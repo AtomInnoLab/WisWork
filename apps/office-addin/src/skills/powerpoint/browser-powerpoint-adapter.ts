@@ -139,6 +139,9 @@ export type PowerPointMasterOperation =
 
 export interface PowerPointPresentationState {
   slideCount: number
+  slideWidth?: number
+  slideHeight?: number
+  coordinateUnit?: 'pt'
   selectedSlideIndexes: number[]
   api: { v12: boolean; v14: boolean; v15: boolean; v18: boolean; v110: boolean }
 }
@@ -527,7 +530,28 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         selectedSlideIndexes = []
       }
     }
-    return { slideCount, selectedSlideIndexes, api: apiSupport }
+    let dimensions: Pick<
+      PowerPointPresentationState,
+      'slideWidth' | 'slideHeight' | 'coordinateUnit'
+    > = {}
+    if (apiSupport.v110) {
+      try {
+        dimensions = await this.run('1.10', async (context) => {
+          const setup = (context.presentation as RuntimeRecord).pageSetup as RuntimeRecord
+          if (typeof setup?.load !== 'function') throw new Error('office_api_unsupported')
+          ;(setup.load as (properties: string[]) => void)(['slideWidth', 'slideHeight'])
+          await sync(context, signal)
+          const slideWidth = finite(setup.slideWidth)
+          const slideHeight = finite(setup.slideHeight)
+          if (slideWidth <= 0 || slideHeight <= 0) throw new Error('office_read_failed')
+          return { slideWidth, slideHeight, coordinateUnit: 'pt' as const }
+        })
+      } catch (error) {
+        if (signal?.aborted) throw error
+        // Older/partial hosts remain readable. Never invent a default canvas size.
+      }
+    }
+    return { slideCount, selectedSlideIndexes, api: apiSupport, ...dimensions }
   }
   async readShapeTextStyle(slideIndex: number, shapeId: string, signal?: AbortSignal) {
     return this.run('1.4', async (context) => {

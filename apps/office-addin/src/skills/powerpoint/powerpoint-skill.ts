@@ -363,7 +363,7 @@ const tools = [
   {
     name: 'get_presentation_state',
     description:
-      'Read the bounded PowerPoint document state before planning or editing. Returns slide count, selected zero-based slide indices, and supported PowerPoint API versions.',
+      'Read the bounded PowerPoint document state before planning or editing. Returns slide count, selected zero-based slide indices, supported PowerPoint API versions, and measured slideWidth/slideHeight in points when supported. Use these dimensions for layouts; screenshot pixels are not Office coordinates.',
     inputSchema: {
       type: 'object',
       properties: { explanation: { type: 'string', maxLength: 50 } },
@@ -429,7 +429,8 @@ const tools = [
   },
   {
     name: 'read_slide_text',
-    description: 'Read bounded text from a shape selected by stable ID.',
+    description:
+      'Read bounded text and available current font/style readback from a shape selected by stable ID. Use the actual style to repair a failed font change without replaying the batch.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1367,7 +1368,7 @@ export function createPowerPointSkill(options: {
   prepareScreenshot?: (image: AgentImage, signal?: AbortSignal) => Promise<AgentImage>
   presentationFlags?: PresentationVerificationFlags
   presentationTelemetry?: (event: PresentationTelemetryEvent) => void
-}): AgentSkill {
+}): AgentSkill & { validateImageMutation: (slideIndex: number) => string | undefined } {
   const mutationTools = new Set([
     'set_slide_background',
     'execute_office_js',
@@ -1382,6 +1383,7 @@ export function createPowerPointSkill(options: {
   let screenshotRevision = 0
   let verificationRevision = 0
   let knownSlideCount = 0
+  let canvas: { slideWidth: number; slideHeight: number; coordinateUnit: 'pt' } | undefined
   let unknownMutationPages = false
   let activeDesignContract: PresentationDesignContract | undefined
   let activeDesignContractIsModern = false
@@ -1415,7 +1417,6 @@ export function createPowerPointSkill(options: {
           : 'Call verify_slides and resolve remaining issues before reporting completion.',
   })
   const proposalDesignSlides = new Map<string, { indexes: number[]; scaffold: boolean }>()
-  let proposingDesignSlides: { indexes: number[]; scaffold: boolean } | undefined
   const mutationSlideIndexes = (call: { name: string; input: Record<string, unknown> }) => {
     if (['edit_slide_master', 'edit_slide_master_xml'].includes(call.name))
       return Array.from({ length: knownSlideCount }, (_, index) => index)
@@ -1505,10 +1506,10 @@ export function createPowerPointSkill(options: {
     if (targets.length > 3) return 'design_contract_batch_size'
   }
   options.proposals.subscribeAudit?.((event) => {
-    if (event.kind === 'proposed' && proposingDesignSlides)
+    if (event.kind === 'proposed' && event.powerPointMutation)
       proposalDesignSlides.set(event.id, {
-        ...proposingDesignSlides,
-        indexes: [...proposingDesignSlides.indexes],
+        ...event.powerPointMutation,
+        indexes: [...event.powerPointMutation.indexes],
       })
     if (event.kind === 'settled') {
       const mutation = proposalDesignSlides.get(event.id)
@@ -1537,6 +1538,10 @@ export function createPowerPointSkill(options: {
     const edited = await editPowerPointPackage(before.base64, kind, replacements, signal)
     let applied: Awaited<ReturnType<typeof editPowerPointPackage>> | undefined
     const proposal = options.proposals.propose({
+      powerPointMutation: {
+        indexes: mutationSlideIndexes({ name: toolName, input: { slide_index: slideIndex } }),
+        scaffold: false,
+      },
       operation: toolName,
       toolName,
       title: explanation || `Edit PowerPoint ${kind} XML`,
@@ -1597,11 +1602,20 @@ export function createPowerPointSkill(options: {
 
   return {
     id: 'office-powerpoint',
+    validateImageMutation: (slideIndex) => {
+      if (!Number.isSafeInteger(slideIndex) || slideIndex < 0) return 'invalid_tool_input'
+      if (knownSlideCount > 0 && slideIndex >= knownSlideCount) return 'invalid_tool_input'
+      const error = designProductionError([slideIndex], false)
+      return error === 'design_contract_review_required'
+        ? boundedJson({ error, ...reviewRecovery() })
+        : error
+    },
     repeatFinalResponseCorrection: true,
     systemPrompt:
       `${PRESENTATION_DESIGN_WORKFLOW_PROMPT}\n` +
       'Follow the same complete workflow as WisWork Slides in this agent run: understand the document with get_presentation_state and bounded reads, and inspect the presentation before planning; for a new deck, you must call ask_clarification for missing audience, focus, style, and page-count choices unless the user already supplied or delegated them; use plan_deck before the first mutation to record the narrative and visual plan; run web_search and image_search for needed facts and visuals; implement the complete plan with bounded slide edits; screenshot every created or changed slide and inspect the native images; repair concrete clipping, overlap, hierarchy, spacing, contrast, and balance defects; screenshot every repaired slide again; then call verify_slides after the approved build before reporting completion. A screenshot call alone is not a visual pass: inspect its image and keep the screenshot-repair-screenshot loop in this same run until the checked pages are satisfactory or a concrete blocker remains. Never end the run expecting another user message or host post-processing to finish the deck. All slide_index values are zero-based, so the user’s first slide is index 0. Never replace that tool call with prose questions; the host renders its model-authored questions as interactive feedback and returns the answers so you can continue the same task. Emit a concise user-visible progress note before every tool batch, explaining the current design decision and next action without revealing private chain-of-thought. ' +
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
+      ' Use the measured slideWidth and slideHeight from get_presentation_state for every layout; coordinates are points, not screenshot pixels. Never assume a 720x405 or 960x540 canvas. If dimensions are unavailable, obtain the actual size before positioning content. A full-bleed image must cover the actual canvas, not only its upper-left area. Plan text and imagery together: preserve image proportions, leave deliberate clear space for titles, and use a contrasting text panel when the photo is too busy or bright. Inspect the entire screenshot including right and bottom edges; accidental white bands, blank planned pages, distorted images, and unreadable text over photos fail visual review. Do not change font families across a batch merely for styling; use the current family when font readback fails and repair size, color, spacing, and background separately.' +
       ' Submit plan_deck with draft or ready only; producing and verified are host-owned states. After inspecting each screenshot call review_slide_screenshot with its acceptance_ids; screenshot_slide and verify_slides do not register a visual review. Do not resubmit plan_deck to record a review.' +
       ' ' +
       (isMac
@@ -1614,9 +1628,10 @@ export function createPowerPointSkill(options: {
           !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
     ),
     buildContext: () =>
-      activeDesignContract
+      (canvas ? `<presentation canvas>\n${boundedJson(canvas)}\n</presentation canvas>\n` : '') +
+      (activeDesignContract
         ? `<active presentation design contract>\n${boundedJson(activeDesignContract)}\n</active presentation design contract>\n<presentation review progress>\n${boundedJson(reviewRecovery())}\n</presentation review progress>`
-        : '',
+        : ''),
     reviewFinalResponse(context) {
       if (!context.mutated) return undefined
       if (unknownMutationPages)
@@ -1644,6 +1659,20 @@ export function createPowerPointSkill(options: {
           verifyInput(call.input)
           const state = await options.adapter.getPresentationState(signal)
           knownSlideCount = state.slideCount
+          canvas =
+            state.coordinateUnit === 'pt' &&
+            typeof state.slideWidth === 'number' &&
+            typeof state.slideHeight === 'number' &&
+            Number.isFinite(state.slideWidth) &&
+            Number.isFinite(state.slideHeight) &&
+            state.slideWidth > 0 &&
+            state.slideHeight > 0
+              ? {
+                  slideWidth: state.slideWidth,
+                  slideHeight: state.slideHeight,
+                  coordinateUnit: 'pt',
+                }
+              : undefined
           if (unknownMutationPages) {
             for (let index = 0; index < knownSlideCount; index++) dirtySlideIndexes.add(index)
             unknownMutationPages = false
@@ -1771,7 +1800,6 @@ export function createPowerPointSkill(options: {
                 ? boundedJson({ error: productionError, ...reviewRecovery() })
                 : productionError,
             )
-          proposingDesignSlides = { indexes, scaffold: scaffolding }
           if (!activeDesignContractIsModern) {
             mutationRevision++
             for (const index of indexes) dirtySlideIndexes.add(index)
@@ -1887,10 +1915,24 @@ export function createPowerPointSkill(options: {
         }
         if (call.name === 'read_slide_text') {
           const input = shapeInput(call.input)
+          const text = await options.adapter.readSlideText(
+            input.slide_index,
+            input.shape_id,
+            signal,
+          )
+          let textStyle
+          try {
+            textStyle = await options.adapter.readShapeTextStyle?.(
+              input.slide_index,
+              input.shape_id,
+              signal,
+            )
+          } catch (error) {
+            if (signal?.aborted) throw error
+            // Mixed/unsupported font properties must not make readable text unavailable.
+          }
           return {
-            output: boundedJson(
-              await options.adapter.readSlideText(input.slide_index, input.shape_id, signal),
-            ),
+            output: boundedJson({ ...text, ...(textStyle ? { textStyle } : {}) }),
             mutated: false,
             summary: 'Read PowerPoint text',
           }
@@ -1981,6 +2023,7 @@ export function createPowerPointSkill(options: {
           const color = input.color.toUpperCase()
           const transparency = input.transparency ?? 0
           const proposal = options.proposals.propose({
+            powerPointMutation: { indexes: mutationSlideIndexes(call), scaffold: scaffolding },
             operation: call.name,
             toolName: call.name,
             title: input.explanation || 'Set slide background',
@@ -2052,6 +2095,7 @@ export function createPowerPointSkill(options: {
             JSON.stringify([before.slideId, before.shapeId, before.text, before.paragraphs]),
           )
           const proposal = options.proposals.propose({
+            powerPointMutation: { indexes: mutationSlideIndexes(call), scaffold: scaffolding },
             operation: 'edit_slide_text',
             toolName: call.name,
             title: input.explanation || 'Edit slide text',
@@ -2115,6 +2159,7 @@ export function createPowerPointSkill(options: {
           const snapshot = await options.adapter.snapshotSlide(input.slide_index, signal)
           let insertedSlideId: string | undefined
           const proposal = options.proposals.propose({
+            powerPointMutation: { indexes: mutationSlideIndexes(call), scaffold: scaffolding },
             operation: 'duplicate_slide',
             toolName: call.name,
             title: input.explanation || 'Duplicate slide',
@@ -2238,6 +2283,7 @@ export function createPowerPointSkill(options: {
           })
           let declarativeResult: { createdShapeIds: string[]; insertedSlideId?: string } | undefined
           const proposal = options.proposals.propose({
+            powerPointMutation: { indexes: mutationSlideIndexes(call), scaffold: scaffolding },
             operation: call.name,
             toolName: call.name,
             title: input.explanation || 'Execute declarative PowerPoint operations',
@@ -2467,6 +2513,7 @@ export function createPowerPointSkill(options: {
             ...new Set(operations.map((operation) => `master:${operation.master_id}`)),
           ]
           const proposal = options.proposals.propose({
+            powerPointMutation: { indexes: mutationSlideIndexes(call), scaffold: scaffolding },
             operation: call.name,
             toolName: call.name,
             title: (input.explanation as string | undefined) || 'Edit PowerPoint slide master',

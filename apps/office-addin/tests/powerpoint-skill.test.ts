@@ -123,6 +123,100 @@ const modernContract = (overrides: Record<string, unknown> = {}) => ({
 })
 
 describe('PowerPoint compatibility skill', () => {
+  it('returns actual font readback for targeted repair without losing text on unsupported hosts', async () => {
+    const port = adapter({
+      readShapeTextStyle: vi
+        .fn()
+        .mockResolvedValue({ fontFamily: 'Aptos', fontSize: 24, color: '#FFFFFF' }),
+    })
+    const skill = createPowerPointSkill({
+      adapter: port,
+      proposals: createStructuredProposalController(),
+    })
+    const read = () => skill.executeTool(call('read_slide_text', { slide_index: 0, shape_id: '2' }))
+    expect(JSON.parse((await read()).output)).toMatchObject({
+      text: 'Hello',
+      textStyle: { fontFamily: 'Aptos', fontSize: 24 },
+    })
+    vi.mocked(port.readShapeTextStyle!).mockRejectedValue(new Error('office_api_unsupported'))
+    expect(JSON.parse((await read()).output)).toMatchObject({ text: 'Hello' })
+  })
+  it('keeps measured point dimensions in context without inventing a default canvas', async () => {
+    const state = { slideCount: 2, selectedSlideIndexes: [], api: {} }
+    const port = adapter({
+      getPresentationState: vi.fn().mockResolvedValue({
+        ...state,
+        slideWidth: 960,
+        slideHeight: 540,
+        coordinateUnit: 'pt',
+      }),
+    })
+    const skill = createPowerPointSkill({
+      adapter: port,
+      proposals: createStructuredProposalController(),
+    })
+    expect(skill.buildContext?.()).not.toContain('960')
+    await skill.executeTool(call('get_presentation_state'))
+    expect(skill.buildContext?.()).toContain('"slideWidth":960')
+    expect(skill.buildContext?.()).toContain('"coordinateUnit":"pt"')
+    vi.mocked(port.getPresentationState).mockResolvedValue(state as any)
+    await skill.executeTool(call('get_presentation_state'))
+    expect(skill.buildContext?.()).not.toContain('960')
+  })
+  it('binds an image proposal to its own page, not the previous text-edit page', async () => {
+    const base = modernContract()
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: adapter(), proposals })
+    await skill.executeTool(
+      call('plan_deck', {
+        contract: modernContract({
+          prototypePages: [1, 2],
+          brief: { ...base.brief, pageCount: 2 },
+          slides: [1, 2].map((number) => ({
+            ...base.slides[0],
+            number,
+            acceptance: [{ id: `A${number}.1`, criterion: 'Readable' }],
+          })),
+        }),
+      }),
+    )
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+    )
+    await proposals.confirm(proposals.pending()!.id)
+    await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    await skill.executeTool(
+      call('review_slide_screenshot', { slide_index: 0, acceptance_ids: ['A1.1'], passed: true }),
+    )
+    const picture = proposals.propose({
+      operation: 'insert_web_image',
+      toolName: 'insert_web_image',
+      title: 'Picture',
+      preview: {},
+      impact: { host: 'powerpoint', targets: ['slide-2'], count: 1 },
+      fingerprint: 's2',
+      powerPointMutation: { indexes: [1], scaffold: false },
+      validate: () => true,
+      execute: () => undefined,
+      verify: () => undefined,
+    })
+    await proposals.confirm(picture.id)
+    const progress = skill.buildContext?.().split('<presentation review progress>')[1] ?? ''
+    expect(progress).toContain('"slide_index":1')
+    expect(progress).not.toContain('"slide_index":0')
+    await skill.executeTool(call('screenshot_slide', { slide_index: 1 }))
+    expect(
+      (
+        await skill.executeTool(
+          call('review_slide_screenshot', {
+            slide_index: 1,
+            acceptance_ids: ['A2.1'],
+            passed: true,
+          }),
+        )
+      ).isError,
+    ).not.toBe(true)
+  })
   it('promotes a fully populated draft to ready instead of treating the transition as a replay', async () => {
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: adapter(), proposals })
@@ -2402,6 +2496,27 @@ describe('PowerPoint compatibility skill', () => {
 })
 
 describe('browser PowerPoint adapter', () => {
+  it.each([
+    [960, 540],
+    [720, 405],
+  ])('returns the real %i × %i point canvas before production', async (slideWidth, slideHeight) => {
+    const slides = { getCount: () => ({ value: 1 }) }
+    const pageSetup = { slideWidth, slideHeight, load: vi.fn() }
+    vi.stubGlobal('Office', {
+      context: { host: 'PowerPoint', requirements: { isSetSupported: () => true } },
+    })
+    vi.stubGlobal('PowerPoint', {
+      run: (fn: (context: unknown) => unknown) =>
+        fn({ presentation: { slides, pageSetup }, sync: vi.fn() }),
+    })
+    expect(await new BrowserPowerPointAdapter().getPresentationState()).toMatchObject({
+      slideWidth,
+      slideHeight,
+      coordinateUnit: 'pt',
+    })
+    expect(pageSetup.load).toHaveBeenCalledWith(['slideWidth', 'slideHeight'])
+    vi.unstubAllGlobals()
+  })
   it('reads all actual text instead of an implicit paragraph-marker style', async () => {
     const mixedFont = { load: vi.fn(), name: '', size: 0, color: '', bold: false, italic: false }
     const sampledFont = {
