@@ -1390,16 +1390,19 @@ export function createPowerPointSkill(options: {
   const dirtySlideIndexes = new Set<number>()
   const builtDesignSlides = new Set<number>()
   const pendingDesignReviews = new Set<number>()
+  const repairRequiredDesignReviews = new Set<number>()
   const reviewRecovery = () => ({
     nextTool: [...pendingDesignReviews].some((index) => dirtySlideIndexes.has(index))
       ? 'screenshot_slide'
-      : pendingDesignReviews.size
-        ? 'review_slide_screenshot'
-        : !activeDesignContract || activeDesignContract.status === 'draft'
-          ? 'plan_deck'
-          : builtDesignSlides.size < activeDesignContract.slides.length
-            ? 'get_presentation_state'
-            : 'verify_slides',
+      : repairRequiredDesignReviews.size
+        ? 'list_slide_shapes'
+        : pendingDesignReviews.size
+          ? 'review_slide_screenshot'
+          : !activeDesignContract || activeDesignContract.status === 'draft'
+            ? 'plan_deck'
+            : builtDesignSlides.size < activeDesignContract.slides.length
+              ? 'get_presentation_state'
+              : 'verify_slides',
     pendingReviews: [...pendingDesignReviews]
       .sort((a, b) => a - b)
       .map((index) => ({
@@ -1407,6 +1410,7 @@ export function createPowerPointSkill(options: {
         acceptance_ids:
           activeDesignContract?.slides[index]?.acceptance.map((rule) => rule.id) ?? [],
         needsScreenshot: dirtySlideIndexes.has(index),
+        needsRepair: repairRequiredDesignReviews.has(index),
       })),
     instruction: pendingDesignReviews.size
       ? 'Inspect each current screenshot, then call review_slide_screenshot with its acceptance_ids and the actual result. Repair failed pages and screenshot again. Do not resubmit plan_deck to record a review.'
@@ -1468,7 +1472,10 @@ export function createPowerPointSkill(options: {
       activeDesignContract = { ...activeDesignContract, status: 'producing' }
     for (const index of indexes) {
       if (!scaffold) {
-        if (confirmed) builtDesignSlides.add(index)
+        if (confirmed) {
+          builtDesignSlides.add(index)
+          repairRequiredDesignReviews.delete(index)
+        }
         pendingDesignReviews.add(index)
       }
       dirtySlideIndexes.add(index)
@@ -1722,6 +1729,7 @@ export function createPowerPointSkill(options: {
             activeDesignContractIsModern = 'contract' in call.input
             builtDesignSlides.clear()
             pendingDesignReviews.clear()
+            repairRequiredDesignReviews.clear()
             proposalDesignSlides.clear()
           }
           return {
@@ -1888,11 +1896,40 @@ export function createPowerPointSkill(options: {
             supplied.some((id, index) => id !== expected[index])
           )
             return failure(call.name, 'design_contract_acceptance_mismatch')
-          if (call.input.passed !== true)
-            return failure(
-              call.name,
-              `design_contract_visual_review_failed: ${Array.isArray(call.input.issues) ? call.input.issues.map(String).join('; ') : 'repair and re-screenshot this slide'}`,
-            )
+          if (call.input.passed !== true) {
+            const issues = Array.isArray(call.input.issues)
+              ? call.input.issues.map(String)
+              : ['Repair and re-screenshot this slide']
+            repairRequiredDesignReviews.add(input.slide_index)
+            return {
+              output: boundedJson({
+                status: 'needs_repair',
+                slide: input.slide_index + 1,
+                revision: activeDesignContract.revision,
+                acceptanceIds: expected,
+                issues,
+                nextTool: 'list_slide_shapes',
+                instruction:
+                  'Repair the reported visual issues, then take a new screenshot before reviewing this slide again.',
+              }),
+              mutated: false,
+              summary: `PowerPoint slide needs repair · DESIGN r${activeDesignContract.revision}`,
+            }
+          }
+          if (repairRequiredDesignReviews.has(input.slide_index))
+            return {
+              output: boundedJson({
+                status: 'repair_required',
+                slide: input.slide_index + 1,
+                revision: activeDesignContract.revision,
+                acceptanceIds: expected,
+                nextTool: 'list_slide_shapes',
+                instruction:
+                  'Apply a repair for the previously reported issues, then take a new screenshot before reviewing this slide again.',
+              }),
+              mutated: false,
+              summary: `PowerPoint slide still needs repair · DESIGN r${activeDesignContract.revision}`,
+            }
           pendingDesignReviews.delete(input.slide_index)
           return {
             output: boundedJson({

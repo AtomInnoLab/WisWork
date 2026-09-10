@@ -19,7 +19,7 @@
 2. get_state 返回可测量的点尺寸并保留上下文，无 API 时不伪造默认画布。明确整页边界、图文对比和图片比例要求。
 3. 每个提案携带内部、限长、复制后的页面归属；独立图片模块使用自己的页码并走生产前置检查。用户输入不能注入该内部字段，Relay 格式不变。
 4. 兼容映射诊断码；保留本地精确失败。文本读取附带可用的真实样式；不支持时仍保留文本结果。
-5. 定向回归、独立审查、全仓测试、类型、lint、格式和生产构建。升 PC 0.6.66 / Taskpane 0.3.36.0，提交 PR；备份本机静态站点，先资源后入口替换，并从公开 HTTPS 比对构建产物。
+5. 定向回归、独立审查、全仓测试、类型、lint、格式和生产构建。升 PC 0.6.67 / Taskpane 0.3.37.0，提交 PR；备份本机静态站点，先资源后入口替换，并从公开 HTTPS 比对构建产物。
 
 ## 发布边界
 
@@ -51,3 +51,30 @@
 验收：68 秒后返回成功 receipt，不出现 `tool_timeout`；五分钟未确认返回 `tool_timeout`；随后读取可执行。定向测试转绿后运行相关 workspace、类型、lint、格式及完整回归。无迁移；回滚该提交恢复原 30 秒行为。
 
 验证：RED 测试在 68 秒后实际得到 `tool_timeout`；GREEN 后得到成功 receipt。Codex bridge 27 项、Office proxy 36 项定向测试通过；独立审查无关键或重要问题，其测试建议已修正。最终全仓 Vitest 7,520 项通过、21 项条件跳过，Office 插件 908 项通过；全仓类型、lint（既有 13 条警告、0 错误）、格式及 diff 检查通过。
+
+## 追加：视觉未通过不是工具执行故障
+
+目标：保留逐页截图验收和修复门槛，但把模型如实提交的 `passed: false` 表达为成功记录的 `needs_repair` 结果，不再显示红色工具故障或消耗运行时失败预算。非目标：不自动放行未通过页面，不绕过重新截图，不把外部图片下载失败伪装为成功。
+
+证据：build `ba87dff0b4ff` 在 2–8ms 内连续返回 `design_contract_visual_review_failed`，随后整轮在 413 秒终止；实现中 `review_slide_screenshot` 的 `passed !== true` 分支直接调用通用 `failure()`。同一状态机已经保留待审页面，并允许已构建页面继续修复，因此无需放松 `design_contract_review_required` 门槛。
+
+涉及文件：
+
+- `apps/office-addin/src/skills/powerpoint/powerpoint-skill.ts`：将未通过审查返回为有界 `needs_repair` 成功结果，待审状态保持不变。
+- `apps/office-addin/tests/powerpoint-skill.test.ts`：证明未通过不带 `isError`、仍阻止最终验证、允许修复且修复后必须重新截图。
+
+图片的 129ms 即时拒绝和约 15 秒下载超时属于不同阶段。搜索供应商同时提供同一候选的原图与缩略图，但当前解析丢弃缩略图，且 Office 搜索结果丢弃原图宽高；因此原图遇到防盗链/超时时整次失败，模型也无法按真实比例布局。本交付保留原图优先，仅在同一候选的原图不可取时下载其经过相同 HTTPS/SSRF 校验的备用图，不跨候选自动换图；同时返回有界宽高供布局使用。仍由截图审查决定备用图画质是否合格。
+
+- `packages/ai-search/src/shared.ts`、`packages/ai-search/src/index.ts`：保留供应商给出的同候选备用图地址，不向 Office 模型暴露私有备用地址。
+- `apps/shell/src/main/office-retrieval-proxy.ts`：登记同候选备用地址、原图失败时回退，并向模型保留宽高。
+- 对应搜索与 Office retrieval 测试先红后绿；不改变 Relay 协议，不降低下载大小、MIME、DNS、重定向或来源授权约束。
+
+验证：视觉语义、同候选备用图、过期授权刷新和尺寸边界均先以失败测试复现并转绿；定向 198 项、Office 插件 909 项、Shell 593 项通过。全仓 `npm test`、`npm run typecheck`、`npm run format:check`、`git diff --check` 均退出 0；lint 为既有 13 条警告、0 错误。独立初审提出的三个重要边界已修复，复审无 Critical、Important 或 Minor 遗留。
+
+## 追加：PC 终态释放提案与选区运行可停止
+
+目标：PC 运行到达失败或取消终态时，所有尚未确认的 mutation proposal 必须同步拒绝并结算底层 claim；选区编辑运行中始终显示“结束”按钮。非目标：不放宽 DESIGN.md 的正文/证据一致性校验，也不允许终态之后继续确认旧提案。
+
+证据：trace `d97b9640-b28d-4cfc-a23f-f53a5790ee63` 中一个提案在运行终态后约 91 秒才结算；此间文档工具路由仍持有 pending mutation，后续调用连续返回 `tool_call_in_progress`。PC Shell 的终态处理仅清空 UI 提案 Map 和定时器，没有拒绝 mutation authority claim。Slides 面板则用 `busy && !selectionScopeEnabled` 决定是否渲染停止按钮，导致选区编辑忙碌时按钮消失。
+
+修复：终态先撤销未完成宿主调用，再逐一 claim 并拒绝遗留提案、记录取消 execution，最后按已记录结果结算工具生命周期；选区模式与普通模式统一由 `busy` 控制停止按钮。回归证明终态后读取可以立即派发，不再收到 `tool_call_in_progress`，且选区任务忙碌时 `.ai-stop-btn` 可见。

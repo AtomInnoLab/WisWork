@@ -9,6 +9,7 @@ export interface WebSearchResult {
 export interface ImageSearchResult {
   title: string
   imageUrl: string
+  fallbackImageUrl?: string
   sourceUrl: string
   source: string
   width?: number

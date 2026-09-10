@@ -369,11 +369,45 @@ describe('PC Codex host registrar', () => {
       mutated: false,
     })
     expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(5)
+
+    const abandoned = registered.session.callTool(registered.session.credentials, {
+      id: 'm4',
+      name: 'replace_blocks',
+      input: {},
+    }) as any
+    registered.onEvent({
+      type: 'proposal',
+      proposalId: 'T'.repeat(43),
+      call: { id: 'm4', name: 'replace_blocks', input: {} },
+      expiresAt: Date.now() + 60_000,
+      summary: { operation: 'replace', target: 'blocks', scope: 'bounded-set', count: 1 },
+    })
     registered.onEvent({ type: 'terminal', status: 'failed', code: 'enhanced_proposal_expired' })
+    await expect(abandoned.result).resolves.toMatchObject({
+      output: 'mutation_cancelled',
+      isError: true,
+      mutated: false,
+    })
     expect(sent.at(-1)).toEqual([
       PC_HOST_CODEX_CHANNELS.event,
       { type: 'error', code: 'enhanced_proposal_expired' },
     ])
+    const readAfterTerminal = registered.session.callTool(registered.session.credentials, {
+      id: 'r-after-terminal',
+      name: 'read_blocks',
+      input: {},
+    }) as Promise<unknown>
+    expect(sent.at(-1)?.[0]).toBe(PC_HOST_CODEX_CHANNELS.toolCall)
+    await handlers.get(PC_HOST_CODEX_CHANNELS.toolResult)!(
+      { sender: owner },
+      {
+        documentId: 'doc-1',
+        generation: 3,
+        callId: 'r-after-terminal',
+        execution: { output: 'ok', summary: 'read' },
+      },
+    )
+    await expect(readAfterTerminal).resolves.toMatchObject({ output: 'ok' })
     await registrar.closeOwner(owner)
     expect(engine.closeDocument).toHaveBeenCalledWith('doc-1')
   })

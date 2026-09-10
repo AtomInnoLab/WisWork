@@ -92,6 +92,18 @@ function publicImageUrl(value: unknown, provider: ImageSearchError['provider']):
   }
 }
 
+function optionalPublicImageUrl(
+  value: unknown,
+  provider: ImageSearchError['provider'],
+): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  try {
+    return publicImageUrl(value, provider)
+  } catch {
+    return undefined
+  }
+}
+
 function imageRecord(value: unknown, provider: ImageSearchError['provider']) {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new ImageSearchError('parse', provider)
@@ -100,9 +112,9 @@ function imageRecord(value: unknown, provider: ImageSearchError['provider']) {
 
 function optionalDimension(value: unknown, provider: ImageSearchError['provider']) {
   if (value === undefined) return undefined
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
+  if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > 100_000)
     throw new ImageSearchError('parse', provider)
-  return value
+  return Number(value)
 }
 
 function optionalText(value: unknown, provider: ImageSearchError['provider']): string {
@@ -369,6 +381,9 @@ export async function imageSearch(
             source:
               image.source == null ? safeHost(sourceUrl) : optionalText(image.source, 'serpapi'),
           }
+          const fallbackImageUrl = optionalPublicImageUrl(image.thumbnail, 'serpapi')
+          if (fallbackImageUrl && fallbackImageUrl !== imageUrl)
+            entry.fallbackImageUrl = fallbackImageUrl
           const width = optionalDimension(image.original_width, 'serpapi')
           const height = optionalDimension(image.original_height, 'serpapi')
           if (width !== undefined) entry.width = width
@@ -407,6 +422,12 @@ export async function imageSearch(
             sourceUrl,
             source: img.source == null ? safeHost(sourceUrl) : optionalText(img.source, 'serper'),
           }
+          const fallbackImageUrl = optionalPublicImageUrl(
+            img.thumbnailUrl ?? img.thumbnail,
+            'serper',
+          )
+          if (fallbackImageUrl && fallbackImageUrl !== imageUrl)
+            entry.fallbackImageUrl = fallbackImageUrl
           const width = optionalDimension(img.imageWidth, 'serper')
           const height = optionalDimension(img.imageHeight, 'serper')
           if (width !== undefined) entry.width = width
@@ -486,6 +507,9 @@ async function duckImageSearch(query: string, maxResults: number): Promise<Image
         sourceUrl,
         source: safeHost(sourceUrl),
       }
+      const fallbackImageUrl = optionalPublicImageUrl(img.thumbnail, 'duckduckgo')
+      if (fallbackImageUrl && fallbackImageUrl !== imageUrl)
+        entry.fallbackImageUrl = fallbackImageUrl
       const width = optionalDimension(img.width, 'duckduckgo')
       const height = optionalDimension(img.height, 'duckduckgo')
       if (width !== undefined) entry.width = width

@@ -120,4 +120,52 @@ describe('AiPanel collapse (slides)', () => {
 
     cleanup()
   })
+
+  it('shows the stop action while a selection-scoped run is busy', async () => {
+    const originalApi = window.slidesApi
+    let cleanup: () => void = () => undefined
+    try {
+      window.slidesApi = {
+        getDesignSidecar: vi.fn(async () => ({ ok: true })),
+        captureAgentSelection: vi.fn(async () => ({
+          status: 'captured' as const,
+          documentId: 'document-1',
+          sessionId: 'session-1',
+          generation: 1,
+          slides: [
+            {
+              slideId: 'slide-1',
+              elements: [
+                {
+                  elementId: 'shape-1',
+                  expectedType: 'text' as const,
+                  expectedFingerprint: 'fingerprint-1',
+                },
+              ],
+            },
+          ],
+        })),
+        beginHistoryBatch: vi.fn(async () => true),
+        endHistoryBatch: vi.fn(async () => 1),
+        onAiStream: vi.fn(() => () => undefined),
+        aiStream: vi.fn(() => new Promise<void>(() => undefined)),
+        aiStreamCancel: vi.fn(async () => undefined),
+      } as unknown as typeof window.slidesApi
+      const mounted = mount(createElement(AiPanel, panelProps({ selectedIds: ['shape-1'] })))
+      cleanup = mounted.cleanup
+      const scope = mounted.container.querySelector<HTMLInputElement>(
+        '.ai-selection-scope-toggle input',
+      )!
+      act(() => scope.click())
+      expect(scope.checked).toBe(true)
+      const textarea =
+        mounted.container.querySelector<HTMLTextAreaElement>('.ai-input-box textarea')!
+      typeInto(textarea, 'Edit this shape')
+      act(() => mounted.container.querySelector<HTMLButtonElement>('.ai-send-btn')!.click())
+      await vi.waitFor(() => expect(mounted.container.querySelector('.ai-stop-btn')).not.toBeNull())
+    } finally {
+      cleanup()
+      ;(window as typeof window & { slidesApi?: unknown }).slidesApi = originalApi
+    }
+  })
 })

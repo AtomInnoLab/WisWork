@@ -485,20 +485,37 @@ export function registerPcCodexHosts(options: {
       })
       pending.reject()
     }
+    for (const proposal of record.proposals.values()) {
+      if (proposal.timer) clearTimeout(proposal.timer)
+      const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
+      if (claimed && claimed.request.call.id === proposal.call.id) {
+        const execution = {
+          output: 'mutation_cancelled',
+          summary: 'Mutation rejected',
+          isError: true,
+          mutated: false,
+        }
+        record.session.mutationAuthority.reject(claimed.claim, 'mutation_cancelled')
+        recordExecution(record, { ...proposal.call, input: {} }, execution)
+      } else if (claimed) {
+        record.session.mutationAuthority.reject(claimed.claim, 'mutation_binding_mismatch')
+      }
+    }
+    record.proposals.clear()
     for (const lifecycle of record.lifecycle.values()) {
       if (lifecycle.turnId) record.retiredTurns.add(lifecycle.turnId)
       if (!lifecycle.done)
-        finishTool(record, lifecycle, {
-          output: event.status === 'cancelled' ? 'tool_cancelled' : 'tool_execution_failed',
-          summary: event.status === 'cancelled' ? 'Tool cancelled' : 'Tool failed',
-          isError: true,
-          mutated: false,
-        })
+        finishTool(
+          record,
+          lifecycle,
+          lifecycle.execution ?? {
+            output: event.status === 'cancelled' ? 'tool_cancelled' : 'tool_execution_failed',
+            summary: event.status === 'cancelled' ? 'Tool cancelled' : 'Tool failed',
+            isError: true,
+            mutated: false,
+          },
+        )
     }
-    for (const proposal of record.proposals.values()) {
-      if (proposal.timer) clearTimeout(proposal.timer)
-    }
-    record.proposals.clear()
     if (event.status === 'failed')
       send(record, PC_HOST_CODEX_CHANNELS.event, {
         type: 'error',
