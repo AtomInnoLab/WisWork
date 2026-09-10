@@ -77,6 +77,8 @@ fn deployment_bounds_image_fetch_before_proxying() {
     assert!(locations.contains("client_max_body_size 4k"));
     assert!(locations.contains("limit_conn wiswork_relay_connections 16"));
     assert!(locations.contains("limit_req zone=wiswork_image_fetch burst=16 nodelay"));
+    assert!(locations.contains("proxy_buffering off"));
+    assert!(locations.contains("proxy_max_temp_file_size 0"));
     assert!(locations.contains("access_log off"));
     assert!(limits.contains("zone=wiswork_image_fetch:10m rate=120r/m"));
 }
