@@ -409,36 +409,52 @@ async fn recv(
     serde_json::from_str(&text).unwrap()
 }
 
-async fn approved_v2_session(
+async fn approved_v2_session(url: &str) -> (TestSocket, TestSocket, Value, Value) {
+    approved_v2_session_with_capabilities(url, &["agent.v1"]).await
+}
+
+async fn approved_v2_session_with_capabilities(
     url: &str,
-) -> (
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    Value,
-    Value,
-) {
+    capabilities: &[&str],
+) -> (TestSocket, TestSocket, Value, Value) {
     let mut office = socket(url, ORIGIN).await;
     send(
         &mut office,
-        json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1"]}),
+        json!({"version":2,"type":"office.create","host":"Word","capabilities":capabilities}),
     )
     .await;
     let created = recv(&mut office).await;
     let mut pc = pc_socket(url).await;
     send(
         &mut pc,
-        json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":["agent.v1"]}),
+        json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":capabilities}),
     )
     .await;
     let claimed = recv(&mut pc).await;
     send(
         &mut pc,
-        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"]}),
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":capabilities}),
     )
     .await;
     let pc_ready = recv(&mut pc).await;
     let office_ready = recv(&mut office).await;
     (office, pc, office_ready, pc_ready)
+}
+
+#[tokio::test]
+async fn enhanced_lease_capability_is_negotiated_but_not_callable() {
+    let url = server().await;
+    let capabilities = &["agent.v1", "enhanced-lease.v1"];
+    let (mut office, mut pc, office_ready, pc_ready) =
+        approved_v2_session_with_capabilities(&url, capabilities).await;
+    assert_eq!(office_ready["capabilities"], json!(capabilities));
+    assert_eq!(pc_ready["capabilities"], json!(capabilities));
+    let sid = &office_ready["session_id"];
+    let cap = &office_ready["capability"];
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":cap,"request_id":"not_callable_123","capability_name":"enhanced-lease.v1","body":{}})).await;
+    assert_eq!(recv(&mut office).await["code"], "capability_not_negotiated");
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":cap,"request_id":"next_request_123","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "next_request_123");
 }
 
 #[tokio::test]
@@ -470,7 +486,8 @@ async fn agent_request_outlives_single_response_budget_but_still_expires() {
 #[tokio::test]
 async fn enhanced_state_and_tool_subframes_remain_bound_to_one_active_agent_request() {
     let url = server().await;
-    let (mut office, mut pc, office_ready, pc_ready) = approved_v2_session(&url).await;
+    let (mut office, mut pc, office_ready, pc_ready) =
+        approved_v2_session_with_capabilities(&url, &["agent.v1", "enhanced-lease.v1"]).await;
     let sid = office_ready["session_id"].clone();
     let office_cap = office_ready["capability"].clone();
     let pc_cap = pc_ready["capability"].clone();
@@ -488,6 +505,14 @@ async fn enhanced_state_and_tool_subframes_remain_bound_to_one_active_agent_requ
     let call = recv(&mut office).await;
     assert_eq!(call["type"], "relay.tool_call");
     assert_eq!(call["call_id"], "call_12345678");
+    // Same-generation renewal must not cancel or replace the pending tool.
+    let mut renewed = enhanced.clone();
+    renewed["expires_at"] = json!(4_000_000_600_000u64);
+    send(&mut pc, json!({"version":2,"type":"pc.session_state","session_id":sid,"capability":pc_cap,"generation":7,"enhanced":renewed})).await;
+    let renewed_state = recv(&mut office).await;
+    assert_eq!(renewed_state["type"], "relay.session_state");
+    assert_eq!(renewed_state["generation"], 7);
+    assert_eq!(renewed_state["enhanced"], renewed);
     send(&mut office, json!({"version":2,"type":"office.tool_result","session_id":sid,"capability":office_cap,"request_id":"request_12345678","turn_id":"turn_12345678","call_id":"call_12345678","generation":7,"output":"{\"title\":\"Doc\"}","is_error":false})).await;
     let result = recv(&mut pc).await;
     assert_eq!(result["type"], "relay.tool_result");

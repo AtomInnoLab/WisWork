@@ -63,6 +63,7 @@ const SUPPORTED_CAPABILITIES: &[&str] = &[
     "image-search.v1",
     "image-fetch.v1",
     "design-document.v1",
+    "enhanced-lease.v1",
 ];
 
 #[derive(Clone)]
@@ -2888,7 +2889,8 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
     }
     let capability_name = if protocol == PROTOCOL_V2 {
         let name = string(&m, "capability_name")?;
-        if !session.capabilities.iter().any(|item| item == name) {
+        // Lease renewal is authenticated session control, never a callable service.
+        if name == "enhanced-lease.v1" || !session.capabilities.iter().any(|item| item == name) {
             send(
                 &session.office_tx,
                 json!({"version":protocol,"type":"relay.error","session_id":sid,"request_id":rid,"code":"capability_not_negotiated"}),
@@ -3310,7 +3312,8 @@ async fn session_state(app: &App, conn: u64, m: Map<String, Value>) -> Result<()
     if !m["enhanced"].is_null() && !valid_enhanced_statement(&m["enhanced"], &session.host) {
         return Err("invalid_frame");
     }
-    renew_session(session, app.inner.config.session_ttl);
+    // Background authority renewal is not user activity. Keep both the idle
+    // and absolute session deadlines independent of session-state traffic.
     send(
         &session.office_tx,
         json!({"version":protocol,"type":"relay.session_state","session_id":sid,"generation":generation,"enhanced":m["enhanced"]}),
@@ -3627,6 +3630,83 @@ async fn cleanup(app: &App, conn: u64) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn negotiates_and_resumes_enhanced_lease_capability() {
+        let body = serde_json::json!({"capabilities":["agent.v1","enhanced-lease.v1"]});
+        let map = body.as_object().unwrap();
+        assert_eq!(
+            super::capabilities(map).unwrap(),
+            vec!["agent.v1", "enhanced-lease.v1"]
+        );
+        assert_eq!(
+            super::resume_capabilities(map).unwrap(),
+            vec!["agent.v1", "enhanced-lease.v1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn enhanced_lease_control_never_renews_idle_or_absolute_expiry() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(8);
+        let (pc_sender, _pc_receiver) = mpsc::channel(8);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let now = Instant::now();
+        let expires = now + Duration::from_secs(60);
+        let absolute_expires = now + Duration::from_secs(120);
+        app.inner.state.lock().await.sessions.insert(
+            "lease_session".into(),
+            Session {
+                version: PROTOCOL_V2,
+                host: "Word".into(),
+                office: 1,
+                office_tx,
+                pc: 2,
+                pc_tx,
+                office_cap: "office_cap".into(),
+                pc_cap: "pc_cap".into(),
+                expires,
+                absolute_expires,
+                active: None,
+                used_requests: VecDeque::new(),
+                capabilities: vec!["agent.v1".into(), "enhanced-lease.v1".into()],
+                diagnostics: 0,
+                diagnostic_window_started: now,
+                diagnostic_window_count: 0,
+                binding_id: None,
+            },
+        );
+        let frame = json!({"version":2,"type":"pc.session_state","session_id":"lease_session","capability":"pc_cap","generation":7,
+            "enhanced":{"version":1,"runtime_mode":"enhanced","runtime_instance":"runtime_0123456789abcdef","component_version":"0.147.0","host":"office-word","raw_office":false,"expires_at":900_000,"policy_generation":2,"session_generation":7}});
+        assert_eq!(
+            session_state(&app, 9, frame.as_object().unwrap().clone()).await,
+            Err("invalid_capability")
+        );
+        for expiry in [900_000, 1_500_000] {
+            let mut update = frame.clone();
+            update["enhanced"]["expires_at"] = json!(expiry);
+            assert_eq!(
+                session_state(&app, 2, update.as_object().unwrap().clone()).await,
+                Ok(())
+            );
+            assert!(office_receiver.recv().await.is_some());
+            let store = app.inner.state.lock().await;
+            let session = store.sessions.get("lease_session").unwrap();
+            assert_eq!(
+                session.expires, expires,
+                "lease control cannot act as user activity"
+            );
+            assert_eq!(session.absolute_expires, absolute_expires);
+            assert!(session.active.is_none());
+        }
+    }
+
     #[test]
     fn negotiates_and_resumes_design_document_capability() {
         let body = serde_json::json!({"capabilities":["agent.v1","design-document.v1"]});
