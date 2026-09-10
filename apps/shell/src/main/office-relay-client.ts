@@ -15,6 +15,8 @@ const MAX_CHUNK_BYTES = 64 * 1024
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 // Relay owns the 300s deadline; this only handles a lost relay.cancel.
 const REQUEST_TIMEOUT_MS = 305_000
+// Match Relay's extended agent.v1 envelope, with five seconds for relay.cancel.
+const AGENT_REQUEST_TIMEOUT_MS = 30 * 60_000 + 25_000
 const CONNECT_TIMEOUT_MS = 10_000
 // Relay owns the renewable idle TTL. PC keeps only a bounded absolute-lifetime watchdog.
 const SESSION_ABSOLUTE_MAX_MS = 8 * 60 * 60 * 1_000
@@ -226,7 +228,9 @@ export function createOfficeRelayClient(options: {
   const send = (frame: Record<string, unknown>) => {
     if (!socket || socket.readyState !== 1) throw new Error('relay_disconnected')
     const raw = JSON.stringify(frame)
-    if (Buffer.byteLength(raw) > MAX_CONTROL_BYTES && frame.type !== 'pc.chunk')
+    const maximum =
+      frame.type === 'pc.tool_call' ? MAX_REQUEST_BYTES + MAX_CONTROL_BYTES : MAX_CONTROL_BYTES
+    if (Buffer.byteLength(raw) > maximum && frame.type !== 'pc.chunk')
       throw new Error('control_frame_too_large')
     socket.send(raw)
   }
@@ -318,7 +322,12 @@ export function createOfficeRelayClient(options: {
     if (bodyBytes > MAX_REQUEST_BYTES) return clear('request_too_large', true)
     const controller = new AbortController()
     active = { requestId: frame.request_id, controller, remoteCancelled: false }
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    const timeout = setTimeout(
+      () => controller.abort(),
+      protocolVersion === 2 && frame.capability_name === 'agent.v1'
+        ? AGENT_REQUEST_TIMEOUT_MS
+        : REQUEST_TIMEOUT_MS,
+    )
     try {
       const capabilityName = protocolVersion === 2 ? frame.capability_name : 'agent.v1'
       if (
@@ -336,7 +345,8 @@ export function createOfficeRelayClient(options: {
           !Number.isSafeInteger(call.generation) ||
           call.generation !== session.enhanced?.session_generation ||
           !/^[A-Za-z0-9_-]{1,128}$/.test(call.toolName) ||
-          !jsonObject(call.input)
+          !jsonObject(call.input) ||
+          Buffer.byteLength(JSON.stringify(call.input)) > MAX_REQUEST_BYTES
         )
           return Promise.reject(new Error('invalid_tool_call'))
         return new Promise((resolve, reject) => {

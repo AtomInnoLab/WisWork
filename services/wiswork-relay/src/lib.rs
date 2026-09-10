@@ -62,6 +62,7 @@ pub struct Config {
     pub session_ttl: Duration,
     pub session_max_ttl: Duration,
     pub request_ttl: Duration,
+    pub agent_request_ttl: Duration,
     pub max_claim_attempts: u8,
     pub max_global_claims: u32,
     pub max_global_resume_attempts: u32,
@@ -82,6 +83,7 @@ impl Default for Config {
             session_ttl: Duration::from_secs(1800),
             session_max_ttl: Duration::from_secs(8 * 60 * 60),
             request_ttl: Duration::from_secs(300),
+            agent_request_ttl: Duration::from_secs(30 * 60 + 20),
             max_claim_attempts: 5,
             max_global_claims: 1_000,
             max_global_resume_attempts: 1_000,
@@ -2504,11 +2506,19 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
         session.used_requests.pop_front();
     }
     session.used_requests.push_back(rid.to_owned());
+    // v2 agent requests multiplex many model/tool steps, unlike retrieval and
+    // legacy single-response requests. Keep an absolute watchdog behind the
+    // Taskpane's progress timeout (280s) and whole-turn cap (30 minutes).
+    let request_ttl = if capability_name.as_deref() == Some("agent.v1") {
+        app.inner.config.agent_request_ttl
+    } else {
+        app.inner.config.request_ttl
+    };
     session.active = Some(Active {
         id: rid.into(),
         sequence: 0,
         bytes: 0,
-        deadline: Instant::now() + app.inner.config.request_ttl,
+        deadline: Instant::now() + request_ttl,
         started: false,
         pending_tool: None,
         used_tool_calls: VecDeque::new(),
@@ -2524,7 +2534,7 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
     let deadline_app = app.clone();
     let deadline_sid = sid.to_owned();
     let deadline_rid = rid.to_owned();
-    let deadline = app.inner.config.request_ttl;
+    let deadline = request_ttl;
     tokio::spawn(async move {
         tokio::time::sleep(deadline).await;
         let mut store = deadline_app.inner.state.lock().await;

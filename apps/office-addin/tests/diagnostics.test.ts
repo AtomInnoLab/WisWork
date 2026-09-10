@@ -5,6 +5,24 @@ import {
 } from '../src/diagnostics/office-diagnostics.js'
 
 describe('Office safe diagnostics', () => {
+  it.each(['image_fetch_unavailable', 'image_limit', 'image_mime_unsupported', 'invalid_image'])(
+    'preserves %s instead of misdiagnosing image preparation as an Office write failure',
+    (errorCode) => {
+      const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+      diagnostics.setTool('insert_web_image')
+      diagnostics.record({
+        phase: 'tool',
+        errorCode,
+        error: new Error('private image URL or upstream error body'),
+      })
+      expect(diagnostics.snapshot().events.at(-1)).toMatchObject({
+        tool: 'insert_web_image',
+        error_code: errorCode,
+      })
+      expect(diagnostics.exportJson()).not.toContain('private image')
+    },
+  )
+
   it('normalizes Office platform and exposes only the active known requirement set', () => {
     const isSetSupported = vi.fn(
       (name: string, version: string) => name === 'WordApi' && version === '1.3',

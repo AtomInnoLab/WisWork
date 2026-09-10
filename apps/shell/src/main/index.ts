@@ -173,6 +173,7 @@ import { registerCodexRuntimeIpc } from './codex-ipc'
 import { registerPcCodexHosts } from './pc-codex-hosts'
 import { createProductionCodexBootstrap } from './codex-engine'
 import { createOfficeCodexProxy } from './office-codex-proxy'
+import { createOfficeImageHandoff } from './office-image-handoff'
 import { createShellEnhancedPolicyAuthority } from './enhanced-policy-authority'
 import { createImageSearchSecretStore } from './image-search-secret-store'
 import { migrateLegacyUserData } from './user-data-migration'
@@ -2781,6 +2782,7 @@ app.whenReady().then(async () => {
     rollout: enhancedPolicy,
     policyAuthority: officePolicyAuthority,
     telemetry: enhancedTelemetry,
+    prepareImageHandoff: createOfficeImageHandoff(nativeImage),
   })
   enhancedModeComponentController = registerEnhancedModeComponentIpc({
     ipcMain,

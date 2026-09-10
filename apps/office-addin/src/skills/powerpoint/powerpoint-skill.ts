@@ -1379,8 +1379,8 @@ export function createPowerPointSkill(options: {
   const dirtySlideIndexes = new Set<number>()
   const builtDesignSlides = new Set<number>()
   const pendingDesignReviews = new Set<number>()
-  const proposalDesignSlides = new Map<string, number[]>()
-  let proposingDesignSlides: number[] | undefined
+  const proposalDesignSlides = new Map<string, { indexes: number[]; scaffold: boolean }>()
+  let proposingDesignSlides: { indexes: number[]; scaffold: boolean } | undefined
   const mutationSlideIndexes = (call: { name: string; input: Record<string, unknown> }) => {
     if (['edit_slide_master', 'edit_slide_master_xml'].includes(call.name))
       return Array.from({ length: knownSlideCount }, (_, index) => index)
@@ -1420,13 +1420,15 @@ export function createPowerPointSkill(options: {
           batchScoped: true,
         }
       : undefined
-  const recordDesignMutation = (indexes: readonly number[]) => {
+  const recordDesignMutation = (indexes: readonly number[], scaffold: boolean) => {
     if (!activeDesignContractIsModern || !activeDesignContract) return
     if (activeDesignContract.status === 'ready')
       activeDesignContract = transitionPresentationDesignContract(activeDesignContract, 'producing')
     for (const index of indexes) {
-      builtDesignSlides.add(index)
-      pendingDesignReviews.add(index)
+      if (!scaffold) {
+        builtDesignSlides.add(index)
+        pendingDesignReviews.add(index)
+      }
       dirtySlideIndexes.add(index)
     }
     mutationRevision++
@@ -1455,11 +1457,15 @@ export function createPowerPointSkill(options: {
   }
   options.proposals.subscribeAudit?.((event) => {
     if (event.kind === 'proposed' && proposingDesignSlides)
-      proposalDesignSlides.set(event.id, [...proposingDesignSlides])
+      proposalDesignSlides.set(event.id, {
+        ...proposingDesignSlides,
+        indexes: [...proposingDesignSlides.indexes],
+      })
     if (event.kind === 'settled') {
-      const indexes = proposalDesignSlides.get(event.id)
+      const mutation = proposalDesignSlides.get(event.id)
       proposalDesignSlides.delete(event.id)
-      if (event.status === 'confirmed' && indexes) recordDesignMutation(indexes)
+      if (event.status === 'confirmed' && mutation)
+        recordDesignMutation(mutation.indexes, mutation.scaffold)
     }
     if (!presentation) return
     if (event.kind === 'proposed') presentation.recordProposal(event)
@@ -1650,6 +1656,20 @@ export function createPowerPointSkill(options: {
             mutated: false,
             summary: 'PowerPoint state already matched',
           }
+        if (activeDesignContractIsModern && call.name === 'execute_office_js') {
+          const input = declarativeInput(call.input, { slide: false, explanationMax: 100 })
+          const program = parseDeclarativeProgram(input.code, parsePowerPointOperation)
+          if (program.operations.some((operation) => operation.op === 'duplicate_slide'))
+            return failure(
+              call.name,
+              JSON.stringify({
+                error: 'invalid_tool_input',
+                instruction:
+                  'Use the dedicated duplicate_slide tool so inserted pages follow the design contract.',
+              }),
+            )
+        }
+        let scaffolding = false
         if (mutationTools.has(call.name)) {
           const indexes = mutationSlideIndexes(call)
           const inputIndexes =
@@ -1660,8 +1680,18 @@ export function createPowerPointSkill(options: {
           )
             return failure(call.name, 'invalid_tool_input')
           const productionError = designProductionError(indexes)
-          if (productionError) return failure(call.name, productionError)
-          proposingDesignSlides = indexes
+          const contract = activeDesignContract
+          // Append only the unbuilt placeholders needed to reach a later prototype.
+          scaffolding =
+            productionError === 'design_contract_prototype_required' &&
+            call.name === 'duplicate_slide' &&
+            contract !== undefined &&
+            ['ready', 'producing'].includes(contract.status) &&
+            knownSlideCount > 0 &&
+            call.input.slide_index === knownSlideCount - 1 &&
+            indexes[0]! < Math.max(...contract.prototypePages) - 1
+          if (productionError && !scaffolding) return failure(call.name, productionError)
+          proposingDesignSlides = { indexes, scaffold: scaffolding }
           if (!activeDesignContractIsModern) {
             mutationRevision++
             for (const index of indexes) dirtySlideIndexes.add(index)
@@ -1963,6 +1993,7 @@ export function createPowerPointSkill(options: {
         }
         if (call.name === 'duplicate_slide') {
           const input = slideInput(call.input)
+          const scaffoldContract = scaffolding ? activeDesignContract : undefined
           await options.adapter.verifySlides(signal)
           const snapshot = await options.adapter.snapshotSlide(input.slide_index, signal)
           let insertedSlideId: string | undefined
@@ -1970,13 +2001,27 @@ export function createPowerPointSkill(options: {
             operation: 'duplicate_slide',
             toolName: call.name,
             title: input.explanation || 'Duplicate slide',
-            preview: { slideIndex: input.slide_index, slideId: snapshot.slideId },
+            preview: {
+              slideIndex: input.slide_index,
+              slideId: snapshot.slideId,
+              ...(scaffolding
+                ? {
+                    scaffold: true,
+                    instruction:
+                      'This placeholder is not produced. Fill and review it after the prototype pages.',
+                  }
+                : {}),
+            },
             impact: { host: 'powerpoint', targets: [snapshot.slideId], count: 1 },
             fingerprint: snapshot.fingerprint,
             before: snapshot,
             validate: async (confirmSignal) =>
               (await options.adapter.snapshotSlide(input.slide_index, confirmSignal))
-                .fingerprint === snapshot.fingerprint,
+                .fingerprint === snapshot.fingerprint &&
+              (!scaffolding ||
+                (activeDesignContract === scaffoldContract &&
+                  (await options.adapter.getPresentationState(confirmSignal)).slideCount ===
+                    input.slide_index + 1)),
             execute: async (confirmSignal) => {
               insertedSlideId = (
                 await options.adapter.duplicateSlide(input.slide_index, confirmSignal)
@@ -1991,6 +2036,8 @@ export function createPowerPointSkill(options: {
                 )
                 return inserted.slideId === insertedSlideId
               }, confirmSignal)
+              // Keep the cached bounds in step with this verified insertion. Zero means unknown.
+              if (knownSlideCount > 0) knownSlideCount++
             },
           })
           return {
@@ -2241,6 +2288,7 @@ export function createPowerPointSkill(options: {
                   )
                   return inserted.slideId === insertedSlideId
                 }, confirmSignal)
+                if (knownSlideCount > 0) knownSlideCount++
               }
             },
           })

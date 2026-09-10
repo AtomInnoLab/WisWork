@@ -54,7 +54,13 @@ function setup(loggedIn = true) {
 }
 
 describe('Office relay PC client', () => {
-  it('publishes Enhanced session state and routes exact tool subframes inside agent.v1', async () => {
+  it.each([
+    [0, 0],
+    [360_000, 0],
+    [0, 180 * 1024],
+    [0, 200 * 1024],
+  ])('keeps Enhanced tool results after %i ms with %i image bytes', async (delayMs, imageBytes) => {
+    vi.useFakeTimers()
     const socket = new FakeSocket()
     let runtimeReady = false
     const enhanced = {
@@ -64,7 +70,7 @@ describe('Office relay PC client', () => {
       component_version: '0.147.0',
       host: 'office-word',
       raw_office: false,
-      expires_at: Date.now() + 60_000,
+      expires_at: Date.now() + 40 * 60_000,
       policy_generation: 2,
       session_generation: 7,
     } as const
@@ -72,12 +78,25 @@ describe('Office relay PC client', () => {
       status: 200,
       contentType: 'text/event-stream',
       body: (async function* () {
+        const imageInput = imageBytes
+          ? { _wiswork_image_base64: Buffer.alloc(imageBytes).toString('base64') }
+          : {}
+        if (imageBytes > 180 * 1024)
+          await expect(
+            executeTool({
+              turnId: 'turn_12345678',
+              callId: 'call_oversized',
+              generation: 7,
+              toolName: 'insert_web_image',
+              input: imageInput,
+            }),
+          ).rejects.toThrow('invalid_tool_call')
         const result = await executeTool({
           turnId: 'turn_12345678',
           callId: 'call_12345678',
           generation: 7,
           toolName: 'read_document',
-          input: {},
+          input: imageBytes > 180 * 1024 ? {} : imageInput,
         })
         yield new TextEncoder().encode(result.output)
       })(),
@@ -166,6 +185,7 @@ describe('Office relay PC client', () => {
       generation: 7,
       tool_name: 'read_document',
     })
+    await vi.advanceTimersByTimeAsync(delayMs)
     socket.message({
       version: 2,
       type: 'relay.tool_result',
@@ -181,6 +201,8 @@ describe('Office relay PC client', () => {
       expect(socket.sent.map(JSON.parse).some((value) => value.type === 'pc.done')).toBe(true),
     )
     expect(enhancedProxy).toHaveBeenCalledOnce()
+    client.revoke()
+    vi.useRealTimers()
   })
 
   it.each(['account', 'token'] as const)(

@@ -23,6 +23,9 @@ const MAX_RELAY_FRAME_BYTES = Math.ceil((MAX_CHUNK_BYTES * 4) / 3) + 4096
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 // Finish before Relay's 300s deadline so the client owns cancellation and preserves pairing.
 const REQUEST_TIMEOUT_MS = 290_000
+// agent.v1 can carry a whole Enhanced tool loop. Transport owns its progress
+// timeout and 30-minute cap; this watchdog also covers a lost cancellation.
+const AGENT_REQUEST_TIMEOUT_MS = 30 * 60_000 + 10_000
 const MAX_OPAQUE_LENGTH = 512
 const MAX_DIAGNOSTIC_EVENT_BYTES = 4 * 1024
 const MAX_PENDING_DIAGNOSTICS = 16
@@ -1472,21 +1475,26 @@ export function createOfficeRelaySession(
       if (bodyBytes > MAX_REQUEST_BYTES) throw new Error('relay_request_too_large')
       const id = randomUUID()
       return new Promise<Response>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          if (request?.id !== id) return
-          try {
-            send({
-              version: protocolVersion,
-              type: 'office.cancel',
-              session_id: sessionId,
-              capability,
-              request_id: id,
-            })
-          } catch {
-            /* revoked */
-          }
-          finishRequest('relay_timeout')
-        }, REQUEST_TIMEOUT_MS)
+        const timer = setTimeout(
+          () => {
+            if (request?.id !== id) return
+            try {
+              send({
+                version: protocolVersion,
+                type: 'office.cancel',
+                session_id: sessionId,
+                capability,
+                request_id: id,
+              })
+            } catch {
+              /* revoked */
+            }
+            finishRequest('relay_timeout')
+          },
+          protocolVersion === 2 && capabilityName === 'agent.v1'
+            ? AGENT_REQUEST_TIMEOUT_MS
+            : REQUEST_TIMEOUT_MS,
+        )
         request = { id, sequence: 0, bytes: 0, responseResolved: false, resolve, reject, timer }
         if (signal) {
           const abort = () => {
@@ -1548,15 +1556,21 @@ export function createOfficeRelaySession(
         phase: event.phase,
         outcome: event.outcome,
         error_code:
-          event.error_code === 'invalid_tool_input'
+          // Keep precise image failures locally; older Relay v2 accepts only these wire codes.
+          event.error_code === 'invalid_tool_input' ||
+          event.error_code === 'invalid_image' ||
+          event.error_code === 'image_limit' ||
+          event.error_code === 'image_mime_unsupported'
             ? 'agent_run_failed'
-            : event.error_code === 'office_concurrent_change' ||
-                event.error_code === 'office_state_uncertain'
-              ? // Relay v2 does not yet advertise the local transaction-detail vocabulary.
-                'office_verify_failed'
-              : event.error_code.startsWith('office_recovery_failed:word_')
-                ? 'office_recovery_failed'
-                : event.error_code,
+            : event.error_code === 'image_fetch_unavailable'
+              ? 'network_error'
+              : event.error_code === 'office_concurrent_change' ||
+                  event.error_code === 'office_state_uncertain'
+                ? // Relay v2 does not yet advertise the local transaction-detail vocabulary.
+                  'office_verify_failed'
+                : event.error_code.startsWith('office_recovery_failed:word_')
+                  ? 'office_recovery_failed'
+                  : event.error_code,
         ...(event.office_error_code ? { office_error_code: event.office_error_code } : {}),
         ...(event.office_error_name ? { office_error_name: event.office_error_name } : {}),
         ...(event.office_error_location

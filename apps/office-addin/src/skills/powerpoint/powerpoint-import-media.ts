@@ -1,8 +1,31 @@
-import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
+import type { AgentSkill, AgentToolCall, ToolExecution } from '@wiswork/agent-core'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
 import { readBoundedImage, validateBoundedImageBytes } from '../shared/import-media.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
+
+const prefetchedImage = Symbol('PC-prefetched PowerPoint image')
+
+/** Only the authenticated remote-tool handler may attach bytes; this is not model input. */
+export function withPrefetchedPowerPointImage(call: AgentToolCall): AgentToolCall {
+  if (!Object.hasOwn(call.input, '_wiswork_image_base64')) return call
+  const { _wiswork_image_base64: base64, ...input } = call.input
+  if (
+    call.name !== 'insert_web_image' ||
+    typeof base64 !== 'string' ||
+    !base64.length ||
+    base64.length > 240 * 1024 ||
+    base64.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)
+  )
+    throw new Error('invalid_tool_input')
+  return Object.assign(
+    { ...call, input },
+    {
+      [prefetchedImage]: Uint8Array.from(atob(base64), (character) => character.charCodeAt(0)),
+    },
+  )
+}
 
 export interface PowerPointImageAdapter {
   snapshotSlide(
@@ -149,7 +172,11 @@ export function createPowerPointImportMediaSkill(options: {
         const image =
           local !== undefined
             ? await readBoundedImage(options.vfs, local.path)
-            : await fetchValidatedImage(options.fetchImage!, remote!.url, signal)
+            : prefetchedImage in call
+              ? await validateBoundedImageBytes(
+                  (call as AgentToolCall & { [prefetchedImage]: Uint8Array })[prefetchedImage],
+                )
+              : await fetchValidatedImage(options.fetchImage!, remote!.url, signal)
         const geometry = {
           left: value.left,
           top: value.top,

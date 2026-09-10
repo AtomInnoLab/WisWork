@@ -15,9 +15,10 @@ export const MAX_STREAM_TEXT_LENGTH = 128 * 1024
 export const MAX_COMPLETED_TOOL_CALLS = 32
 // Enhanced streams span a whole document session, not a single provider response.
 export const MAX_OBSERVED_TOOL_CALLS = 1024
-// Stay below the Office relay client's 290s request deadline while allowing long model turns such as
-// multi-slide planning. This is an absolute per-model-turn budget, not an idle timer.
+// Standard responses keep their absolute budget. Enhanced responses contain an entire
+// tool loop: renew on actual progress, bounded by a separate whole-turn deadline.
 export const STREAM_RESPONSE_TIMEOUT_MS = 280_000
+export const ENHANCED_TURN_TIMEOUT_MS = 30 * 60_000
 const MAX_STREAM_RESPONSE_BYTES = 1024 * 1024
 const MAX_STREAM_EVENTS = 4096
 const MAX_SSE_LINE_LENGTH = 64 * 1024
@@ -258,6 +259,7 @@ async function consumeStream(
   signal: AbortSignal,
   handleControl?: (event: Record<string, unknown>, signal: AbortSignal) => Promise<void>,
   handleActivity?: (event: Record<string, unknown>) => void,
+  onProgress?: () => void,
 ): Promise<void> {
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined)
@@ -291,11 +293,14 @@ async function consumeStream(
     }
     if (event.type === 'wiswork_tool_activity' || event.type === 'wiswork_tool_lifecycle') {
       handleActivity?.(event as Record<string, unknown>)
+      onProgress?.()
       continue
     }
     if (event.type === 'wiswork_tool_call') {
       if (!handleControl) throw new TransportError('transport_invalid_stream')
+      onProgress?.()
       await handleControl(event as Record<string, unknown>, signal)
+      onProgress?.()
       continue
     }
     if (event.type === 'error' || event.error) throw new TransportError('transport_stream_error')
@@ -316,6 +321,7 @@ async function consumeStream(
           throw new TransportError('transport_stream_budget_exceeded')
         }
         callbacks.onDelta(event.delta.text)
+        onProgress?.()
       }
     } else if (event.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
       const tool = pending.get(index)
@@ -325,6 +331,7 @@ async function consumeStream(
           throw new TransportError('transport_tool_input_too_large')
         }
         tool.json += fragment
+        if (fragment) onProgress?.()
       }
     } else if (event.type === 'content_block_stop') {
       const tool = pending.get(index)
@@ -422,6 +429,7 @@ function createTransport(
         observe(activity)
       }
       let timeout: ReturnType<typeof setTimeout> | undefined
+      const startedAt = Date.now()
       let cancelListener: (() => void) | undefined
       let completed = false
       const done = () => {
@@ -446,20 +454,51 @@ function createTransport(
           })
           if (body.length > MAX_REQUEST_BODY_LENGTH)
             throw new TransportError('transport_request_too_large')
+          let renewDeadline = () => {}
+          const expired = new Promise<never>((_resolve, reject) => {
+            const expire = () => {
+              reject(new TransportError('transport_timeout'))
+              controller.abort()
+            }
+            timeout = setTimeout(expire, STREAM_RESPONSE_TIMEOUT_MS)
+            renewDeadline = () => {
+              const negotiated = enhancedGeneration()
+              generation ??= negotiated
+              if (
+                controller.signal.aborted ||
+                completed ||
+                generation === undefined ||
+                negotiated !== generation
+              )
+                return
+              clearTimeout(timeout)
+              timeout = setTimeout(
+                expire,
+                Math.max(
+                  0,
+                  Math.min(
+                    STREAM_RESPONSE_TIMEOUT_MS,
+                    ENHANCED_TURN_TIMEOUT_MS - (Date.now() - startedAt),
+                  ),
+                ),
+              )
+            }
+          })
           const operation = fetchMessages({
             method: 'POST',
             signal: controller.signal,
             headers: { 'content-type': 'application/json' },
             body,
           }).then((response) =>
-            consumeStream(response, callbacks, controller.signal, handleControl, handleActivity),
+            consumeStream(
+              response,
+              callbacks,
+              controller.signal,
+              handleControl,
+              handleActivity,
+              renewDeadline,
+            ),
           )
-          const expired = new Promise<never>((_resolve, reject) => {
-            timeout = setTimeout(() => {
-              reject(new TransportError('transport_timeout'))
-              controller.abort()
-            }, STREAM_RESPONSE_TIMEOUT_MS)
-          })
           const cancelled = new Promise<never>((_resolve, reject) => {
             cancelListener = () => reject(new DOMException('Aborted', 'AbortError'))
             controller.signal.addEventListener('abort', cancelListener, { once: true })

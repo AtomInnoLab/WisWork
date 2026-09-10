@@ -2,6 +2,12 @@
 
 Standalone Rust WebSocket relay for pairing the Office task pane with a signed-in WisWork PC. It never executes the agent or stores document content.
 
+Legacy and retrieval requests have a 300-second absolute deadline. Negotiated v2 `agent.v1`
+requests can carry an entire multi-step Agent run and have a 30-minute-plus-20-second deadline.
+The Taskpane owns a shorter progress timeout and total cap, followed by its Relay-session
+watchdog; PC keeps a five-second grace period behind Relay. Request cancellation releases the
+request without revoking the pairing. Authorization expiry and byte limits remain independent.
+
 ## Development
 
 ```bash
