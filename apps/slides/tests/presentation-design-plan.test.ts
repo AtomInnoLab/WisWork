@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { renderPresentationDesignContract } from '@wiswork/agent-core'
+import {
+  extractPresentationDesignContract,
+  PRESENTATION_DESIGN_CONTRACT_SCHEMA,
+  renderPresentationDesignContract,
+} from '@wiswork/agent-core'
 import { createSlidesSkill } from '../src/renderer/ai/slides-skill'
 
 describe('presentation design plan', () => {
@@ -55,6 +59,25 @@ describe('presentation design plan', () => {
     assets: [],
     deckAcceptance: [{ id: 'D1', criterion: 'One claim per slide' }],
   }
+
+  it('exposes uncapped asset inventory, slide references, and legacy image queries', () => {
+    const skill = createSlidesSkill({
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      fitWidthPx: 1280,
+    })
+    const schema = skill.tools.find((tool) => tool.name === 'plan_deck')!.inputSchema as any
+    const contract = schema.properties.contract.properties
+    const shared = PRESENTATION_DESIGN_CONTRACT_SCHEMA.properties as any
+    expect(contract.assets).toBe(shared.assets)
+    expect(contract.slides).toBe(shared.slides)
+    expect(contract.assets).not.toHaveProperty('maxItems')
+    expect(contract.slides.items.properties.assetIds).not.toHaveProperty('maxItems')
+    expect(schema.properties.pages.items.properties.image_queries).not.toHaveProperty('maxItems')
+  })
 
   it('places an edited DESIGN.md contract in the next agent-turn context', () => {
     const skill = createSlidesSkill({
@@ -188,7 +211,11 @@ describe('presentation design plan', () => {
     expect(mutation.output).toContain('Normalize it into a ready structured contract')
   })
 
-  it('keeps an image-bearing legacy plan as a draft until assets are resolved', async () => {
+  it('preserves more than four legacy image queries as draft assets until resolved', async () => {
+    const imageQueries = Array.from(
+      { length: 5 },
+      (_, index) => `wetland restoration scene ${index}`,
+    )
     const saveSidecar = vi.fn(async () => undefined)
     const skill = createSlidesSkill({
       getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,
@@ -208,7 +235,7 @@ describe('presentation design plan', () => {
         visual: 'Documentary photograph',
         acceptance: ['Image supports the claim'],
         density: 'low',
-        image_queries: ['real wetland restoration'],
+        image_queries: imageQueries,
       },
       {
         title: 'Action',
@@ -236,6 +263,10 @@ describe('presentation design plan', () => {
       },
     })
 
+    expect(plan.isError).not.toBe(true)
+    const contract = extractPresentationDesignContract(plan.output)
+    expect(contract?.assets.map((asset) => asset.intent)).toEqual(imageQueries)
+    expect(contract?.slides[0]?.assetIds).toEqual(contract?.assets.map((asset) => asset.id))
     expect(plan.output).toContain('Status: draft')
     expect(plan.output).not.toContain('· ready')
     expect(saveSidecar).toHaveBeenCalledWith(
@@ -502,6 +533,66 @@ describe('presentation design plan', () => {
       }),
     )
     expect(skill.buildContext?.()).toContain('Revision: 3')
+  })
+
+  it('preserves more than twenty modern asset references through planning and DESIGN.md restoration', async () => {
+    const assets = Array.from({ length: 21 }, (_, index) => ({
+      id: `native-chart-${index}`,
+      slideNumbers: [1],
+      type: 'chart',
+      role: 'evidence',
+      intent: `Show measured trend ${index}`,
+      source: 'User-provided data',
+      crop: 'none',
+      placement: 'chart panel',
+      status: 'fallback_ready' as const,
+      fallback: 'Native editable chart using provided values',
+    }))
+    const assetIds = assets.map((asset) => asset.id)
+    let designMd: string | undefined
+    const access = {
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      saveSidecar: async (sidecar: { designMd?: string }) => {
+        designMd = sidecar.designMd
+      },
+      fitWidthPx: 1280,
+    }
+    const skill = createSlidesSkill(access)
+    const plan = await skill.executeTool({
+      id: 'many-asset-contract',
+      name: 'plan_deck',
+      input: {
+        contract: {
+          ...modernContract,
+          slides: [{ ...modernContract.slides[0], assetIds }],
+          assets,
+        },
+      },
+    })
+
+    expect(plan.isError).not.toBe(true)
+    expect(plan.output).toContain('[images: 21]')
+    const saved = extractPresentationDesignContract(designMd ?? '')
+    expect(saved?.assets.map((asset) => asset.intent)).toEqual(assets.map((asset) => asset.intent))
+    expect(saved?.slides[0]?.assetIds).toEqual(assetIds)
+
+    let restoredDesign: string | undefined
+    const restored = createSlidesSkill({
+      ...access,
+      getPresentationDesignDocument: () => designMd,
+      setPresentationDesignContext: (context) => {
+        restoredDesign = context.designMd
+      },
+    })
+    expect(() => restored.buildContext?.()).not.toThrow()
+    expect(extractPresentationDesignContract(restoredDesign ?? '')).toEqual(saved)
+    expect(restored.reviewFinalResponse?.({ text: 'Plan restored', mutated: false })).toContain(
+      '0 of 1 planned pages',
+    )
   })
 
   it('returns asset recovery details without replacing the saved draft or promoting an asset', async () => {

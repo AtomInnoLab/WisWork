@@ -66,7 +66,21 @@ describe('configured Office connection lifecycle', () => {
       replaceSelection: vi.fn().mockResolvedValue(undefined),
       appendText: vi.fn().mockResolvedValue(undefined),
     }
-    let snapshot: OfficeRelaySnapshot = { status: 'connected', capabilities: ['agent.v1'] }
+    let snapshot: OfficeRelaySnapshot = {
+      status: 'connected',
+      capabilities: ['agent.v1', 'enhanced-lease.v1'],
+      enhanced: {
+        version: 1,
+        runtime_mode: 'enhanced',
+        runtime_instance: 'runtime_0123456789abcdef',
+        component_version: '0.147.0',
+        host: 'office-word',
+        raw_office: false,
+        expires_at: Date.now() + 15 * 60_000,
+        policy_generation: 1,
+        session_generation: 1,
+      },
+    }
     let notify: () => void = () => undefined
     let attempts = 0
     const bridge: OfficeRelaySession = {
@@ -146,6 +160,22 @@ describe('configured Office connection lifecycle', () => {
       (button) => button.textContent === '退出登录',
     )
     expect(logout, container.innerHTML).toBeDefined()
+
+    await act(async () => {
+      snapshot = {
+        ...snapshot,
+        enhanced: {
+          ...snapshot.enhanced!,
+          expires_at: snapshot.enhanced!.expires_at + 10 * 60_000,
+        },
+      }
+      notify()
+      await flush()
+    })
+    expect(container.textContent).toContain('Hello')
+    expect(agentSession.authenticationLost).not.toHaveBeenCalled()
+    expect(runtime.clearSession).not.toHaveBeenCalled()
+    expect(agentSession.newTask).not.toHaveBeenCalled()
 
     await act(async () => {
       logout!.click()

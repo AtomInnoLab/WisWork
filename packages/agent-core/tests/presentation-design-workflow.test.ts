@@ -48,7 +48,7 @@ describe('presentation design workflow', () => {
         schemaVersion: { const: 1 },
         status: { enum: ['draft', 'ready', 'producing', 'verified'] },
         slides: { maxItems: 12 },
-        assets: { maxItems: 120 },
+        assets: { type: 'array' },
       },
     })
     const properties = PRESENTATION_DESIGN_CONTRACT_SCHEMA.properties as Record<
@@ -58,6 +58,15 @@ describe('presentation design workflow', () => {
     expect(properties.brief?.additionalProperties).toBe(true)
     expect(properties.slides?.items).toMatchObject({ additionalProperties: true })
     expect(properties.assets?.items).toMatchObject({ additionalProperties: true })
+    expect(properties.assets).not.toHaveProperty('maxItems')
+    const slideProperties = (properties.slides?.items as Record<string, unknown>)
+      .properties as Record<string, Record<string, unknown>>
+    expect(slideProperties.assetIds).not.toHaveProperty('maxItems')
+    expect(slideProperties.assetIds?.items).toEqual({
+      type: 'string',
+      minLength: 1,
+      maxLength: 100,
+    })
   })
 
   it('renders a user-editable design artifact', () => {
@@ -133,6 +142,51 @@ describe('presentation design workflow', () => {
       visualSystem: { style: 'Dark editorial' },
     })
     expect(contract.slides[0]).toMatchObject({ number: 1, title: 'Cover' })
+  })
+
+  it('preserves legacy image queries past the former quota and still validates each item', () => {
+    const queries = Array.from({ length: 25 }, (_, index) => `  photo ${index}  `)
+    const page = {
+      title: 'Photo essay',
+      brief: 'Explore the landscape',
+      layout: 'editorial',
+      purpose: 'Compare',
+      visual: 'Photo sequence',
+      density: 'high',
+      acceptance: ['Legible captions'],
+      image_queries: queries,
+    }
+    const plan = {
+      core_hook: 'One journey',
+      style: 'Editorial',
+      prototype_pages: [0],
+      pages: [page],
+    }
+    const parsed = parsePresentationDesignPlan(plan)
+    expect(parsed.pages[0]?.image_queries).toEqual(queries.map((query) => query.trim()))
+    const contract = parsePresentationDesignContract(plan)
+    expect(contract.assets).toHaveLength(25)
+    expect(contract.slides[0]?.assetIds).toHaveLength(25)
+    expect(extractPresentationDesignContract(renderPresentationDesignContract(contract))).toEqual(
+      contract,
+    )
+    for (const invalid of [' ', 42, 'x'.repeat(201)]) {
+      expect(() =>
+        parsePresentationDesignPlan({
+          ...plan,
+          pages: [{ ...page, image_queries: [...queries, invalid] }],
+        }),
+      ).toThrow('invalid_presentation_plan')
+    }
+    expect(() =>
+      parsePresentationDesignPlan({ ...plan, pages: [{ ...page, image_queries: 'not an array' }] }),
+    ).toThrow('invalid_presentation_plan')
+    expect(() =>
+      parsePresentationDesignPlan({
+        ...plan,
+        pages: [{ ...page, evidence: Array(9).fill('source') }],
+      }),
+    ).toThrow('invalid_presentation_plan')
   })
 
   it('accepts a complete contract, ignores future fields, and validates production readiness', () => {
@@ -240,6 +294,55 @@ describe('presentation design workflow', () => {
     expect(chineseDesign).toContain('## 整套验收标准')
     expect(extractPresentationDesignContract(chineseDesign)).toEqual(chinese)
     expect(extractPresentationDesignContract('# DESIGN.md\n\nLegacy prose')).toBeUndefined()
+
+    for (const count of [21, 121, 250]) {
+      const assets = Array.from({ length: count }, (_, index) => ({
+        ...contract.assets[0]!,
+        id: `photo-${index}`,
+        localReference: `asset://photo-${index}`,
+      }))
+      const large = parsePresentationDesignContract({
+        ...contract,
+        assets,
+        slides: [{ ...contract.slides[0], assetIds: assets.map((asset) => asset.id) }],
+      })
+      expect(large.assets).toEqual(assets)
+      expect(large.slides[0]?.assetIds).toEqual(assets.map((asset) => asset.id))
+      expect(validatePresentationDesignReadiness(large)).toEqual({ ready: true, issues: [] })
+      expect(extractPresentationDesignContract(renderPresentationDesignContract(large))).toEqual(
+        large,
+      )
+      const unknown = {
+        ...large,
+        slides: [{ ...large.slides[0]!, assetIds: [...large.slides[0]!.assetIds, 'missing'] }],
+      }
+      expect(validatePresentationDesignReadiness(unknown).issues).toContain(
+        'slides[0].assetIds must reference a ready asset',
+      )
+      for (const invalid of [' ', 42, 'x'.repeat(101)]) {
+        expect(() =>
+          parsePresentationDesignContract({
+            ...large,
+            slides: [{ ...large.slides[0], assetIds: [...large.slides[0]!.assetIds, invalid] }],
+          }),
+        ).toThrow('invalid_presentation_plan')
+      }
+      expect(() =>
+        parsePresentationDesignContract({ ...large, assets: [...large.assets, null] }),
+      ).toThrow('invalid_presentation_design_contract')
+    }
+    expect(() =>
+      parsePresentationDesignContract({
+        ...contract,
+        slides: [{ ...contract.slides[0], assetIds: 'not an array' }],
+      }),
+    ).toThrow('invalid_presentation_plan')
+    expect(() =>
+      parsePresentationDesignContract({
+        ...contract,
+        slides: [{ ...contract.slides[0], content: Array(21).fill('body') }],
+      }),
+    ).toThrow('invalid_presentation_plan')
   })
 
   it('defaults missing optional schema-1 transport fields instead of rejecting older snapshots', () => {

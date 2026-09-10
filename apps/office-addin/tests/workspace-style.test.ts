@@ -5,6 +5,11 @@ const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8
 const main = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8')
 
 describe('Office workspace styling', () => {
+  it('keeps the current design accessible between the header and conversation', () => {
+    expect(styles).toMatch(/\.design-document-entry\s*\{[^}]*grid-row:\s*2/)
+    expect(styles).toMatch(/\.design-document-entry button\s*\{[^}]*min-height:\s*44px/)
+    expect(styles).toMatch(/\.design-document-content\s*\{[^}]*overflow:\s*auto/)
+  })
   it('imports shared WisWork tokens and uses no raw UI colors', () => {
     expect(main).toContain('@wiswork/ui/tokens.css')
     expect(styles).not.toMatch(/#[0-9a-f]{3,8}\b/i)

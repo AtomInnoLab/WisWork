@@ -244,6 +244,7 @@ export function createOfficeHostRuntime(
     dynamicTools.push(...elevated.tools)
   }
   const disableElevatedOffice = () => {
+    if (!elevated) return
     elevated = undefined
     const index = dynamicTools.findIndex((tool) => tool.name === 'propose_raw_office_edit')
     if (index >= 0) dynamicTools.splice(index, 1)

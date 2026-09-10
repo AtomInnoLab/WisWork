@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
+import {
+  extractPresentationDesignContract,
+  PRESENTATION_DESIGN_CONTRACT_SCHEMA,
+} from '@wiswork/agent-core'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import {
   BrowserPowerPointAdapter,
@@ -8,7 +12,8 @@ import {
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
 import { editPowerPointPackage } from '../src/skills/powerpoint/powerpoint-package.js'
 
-const png = 'iVBORw0KGgoAAAA='
+const png =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/DPsAAAAASUVORK5CYII='
 
 function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter {
   return {
@@ -235,6 +240,26 @@ describe('PowerPoint compatibility skill', () => {
     expect(skill.systemPrompt).toContain('Do not resubmit plan_deck to record a review')
   })
 
+  it('exposes uncapped asset inventory, slide references, and legacy image queries', () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+    })
+    const schema = skill.tools.find((tool) => tool.name === 'plan_deck')!.inputSchema as any
+    const contract = schema.properties.contract.properties
+    const shared = PRESENTATION_DESIGN_CONTRACT_SCHEMA.properties as any
+    expect(contract.assets).toBe(shared.assets)
+    expect(contract.slides).toBe(shared.slides)
+    expect(contract.assets).not.toHaveProperty('maxItems')
+    expect(contract.slides.items.properties.assetIds).not.toHaveProperty('maxItems')
+    expect(schema.properties.pages.items.properties.image_queries).not.toHaveProperty('maxItems')
+    expect(schema.properties.pages.items.properties.image_queries.items).toEqual({
+      type: 'string',
+      minLength: 1,
+      maxLength: 200,
+    })
+  })
+
   it('preserves produced pages and pending review when the unchanged ready plan is resubmitted', async () => {
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: adapter(), proposals })
@@ -305,6 +330,7 @@ describe('PowerPoint compatibility skill', () => {
   })
 
   it('exposes the same plan-before-build workflow as desktop Slides', async () => {
+    const imageQueries = Array.from({ length: 5 }, (_, index) => `onboarding team scene ${index}`)
     const skill = createPowerPointSkill({
       adapter: adapter(),
       proposals: createStructuredProposalController(),
@@ -317,43 +343,46 @@ describe('PowerPoint compatibility skill', () => {
     expect(skill.systemPrompt).toContain('verify_slides after the approved build')
     expect(skill.systemPrompt).toContain('user-visible progress note before every tool batch')
 
-    await expect(
-      skill.executeTool(
-        call('plan_deck', {
-          core_hook: 'New hires reach their first useful result in seven days',
-          style: 'Clear blue training system with one idea per slide',
-          pages: [
-            {
-              title: 'Welcome',
-              type: 'cover',
-              brief: 'Set expectations for the first week',
-              layout: 'hero_statement',
-              purpose: 'Open the story',
-              visual: 'One welcoming team photograph',
-              acceptance: ['Title is dominant', 'Image supports the message'],
-              density: 'low',
-              image_queries: ['new employee onboarding team'],
-            },
-            {
-              title: 'Your first seven days',
-              type: 'content',
-              brief: 'Show the onboarding milestones',
-              layout: 'timeline',
-              purpose: 'Explain the sequence',
-              visual: 'One horizontal milestone timeline',
-              acceptance: ['Milestones scan left to right'],
-              density: 'medium',
-              image_queries: [],
-            },
-          ],
-          prototype_pages: [0, 1],
-        }),
-      ),
-    ).resolves.toMatchObject({
+    const imagePlan = await skill.executeTool(
+      call('plan_deck', {
+        core_hook: 'New hires reach their first useful result in seven days',
+        style: 'Clear blue training system with one idea per slide',
+        pages: [
+          {
+            title: 'Welcome',
+            type: 'cover',
+            brief: 'Set expectations for the first week',
+            layout: 'hero_statement',
+            purpose: 'Open the story',
+            visual: 'One welcoming team photograph',
+            acceptance: ['Title is dominant', 'Image supports the message'],
+            density: 'low',
+            image_queries: imageQueries,
+          },
+          {
+            title: 'Your first seven days',
+            type: 'content',
+            brief: 'Show the onboarding milestones',
+            layout: 'timeline',
+            purpose: 'Explain the sequence',
+            visual: 'One horizontal milestone timeline',
+            acceptance: ['Milestones scan left to right'],
+            density: 'medium',
+            image_queries: [],
+          },
+        ],
+        prototype_pages: [0, 1],
+      }),
+    )
+    expect(imagePlan.isError).not.toBe(true)
+    expect(imagePlan).toMatchObject({
       mutated: false,
       summary: 'Planned 2 slides',
       output: expect.stringContaining('New hires reach their first useful result in seven days'),
     })
+    const contract = extractPresentationDesignContract(JSON.parse(imagePlan.output).designMd)
+    expect(contract?.assets.map((asset) => asset.intent)).toEqual(imageQueries)
+    expect(contract?.slides[0]?.assetIds).toEqual(contract?.assets.map((asset) => asset.id))
     const result = await skill.executeTool(
       call('plan_deck', {
         core_hook: 'One visual system',
@@ -703,6 +732,7 @@ describe('PowerPoint compatibility skill', () => {
       'isError',
       true,
     )
+    expect(skill.buildContext?.()).toContain('"status":"verified"')
   })
 
   it('enforces prototype-first production and rejects host verification defects', async () => {
@@ -895,6 +925,143 @@ describe('PowerPoint compatibility skill', () => {
     ).resolves.toMatchObject({
       isError: true,
       output: 'design_contract_screenshot_required',
+    })
+  })
+
+  describe('visual review recovery', () => {
+    async function setup() {
+      const fake = adapter()
+      const proposals = createStructuredProposalController()
+      const skill = createPowerPointSkill({ adapter: fake, proposals })
+      await skill.executeTool(call('plan_deck', { contract: modernContract() }))
+      const edit = async () => {
+        await skill.executeTool(
+          call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+        )
+        return proposals.confirm(proposals.pending()!.id)
+      }
+      const screenshot = () => skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+      const review = (passed: boolean) =>
+        skill.executeTool(
+          call('review_slide_screenshot', {
+            slide_index: 0,
+            acceptance_ids: ['A1.1'],
+            passed,
+            issues: passed ? [] : ['White title is unreadable'],
+          }),
+        )
+      await edit()
+      await screenshot()
+      return { fake, skill, edit, screenshot, review }
+    }
+
+    it('invalidates an old visual pass when a fresh re-review reports a defect', async () => {
+      const { skill, screenshot, review } = await setup()
+      await review(true)
+      await skill.executeTool(call('verify_slides'))
+      expect(skill.buildContext?.()).toContain('"status":"verified"')
+      await screenshot()
+      expect(JSON.parse((await review(false)).output)).toMatchObject({ status: 'needs_repair' })
+      expect(skill.buildContext?.()).toContain('"status":"producing"')
+      expect(skill.buildContext?.()).toContain('"needsRepair":true')
+      expect((await skill.executeTool(call('verify_slides'))).isError).toBe(true)
+      await screenshot()
+      expect(JSON.parse((await review(true)).output)).toMatchObject({ status: 'repair_required' })
+    })
+
+    it('accepts an applied-unverified repair only after a new screenshot and positive review', async () => {
+      const { fake, skill, edit, screenshot, review } = await setup()
+      await review(false)
+      vi.mocked(fake.editSlideText).mockRejectedValueOnce(new Error('office_applied_unverified'))
+      await edit()
+      expect(await review(true)).toMatchObject({
+        isError: true,
+        output: 'design_contract_screenshot_required',
+      })
+      await screenshot()
+      expect(JSON.parse((await review(true)).output)).toMatchObject({ status: 'passed' })
+      expect((await skill.executeTool(call('verify_slides'))).isError).not.toBe(true)
+    })
+
+    it.each(['office_verify_failed', 'office_write_pending'])(
+      'does not accept a %s write as an applied repair',
+      async (code) => {
+        const { fake, skill, edit, screenshot, review } = await setup()
+        await review(false)
+        vi.mocked(fake.editSlideText).mockRejectedValueOnce(new Error(code))
+        if (code === 'office_verify_failed') await expect(edit()).rejects.toThrow(code)
+        else await edit()
+        await screenshot()
+        expect(JSON.parse((await review(true)).output)).toMatchObject({ status: 'repair_required' })
+        expect((await skill.executeTool(call('verify_slides'))).isError).toBe(true)
+      },
+    )
+
+    it('directs native screenshot failure to same-page repair without clearing review gates', async () => {
+      const { fake, skill, screenshot, review } = await setup()
+      vi.mocked(fake.screenshotSlide).mockRejectedValueOnce(
+        new Error('office_screenshot_unavailable'),
+      )
+      const result = await screenshot()
+      expect(result.isError).toBe(true)
+      expect(JSON.parse(result.output)).toMatchObject({
+        error: 'office_read_failed',
+        reason: 'office_screenshot_unavailable',
+        slide_index: 0,
+        nextTool: 'list_slide_shapes',
+        repairAllowed: true,
+        visualAvailableToModel: false,
+      })
+      expect(result.modelContent).toBeUndefined()
+      expect(skill.validateImageMutation(0)).toBeUndefined()
+      expect(skill.buildContext?.()).toContain('"screenshotUnavailable":true')
+      expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain(
+        'list_slide_shapes',
+      )
+      expect(await review(true)).toMatchObject({
+        isError: true,
+        output: 'design_contract_screenshot_required',
+      })
+      expect((await skill.executeTool(call('verify_slides'))).isError).toBe(true)
+      await screenshot()
+      expect(skill.buildContext?.()).not.toContain('"screenshotUnavailable":true')
+      expect(JSON.parse((await review(true)).output)).toMatchObject({ status: 'passed' })
+    })
+
+    it('keeps expansion blocked while allowing repair of a screenshot-failed batch page', async () => {
+      const base = modernContract()
+      const fake = adapter({
+        screenshotSlide: vi.fn().mockRejectedValue(new Error('office_screenshot_unavailable')),
+      })
+      const proposals = createStructuredProposalController()
+      const skill = createPowerPointSkill({ adapter: fake, proposals })
+      await skill.executeTool(
+        call('plan_deck', {
+          contract: modernContract({
+            prototypePages: [1, 2, 3],
+            brief: { ...base.brief, pageCount: 4 },
+            slides: [1, 2, 3, 4].map((number) => ({
+              ...base.slides[0],
+              number,
+              acceptance: [{ id: `A${number}.1`, criterion: 'Readable' }],
+            })),
+          }),
+        }),
+      )
+      for (const slide_index of [0, 1, 2]) {
+        await skill.executeTool(
+          call('edit_slide_text', { slide_index, shape_id: '2', text: 'Hello' }),
+        )
+        await proposals.confirm(proposals.pending()!.id)
+      }
+      await skill.executeTool(call('screenshot_slide', { slide_index: 2 }))
+      expect(skill.validateImageMutation(2)).toBeUndefined()
+      expect(JSON.parse(skill.validateImageMutation(3)!)).toMatchObject({
+        error: 'design_contract_review_required',
+        nextTool: 'list_slide_shapes',
+        failedScreenshotSlideIndexes: [2],
+      })
+      expect((await skill.executeTool(call('verify_slides'))).isError).toBe(true)
     })
   })
 
@@ -2591,7 +2758,10 @@ describe('PowerPoint compatibility skill', () => {
     ).resolves.toMatchObject({ output: 'office_read_failed', isError: true })
     await expect(
       skill.executeTool(call('screenshot_slide', { slide_index: 0 })),
-    ).resolves.toMatchObject({ output: 'office_read_failed', isError: true })
+    ).resolves.toMatchObject({
+      output: expect.stringContaining('"error":"office_read_failed"'),
+      isError: true,
+    })
   })
 })
 
@@ -2939,6 +3109,220 @@ describe('browser PowerPoint adapter', () => {
     expect(getImageAsBase64).toHaveBeenNthCalledWith(1, { width: 960 })
     expect(getImageAsBase64).toHaveBeenNthCalledWith(2, { height: 540 })
     expect(getImageAsBase64).toHaveBeenNthCalledWith(3, undefined)
+  })
+
+  it('retries empty or invalid native screenshot data before giving up rendering', async () => {
+    const getImageAsBase64 = vi
+      .fn()
+      .mockReturnValueOnce({ value: '' })
+      .mockReturnValueOnce({ value: 'iVBORw0KGgoAAAA=' })
+      .mockReturnValueOnce({ value: png })
+    const slide = { id: 's1', load: vi.fn(), getImageAsBase64 }
+    const context = {
+      presentation: {
+        slides: { getCount: () => ({ value: 1 }), getItemAt: () => slide },
+      },
+      sync: vi.fn().mockResolvedValue(undefined),
+    }
+    vi.stubGlobal('Office', {
+      context: { host: 'PowerPoint', requirements: { isSetSupported: () => true } },
+    })
+    vi.stubGlobal('PowerPoint', {
+      run: (callback: (value: typeof context) => unknown) => callback(context),
+    })
+    await expect(new BrowserPowerPointAdapter().screenshotSlide(0)).resolves.toEqual({
+      mime: 'image/png',
+      base64: png,
+    })
+    expect(getImageAsBase64).toHaveBeenCalledTimes(3)
+  })
+
+  describe('native screenshot lifetime', () => {
+    const stages = [
+      'run admission',
+      'slide count sync',
+      'slide lookup sync',
+      'image export sync',
+      'run cleanup',
+    ] as const
+
+    function stallScreenshot(stage: (typeof stages)[number]) {
+      let release!: () => void
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const getImageAsBase64 = vi.fn(() => ({ value: png }))
+      const slide = { id: 'slide-1', load: vi.fn(), getImageAsBase64 }
+      let syncCount = 0
+      const context = {
+        presentation: {
+          slides: { getCount: () => ({ value: 1 }), getItemAt: () => slide },
+        },
+        sync: vi.fn(async () => {
+          syncCount += 1
+          if (
+            (stage === 'slide count sync' && syncCount === 1) ||
+            (stage === 'slide lookup sync' && syncCount === 2) ||
+            (stage === 'image export sync' && syncCount === 3)
+          )
+            await blocked
+        }),
+      }
+      const run = vi.fn(async (callback: (value: typeof context) => Promise<unknown>) => {
+        if (stage === 'run admission') await blocked
+        const result = await callback(context)
+        if (stage === 'run cleanup') await blocked
+        return result
+      })
+      vi.stubGlobal('Office', {
+        context: { host: 'PowerPoint', requirements: { isSetSupported: () => true } },
+      })
+      vi.stubGlobal('PowerPoint', { run })
+      return { release, run, getImageAsBase64 }
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    })
+
+    it.each(stages)('bounds a stalled %s within the native read budget', async (stage) => {
+      vi.useFakeTimers()
+      const native = stallScreenshot(stage)
+      let outcome: string | undefined
+      const pending = new BrowserPowerPointAdapter().screenshotSlide(0).then(
+        () => {
+          outcome = 'success'
+        },
+        (error: Error) => {
+          outcome = error.message
+        },
+      )
+      try {
+        // Native capture must leave room for the existing 10s preview inside the PC tool limit.
+        await vi.advanceTimersByTimeAsync(15_000)
+        expect(outcome).toBe('office_screenshot_unavailable')
+        expect(native.run).toHaveBeenCalledOnce()
+        expect(vi.getTimerCount()).toBe(0)
+        const exportsBeforeRelease = native.getImageAsBase64.mock.calls.length
+        native.release()
+        await pending
+        await vi.advanceTimersByTimeAsync(0)
+        expect(native.getImageAsBase64).toHaveBeenCalledTimes(exportsBeforeRelease)
+        expect(native.run).toHaveBeenCalledOnce()
+      } finally {
+        native.release()
+        await pending
+      }
+    })
+
+    it.each(stages)('settles user cancellation while %s is still stalled', async (stage) => {
+      vi.useFakeTimers()
+      const native = stallScreenshot(stage)
+      const controller = new AbortController()
+      let outcome: string | undefined
+      const pending = new BrowserPowerPointAdapter().screenshotSlide(0, controller.signal).then(
+        () => {
+          outcome = 'success'
+        },
+        (error: Error) => {
+          outcome = error.message
+        },
+      )
+      try {
+        await vi.advanceTimersByTimeAsync(0)
+        controller.abort()
+        await vi.advanceTimersByTimeAsync(0)
+        expect(outcome).toBe('cancelled')
+        expect(native.run).toHaveBeenCalledOnce()
+        expect(vi.getTimerCount()).toBe(0)
+      } finally {
+        native.release()
+        await pending
+      }
+    })
+
+    it('shares one native read deadline across concrete rendering failures', async () => {
+      vi.useFakeTimers()
+      const native = stallScreenshot('image export sync')
+      native.run.mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10_000))
+        throw new Error('GeneralException')
+      })
+      let outcome: string | undefined
+      const pending = new BrowserPowerPointAdapter().screenshotSlide(0).then(
+        () => {
+          outcome = 'success'
+        },
+        (error: Error) => {
+          outcome = error.message
+        },
+      )
+      try {
+        await vi.advanceTimersByTimeAsync(14_999)
+        expect(native.run).toHaveBeenCalledTimes(2)
+        expect(outcome).toBeUndefined()
+        await vi.advanceTimersByTimeAsync(1)
+        expect(outcome).toBe('office_screenshot_unavailable')
+        expect(native.run).toHaveBeenCalledTimes(2)
+      } finally {
+        native.release()
+        await pending
+      }
+    })
+
+    it('rejects an overdue native result even when the deadline timer has not run yet', async () => {
+      vi.useFakeTimers()
+      const native = stallScreenshot('run cleanup')
+      const pending = new BrowserPowerPointAdapter().screenshotSlide(0).then(
+        () => 'success',
+        (error: Error) => error.message,
+      )
+      try {
+        await vi.advanceTimersByTimeAsync(0)
+        vi.setSystemTime(Date.now() + 15_001)
+        native.release()
+        expect(await pending).toBe('office_screenshot_unavailable')
+      } finally {
+        native.release()
+        await pending
+      }
+    })
+
+    it('does not let a late timed-out native screenshot unlock visual review', async () => {
+      vi.useFakeTimers()
+      const native = stallScreenshot('image export sync')
+      const browser = new BrowserPowerPointAdapter()
+      const proposals = createStructuredProposalController()
+      const skill = createPowerPointSkill({
+        adapter: adapter({ screenshotSlide: browser.screenshotSlide.bind(browser) }),
+        proposals,
+      })
+      await skill.executeTool(call('plan_deck', { contract: modernContract() }))
+      await skill.executeTool(
+        call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+      )
+      await proposals.confirm(proposals.pending()!.id)
+      const pending = skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+      try {
+        await vi.advanceTimersByTimeAsync(15_000)
+        native.release()
+        const screenshot = await pending
+        expect.soft(screenshot).toMatchObject({ isError: true })
+        await expect(
+          skill.executeTool(
+            call('review_slide_screenshot', {
+              slide_index: 0,
+              acceptance_ids: ['A1.1'],
+              passed: true,
+            }),
+          ),
+        ).resolves.toMatchObject({ isError: true, output: 'design_contract_screenshot_required' })
+      } finally {
+        native.release()
+        await pending
+      }
+    })
   })
 
   it('maps native master operations to PowerPointApi 1.10 objects', async () => {

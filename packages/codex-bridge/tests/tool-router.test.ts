@@ -622,6 +622,26 @@ describe('document-scoped tool session', () => {
     await expect(first).resolves.toMatchObject({ output: 'first' })
   })
 
+  it('aborts the remote executor when a bounded read times out', async () => {
+    let remoteSignal: AbortSignal | undefined
+    const f = fixture({
+      maxCallMs: 10,
+      executeRead: vi.fn(async (_call, signal) => {
+        remoteSignal = signal
+        return await new Promise<ToolExecution>(() => undefined)
+      }),
+    })
+    await expect(
+      f.session.callTool(f.session.credentials, {
+        id: 'timed-out-remote-read',
+        name: readTool.name,
+        input: {},
+      }),
+    ).resolves.toMatchObject({ output: 'tool_timeout' })
+    expect(remoteSignal?.aborted).toBe(true)
+    f.session.close()
+  })
+
   it('binds the catalog digest into a Task 2 one-use carrier', () => {
     const validate = vi.fn((capability: unknown) => capability === 'opaque')
     const issuer = createDocumentCarrierIssuer(

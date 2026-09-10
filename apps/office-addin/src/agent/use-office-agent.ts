@@ -118,6 +118,12 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
 })
 
 const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
+  session_expired: {
+    code: 'session_expired',
+    message:
+      'The connection authorization expired. Reconnect to WisWork PC, then continue the unfinished work; existing changes are preserved.',
+    retryable: false,
+  },
   auth_required: {
     code: 'auth_required',
     message: 'Sign in to WisWork PC, reconnect, and try again.',
@@ -138,6 +144,12 @@ const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
     message: 'The Agent took too long to respond. Try again.',
     retryable: true,
   },
+  transport_stream_budget_exceeded: {
+    code: 'transport_stream_budget_exceeded',
+    message:
+      'The task reached its response limit. Existing changes are preserved; continue the unfinished pages in a new request.',
+    retryable: false,
+  },
 })
 
 const safeConfirmationError = (error: unknown): SafeSessionError => {
@@ -157,12 +169,29 @@ const safeConfirmationError = (error: unknown): SafeSessionError => {
   )
 }
 
-const safeRunError = (error: string): SafeSessionError =>
-  runErrors[error === 'transport_timeout' ? 'request_timeout' : error] ?? {
-    code: 'agent_run_failed',
-    message: 'The Agent could not complete this request. Try again.',
-    retryable: true,
+const safeRunError = (error: string): SafeSessionError => {
+  const aliases: Readonly<Record<string, string>> = {
+    transport_timeout: 'request_timeout',
+    transport_auth: 'auth_required',
+    transport_http_401: 'auth_required',
+    transport_http_403: 'auth_required',
+    transport_http_408: 'request_timeout',
+    transport_http_429: 'provider_unavailable',
+    transport_http_500: 'provider_unavailable',
+    transport_http_502: 'provider_unavailable',
+    transport_http_503: 'provider_unavailable',
+    transport_http_504: 'request_timeout',
+    transport_network: 'network_error',
   }
+  const code = Object.hasOwn(aliases, error) ? aliases[error]! : error
+  return (
+    (Object.hasOwn(runErrors, code) ? runErrors[code] : undefined) ?? {
+      code: 'agent_run_failed',
+      message: 'The Agent could not complete this request. Try again.',
+      retryable: true,
+    }
+  )
+}
 
 function toolActivity(name: string, state: 'running' | 'complete' | 'error'): string {
   const labels: Readonly<Record<string, string>> = {
@@ -214,6 +243,7 @@ const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'invalid_tool_input',
   'office_api_unsupported',
   'office_read_failed',
+  'office_screenshot_unavailable',
   'office_overwrite_required',
   'office_recovery_failed',
   'office_concurrent_change',
@@ -250,12 +280,13 @@ function diagnosticToolError(output: string): string {
   if (output.startsWith('design_contract_visual_review_failed:'))
     return 'design_contract_visual_review_failed'
   if (output === 'raw_office_program_invalid') return 'invalid_tool_input'
-  if (output === 'office_screenshot_unavailable') return 'office_read_failed'
   const safe = (value: string) =>
     DIAGNOSTIC_TOOL_ERRORS.has(value) || /^office_recovery_failed:word_[a-z_]+$/.test(value)
   if (safe(output)) return output
   try {
-    const parsed = JSON.parse(output) as { error?: unknown }
+    const parsed = JSON.parse(output) as { error?: unknown; reason?: unknown }
+    if (parsed.error === 'office_read_failed' && parsed.reason === 'office_screenshot_unavailable')
+      return 'office_screenshot_unavailable'
     return typeof parsed.error === 'string' && safe(parsed.error)
       ? parsed.error
       : 'agent_run_failed'
@@ -987,13 +1018,15 @@ export function createOfficeAgentSession(dependencies: {
       },
       onError: (error) => {
         const safeError = safeRunError(error)
-        diagnose((diagnostics) =>
+        diagnose((diagnostics) => {
+          // This measures the whole run, not the most recently observed Office tool.
+          diagnostics.setTool('agent_run')
           diagnostics.record({
             phase: 'transport',
             errorCode: safeError.code,
             durationMs: Math.max(0, Date.now() - runStartedAt),
-          }),
-        )
+          })
+        })
         activeAssistantId = undefined
         append({
           id: eventId(),

@@ -4,8 +4,11 @@ import {
   createOfficeRelaySession,
   officeTransportMode,
   type RelayWebSocket,
+  type OfficeRelayCapability,
 } from '../src/relay/session.js'
 import type { OfficeDiagnosticEvent } from '../src/diagnostics/office-diagnostics.js'
+import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
+import type { StructuredProposalController } from '../src/agent/proposal-controller.js'
 
 class FakeSocket implements RelayWebSocket {
   static readonly OPEN = 1
@@ -37,13 +40,21 @@ const flushFrames = async () => {
   for (let turn = 0; turn < 4; turn += 1) await Promise.resolve()
 }
 
-async function connectedEnhancedSession(lifetimeMs = 60_000) {
+async function connectedEnhancedSession(
+  lifetimeMs = 60_000,
+  capabilities: OfficeRelayCapability[] = ['agent.v1'],
+  approvedCapabilities = capabilities,
+) {
   const socket = new FakeSocket()
+  let requestSequence = 0
   const session = createOfficeRelaySession({
     createSocket: () => socket,
     persistentPairing: false,
-    capabilities: ['agent.v1'],
-    randomUUID: () => 'request_12345678',
+    capabilities,
+    randomUUID: () =>
+      capabilities.includes('design-document.v1')
+        ? `request_design_${++requestSequence}`
+        : 'request_12345678',
   })
   const toolHandler = vi.fn(async () => ({ output: 'ok' }))
   session.setToolHandler?.(toolHandler)
@@ -65,7 +76,7 @@ async function connectedEnhancedSession(lifetimeMs = 60_000) {
       session_id: 'session_12345678',
       capability: 'capability_12345678',
       expires_in: 1800,
-      capabilities: ['agent.v1'],
+      capabilities: approvedCapabilities,
     }),
   )
   await connecting
@@ -93,6 +104,290 @@ async function connectedEnhancedSession(lifetimeMs = 60_000) {
 }
 
 describe('Office cloud relay session', () => {
+  it('renews a negotiated 15-minute Enhanced lease without cancelling its active tool or semantic proposal', async () => {
+    vi.useFakeTimers()
+    const { socket, session } = await connectedEnhancedSession(15 * 60_000, [
+      'agent.v1',
+      'enhanced-lease.v1',
+    ])
+    const runtime = createOfficeHostRuntime('powerpoint')
+    const proposals = runtime.proposals as StructuredProposalController
+    const execute = vi.fn()
+    // Matches App's raw_office=false effect, which also runs for a new lease object.
+    const unsubscribe = session.subscribe(() => runtime.disableElevatedOffice())
+    try {
+      const original = session.snapshot().enhanced!
+      let activeSignal: AbortSignal | undefined
+      session.setToolHandler?.(async (call) => {
+        activeSignal = call.signal
+        const proposal = proposals.propose({
+          operation: 'edit_slide_text',
+          title: 'Update slide title',
+          preview: { text: 'Renewed title' },
+          impact: { host: 'powerpoint', targets: ['slide_1'], count: 1 },
+          fingerprint: 'slide_1_revision',
+          validate: () => !call.signal.aborted,
+          execute,
+        })
+        call.signal.addEventListener('abort', () => proposals.logout(), { once: true })
+        const decision = await proposals.waitForDecision(proposal.id)
+        return { output: decision.status }
+      })
+      const pending = session.capabilityFetch('agent.v1', { messages: [] }).catch((error) => error)
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'relay.tool_call',
+          session_id: 'session_12345678',
+          request_id: 'request_12345678',
+          turn_id: 'turn_12345678',
+          call_id: 'call_12345678',
+          generation: 1,
+          tool_name: 'read_document',
+          input: {},
+        }),
+      )
+      await flushFrames()
+      const proposalId = proposals.pending()!.id
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      const renewed = { ...original, expires_at: Date.now() + 15 * 60_000 }
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'relay.session_state',
+          session_id: 'session_12345678',
+          generation: 1,
+          enhanced: renewed,
+        }),
+      )
+      await flushFrames()
+      expect(session.snapshot()).toMatchObject({ status: 'connected', enhanced: renewed })
+      await vi.advanceTimersByTimeAsync(6 * 60_000)
+      expect(Date.now()).toBeGreaterThan(original.expires_at)
+      expect(activeSignal?.aborted).toBe(false)
+      expect(proposals.pending()?.id).toBe(proposalId)
+      await proposals.confirm(proposalId)
+      expect(execute).toHaveBeenCalledOnce()
+      await expect(proposals.confirm(proposalId)).rejects.toThrow('proposal_missing')
+      await flushFrames()
+      expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual(
+        expect.objectContaining({
+          type: 'office.tool_result',
+          call_id: 'call_12345678',
+          output: 'confirmed',
+        }),
+      )
+      // The active request and its replay protection must both survive renewal.
+      await expect(session.capabilityFetch('agent.v1', {})).rejects.toThrow('relay_busy')
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'relay.tool_call',
+          session_id: 'session_12345678',
+          request_id: 'request_12345678',
+          turn_id: 'turn_12345678',
+          call_id: 'call_12345678',
+          generation: 1,
+          tool_name: 'read_document',
+          input: {},
+        }),
+      )
+      await flushFrames()
+      expect(session.snapshot()).toEqual({ status: 'offline' })
+      expect(execute).toHaveBeenCalledOnce()
+      await expect(pending).resolves.toMatchObject({ message: 'relay_disconnected' })
+    } finally {
+      unsubscribe()
+      runtime.dispose()
+      session.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    ['replayed expiry', {}],
+    ['decreasing expiry', { expires_at: 1 }],
+    ['overlong lease', { expires_at: Number.MAX_SAFE_INTEGER }],
+    ['changed runtime', { runtime_instance: 'runtime_different_0123456789' }],
+    ['changed component', { component_version: '0.148.0' }],
+    ['changed host', { host: 'office-word' }],
+    ['changed permissions', { raw_office: true }],
+    ['changed policy', { policy_generation: 2 }],
+    ['changed session', { session_generation: 2 }],
+    ['changed mode', { runtime_mode: 'standard' }],
+    ['changed version', { version: 2 }],
+    ['unknown field', { unexpected: true }],
+  ])('rejects a same-generation renewal with %s', async (_label, changed) => {
+    const { socket, session } = await connectedEnhancedSession(15 * 60_000, [
+      'agent.v1',
+      'enhanced-lease.v1',
+    ])
+    try {
+      const original = session.snapshot().enhanced!
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'relay.session_state',
+          session_id: 'session_12345678',
+          generation: 1,
+          enhanced: {
+            ...original,
+            expires_at:
+              _label === 'replayed expiry' ? original.expires_at : original.expires_at + 1,
+            ...changed,
+          },
+        }),
+      )
+      await flushFrames()
+      expect(session.snapshot()).toEqual({ status: 'offline' })
+    } finally {
+      session.disconnect()
+    }
+  })
+
+  it('rejects an offered but unnegotiated renewal capability', async () => {
+    const { socket, session } = await connectedEnhancedSession(
+      15 * 60_000,
+      ['agent.v1', 'enhanced-lease.v1'],
+      ['agent.v1'],
+    )
+    const original = session.snapshot().enhanced!
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.session_state',
+        session_id: 'session_12345678',
+        generation: 1,
+        enhanced: { ...original, expires_at: original.expires_at + 1 },
+      }),
+    )
+    await flushFrames()
+    expect(session.snapshot()).toEqual({ status: 'offline' })
+  })
+
+  it.each(['expired', 'disconnected'] as const)('does not revive an %s lease', async (reason) => {
+    vi.useFakeTimers()
+    const { socket, session } = await connectedEnhancedSession(15 * 60_000, [
+      'agent.v1',
+      'enhanced-lease.v1',
+    ])
+    try {
+      const original = session.snapshot().enhanced!
+      if (reason === 'expired') vi.setSystemTime(original.expires_at)
+      else session.disconnect()
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'relay.session_state',
+          session_id: 'session_12345678',
+          generation: 1,
+          enhanced: { ...original, expires_at: Date.now() + 15 * 60_000 },
+        }),
+      )
+      await flushFrames()
+      expect(session.snapshot()).toEqual({ status: 'offline' })
+    } finally {
+      session.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  it('bounds renewal clock skew to 30 seconds and expires at the renewed deadline', async () => {
+    vi.useFakeTimers()
+    const { socket, session } = await connectedEnhancedSession(15 * 60_000, [
+      'agent.v1',
+      'enhanced-lease.v1',
+    ])
+    try {
+      const original = session.snapshot().enhanced!
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      const renewed = { ...original, expires_at: Date.now() + 15 * 60_000 + 30_000 }
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'relay.session_state',
+          session_id: 'session_12345678',
+          generation: 1,
+          enhanced: renewed,
+        }),
+      )
+      await flushFrames()
+      expect(session.snapshot().enhanced).toEqual(renewed)
+      await vi.advanceTimersByTimeAsync(15 * 60_000 + 29_999)
+      expect(session.snapshot().status).toBe('connected')
+      await vi.advanceTimersByTimeAsync(1)
+      expect(session.snapshot()).toEqual({ status: 'offline' })
+    } finally {
+      session.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  it('never sends the negotiated lease control capability as a callable request', async () => {
+    const { socket, session } = await connectedEnhancedSession(15 * 60_000, [
+      'agent.v1',
+      'enhanced-lease.v1',
+    ])
+    try {
+      const sent = socket.sent.length
+      await expect(session.capabilityFetch('enhanced-lease.v1', {})).rejects.toThrow(
+        'relay_capability_unavailable',
+      )
+      expect(socket.sent).toHaveLength(sent)
+      expect(session.snapshot().status).toBe('connected')
+    } finally {
+      session.disconnect()
+    }
+  })
+
+  it.each([
+    ['request_timeout', 'relay_request_timeout'],
+    ['auth_required', 'relay_auth_required'],
+    ['upstream_error', 'relay_upstream_error'],
+    ['unknown_private_code', 'relay_error'],
+  ])('retains only a known request failure category: %s', async (code, expected) => {
+    const { socket, session } = await connectedEnhancedSession()
+    const pending = session
+      .capabilityFetch('agent.v1', { messages: [] })
+      .catch((error) => error.message)
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.error',
+        session_id: 'session_12345678',
+        request_id: 'request_12345678',
+        code,
+      }),
+    )
+    await expect(pending).resolves.toBe(expected)
+    session.disconnect()
+  })
+  it('lets a new model turn preempt a background DESIGN.md read without breaking pairing', async () => {
+    const { session, socket } = await connectedEnhancedSession(60_000, [
+      'agent.v1',
+      'design-document.v1',
+    ])
+    try {
+      const read = session
+        .capabilityFetch('design-document.v1', { action: 'read', documentId: 'document_12345678' })
+        .catch((error: Error) => error.message)
+      const stop = new AbortController()
+      const run = session
+        .capabilityFetch('agent.v1', { messages: [] }, stop.signal)
+        .catch((error: Error) => error.message)
+      await flushFrames()
+      const frames = socket.sent.map((raw) => JSON.parse(raw))
+      expect(
+        frames.filter((item) => item.type === 'office.request').map((item) => item.capability_name),
+      ).toEqual(['design-document.v1', 'agent.v1'])
+      expect(await read).toBe('relay_cancelled')
+      expect(session.snapshot().status).toBe('connected')
+      stop.abort()
+      await run
+    } finally {
+      session.disconnect()
+    }
+  })
   it('keeps a multi-step agent request past five minutes and cancels at its own total deadline', async () => {
     vi.useFakeTimers()
     try {
@@ -642,7 +937,7 @@ describe('Office cloud relay session', () => {
           : undefined
         await vi.advanceTimersByTimeAsync(60_000)
         expect(session.snapshot()).toEqual({ status: 'offline' })
-        if (active) await expect(pending).resolves.toBe('relay_disconnected')
+        if (active) await expect(pending).resolves.toBe('relay_session_expired')
         session.disconnect()
         expect(
           socket.sent
@@ -881,6 +1176,9 @@ describe('Office cloud relay session', () => {
       'design_contract_review_not_pending',
       'design_contract_acceptance_mismatch',
       'design_contract_screenshot_required',
+      'session_expired',
+      'office_screenshot_unavailable',
+      'transport_stream_budget_exceeded',
     ].entries()) {
       const eventId = `00000000-0000-4000-8000-${String(index + 6).padStart(12, '0')}`
       const upload = session.sendDiagnostic({
@@ -889,7 +1187,13 @@ describe('Office cloud relay session', () => {
         error_code: errorCode,
       })
       expect(frame(socket, index + 5).error_code).toBe(
-        errorCode === 'image_fetch_unavailable' ? 'network_error' : 'agent_run_failed',
+        errorCode === 'image_fetch_unavailable'
+          ? 'network_error'
+          : errorCode === 'session_expired'
+            ? 'auth_required'
+            : errorCode === 'office_screenshot_unavailable'
+              ? 'office_read_failed'
+              : 'agent_run_failed',
       )
       socket.receive(
         JSON.stringify({
@@ -903,7 +1207,7 @@ describe('Office cloud relay session', () => {
     await expect(
       session.sendDiagnostic({ ...diagnostic, tool: 'x'.repeat(5_000) }),
     ).rejects.toThrow('diagnostic_too_large')
-    expect(socket.sent).toHaveLength(18)
+    expect(socket.sent).toHaveLength(21)
   })
 
   it('keeps Agent streaming usable after a nonfatal diagnostic limit response', async () => {

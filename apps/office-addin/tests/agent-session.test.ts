@@ -865,50 +865,68 @@ describe('Office agent session', () => {
     session.dispose()
   })
 
-  it('records paired Enhanced semantic tool failures in Taskpane diagnostics', async () => {
-    let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
-    const diagnostics = {
-      startTrace: vi.fn(() => 'trace'),
-      setTool: vi.fn(),
-      record: vi.fn(),
-      clear: vi.fn(),
-    }
-    createOfficeAgentSession({
-      transport: transportHarness().transport,
-      skill: {
-        id: 'test',
-        systemPrompt: 'test',
-        tools: [
-          { name: 'list_slide_shapes', description: 'read', inputSchema: { type: 'object' } },
-        ],
-        executeTool: vi.fn(async () => ({
-          output: 'office_read_failed',
-          isError: true,
-          mutated: false,
-          summary: 'failed',
-        })),
-      },
-      proposals: proposalsHarness().controller,
-      diagnostics,
-      remoteTools: {
-        setToolHandler: (next) => {
-          handler = next
+  it.each([
+    ['office_read_failed', 'list_slide_shapes', 'office_read_failed'],
+    ['office_screenshot_unavailable', 'screenshot_slide', 'office_screenshot_unavailable'],
+    [
+      'office_screenshot_unavailable',
+      'screenshot_slide',
+      JSON.stringify({ error: 'office_screenshot_unavailable' }),
+    ],
+    [
+      'office_screenshot_unavailable',
+      'screenshot_slide',
+      JSON.stringify({
+        error: 'office_read_failed',
+        reason: 'office_screenshot_unavailable',
+        visualAvailableToModel: false,
+      }),
+    ],
+  ] as const)(
+    'records paired Enhanced %s failures in Taskpane diagnostics (%s, %s)',
+    async (errorCode, toolName, output) => {
+      let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+      const diagnostics = {
+        startTrace: vi.fn(() => 'trace'),
+        setTool: vi.fn(),
+        record: vi.fn(),
+        clear: vi.fn(),
+      }
+      createOfficeAgentSession({
+        transport: transportHarness().transport,
+        skill: {
+          id: 'test',
+          systemPrompt: 'test',
+          tools: [{ name: toolName!, description: 'read', inputSchema: { type: 'object' } }],
+          executeTool: vi.fn(async () => ({
+            output,
+            isError: true,
+            mutated: false,
+            summary: 'failed',
+          })),
         },
-      },
-    })
-    await handler!({
-      turnId: 'turn_12345678',
-      callId: 'call_12345678',
-      generation: 1,
-      toolName: 'list_slide_shapes',
-      input: { slide_index: 0 },
-      signal: new AbortController().signal,
-    })
-    expect(diagnostics.setTool).toHaveBeenCalledWith('list_slide_shapes')
-    expect(diagnostics.record).toHaveBeenCalledWith(
-      expect.objectContaining({ phase: 'tool', errorCode: 'office_read_failed' }),
-    )
-  })
+        proposals: proposalsHarness().controller,
+        diagnostics,
+        remoteTools: {
+          setToolHandler: (next) => {
+            handler = next
+          },
+        },
+      })
+      await handler!({
+        turnId: 'turn_12345678',
+        callId: 'call_12345678',
+        generation: 1,
+        toolName,
+        input: { slide_index: 0 },
+        signal: new AbortController().signal,
+      })
+      expect(diagnostics.setTool).toHaveBeenCalledWith(toolName)
+      expect(diagnostics.record).toHaveBeenCalledWith(
+        expect.objectContaining({ phase: 'tool', errorCode }),
+      )
+    },
+  )
 
   it('preserves bounded local diagnostics when Relay authentication is lost', () => {
     const diagnostics = {
@@ -1491,6 +1509,38 @@ describe('Office agent session', () => {
       retryable: true,
     })
   })
+
+  it.each([
+    ['session_expired', 'session_expired'],
+    ['transport_auth', 'auth_required'],
+    ['transport_http_401', 'auth_required'],
+    ['transport_network', 'network_error'],
+    ['transport_http_502', 'provider_unavailable'],
+    ['transport_stream_budget_exceeded', 'transport_stream_budget_exceeded'],
+  ])(
+    'reports %s without attributing the run failure to the last screenshot',
+    async (code, expected) => {
+      const harness = transportHarness()
+      const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+        proposals: proposalsHarness().controller,
+        diagnostics,
+      })
+      session.send('Build a presentation')
+      await Promise.resolve()
+      diagnostics.setTool('screenshot_slide')
+      harness.callbacks().onError(code)
+      expect(session.snapshot()).toMatchObject({ busy: false, status: 'error', error: expected })
+      expect(diagnostics.snapshot().events.at(-1)).toMatchObject({
+        tool: 'agent_run',
+        phase: 'transport',
+        error_code: expected,
+      })
+      session.dispose()
+    },
+  )
 
   it('does not retry a known non-retryable authentication failure', async () => {
     const harness = transportHarness()

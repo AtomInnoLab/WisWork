@@ -91,6 +91,27 @@ describe('private Office image handoff', () => {
     expect(createFromBuffer).not.toHaveBeenCalled()
   })
 
+  it('does not shrink a large photo to a blurry thumbnail just to fit transport', async () => {
+    const sizes: number[] = []
+    const image = decoded({
+      getSize: () => ({ width: 3200, height: 1800 }),
+      resize: ({ width, height }) => {
+        sizes.push(width)
+        return decoded({
+          getSize: () => ({ width, height }),
+          toJPEG: () => new Uint8Array(width < 960 ? LIMIT : LIMIT + 1),
+        })
+      },
+    })
+    await expect(
+      createOfficeImageHandoff({ createFromBuffer: () => image })({
+        mime: 'image/jpeg',
+        bytes: new Uint8Array(LIMIT + 1),
+      }),
+    ).rejects.toThrow('image_limit')
+    expect(sizes.every((size) => size >= 960)).toBe(true)
+  })
+
   it('rejects empty or undecodable images without forwarding them', async () => {
     for (const bytes of [new Uint8Array(), new Uint8Array(100)]) {
       const prepare = createOfficeImageHandoff({
@@ -121,9 +142,9 @@ describe('private Office image handoff', () => {
       await expect(
         prepare({ mime: 'image/jpeg', bytes: new Uint8Array(LIMIT + 1) }),
       ).rejects.toThrow('image_limit')
-      expect(image.resize).toHaveBeenCalledTimes(5)
-      expect(toPNG).toHaveBeenCalledTimes(5)
-      expect(toJPEG).toHaveBeenCalledTimes(5)
+      expect(image.resize).toHaveBeenCalledTimes(3)
+      expect(toPNG).toHaveBeenCalledTimes(3)
+      expect(toJPEG).toHaveBeenCalledTimes(3)
     },
   )
 })

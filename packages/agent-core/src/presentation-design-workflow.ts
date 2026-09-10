@@ -147,9 +147,9 @@ export interface PresentationDesignContract {
 }
 
 const boundedString = (maxLength: number) => ({ type: 'string', minLength: 1, maxLength })
-const stringArray = (maxItems: number, maxLength: number) => ({
+const stringArray = (maxItems: number | undefined, maxLength: number) => ({
   type: 'array',
-  maxItems,
+  ...(maxItems === undefined ? {} : { maxItems }),
   items: boundedString(maxLength),
 })
 const acceptanceSchema = () => ({
@@ -298,14 +298,13 @@ export const PRESENTATION_DESIGN_CONTRACT_SCHEMA: Record<string, unknown> = {
           layoutFamily: boundedString(100),
           focalVisual: boundedString(1_000),
           density: { type: 'string', enum: ['low', 'medium', 'high'] },
-          assetIds: stringArray(20, 100),
+          assetIds: stringArray(undefined, 100),
           acceptance: { type: 'array', minItems: 1, maxItems: 20, items: acceptanceSchema() },
         },
       },
     },
     assets: {
       type: 'array',
-      maxItems: 120,
       description:
         'Full replacement inventory, not a patch. Drafts may contain research candidates. A ready contract contains only selected production assets, all ready or fallback_ready; preserve unused research in discovery.researchNotes.',
       items: {
@@ -371,11 +370,15 @@ const text = (value: unknown, max: number): string => {
 
 const texts = (
   value: unknown,
-  maxItems: number,
+  maxItems: number | undefined,
   maxLength: number,
   required: boolean,
 ): string[] => {
-  if (!Array.isArray(value) || (required && value.length === 0) || value.length > maxItems)
+  if (
+    !Array.isArray(value) ||
+    (required && value.length === 0) ||
+    (maxItems !== undefined && value.length > maxItems)
+  )
     throw new Error('invalid_presentation_plan')
   return value.map((item) => text(item, maxLength))
 }
@@ -402,7 +405,7 @@ export function parsePresentationDesignPlan(value: unknown): PresentationDesignP
       evidence: texts(page.evidence ?? [], 8, 500, false),
       acceptance: texts(page.acceptance, 8, 300, true),
       density: page.density as PresentationDesignPagePlan['density'],
-      image_queries: texts(page.image_queries ?? [], 4, 200, false),
+      image_queries: texts(page.image_queries ?? [], undefined, 200, false),
     }
   })
   const prototypes = plan.prototype_pages
@@ -565,7 +568,7 @@ export function parsePresentationDesignContract(value: unknown): PresentationDes
       layoutFamily: optionalText(slide.layoutFamily, 100),
       focalVisual: optionalText(slide.focalVisual, 1_000),
       density,
-      assetIds: texts(slide.assetIds ?? [], 20, 100, false),
+      assetIds: texts(slide.assetIds ?? [], undefined, 100, false),
       acceptance: acceptanceRules(slide.acceptance),
     }
   })

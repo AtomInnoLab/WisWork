@@ -65,7 +65,7 @@ describe('Office model screenshot previews', () => {
       })
       expect(diagnostics.snapshot().events.at(-1)).toMatchObject({
         tool: 'screenshot_slide',
-        error_code: 'office_read_failed',
+        error_code: 'office_screenshot_unavailable',
       })
     } finally {
       session.dispose()
@@ -189,36 +189,76 @@ describe('Office model screenshot previews', () => {
     'keeps the screenshot gate dirty after %s failure',
     async (scenario) => {
       const proposals = createStructuredProposalController()
+      let text = 'Old'
+      const prepare = vi.fn(async () => {
+        if (scenario === 'preparation') throw new Error('office_screenshot_unavailable')
+        return {
+          ...png,
+          base64: Buffer.alloc(OFFICE_SCREENSHOT_PREVIEW_BYTES + 1).toString('base64'),
+        }
+      })
       const skill = createPowerPointSkill({
         platform: 'Mac',
         proposals,
         adapter: {
           snapshotSlide: async () => ({ slideId: 's1', fingerprint: 'same' }),
-          editSlideText: async () => undefined,
-          readSlideText: async () => ({ text: 'New' }),
+          editSlideText: async (_slide: number, _shape: string, value: string) => {
+            text = value
+          },
+          readSlideText: async () => ({
+            slideId: 's1',
+            shapeId: 'title',
+            text,
+            paragraphs: [text],
+          }),
+          verifySlides: async () => ({ slideWidth: 960, slideHeight: 540, slides: [] }),
           screenshotSlide: async () => png,
         } as unknown as PowerPointAdapter,
-        prepareScreenshot: async () => {
-          if (scenario === 'preparation') throw new Error('office_screenshot_unavailable')
-          return {
-            ...png,
-            base64: Buffer.alloc(OFFICE_SCREENSHOT_PREVIEW_BYTES + 1).toString('base64'),
-          }
-        },
+        prepareScreenshot: prepare,
       })
-      await skill.executeTool({
+      const edit = await skill.executeTool({
         id: 'edit',
         name: 'edit_slide_text',
         input: { slide_index: 0, shape_id: 'title', text: 'New' },
       })
+      expect(edit.isError).not.toBe(true)
+      await proposals.confirm(proposals.pending()!.id)
+      expect(text).toBe('New')
       const result = await skill.executeTool({
         id: 'shot',
         name: 'screenshot_slide',
         input: { slide_index: 0 },
       })
-      expect(result).toMatchObject({ isError: true, output: 'office_screenshot_unavailable' })
+      expect(result).toMatchObject({ isError: true, mutated: false })
+      expect(JSON.parse(result.output)).toMatchObject({
+        error: 'office_read_failed',
+        reason: 'office_screenshot_unavailable',
+        slide_index: 0,
+        nextTool: 'list_slide_shapes',
+        failedScreenshotSlideIndexes: [0],
+        repairAllowed: true,
+        visualAvailableToModel: false,
+      })
+      expect(result.modelContent).toBeUndefined()
+      expect(result.display).toBeUndefined()
       expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain(
         'screenshot_slide',
+      )
+      await skill.executeTool({ id: 'verify', name: 'verify_slides', input: {} })
+      expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain(
+        '"failedScreenshotSlideIndexes":[0]',
+      )
+      prepare.mockResolvedValueOnce(png)
+      const fresh = await skill.executeTool({
+        id: 'fresh',
+        name: 'screenshot_slide',
+        input: { slide_index: 0 },
+      })
+      expect(fresh.isError).not.toBe(true)
+      expect(fresh.modelContent).toEqual([{ type: 'image', image: png }])
+      // Verifying while the screenshot was unusable must not count as final verification.
+      expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain(
+        'verify_slides',
       )
     },
   )
@@ -254,13 +294,19 @@ describe('Office model screenshot previews', () => {
           complete = resolve
         }),
     )
+    const proposals = createStructuredProposalController()
+    let text = 'Old'
     const skill = createPowerPointSkill({
       platform: 'Mac',
-      proposals: createStructuredProposalController(),
+      proposals,
       adapter: {
         screenshotSlide: async () => png,
         snapshotSlide: async () => ({ slideId: 's1', fingerprint: 'same' }),
-        editSlideText: async () => undefined,
+        editSlideText: async (_slide: number, _shape: string, value: string) => {
+          text = value
+        },
+        readSlideText: async () => ({ slideId: 's1', shapeId: 'title', text, paragraphs: [text] }),
+        verifySlides: async () => ({ slideWidth: 960, slideHeight: 540, slides: [] }),
       } as unknown as PowerPointAdapter,
       prepareScreenshot: prepare,
     })
@@ -270,18 +316,43 @@ describe('Office model screenshot previews', () => {
       input: { slide_index: 0 },
     })
     await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce())
-    await skill.executeTool({
+    const edit = await skill.executeTool({
       id: 'edit',
       name: 'edit_slide_text',
       input: { slide_index: 0, shape_id: 'title', text: 'Newer' },
     })
+    expect(edit.isError).not.toBe(true)
+    await proposals.confirm(proposals.pending()!.id)
+    expect(text).toBe('Newer')
     complete(png)
-    expect(await screenshot).toMatchObject({
-      isError: true,
-      output: 'office_screenshot_unavailable',
+    const stale = await screenshot
+    expect(stale).toMatchObject({ isError: true, mutated: false })
+    expect(JSON.parse(stale.output)).toMatchObject({
+      error: 'office_read_failed',
+      reason: 'office_screenshot_unavailable',
+      slide_index: 0,
+      nextTool: 'list_slide_shapes',
+      failedScreenshotSlideIndexes: [0],
+      repairAllowed: true,
+      visualAvailableToModel: false,
     })
+    expect(stale.modelContent).toBeUndefined()
+    expect(stale.display).toBeUndefined()
     expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain(
       'screenshot_slide',
     )
+    await skill.executeTool({ id: 'verify', name: 'verify_slides', input: {} })
+    expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain(
+      '"failedScreenshotSlideIndexes":[0]',
+    )
+    prepare.mockResolvedValueOnce(png)
+    const fresh = await skill.executeTool({
+      id: 'fresh',
+      name: 'screenshot_slide',
+      input: { slide_index: 0 },
+    })
+    expect(fresh.isError).not.toBe(true)
+    expect(fresh.modelContent).toEqual([{ type: 'image', image: png }])
+    expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain('verify_slides')
   })
 })

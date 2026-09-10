@@ -769,7 +769,10 @@ describe('Office PowerPoint presentation verification', () => {
         id: `slide-${page.slide}`,
         load: vi.fn(),
         shapes,
-        getImageAsBase64: vi.fn(() => ({ value: 'iVBORw0KGgoAAAA=' })),
+        getImageAsBase64: vi.fn(() => ({
+          value:
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/DPsAAAAASUVORK5CYII=',
+        })),
       }
     })
     const slides = {

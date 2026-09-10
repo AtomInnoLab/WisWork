@@ -212,6 +212,16 @@ class DeterministicIdbFactory {
 }
 
 describe('Office persistent binding store', () => {
+  it('persists the approved optional Enhanced lease capability', async () => {
+    const database = new MemoryBindingDatabase()
+    const store = createOfficeBindingStore({ database, subtle: crypto.subtle })
+    const capabilities = ['agent.v1', 'enhanced-lease.v1']
+    const enrollment = await store.createEnrollment('powerpoint', capabilities)
+    await store.stage(enrollment, 'binding_12345678', capabilities)
+    await store.activate(enrollment, 'binding_12345678', capabilities)
+    await expect(store.load('powerpoint', capabilities)).resolves.toMatchObject({ capabilities })
+  })
+
   it('generates and stores only a non-exportable P-256 private CryptoKey', async () => {
     const database = new MemoryBindingDatabase()
     const store = createOfficeBindingStore({ database, subtle: crypto.subtle })
@@ -311,12 +321,15 @@ describe('Office persistent binding store', () => {
     await store.activate(enrollment, 'binding_12345678', ['agent.v1'])
 
     await expect(
-      store.load('word', ['agent.v1', 'web-search.v1', 'image-search.v1']),
+      store.load('word', ['agent.v1', 'web-search.v1', 'image-search.v1', 'enhanced-lease.v1']),
     ).resolves.toMatchObject({
       bindingId: 'binding_12345678',
       capabilities: ['agent.v1'],
     })
     expect(database.deletes).toBe(0)
+    expect((database.values.get('word') as { capabilities: string[] }).capabilities).toEqual([
+      'agent.v1',
+    ])
   })
 
   it('signs the fixed domain-separated resume transcript as a raw P-256 signature', async () => {

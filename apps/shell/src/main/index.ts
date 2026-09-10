@@ -200,6 +200,7 @@ import {
 } from './office-bridge-runtime'
 import { registerOfficePairingIpc } from './office-pairing-ipc'
 import { createOfficeRelayClient, officeRelayEndpointFromEnv } from './office-relay-client'
+import { createOfficeDesignDocuments } from './office-design-document'
 import { createOfficeRelayPool, type OfficeRelayPool } from './office-relay-pool'
 import { createElectronOfficeRelayBindingStore } from './office-relay-binding-store'
 import { createOfficeRelayLifecycle, type OfficeRelayLifecycle } from './office-relay-lifecycle'
@@ -3001,7 +3002,22 @@ app.whenReady().then(async () => {
             }[host] as 'office-word' | 'office-excel' | 'office-powerpoint'
             return codexRuntime?.createOfficeSessionStatement(enhancedHost)
           },
+          renewEnhancedStatement: async (previous) =>
+            codexRuntime?.renewOfficeSessionStatement(previous),
+          isEnhancedStatementCurrent: (statement) =>
+            codexRuntime?.isOfficeSessionStatementCurrent(statement) === true,
           retrievalProxy: createRetrievalProxy(),
+          designDocument: createOfficeDesignDocuments({
+            directory: join(app.getPath('userData'), 'office-design-documents'),
+            openFile: async (path) => {
+              if (!tabManager) throw new Error('design_document_unavailable')
+              const existing = tabManager.findMarkdownTabByPath(path)
+              if (existing) tabManager.activateTab(existing)
+              else tabManager.openMarkdownTab(path)
+              shellWindow?.show()
+              shellWindow?.focus()
+            },
+          }),
           retrievalCapabilities,
           negotiateCapabilities: true,
           persistentPairing: () => officeRelayPersistenceAvailable,

@@ -8,12 +8,14 @@ const DATABASE_VERSION = 2
 const ENROLLMENT_LEASE_MS = 180_000
 const MAX_OPAQUE_LENGTH = 512
 const MAX_CAPABILITIES = 16
-const DATA_CAPABILITIES = new Set([
+const BINDING_CAPABILITIES = new Set([
   'agent.v1',
   'web-search.v1',
   'web-fetch.v1',
   'image-search.v1',
   'image-fetch.v1',
+  'design-document.v1',
+  'enhanced-lease.v1',
 ])
 
 export const OFFICE_BINDING_DATABASE_SCHEMA = Object.freeze({
@@ -109,7 +111,7 @@ const exactCapabilities = (value: unknown, expected: readonly string[]): value i
   value.every(
     (capability, index, values) =>
       typeof capability === 'string' &&
-      DATA_CAPABILITIES.has(capability) &&
+      BINDING_CAPABILITIES.has(capability) &&
       values.indexOf(capability) === index &&
       capability === expected[index],
   )
@@ -123,7 +125,7 @@ const compatibleCapabilities = (value: unknown, requested: readonly string[]): v
   value.every(
     (capability, index, values) =>
       typeof capability === 'string' &&
-      DATA_CAPABILITIES.has(capability) &&
+      BINDING_CAPABILITIES.has(capability) &&
       requested.includes(capability) &&
       values.indexOf(capability) === index,
   )

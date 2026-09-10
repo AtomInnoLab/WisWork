@@ -860,7 +860,7 @@ describe('Office fixed retrieval proxy', () => {
       controller.signal,
     )
     controller.abort()
-    await expect(pending).rejects.toThrow('retrieval_upstream_error')
+    await expect(pending).rejects.toThrow('search_cancelled')
     resolveLookup([{ address: '93.184.216.34', family: 4 }])
   })
 

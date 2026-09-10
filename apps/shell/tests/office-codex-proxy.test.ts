@@ -201,6 +201,7 @@ describe('Office Codex proxy', () => {
               ),
             },
           }),
+          expect.any(AbortSignal),
         )
         if (scenario === 'normalized') {
           expect(prepareImageHandoff).toHaveBeenCalledWith({
@@ -589,6 +590,7 @@ describe('Office Codex proxy', () => {
     expect(chunks.join('')).not.toContain('wiswork_tool_activity')
     expect(executeTool).toHaveBeenCalledWith(
       expect.objectContaining({ generation: 3, toolName: 'get_document_text' }),
+      expect.any(AbortSignal),
     )
     expect(telemetry.host.mock.calls).toEqual([
       ['office-word', 'plan', 'started'],
@@ -704,6 +706,7 @@ describe('Office Codex proxy', () => {
       })
       expect(executeTool).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ toolName: 'review_slide_screenshot', input: reviewInput }),
+        expect.any(AbortSignal),
       )
       expect(review).toMatchObject({
         output: 'design_contract_screenshot_required',
