@@ -30,6 +30,7 @@ const MAX_TEXT_BYTES = 128 * 1024
 const MAX_TOOLS = 64
 const MAX_RETRIEVAL_DISPLAY_BYTES = 8 * 1024
 const MAX_IMAGE_HANDOFF_BYTES = 180 * 1024
+const OFFICE_REMOTE_MUTATION_MS = 5 * 60_000
 const PRIVATE_IMAGE_FIELD = '_wiswork_image_base64'
 const RETRIEVAL_TOOLS = new Set(['web_search', 'web_fetch', 'image_search'])
 const IMAGE_PREFETCH_ERRORS = new Set([
@@ -536,6 +537,8 @@ export function createOfficeCodexProxy(options: {
       executeRead: execute,
       suspendMutation: suspension.suspend,
       ownsSuspension: suspension.owns,
+      // One Relay call spans Taskpane consent and the subsequent Office write.
+      maxMutationMs: OFFICE_REMOTE_MUTATION_MS,
     })
     const encoder = new TextEncoder()
     const queue: Uint8Array[] = []

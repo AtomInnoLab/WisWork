@@ -247,6 +247,57 @@ describe('Office Codex proxy', () => {
     },
   )
 
+  it('keeps a remote Office mutation alive while the user reviews it for 68 seconds', async () => {
+    vi.useFakeTimers()
+    let session!: DocumentToolSession
+    let receipt!: ToolExecution
+    let resolveRemote!: (value: { output: string; isError: boolean }) => void
+    const remote = new Promise<{ output: string; isError: boolean }>((resolve) => {
+      resolveRemote = resolve
+    })
+    const proxy = createOfficeCodexProxy({
+      runtime: {
+        async runOfficeTurn(input: any) {
+          session = input.toolSession
+          const result = session.callTool(session.credentials, {
+            id: 'slow-consent-write',
+            name: 'edit_slide_text',
+            input: {},
+          })
+          if (!isToolExecutionSuspension(result)) throw new Error('expected_mutation_suspension')
+          receipt = await result.result
+          input.onEvent({ type: 'terminal', status: 'completed' })
+        },
+      } as any,
+      rollout,
+      policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+    })
+    try {
+      const response = await proxy({
+        body: {
+          system: '',
+          messages: [],
+          tools: [
+            { name: 'edit_slide_text', description: 'write', input_schema: { type: 'object' } },
+          ],
+        },
+        signal: new AbortController().signal,
+        host: 'PowerPoint',
+        sessionId: 'session_12345678',
+        requestId: 'request_12345678',
+        statement: { ...statement, host: 'office-powerpoint' },
+        executeTool: vi.fn(() => remote),
+      })
+      await vi.advanceTimersByTimeAsync(68_000)
+      resolveRemote({ output: 'applied', isError: false })
+      for await (const _chunk of response.body as AsyncIterable<Uint8Array>) void _chunk
+      expect(receipt).toMatchObject({ output: 'applied', isError: false })
+    } finally {
+      session?.close()
+      vi.useRealTimers()
+    }
+  })
+
   it.each([
     ['cancel', 'success'],
     ['cancel', 'failure'],
@@ -313,7 +364,7 @@ describe('Office Codex proxy', () => {
         await vi.advanceTimersByTimeAsync(5)
         expect(executeTool).toHaveBeenCalledOnce()
         if (ending === 'cancel') session.cancelAll(session.credentials)
-        else if (ending === 'timeout') await vi.advanceTimersByTimeAsync(30_000)
+        else if (ending === 'timeout') await vi.advanceTimersByTimeAsync(5 * 60_000)
         else finishRemote()
         let stream = ''
         for await (const chunk of response.body as AsyncIterable<Uint8Array>)
