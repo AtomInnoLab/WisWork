@@ -29,6 +29,14 @@ const MAX_RETRIEVAL_DISPLAY_BYTES = 8 * 1024
 const MAX_IMAGE_HANDOFF_BYTES = 180 * 1024
 const PRIVATE_IMAGE_FIELD = '_wiswork_image_base64'
 const RETRIEVAL_TOOLS = new Set(['web_search', 'web_fetch', 'image_search'])
+const IMAGE_PREFETCH_ERRORS = new Set([
+  'image_fetch_unavailable',
+  'image_limit',
+  'invalid_image',
+  'image_mime_unsupported',
+  'invalid_tool_input',
+  'cancelled',
+])
 
 /** Project public source links only; model output and upstream error bodies stay on PC. */
 function retrievalDisplay(
@@ -304,7 +312,11 @@ export function createOfficeCodexProxy(options: {
                   ? item.details
                   : item.details?.summary === 'Retrieval unavailable'
                     ? { summary: 'Retrieval unavailable' }
-                    : {}),
+                    : toolName === 'insert_web_image' &&
+                        typeof item.details?.summary === 'string' &&
+                        IMAGE_PREFETCH_ERRORS.has(item.details.summary)
+                      ? { summary: item.details.summary }
+                      : {}),
               }),
         })}\n\n`,
       )
@@ -413,16 +425,11 @@ export function createOfficeCodexProxy(options: {
               : error instanceof Error
                 ? error.message
                 : ''
+          const output = IMAGE_PREFETCH_ERRORS.has(code) ? code : 'image_fetch_unavailable'
+          // Reuse the bounded lifecycle summary, never upstream text or image URLs.
+          enrich({ summary: output })
           return {
-            output: [
-              'image_limit',
-              'invalid_image',
-              'image_mime_unsupported',
-              'invalid_tool_input',
-              'cancelled',
-            ].includes(code)
-              ? code
-              : 'image_fetch_unavailable',
+            output,
             isError: true,
             summary: 'Office image unavailable',
             mutated: false,

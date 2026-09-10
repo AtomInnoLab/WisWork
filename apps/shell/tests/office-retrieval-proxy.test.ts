@@ -17,6 +17,140 @@ const TEST_SERVICES = {
 } as const
 
 describe('Office fixed retrieval proxy', () => {
+  it('clears image-search authority so a reconnected session must search again', async () => {
+    const downloadImage = vi.fn(async () => ({
+      mime: 'image/png' as const,
+      bytes: new Uint8Array(4),
+    }))
+    const proxy = createOfficeLocalSearchProxy({
+      fetchWithAuth: vi.fn(),
+      downloadImage,
+      searchImages: async () => ({
+        images: [
+          {
+            title: 'Cover',
+            imageUrl: 'https://images.example/cover.png',
+            sourceUrl: 'https://example.com/cover',
+            source: 'example.com',
+          },
+        ],
+        method: 'serpapi',
+      }),
+    })
+    await proxy('image-search.v1', { query: 'private cover query', max_results: 1 })
+    proxy.clear?.()
+    await expect(
+      proxy('image-fetch.v1', { url: 'https://images.example/cover.png' }),
+    ).rejects.toThrow('retrieval_invalid_request')
+    expect(downloadImage).not.toHaveBeenCalled()
+    await proxy('image-search.v1', { query: 'new cover query', max_results: 1 })
+    await expect(
+      proxy('image-fetch.v1', { url: 'https://images.example/cover.png' }),
+    ).resolves.toBeInstanceOf(Uint8Array)
+  })
+
+  it.each(['initial search', 'expired revalidation'])(
+    'does not restore cleared image authority after a late %s',
+    async (phase) => {
+      vi.useFakeTimers()
+      try {
+        const found = {
+          images: [
+            {
+              title: 'Cover',
+              imageUrl: 'https://images.example/cover.png',
+              sourceUrl: 'https://example.com/cover',
+              source: 'example.com',
+            },
+          ],
+          method: 'serpapi',
+        }
+        let finish!: (value: typeof found) => void
+        const searchImages = vi.fn(
+          () =>
+            new Promise<typeof found>((resolve) => {
+              finish = resolve
+            }),
+        )
+        const downloadImage = vi.fn(async () => ({
+          mime: 'image/png' as const,
+          bytes: new Uint8Array(4),
+        }))
+        const proxy = createOfficeLocalSearchProxy({
+          fetchWithAuth: vi.fn(),
+          searchImages,
+          downloadImage,
+        })
+        if (phase === 'expired revalidation') {
+          const first = proxy('image-search.v1', { query: 'private cover query', max_results: 1 })
+          finish(found)
+          await first
+          vi.setSystemTime(Date.now() + 15 * 60_000 + 1)
+        }
+        const pending =
+          phase === 'initial search'
+            ? proxy('image-search.v1', { query: 'private cover query', max_results: 1 })
+            : proxy('image-fetch.v1', { url: 'https://images.example/cover.png' })
+        const settled = pending.then(
+          () => 'success',
+          (error: Error) => error.message,
+        )
+        proxy.clear?.()
+        finish(found)
+        expect(await settled).toBe('search_cancelled')
+        await expect(
+          proxy('image-fetch.v1', { url: 'https://images.example/cover.png' }),
+        ).rejects.toThrow('retrieval_invalid_request')
+        expect(downloadImage).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it.each([true, false])(
+    'revalidates expired search provenance before downloading (still listed: %s)',
+    async (stillListed) => {
+      const image = {
+        title: 'Volcano',
+        imageUrl: 'https://images.example/volcano.jpg',
+        sourceUrl: 'https://example.com/',
+        source: 'example',
+      }
+      const searchImages = vi.fn(async () => ({ images: [image], method: 'test' }))
+      const downloadImage = vi.fn(async () => ({
+        mime: 'image/jpeg' as const,
+        bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+      }))
+      const proxy = createOfficeLocalSearchProxy({
+        fetchWithAuth: vi.fn(),
+        searchImages,
+        downloadImage,
+      })
+      vi.useFakeTimers()
+      try {
+        await proxy('image-search.v1', { query: 'volcano', max_results: 3 })
+        if (!stillListed) searchImages.mockResolvedValue({ images: [], method: 'test' })
+        await vi.advanceTimersByTimeAsync(15 * 60_000 + 1)
+        if (stillListed) {
+          await expect(proxy('image-fetch.v1', { url: image.imageUrl })).resolves.toBeInstanceOf(
+            Uint8Array,
+          )
+          expect(downloadImage).toHaveBeenCalledTimes(1)
+        } else {
+          await expect(proxy('image-fetch.v1', { url: image.imageUrl })).rejects.toThrow(
+            'retrieval_invalid_request',
+          )
+          expect(downloadImage).not.toHaveBeenCalled()
+        }
+        expect(searchImages).toHaveBeenCalledTimes(2)
+        expect(searchImages).toHaveBeenLastCalledWith('volcano', 3)
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
+
   it('accepts only bounded HTTPS redirects for searched images', () => {
     expect(resolvePublicImageRedirect('https://images.example/a', '/final.webp', 3)).toBe(
       'https://images.example/final.webp',
@@ -46,7 +180,7 @@ describe('Office fixed retrieval proxy', () => {
       yield new Uint8Array(3)
       throw new Error('must_not_read_past_limit')
     }
-    await expect(collectBoundedImageBytes(chunks(), 5)).rejects.toThrow('retrieval_upstream_error')
+    await expect(collectBoundedImageBytes(chunks(), 5)).rejects.toThrow('image_limit')
   })
   it('is disabled without configuration and accepts only a compile-allowlisted exact endpoint', () => {
     expect(officeRetrievalEndpointFromEnv({}, TEST_SERVICES)).toBeNull()
@@ -145,12 +279,12 @@ describe('Office fixed retrieval proxy', () => {
   })
 
   it('normalizes downloaded search images before returning them to Office', async () => {
-    const source = new Uint8Array([0x52, 0x49, 0x46, 0x46])
+    const source = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
     const normalized = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
     const normalizeImage = vi.fn(async () => ({ mime: 'image/png' as const, bytes: normalized }))
     const proxy = createOfficeLocalSearchProxy({
       fetchWithAuth: vi.fn(),
-      downloadImage: vi.fn(async () => ({ mime: 'image/webp' as const, bytes: source })),
+      downloadImage: vi.fn(async () => ({ mime: 'image/jpeg' as const, bytes: source })),
       normalizeImage,
       searchImages: vi.fn(async () => ({
         images: [
@@ -166,7 +300,7 @@ describe('Office fixed retrieval proxy', () => {
     })
     await proxy('image-search.v1', { query: 'llm', max_results: 1 })
     const result = await proxy('image-fetch.v1', { url: 'https://images.example/llm.jpg' })
-    expect(normalizeImage).toHaveBeenCalledWith({ mime: 'image/webp', bytes: source })
+    expect(normalizeImage).toHaveBeenCalledWith({ mime: 'image/jpeg', bytes: source })
     expect(JSON.parse(new TextDecoder().decode(result))).toEqual({
       mime: 'image/png',
       data_base64: Buffer.from(normalized).toString('base64'),

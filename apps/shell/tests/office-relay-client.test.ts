@@ -5,6 +5,7 @@ import {
   type RelaySocket,
 } from '../src/main/office-relay-client'
 import type { OfficeRelayBinding } from '../src/main/office-relay-binding-store'
+import { createOfficeLocalSearchProxy } from '../src/main/office-retrieval-proxy'
 
 class FakeSocket implements RelaySocket {
   readyState = 0
@@ -54,14 +55,88 @@ function setup(loggedIn = true) {
 }
 
 describe('Office relay PC client', () => {
+  it.each(['revoked', 'socket-close'])(
+    'clears only its own client image provenance when %s',
+    async (ending) => {
+      const makeProxy = () =>
+        createOfficeLocalSearchProxy({
+          fetchWithAuth: vi.fn(),
+          downloadImage: async () => ({ mime: 'image/png' as const, bytes: new Uint8Array(4) }),
+          searchImages: async () => ({
+            images: [
+              {
+                title: 'Cover',
+                imageUrl: 'https://images.example/cover.png',
+                sourceUrl: 'https://example.com/cover',
+                source: 'example.com',
+              },
+            ],
+            method: 'serpapi',
+          }),
+        })
+      const first = makeProxy(),
+        second = makeProxy()
+      const socket = new FakeSocket()
+      const client = createOfficeRelayClient({
+        endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+        connect: () => socket,
+        getValidAccountStatus: async () => ({ loggedIn: true }),
+        getAccessToken: async () => 'token',
+        proxy: async () => ({ status: 200, body: new Uint8Array() }),
+        retrievalProxy: first,
+        onPending() {},
+      })
+      const claiming = client.claim('123456')
+      await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+      socket.open()
+      await claiming
+      await first('image-search.v1', { query: 'private cover query', max_results: 1 })
+      await expect(
+        second('image-fetch.v1', { url: 'https://images.example/cover.png' }),
+      ).rejects.toThrow('retrieval_invalid_request')
+      await second('image-search.v1', { query: 'separate cover query', max_results: 1 })
+      if (ending === 'socket-close') socket.close()
+      else client.revoke()
+      await expect(
+        first('image-fetch.v1', { url: 'https://images.example/cover.png' }),
+      ).rejects.toThrow('retrieval_invalid_request')
+      await expect(
+        second('image-fetch.v1', { url: 'https://images.example/cover.png' }),
+      ).resolves.toBeInstanceOf(Uint8Array)
+      client.revoke('test-complete')
+    },
+  )
+
   it.each([
-    [0, 0],
-    [360_000, 0],
-    [0, 180 * 1024],
-    [0, 200 * 1024],
-  ])('keeps Enhanced tool results after %i ms with %i image bytes', async (delayMs, imageBytes) => {
+    { delayMs: 0, imageBytes: 0, toolName: 'read_document', reply: 'small' },
+    { delayMs: 360_000, imageBytes: 0, toolName: 'read_document', reply: 'small' },
+    { delayMs: 0, imageBytes: 180 * 1024, toolName: 'read_document', reply: 'small' },
+    { delayMs: 0, imageBytes: 200 * 1024, toolName: 'read_document', reply: 'small' },
+    { delayMs: 0, imageBytes: 0, toolName: 'plan_deck', reply: 'design' },
+    { delayMs: 0, imageBytes: 0, toolName: 'screenshot_slide', reply: 'design' },
+    { delayMs: 0, imageBytes: 0, toolName: 'plan_deck', reply: 'boundary' },
+    { delayMs: 0, imageBytes: 0, toolName: 'plan_deck', reply: 'oversized' },
+    { delayMs: 0, imageBytes: 0, toolName: 'plan_deck', reply: 'wrong-call' },
+    { delayMs: 0, imageBytes: 0, toolName: 'plan_deck', reply: 'extra-field' },
+    { delayMs: 0, imageBytes: 0, toolName: 'plan_deck', reply: 'control' },
+  ])('handles bounded $toolName $reply ($delayMs/$imageBytes)', async (testCase) => {
+    const { delayMs, imageBytes, toolName, reply } = testCase
     vi.useFakeTimers()
     const socket = new FakeSocket()
+    const responses: string[] = []
+    const output =
+      reply === 'small'
+        ? '{"title":"Doc"}'
+        : reply === 'boundary'
+          ? 'x'.repeat(256 * 1024)
+          : reply === 'oversized'
+            ? 'x'.repeat(272 * 1024)
+            : JSON.stringify({
+                designMd: '# DESIGN.md\n' + 'a'.repeat(32 * 1024),
+                ...(toolName === 'screenshot_slide'
+                  ? { mime: 'image/png', bytes: 100, fingerprint: 'shot' }
+                  : {}),
+              })
     let runtimeReady = false
     const enhanced = {
       version: 1,
@@ -95,10 +170,21 @@ describe('Office relay PC client', () => {
           turnId: 'turn_12345678',
           callId: 'call_12345678',
           generation: 7,
-          toolName: 'read_document',
+          toolName,
           input: imageBytes > 180 * 1024 ? {} : imageInput,
         })
-        yield new TextEncoder().encode(result.output)
+        responses.push(result.output)
+        if (reply === 'design') {
+          const next = await executeTool({
+            turnId: 'turn_12345678',
+            callId: 'call_next_12345678',
+            generation: 7,
+            toolName: 'read_document',
+            input: {},
+          })
+          responses.push(next.output)
+        }
+        yield new TextEncoder().encode('done')
       })(),
     }))
     const client = createOfficeRelayClient({
@@ -183,24 +269,65 @@ describe('Office relay PC client', () => {
       turn_id: 'turn_12345678',
       call_id: 'call_12345678',
       generation: 7,
-      tool_name: 'read_document',
+      tool_name: toolName,
     })
     await vi.advanceTimersByTimeAsync(delayMs)
-    socket.message({
-      version: 2,
-      type: 'relay.tool_result',
-      session_id: 'session_12345678',
-      request_id: 'request_12345678',
-      turn_id: 'turn_12345678',
-      call_id: 'call_12345678',
-      generation: 7,
-      output: '{"title":"Doc"}',
-      is_error: false,
-    })
+    socket.message(
+      reply === 'control'
+        ? {
+            version: 2,
+            type: 'relay.cancel',
+            session_id: 'session_12345678',
+            request_id: 'x'.repeat(32 * 1024),
+          }
+        : {
+            version: 2,
+            type: 'relay.tool_result',
+            session_id: 'session_12345678',
+            request_id: 'request_12345678',
+            turn_id: 'turn_12345678',
+            call_id: reply === 'wrong-call' ? 'call_wrong_12345678' : 'call_12345678',
+            generation: 7,
+            output,
+            is_error: false,
+            ...(reply === 'extra-field' ? { unexpected: true } : {}),
+          },
+    )
+    if (['oversized', 'wrong-call', 'extra-field', 'control'].includes(reply)) {
+      expect(client.status()).toBe('disconnected:protocol_violation')
+      expect(responses).toEqual([])
+      client.revoke()
+      vi.useRealTimers()
+      return
+    }
+    expect(client.status()).toBe('paired')
+    if (reply === 'design') {
+      await vi.waitFor(() =>
+        expect(
+          socket.sent
+            .map(JSON.parse)
+            .some(
+              (frame) => frame.type === 'pc.tool_call' && frame.call_id === 'call_next_12345678',
+            ),
+        ).toBe(true),
+      )
+      socket.message({
+        version: 2,
+        type: 'relay.tool_result',
+        session_id: 'session_12345678',
+        request_id: 'request_12345678',
+        turn_id: 'turn_12345678',
+        call_id: 'call_next_12345678',
+        generation: 7,
+        output: 'next tool succeeded',
+        is_error: false,
+      })
+    }
     await vi.waitFor(() =>
       expect(socket.sent.map(JSON.parse).some((value) => value.type === 'pc.done')).toBe(true),
     )
     expect(enhancedProxy).toHaveBeenCalledOnce()
+    expect(responses).toEqual(reply === 'design' ? [output, 'next tool succeeded'] : [output])
     client.revoke()
     vi.useRealTimers()
   })

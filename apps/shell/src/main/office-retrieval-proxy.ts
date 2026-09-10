@@ -20,21 +20,18 @@ export const OFFICE_RETRIEVAL_SERVICES: Readonly<
 
 export type OfficeWebCapability =
   'web-search.v1' | 'web-fetch.v1' | 'image-search.v1' | 'image-fetch.v1'
-export type OfficeRetrievalProxy = (
-  capability: string,
-  body: unknown,
-  signal?: AbortSignal,
-) => Promise<Uint8Array>
+export interface OfficeRetrievalProxy {
+  (capability: string, body: unknown, signal?: AbortSignal): Promise<Uint8Array>
+  clear?(): void
+}
 
 export interface DownloadedImage {
-  mime: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' | 'image/avif'
+  mime: 'image/png' | 'image/jpeg'
   bytes: Uint8Array
 }
 
 function supportedImageMime(value: unknown): value is DownloadedImage['mime'] {
-  return ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif'].includes(
-    String(value),
-  )
+  return value === 'image/png' || value === 'image/jpeg'
 }
 
 export async function collectBoundedImageBytes(
@@ -45,7 +42,7 @@ export async function collectBoundedImageBytes(
   let total = 0
   for await (const chunk of chunks) {
     total += chunk.byteLength
-    if (total > maximum) throw new Error('retrieval_upstream_error')
+    if (total > maximum) throw new Error('image_limit')
     collected.push(chunk)
   }
   const bytes = new Uint8Array(total)
@@ -110,10 +107,15 @@ async function downloadPublicImage(
   const selected = addresses[0]!
   return new Promise((resolve, reject) => {
     let settled = false
-    const fail = () => {
+    const fail = (
+      code:
+        | 'retrieval_upstream_error'
+        | 'image_mime_unsupported'
+        | 'image_limit' = 'retrieval_upstream_error',
+    ) => {
       if (settled) return
       settled = true
-      reject(new Error('retrieval_upstream_error'))
+      reject(new Error(code))
     }
     const request = httpsRequest(
       parsed,
@@ -122,7 +124,7 @@ async function downloadPublicImage(
         agent: false,
         lookup: createPinnedLookup(selected),
         headers: {
-          Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif;q=0.9,*/*;q=0.1',
+          Accept: 'image/png,image/jpeg',
           'User-Agent':
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/128 Safari/537.36',
         },
@@ -155,13 +157,19 @@ async function downloadPublicImage(
         }
         const mime = response.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
         const declared = Number(response.headers['content-length'] ?? 0)
-        if (
-          response.statusCode !== 200 ||
-          !supportedImageMime(mime) ||
-          declared > 2 * 1024 * 1024
-        ) {
+        if (response.statusCode !== 200) {
           response.destroy()
           fail()
+          return
+        }
+        if (declared > 2 * 1024 * 1024) {
+          response.destroy()
+          fail('image_limit')
+          return
+        }
+        if (!supportedImageMime(mime)) {
+          response.destroy()
+          fail('image_mime_unsupported')
           return
         }
         void collectBoundedImageBytes(response)
@@ -170,13 +178,17 @@ async function downloadPublicImage(
             settled = true
             resolve({ mime, bytes })
           })
-          .catch(() => {
+          .catch((error) => {
             response.destroy()
-            fail()
+            fail(
+              error instanceof Error && error.message === 'image_limit'
+                ? 'image_limit'
+                : 'retrieval_upstream_error',
+            )
           })
       },
     )
-    request.once('error', fail)
+    request.once('error', () => fail())
     const timeout = setTimeout(
       () => request.destroy(new Error('retrieval_upstream_error')),
       Math.max(1, timeoutMs - (Date.now() - startedAt)),
@@ -207,25 +219,35 @@ export function createOfficeLocalSearchProxy(options: {
     options.downloadImage ??
     ((url: string, signal?: AbortSignal) =>
       downloadPublicImage(url, signal, options.lookupAddresses, options.imageTimeoutMs))
-  const allowedImages = new Map<string, number>()
-  return async (capability, body, signal) => {
+  const allowedImages = new Map<string, { expiresAt: number; query: string; maxResults: number }>()
+  let generation = 0
+  const proxy: OfficeRetrievalProxy = async (capability, body, signal) => {
+    const requestGeneration = generation
+    const checkCurrent = () => {
+      if (signal?.aborted || requestGeneration !== generation) throw new Error('search_cancelled')
+    }
     const request = requestFor(capability, body)
-    if (signal?.aborted) throw new Error('search_cancelled')
+    checkCurrent()
     if (request.operation === 'web-search') {
       const input = request.input as { query: string; max_results: number }
       const result = await searchWeb(input.query, Math.min(input.max_results, 10), {
         fetchWithAuth: options.fetchWithAuth,
         signal,
       })
+      checkCurrent()
       return new TextEncoder().encode(JSON.stringify({ results: result.results }))
     }
     if (request.operation === 'image-search') {
       const input = request.input as { query: string; max_results: number }
       const result = await searchImages(input.query, input.max_results)
-      if (signal?.aborted) throw new Error('search_cancelled')
+      checkCurrent()
       const expiresAt = Date.now() + 15 * 60_000
-      for (const [url, expiry] of allowedImages) if (expiry < Date.now()) allowedImages.delete(url)
-      for (const image of result.images) allowedImages.set(image.imageUrl, expiresAt)
+      for (const image of result.images)
+        allowedImages.set(image.imageUrl, {
+          expiresAt,
+          query: input.query,
+          maxResults: input.max_results,
+        })
       while (allowedImages.size > 100) allowedImages.delete(allowedImages.keys().next().value!)
       return new TextEncoder().encode(
         JSON.stringify({
@@ -240,13 +262,26 @@ export function createOfficeLocalSearchProxy(options: {
     }
     if (request.operation === 'image-fetch') {
       const url = (request.input as { url: string }).url
-      const expiry = allowedImages.get(url) ?? 0
-      if (expiry < Date.now()) throw new Error('retrieval_invalid_request')
+      const source = allowedImages.get(url)
+      if (!source) throw new Error('retrieval_invalid_request')
+      if (source.expiresAt < Date.now()) {
+        // Re-run the original search; an expired candidate is not permission to
+        // fetch a stale/arbitrary URL. Keep the same bounded 100-candidate ledger.
+        const result = await searchImages(source.query, source.maxResults)
+        checkCurrent()
+        if (!result.images.some((image) => image.imageUrl === url))
+          throw new Error('retrieval_invalid_request')
+        source.expiresAt = Date.now() + 15 * 60_000
+      }
       const downloaded = await downloadImage(url, signal)
+      checkCurrent()
+      if (!supportedImageMime(downloaded.mime)) throw new Error('image_mime_unsupported')
+      if (downloaded.bytes.byteLength > 2 * 1024 * 1024) throw new Error('image_limit')
       const { mime, bytes } = options.normalizeImage
         ? await options.normalizeImage(downloaded)
         : downloaded
-      if (mime !== 'image/png' && mime !== 'image/jpeg') throw new Error('retrieval_upstream_error')
+      checkCurrent()
+      if (!supportedImageMime(mime)) throw new Error('image_mime_unsupported')
       if (bytes.byteLength > 2 * 1024 * 1024) throw new Error('retrieval_upstream_error')
       return new TextEncoder().encode(
         JSON.stringify({ mime, data_base64: Buffer.from(bytes).toString('base64') }),
@@ -254,6 +289,11 @@ export function createOfficeLocalSearchProxy(options: {
     }
     throw new Error('retrieval_capability_unavailable')
   }
+  proxy.clear = () => {
+    generation += 1
+    allowedImages.clear()
+  }
+  return proxy
 }
 
 const record = (value: unknown): Record<string, unknown> => {

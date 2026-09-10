@@ -379,6 +379,126 @@ describe('Excel import/export proposals', () => {
 })
 
 describe('PowerPoint image proposal', () => {
+  function imageReadbackFixture(widthAtRead: (read: number) => number) {
+    let reads = 0
+    const geometry = { left: 10, top: 20, width: 300, height: 180 }
+    const picture = {
+      id: 'picture-1',
+      type: 'Image',
+      ...geometry,
+      load: vi.fn((properties: string) => {
+        if (properties.includes('width')) picture.width = widthAtRead(++reads)
+      }),
+      delete: vi.fn(() => {
+        shapes.items = []
+      }),
+    }
+    const shapes = {
+      items: [] as (typeof picture)[],
+      load: vi.fn(),
+      getItem: vi.fn(() => picture),
+    }
+    const slide = { id: 'slide-1', shapes, load: vi.fn() }
+    const context = {
+      presentation: {
+        slides: { getItemAt: vi.fn(() => slide) },
+        setSelectedSlides: vi.fn(),
+      },
+      sync: vi.fn().mockResolvedValue(undefined),
+    }
+    const setSelectedDataAsync = vi.fn(
+      (_data: string, _options: unknown, callback: (result: unknown) => void) => {
+        shapes.items = [picture]
+        callback({ status: 'succeeded' })
+      },
+    )
+    Object.assign(globalThis, {
+      Office: {
+        CoercionType: { Image: 'image' },
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+          document: { setSelectedDataAsync },
+        },
+      },
+      PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+    })
+    const adapter = new BrowserPowerPointImportMediaAdapter({
+      snapshotSlide: vi.fn().mockResolvedValue({ slideId: 'slide-1', fingerprint: 'stable' }),
+    })
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/image.png', png(10, 10))
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointImportMediaSkill({ adapter, proposals, vfs })
+    return {
+      geometry,
+      adapter,
+      proposals,
+      skill,
+      picture,
+      shapes,
+      setSelectedDataAsync,
+      reads: () => reads,
+    }
+  }
+
+  it('waits for image geometry to converge without inserting the image again', async () => {
+    const fixture = imageReadbackFixture((read) => (read === 1 ? 0 : 300))
+    await fixture.skill.executeTool(
+      call('insert-image', {
+        path: '/home/user/image.png',
+        slide_index: 0,
+        ...fixture.geometry,
+      }),
+    )
+    await expect(
+      fixture.proposals.confirm(fixture.proposals.pending()!.id),
+    ).resolves.toBeUndefined()
+    expect(fixture.reads()).toBe(2)
+    expect(fixture.setSelectedDataAsync).toHaveBeenCalledOnce()
+    expect(fixture.picture.delete).not.toHaveBeenCalled()
+    expect(fixture.shapes.items).toHaveLength(1)
+  })
+
+  it('keeps a permanent geometry mismatch bounded and recovers the inserted image', async () => {
+    const fixture = imageReadbackFixture(() => 0)
+    await fixture.skill.executeTool(
+      call('insert-image', {
+        path: '/home/user/image.png',
+        slide_index: 0,
+        ...fixture.geometry,
+      }),
+    )
+    await expect(fixture.proposals.confirm(fixture.proposals.pending()!.id)).rejects.toThrow(
+      'office_verify_failed',
+    )
+    expect(fixture.reads()).toBe(3)
+    expect(fixture.setSelectedDataAsync).toHaveBeenCalledOnce()
+    expect(fixture.picture.delete).toHaveBeenCalledOnce()
+    expect(fixture.shapes.items).toHaveLength(0)
+  })
+
+  it('stops image readback on abort without retrying or replaying insertion', async () => {
+    const fixture = imageReadbackFixture(() => {
+      setTimeout(() => fixture.proposals.newTurn(), 0)
+      return 0
+    })
+    await fixture.skill.executeTool(
+      call('insert-image', {
+        path: '/home/user/image.png',
+        slide_index: 0,
+        ...fixture.geometry,
+      }),
+    )
+    await expect(fixture.proposals.confirm(fixture.proposals.pending()!.id)).rejects.toThrow(
+      'cancelled',
+    )
+    expect(fixture.reads()).toBe(1)
+    expect(fixture.setSelectedDataAsync).toHaveBeenCalledOnce()
+    expect(fixture.picture.delete).toHaveBeenCalledOnce()
+    expect(fixture.shapes.items).toHaveLength(0)
+  })
+
   it('inserts pictures through the cross-platform ImageCoercion API', async () => {
     const created = {
       id: 'picture-1',

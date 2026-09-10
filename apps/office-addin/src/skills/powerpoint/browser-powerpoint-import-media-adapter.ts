@@ -121,22 +121,29 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
     geometry: ImageGeometry,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    return runtime().run(async (context: Runtime) => {
-      const item = await slide(context, index, signal)
-      if (typeof item.shapes?.getItem !== 'function') throw new Error('office_api_unsupported')
-      const shape = item.shapes.getItem(id)
-      shape.load('id,left,top,width,height,type')
-      await sync(context, signal)
-      const close = (actual: unknown, expected: number) =>
-        typeof actual === 'number' && Math.abs(actual - expected) <= 0.01
-      return (
-        String(shape.id) === id &&
-        ['image', 'picture'].some((value) => String(shape.type).toLowerCase().includes(value)) &&
-        close(shape.left, geometry.left) &&
-        close(shape.top, geometry.top) &&
-        close(shape.width, geometry.width) &&
-        close(shape.height, geometry.height)
-      )
+    return readUntilConverged<boolean>({
+      signal,
+      accept: Boolean,
+      read: () =>
+        runtime().run(async (context: Runtime) => {
+          const item = await slide(context, index, signal)
+          if (typeof item.shapes?.getItem !== 'function') throw new Error('office_api_unsupported')
+          const shape = item.shapes.getItem(id)
+          shape.load('id,left,top,width,height,type')
+          await sync(context, signal)
+          const close = (actual: unknown, expected: number) =>
+            typeof actual === 'number' && Math.abs(actual - expected) <= 0.01
+          return (
+            String(shape.id) === id &&
+            ['image', 'picture'].some((value) =>
+              String(shape.type).toLowerCase().includes(value),
+            ) &&
+            close(shape.left, geometry.left) &&
+            close(shape.top, geometry.top) &&
+            close(shape.width, geometry.width) &&
+            close(shape.height, geometry.height)
+          )
+        }),
     })
   }
   async removeImage(index: number, id: string): Promise<void> {

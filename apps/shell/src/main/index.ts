@@ -2967,36 +2967,16 @@ app.whenReady().then(async () => {
         })
       : undefined
     const retrievalEndpoint = officeRetrievalEndpointFromEnv(process.env)
-    const retrievalProxy = retrievalEndpoint
-      ? createOfficeRetrievalProxy({
-          endpoint: retrievalEndpoint,
-          fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
-        })
-      : createOfficeLocalSearchProxy({
-          fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
-          normalizeImage: async ({ bytes }) => {
-            const decoded = nativeImage.createFromBuffer(Buffer.from(bytes))
-            const { width, height } = decoded.getSize()
-            if (
-              decoded.isEmpty() ||
-              !Number.isSafeInteger(width) ||
-              !Number.isSafeInteger(height) ||
-              width < 1 ||
-              height < 1 ||
-              width > 8_192 ||
-              height > 8_192 ||
-              width * height > 16_000_000
-            )
-              throw new Error('retrieval_upstream_error')
-            const png = decoded.toPNG()
-            if (png.byteLength <= 2 * 1024 * 1024)
-              return { mime: 'image/png' as const, bytes: new Uint8Array(png) }
-            const jpeg = decoded.toJPEG(90)
-            if (!jpeg.byteLength || jpeg.byteLength > 2 * 1024 * 1024)
-              throw new Error('retrieval_upstream_error')
-            return { mime: 'image/jpeg' as const, bytes: new Uint8Array(jpeg) }
-          },
-        })
+    const createRetrievalProxy = () =>
+      retrievalEndpoint
+        ? createOfficeRetrievalProxy({
+            endpoint: retrievalEndpoint,
+            fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+          })
+        : createOfficeLocalSearchProxy({
+            fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+            normalizeImage: createOfficeImageHandoff(nativeImage, { reencode: true }),
+          })
     const retrievalCapabilities = retrievalEndpoint
       ? (['web-search.v1', 'web-fetch.v1', 'image-search.v1'] as const)
       : (['web-search.v1', 'image-search.v1', 'image-fetch.v1'] as const)
@@ -3017,7 +2997,7 @@ app.whenReady().then(async () => {
             }[host] as 'office-word' | 'office-excel' | 'office-powerpoint'
             return codexRuntime?.createOfficeSessionStatement(enhancedHost)
           },
-          retrievalProxy,
+          retrievalProxy: createRetrievalProxy(),
           retrievalCapabilities,
           negotiateCapabilities: true,
           persistentPairing: () => officeRelayPersistenceAvailable,

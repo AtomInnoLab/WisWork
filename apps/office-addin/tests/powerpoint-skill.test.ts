@@ -123,6 +123,83 @@ const modernContract = (overrides: Record<string, unknown> = {}) => ({
 })
 
 describe('PowerPoint compatibility skill', () => {
+  it('promotes a fully populated draft to ready instead of treating the transition as a replay', async () => {
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: adapter(), proposals })
+    await skill.executeTool(call('plan_deck', { contract: modernContract({ status: 'draft' }) }))
+    const ready = await skill.executeTool(call('plan_deck', { contract: modernContract() }))
+    expect(JSON.parse(ready.output).status).toBe('ready')
+  })
+  it('advertises only caller-owned planning statuses and explains the screenshot review handoff', () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+    })
+    const schema = skill.tools.find((tool) => tool.name === 'plan_deck')!.inputSchema as any
+    expect(schema.properties.contract.properties.status.enum).toEqual(['draft', 'ready'])
+    expect(skill.systemPrompt).toContain('review_slide_screenshot')
+    expect(skill.systemPrompt).toContain('Do not resubmit plan_deck to record a review')
+  })
+
+  it('preserves produced pages and pending review when the unchanged ready plan is resubmitted', async () => {
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: adapter(), proposals })
+    const contract = modernContract()
+    await skill.executeTool(call('plan_deck', { contract }))
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+    )
+    await proposals.confirm(proposals.pending()!.id)
+    await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain(
+      'review_slide_screenshot',
+    )
+    const repeated = await skill.executeTool(call('plan_deck', { contract }))
+    expect(JSON.parse(repeated.output).status).toBe('producing')
+    expect(
+      await skill.executeTool(
+        call('review_slide_screenshot', {
+          slide_index: 0,
+          acceptance_ids: ['A1.1'],
+          passed: true,
+        }),
+      ),
+    ).not.toHaveProperty('isError', true)
+    expect(await skill.executeTool(call('verify_slides'))).not.toHaveProperty('isError', true)
+    expect(skill.buildContext?.()).toContain('"status":"verified"')
+  })
+
+  it('returns actionable review recovery and requires a fresh screenshot without rewriting the contract', async () => {
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: adapter(), proposals })
+    await skill.executeTool(call('plan_deck', { contract: modernContract() }))
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+    )
+    await proposals.confirm(proposals.pending()!.id)
+    expect(
+      await skill.executeTool(
+        call('review_slide_screenshot', {
+          slide_index: 0,
+          acceptance_ids: ['A1.1'],
+          passed: true,
+        }),
+      ),
+    ).toMatchObject({ isError: true, output: 'design_contract_screenshot_required' })
+    const result = await skill.executeTool(
+      call('plan_deck', { contract: modernContract({ status: 'producing' }) }),
+    )
+    expect(JSON.parse(result.output)).toMatchObject({
+      error: 'design_contract_invalid_status',
+      allowedStatuses: ['draft', 'ready'],
+      nextTool: 'screenshot_slide',
+      pendingReviews: [{ slide_index: 0, acceptance_ids: ['A1.1'], needsScreenshot: true }],
+    })
+    const shot = await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    expect(JSON.parse(shot.output)).toMatchObject({ nextTool: 'review_slide_screenshot' })
+    expect(skill.buildContext?.()).toContain('"pendingReviews"')
+  })
+
   it('shares the design prototype and batch verification workflow with desktop Slides', () => {
     const skill = createPowerPointSkill({
       adapter: adapter(),
@@ -1857,7 +1934,10 @@ describe('PowerPoint compatibility skill', () => {
 
     await expect(
       skill.executeTool(call('duplicate_slide', { slide_index: 2 })),
-    ).resolves.toMatchObject({ isError: true, output: 'design_contract_review_required' })
+    ).resolves.toMatchObject({
+      isError: true,
+      output: expect.stringContaining('"error":"design_contract_review_required"'),
+    })
     expect(proposals.pending()).toBeUndefined()
     expect(skill.buildContext?.()).toContain('"status":"producing"')
   })
@@ -1968,7 +2048,10 @@ describe('PowerPoint compatibility skill', () => {
         skill.executeTool(
           call('edit_slide_text', { slide_index: 1, shape_id: '2', text: 'Hello' }),
         ),
-      ).resolves.toMatchObject({ isError: true, output: 'design_contract_review_required' })
+      ).resolves.toMatchObject({
+        isError: true,
+        output: expect.stringContaining('"error":"design_contract_review_required"'),
+      })
       for (const index of [0, 2, 3]) await review(index)
       await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
         isError: true,
@@ -2199,7 +2282,7 @@ describe('PowerPoint compatibility skill', () => {
 })
 
 describe('browser PowerPoint adapter', () => {
-  it('reads a representative character style instead of mixed paragraph-marker style', async () => {
+  it('reads all actual text instead of an implicit paragraph-marker style', async () => {
     const mixedFont = { load: vi.fn(), name: '', size: 0, color: '', bold: false, italic: false }
     const sampledFont = {
       load: vi.fn(),
@@ -2244,7 +2327,7 @@ describe('browser PowerPoint adapter', () => {
       bold: true,
       italic: false,
     })
-    expect(range.getSubstring).toHaveBeenCalledWith(0, 1)
+    expect(range.getSubstring).toHaveBeenCalledWith(0, 5)
     expect(sampledFont.load).toHaveBeenCalledWith('color,name,size,bold,italic')
   })
 

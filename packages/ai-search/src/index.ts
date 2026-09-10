@@ -301,6 +301,29 @@ export async function webSearch(
 
 // ── Image search ────────────────────────────────────────────────────
 
+function collectImageResults(
+  items: unknown[],
+  maxResults: number,
+  parse: (item: unknown) => ImageSearchResult | undefined,
+): ImageSearchResult[] {
+  const images: ImageSearchResult[] = []
+  let invalid: ImageSearchError | undefined
+  for (const item of items) {
+    try {
+      const image = parse(item)
+      if (image) images.push(image)
+      if (images.length >= maxResults) break
+    } catch (error) {
+      if (!(error instanceof ImageSearchError) || error.code !== 'parse') throw error
+      invalid = error
+    }
+  }
+  // One malformed result must not discard good neighbours, but an entirely
+  // malformed response still fails instead of claiming an empty search success.
+  if (!images.length && invalid) throw invalid
+  return images
+}
+
 export async function imageSearch(
   query: string,
   maxResults = 8,
@@ -333,12 +356,12 @@ export async function imageSearch(
             ? data.image_results
             : null
         if (!raw) throw new ImageSearchError('parse', 'serpapi')
-        const images: ImageSearchResult[] = []
-        for (const item of raw) {
+        const images = collectImageResults(raw, maxResults, (item) => {
           const image = imageRecord(item, 'serpapi')
           const imageUrl = publicImageUrl(image.original, 'serpapi')
           const sourceUrl = publicImageUrl(image.link, 'serpapi')
-          if (COPYRIGHT_HOSTS.some((host) => imageUrl.toLowerCase().includes(host))) continue
+          if (COPYRIGHT_HOSTS.some((host) => imageUrl.toLowerCase().includes(host)))
+            return undefined
           const entry: ImageSearchResult = {
             title: optionalText(image.title, 'serpapi'),
             imageUrl,
@@ -350,9 +373,8 @@ export async function imageSearch(
           const height = optionalDimension(image.original_height, 'serpapi')
           if (width !== undefined) entry.width = width
           if (height !== undefined) entry.height = height
-          images.push(entry)
-          if (images.length >= maxResults) break
-        }
+          return entry
+        })
         return { images, method: 'serpapi' }
       }
       throw imageSearchFailure('serpapi', undefined, resp.status)
@@ -374,12 +396,11 @@ export async function imageSearch(
         const data = asRecord(await resp.json())
         if (!Array.isArray(data.images)) throw new ImageSearchError('parse', 'serper')
         const raw: unknown[] = data.images
-        const images: ImageSearchResult[] = []
-        for (const item of raw) {
+        const images = collectImageResults(raw, maxResults, (item) => {
           const img = imageRecord(item, 'serper')
           const imageUrl = publicImageUrl(img.imageUrl ?? img.original, 'serper')
           const sourceUrl = publicImageUrl(img.link, 'serper')
-          if (COPYRIGHT_HOSTS.some((d) => imageUrl.toLowerCase().includes(d))) continue
+          if (COPYRIGHT_HOSTS.some((d) => imageUrl.toLowerCase().includes(d))) return undefined
           const entry: ImageSearchResult = {
             title: optionalText(img.title, 'serper'),
             imageUrl,
@@ -390,9 +411,8 @@ export async function imageSearch(
           const height = optionalDimension(img.imageHeight, 'serper')
           if (width !== undefined) entry.width = width
           if (height !== undefined) entry.height = height
-          images.push(entry)
-          if (images.length >= maxResults) break
-        }
+          return entry
+        })
         return { images, method: 'serper' }
       }
       throw imageSearchFailure('serper', undefined, resp.status)
@@ -455,12 +475,11 @@ async function duckImageSearch(query: string, maxResults: number): Promise<Image
     const data = asRecord(await resp.json())
     if (!Array.isArray(data.results)) throw new ImageSearchError('parse', 'duckduckgo')
     const list: unknown[] = data.results
-    const out: ImageSearchResult[] = []
-    for (const item of list.slice(0, maxResults)) {
+    return collectImageResults(list, maxResults, (item) => {
       const img = imageRecord(item, 'duckduckgo')
       const imageUrl = publicImageUrl(img.image, 'duckduckgo')
       const sourceUrl = publicImageUrl(img.url, 'duckduckgo')
-      if (COPYRIGHT_HOSTS.some((d) => imageUrl.toLowerCase().includes(d))) continue
+      if (COPYRIGHT_HOSTS.some((d) => imageUrl.toLowerCase().includes(d))) return undefined
       const entry: ImageSearchResult = {
         title: optionalText(img.title, 'duckduckgo'),
         imageUrl,
@@ -471,9 +490,8 @@ async function duckImageSearch(query: string, maxResults: number): Promise<Image
       const height = optionalDimension(img.height, 'duckduckgo')
       if (width !== undefined) entry.width = width
       if (height !== undefined) entry.height = height
-      out.push(entry)
-    }
-    return out
+      return entry
+    })
   } catch (error) {
     throw imageSearchFailure('duckduckgo', error)
   }
