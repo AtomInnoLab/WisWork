@@ -17,7 +17,13 @@ import {
   type OfficeWorkspaceUi,
   type WorkspacePanelName,
 } from '../src/App.js'
-import type { OfficeAgentSession, OfficeAgentSnapshot } from '../src/agent/use-office-agent.js'
+import {
+  createOfficeAgentSession,
+  type OfficeAgentSession,
+  type OfficeAgentSnapshot,
+} from '../src/agent/use-office-agent.js'
+import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
+import type { OfficeToolActivity } from '../src/agent/transport.js'
 import type { OfficeHostRuntime } from '../src/agent/host-runtime.js'
 
 const proposal = {
@@ -98,6 +104,64 @@ function workspaceMarkup(
 }
 
 describe('Office Agent workspace UI', () => {
+  it('shows the actual image step and expandable safe PC failure detail', async () => {
+    let observe: ((event: OfficeToolActivity) => void) | undefined
+    const session = createOfficeAgentSession({
+      transport: {
+        stream: () => ({ cancel: vi.fn() }),
+        setToolActivityHandler: (next) => {
+          observe = next
+        },
+      },
+      skill: {
+        id: 'test',
+        systemPrompt: '',
+        tools: [
+          { name: 'insert_web_image', description: 'image', inputSchema: { type: 'object' } },
+        ],
+        executeTool: vi.fn(),
+      },
+      proposals: createStructuredProposalController(),
+    })
+    session.send('Insert image')
+    await Promise.resolve()
+    const base = { callId: 'call_image123', toolName: 'insert_web_image', startedAt: Date.now() }
+    observe!({ ...base, state: 'running' })
+    observe!({ ...base, state: 'error', summary: 'image_fetch_unavailable' })
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    await act(async () =>
+      root.render(
+        React.createElement(AgentWorkspace, {
+          session,
+          ui: {
+            attachments: () => [],
+            skills: () => [],
+            skillPackagesEnabled: true,
+            upload: vi.fn(),
+            clear: vi.fn(),
+          },
+          disconnect: vi.fn(),
+          host: 'powerpoint',
+        }),
+      ),
+    )
+    expect(container.textContent).toContain('插入网络图片未完成')
+    expect(container.textContent).not.toContain('准备修改')
+    expect(container.textContent).not.toContain('Office tool failed')
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('.ai-work-group-summary')!.click(),
+    )
+    await act(async () => container.querySelector<HTMLButtonElement>('.ai-step-title')!.click())
+    expect(container.querySelector('.ai-step-detail')?.textContent).toBe(
+      '图片暂时无法获取（image_fetch_unavailable）',
+    )
+    await act(async () => root.unmount())
+    session.dispose()
+    container.remove()
+  })
+
   it('shows the runtime selected by WisWork PC without exposing a second mode switch', () => {
     const standard = workspaceMarkup({}, undefined, 'powerpoint', undefined, 'standard')
     const enhanced = workspaceMarkup({}, undefined, 'powerpoint', undefined, 'enhanced')

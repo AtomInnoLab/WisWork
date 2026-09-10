@@ -1560,7 +1560,17 @@ export function createOfficeRelaySession(
           event.error_code === 'invalid_tool_input' ||
           event.error_code === 'invalid_image' ||
           event.error_code === 'image_limit' ||
-          event.error_code === 'image_mime_unsupported'
+          event.error_code === 'image_mime_unsupported' ||
+          [
+            'design_contract_review_required',
+            'design_contract_prototype_required',
+            'design_contract_production_incomplete',
+            'design_contract_verification_failed',
+            'design_contract_invalid_status',
+            'design_contract_review_not_pending',
+            'design_contract_acceptance_mismatch',
+            'design_contract_screenshot_required',
+          ].includes(event.error_code)
             ? 'agent_run_failed'
             : event.error_code === 'image_fetch_unavailable'
               ? 'network_error'

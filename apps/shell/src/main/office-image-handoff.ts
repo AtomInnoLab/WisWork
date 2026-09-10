@@ -9,9 +9,10 @@ interface DecodedImage {
   toJPEG(quality: number): Uint8Array
 }
 
-export function createOfficeImageHandoff(nativeImage: {
-  createFromBuffer(bytes: Buffer): DecodedImage
-}): (image: HandoffImage) => Promise<HandoffImage> {
+export function createOfficeImageHandoff(
+  nativeImage: { createFromBuffer(bytes: Buffer): DecodedImage },
+  options: { reencode?: boolean } = {},
+): (image: HandoffImage) => Promise<HandoffImage> {
   return async (image) => {
     if (image.bytes.byteLength > 2 * 1024 * 1024) throw new Error('image_limit')
     if (!image.bytes.byteLength) throw new Error('invalid_image')
@@ -35,7 +36,7 @@ export function createOfficeImageHandoff(nativeImage: {
       width * height > 16_000_000
     )
       throw new Error('image_limit')
-    if (image.bytes.byteLength <= MAX_HANDOFF_BYTES) return image
+    if (!options.reencode && image.bytes.byteLength <= MAX_HANDOFF_BYTES) return image
 
     // This private 256 KiB tool envelope is separate from the 2 MiB retrieval output.
     // Keep room for base64 expansion and provenance; never truncate encoded bytes.

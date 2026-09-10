@@ -85,6 +85,7 @@ describe('Office Codex proxy', () => {
       })
       const runtime = {
         async runOfficeTurn(value: any) {
+          value.onEvent({ type: 'tool-start', callId: 'image_call', toolName: 'insert_web_image' })
           if (scenario === 'injected') {
             try {
               value.summarizeProposal({ name: 'insert_web_image', input })
@@ -99,6 +100,12 @@ describe('Office Codex proxy', () => {
             input,
           })
           receipt = await (isToolExecutionSuspension(result) ? result.result : result)
+          value.onEvent({
+            type: 'tool-complete',
+            callId: 'image_call',
+            toolName: 'insert_web_image',
+            isError: receipt.isError === true,
+          })
           value.onEvent({ type: 'terminal', status: 'completed' })
         },
       }
@@ -162,6 +169,21 @@ describe('Office Codex proxy', () => {
         if (scenario === 'large' || scenario === 'normalizer-failed')
           expect(receipt.output).toBe('image_limit')
         if (scenario === 'unavailable') expect(receipt.output).toBe('image_fetch_unavailable')
+        if (scenario !== 'cancelled') {
+          const events = stream
+            .split('\n')
+            .filter((line) => line.startsWith('data: {'))
+            .map((line) => JSON.parse(line.slice(6)))
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              type: 'wiswork_tool_lifecycle',
+              tool_name: 'insert_web_image',
+              state: 'error',
+              summary: receipt.output,
+            }),
+          )
+          expect(stream).not.toContain(input.url)
+        }
         if (scenario === 'injected') {
           expect(rejectedBeforeApproval).toBe(true)
           expect(receipt.output).toBe('invalid_tool_input')

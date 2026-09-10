@@ -257,6 +257,11 @@ export function createOfficeRelayClient(options: {
   const clear = (reason: string, close: boolean) => {
     generation += 1
     cancelActive()
+    try {
+      options.retrievalProxy?.clear?.()
+    } catch {
+      // A cleanup failure must not prevent revoking the Relay session.
+    }
     active = null
     const expiredPendingId = pending?.pairingId
     pending = null
@@ -569,7 +574,12 @@ export function createOfficeRelayClient(options: {
     )
       return clear('protocol_violation', true)
     const typed = frame as Record<string, unknown>
-    if (frameBytes > MAX_CONTROL_BYTES && typed.type !== 'relay.request')
+    // Tool results are data frames too; the outer 272 KiB ceiling still applies.
+    if (
+      frameBytes > MAX_CONTROL_BYTES &&
+      typed.type !== 'relay.request' &&
+      typed.type !== 'relay.tool_result'
+    )
       return clear('protocol_violation', true)
     if (typed.type === 'pc.waiting_for_office') {
       if (

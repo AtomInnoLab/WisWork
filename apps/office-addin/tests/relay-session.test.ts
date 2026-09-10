@@ -872,8 +872,16 @@ describe('Office cloud relay session', () => {
       'image_limit',
       'image_mime_unsupported',
       'invalid_image',
+      'design_contract_review_required',
+      'design_contract_prototype_required',
+      'design_contract_production_incomplete',
+      'design_contract_verification_failed',
+      'design_contract_invalid_status',
+      'design_contract_review_not_pending',
+      'design_contract_acceptance_mismatch',
+      'design_contract_screenshot_required',
     ].entries()) {
-      const eventId = `00000000-0000-4000-8000-00000000000${index + 6}`
+      const eventId = `00000000-0000-4000-8000-${String(index + 6).padStart(12, '0')}`
       const upload = session.sendDiagnostic({
         ...diagnostic,
         event_id: eventId,
@@ -894,7 +902,7 @@ describe('Office cloud relay session', () => {
     await expect(
       session.sendDiagnostic({ ...diagnostic, tool: 'x'.repeat(5_000) }),
     ).rejects.toThrow('diagnostic_too_large')
-    expect(socket.sent).toHaveLength(9)
+    expect(socket.sent).toHaveLength(17)
   })
 
   it('keeps Agent streaming usable after a nonfatal diagnostic limit response', async () => {

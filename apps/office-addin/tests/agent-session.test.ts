@@ -9,6 +9,7 @@ import type { ProposalDecision, StructuredProposal } from '../src/agent/proposal
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import type { OfficePowerPointVisualReviewer } from '../src/skills/powerpoint/powerpoint-verification.js'
 import { createPcBridgeAgentTransport, type OfficeToolActivity } from '../src/agent/transport.js'
+import { createOfficeDiagnostics } from '../src/diagnostics/office-diagnostics.js'
 
 function transportHarness() {
   let callbacks: AgentStreamCallbacks | undefined
@@ -95,6 +96,176 @@ describe('presentation clarification display', () => {
 })
 
 describe('Office agent session', () => {
+  it.each([
+    'review_required',
+    'prototype_required',
+    'production_incomplete',
+    'verification_failed',
+    'invalid_status',
+    'review_not_pending',
+    'acceptance_mismatch',
+    'screenshot_required',
+    'unknown_private',
+  ])('retains only the safe design-contract failure code: %s', async (suffix) => {
+    let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+    const code = `design_contract_${suffix}`
+    const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+    const session = createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: {
+        id: 'test',
+        systemPrompt: '',
+        tools: [{ name: 'plan_deck', description: 'plan', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => ({
+          output: ['review_required', 'invalid_status', 'unknown_private'].includes(suffix)
+            ? JSON.stringify({ error: code, contract: 'private contract https://secret.example' })
+            : code,
+          isError: true,
+          summary: 'plan',
+        })),
+      },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+      remoteTools: {
+        setToolHandler: (next) => {
+          handler = next
+        },
+      },
+    })
+    await handler!({
+      turnId: 'turn_12345678',
+      callId: 'call_plan123',
+      generation: 3,
+      toolName: 'plan_deck',
+      input: {},
+      signal: new AbortController().signal,
+    })
+    expect(diagnostics.snapshot().events).toEqual([
+      expect.objectContaining({
+        tool: 'plan_deck',
+        error_code: suffix === 'unknown_private' ? 'agent_run_failed' : code,
+      }),
+    ])
+    expect(diagnostics.exportJson()).not.toContain('private contract')
+    expect(diagnostics.exportJson()).not.toContain('secret.example')
+    session.dispose()
+  })
+
+  it.each([
+    ['image_fetch_unavailable', '图片暂时无法获取'],
+    ['image_limit', '图片超过大小限制'],
+    ['image_mime_unsupported', '图片格式不受支持'],
+    ['invalid_image', '图片数据无效'],
+  ])(
+    'records a PC-only image failure with its visible tool and safe code: %s',
+    async (code, message) => {
+      const base = {
+        type: 'wiswork_tool_lifecycle',
+        generation: 3,
+        call_id: 'call_image123',
+        tool_name: 'insert_web_image',
+        started_at: Date.now(),
+      }
+      const frames = [
+        { ...base, state: 'running' },
+        { ...base, state: 'error', summary: code },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+      ]
+      const executeTool = vi.fn()
+      const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+      const session = createOfficeAgentSession({
+        transport: createPcBridgeAgentTransport({
+          snapshot: () => ({ enhanced: { session_generation: 3 } }),
+          authenticatedFetch: vi.fn(
+            async () =>
+              new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')),
+          ),
+        } as any),
+        skill: {
+          id: 'test',
+          systemPrompt: '',
+          tools: [
+            { name: 'insert_web_image', description: 'image', inputSchema: { type: 'object' } },
+          ],
+          executeTool,
+        },
+        proposals: proposalsHarness().controller,
+        diagnostics,
+      })
+      session.send('Insert cover image')
+      await vi.waitFor(() => expect(session.snapshot().busy).toBe(false))
+      expect(session.snapshot().timeline.find((event) => event.kind === 'tool')).toMatchObject({
+        name: 'insert_web_image',
+        summary: '插入网络图片未完成',
+        state: 'error',
+        output: `${message}（${code}）`,
+      })
+      expect(diagnostics.snapshot().events).toEqual([
+        expect.objectContaining({ tool: 'insert_web_image', phase: 'tool', error_code: code }),
+      ])
+      expect(executeTool).not.toHaveBeenCalled()
+      session.dispose()
+    },
+  )
+
+  it.each(['remote-first', 'observation-first'] as const)(
+    'records a failed image call only once (%s)',
+    async (order) => {
+      let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+      let observe: ((event: OfficeToolActivity) => void) | undefined
+      const harness = transportHarness()
+      const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+      const session = createOfficeAgentSession({
+        transport: {
+          ...harness.transport,
+          setToolActivityHandler: (next) => {
+            observe = next
+          },
+        },
+        skill: {
+          id: 'test',
+          systemPrompt: '',
+          tools: [{ name: 'insert-image', description: 'image', inputSchema: { type: 'object' } }],
+          executeTool: vi.fn(async () => ({
+            output: 'invalid_image',
+            isError: true,
+            summary: 'image',
+          })),
+        },
+        proposals: proposalsHarness().controller,
+        diagnostics,
+        remoteTools: {
+          setToolHandler: (next) => {
+            handler = next
+          },
+        },
+      })
+      session.send('Insert image')
+      await Promise.resolve()
+      const base = { callId: 'call_image123', toolName: 'insert-image', startedAt: Date.now() }
+      observe!({ ...base, state: 'running' })
+      const fail = () => observe!({ ...base, state: 'error', summary: 'invalid_image' })
+      if (order === 'observation-first') fail()
+      await handler!({
+        ...base,
+        turnId: 'turn_12345678',
+        generation: 3,
+        input: {},
+        signal: new AbortController().signal,
+      })
+      if (order === 'remote-first') fail()
+      fail()
+      expect(diagnostics.snapshot().events).toEqual([
+        expect.objectContaining({ tool: 'insert-image', error_code: 'invalid_image' }),
+      ])
+      expect(session.snapshot().timeline.find((event) => event.kind === 'tool')).toMatchObject({
+        summary: '插入图片未完成',
+        output: '图片数据无效（invalid_image）',
+      })
+      session.dispose()
+    },
+  )
+
   it('shows and resolves one model-authored questionnaire question at a time', async () => {
     let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
     const session = createOfficeAgentSession({

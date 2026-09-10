@@ -204,6 +204,36 @@ describe('wisUsageWebSearch', () => {
 })
 
 describe('imageSearch (Serper)', () => {
+  it.each(['serpapi', 'serper', 'duckduckgo'] as const)(
+    'keeps safe %s candidates when individual results are malformed',
+    async (provider) => {
+      if (provider === 'serpapi') process.env.SERPAPI_API_KEY = 'test-key'
+      if (provider === 'serper') process.env.SERPER_API_KEY = 'test-key'
+      const entry = (id: string) => ({
+        title: id,
+        original: `https://cdn.example.com/${id}.jpg`,
+        imageUrl: `https://cdn.example.com/${id}.jpg`,
+        image: `https://cdn.example.com/${id}.jpg`,
+        link: 'https://example.com/source',
+        url: 'https://example.com/source',
+      })
+      const records = [
+        entry('first'),
+        null,
+        { ...entry('unsafe'), link: 'http://example.com', url: 'http://example.com' },
+        entry('last'),
+      ]
+      mockFetch((url) =>
+        url.includes('duckduckgo.com/?')
+          ? { ok: true, text: 'vqd="123-456"' }
+          : { ok: true, json: { images_results: records, images: records, results: records } },
+      )
+      const result = await imageSearch('mixed candidates', 2)
+      expect(result.method).toBe(provider)
+      expect(result.images.map((image) => image.title)).toEqual(['first', 'last'])
+    },
+  )
+
   it('parses images + filters copyright hosts', async () => {
     process.env.SERPER_API_KEY = 'test-key'
     mockFetch((url) => {

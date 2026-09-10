@@ -531,21 +531,25 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       if (!range || typeof range.load !== 'function') throw new Error('office_api_unsupported')
       ;(range.load as (properties: string) => void)('text')
       await sync(context, signal)
-      const sampledRange =
-        string(range.text, MAX_POWERPOINT_TEXT).length > 0 &&
-        typeof range.getSubstring === 'function'
-          ? (range.getSubstring as (start: number, length: number) => RuntimeRecord)(0, 1)
+      const text = typeof range.text === 'string' ? range.text : ''
+      if (text.length > MAX_POWERPOINT_TEXT) throw new Error('office_read_failed')
+      // Exclude an implicit trailing paragraph marker, but verify all actual text rather
+      // than accepting the first character as evidence for the whole shape.
+      const contentRange =
+        text.length > 0 && typeof range.getSubstring === 'function'
+          ? (range.getSubstring as (start: number, length: number) => RuntimeRecord)(0, text.length)
           : range
-      const font = sampledRange.font as RuntimeRecord | undefined
+      const font = contentRange.font as RuntimeRecord | undefined
       if (!font || typeof font.load !== 'function') throw new Error('office_api_unsupported')
       ;(font.load as (properties: string) => void)('color,name,size,bold,italic')
       await sync(context, signal)
       return {
-        color: string(font.color),
-        fontFamily: string(font.name),
-        fontSize: finite(font.size),
-        bold: font.bold === true,
-        italic: font.italic === true,
+        color: typeof font.color === 'string' ? string(font.color) : undefined,
+        fontFamily: typeof font.name === 'string' ? string(font.name) : undefined,
+        fontSize:
+          typeof font.size === 'number' && Number.isFinite(font.size) ? font.size : undefined,
+        bold: typeof font.bold === 'boolean' ? font.bold : undefined,
+        italic: typeof font.italic === 'boolean' ? font.italic : undefined,
       }
     })
   }

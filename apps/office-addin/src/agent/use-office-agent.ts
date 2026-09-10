@@ -168,6 +168,8 @@ function toolActivity(name: string, state: 'running' | 'complete' | 'error'): st
     web_search: '网页搜索',
     web_fetch: '读取网页',
     image_search: '图片搜索',
+    insert_web_image: '插入网络图片',
+    'insert-image': '插入图片',
     plan_deck: '规划演示文稿',
     screenshot_slide: '检查幻灯片',
     verify_slides: '验证演示文稿',
@@ -195,6 +197,14 @@ function toolActivity(name: string, state: 'running' | 'complete' | 'error'): st
 
 const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'cancelled',
+  'design_contract_review_required',
+  'design_contract_prototype_required',
+  'design_contract_production_incomplete',
+  'design_contract_verification_failed',
+  'design_contract_invalid_status',
+  'design_contract_review_not_pending',
+  'design_contract_acceptance_mismatch',
+  'design_contract_screenshot_required',
   'image_fetch_unavailable',
   'image_limit',
   'image_mime_unsupported',
@@ -211,6 +221,15 @@ const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'proposal_missing',
   'proposal_stale',
 ])
+
+const IMAGE_FAILURE_MESSAGES: Readonly<Record<string, string>> = {
+  image_fetch_unavailable: '图片暂时无法获取',
+  image_limit: '图片超过大小限制',
+  image_mime_unsupported: '图片格式不受支持',
+  invalid_image: '图片数据无效',
+  invalid_tool_input: '图片插入参数无效',
+  cancelled: '图片操作已取消',
+}
 
 const AUTOMATIC_POWERPOINT_MUTATION_TOOLS = new Set([
   'set_slide_background',
@@ -392,6 +411,21 @@ export function createOfficeAgentSession(dependencies: {
   const toolStartedAt = new Map<string, number>()
   // Canonical observation is authoritative even when a relay execution receipt arrives first.
   const observedTools = new Map<string, 'running' | 'settled'>()
+  const recordedToolFailures = new Set<string>()
+  const recordToolFailure = (
+    callId: string,
+    toolName: string,
+    errorCode: string,
+    durationMs: number,
+  ) => {
+    if (recordedToolFailures.has(callId) || recordedToolFailures.size >= MAX_OBSERVED_TOOL_CALLS)
+      return
+    recordedToolFailures.add(callId)
+    diagnose((diagnostics) => {
+      diagnostics.setTool(toolName)
+      diagnostics.record({ phase: 'tool', errorCode, durationMs: Math.max(0, durationMs) })
+    })
+  }
   const eventId = () => `event-${++nextEventId}`
   const append = (event: Parameters<typeof appendPresentationEvent>[1]) => {
     state = { ...state, timeline: appendPresentationEvent(state.timeline, event) }
@@ -616,6 +650,20 @@ export function createOfficeAgentSession(dependencies: {
       if (!existing || existing.kind !== 'tool' || observedTools.get(activity.callId) !== 'running')
         return
       observedTools.set(activity.callId, 'settled')
+      const imageError =
+        activity.state === 'error' &&
+        (activity.toolName === 'insert_web_image' || activity.toolName === 'insert-image') &&
+        typeof activity.summary === 'string' &&
+        Object.hasOwn(IMAGE_FAILURE_MESSAGES, activity.summary)
+          ? activity.summary
+          : undefined
+      if (imageError)
+        recordToolFailure(
+          activity.callId,
+          activity.toolName,
+          imageError,
+          Date.now() - activity.startedAt,
+        )
       replace(existing.id, (event) =>
         event.kind !== 'tool'
           ? event
@@ -626,9 +674,11 @@ export function createOfficeAgentSession(dependencies: {
                 summary +
                 (activity.resultCount === undefined ? '' : ` · ${activity.resultCount} 条结果`),
               durationMs: Math.max(0, Date.now() - activity.startedAt),
-              output: activity.query
-                ? [activity.query, activity.summary].filter(Boolean).join('\n')
-                : (event.output ?? activity.summary ?? ''),
+              output: imageError
+                ? `${IMAGE_FAILURE_MESSAGES[imageError]}（${imageError}）`
+                : activity.query
+                  ? [activity.query, activity.summary].filter(Boolean).join('\n')
+                  : (event.output ?? activity.summary ?? ''),
               ...(activity.display ? { display: activity.display } : {}),
             },
       )
@@ -714,13 +764,7 @@ export function createOfficeAgentSession(dependencies: {
       publish(observed ? {} : { activity: finishedSummary })
       if (settled.isError) {
         const errorCode = diagnosticToolError(settled.output)
-        diagnose((diagnostics) =>
-          diagnostics.record({
-            phase: 'tool',
-            errorCode,
-            durationMs: Math.max(0, Date.now() - startedAt),
-          }),
-        )
+        recordToolFailure(call.callId, call.toolName, errorCode, Date.now() - startedAt)
       }
       return { output: settled.output, ...(settled.isError ? { isError: true } : {}) }
     } catch {
@@ -738,12 +782,11 @@ export function createOfficeAgentSession(dependencies: {
           : event,
       )
       publish(observed ? {} : { activity: failedSummary })
-      diagnose((diagnostics) =>
-        diagnostics.record({
-          phase: 'tool',
-          errorCode: call.signal.aborted ? 'cancelled' : 'tool_execution_failed',
-          durationMs: Math.max(0, Date.now() - startedAt),
-        }),
+      recordToolFailure(
+        call.callId,
+        call.toolName,
+        call.signal.aborted ? 'cancelled' : 'tool_execution_failed',
+        Date.now() - startedAt,
       )
       if (call.signal.aborted) proposals.newTurn()
       return { output: 'tool_execution_failed', isError: true }
@@ -951,6 +994,7 @@ export function createOfficeAgentSession(dependencies: {
     if (!value || harness.snapshot.busy || state.applying || disposed) return
     sessionEpoch += 1
     observedTools.clear()
+    recordedToolFailures.clear()
     diagnose((diagnostics) => diagnostics.startTrace())
     staleTools.clear()
     runStartedAt = Date.now()
