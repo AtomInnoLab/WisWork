@@ -332,6 +332,42 @@ describe('document-scoped tool session', () => {
     }
   })
 
+  it('allows a bounded host-specific mutation timeout without changing read bounds', async () => {
+    vi.useFakeTimers()
+    const f = fixture({
+      maxCallMs: 10,
+      maxMutationMs: 68_001,
+      executeRead: vi.fn(async () => await new Promise<ToolExecution>(() => undefined)),
+    })
+    try {
+      const outcome = f.session.callTool(f.session.credentials, {
+        id: 'remote-consent',
+        name: writeTool.name,
+        input: {},
+      }) as any
+      const claimed = f.session.mutationAuthority.claimNext()!
+      await vi.advanceTimersByTimeAsync(68_000)
+      f.session.mutationAuthority.settle(claimed.claim, {
+        output: 'applied',
+        summary: 'applied',
+        mutated: true,
+      })
+      await expect(outcome.result).resolves.toMatchObject({ output: 'applied' })
+
+      const read = f.session.callTool(f.session.credentials, {
+        id: 'slow-read',
+        name: readTool.name,
+        input: {},
+      })
+      await vi.advanceTimersByTimeAsync(10)
+      await expect(read).resolves.toMatchObject({ output: 'tool_timeout' })
+    } finally {
+      f.session.close()
+      vi.useRealTimers()
+    }
+    expect(() => fixture({ maxMutationMs: 5 * 60_000 + 1 })).toThrow('invalid_tool_bounds')
+  })
+
   it('binds canonical high-entropy credentials and immutable exact identity', () => {
     const f = fixture()
     expect(Buffer.from(f.session.credentials.sessionId, 'base64url')).toHaveLength(32)

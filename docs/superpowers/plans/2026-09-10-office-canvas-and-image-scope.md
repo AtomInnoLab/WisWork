@@ -32,3 +32,22 @@
 - 全仓 `npm run typecheck`、`npm run lint`、`npm run format:check`、`git diff --check` 均通过。lint 为既有 13 条警告、0 错误。
 - PC Shell 生产构建通过；独立代码审查及字体读取/升版增量复审均无阻塞项。
 - Taskpane 将在提交后使用提交哈希构建生产资源；部署备份和公开 HTTPS 比对结果记录于 PR。
+
+## 追加：远程审批超时后会话失效
+
+目标：远程 Office 人工审批在五分钟许可窗口内不能被普通 30 秒工具执行超时提前终止；审批最终成功、拒绝或超时后必须释放写入门槛。非目标：不延长读取工具、PC 本地已确认写入或整轮请求的既有边界；不把图片下载失败伪装为成功。
+
+架构：文档工具路由继续默认使用 30 秒执行上限，仅增加一个有上限的 mutation 专用配置。Office 代理由于一次远程调用同时包含“用户确认 + Office 执行”，明确选择五分钟；其他宿主仍保持默认值。Relay 协议和 Taskpane 无需变化。
+
+约束：上限不得超过既有 `MAX_CONSENT_MS`；超时仍取消 claim 并释放 pending mutation；不允许未知注册字段或无限等待。
+
+涉及文件：
+
+- `packages/codex-bridge/src/tool-router.ts`：验证并应用可选 mutation 时限。
+- `packages/codex-bridge/tests/tool-router.test.ts`：默认 30 秒保持不变，独立 mutation 时限可配置且越界被拒绝。
+- `apps/shell/src/main/office-codex-proxy.ts`：Office 远程审批选择五分钟时限。
+- `apps/shell/tests/office-codex-proxy.test.ts`：先复现 68 秒后仍应可确认；验证五分钟后仍会超时并清门槛。
+
+验收：68 秒后返回成功 receipt，不出现 `tool_timeout`；五分钟未确认返回 `tool_timeout`；随后读取可执行。定向测试转绿后运行相关 workspace、类型、lint、格式及完整回归。无迁移；回滚该提交恢复原 30 秒行为。
+
+验证：RED 测试在 68 秒后实际得到 `tool_timeout`；GREEN 后得到成功 receipt。Codex bridge 27 项、Office proxy 36 项定向测试通过；独立审查无关键或重要问题，其测试建议已修正。最终全仓 Vitest 7,520 项通过、21 项条件跳过，Office 插件 908 项通过；全仓类型、lint（既有 13 条警告、0 错误）、格式及 diff 检查通过。
