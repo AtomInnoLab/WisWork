@@ -37,7 +37,7 @@ const flushFrames = async () => {
   for (let turn = 0; turn < 4; turn += 1) await Promise.resolve()
 }
 
-async function connectedEnhancedSession() {
+async function connectedEnhancedSession(lifetimeMs = 60_000) {
   const socket = new FakeSocket()
   const session = createOfficeRelaySession({
     createSocket: () => socket,
@@ -82,7 +82,7 @@ async function connectedEnhancedSession() {
         component_version: '0.147.0',
         host: 'office-powerpoint',
         raw_office: false,
-        expires_at: Date.now() + 60_000,
+        expires_at: Date.now() + lifetimeMs,
         policy_generation: 1,
         session_generation: 1,
       },
@@ -93,6 +93,43 @@ async function connectedEnhancedSession() {
 }
 
 describe('Office cloud relay session', () => {
+  it('keeps a multi-step agent request past five minutes and cancels at its own total deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const { session, socket } = await connectedEnhancedSession(40 * 60_000)
+      const response = session.authenticatedFetch('/v1/office/messages', {
+        method: 'POST',
+        body: '{}',
+      })
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'relay.start',
+          session_id: 'session_12345678',
+          request_id: 'request_12345678',
+          status: 200,
+          content_type: 'text/event-stream',
+        }),
+      )
+      await flushFrames()
+      const body = (await response).text()
+      const rejected = expect(body).rejects.toThrow('relay_timeout')
+      await vi.advanceTimersByTimeAsync(360_000)
+      expect(
+        socket.sent.map((value) => JSON.parse(value)).filter((f) => f.type === 'office.cancel'),
+      ).toHaveLength(0)
+      expect(session.snapshot().status).toBe('connected')
+      await vi.advanceTimersByTimeAsync(30 * 60_000 + 10_000 - 360_000)
+      await rejected
+      expect(
+        socket.sent.map((value) => JSON.parse(value)).filter((f) => f.type === 'office.cancel'),
+      ).toHaveLength(1)
+      expect(session.snapshot().status).toBe('connected')
+      session.disconnect()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   const diagnostic: OfficeDiagnosticEvent = {
     event_id: '00000000-0000-4000-8000-000000000001',
     trace_id: '00000000-0000-4000-8000-000000000002',

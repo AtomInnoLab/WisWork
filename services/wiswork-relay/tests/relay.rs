@@ -73,6 +73,15 @@ async fn server_with_all_limits(
     max_global_claims: Option<u32>,
     diagnostic_rate: Option<(u8, Duration)>,
 ) -> String {
+    server_with_request_limits(session_ttls, max_global_claims, diagnostic_rate, None).await
+}
+
+async fn server_with_request_limits(
+    session_ttls: Option<(Duration, Duration)>,
+    max_global_claims: Option<u32>,
+    diagnostic_rate: Option<(u8, Duration)>,
+    request_ttls: Option<(Duration, Duration)>,
+) -> String {
     let auth_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let auth_addr = auth_listener.local_addr().unwrap();
     let auth = axum::Router::new()
@@ -114,6 +123,10 @@ async fn server_with_all_limits(
     if let Some((idle, maximum)) = session_ttls {
         config.session_ttl = idle;
         config.session_max_ttl = maximum;
+    }
+    if let Some((standard, agent)) = request_ttls {
+        config.request_ttl = standard;
+        config.agent_request_ttl = agent;
     }
     if let Some(maximum) = max_global_claims {
         config.max_global_claims = maximum;
@@ -328,6 +341,32 @@ async fn approved_v2_session(
     let pc_ready = recv(&mut pc).await;
     let office_ready = recv(&mut office).await;
     (office, pc, office_ready, pc_ready)
+}
+
+#[tokio::test]
+async fn agent_request_outlives_single_response_budget_but_still_expires() {
+    let url = server_with_request_limits(
+        None,
+        None,
+        None,
+        Some((Duration::from_millis(100), Duration::from_millis(900))),
+    )
+    .await;
+    let (mut office, mut pc, office_ready, pc_ready) = approved_v2_session(&url).await;
+    let sid = &office_ready["session_id"];
+    let cap = &office_ready["capability"];
+    let pc_cap = &pc_ready["capability"];
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":cap,"request_id":"long_agent_request","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["type"], "relay.request");
+    send(&mut pc, json!({"version":2,"type":"pc.start","session_id":sid,"capability":pc_cap,"request_id":"long_agent_request","status":200,"content_type":"text/event-stream"})).await;
+    assert_eq!(recv(&mut office).await["type"], "relay.start");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    send(&mut pc, json!({"version":2,"type":"pc.chunk","session_id":sid,"capability":pc_cap,"request_id":"long_agent_request","sequence":0,"data":"b2s="})).await;
+    assert_eq!(recv(&mut office).await["type"], "relay.chunk");
+    assert_eq!(recv(&mut office).await["code"], "request_timeout");
+    assert_eq!(recv(&mut pc).await["type"], "relay.cancel");
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":cap,"request_id":"next_agent_request","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "next_agent_request");
 }
 
 #[tokio::test]

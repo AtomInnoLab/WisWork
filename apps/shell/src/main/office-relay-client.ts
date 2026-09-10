@@ -15,6 +15,8 @@ const MAX_CHUNK_BYTES = 64 * 1024
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 // Relay owns the 300s deadline; this only handles a lost relay.cancel.
 const REQUEST_TIMEOUT_MS = 305_000
+// Match Relay's extended agent.v1 envelope, with five seconds for relay.cancel.
+const AGENT_REQUEST_TIMEOUT_MS = 30 * 60_000 + 25_000
 const CONNECT_TIMEOUT_MS = 10_000
 // Relay owns the renewable idle TTL. PC keeps only a bounded absolute-lifetime watchdog.
 const SESSION_ABSOLUTE_MAX_MS = 8 * 60 * 60 * 1_000
@@ -318,7 +320,12 @@ export function createOfficeRelayClient(options: {
     if (bodyBytes > MAX_REQUEST_BYTES) return clear('request_too_large', true)
     const controller = new AbortController()
     active = { requestId: frame.request_id, controller, remoteCancelled: false }
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    const timeout = setTimeout(
+      () => controller.abort(),
+      protocolVersion === 2 && frame.capability_name === 'agent.v1'
+        ? AGENT_REQUEST_TIMEOUT_MS
+        : REQUEST_TIMEOUT_MS,
+    )
     try {
       const capabilityName = protocolVersion === 2 ? frame.capability_name : 'agent.v1'
       if (

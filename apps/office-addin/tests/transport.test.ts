@@ -422,10 +422,6 @@ describe('Office Agent transport', () => {
     expect(observe.mock.calls[1]?.[0].summary).toBe('Tool interrupted')
   })
 
-  it('keeps the stream deadline below Relay while allowing long model turns', () => {
-    expect(STREAM_RESPONSE_TIMEOUT_MS).toBe(280_000)
-  })
-
   it('streams through the local PC bridge without provider credentials', async () => {
     const authenticatedFetch = vi.fn().mockResolvedValue(sse([]))
     const cb = callbacks()
@@ -626,6 +622,96 @@ describe('Office Agent transport', () => {
     expect(cancel).toHaveBeenCalledOnce()
     vi.useRealTimers()
   })
+
+  it('does not extend the standard response budget for text progress', async () => {
+    vi.useFakeTimers()
+    try {
+      let source!: ReadableStreamDefaultController<Uint8Array>
+      const cb = callbacks()
+      createPcBridgeAgentTransport({
+        authenticatedFetch: async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                source = controller
+              },
+            }),
+          ),
+      }).stream(searchRequest, cb)
+      await vi.advanceTimersByTimeAsync(200_000)
+      source.enqueue(
+        new TextEncoder().encode(
+          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"progress"}}\n\n',
+        ),
+      )
+      await vi.advanceTimersByTimeAsync(80_000)
+      expect(cb.onDelta).toHaveBeenCalledWith('progress')
+      expect(cb.onError).toHaveBeenCalledWith('transport_timeout')
+      expect(cb.onDone).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['complete', 'idle', 'absolute', 'heartbeat'] as const)(
+    'bounds an Enhanced multi-step turn by progress and total duration: %s',
+    async (ending) => {
+      vi.useFakeTimers()
+      try {
+        let source!: ReadableStreamDefaultController<Uint8Array>
+        const cancel = vi.fn()
+        const cb = callbacks()
+        const observe = vi.fn()
+        // The first request can promote the session after stream() has started.
+        let enhanced: { session_generation: number } | undefined = undefined
+        const transport = createPcBridgeAgentTransport({
+          snapshot: () => ({ enhanced }),
+          authenticatedFetch: async () =>
+            new Response(
+              new ReadableStream({
+                start(controller) {
+                  source = controller
+                },
+                cancel,
+              }),
+            ),
+        })
+        transport.setToolActivityHandler?.(observe)
+        transport.stream(searchRequest, cb)
+        enhanced = { session_generation: 3 }
+        const send = (value: unknown) =>
+          source.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`))
+        if (ending === 'heartbeat') {
+          await vi.advanceTimersByTimeAsync(200_000)
+          source.enqueue(new TextEncoder().encode(': heartbeat\n\n'))
+          send({ type: 'ping' })
+          await vi.advanceTimersByTimeAsync(80_000)
+        } else {
+          const steps = ending === 'absolute' ? 8 : 2
+          for (let index = 0; index < steps; index += 1) {
+            await vi.advanceTimersByTimeAsync(200_000)
+            const extra = { call_id: `call_progress_${index}` }
+            send(activity('running', extra))
+            send(activity('complete', extra))
+            await vi.advanceTimersByTimeAsync(0)
+            expect(cb.onError).not.toHaveBeenCalled()
+          }
+          expect(observe).toHaveBeenCalledTimes(steps * 2)
+          if (ending === 'complete') source.close()
+          else await vi.advanceTimersByTimeAsync(ending === 'idle' ? 280_000 : 200_000)
+        }
+        await vi.advanceTimersByTimeAsync(0)
+        expect(cb.onDone).toHaveBeenCalledOnce()
+        if (ending === 'complete') expect(cb.onError).not.toHaveBeenCalled()
+        else {
+          expect(cb.onError).toHaveBeenCalledWith('transport_timeout')
+          expect(cancel).toHaveBeenCalledOnce()
+        }
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
 
   it('contains a response reader cancellation rejection during timeout cleanup', async () => {
     vi.useFakeTimers()

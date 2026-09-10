@@ -188,6 +188,16 @@ The production build identifier defaults to `GITHUB_SHA` (or the current short G
 CI) and can be set explicitly with a 3–96 character alphanumeric
 `VITE_WISWORK_OFFICE_BUILD_ID`; it is used only for bundle-to-trace correlation.
 
+Enhanced Agent streams span many model and tool steps. They have a 280-second progress timeout
+and a 30-minute absolute request cap; accepted tool activity, tool execution, and nonempty text or
+tool-input deltas renew only the progress timer. Heartbeats do not renew it. Standard responses
+retain their 280-second absolute budget. For v2 `agent.v1`, the Taskpane Relay session, Relay
+service, and PC watchdog use 30 minutes plus 10/20/25 seconds respectively, allowing cancellation
+to propagate. Retrieval and legacy requests retain their existing shorter limits. Session
+authorization expiry and all stream size/count limits still apply independently.
+Deploy the Relay service and updated PC along with the Taskpane for this timeout change; an older
+component still has its original five-minute request limit.
+
 Web tools remain unadvertised because there is no compiled, reviewed retrieval-service
 attestation. Their activation change must add its capability flag and Office v2 composition in the
 same deployment; this build intentionally exposes no no-op Web flag.
