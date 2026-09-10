@@ -540,7 +540,6 @@ const tools = [
               layout: { type: 'string', minLength: 1, maxLength: 100 },
               image_queries: {
                 type: 'array',
-                maxItems: 4,
                 items: { type: 'string', minLength: 1, maxLength: 200 },
               },
               purpose: { type: 'string', minLength: 1, maxLength: 500 },

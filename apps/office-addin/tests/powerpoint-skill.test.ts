@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
+import {
+  extractPresentationDesignContract,
+  PRESENTATION_DESIGN_CONTRACT_SCHEMA,
+} from '@wiswork/agent-core'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import {
   BrowserPowerPointAdapter,
@@ -236,6 +240,26 @@ describe('PowerPoint compatibility skill', () => {
     expect(skill.systemPrompt).toContain('Do not resubmit plan_deck to record a review')
   })
 
+  it('exposes uncapped asset inventory, slide references, and legacy image queries', () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+    })
+    const schema = skill.tools.find((tool) => tool.name === 'plan_deck')!.inputSchema as any
+    const contract = schema.properties.contract.properties
+    const shared = PRESENTATION_DESIGN_CONTRACT_SCHEMA.properties as any
+    expect(contract.assets).toBe(shared.assets)
+    expect(contract.slides).toBe(shared.slides)
+    expect(contract.assets).not.toHaveProperty('maxItems')
+    expect(contract.slides.items.properties.assetIds).not.toHaveProperty('maxItems')
+    expect(schema.properties.pages.items.properties.image_queries).not.toHaveProperty('maxItems')
+    expect(schema.properties.pages.items.properties.image_queries.items).toEqual({
+      type: 'string',
+      minLength: 1,
+      maxLength: 200,
+    })
+  })
+
   it('preserves produced pages and pending review when the unchanged ready plan is resubmitted', async () => {
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: adapter(), proposals })
@@ -306,6 +330,7 @@ describe('PowerPoint compatibility skill', () => {
   })
 
   it('exposes the same plan-before-build workflow as desktop Slides', async () => {
+    const imageQueries = Array.from({ length: 5 }, (_, index) => `onboarding team scene ${index}`)
     const skill = createPowerPointSkill({
       adapter: adapter(),
       proposals: createStructuredProposalController(),
@@ -318,43 +343,46 @@ describe('PowerPoint compatibility skill', () => {
     expect(skill.systemPrompt).toContain('verify_slides after the approved build')
     expect(skill.systemPrompt).toContain('user-visible progress note before every tool batch')
 
-    await expect(
-      skill.executeTool(
-        call('plan_deck', {
-          core_hook: 'New hires reach their first useful result in seven days',
-          style: 'Clear blue training system with one idea per slide',
-          pages: [
-            {
-              title: 'Welcome',
-              type: 'cover',
-              brief: 'Set expectations for the first week',
-              layout: 'hero_statement',
-              purpose: 'Open the story',
-              visual: 'One welcoming team photograph',
-              acceptance: ['Title is dominant', 'Image supports the message'],
-              density: 'low',
-              image_queries: ['new employee onboarding team'],
-            },
-            {
-              title: 'Your first seven days',
-              type: 'content',
-              brief: 'Show the onboarding milestones',
-              layout: 'timeline',
-              purpose: 'Explain the sequence',
-              visual: 'One horizontal milestone timeline',
-              acceptance: ['Milestones scan left to right'],
-              density: 'medium',
-              image_queries: [],
-            },
-          ],
-          prototype_pages: [0, 1],
-        }),
-      ),
-    ).resolves.toMatchObject({
+    const imagePlan = await skill.executeTool(
+      call('plan_deck', {
+        core_hook: 'New hires reach their first useful result in seven days',
+        style: 'Clear blue training system with one idea per slide',
+        pages: [
+          {
+            title: 'Welcome',
+            type: 'cover',
+            brief: 'Set expectations for the first week',
+            layout: 'hero_statement',
+            purpose: 'Open the story',
+            visual: 'One welcoming team photograph',
+            acceptance: ['Title is dominant', 'Image supports the message'],
+            density: 'low',
+            image_queries: imageQueries,
+          },
+          {
+            title: 'Your first seven days',
+            type: 'content',
+            brief: 'Show the onboarding milestones',
+            layout: 'timeline',
+            purpose: 'Explain the sequence',
+            visual: 'One horizontal milestone timeline',
+            acceptance: ['Milestones scan left to right'],
+            density: 'medium',
+            image_queries: [],
+          },
+        ],
+        prototype_pages: [0, 1],
+      }),
+    )
+    expect(imagePlan.isError).not.toBe(true)
+    expect(imagePlan).toMatchObject({
       mutated: false,
       summary: 'Planned 2 slides',
       output: expect.stringContaining('New hires reach their first useful result in seven days'),
     })
+    const contract = extractPresentationDesignContract(JSON.parse(imagePlan.output).designMd)
+    expect(contract?.assets.map((asset) => asset.intent)).toEqual(imageQueries)
+    expect(contract?.slides[0]?.assetIds).toEqual(contract?.assets.map((asset) => asset.id))
     const result = await skill.executeTool(
       call('plan_deck', {
         core_hook: 'One visual system',
