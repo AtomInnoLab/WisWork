@@ -116,6 +116,7 @@ export class ShellCodexRuntime {
   #epoch = 0
   readonly #runtimeInstance = `runtime_${randomBytes(18).toString('base64url')}`
   #officeGeneration = 0
+  readonly #officeStatements = new WeakSet<Readonly<OfficeEnhancedSessionStatement>>()
 
   constructor(options: ShellCodexRuntimeOptions) {
     this.#options = options
@@ -150,7 +151,7 @@ export class ShellCodexRuntime {
     )
       return undefined
     this.#officeGeneration += 1
-    return Object.freeze({
+    const statement = Object.freeze({
       version: 1,
       runtime_mode: 'enhanced',
       runtime_instance: this.#runtimeInstance,
@@ -160,7 +161,40 @@ export class ShellCodexRuntime {
       expires_at: now + 15 * 60_000,
       policy_generation: this.#epoch,
       session_generation: this.#officeGeneration,
-    })
+    } as const)
+    this.#officeStatements.add(statement)
+    return statement
+  }
+
+  isOfficeSessionStatementCurrent(statement: Readonly<OfficeEnhancedSessionStatement>): boolean {
+    return (
+      this.#officeStatements.has(statement) &&
+      !this.#closed &&
+      this.#state === 'ready' &&
+      this.configuredAgentRuntime === 'enhanced' &&
+      statement.runtime_instance === this.#runtimeInstance &&
+      statement.policy_generation === this.#epoch &&
+      this.#options.policy.globalEnabled &&
+      this.#options.policy.hosts[statement.host] &&
+      statement.raw_office === this.#options.policy.rawOfficeEnabled &&
+      statement.expires_at > Date.now()
+    )
+  }
+
+  async renewOfficeSessionStatement(
+    previous: Readonly<OfficeEnhancedSessionStatement>,
+  ): Promise<Readonly<OfficeEnhancedSessionStatement> | undefined> {
+    if (!this.isOfficeSessionStatementCurrent(previous)) return undefined
+    if (
+      !(await this.#options.isSignedIn().catch(() => false)) ||
+      !this.isOfficeSessionStatementCurrent(previous)
+    )
+      return undefined
+    const expires_at = Date.now() + 15 * 60_000
+    if (expires_at <= previous.expires_at) return undefined
+    const renewed = Object.freeze({ ...previous, expires_at })
+    this.#officeStatements.add(renewed)
+    return renewed
   }
 
   initialize(): Promise<void> {

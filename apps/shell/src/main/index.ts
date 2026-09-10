@@ -3002,6 +3002,10 @@ app.whenReady().then(async () => {
             }[host] as 'office-word' | 'office-excel' | 'office-powerpoint'
             return codexRuntime?.createOfficeSessionStatement(enhancedHost)
           },
+          renewEnhancedStatement: async (previous) =>
+            codexRuntime?.renewOfficeSessionStatement(previous),
+          isEnhancedStatementCurrent: (statement) =>
+            codexRuntime?.isOfficeSessionStatementCurrent(statement) === true,
           retrievalProxy: createRetrievalProxy(),
           designDocument: createOfficeDesignDocuments({
             directory: join(app.getPath('userData'), 'office-design-documents'),

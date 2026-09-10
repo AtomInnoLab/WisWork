@@ -32,19 +32,81 @@ function fixture(
       return engine
     }),
   }
+  const isSignedIn = vi.fn(async () => true)
   const runtime = new ShellCodexRuntime({
     activeAgentRuntime: mode,
     policy: rollout,
-    isSignedIn: vi.fn(async () => true),
+    isSignedIn,
     resolveExecutable: vi.fn(async () => '/private/components/codex-app-server'),
     bootstrap,
     diagnosticTasks,
   })
   const owner = { isDestroyed: () => false }
-  return { runtime, owner, engine, bootstrap, diagnosticTasks, crash: () => crash() }
+  return { runtime, owner, engine, bootstrap, diagnosticTasks, isSignedIn, crash: () => crash() }
 }
 
 describe('Shell Codex runtime lifecycle', () => {
+  it('renews a real 15-minute Office statement without changing authority or generation', async () => {
+    vi.useFakeTimers()
+    try {
+      const f = fixture()
+      await f.runtime.initialize()
+      const previous = f.runtime.createOfficeSessionStatement('office-word')!
+      expect(previous.expires_at - Date.now()).toBe(15 * 60_000)
+      // Another document issuing authority must not invalidate this document's lease.
+      f.runtime.createOfficeSessionStatement('office-excel')
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      const renewed = await f.runtime.renewOfficeSessionStatement(previous)
+      expect(renewed).toEqual({ ...previous, expires_at: Date.now() + 15 * 60_000 })
+      expect(Object.isFrozen(renewed)).toBe(true)
+      expect(f.runtime.createOfficeSessionStatement('office-word')?.session_generation).toBe(3)
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+      await expect(f.runtime.renewOfficeSessionStatement(previous)).resolves.toBeUndefined()
+      await expect(f.runtime.renewOfficeSessionStatement(renewed!)).resolves.toBeDefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['logout', 'crash', 'policy', 'host', 'raw', 'signed-out', 'expiry'])(
+    'cannot renew after %s while the async login check is pending',
+    async (change) => {
+      vi.useFakeTimers()
+      try {
+        const rollout = policy()
+        const f = fixture('enhanced', rollout)
+        await f.runtime.initialize()
+        const previous = f.runtime.createOfficeSessionStatement('office-word')!
+        let finish!: (signedIn: boolean) => void
+        f.isSignedIn.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+        const renewal = f.runtime.renewOfficeSessionStatement(previous)
+        if (change === 'logout') await f.runtime.logout()
+        if (change === 'crash') f.crash()
+        if (change === 'policy') Object.assign(rollout, { globalEnabled: false })
+        if (change === 'host') Object.assign(rollout.hosts, { 'office-word': false })
+        if (change === 'raw') Object.assign(rollout, { rawOfficeEnabled: true })
+        if (change === 'expiry') await vi.advanceTimersByTimeAsync(15 * 60_000)
+        finish(change !== 'signed-out')
+        await expect(renewal).resolves.toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it('rejects forged and replacement-runtime statements before awaiting login', async () => {
+    const f = fixture()
+    const replacement = fixture()
+    await Promise.all([f.runtime.initialize(), replacement.runtime.initialize()])
+    const previous = f.runtime.createOfficeSessionStatement('office-word')!
+    f.isSignedIn.mockClear()
+    replacement.isSignedIn.mockClear()
+    await expect(f.runtime.renewOfficeSessionStatement({ ...previous })).resolves.toBeUndefined()
+    await expect(replacement.runtime.renewOfficeSessionStatement(previous)).resolves.toBeUndefined()
+    expect(f.isSignedIn).not.toHaveBeenCalled()
+    expect(replacement.isSignedIn).not.toHaveBeenCalled()
+  })
+
   it('issues restart-bound host-scoped Office statements only while Enhanced is ready', async () => {
     const f = fixture()
     expect(f.runtime.createOfficeSessionStatement('office-word', 1_000)).toBeUndefined()

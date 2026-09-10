@@ -59,6 +59,18 @@ function harness(initial: unknown = null) {
 }
 
 describe('Office relay encrypted binding store', () => {
+  it('stores explicitly paired lease capability without broadening an existing binding', async () => {
+    const { store, writes } = harness({ version: 1, bindings: [wordBinding()], tombstones: [] })
+    await expect(store.listForAccount('account-one')).resolves.toEqual([wordBinding()])
+    expect(writes).toHaveLength(0)
+    const paired = wordBinding({
+      bindingId: 'binding_lease_12345678',
+      capabilities: ['agent.v1', 'enhanced-lease.v1'],
+    })
+    await store.put(paired)
+    expect(await store.listForAccount('account-one')).toEqual([wordBinding(), paired])
+  })
+
   it('creates the production store at office-pairings.enc under Electron userData', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wiswork-office-pairings-'))
     temporaryRoots.push(root)

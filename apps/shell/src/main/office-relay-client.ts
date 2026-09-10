@@ -19,6 +19,9 @@ const REQUEST_TIMEOUT_MS = 305_000
 // Match Relay's extended agent.v1 envelope, with five seconds for relay.cancel.
 const AGENT_REQUEST_TIMEOUT_MS = 30 * 60_000 + 25_000
 const CONNECT_TIMEOUT_MS = 10_000
+const ENHANCED_LEASE_RENEW_BEFORE_MS = 5 * 60_000
+const ENHANCED_LEASE_MS = 15 * 60_000
+const ENHANCED_LEASE_CAPABILITY = 'enhanced-lease.v1'
 // Relay owns the renewable idle TTL. PC keeps only a bounded absolute-lifetime watchdog.
 const SESSION_ABSOLUTE_MAX_MS = 8 * 60 * 60 * 1_000
 const IDENTIFIER = /^[A-Za-z0-9_-]{8,128}$/
@@ -73,6 +76,7 @@ const V2_CAPABILITIES = [
   'image-search.v1',
   'image-fetch.v1',
   'design-document.v1',
+  ENHANCED_LEASE_CAPABILITY,
 ] as const
 const PAIRING_RESUME_FEATURE = 'pairing-resume.v1'
 
@@ -153,6 +157,10 @@ export function createOfficeRelayClient(options: {
   enhancedStatement?: (
     host: OfficePairingRequest['hostLabel'],
   ) => Readonly<OfficeEnhancedSessionStatement> | undefined
+  renewEnhancedStatement?: (
+    previous: Readonly<OfficeEnhancedSessionStatement>,
+  ) => Promise<Readonly<OfficeEnhancedSessionStatement> | undefined>
+  isEnhancedStatementCurrent?: (statement: Readonly<OfficeEnhancedSessionStatement>) => boolean
   retrievalProxy?: OfficeRetrievalProxy
   designDocument?: OfficeDesignDocumentHandler
   retrievalCapabilities?: readonly OfficeWebCapability[]
@@ -170,8 +178,12 @@ export function createOfficeRelayClient(options: {
   let socket: RelaySocket | null = null
   let diagnostic: OfficeRelayStatus = 'disconnected'
   let protocolVersion: 1 | 2 = 1
+  const enhancedLeaseAvailable = Boolean(
+    options.renewEnhancedStatement && options.isEnhancedStatementCurrent,
+  )
   const negotiateCapabilities =
     options.negotiateCapabilities === true ||
+    enhancedLeaseAvailable ||
     Boolean(options.retrievalProxy) ||
     options.persistentPairing === true ||
     typeof options.persistentPairing === 'function'
@@ -183,9 +195,15 @@ export function createOfficeRelayClient(options: {
     'agent.v1',
     ...(options.retrievalProxy
       ? (options.retrievalCapabilities ??
-        V2_CAPABILITIES.filter((name) => name !== 'agent.v1' && name !== 'design-document.v1'))
+        V2_CAPABILITIES.filter(
+          (name) =>
+            name !== 'agent.v1' &&
+            name !== 'design-document.v1' &&
+            name !== ENHANCED_LEASE_CAPABILITY,
+        ))
       : []),
     ...(options.designDocument ? ['design-document.v1'] : []),
+    ...(enhancedLeaseAvailable ? [ENHANCED_LEASE_CAPABILITY] : []),
   ]
   let pending: (OfficePairingRequest & { capabilities?: string[]; features?: string[] }) | null =
     null
@@ -194,6 +212,7 @@ export function createOfficeRelayClient(options: {
     capability: string
     capabilities: string[]
     host: OfficePairingRequest['hostLabel']
+    accountId: string | null
     enhanced?: Readonly<OfficeEnhancedSessionStatement>
   } | null = null
   let active: { requestId: string; controller: AbortController; remoteCancelled: boolean } | null =
@@ -230,6 +249,9 @@ export function createOfficeRelayClient(options: {
   let approvalSentFor: string | null = null
   let pairingTimer: ReturnType<typeof setTimeout> | null = null
   let sessionTimer: ReturnType<typeof setTimeout> | null = null
+  let leaseTimer: ReturnType<typeof setTimeout> | null = null
+  let renewalTimer: ReturnType<typeof setTimeout> | null = null
+  let renewalAttempt: { timer: ReturnType<typeof setTimeout> } | null = null
   let acceptedApprovalSignature: string | null = null
 
   const frameSignature = (frame: Record<string, unknown>): string =>
@@ -251,8 +273,14 @@ export function createOfficeRelayClient(options: {
   const clearTimers = () => {
     if (pairingTimer) clearTimeout(pairingTimer)
     if (sessionTimer) clearTimeout(sessionTimer)
+    if (leaseTimer) clearTimeout(leaseTimer)
+    if (renewalTimer) clearTimeout(renewalTimer)
+    if (renewalAttempt) clearTimeout(renewalAttempt.timer)
     pairingTimer = null
     sessionTimer = null
+    leaseTimer = null
+    renewalTimer = null
+    renewalAttempt = null
   }
   const rememberTerminalRequest = (requestId: string) => {
     if (terminalRequestIds.has(requestId)) return
@@ -306,6 +334,101 @@ export function createOfficeRelayClient(options: {
     setStatus(`disconnected:${reason}` as OfficeRelayStatus)
   }
 
+  const armEnhancedLease = () => {
+    if (leaseTimer) clearTimeout(leaseTimer)
+    if (renewalTimer) clearTimeout(renewalTimer)
+    leaseTimer = null
+    renewalTimer = null
+    const current = session
+    const previous = current?.enhanced
+    if (!current || !previous) return
+    const now = options.now ?? Date.now
+    const remaining = previous.expires_at - now()
+    if (remaining <= 0) return clear('session_expired', true)
+    leaseTimer = setTimeout(() => clear('session_expired', true), remaining)
+    const renew = options.renewEnhancedStatement
+    if (
+      !enhancedLeaseAvailable ||
+      !renew ||
+      !current.accountId ||
+      !current.capabilities.includes(ENHANCED_LEASE_CAPABILITY)
+    )
+      return
+    const owner = generation
+    renewalTimer = setTimeout(
+      () => {
+        renewalTimer = null
+        if (renewalAttempt) return
+        const attempt = {
+          timer: setTimeout(() => {
+            if (renewalAttempt === attempt) renewalAttempt = null
+          }, CONNECT_TIMEOUT_MS),
+        }
+        renewalAttempt = attempt
+        const isCurrent = () =>
+          renewalAttempt === attempt &&
+          owner === generation &&
+          session === current &&
+          current.enhanced === previous &&
+          socket?.readyState === 1 &&
+          previous.expires_at > now()
+        const checkAccount = async () => {
+          const account = await options.getValidAccountStatus()
+          if (!isCurrent()) return false
+          if (!account.loggedIn || account.userId !== current.accountId) {
+            clear('auth_required', true)
+            return false
+          }
+          return true
+        }
+        void (async () => {
+          if (!isCurrent()) return
+          if (!(await checkAccount()) || !isCurrent()) return
+          const renewed = await renew(previous)
+          if (!isCurrent()) return
+          if (!(await checkAccount()) || !isCurrent()) return
+          if (!renewed) return clear('enhanced_authority_unavailable', true)
+          if (
+            !exact(renewed, Object.keys(previous)) ||
+            Object.keys(previous).some(
+              (key) =>
+                key !== 'expires_at' &&
+                renewed[key as keyof OfficeEnhancedSessionStatement] !==
+                  previous[key as keyof OfficeEnhancedSessionStatement],
+            ) ||
+            !Number.isSafeInteger(renewed.expires_at) ||
+            renewed.expires_at <= previous.expires_at ||
+            renewed.expires_at <= now() ||
+            renewed.expires_at > now() + ENHANCED_LEASE_MS
+          )
+            return clear('protocol_violation', true)
+          // The last account await may outlive a runtime crash or policy revocation.
+          if (options.isEnhancedStatementCurrent?.(renewed) !== true)
+            return clear('enhanced_authority_unavailable', true)
+          current.enhanced = renewed
+          send({
+            version: 2,
+            type: 'pc.session_state',
+            session_id: current.sessionId,
+            capability: current.capability,
+            generation: renewed.session_generation,
+            enhanced: renewed,
+          })
+          armEnhancedLease()
+        })()
+          .catch(() => {
+            // A failed or stalled renewal never moves the existing expiry watchdog.
+          })
+          .finally(() => {
+            clearTimeout(attempt.timer)
+            if (renewalAttempt === attempt) renewalAttempt = null
+          })
+      },
+      // A buggy short extension must not cause a tight renewal loop.
+      Math.max(60_000, remaining - ENHANCED_LEASE_RENEW_BEFORE_MS),
+    )
+  }
+
   const promoteEnhancedSession = (): void => {
     if (!session || session.enhanced || protocolVersion !== 2) return
     const enhanced = options.enhancedStatement?.(session.host)
@@ -319,6 +442,7 @@ export function createOfficeRelayClient(options: {
       generation: enhanced.session_generation,
       enhanced,
     })
+    armEnhancedLease()
   }
 
   const runRequest = async (frame: Record<string, unknown>, owner: number) => {
@@ -392,6 +516,7 @@ export function createOfficeRelayClient(options: {
       const capabilityName = protocolVersion === 2 ? frame.capability_name : 'agent.v1'
       if (
         typeof capabilityName !== 'string' ||
+        capabilityName === ENHANCED_LEASE_CAPABILITY ||
         !session.capabilities.includes(capabilityName) ||
         (capabilityName === 'design-document.v1'
           ? !options.designDocument
@@ -751,6 +876,7 @@ export function createOfficeRelayClient(options: {
           (value, index, values) =>
             typeof value === 'string' &&
             V2_CAPABILITIES.includes(value as (typeof V2_CAPABILITIES)[number]) &&
+            offeredCapabilities.includes(value) &&
             values.indexOf(value) === index,
         )
           ? (typed.capabilities as string[])
@@ -856,6 +982,7 @@ export function createOfficeRelayClient(options: {
             ? [...resumeBinding!.capabilities]
             : (approvedPending?.capabilities ?? ['agent.v1']),
           host,
+          accountId: resumed ? resumeBinding!.accountId : approvedAccountId,
           ...(enhanced ? { enhanced } : {}),
         }
         if (protocolVersion === 2) {
@@ -875,6 +1002,7 @@ export function createOfficeRelayClient(options: {
         resumeBinding = null
         sessionTimer = setTimeout(() => clear('session_expired', true), SESSION_ABSOLUTE_MAX_MS)
         setStatus('paired')
+        armEnhancedLease()
       }
       if (pairingTimer) clearTimeout(pairingTimer)
       pairingTimer = null

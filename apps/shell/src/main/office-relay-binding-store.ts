@@ -15,6 +15,7 @@ const CAPABILITIES = new Set([
   'image-search.v1',
   'image-fetch.v1',
   'design-document.v1',
+  'enhanced-lease.v1',
 ])
 const SECURE_LINUX_BACKENDS = new Set(['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'])
 
