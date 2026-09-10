@@ -90,7 +90,13 @@ export type StructuredProposalAuditEvent =
       verificationBinding?: { callId: string; fingerprint: string; targets: string[] }
       powerPointMutation?: { indexes: number[]; scaffold: boolean }
     }
-  | { kind: 'settled'; id: string; status: ProposalDecision['status']; error?: string }
+  | {
+      kind: 'settled'
+      id: string
+      status: ProposalDecision['status']
+      error?: string
+      safeCode?: 'office_write_pending'
+    }
   | { kind: 'quarantined'; generation: number }
   | { kind: 'quarantine_cleared'; generation: number }
 

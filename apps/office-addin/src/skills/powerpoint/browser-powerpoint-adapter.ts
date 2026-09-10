@@ -6,6 +6,7 @@ import {
 } from './powerpoint-package.js'
 import { readUntilConverged } from '../shared/office-write-transaction.js'
 import JSZip from 'jszip'
+import { OFFICE_SCREENSHOT_SOURCE_BYTES, officeScreenshotBytes } from '@wiswork/agent-core'
 
 export const MAX_POWERPOINT_SHAPES = 1_000
 export const MAX_POWERPOINT_TEXT = 12_000
@@ -899,6 +900,10 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           )(options)
           await sync(context, signal)
           if (typeof image.value !== 'string') throw new Error('office_read_failed')
+          officeScreenshotBytes(
+            { base64: image.value, mime: 'image/png' },
+            OFFICE_SCREENSHOT_SOURCE_BYTES,
+          )
           return { base64: image.value, mime: 'image/png' }
         })
       } catch (error) {

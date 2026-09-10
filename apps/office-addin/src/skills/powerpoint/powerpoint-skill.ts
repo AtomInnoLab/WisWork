@@ -1392,18 +1392,21 @@ export function createPowerPointSkill(options: {
   const appliedUnverifiedDesignSlides = new Set<number>()
   const pendingDesignReviews = new Set<number>()
   const repairRequiredDesignReviews = new Set<number>()
+  const failedScreenshotSlides = new Set<number>()
   const reviewRecovery = () => ({
-    nextTool: [...pendingDesignReviews].some((index) => dirtySlideIndexes.has(index))
-      ? 'screenshot_slide'
-      : repairRequiredDesignReviews.size
-        ? 'list_slide_shapes'
-        : pendingDesignReviews.size
-          ? 'review_slide_screenshot'
-          : !activeDesignContract || activeDesignContract.status === 'draft'
-            ? 'plan_deck'
-            : builtDesignSlides.size < activeDesignContract.slides.length
-              ? 'get_presentation_state'
-              : 'verify_slides',
+    nextTool: failedScreenshotSlides.size
+      ? 'list_slide_shapes'
+      : [...pendingDesignReviews].some((index) => dirtySlideIndexes.has(index))
+        ? 'screenshot_slide'
+        : repairRequiredDesignReviews.size
+          ? 'list_slide_shapes'
+          : pendingDesignReviews.size
+            ? 'review_slide_screenshot'
+            : !activeDesignContract || activeDesignContract.status === 'draft'
+              ? 'plan_deck'
+              : builtDesignSlides.size < activeDesignContract.slides.length
+                ? 'get_presentation_state'
+                : 'verify_slides',
     pendingReviews: [...pendingDesignReviews]
       .sort((a, b) => a - b)
       .map((index) => ({
@@ -1412,14 +1415,20 @@ export function createPowerPointSkill(options: {
           activeDesignContract?.slides[index]?.acceptance.map((rule) => rule.id) ?? [],
         needsScreenshot: dirtySlideIndexes.has(index),
         needsRepair: repairRequiredDesignReviews.has(index),
+        ...(failedScreenshotSlides.has(index) ? { screenshotUnavailable: true } : {}),
       })),
-    instruction: pendingDesignReviews.size
-      ? 'Inspect each current screenshot, then call review_slide_screenshot with its acceptance_ids and the actual result. Repair failed pages and screenshot again. Do not resubmit plan_deck to record a review.'
-      : !activeDesignContract || activeDesignContract.status === 'draft'
-        ? 'Submit the complete validated plan with draft or ready. Producing and verified are host-owned states.'
-        : builtDesignSlides.size < activeDesignContract.slides.length
-          ? 'Read the current presentation and continue the remaining production under this contract. Do not resubmit plan_deck to record progress.'
-          : 'Call verify_slides and resolve remaining issues before reporting completion.',
+    ...(failedScreenshotSlides.size
+      ? { failedScreenshotSlideIndexes: [...failedScreenshotSlides].sort((a, b) => a - b) }
+      : {}),
+    instruction: failedScreenshotSlides.size
+      ? 'The screenshot is unavailable for visual inspection. Inspect list_slide_shapes and read_slide_text on the affected page. Existing built or pending pages remain writable: repair the image or layout on that same page, then retry screenshot_slide and review its real image. Do not repeat an unchanged failing screenshot or claim that all writes are blocked. If the native host still cannot render, report that page as blocked; final verification remains required.'
+      : pendingDesignReviews.size
+        ? 'Inspect each current screenshot, then call review_slide_screenshot with its acceptance_ids and the actual result. Repair failed pages and screenshot again. Do not resubmit plan_deck to record a review.'
+        : !activeDesignContract || activeDesignContract.status === 'draft'
+          ? 'Submit the complete validated plan with draft or ready. Producing and verified are host-owned states.'
+          : builtDesignSlides.size < activeDesignContract.slides.length
+            ? 'Read the current presentation and continue the remaining production under this contract. Do not resubmit plan_deck to record progress.'
+            : 'Call verify_slides and resolve remaining issues before reporting completion.',
   })
   const proposalDesignSlides = new Map<string, { indexes: number[]; scaffold: boolean }>()
   const mutationSlideIndexes = (call: { name: string; input: Record<string, unknown> }) => {
@@ -1473,10 +1482,11 @@ export function createPowerPointSkill(options: {
       activeDesignContract = { ...activeDesignContract, status: 'producing' }
     for (const index of indexes) {
       if (!scaffold) {
+        appliedUnverifiedDesignSlides.delete(index)
         if (confirmed) {
           builtDesignSlides.add(index)
-          appliedUnverifiedDesignSlides.delete(index)
           repairRequiredDesignReviews.delete(index)
+          failedScreenshotSlides.delete(index)
         }
         pendingDesignReviews.add(index)
       }
@@ -1529,8 +1539,18 @@ export function createPowerPointSkill(options: {
         // Verification can fail after Office has applied some or all operations. Keep the
         // page unbuilt until a fresh screenshot review confirms an applied-unverified write.
         recordDesignMutation(mutation.indexes, mutation.scaffold, false)
-        if (event.status === 'applied_unverified' && !mutation.scaffold)
-          for (const index of mutation.indexes) appliedUnverifiedDesignSlides.add(index)
+        if (
+          event.status === 'applied_unverified' &&
+          event.safeCode !== 'office_write_pending' &&
+          !mutation.scaffold
+        )
+          for (const index of mutation.indexes) {
+            appliedUnverifiedDesignSlides.add(index)
+            // A known applied repair still needs its new screenshot. A pending or
+            // failed write cannot stand in for a repair of the rejected image.
+            repairRequiredDesignReviews.delete(index)
+            failedScreenshotSlides.delete(index)
+          }
       }
     }
     if (!presentation) return
@@ -1648,6 +1668,7 @@ export function createPowerPointSkill(options: {
       if (!context.mutated) return undefined
       if (unknownMutationPages)
         return '[System correction] Read the presentation state, then screenshot every slide affected by the master change.'
+      if (failedScreenshotSlides.size) return `[System correction] ${boundedJson(reviewRecovery())}`
       if (dirtySlideIndexes.size)
         return `[System correction] Continue the WisWork Slides quality loop now: call screenshot_slide for every created or changed slide (${[...dirtySlideIndexes].map((index) => index + 1).join(', ')}), inspect each native image, repair concrete defects, and screenshot each repaired slide again before finishing.`
       if (pendingDesignReviews.size) return `[System correction] ${boundedJson(reviewRecovery())}`
@@ -1736,6 +1757,7 @@ export function createPowerPointSkill(options: {
             appliedUnverifiedDesignSlides.clear()
             pendingDesignReviews.clear()
             repairRequiredDesignReviews.clear()
+            failedScreenshotSlides.clear()
             proposalDesignSlides.clear()
           }
           return {
@@ -1841,7 +1863,7 @@ export function createPowerPointSkill(options: {
             : result
           assertNotCancelled(signal)
           if (capturedMutation !== mutationRevision || capturedContract !== activeDesignContract)
-            return failure(call.name, 'office_screenshot_unavailable')
+            throw new Error('office_screenshot_unavailable')
           const output = boundedJson({
             mime: modelImage.mime,
             bytes: base64Bytes(modelImage.base64),
@@ -1867,6 +1889,7 @@ export function createPowerPointSkill(options: {
           if (options.prepareScreenshot) encodeOfficeScreenshotResult(output, modelContent)
           screenshotRevision = mutationRevision
           dirtySlideIndexes.delete(input.slide_index)
+          failedScreenshotSlides.delete(input.slide_index)
           return {
             output,
             modelContent,
@@ -1898,11 +1921,11 @@ export function createPowerPointSkill(options: {
             supplied.some((id, index) => id !== expected[index])
           )
             return failure(call.name, 'design_contract_acceptance_mismatch')
-          if (
+          const alreadyReviewed =
             !pendingDesignReviews.has(input.slide_index) &&
             builtDesignSlides.has(input.slide_index) &&
             !dirtySlideIndexes.has(input.slide_index)
-          )
+          if (alreadyReviewed && call.input.passed === true)
             return {
               output: boundedJson({
                 status: 'already_reviewed',
@@ -1912,7 +1935,7 @@ export function createPowerPointSkill(options: {
               mutated: false,
               summary: `PowerPoint slide already reviewed · DESIGN r${activeDesignContract.revision}`,
             }
-          if (!pendingDesignReviews.has(input.slide_index))
+          if (!pendingDesignReviews.has(input.slide_index) && !alreadyReviewed)
             return failure(call.name, 'design_contract_review_not_pending')
           if (dirtySlideIndexes.has(input.slide_index))
             return failure(call.name, 'design_contract_screenshot_required')
@@ -1920,7 +1943,11 @@ export function createPowerPointSkill(options: {
             const issues = Array.isArray(call.input.issues)
               ? call.input.issues.map(String)
               : ['Repair and re-screenshot this slide']
+            pendingDesignReviews.add(input.slide_index)
             repairRequiredDesignReviews.add(input.slide_index)
+            appliedUnverifiedDesignSlides.delete(input.slide_index)
+            if (activeDesignContract.status === 'verified')
+              activeDesignContract = { ...activeDesignContract, status: 'producing' }
             return {
               output: boundedJson({
                 status: 'needs_repair',
@@ -1951,8 +1978,14 @@ export function createPowerPointSkill(options: {
               summary: `PowerPoint slide still needs repair · DESIGN r${activeDesignContract.revision}`,
             }
           pendingDesignReviews.delete(input.slide_index)
-          if (appliedUnverifiedDesignSlides.delete(input.slide_index))
+          if (appliedUnverifiedDesignSlides.delete(input.slide_index)) {
             builtDesignSlides.add(input.slide_index)
+            if (activeDesignContract.status === 'ready')
+              activeDesignContract = transitionPresentationDesignContract(
+                activeDesignContract,
+                'producing',
+              )
+          }
           return {
             output: boundedJson({
               status: 'passed',
@@ -2709,6 +2742,31 @@ export function createPowerPointSkill(options: {
         return failure(call.name, 'invalid_tool_input')
       } catch (error) {
         const code = errorCode(error, ['edit_slide_text', 'duplicate_slide'].includes(call.name))
+        if (
+          call.name === 'screenshot_slide' &&
+          ['office_read_failed', 'office_screenshot_unavailable'].includes(code)
+        ) {
+          const index = Number(call.input.slide_index)
+          failedScreenshotSlides.add(index)
+          dirtySlideIndexes.add(index)
+          if (builtDesignSlides.has(index) || pendingDesignReviews.has(index)) {
+            pendingDesignReviews.add(index)
+            if (activeDesignContract?.status === 'verified')
+              activeDesignContract = { ...activeDesignContract, status: 'producing' }
+          }
+          return failure(
+            call.name,
+            boundedJson({
+              error: 'office_read_failed',
+              reason: 'office_screenshot_unavailable',
+              ...reviewRecovery(),
+              slide_index: index,
+              repairAllowed: designProductionError([index], false) === undefined,
+              visualAvailableToModel: false,
+            }),
+            error,
+          )
+        }
         return failure(call.name, code, error)
       }
     },
