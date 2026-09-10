@@ -20,6 +20,14 @@ export {
   suspendToolExecution,
 } from './types'
 export { composeSkills } from './skill'
+export {
+  decodeOfficeScreenshotResult,
+  encodeOfficeScreenshotResult,
+  officeScreenshotBytes,
+  OFFICE_SCREENSHOT_PREVIEW_BYTES,
+  OFFICE_SCREENSHOT_SOURCE_BYTES,
+  OFFICE_SCREENSHOT_WIRE_BYTES,
+} from './office-tool-image'
 export type {
   AgentSkill,
   FinalResponseReviewContext,

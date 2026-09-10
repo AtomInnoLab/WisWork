@@ -137,6 +137,15 @@ describe('document-scoped tool session', () => {
       expect(compiledDocumentTool('office-powerpoint', name)?.[0]).toBe(mutability)
   })
 
+  it('compiles PowerPoint screenshot review as a bounded read without raw Office authority', () => {
+    expect(compiledDocumentTool('office-powerpoint', 'review_slide_screenshot')).toEqual([
+      'read',
+      'bounded-render-facts',
+    ])
+    expect(compiledDocumentTool('office-word', 'review_slide_screenshot')).toBeUndefined()
+    expect(compiledDocumentTool('office-excel', 'review_slide_screenshot')).toBeUndefined()
+  })
+
   it('separates bounded Office operations from elevated raw Office proposals', () => {
     const bounded = [
       ['office-word', 'execute_office_js'],

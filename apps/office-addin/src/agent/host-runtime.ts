@@ -48,6 +48,7 @@ import {
   type StructuredProposalController,
 } from './proposal-controller.js'
 import { composeOfficeSkills } from './skill-registry.js'
+import { prepareOfficeScreenshotPreview } from './office-screenshot-preview.js'
 
 export interface OfficeHostRuntime {
   skill: AgentSkill
@@ -143,6 +144,7 @@ export function createOfficeHostRuntime(
         vfs,
         nativeMasterEditingSupported: supportsNativePowerPointMasterEditing(),
         platform: options.platform ?? currentOfficePlatform(),
+        prepareScreenshot: prepareOfficeScreenshotPreview,
         verificationAuthority: presentationFlags.verifiedCompletion
           ? createBrowserPowerPointVerificationAuthority(powerPointAdapter!)
           : undefined,

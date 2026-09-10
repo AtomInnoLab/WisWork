@@ -1,7 +1,8 @@
 import { imageSearch, wisUsageWebSearch } from '@wiswork/ai-search'
+import type { LookupAddress } from 'node:dns'
 import { lookup } from 'node:dns/promises'
 import { request as httpsRequest } from 'node:https'
-import type { LookupFunction } from 'node:net'
+import type { LookupFunction, TcpNetConnectOpts } from 'node:net'
 const MAX_RESPONSE_BYTES = 512 * 1024
 const MAX_QUERY_CHARS = 4_096
 const MAX_FETCH_CONTENT_CHARS = 256 * 1024
@@ -54,14 +55,22 @@ export async function collectBoundedImageBytes(
   return bytes
 }
 
-export function createPinnedLookup(selected: { address: string; family: number }): LookupFunction {
+export function createPinnedLookup(
+  selected: LookupAddress | readonly LookupAddress[],
+): LookupFunction {
+  const addresses = ('address' in selected ? [selected] : selected).map(({ address, family }) => ({
+    address,
+    family,
+  }))
+  const first = addresses[0]
+  if (!first) throw new Error('retrieval_upstream_error')
   return ((_hostname, options, callback) => {
-    if (typeof options === 'object' && options.all) callback(null, [selected])
-    else callback(null, selected.address, selected.family)
+    if (typeof options === 'object' && options.all) callback(null, addresses)
+    else callback(null, first.address, first.family)
   }) as LookupFunction
 }
 
-type LookupAddresses = (hostname: string) => Promise<readonly { address: string; family: number }[]>
+type LookupAddresses = (hostname: string) => Promise<readonly LookupAddress[]>
 
 export function resolvePublicImageRedirect(
   currentUrl: string,
@@ -104,7 +113,6 @@ async function downloadPublicImage(
   if (signal?.aborted) throw new Error('retrieval_upstream_error')
   if (!addresses.length || addresses.some((entry) => unsafeIpLiteral(entry.address)))
     throw new Error('retrieval_upstream_error')
-  const selected = addresses[0]!
   return new Promise((resolve, reject) => {
     let settled = false
     const fail = (
@@ -117,12 +125,17 @@ async function downloadPublicImage(
       settled = true
       reject(new Error(code))
     }
+    // HTTPS forwards socket options that its RequestOptions type does not declare.
+    const connectionOptions: Pick<TcpNetConnectOpts, 'autoSelectFamily'> = {
+      autoSelectFamily: true,
+    }
     const request = httpsRequest(
       parsed,
       {
         method: 'GET',
         agent: false,
-        lookup: createPinnedLookup(selected),
+        lookup: createPinnedLookup(addresses),
+        ...connectionOptions,
         headers: {
           Accept: 'image/png,image/jpeg',
           'User-Agent':

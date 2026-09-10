@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
 import {
   createToolExecutionSuspensionAuthority,
+  decodeOfficeScreenshotResult,
+  officeScreenshotBytes,
+  OFFICE_SCREENSHOT_PREVIEW_BYTES,
   type AgentToolDef,
   type AgentToolCall,
   type ToolExecution,
@@ -451,6 +454,56 @@ export function createOfficeCodexProxy(options: {
         throw error
       }
       telemetry('dispatch', result.isError ? 'failed' : 'succeeded')
+      if (call.name === 'screenshot_slide' && !result.isError) {
+        if (signal?.aborted || request.signal.aborted)
+          return {
+            output: 'tool_cancelled',
+            isError: true,
+            summary: 'Tool cancelled',
+            mutated: false,
+          }
+        try {
+          const screenshot = decodeOfficeScreenshotResult(result.output)
+          if (!options.prepareImageHandoff) throw new Error('office_screenshot_unavailable')
+          const image = screenshot.modelContent[0]!.image
+          const bytes = officeScreenshotBytes(image, OFFICE_SCREENSHOT_PREVIEW_BYTES)
+          const verified = await options.prepareImageHandoff({
+            bytes,
+            mime: image.mime as 'image/png' | 'image/jpeg',
+          })
+          if (signal?.aborted || request.signal.aborted)
+            return {
+              output: 'tool_cancelled',
+              isError: true,
+              summary: 'Tool cancelled',
+              mutated: false,
+            }
+          if (
+            verified.mime !== image.mime ||
+            !Buffer.from(bytes).equals(Buffer.from(verified.bytes))
+          )
+            throw new Error('office_screenshot_unavailable')
+          screenshot.output = JSON.stringify({
+            ...JSON.parse(screenshot.output),
+            visualAvailableToModel: true,
+          })
+          telemetry('verify', 'verified')
+          return {
+            ...screenshot,
+            isError: false,
+            summary: 'Office screenshot delivered',
+            mutated: false,
+          }
+        } catch {
+          telemetry('verify', 'failed')
+          return {
+            output: 'office_screenshot_unavailable',
+            isError: true,
+            summary: 'Office screenshot unavailable',
+            mutated: false,
+          }
+        }
+      }
       telemetry('verify', result.isError ? 'failed' : mutation ? 'applied_unverified' : 'verified')
       return {
         output: result.output,

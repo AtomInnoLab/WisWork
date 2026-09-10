@@ -1,5 +1,6 @@
 import {
   suspendToolExecution,
+  encodeOfficeScreenshotResult,
   type AgentSkill,
   type ToolExecution,
   type ToolExecutionOutcome,
@@ -245,6 +246,8 @@ const AUTOMATIC_POWERPOINT_MUTATION_TOOLS = new Set([
 ])
 
 function diagnosticToolError(output: string): string {
+  if (output === 'raw_office_program_invalid') return 'invalid_tool_input'
+  if (output === 'office_screenshot_unavailable') return 'office_read_failed'
   const safe = (value: string) =>
     DIAGNOSTIC_TOOL_ERRORS.has(value) || /^office_recovery_failed:word_[a-z_]+$/.test(value)
   if (safe(output)) return output
@@ -417,13 +420,19 @@ export function createOfficeAgentSession(dependencies: {
     toolName: string,
     errorCode: string,
     durationMs: number,
+    error?: unknown,
   ) => {
     if (recordedToolFailures.has(callId) || recordedToolFailures.size >= MAX_OBSERVED_TOOL_CALLS)
       return
     recordedToolFailures.add(callId)
     diagnose((diagnostics) => {
       diagnostics.setTool(toolName)
-      diagnostics.record({ phase: 'tool', errorCode, durationMs: Math.max(0, durationMs) })
+      diagnostics.record({
+        phase: 'tool',
+        errorCode,
+        durationMs: Math.max(0, durationMs),
+        ...(error === undefined ? {} : { error }),
+      })
     })
   }
   const eventId = () => `event-${++nextEventId}`
@@ -731,7 +740,7 @@ export function createOfficeAgentSession(dependencies: {
         }),
         call.signal,
       )
-      const settled =
+      let settled =
         'kind' in outcome && outcome.kind === 'tool-execution-suspension'
           ? await Promise.race([
               outcome.result,
@@ -746,6 +755,14 @@ export function createOfficeAgentSession(dependencies: {
               }),
             ])
           : outcome
+      let screenshotOutput: string | undefined
+      if (call.toolName === 'screenshot_slide' && !settled.isError) {
+        try {
+          screenshotOutput = encodeOfficeScreenshotResult(settled.output, settled.modelContent)
+        } catch {
+          settled = { ...settled, output: 'office_screenshot_unavailable', isError: true }
+        }
+      }
       const finishedSummary = toolActivity(call.toolName, settled.isError ? 'error' : 'complete')
       if (!current() || call.signal.aborted) return { output: 'tool_cancelled', isError: true }
       const observed = observedTools.has(call.callId)
@@ -764,9 +781,18 @@ export function createOfficeAgentSession(dependencies: {
       publish(observed ? {} : { activity: finishedSummary })
       if (settled.isError) {
         const errorCode = diagnosticToolError(settled.output)
-        recordToolFailure(call.callId, call.toolName, errorCode, Date.now() - startedAt)
+        recordToolFailure(
+          call.callId,
+          call.toolName,
+          errorCode,
+          Date.now() - startedAt,
+          settled.diagnosticError,
+        )
       }
-      return { output: settled.output, ...(settled.isError ? { isError: true } : {}) }
+      return {
+        output: screenshotOutput ?? settled.output,
+        ...(settled.isError ? { isError: true } : {}),
+      }
     } catch {
       if (!current()) return { output: 'tool_cancelled', isError: true }
       const failedSummary = toolActivity(call.toolName, 'error')

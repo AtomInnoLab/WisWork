@@ -146,6 +146,7 @@ const CATALOG = Object.freeze({
     image_search: ['read', 'semantic-read'],
     inspect_slide_masters: ['read', 'semantic-read'],
     screenshot_slide: ['read', 'bounded-render-facts'],
+    review_slide_screenshot: ['read', 'bounded-render-facts'],
     list_slide_shapes: ['read', 'semantic-read'],
     read_slide_text: ['read', 'semantic-read'],
     verify_slides: ['read', 'bounded-render-facts'],

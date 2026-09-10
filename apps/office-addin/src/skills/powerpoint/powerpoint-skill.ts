@@ -1,4 +1,5 @@
 import {
+  encodeOfficeScreenshotResult,
   formatPresentationDesignReadinessFailure,
   parsePresentationDesignContract,
   PRESENTATION_DESIGN_CONTRACT_SCHEMA,
@@ -7,6 +8,7 @@ import {
   transitionPresentationDesignContract,
   validatePresentationDesignReadiness,
   type AgentSkill,
+  type AgentImage,
   type PresentationDesignContract,
   type ToolExecution,
 } from '@wiswork/agent-core'
@@ -718,6 +720,8 @@ function errorCode(error: unknown, write = false): string {
   const code = error instanceof Error ? error.message : ''
   if (['invalid_tool_input', 'office_api_unsupported', 'cancelled'].includes(code)) return code
   if (code === 'office_verify_failed') return code
+  if (code === 'office_screenshot_unavailable') return code
+  if (code === 'tool_cancelled') return 'cancelled'
   return write ? 'office_write_failed' : 'office_read_failed'
 }
 function validPng(value: unknown): value is string {
@@ -1360,6 +1364,7 @@ export function createPowerPointSkill(options: {
   nativeMasterEditingSupported?: boolean
   verificationAuthority?: OfficePowerPointVerificationAuthority
   visualReviewer?: OfficePowerPointVisualReviewer
+  prepareScreenshot?: (image: AgentImage, signal?: AbortSignal) => Promise<AgentImage>
   presentationFlags?: PresentationVerificationFlags
   presentationTelemetry?: (event: PresentationTelemetryEvent) => void
 }): AgentSkill {
@@ -1765,34 +1770,46 @@ export function createPowerPointSkill(options: {
           return failure(call.name, 'office_api_unsupported')
         if (call.name === 'screenshot_slide') {
           const input = slideInput(call.input)
+          const capturedMutation = mutationRevision
+          const capturedContract = activeDesignContract
           const result = await options.adapter.screenshotSlide(input.slide_index, signal)
           assertNotCancelled(signal)
           if (result.mime !== 'image/png' || !validPng(result.base64))
             throw new Error('office_read_failed')
+          const modelImage = options.prepareScreenshot
+            ? await options.prepareScreenshot(result, signal)
+            : result
+          assertNotCancelled(signal)
+          if (capturedMutation !== mutationRevision || capturedContract !== activeDesignContract)
+            return failure(call.name, 'office_screenshot_unavailable')
+          const output = boundedJson({
+            mime: modelImage.mime,
+            bytes: base64Bytes(modelImage.base64),
+            fingerprint: fingerprint(modelImage.base64),
+            visualAvailableToModel: true,
+            ...(activeDesignContractIsModern && activeDesignContract
+              ? {
+                  designRevision: activeDesignContract.revision,
+                  designStatus: activeDesignContract.status,
+                  acceptanceIds:
+                    activeDesignContract.slides[input.slide_index]?.acceptance.map(
+                      (rule) => rule.id,
+                    ) ?? [],
+                  designMd: visibleDesignDocument(activeDesignContract),
+                  nextTool: pendingDesignReviews.has(input.slide_index)
+                    ? 'review_slide_screenshot'
+                    : 'verify_slides',
+                }
+              : {}),
+          })
+          const modelContent = [{ type: 'image' as const, image: modelImage }]
+          // Production preparation must fit the actual Relay envelope before clearing the gate.
+          if (options.prepareScreenshot) encodeOfficeScreenshotResult(output, modelContent)
           screenshotRevision = mutationRevision
           dirtySlideIndexes.delete(input.slide_index)
           return {
-            output: boundedJson({
-              mime: result.mime,
-              bytes: base64Bytes(result.base64),
-              fingerprint: fingerprint(result.base64),
-              visualAvailableToModel: true,
-              ...(activeDesignContractIsModern && activeDesignContract
-                ? {
-                    designRevision: activeDesignContract.revision,
-                    designStatus: activeDesignContract.status,
-                    acceptanceIds:
-                      activeDesignContract.slides[input.slide_index]?.acceptance.map(
-                        (rule) => rule.id,
-                      ) ?? [],
-                    designMd: visibleDesignDocument(activeDesignContract),
-                    nextTool: pendingDesignReviews.has(input.slide_index)
-                      ? 'review_slide_screenshot'
-                      : 'verify_slides',
-                  }
-                : {}),
-            }),
-            modelContent: [{ type: 'image', image: { mime: result.mime, base64: result.base64 } }],
+            output,
+            modelContent,
             display: {
               kind: 'images',
               items: [{ url: `data:${result.mime};base64,${result.base64}` }],
@@ -2548,7 +2565,7 @@ export function createPowerPointSkill(options: {
         return failure(call.name, 'invalid_tool_input')
       } catch (error) {
         const code = errorCode(error, ['edit_slide_text', 'duplicate_slide'].includes(call.name))
-        return failure(call.name, code, code === 'invalid_tool_input' ? error : undefined)
+        return failure(call.name, code, error)
       }
     },
   }
