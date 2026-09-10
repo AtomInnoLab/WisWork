@@ -3204,7 +3204,7 @@ export function AiPanel({
               >
                 <IconPaperclip size={20} />
               </button>
-              {busy && !selectionScopeEnabled ? (
+              {busy ? (
                 <button
                   className="ai-send-btn ai-stop-btn"
                   onClick={cancel}

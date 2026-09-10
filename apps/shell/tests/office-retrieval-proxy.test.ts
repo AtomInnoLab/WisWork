@@ -17,6 +17,117 @@ const TEST_SERVICES = {
 } as const
 
 describe('Office fixed retrieval proxy', () => {
+  it('returns source dimensions and falls back to the same searched image rendition', async () => {
+    const downloadImage = vi.fn(async (url: string) => {
+      if (url.endsWith('/original.png')) throw new Error('retrieval_upstream_error')
+      return { mime: 'image/jpeg' as const, bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) }
+    })
+    const proxy = createOfficeLocalSearchProxy({
+      fetchWithAuth: vi.fn(),
+      downloadImage,
+      searchImages: async () => ({
+        images: [
+          {
+            title: 'Cover',
+            imageUrl: 'https://images.example/original.png',
+            fallbackImageUrl: 'https://images.example/thumbnail.jpg',
+            sourceUrl: 'https://example.com/cover',
+            source: 'example.com',
+            width: 1600,
+            height: 900,
+          },
+        ],
+        method: 'serper',
+      }),
+    })
+
+    const search = JSON.parse(
+      new TextDecoder().decode(
+        await proxy('image-search.v1', { query: 'private cover query', max_results: 1 }),
+      ),
+    )
+    expect(search.images[0]).toMatchObject({ width: 1600, height: 900 })
+    expect(JSON.stringify(search)).not.toContain('thumbnail.jpg')
+    const fetched = JSON.parse(
+      new TextDecoder().decode(
+        await proxy('image-fetch.v1', { url: 'https://images.example/original.png' }),
+      ),
+    )
+    expect(fetched.mime).toBe('image/jpeg')
+    expect(downloadImage).toHaveBeenNthCalledWith(
+      1,
+      'https://images.example/original.png',
+      undefined,
+    )
+    expect(downloadImage).toHaveBeenNthCalledWith(
+      2,
+      'https://images.example/thumbnail.jpg',
+      undefined,
+    )
+  })
+
+  it('refreshes expired fallback authority from the renewed matching result', async () => {
+    vi.useFakeTimers()
+    try {
+      let fallbackImageUrl: string | undefined = 'https://images.example/old-thumbnail.jpg'
+      const searchImages = vi.fn(async () => ({
+        images: [
+          {
+            title: 'Cover',
+            imageUrl: 'https://images.example/original.png',
+            ...(fallbackImageUrl ? { fallbackImageUrl } : {}),
+            sourceUrl: 'https://example.com/cover',
+            source: 'example.com',
+          },
+        ],
+        method: 'serper',
+      }))
+      const downloadImage = vi.fn(async (url: string) => {
+        if (url.endsWith('/original.png')) throw new Error('retrieval_upstream_error')
+        return { mime: 'image/jpeg' as const, bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) }
+      })
+      const proxy = createOfficeLocalSearchProxy({
+        fetchWithAuth: vi.fn(),
+        downloadImage,
+        searchImages,
+      })
+      await proxy('image-search.v1', { query: 'cover', max_results: 1 })
+      fallbackImageUrl = 'https://images.example/new-thumbnail.jpg'
+      await vi.advanceTimersByTimeAsync(15 * 60_000 + 1)
+      await proxy('image-fetch.v1', { url: 'https://images.example/original.png' })
+      expect(downloadImage).toHaveBeenLastCalledWith(
+        'https://images.example/new-thumbnail.jpg',
+        undefined,
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('omits unsafe layout dimensions from injected image search results', async () => {
+    const proxy = createOfficeLocalSearchProxy({
+      fetchWithAuth: vi.fn(),
+      searchImages: async () => ({
+        images: [
+          {
+            title: 'Cover',
+            imageUrl: 'https://images.example/cover.png',
+            sourceUrl: 'https://example.com/cover',
+            source: 'example.com',
+            width: 12.5,
+            height: 100_001,
+          },
+        ],
+        method: 'test',
+      }),
+    })
+    const search = JSON.parse(
+      new TextDecoder().decode(await proxy('image-search.v1', { query: 'cover', max_results: 1 })),
+    )
+    expect(search.images[0]).not.toHaveProperty('width')
+    expect(search.images[0]).not.toHaveProperty('height')
+  })
+
   it('clears image-search authority so a reconnected session must search again', async () => {
     const downloadImage = vi.fn(async () => ({
       mime: 'image/png' as const,

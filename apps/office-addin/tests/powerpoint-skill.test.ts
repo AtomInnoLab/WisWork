@@ -798,6 +798,70 @@ describe('PowerPoint compatibility skill', () => {
     expect(skill.buildContext?.()).toContain('"status":"producing"')
   })
 
+  it('records a failed visual review as repair feedback without failing the tool', async () => {
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: adapter(), proposals })
+    await skill.executeTool(call('plan_deck', { contract: modernContract() }))
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+    )
+    await proposals.confirm(proposals.pending()!.id)
+    await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+
+    const review = await skill.executeTool(
+      call('review_slide_screenshot', {
+        slide_index: 0,
+        acceptance_ids: ['A1.1'],
+        passed: false,
+        issues: ['Title contrast is too low'],
+      }),
+    )
+    expect(review.isError).not.toBe(true)
+    expect(JSON.parse(review.output)).toMatchObject({
+      status: 'needs_repair',
+      slide: 1,
+      acceptanceIds: ['A1.1'],
+      issues: ['Title contrast is too low'],
+      nextTool: 'list_slide_shapes',
+    })
+    await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    const unchanged = await skill.executeTool(
+      call('review_slide_screenshot', {
+        slide_index: 0,
+        acceptance_ids: ['A1.1'],
+        passed: true,
+      }),
+    )
+    expect(unchanged.isError).not.toBe(true)
+    expect(JSON.parse(unchanged.output)).toMatchObject({
+      status: 'repair_required',
+      slide: 1,
+      nextTool: 'list_slide_shapes',
+    })
+    await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
+      isError: true,
+      output: expect.stringContaining('"error":"design_contract_production_incomplete"'),
+    })
+
+    const repair = await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+    )
+    expect(repair.isError).not.toBe(true)
+    await proposals.confirm(proposals.pending()!.id)
+    await expect(
+      skill.executeTool(
+        call('review_slide_screenshot', {
+          slide_index: 0,
+          acceptance_ids: ['A1.1'],
+          passed: true,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      isError: true,
+      output: 'design_contract_screenshot_required',
+    })
+  })
+
   it('counts only the inserted page as produced when duplicating a slide', async () => {
     const base = modernContract()
     const first = (base.slides as Array<Record<string, unknown>>)[0]!

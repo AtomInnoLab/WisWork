@@ -221,6 +221,8 @@ describe('imageSearch (Serper)', () => {
         entry('first'),
         null,
         { ...entry('unsafe'), link: 'http://example.com', url: 'http://example.com' },
+        { ...entry('fractional'), width: 12.5, imageWidth: 12.5, original_width: 12.5 },
+        { ...entry('oversized'), width: 100_001, imageWidth: 100_001, original_width: 100_001 },
         entry('last'),
       ]
       mockFetch((url) =>
@@ -245,6 +247,7 @@ describe('imageSearch (Serper)', () => {
             {
               title: 'good',
               imageUrl: 'https://cdn.example.com/a.jpg',
+              thumbnailUrl: 'https://cdn.example.com/a-thumbnail.jpg',
               link: 'https://example.com',
               imageWidth: 800,
               imageHeight: 600,
@@ -263,6 +266,7 @@ describe('imageSearch (Serper)', () => {
     expect(r.images).toHaveLength(1) // getty is filtered out
     expect(r.images[0]).toMatchObject({
       imageUrl: 'https://cdn.example.com/a.jpg',
+      fallbackImageUrl: 'https://cdn.example.com/a-thumbnail.jpg',
       width: 800,
       height: 600,
     })
@@ -352,6 +356,7 @@ describe('imageSearch (SerpApi)', () => {
             {
               title: 'Wildflowers',
               original: 'https://cdn.example.com/flowers.jpg',
+              thumbnail: 'https://cdn.example.com/flowers-thumbnail.jpg',
               link: 'https://example.com/flowers',
               source: 'Example',
               original_width: 1200,
@@ -368,6 +373,7 @@ describe('imageSearch (SerpApi)', () => {
         {
           title: 'Wildflowers',
           imageUrl: 'https://cdn.example.com/flowers.jpg',
+          fallbackImageUrl: 'https://cdn.example.com/flowers-thumbnail.jpg',
           sourceUrl: 'https://example.com/flowers',
           source: 'Example',
           width: 1200,

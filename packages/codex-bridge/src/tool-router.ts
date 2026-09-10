@@ -231,6 +231,8 @@ export interface DocumentToolRegistration {
   readonly ownsSuspension: (value: ToolExecutionOutcome) => boolean
   readonly carrier?: Readonly<{ issuer: DocumentCarrierIssuer; capability: unknown }>
   readonly maxCallMs?: number
+  /** Includes remote human consent when a host cannot split consent from execution. */
+  readonly maxMutationMs?: number
   readonly maxTotalCalls?: number
   readonly maxPendingMutations?: number
 }
@@ -582,6 +584,7 @@ export function createDocumentToolSession(
           'ownsSuspension',
           'carrier',
           'maxCallMs',
+          'maxMutationMs',
           'maxTotalCalls',
           'maxPendingMutations',
         ].includes(key),
@@ -600,12 +603,16 @@ export function createDocumentToolSession(
     manifest.authorization.generation,
   )
   const maxCallMs = registration.maxCallMs ?? MAX_CALL_MS
+  const maxMutationMs = registration.maxMutationMs ?? maxCallMs
   const maxTotalCalls = registration.maxTotalCalls ?? MAX_TOTAL_CALLS
   const maxPendingMutations = registration.maxPendingMutations ?? MAX_PENDING_MUTATIONS
   if (
     !Number.isSafeInteger(maxCallMs) ||
     maxCallMs <= 0 ||
     maxCallMs > MAX_CALL_MS ||
+    !Number.isSafeInteger(maxMutationMs) ||
+    maxMutationMs <= 0 ||
+    maxMutationMs > MAX_CONSENT_MS ||
     !Number.isSafeInteger(maxTotalCalls) ||
     maxTotalCalls <= 0 ||
     maxTotalCalls > MAX_TOTAL_CALLS ||
@@ -824,7 +831,7 @@ export function createDocumentToolSession(
       mutation.timer = setTimeout(() => {
         mutation.finish(stable('tool_timeout', 'Tool timed out'))
         mutation.controller.abort()
-      }, maxCallMs)
+      }, maxMutationMs)
       mutation.timer.unref()
       const claim = Object.freeze(Object.create(null)) as MutationClaim
       mutationClaims.set(claim as object, {

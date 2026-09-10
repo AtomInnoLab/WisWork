@@ -36,6 +36,12 @@ function supportedImageMime(value: unknown): value is DownloadedImage['mime'] {
   return value === 'image/png' || value === 'image/jpeg'
 }
 
+function boundedImageDimension(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 100_000
+    ? Number(value)
+    : undefined
+}
+
 export async function collectBoundedImageBytes(
   chunks: AsyncIterable<Uint8Array>,
   maximum = 2 * 1024 * 1024,
@@ -252,7 +258,10 @@ export function createOfficeLocalSearchProxy(options: {
         3,
         maximumSourceBytes,
       ))
-  const allowedImages = new Map<string, { expiresAt: number; query: string; maxResults: number }>()
+  const allowedImages = new Map<
+    string,
+    { expiresAt: number; query: string; maxResults: number; fallbackImageUrl?: string }
+  >()
   let generation = 0
   const proxy: OfficeRetrievalProxy = async (capability, body, signal) => {
     const requestGeneration = generation
@@ -280,16 +289,25 @@ export function createOfficeLocalSearchProxy(options: {
           expiresAt,
           query: input.query,
           maxResults: input.max_results,
+          ...(image.fallbackImageUrl
+            ? { fallbackImageUrl: safeHttpsUrl(image.fallbackImageUrl) }
+            : {}),
         })
       while (allowedImages.size > 100) allowedImages.delete(allowedImages.keys().next().value!)
       return new TextEncoder().encode(
         JSON.stringify({
-          images: result.images.map((image) => ({
-            title: image.title,
-            image_url: safeHttpsUrl(image.imageUrl),
-            source_url: safeHttpsUrl(new URL(image.sourceUrl).href),
-            source: image.source,
-          })),
+          images: result.images.map((image) => {
+            const width = boundedImageDimension(image.width)
+            const height = boundedImageDimension(image.height)
+            return {
+              title: image.title,
+              image_url: safeHttpsUrl(image.imageUrl),
+              source_url: safeHttpsUrl(new URL(image.sourceUrl).href),
+              source: image.source,
+              ...(width === undefined ? {} : { width }),
+              ...(height === undefined ? {} : { height }),
+            }
+          }),
         }),
       )
     }
@@ -302,11 +320,22 @@ export function createOfficeLocalSearchProxy(options: {
         // fetch a stale/arbitrary URL. Keep the same bounded 100-candidate ledger.
         const result = await searchImages(source.query, source.maxResults)
         checkCurrent()
-        if (!result.images.some((image) => image.imageUrl === url))
-          throw new Error('retrieval_invalid_request')
+        const renewed = result.images.find((image) => image.imageUrl === url)
+        if (!renewed) throw new Error('retrieval_invalid_request')
+        if (renewed.fallbackImageUrl)
+          source.fallbackImageUrl = safeHttpsUrl(renewed.fallbackImageUrl)
+        else delete source.fallbackImageUrl
         source.expiresAt = Date.now() + 15 * 60_000
       }
-      const downloaded = await downloadImage(url, signal)
+      let downloaded: DownloadedImage
+      try {
+        downloaded = await downloadImage(url, signal)
+      } catch (error) {
+        if (signal?.aborted) throw error
+        checkCurrent()
+        if (!source.fallbackImageUrl) throw error
+        downloaded = await downloadImage(source.fallbackImageUrl, signal)
+      }
       checkCurrent()
       if (!supportedImageMime(downloaded.mime)) throw new Error('image_mime_unsupported')
       if (downloaded.bytes.byteLength > maximumSourceBytes) throw new Error('image_limit')
