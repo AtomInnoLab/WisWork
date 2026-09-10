@@ -884,16 +884,19 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
   ): Promise<{ base64: string; mime: 'image/png' }> {
     cancelled(signal)
     let lastError: unknown
-    for (const width of [960, 720, 480]) {
+    for (const options of [{ width: 960 }, { height: 540 }, undefined]) {
       try {
         return await this.run('1.8', async (context) => {
           const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
           const slide = await getSlide(context, slides, slideIndex, signal)
           if (typeof slide.getImageAsBase64 !== 'function')
             throw new Error('office_api_unsupported')
-          const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
-            width,
-          })
+          const image = (
+            slide.getImageAsBase64 as (options?: {
+              width?: number
+              height?: number
+            }) => RuntimeRecord
+          )(options)
           await sync(context, signal)
           if (typeof image.value !== 'string') throw new Error('office_read_failed')
           return { base64: image.value, mime: 'image/png' }
