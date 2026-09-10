@@ -36,10 +36,15 @@ class FakeChild extends EventEmitter implements ChildProcessAdapter {
     this.emit('spawn')
   }
 
-  exited(code: number | null = 0, signal: NodeJS.Signals | null = null): void {
+  exited(code: number | null = 0, signal: NodeJS.Signals | null = null, closeStdio = true): void {
     this.exitCode = code
     this.signalCode = signal
     this.emit('exit', code, signal)
+    if (closeStdio) this.closed()
+  }
+
+  closed(): void {
+    this.emit('close', this.exitCode, this.signalCode)
   }
 }
 
@@ -344,6 +349,58 @@ describe('pinned Codex app-server process manager', () => {
     expect(JSON.stringify(fixture.diagnostics.mock.calls)).not.toContain('private')
   })
 
+  it.each([
+    { executablePath: '/opt/wiswork/codex', prefix: 'codex-cli ' },
+    { executablePath: '/opt/wiswork/codex-app-server', prefix: 'codex-app-server ' },
+  ])('waits for version stdio to close after exit: $prefix', async ({ executablePath, prefix }) => {
+    const fixture = createFixture({ autoVersion: false, executablePath })
+    const outcome = fixture.manager.start().then(
+      () => 'started',
+      (error: { code: string }) => error.code,
+    )
+    await tick()
+    fixture.version.stdout.write(prefix)
+    fixture.version.exited(0, null, false)
+    expect(fixture.calls).toHaveLength(1)
+    fixture.version.stdout.end('0.147.0\n')
+    fixture.version.closed()
+
+    try {
+      expect(await outcome).toBe('started')
+      expect(fixture.calls).toHaveLength(2)
+    } finally {
+      fixture.server.exited(0)
+      await fixture.manager.stop()
+    }
+  })
+
+  it.each([
+    { tail: Buffer.from('unexpected suffix'), stderr: false, code: 'codex_version_mismatch' },
+    { tail: Buffer.from([0xff]), stderr: false, code: 'codex_version_mismatch' },
+    { tail: Buffer.alloc(65_537), stderr: true, code: 'codex_version_output_limit' },
+  ])('validates late version output after exit: $code', async ({ tail, stderr, code }) => {
+    const fixture = createFixture({ autoVersion: false })
+    const outcome = fixture.manager.start().then(
+      () => 'started',
+      (error: { code: string }) => error.code,
+    )
+    await tick()
+    fixture.version.stdout.write('codex-cli 0.147.0\n')
+    fixture.version.exited(0, null, false)
+    if (stderr) fixture.version.stderr.end(tail)
+    else fixture.version.stdout.end(tail)
+    fixture.version.closed()
+
+    try {
+      expect(await outcome).toBe(code)
+      expect(fixture.calls).toHaveLength(1)
+      expect(fixture.removeDirectories).toHaveBeenCalledOnce()
+    } finally {
+      fixture.server.exited(0)
+      await fixture.manager.stop()
+    }
+  })
+
   it('bounds version output and its verification deadline', async () => {
     const output = createFixture({ autoVersion: false })
     const tooLarge = output.manager.start()
@@ -370,6 +427,36 @@ describe('pinned Codex app-server process manager', () => {
       vi.useRealTimers()
     }
   })
+
+  it.each([true, false])(
+    'bounds stdio closure after a successful version exit (closes: %s)',
+    async (closes) => {
+      vi.useFakeTimers()
+      try {
+        const fixture = createFixture({ autoVersion: false })
+        const rejection = expect(fixture.manager.start()).rejects.toMatchObject({
+          code: closes ? 'codex_version_timeout' : 'codex_process_termination_timeout',
+        })
+        await vi.advanceTimersByTimeAsync(0)
+        fixture.version.stdout.end('codex-cli 0.147.0\n')
+        fixture.version.exited(0, null, false)
+        await vi.advanceTimersByTimeAsync(99)
+        expect(fixture.calls).toHaveLength(1)
+        expect(fixture.version.kills).toEqual([])
+        expect(fixture.removeDirectories).not.toHaveBeenCalled()
+
+        await vi.advanceTimersByTimeAsync(1)
+        expect(fixture.version.kills).toEqual(['SIGKILL'])
+        if (closes) fixture.version.closed()
+        else await vi.advanceTimersByTimeAsync(10)
+        await rejection
+        expect(fixture.calls).toHaveLength(1)
+        expect(fixture.removeDirectories).toHaveBeenCalledTimes(closes ? 1 : 0)
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
 
   it('rejects start on early child error or exit and cleans up', async () => {
     const errored = createFixture({ autoServerSpawn: false })

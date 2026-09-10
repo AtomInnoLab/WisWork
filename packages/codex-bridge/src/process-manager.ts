@@ -460,7 +460,7 @@ export class CodexProcessManager {
         child.stdout.off('data', onStdout)
         child.stderr.off('data', onStderr)
         child.off('error', onError)
-        child.off('exit', onExit)
+        child.off('close', onClose)
       }
       const finish = (error?: CodexProcessError): void => {
         if (settled) return
@@ -486,7 +486,7 @@ export class CodexProcessManager {
         if (terminationError) return
         finish(new CodexProcessError('codex_version_check_failed'))
       }
-      const onExit = (code: number | null): void => {
+      const onClose = (code: number | null): void => {
         if (settled) return
         if (terminationError) {
           finish(terminationError)
@@ -529,7 +529,8 @@ export class CodexProcessManager {
       child.stdout.on('data', onStdout)
       child.stderr.on('data', onStderr)
       child.once('error', onError)
-      child.once('exit', onExit)
+      // Process exit can precede the final stdout chunk; close also waits for stdio.
+      child.once('close', onClose)
     })
   }
 
