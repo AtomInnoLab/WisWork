@@ -62,6 +62,7 @@ const SUPPORTED_CAPABILITIES: &[&str] = &[
     "web-fetch.v1",
     "image-search.v1",
     "image-fetch.v1",
+    "design-document.v1",
 ];
 
 #[derive(Clone)]
@@ -3104,6 +3105,11 @@ async fn tool_result(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), 
     if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
+    // A cancelled/timed-out request may have a tool result already in transit.
+    // Validate the session authority first, then ignore this retired request.
+    if known_inactive_request(session, rid) {
+        return Ok(());
+    }
     let active = session.active.as_mut().ok_or("invalid_request")?;
     if active.id != rid {
         return Err("invalid_request");
@@ -3621,6 +3627,19 @@ async fn cleanup(app: &App, conn: u64) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn negotiates_and_resumes_design_document_capability() {
+        let body = serde_json::json!({"capabilities":["agent.v1","design-document.v1"]});
+        let map = body.as_object().unwrap();
+        assert_eq!(
+            super::capabilities(map).unwrap(),
+            vec!["agent.v1", "design-document.v1"]
+        );
+        assert_eq!(
+            super::resume_capabilities(map).unwrap(),
+            vec!["agent.v1", "design-document.v1"]
+        );
+    }
     use super::*;
     use std::{future::pending, sync::Mutex as StdMutex};
 

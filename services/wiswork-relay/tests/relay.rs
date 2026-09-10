@@ -496,6 +496,42 @@ async fn enhanced_state_and_tool_subframes_remain_bound_to_one_active_agent_requ
     assert_eq!(recv(&mut office).await["type"], "relay.done");
 }
 
+#[tokio::test]
+async fn late_tool_result_after_request_failure_does_not_poison_the_next_turn() {
+    let url = server().await;
+    let (mut office, mut pc, office_ready, pc_ready) = approved_v2_session(&url).await;
+    let sid = &office_ready["session_id"];
+    let office_cap = &office_ready["capability"];
+    let pc_cap = &pc_ready["capability"];
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":office_cap,"request_id":"old_request_12345","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["type"], "relay.request");
+    send(&mut pc, json!({"version":2,"type":"pc.start","session_id":sid,"capability":pc_cap,"request_id":"old_request_12345","status":200,"content_type":"text/event-stream"})).await;
+    assert_eq!(recv(&mut office).await["type"], "relay.start");
+    send(&mut pc, json!({"version":2,"type":"pc.tool_call","session_id":sid,"capability":pc_cap,"request_id":"old_request_12345","turn_id":"turn_12345678","call_id":"old_call_12345","generation":7,"tool_name":"read_document","input":{}})).await;
+    assert_eq!(recv(&mut office).await["type"], "relay.tool_call");
+    send(&mut pc, json!({"version":2,"type":"pc.error","session_id":sid,"capability":pc_cap,"request_id":"old_request_12345","code":"cancelled"})).await;
+    assert_eq!(recv(&mut office).await["code"], "cancelled");
+
+    let late_result = json!({"version":2,"type":"office.tool_result","session_id":sid,"capability":office_cap,"request_id":"old_request_12345","turn_id":"turn_12345678","call_id":"old_call_12345","generation":7,"output":"late","is_error":false});
+    send(&mut office, late_result.clone()).await;
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":office_cap,"request_id":"next_request_12345","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "next_request_12345");
+    send(&mut pc, json!({"version":2,"type":"pc.start","session_id":sid,"capability":pc_cap,"request_id":"next_request_12345","status":200,"content_type":"text/event-stream"})).await;
+    assert_eq!(recv(&mut office).await["type"], "relay.start");
+    send(&mut pc, json!({"version":2,"type":"pc.tool_call","session_id":sid,"capability":pc_cap,"request_id":"next_request_12345","turn_id":"turn_next_12345","call_id":"next_call_12345","generation":7,"tool_name":"read_document","input":{}})).await;
+    assert_eq!(recv(&mut office).await["type"], "relay.tool_call");
+    // Another late old result cannot satisfy the new pending call.
+    send(&mut office, late_result.clone()).await;
+    send(&mut office, json!({"version":2,"type":"office.tool_result","session_id":sid,"capability":office_cap,"request_id":"next_request_12345","turn_id":"turn_next_12345","call_id":"next_call_12345","generation":7,"output":"current","is_error":false})).await;
+    assert_eq!(recv(&mut pc).await["output"], "current");
+    send(&mut pc, json!({"version":2,"type":"pc.done","session_id":sid,"capability":pc_cap,"request_id":"next_request_12345"})).await;
+    assert_eq!(recv(&mut office).await["type"], "relay.done");
+    let mut forged = late_result;
+    forged["capability"] = json!("wrong_capability");
+    send(&mut office, forged).await;
+    assert_eq!(recv(&mut office).await["code"], "invalid_capability");
+}
+
 async fn begin_enrollment(url: &str, signing_key: &SigningKey) -> (TestSocket, TestSocket, Value) {
     let public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_encoded_point(false));
     let mut office = socket(url, ORIGIN).await;
