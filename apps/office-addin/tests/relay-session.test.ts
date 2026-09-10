@@ -876,6 +876,7 @@ describe('Office cloud relay session', () => {
       'design_contract_prototype_required',
       'design_contract_production_incomplete',
       'design_contract_verification_failed',
+      'design_contract_visual_review_failed',
       'design_contract_invalid_status',
       'design_contract_review_not_pending',
       'design_contract_acceptance_mismatch',
@@ -902,7 +903,7 @@ describe('Office cloud relay session', () => {
     await expect(
       session.sendDiagnostic({ ...diagnostic, tool: 'x'.repeat(5_000) }),
     ).rejects.toThrow('diagnostic_too_large')
-    expect(socket.sent).toHaveLength(17)
+    expect(socket.sent).toHaveLength(18)
   })
 
   it('keeps Agent streaming usable after a nonfatal diagnostic limit response', async () => {

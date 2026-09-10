@@ -1566,6 +1566,7 @@ export function createOfficeRelaySession(
             'design_contract_prototype_required',
             'design_contract_production_incomplete',
             'design_contract_verification_failed',
+            'design_contract_visual_review_failed',
             'design_contract_invalid_status',
             'design_contract_review_not_pending',
             'design_contract_acceptance_mismatch',

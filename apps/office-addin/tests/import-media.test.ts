@@ -664,8 +664,35 @@ describe('PowerPoint image proposal', () => {
     }
     const fetchImage = vi.fn().mockResolvedValue(png(10, 10))
     const proposals = createStructuredProposalController()
-    const skill = createPowerPointImportMediaSkill({ adapter, proposals, vfs, fetchImage })
+    const audit = vi.fn()
+    proposals.subscribeAudit?.(audit)
+    const validateMutation = vi.fn().mockReturnValueOnce('design_contract_prototype_required')
+    const skill = createPowerPointImportMediaSkill({
+      adapter,
+      proposals,
+      vfs,
+      fetchImage,
+      validateMutation,
+    })
     expect(skill.tools.map((tool) => tool.name)).toContain('insert_web_image')
+    const blocked = await skill.executeTool(
+      call('insert_web_image', {
+        url: 'https://images.example/llm.png',
+        slide_index: 0,
+        left: 1,
+        top: 2,
+        width: 30,
+        height: 40,
+      }),
+    )
+    expect(blocked).toMatchObject({
+      isError: true,
+      mutated: false,
+      output: 'design_contract_prototype_required',
+    })
+    expect(fetchImage).not.toHaveBeenCalled()
+    expect(adapter.snapshotSlide).not.toHaveBeenCalled()
+    expect(proposals.pending()).toBeUndefined()
     const result = await skill.executeTool(
       call('insert_web_image', {
         url: 'https://images.example/llm.png',
@@ -677,6 +704,13 @@ describe('PowerPoint image proposal', () => {
       }),
     )
     expect(result.isError).not.toBe(true)
+    expect(validateMutation).toHaveBeenCalledWith(0)
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'proposed',
+        powerPointMutation: { indexes: [0], scaffold: false },
+      }),
+    )
     expect(fetchImage).toHaveBeenCalledWith('https://images.example/llm.png', undefined)
     await proposals.confirm(proposals.pending()!.id)
     expect(adapter.insertImage).toHaveBeenCalledOnce()

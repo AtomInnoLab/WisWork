@@ -174,6 +174,10 @@ export function createOfficeHostRuntime(
                 proposals,
                 vfs,
                 fetchImage: options.fetchPowerPointImage,
+                validateMutation: (index) =>
+                  (hostSkill as ReturnType<typeof createPowerPointSkill>).validateImageMutation(
+                    index,
+                  ),
               }),
             ]
           : []

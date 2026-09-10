@@ -78,7 +78,8 @@ const webInput = exactObject({
 })
 const tool = {
   name: 'insert-image',
-  description: 'Propose inserting a bounded VFS PNG or JPEG on a slide.',
+  description:
+    'Propose inserting a bounded VFS PNG or JPEG on a slide. Geometry is in points; use the actual canvas dimensions from get_presentation_state, not screenshot pixels.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -96,7 +97,8 @@ const tool = {
 }
 const webTool = {
   name: 'insert_web_image',
-  description: 'Fetch and propose inserting a bounded PNG or JPEG URL returned by image_search.',
+  description:
+    'Fetch and propose inserting a bounded PNG or JPEG URL returned by image_search. Geometry is in points; use the actual canvas dimensions from get_presentation_state, not screenshot pixels. Preserve the source aspect ratio and compose text in clear space.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -152,6 +154,7 @@ export function createPowerPointImportMediaSkill(options: {
   proposals: StructuredProposalController
   vfs: InMemoryVfs
   fetchImage?: (url: string, signal?: AbortSignal) => Promise<Uint8Array>
+  validateMutation?: (slideIndex: number) => string | undefined
 }): AgentSkill {
   return {
     id: 'office-powerpoint-import-media',
@@ -169,6 +172,9 @@ export function createPowerPointImportMediaSkill(options: {
         const remote = call.name === 'insert_web_image' ? webInput(call.input) : undefined
         const value = local ?? remote!
         if (value.width < 1 || value.height < 1) throw new Error('invalid_tool_input')
+        const designError = options.validateMutation?.(value.slide_index)
+        if (designError)
+          return { output: designError, isError: true, mutated: false, summary: call.name }
         const image =
           local !== undefined
             ? await readBoundedImage(options.vfs, local.path)
@@ -196,6 +202,7 @@ export function createPowerPointImportMediaSkill(options: {
           }
         }
         const proposal = options.proposals.propose({
+          powerPointMutation: { indexes: [value.slide_index], scaffold: false },
           operation: call.name,
           toolName: call.name,
           title: value.explanation || 'Insert image',

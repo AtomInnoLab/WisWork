@@ -25,6 +25,8 @@ export interface StructuredProposal {
 }
 
 export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id'> {
+  /** Host-owned scope; never copied from model input or exposed in the proposal UI. */
+  powerPointMutation?: { indexes: number[]; scaffold: boolean }
   verificationBinding?: {
     callId: string
     fingerprint: string
@@ -86,6 +88,7 @@ export type StructuredProposalAuditEvent =
       fingerprint: string
       targets: string[]
       verificationBinding?: { callId: string; fingerprint: string; targets: string[] }
+      powerPointMutation?: { indexes: number[]; scaffold: boolean }
     }
   | { kind: 'settled'; id: string; status: ProposalDecision['status']; error?: string }
   | { kind: 'quarantined'; generation: number }
@@ -233,6 +236,16 @@ export function createStructuredProposalController(
             request.verificationBinding.targets.some((target) => !target || target.length > 512)))
       )
         invalidProposal()
+      if (
+        request.powerPointMutation &&
+        (!Array.isArray(request.powerPointMutation.indexes) ||
+          request.powerPointMutation.indexes.length > 1_000 ||
+          request.powerPointMutation.indexes.some(
+            (index) => !Number.isSafeInteger(index) || index < 0 || index > 100_000,
+          ) ||
+          typeof request.powerPointMutation.scaffold !== 'boolean')
+      )
+        invalidProposal()
       const publicValue = snapshot({
         id: crypto.randomUUID(),
         operation: request.operation,
@@ -263,6 +276,14 @@ export function createStructuredProposalController(
           ...(publicValue.toolName ? { toolName: publicValue.toolName } : {}),
           fingerprint: publicValue.fingerprint,
           targets: [...publicValue.impact.targets],
+          ...(request.powerPointMutation
+            ? {
+                powerPointMutation: {
+                  indexes: [...request.powerPointMutation.indexes],
+                  scaffold: request.powerPointMutation.scaffold,
+                },
+              }
+            : {}),
           ...(request.verificationBinding
             ? {
                 verificationBinding: {
