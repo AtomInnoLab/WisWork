@@ -54,7 +54,12 @@ function setup(loggedIn = true) {
 }
 
 describe('Office relay PC client', () => {
-  it.each([0, 360_000])('keeps Enhanced tool results after %i ms', async (delayMs) => {
+  it.each([
+    [0, 0],
+    [360_000, 0],
+    [0, 180 * 1024],
+    [0, 200 * 1024],
+  ])('keeps Enhanced tool results after %i ms with %i image bytes', async (delayMs, imageBytes) => {
     vi.useFakeTimers()
     const socket = new FakeSocket()
     let runtimeReady = false
@@ -73,12 +78,25 @@ describe('Office relay PC client', () => {
       status: 200,
       contentType: 'text/event-stream',
       body: (async function* () {
+        const imageInput = imageBytes
+          ? { _wiswork_image_base64: Buffer.alloc(imageBytes).toString('base64') }
+          : {}
+        if (imageBytes > 180 * 1024)
+          await expect(
+            executeTool({
+              turnId: 'turn_12345678',
+              callId: 'call_oversized',
+              generation: 7,
+              toolName: 'insert_web_image',
+              input: imageInput,
+            }),
+          ).rejects.toThrow('invalid_tool_call')
         const result = await executeTool({
           turnId: 'turn_12345678',
           callId: 'call_12345678',
           generation: 7,
           toolName: 'read_document',
-          input: {},
+          input: imageBytes > 180 * 1024 ? {} : imageInput,
         })
         yield new TextEncoder().encode(result.output)
       })(),

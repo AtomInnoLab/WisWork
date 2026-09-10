@@ -6,6 +6,7 @@ import {
 } from '@wiswork/agent-core'
 import { createAgentHarness } from '@wiswork/agent-harness'
 import type { OfficePowerPointVisualReviewer } from '../skills/powerpoint/powerpoint-verification.js'
+import { withPrefetchedPowerPointImage } from '../skills/powerpoint/powerpoint-import-media.js'
 import { useSyncExternalStore } from 'react'
 import type {
   OfficeProposal,
@@ -672,12 +673,12 @@ export function createOfficeAgentSession(dependencies: {
     call.signal.addEventListener('abort', invalidateRemoteProposal, { once: true })
     try {
       const outcome = await sessionSkill.executeTool(
-        {
+        withPrefetchedPowerPointImage({
           id: call.callId,
           invocationId: `${call.turnId}:${call.callId}`,
           name: call.toolName,
           input: call.input,
-        },
+        }),
         call.signal,
       )
       const settled =

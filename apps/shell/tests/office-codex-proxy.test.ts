@@ -37,6 +37,144 @@ const statement = {
 
 describe('Office Codex proxy', () => {
   it.each([
+    'success',
+    'normalized',
+    'normalizer-failed',
+    'unavailable',
+    'large',
+    'injected',
+    'cancelled',
+    'remote-failed',
+  ] as const)(
+    'prefetches bounded private image bytes on PC before dispatch: %s',
+    async (scenario) => {
+      const input = {
+        url: 'https://images.example/approved.png',
+        slide_index: 0,
+        left: 1,
+        top: 2,
+        width: 30,
+        height: 40,
+        ...(scenario === 'injected' ? { _wiswork_image_base64: 'model-injected' } : {}),
+      }
+      const bytes = Buffer.from('private-image-bytes')
+      const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+      const prepareImageHandoff = vi.fn(async () => {
+        if (scenario === 'normalizer-failed') throw new Error('image_limit')
+        return { mime: 'image/jpeg' as const, bytes: jpegBytes }
+      })
+      let receipt!: ToolExecution
+      let rejectedBeforeApproval = false
+      const controller = new AbortController()
+      const executeTool = vi.fn(async (_call: { input: Record<string, unknown> }) => {
+        if (scenario === 'remote-failed') throw new Error('private uncertain host write')
+        return { output: 'applied', isError: false }
+      })
+      const executeRetrieval = vi.fn(async () => {
+        if (scenario === 'unavailable') throw new Error('private upstream credentials')
+        if (scenario === 'cancelled') controller.abort()
+        return new TextEncoder().encode(
+          JSON.stringify({
+            mime: 'image/png',
+            data_base64: (['large', 'normalized', 'normalizer-failed'].includes(scenario)
+              ? Buffer.alloc(181 * 1024)
+              : bytes
+            ).toString('base64'),
+          }),
+        )
+      })
+      const runtime = {
+        async runOfficeTurn(value: any) {
+          if (scenario === 'injected') {
+            try {
+              value.summarizeProposal({ name: 'insert_web_image', input })
+            } catch (error) {
+              rejectedBeforeApproval =
+                error instanceof Error && error.message === 'invalid_tool_input'
+            }
+          }
+          const result = value.toolSession.callTool(value.toolSession.credentials, {
+            id: 'image_call',
+            name: 'insert_web_image',
+            input,
+          })
+          receipt = await (isToolExecutionSuspension(result) ? result.result : result)
+          value.onEvent({ type: 'terminal', status: 'completed' })
+        },
+      }
+      const proxy = createOfficeCodexProxy({
+        runtime: runtime as any,
+        rollout,
+        ...(['normalized', 'normalizer-failed'].includes(scenario) ? { prepareImageHandoff } : {}),
+        policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+      })
+      const response = await proxy({
+        body: {
+          system: '',
+          messages: [],
+          tools: [
+            { name: 'insert_web_image', description: 'insert', input_schema: { type: 'object' } },
+          ],
+        },
+        signal: controller.signal,
+        host: 'PowerPoint',
+        sessionId: 'session_12345678',
+        requestId: 'request_12345678',
+        statement: { ...statement, host: 'office-powerpoint' },
+        executeTool,
+        executeRetrieval,
+      })
+      let stream = ''
+      for await (const chunk of response.body as AsyncIterable<Uint8Array>)
+        stream += new TextDecoder().decode(chunk)
+      if (scenario === 'success' || scenario === 'normalized') {
+        expect(executeRetrieval).toHaveBeenCalledWith(
+          'image-fetch.v1',
+          { url: input.url },
+          expect.any(AbortSignal),
+        )
+        expect(executeTool).toHaveBeenCalledWith(
+          expect.objectContaining({
+            toolName: 'insert_web_image',
+            input: {
+              ...input,
+              _wiswork_image_base64: (scenario === 'normalized' ? jpegBytes : bytes).toString(
+                'base64',
+              ),
+            },
+          }),
+        )
+        if (scenario === 'normalized') {
+          expect(prepareImageHandoff).toHaveBeenCalledWith({
+            mime: 'image/png',
+            bytes: Buffer.alloc(181 * 1024),
+          })
+          const forwarded = executeTool.mock.calls[0]![0] as any
+          expect(Buffer.byteLength(JSON.stringify(forwarded.input))).toBeLessThan(256 * 1024)
+        }
+        expect(receipt.isError).toBe(false)
+      } else if (scenario === 'remote-failed') {
+        expect(executeTool).toHaveBeenCalledOnce()
+        expect(receipt).toMatchObject({ isError: true, output: 'tool_execution_failed' })
+      } else {
+        expect(executeTool).not.toHaveBeenCalled()
+        expect(receipt.isError).toBe(true)
+        if (scenario === 'large' || scenario === 'normalizer-failed')
+          expect(receipt.output).toBe('image_limit')
+        if (scenario === 'unavailable') expect(receipt.output).toBe('image_fetch_unavailable')
+        if (scenario === 'injected') {
+          expect(rejectedBeforeApproval).toBe(true)
+          expect(receipt.output).toBe('invalid_tool_input')
+          expect(executeRetrieval).not.toHaveBeenCalled()
+        }
+      }
+      expect(stream).not.toContain(bytes.toString('base64'))
+      expect(stream).not.toContain(jpegBytes.toString('base64'))
+      expect(stream).not.toContain('private upstream')
+    },
+  )
+
+  it.each([
     ['cancel', 'success'],
     ['cancel', 'failure'],
     ['timeout', 'success'],

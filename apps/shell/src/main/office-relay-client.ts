@@ -228,7 +228,9 @@ export function createOfficeRelayClient(options: {
   const send = (frame: Record<string, unknown>) => {
     if (!socket || socket.readyState !== 1) throw new Error('relay_disconnected')
     const raw = JSON.stringify(frame)
-    if (Buffer.byteLength(raw) > MAX_CONTROL_BYTES && frame.type !== 'pc.chunk')
+    const maximum =
+      frame.type === 'pc.tool_call' ? MAX_REQUEST_BYTES + MAX_CONTROL_BYTES : MAX_CONTROL_BYTES
+    if (Buffer.byteLength(raw) > maximum && frame.type !== 'pc.chunk')
       throw new Error('control_frame_too_large')
     socket.send(raw)
   }
@@ -343,7 +345,8 @@ export function createOfficeRelayClient(options: {
           !Number.isSafeInteger(call.generation) ||
           call.generation !== session.enhanced?.session_generation ||
           !/^[A-Za-z0-9_-]{1,128}$/.test(call.toolName) ||
-          !jsonObject(call.input)
+          !jsonObject(call.input) ||
+          Buffer.byteLength(JSON.stringify(call.input)) > MAX_REQUEST_BYTES
         )
           return Promise.reject(new Error('invalid_tool_call'))
         return new Promise((resolve, reject) => {

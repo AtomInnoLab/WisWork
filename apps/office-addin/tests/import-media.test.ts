@@ -591,6 +591,39 @@ describe('PowerPoint image proposal', () => {
     expect(adapter.snapshotSlide).not.toHaveBeenCalled()
   })
 
+  it('rejects model-supplied image bytes and keeps them out of the public tool schema', async () => {
+    const adapter = {
+      snapshotSlide: vi.fn(),
+      insertImage: vi.fn(),
+      verifyImage: vi.fn(),
+      removeImage: vi.fn(),
+      verifyImageAbsent: vi.fn(),
+    }
+    const fetchImage = vi.fn()
+    const skill = createPowerPointImportMediaSkill({
+      adapter,
+      proposals: createStructuredProposalController(),
+      vfs: new InMemoryVfs(),
+      fetchImage,
+    })
+    expect(JSON.stringify(skill.tools)).not.toContain('_wiswork_image_base64')
+    await expect(
+      skill.executeTool(
+        call('insert_web_image', {
+          url: 'https://images.example/approved.png',
+          slide_index: 0,
+          left: 1,
+          top: 2,
+          width: 30,
+          height: 40,
+          _wiswork_image_base64: Buffer.from(png()).toString('base64'),
+        }),
+      ),
+    ).resolves.toMatchObject({ isError: true, output: 'invalid_tool_input' })
+    expect(fetchImage).not.toHaveBeenCalled()
+    expect(adapter.snapshotSlide).not.toHaveBeenCalled()
+  })
+
   it('revalidates the slide, inserts once, and semantically verifies the created shape', async () => {
     const vfs = new InMemoryVfs()
     vfs.writeFile('/home/user/image.png', png(10, 10))

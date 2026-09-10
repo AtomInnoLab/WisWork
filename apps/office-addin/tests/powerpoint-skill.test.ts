@@ -1759,6 +1759,324 @@ describe('PowerPoint compatibility skill', () => {
     expect(fake.listSlideShapes).toHaveBeenCalledTimes(3)
   })
 
+  it.each(['duplicate_slide', 'execute_office_js'])(
+    'allows successive duplicates after reading the slide count through %s',
+    async (toolName) => {
+      const slideIds = ['slide-1']
+      const duplicateSlide = vi.fn(async (index: number) => {
+        const slideId = `copy-${slideIds.length}`
+        slideIds.splice(index + 1, 0, slideId)
+        return { slideId }
+      })
+      const fake = adapter({
+        duplicateSlide,
+        executeDeclarative: vi.fn(async (operations) => ({
+          createdShapeIds: [],
+          insertedSlideId: (await duplicateSlide(operations[0]!.slide_index)).slideId,
+        })),
+        snapshotSlide: vi.fn(async (index) => ({
+          slideId: slideIds[index]!,
+          fingerprint: slideIds[index]!,
+        })),
+        listSlideShapes: vi.fn(async (index) => ({
+          slideId: slideIds[index]!,
+          slideIndex: index,
+          shapes: [],
+        })),
+      })
+      const proposals = createStructuredProposalController()
+      const skill = createPowerPointSkill({ adapter: fake, proposals })
+      await skill.executeTool(call('get_presentation_state'))
+
+      for (const slideIndex of [0, 1]) {
+        const result = await skill.executeTool(
+          call(
+            toolName,
+            toolName === 'duplicate_slide'
+              ? { slide_index: slideIndex }
+              : {
+                  program: {
+                    version: 1,
+                    operations: [{ op: 'duplicate_slide', slide_index: slideIndex }],
+                  },
+                },
+          ),
+        )
+        expect(result.isError).not.toBe(true)
+        await proposals.confirm(proposals.pending()!.id)
+      }
+
+      expect(slideIds).toEqual(['slide-1', 'copy-1', 'copy-2'])
+      expect(
+        await skill.executeTool(
+          call('edit_slide_text', { slide_index: 2, shape_id: '2', text: 'Hello' }),
+        ),
+      ).not.toHaveProperty('isError', true)
+      await expect(
+        skill.executeTool(call('duplicate_slide', { slide_index: 3 })),
+      ).resolves.toMatchObject({ isError: true, output: 'invalid_tool_input' })
+    },
+  )
+
+  it('keeps prototype and review gates while duplicating newly created slides', async () => {
+    const base = modernContract()
+    const contract = modernContract({
+      prototypePages: [1, 2, 3],
+      brief: { ...base.brief, pageCount: 4 },
+      slides: [1, 2, 3, 4].map((number) => ({
+        ...base.slides[0],
+        number,
+        acceptance: [{ id: `A${number}.1`, criterion: 'Readable' }],
+      })),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({
+      adapter: adapter({
+        listSlideShapes: vi
+          .fn()
+          .mockResolvedValue({ slideId: 'slide-copy', slideIndex: 1, shapes: [] }),
+      }),
+      proposals,
+    })
+    await skill.executeTool(call('get_presentation_state'))
+    expect(await skill.executeTool(call('plan_deck', { contract }))).not.toHaveProperty(
+      'isError',
+      true,
+    )
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+    )
+    await proposals.confirm(proposals.pending()!.id)
+
+    for (const slideIndex of [0, 1]) {
+      expect(
+        await skill.executeTool(call('duplicate_slide', { slide_index: slideIndex })),
+      ).not.toHaveProperty('isError', true)
+      await proposals.confirm(proposals.pending()!.id)
+    }
+
+    await expect(
+      skill.executeTool(call('duplicate_slide', { slide_index: 2 })),
+    ).resolves.toMatchObject({ isError: true, output: 'design_contract_review_required' })
+    expect(proposals.pending()).toBeUndefined()
+    expect(skill.buildContext?.()).toContain('"status":"producing"')
+  })
+
+  describe('non-contiguous prototype scaffolding', () => {
+    async function setup(
+      options: {
+        prototypePages?: number[]
+        slideCount?: number
+        pageCount?: number
+        status?: string
+        readState?: boolean
+      } = {},
+    ) {
+      const base = modernContract()
+      const pageCount = options.pageCount ?? 4
+      const contract = modernContract({
+        status: options.status ?? 'ready',
+        prototypePages: options.prototypePages ?? [1, 3, 4],
+        brief: { ...base.brief, pageCount },
+        slides: Array.from({ length: pageCount }, (_, index) => ({
+          ...base.slides[0],
+          number: index + 1,
+          acceptance: [{ id: `A${index + 1}.1`, criterion: 'Readable' }],
+        })),
+      })
+      const slideIds = Array.from(
+        { length: options.slideCount ?? 1 },
+        (_, index) => `slide-${index}`,
+      )
+      const fake = adapter({
+        getPresentationState: vi.fn(async () => ({
+          slideCount: slideIds.length,
+          selectedSlideIndexes: [0],
+          api: { v12: true, v14: true, v15: true, v18: true, v110: true },
+        })),
+        duplicateSlide: vi.fn(async (index) => {
+          const slideId = `copy-${slideIds.length}`
+          slideIds.splice(index + 1, 0, slideId)
+          return { slideId }
+        }),
+        snapshotSlide: vi.fn(async (index) => ({
+          slideId: slideIds[index]!,
+          fingerprint: slideIds[index]!,
+        })),
+        listSlideShapes: vi.fn(async (index) => ({
+          slideId: slideIds[index]!,
+          slideIndex: index,
+          shapes: [],
+        })),
+      })
+      const proposals = createStructuredProposalController()
+      const skill = createPowerPointSkill({ adapter: fake, proposals })
+      if (options.readState !== false) await skill.executeTool(call('get_presentation_state'))
+      expect(await skill.executeTool(call('plan_deck', { contract }))).not.toHaveProperty(
+        'isError',
+        true,
+      )
+      const write = async (name: string, input: Record<string, unknown>) => {
+        expect(await skill.executeTool(call(name, input))).not.toHaveProperty('isError', true)
+        await proposals.confirm(proposals.pending()!.id)
+      }
+      const review = async (index: number) => {
+        await skill.executeTool(call('screenshot_slide', { slide_index: index }))
+        expect(
+          await skill.executeTool(
+            call('review_slide_screenshot', {
+              slide_index: index,
+              acceptance_ids: [`A${index + 1}.1`],
+              passed: true,
+            }),
+          ),
+        ).not.toHaveProperty('isError', true)
+      }
+      return { skill, proposals, fake, slideIds, contract, write, review }
+    }
+
+    it('appends scaffolds without counting them as produced and requires later fill and review', async () => {
+      const { skill, proposals, slideIds, write, review } = await setup()
+      await write('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' })
+      const scaffold = await skill.executeTool(call('duplicate_slide', { slide_index: 0 }))
+      expect(scaffold.isError).not.toBe(true)
+      expect(JSON.parse(scaffold.output).preview).toMatchObject({ scaffold: true })
+      await proposals.confirm(proposals.pending()!.id)
+      expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain('(1, 2)')
+      await expect(
+        skill.executeTool(
+          call('edit_slide_text', { slide_index: 1, shape_id: '2', text: 'Hello' }),
+        ),
+      ).resolves.toMatchObject({ isError: true, output: 'design_contract_prototype_required' })
+      await skill.executeTool(call('screenshot_slide', { slide_index: 1 }))
+      await expect(
+        skill.executeTool(
+          call('review_slide_screenshot', {
+            slide_index: 1,
+            acceptance_ids: ['A2.1'],
+            passed: true,
+          }),
+        ),
+      ).resolves.toMatchObject({ isError: true, output: 'design_contract_review_not_pending' })
+
+      await write('duplicate_slide', { slide_index: 1 })
+      await write('edit_slide_text', { slide_index: 2, shape_id: '2', text: 'Hello' })
+      await write('duplicate_slide', { slide_index: 2 })
+      await write('edit_slide_text', { slide_index: 3, shape_id: '2', text: 'Hello' })
+      expect(slideIds).toHaveLength(4)
+      await expect(
+        skill.executeTool(
+          call('edit_slide_text', { slide_index: 1, shape_id: '2', text: 'Hello' }),
+        ),
+      ).resolves.toMatchObject({ isError: true, output: 'design_contract_review_required' })
+      for (const index of [0, 2, 3]) await review(index)
+      await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
+        isError: true,
+        output: 'design_contract_production_incomplete',
+      })
+      await write('edit_slide_text', { slide_index: 1, shape_id: '2', text: 'Hello' })
+      await review(1)
+      const verification = await skill.executeTool(call('verify_slides'))
+      expect(verification.isError).not.toBe(true)
+      expect(JSON.parse(verification.output).status).toBe('verified')
+    })
+
+    it.each([
+      { label: 'draft contracts', status: 'draft', source: 0 },
+      { label: 'non-append duplicates', slideCount: 2, source: 0 },
+      { label: 'unknown slide counts', readState: false, source: 0 },
+      {
+        label: 'pages beyond the last prototype',
+        pageCount: 5,
+        prototypePages: [1, 2, 3],
+        slideCount: 4,
+        source: 3,
+      },
+    ])('does not bypass production gates for $label', async ({ source, ...options }) => {
+      const { skill, proposals, fake } = await setup(options)
+      await expect(
+        skill.executeTool(call('duplicate_slide', { slide_index: source })),
+      ).resolves.toMatchObject({ isError: true, output: 'design_contract_prototype_required' })
+      expect(proposals.pending()).toBeUndefined()
+      expect(fake.duplicateSlide).not.toHaveBeenCalled()
+    })
+
+    it('does not record a rejected scaffold as a document mutation', async () => {
+      const { skill, proposals, fake } = await setup()
+      expect(
+        await skill.executeTool(call('duplicate_slide', { slide_index: 0 })),
+      ).not.toHaveProperty('isError', true)
+      proposals.reject()
+      expect(fake.duplicateSlide).not.toHaveBeenCalled()
+      expect(skill.buildContext?.()).toContain('"status":"ready"')
+      expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toBeUndefined()
+    })
+
+    it('rechecks that scaffold duplication is still an append at confirmation', async () => {
+      const { skill, proposals, fake, slideIds } = await setup()
+      expect(
+        await skill.executeTool(call('duplicate_slide', { slide_index: 0 })),
+      ).not.toHaveProperty('isError', true)
+      slideIds.push('user-added-slide')
+      await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+      expect(fake.duplicateSlide).not.toHaveBeenCalled()
+    })
+
+    it('invalidates a scaffold proposal when its design contract changes', async () => {
+      const { skill, proposals, fake, contract } = await setup()
+      expect(
+        await skill.executeTool(call('duplicate_slide', { slide_index: 0 })),
+      ).not.toHaveProperty('isError', true)
+      await skill.executeTool(call('plan_deck', { contract: { ...contract, status: 'draft' } }))
+      await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+      expect(fake.duplicateSlide).not.toHaveBeenCalled()
+    })
+
+    it('does not mark an unverified scaffold as produced', async () => {
+      const { skill, proposals, fake } = await setup()
+      expect(
+        await skill.executeTool(call('duplicate_slide', { slide_index: 0 })),
+      ).not.toHaveProperty('isError', true)
+      vi.mocked(fake.listSlideShapes).mockResolvedValue({
+        slideId: 'wrong-receipt',
+        slideIndex: 1,
+        shapes: [],
+      })
+      await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow(
+        'office_verify_failed',
+      )
+      expect(skill.buildContext?.()).toContain('"status":"ready"')
+      await expect(
+        skill.executeTool(call('duplicate_slide', { slide_index: 1 })),
+      ).resolves.toMatchObject({ isError: true, output: 'invalid_tool_input' })
+      await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
+        isError: true,
+        output: 'design_contract_production_incomplete',
+      })
+    })
+
+    it.each(['program', 'code'])(
+      'directs modern-contract declarative duplicates to the dedicated tool (%s)',
+      async (field) => {
+        const { skill, proposals, fake, write } = await setup()
+        await write('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' })
+        const program = { version: 1, operations: [{ op: 'duplicate_slide', slide_index: 0 }] }
+        const result = await skill.executeTool(
+          call('execute_office_js', {
+            [field]: field === 'program' ? program : JSON.stringify(program),
+          }),
+        )
+        expect(result.isError).toBe(true)
+        expect(JSON.parse(result.output)).toMatchObject({
+          error: 'invalid_tool_input',
+          instruction: expect.stringContaining('duplicate_slide'),
+        })
+        expect(proposals.pending()).toBeUndefined()
+        expect(fake.executeDeclarative).not.toHaveBeenCalled()
+      },
+    )
+  })
+
   it('requires the exact declarative duplicate receipt instead of accepting any following slide', async () => {
     const fake = adapter({
       executeDeclarative: vi.fn().mockResolvedValue({
@@ -1773,6 +2091,7 @@ describe('PowerPoint compatibility skill', () => {
     })
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(call('get_presentation_state'))
 
     await skill.executeTool(
       call('execute_office_js', {
@@ -1784,6 +2103,9 @@ describe('PowerPoint compatibility skill', () => {
     )
 
     await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_verify_failed')
+    await expect(
+      skill.executeTool(call('duplicate_slide', { slide_index: 1 })),
+    ).resolves.toMatchObject({ isError: true, output: 'invalid_tool_input' })
   })
 
   it('advertises slide duplication only through the dedicated tool', () => {

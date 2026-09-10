@@ -26,6 +26,8 @@ const MAX_BODY_BYTES = 256 * 1024
 const MAX_TEXT_BYTES = 128 * 1024
 const MAX_TOOLS = 64
 const MAX_RETRIEVAL_DISPLAY_BYTES = 8 * 1024
+const MAX_IMAGE_HANDOFF_BYTES = 180 * 1024
+const PRIVATE_IMAGE_FIELD = '_wiswork_image_base64'
 const RETRIEVAL_TOOLS = new Set(['web_search', 'web_fetch', 'image_search'])
 
 /** Project public source links only; model output and upstream error bodies stay on PC. */
@@ -111,6 +113,7 @@ const summarizeOfficeProposal = (
   host: OfficeEnhancedSessionStatement['host'],
   call: { readonly name: string; readonly input: Record<string, unknown> },
 ): PcHostProposalSummary => {
+  if (Object.hasOwn(call.input, PRIVATE_IMAGE_FIELD)) throw new Error('invalid_tool_input')
   const program = call.input.program
   const count = (
     Object.values(call.input).find(Array.isArray) ??
@@ -197,6 +200,10 @@ export function createOfficeCodexProxy(options: {
   rollout: EnhancedRolloutPolicy
   policyAuthority: PolicyAuthority
   telemetry?: EnhancedTelemetry
+  prepareImageHandoff?: (image: {
+    bytes: Uint8Array
+    mime: 'image/png' | 'image/jpeg'
+  }) => Promise<{ bytes: Uint8Array; mime: 'image/png' | 'image/jpeg' }>
 }) {
   return async (request: {
     body: unknown
@@ -223,7 +230,7 @@ export function createOfficeCodexProxy(options: {
       throw new Error('enhanced_session_stale')
     telemetry('plan', 'started')
     const parsed = parseRequest(request.body, host, request.statement.raw_office)
-    const pcRetrieval = new Set(['web_search', 'image_search'])
+    const pcRetrieval = new Set(['web_search', 'image_search', 'insert_web_image'])
     if (!request.executeRetrieval) {
       parsed.tools = parsed.tools.filter((tool) => !pcRetrieval.has(tool.name))
       for (const name of pcRetrieval) delete parsed.policy[name]
@@ -332,7 +339,9 @@ export function createOfficeCodexProxy(options: {
           }
       }
       const retrievalSignal = signal ?? request.signal
+      let dispatched = false
       try {
+        if (Object.hasOwn(call.input, PRIVATE_IMAGE_FIELD)) throw new Error('invalid_tool_input')
         if (capability && request.executeRetrieval) {
           const output = await request.executeRetrieval(
             capability,
@@ -349,6 +358,42 @@ export function createOfficeCodexProxy(options: {
               ...retrievalDisplay(result.output, call.name),
             })
         } else {
+          let toolInput = call.input
+          if (call.name === 'insert_web_image') {
+            if (!request.executeRetrieval) throw new Error('image_fetch_unavailable')
+            // Stay within the active agent request: the PC retrieval proxy owns
+            // image-search provenance, URL/DNS/redirect validation and decoding.
+            const payload = await request.executeRetrieval(
+              'image-fetch.v1',
+              { url: call.input.url },
+              retrievalSignal,
+            )
+            if (payload.byteLength > 3 * 1024 * 1024) throw new Error('image_limit')
+            const image = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload))
+            if (
+              !image ||
+              (image.mime !== 'image/png' && image.mime !== 'image/jpeg') ||
+              typeof image.data_base64 !== 'string' ||
+              !image.data_base64.length ||
+              image.data_base64.length % 4 !== 0 ||
+              !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data_base64)
+            )
+              throw new Error('invalid_image')
+            let bytes: Uint8Array = Buffer.from(image.data_base64, 'base64')
+            if (bytes.byteLength > 2 * 1024 * 1024) throw new Error('image_limit')
+            if (options.prepareImageHandoff)
+              ({ bytes } = await options.prepareImageHandoff({ bytes, mime: image.mime }))
+            if (!bytes.byteLength || bytes.byteLength > MAX_IMAGE_HANDOFF_BYTES)
+              throw new Error('image_limit')
+            toolInput = {
+              ...call.input,
+              [PRIVATE_IMAGE_FIELD]: Buffer.from(bytes).toString('base64'),
+            }
+            if (Buffer.byteLength(JSON.stringify(toolInput)) > MAX_BODY_BYTES)
+              throw new Error('image_limit')
+            if (retrievalSignal.aborted || request.signal.aborted) throw new Error('cancelled')
+          }
+          dispatched = true
           result = await request.executeTool({
             turnId,
             // Model carrier IDs may be shorter than Relay identifiers. Keep the
@@ -356,11 +401,33 @@ export function createOfficeCodexProxy(options: {
             callId,
             generation: request.statement.session_generation,
             toolName: call.name,
-            input: call.input,
+            input: toolInput,
           })
         }
       } catch (error) {
         telemetry('dispatch', 'failed')
+        if (call.name === 'insert_web_image' && !dispatched) {
+          const code =
+            retrievalSignal.aborted || request.signal.aborted
+              ? 'cancelled'
+              : error instanceof Error
+                ? error.message
+                : ''
+          return {
+            output: [
+              'image_limit',
+              'invalid_image',
+              'image_mime_unsupported',
+              'invalid_tool_input',
+              'cancelled',
+            ].includes(code)
+              ? code
+              : 'image_fetch_unavailable',
+            isError: true,
+            summary: 'Office image unavailable',
+            mutated: false,
+          }
+        }
         if (capability) {
           if (request.executeRetrieval && !retrievalSignal.aborted)
             enrich({ summary: 'Retrieval unavailable' })

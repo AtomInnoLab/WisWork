@@ -34,7 +34,7 @@ Office / PC 类型检查与 Relay clippy（-D warnings）通过。
 
 ## 边界与发布
 
-诊断中的 duplicate_slide、insert_web_image、execute_office_js、plan_deck 单次失败缺少具体参数或原始校验原因；无法据此声称这些问题都已定位或修复。日志显示它们之后仍有成功工具调用。
+后续针对单次工具失败的复核与修复见 [PC 0.6.61 配套发布](2026-09-10-office-single-tool-release.md)：已复现页数缓存未更新、非连续原型占位死锁、插图嵌套请求争用和 PC 工具帧上限不一致。原始诊断没有完整参数，不能声称每条历史错误均已精确归因；尤其脚本回读校验与计划解析错误仍需要更具体的现场证据。
 
 此次改动需同时发布 PC、Taskpane 和 Relay。仅刷新现有 Taskpane 不能更新 PC/Relay 内的旧 watchdog。
 真实 macOS PowerPoint 长时间制作用例仍需在配套更新后验收；自动测试不替代宿主端验收。

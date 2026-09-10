@@ -867,10 +867,34 @@ describe('Office cloud relay session', () => {
       }),
     )
     await expect(invalidInput).resolves.toBeUndefined()
+    for (const [index, errorCode] of [
+      'image_fetch_unavailable',
+      'image_limit',
+      'image_mime_unsupported',
+      'invalid_image',
+    ].entries()) {
+      const eventId = `00000000-0000-4000-8000-00000000000${index + 6}`
+      const upload = session.sendDiagnostic({
+        ...diagnostic,
+        event_id: eventId,
+        error_code: errorCode,
+      })
+      expect(frame(socket, index + 5).error_code).toBe(
+        errorCode === 'image_fetch_unavailable' ? 'network_error' : 'agent_run_failed',
+      )
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'office.diagnostic.accepted',
+          event_id: eventId,
+        }),
+      )
+      await expect(upload).resolves.toBeUndefined()
+    }
     await expect(
       session.sendDiagnostic({ ...diagnostic, tool: 'x'.repeat(5_000) }),
     ).rejects.toThrow('diagnostic_too_large')
-    expect(socket.sent).toHaveLength(5)
+    expect(socket.sent).toHaveLength(9)
   })
 
   it('keeps Agent streaming usable after a nonfatal diagnostic limit response', async () => {
