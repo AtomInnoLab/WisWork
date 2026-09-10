@@ -787,6 +787,9 @@ export function createDocumentToolSession(
             call.name === 'ask_clarification' ? MAX_QUESTIONNAIRE_MS : maxCallMs,
           )
         } catch (error) {
+          // A timed-out remote executor must release its transport slot too.
+          // Merely returning tool_timeout leaves later document calls blocked.
+          controller.abort()
           return stable(error instanceof ToolRouterError ? error.code : 'tool_execution_failed')
         }
         return validExecution(execution) && execution.mutated !== true

@@ -23,6 +23,7 @@ const SESSION_ABSOLUTE_MAX_MS = 8 * 60 * 60 * 1_000
 const IDENTIFIER = /^[A-Za-z0-9_-]{8,128}$/
 const HOSTS = new Set(['Word', 'Excel', 'PowerPoint'])
 const MAX_REQUEST_IDS = 2_048
+const MAX_PENDING_TOOLS = 8
 const RELAY_ERROR_CODES = new Set([
   'already_claimed',
   'binary_not_supported',
@@ -141,7 +142,7 @@ export function createOfficeRelayClient(options: {
     sessionId: string
     requestId: string
     statement: Readonly<OfficeEnhancedSessionStatement>
-    executeTool(call: OfficeRelayToolCall): Promise<OfficeRelayToolResult>
+    executeTool(call: OfficeRelayToolCall, signal?: AbortSignal): Promise<OfficeRelayToolResult>
   }) => Promise<MessagesProxyResponse>
   enhancedStatement?: (
     host: OfficePairingRequest['hostLabel'],
@@ -212,6 +213,10 @@ export function createOfficeRelayClient(options: {
   const requestIds = new Set<string>()
   const terminalRequestIds = new Set<string>()
   const terminalRequestOrder: string[] = []
+  // Only dispatched, cancelled calls may produce a late result on this socket.
+  const cancelledToolResults = new Set<string>()
+  const toolResultKey = (requestId: string, call: OfficeRelayToolCall) =>
+    JSON.stringify([requestId, call.turnId, call.callId, call.generation])
   let generation = 0
   let approvalSentFor: string | null = null
   let pairingTimer: ReturnType<typeof setTimeout> | null = null
@@ -283,6 +288,7 @@ export function createOfficeRelayClient(options: {
     requestIds.clear()
     terminalRequestIds.clear()
     terminalRequestOrder.length = 0
+    cancelledToolResults.clear()
     clearTimers()
     const current = socket
     socket = null
@@ -327,6 +333,42 @@ export function createOfficeRelayClient(options: {
     if (bodyBytes > MAX_REQUEST_BYTES) return clear('request_too_large', true)
     const controller = new AbortController()
     active = { requestId: frame.request_id, controller, remoteCancelled: false }
+    const queue: NonNullable<typeof pendingTool>[] = []
+    const disposeTools = () => {
+      const dispatched = pendingTool?.requestId === frame.request_id ? pendingTool : null
+      if (dispatched) {
+        pendingTool = null
+        cancelledToolResults.add(toolResultKey(dispatched.requestId, dispatched.call))
+        while (cancelledToolResults.size > TERMINAL_REQUEST_CACHE_SIZE)
+          cancelledToolResults.delete(cancelledToolResults.values().next().value!)
+        dispatched.reject(new Error('tool_cancelled'))
+      }
+      for (const tool of queue.splice(0)) tool.reject(new Error('tool_cancelled'))
+    }
+    const abortRequest = () => {
+      if (active?.controller !== controller) return
+      const remoteCancelled = active.remoteCancelled
+      active = null
+      rememberTerminalRequest(frame.request_id as string)
+      disposeTools()
+      if (!remoteCancelled && session && owner === generation) {
+        try {
+          // The wire is single-flight and has no per-tool cancel. End this
+          // request before releasing its slot; never replay an unresolved write.
+          send({
+            version: protocolVersion,
+            type: 'pc.error',
+            session_id: session.sessionId,
+            capability: session.capability,
+            request_id: frame.request_id,
+            code: 'cancelled',
+          })
+        } catch {
+          // Local cancellation must settle even if the socket has already gone.
+        }
+      }
+    }
+    controller.signal.addEventListener('abort', abortRequest, { once: true })
     const timeout = setTimeout(
       () => controller.abort(),
       protocolVersion === 2 && frame.capability_name === 'agent.v1'
@@ -341,8 +383,41 @@ export function createOfficeRelayClient(options: {
         (capabilityName !== 'agent.v1' && !options.retrievalProxy)
       )
         return clear('protocol_violation', true)
-      const executeTool = (call: OfficeRelayToolCall): Promise<OfficeRelayToolResult> => {
-        if (!session || pendingTool || active?.requestId !== frame.request_id)
+      const dispatchNext = () => {
+        if (
+          pendingTool ||
+          controller.signal.aborted ||
+          active?.controller !== controller ||
+          !session
+        )
+          return
+        const tool = queue.shift()
+        if (!tool) return
+        pendingTool = tool
+        try {
+          send({
+            version: 2,
+            type: 'pc.tool_call',
+            session_id: session.sessionId,
+            capability: session.capability,
+            request_id: frame.request_id,
+            turn_id: tool.call.turnId,
+            call_id: tool.call.callId,
+            generation: tool.call.generation,
+            tool_name: tool.call.toolName,
+            input: tool.call.input,
+          })
+        } catch {
+          controller.abort()
+        }
+      }
+      const executeTool = (
+        call: OfficeRelayToolCall,
+        signal?: AbortSignal,
+      ): Promise<OfficeRelayToolResult> => {
+        if (signal?.aborted || controller.signal.aborted)
+          return Promise.reject(new Error('tool_cancelled'))
+        if (!session || active?.requestId !== frame.request_id)
           return Promise.reject(new Error('tool_unavailable'))
         if (
           !validId(call.turnId) ||
@@ -354,20 +429,34 @@ export function createOfficeRelayClient(options: {
           Buffer.byteLength(JSON.stringify(call.input)) > MAX_REQUEST_BYTES
         )
           return Promise.reject(new Error('invalid_tool_call'))
+        if (queue.length + (pendingTool ? 1 : 0) >= MAX_PENDING_TOOLS)
+          return Promise.reject(new Error('tool_queue_full'))
         return new Promise((resolve, reject) => {
-          pendingTool = { requestId: frame.request_id as string, call, resolve, reject }
-          send({
-            version: 2,
-            type: 'pc.tool_call',
-            session_id: session!.sessionId,
-            capability: session!.capability,
-            request_id: frame.request_id,
-            turn_id: call.turnId,
-            call_id: call.callId,
-            generation: call.generation,
-            tool_name: call.toolName,
-            input: call.input,
-          })
+          const finish = () => signal?.removeEventListener('abort', abort)
+          const tool: NonNullable<typeof pendingTool> = {
+            requestId: frame.request_id as string,
+            call: structuredClone(call),
+            resolve(result) {
+              finish()
+              resolve(result)
+              dispatchNext()
+            },
+            reject(error) {
+              finish()
+              reject(error)
+            },
+          }
+          const abort = () => {
+            if (pendingTool === tool) controller.abort()
+            else {
+              const index = queue.indexOf(tool)
+              if (index >= 0) queue.splice(index, 1)
+              tool.reject(new Error('tool_cancelled'))
+            }
+          }
+          signal?.addEventListener('abort', abort, { once: true })
+          queue.push(tool)
+          dispatchNext()
         })
       }
       const response =
@@ -402,6 +491,7 @@ export function createOfficeRelayClient(options: {
         response.status === 304
       )
         throw new Error('unsupported_stream_status')
+      if (owner !== generation || controller.signal.aborted || !session) return
       const contentType = response.contentType ?? 'application/octet-stream'
       if (!/^[\x20-\x7e]{1,128}$/.test(contentType)) throw new Error('invalid_content_type')
       send({
@@ -440,6 +530,8 @@ export function createOfficeRelayClient(options: {
         }
       }
       if (owner !== generation || controller.signal.aborted || !session) return
+      if (pendingTool?.requestId === frame.request_id || queue.length)
+        throw new Error('unresolved_tool')
       send({
         version: protocolVersion,
         type: 'pc.done',
@@ -468,8 +560,10 @@ export function createOfficeRelayClient(options: {
       })
     } finally {
       clearTimeout(timeout)
+      controller.signal.removeEventListener('abort', abortRequest)
+      disposeTools()
       rememberTerminalRequest(frame.request_id as string)
-      if (active?.requestId === frame.request_id) active = null
+      if (active?.controller === controller) active = null
     }
   }
 
@@ -798,8 +892,6 @@ export function createOfficeRelayClient(options: {
       const tool = pendingTool
       if (
         !session ||
-        !active ||
-        !tool ||
         !exact(frame, [
           'version',
           'type',
@@ -812,14 +904,30 @@ export function createOfficeRelayClient(options: {
           'is_error',
         ]) ||
         typed.session_id !== session.sessionId ||
+        !validId(typed.request_id) ||
+        !validId(typed.turn_id) ||
+        !validId(typed.call_id) ||
+        !Number.isSafeInteger(typed.generation) ||
+        typeof typed.output !== 'string' ||
+        Buffer.byteLength(typed.output) > MAX_RESPONSE_BYTES ||
+        typeof typed.is_error !== 'boolean'
+      )
+        return clear('protocol_violation', true)
+      const cancelledKey = JSON.stringify([
+        typed.request_id,
+        typed.turn_id,
+        typed.call_id,
+        typed.generation,
+      ])
+      if (cancelledToolResults.has(cancelledKey)) return
+      if (
+        !active ||
+        !tool ||
         typed.request_id !== active.requestId ||
         typed.request_id !== tool.requestId ||
         typed.turn_id !== tool.call.turnId ||
         typed.call_id !== tool.call.callId ||
-        typed.generation !== tool.call.generation ||
-        typeof typed.output !== 'string' ||
-        Buffer.byteLength(typed.output) > MAX_RESPONSE_BYTES ||
-        typeof typed.is_error !== 'boolean'
+        typed.generation !== tool.call.generation
       )
         return clear('protocol_violation', true)
       pendingTool = null

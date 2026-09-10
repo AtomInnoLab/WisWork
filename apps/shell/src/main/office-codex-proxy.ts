@@ -224,7 +224,7 @@ export function createOfficeCodexProxy(options: {
     sessionId: string
     requestId: string
     statement: Readonly<OfficeEnhancedSessionStatement>
-    executeTool(call: OfficeRelayToolCall): Promise<OfficeRelayToolResult>
+    executeTool(call: OfficeRelayToolCall, signal?: AbortSignal): Promise<OfficeRelayToolResult>
     executeRetrieval?: OfficeRetrievalProxy
   }): Promise<MessagesProxyResponse> => {
     const host = hostName(request.host)
@@ -410,15 +410,18 @@ export function createOfficeCodexProxy(options: {
             if (retrievalSignal.aborted || request.signal.aborted) throw new Error('cancelled')
           }
           dispatched = true
-          result = await request.executeTool({
-            turnId,
-            // Model carrier IDs may be shorter than Relay identifiers. Keep the
-            // protocol boundary deterministic without weakening Relay validation.
-            callId,
-            generation: request.statement.session_generation,
-            toolName: call.name,
-            input: toolInput,
-          })
+          result = await request.executeTool(
+            {
+              turnId,
+              // Model carrier IDs may be shorter than Relay identifiers. Keep the
+              // protocol boundary deterministic without weakening Relay validation.
+              callId,
+              generation: request.statement.session_generation,
+              toolName: call.name,
+              input: toolInput,
+            },
+            signal ?? request.signal,
+          )
         }
       } catch (error) {
         telemetry('dispatch', 'failed')
