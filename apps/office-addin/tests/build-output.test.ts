@@ -44,7 +44,15 @@ describe('configured Office build output', () => {
     expect(taskpane).not.toMatch(/oauth|callback|auth\.dev|wisusage/i)
     expect(taskpane).not.toContain("'unsafe-eval'")
     expect(files).not.toContain('oauth')
-    expect(files.some((file) => file.startsWith('assets/conversion-worker-'))).toBe(true)
+    const conversionWorker = files.find((file) => file.startsWith('assets/conversion-worker-'))
+    const pdfWorker = files.find(
+      (file) => file.startsWith('assets/pdf.worker-') && file.endsWith('.js'),
+    )
+    expect(conversionWorker).toBeDefined()
+    expect(pdfWorker).toBeDefined()
+    expect(await readFile(resolve(dist, conversionWorker!), 'utf8')).toContain(
+      `./${pdfWorker!.replace(/^assets\//, '')}`,
+    )
     expect(files.some((file) => file.endsWith('.map'))).toBe(false)
   })
 
