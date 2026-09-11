@@ -19,6 +19,7 @@ const REQUEST_TIMEOUT_MS = 305_000
 // Match Relay's extended agent.v1 envelope, with five seconds for relay.cancel.
 const AGENT_REQUEST_TIMEOUT_MS = 30 * 60_000 + 25_000
 const CONNECT_TIMEOUT_MS = 10_000
+const HEARTBEAT_INTERVAL_MS = 20_000
 const ENHANCED_LEASE_RENEW_BEFORE_MS = 5 * 60_000
 const ENHANCED_LEASE_MS = 15 * 60_000
 const ENHANCED_LEASE_CAPABILITY = 'enhanced-lease.v1'
@@ -84,6 +85,7 @@ export interface RelaySocket {
   readyState: number
   addEventListener(name: string, listener: (event: any) => void): void
   send(data: string): void
+  ping?(): void
   close(code?: number, reason?: string): void
 }
 
@@ -173,6 +175,8 @@ export function createOfficeRelayClient(options: {
   onStatus?: (status: OfficeRelayStatus) => void
   maxRequestIds?: number
   now?: () => number
+  scheduleHeartbeat?: typeof setInterval
+  clearHeartbeat?: typeof clearInterval
 }): OfficeRelayClient {
   const connect = options.connect ?? connectAuthenticatedRelaySocket
   let socket: RelaySocket | null = null
@@ -252,6 +256,7 @@ export function createOfficeRelayClient(options: {
   let leaseTimer: ReturnType<typeof setTimeout> | null = null
   let renewalTimer: ReturnType<typeof setTimeout> | null = null
   let renewalAttempt: { timer: ReturnType<typeof setTimeout> } | null = null
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null
   let acceptedApprovalSignature: string | null = null
 
   const frameSignature = (frame: Record<string, unknown>): string =>
@@ -276,11 +281,13 @@ export function createOfficeRelayClient(options: {
     if (leaseTimer) clearTimeout(leaseTimer)
     if (renewalTimer) clearTimeout(renewalTimer)
     if (renewalAttempt) clearTimeout(renewalAttempt.timer)
+    if (heartbeatTimer) (options.clearHeartbeat ?? clearInterval)(heartbeatTimer)
     pairingTimer = null
     sessionTimer = null
     leaseTimer = null
     renewalTimer = null
     renewalAttempt = null
+    heartbeatTimer = null
   }
   const rememberTerminalRequest = (requestId: string) => {
     if (terminalRequestIds.has(requestId)) return
@@ -1232,6 +1239,23 @@ export function createOfficeRelayClient(options: {
       )
       next.addEventListener('open', () => {
         clearTimeout(timeout)
+        if (owner !== generation || socket !== next) {
+          reject(new Error('relay_connection_failed'))
+          return
+        }
+        const ping = () => {
+          if (owner !== generation || socket !== next || next.readyState !== 1) return
+          try {
+            next.ping?.()
+          } catch {
+            clear('network_error', true)
+          }
+        }
+        if (next.ping) {
+          ping()
+          heartbeatTimer = (options.scheduleHeartbeat ?? setInterval)(ping, HEARTBEAT_INTERVAL_MS)
+          ;(heartbeatTimer as ReturnType<typeof setInterval> & { unref?: () => void }).unref?.()
+        }
         resolve()
       })
       next.addEventListener('error', () => {
