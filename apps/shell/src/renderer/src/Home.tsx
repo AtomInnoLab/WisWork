@@ -105,9 +105,13 @@ export function officeConnectionCopy(language: string, status: OfficeRelayStatus
         ? chinese
           ? '正在连接…'
           : 'Connecting…'
-        : chinese
-          ? '输入 Office 中显示的 6 位代码'
-          : 'Enter the 6-digit code shown in Office',
+        : status === 'disconnected:invalid_code'
+          ? chinese
+            ? '代码已失效，请刷新 Office 中的 6 位代码后重试'
+            : 'The code expired. Refresh the 6-digit code in Office and try again.'
+          : chinese
+            ? '输入 Office 中显示的 6 位代码'
+            : 'Enter the 6-digit code shown in Office',
     action: chinese ? '连接' : 'Connect',
     connected,
   }

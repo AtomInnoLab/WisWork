@@ -754,6 +754,7 @@ export function AgentWorkspace(props: {
   runtimeMode?: 'standard' | 'enhanced'
   connectionAvailable?: boolean
   designRequest?: OfficeDesignRequest
+  repairDesignConnection?: () => void | Promise<void>
 }) {
   const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
@@ -966,6 +967,7 @@ export function AgentWorkspace(props: {
           selection={designEditor}
           busy={state.busy || state.applying || props.connectionAvailable === false}
           request={props.designRequest}
+          onRepairConnection={props.repairDesignConnection}
           onApply={(markdown) => session.reviseDesignContract?.(markdown)}
         />
       )}
@@ -1637,6 +1639,7 @@ export function ConfiguredApp(
           ? designRequest
           : undefined
       }
+      repairDesignConnection={() => forgetPairing()}
     />
   )
 }

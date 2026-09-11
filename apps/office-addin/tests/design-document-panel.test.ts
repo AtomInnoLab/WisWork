@@ -93,7 +93,25 @@ describe('Office DESIGN.md reading and connected-PC editing', () => {
     )
     await act(async () => button('DESIGN.md').click())
     expect(container.querySelector('[role="dialog"]')).not.toBeNull()
-    expect(button('在 WisWork PC 编辑').disabled).toBe(true)
+    expect(button('重新配对以启用编辑').disabled).toBe(true)
+  })
+
+  it('offers an explicit re-pair action when the connected PC lacks file sync', async () => {
+    const onRepairConnection = vi.fn()
+    await act(async () =>
+      root.render(
+        React.createElement(OfficeDesignPanel, {
+          current,
+          busy: false,
+          onRepairConnection,
+          onApply: vi.fn(),
+        }),
+      ),
+    )
+    await act(async () => button('DESIGN.md').click())
+    expect(button('重新配对以启用编辑').disabled).toBe(false)
+    await act(async () => button('重新配对以启用编辑').click())
+    expect(onRepairConnection).toHaveBeenCalledOnce()
   })
 
   it('does not reopen a dismissed timeline selection when the current design changes', async () => {
