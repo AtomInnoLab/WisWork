@@ -87,6 +87,14 @@ describe('presentation design workflow', () => {
         JSON.stringify({ status: 'planned', designMd: '# DESIGN.md\n\nAccent: blue' }),
       ),
     ).toBe('# DESIGN.md\n\nAccent: blue')
+    expect(
+      extractPresentationDesignDocument(
+        JSON.stringify({
+          status: 'planned',
+          designMd: '# DESIGN.md\\n\\n状态: verified\\n修订版本: 2',
+        }),
+      ),
+    ).toBe('# DESIGN.md\n\n状态: verified\n修订版本: 2')
     expect(extractPresentationDesignDocument('# DESIGN.md\n\n   ')).toBeUndefined()
   })
 

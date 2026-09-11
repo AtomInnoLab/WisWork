@@ -418,6 +418,27 @@ describe('EnhancedDiagnosticsStore', () => {
     expect(JSON.stringify(result)).not.toContain('Bearer private')
   })
 
+  it('preserves safe failure codes returned by self-check probes', async () => {
+    const { store } = fixture()
+    const result = await store.runSelfCheck({
+      component: async () => ({ status: 'failed', code: 'component_unavailable' }),
+      authentication: async () => true,
+      runtime: async () => ({ status: 'failed', code: 'runtime_unavailable' }),
+      mcp: async () => 'not_tested',
+      wisusage: async () => true,
+    })
+    expect(result.checks[0]).toEqual({
+      layer: 'component',
+      status: 'failed',
+      code: 'component_unavailable',
+    })
+    expect(result.checks[2]).toEqual({
+      layer: 'runtime',
+      status: 'failed',
+      code: 'runtime_unavailable',
+    })
+  })
+
   it('keeps ambiguous concurrent runtime events system-scoped instead of misattributing them', () => {
     const { store } = fixture()
     const slides = store.beginTask('slides')

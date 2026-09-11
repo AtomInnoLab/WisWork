@@ -16,6 +16,7 @@ export interface OfficeDesignPanelProps {
   selection?: { markdown: string; editable: boolean }
   busy: boolean
   request?: OfficeDesignRequest
+  onRepairConnection?: () => void | Promise<void>
   onApply(markdown: string): void
 }
 export function OfficeDesignPanel({
@@ -23,6 +24,7 @@ export function OfficeDesignPanel({
   selection,
   busy,
   request,
+  onRepairConnection,
   onApply,
 }: OfficeDesignPanelProps): ReactNode {
   const [reader, setReader] = useState<{ historical?: string }>()
@@ -180,14 +182,20 @@ export function OfficeDesignPanel({
                   <button
                     type="button"
                     className="secondary"
-                    disabled={!request || busy || opening}
-                    onClick={() => void openOnPc()}
+                    disabled={busy || opening || (!request && !onRepairConnection)}
+                    onClick={() => {
+                      if (request) return void openOnPc()
+                      setReader(undefined)
+                      void onRepairConnection?.()
+                    }}
                   >
-                    {opening
-                      ? '正在打开…'
-                      : conflict
-                        ? '打开当前版本重新编辑'
-                        : '在 WisWork PC 编辑'}
+                    {!request
+                      ? '重新配对以启用编辑'
+                      : opening
+                        ? '正在打开…'
+                        : conflict
+                          ? '打开当前版本重新编辑'
+                          : '在 WisWork PC 编辑'}
                   </button>
                   {changed && (
                     <button
@@ -207,7 +215,7 @@ export function OfficeDesignPanel({
               )}
             </footer>
             {!request && !historical && (
-              <p>编辑需要已连接的 PC 和 Relay 支持文件同步，请更新后重新连接。</p>
+              <p>当前 PC 或配对未授权文件同步。请先升级 PC，再点击重新配对。</p>
             )}
           </section>
         </div>

@@ -22,12 +22,21 @@ export function buildPresentationDesignDocument(style: string): string {
 const hasPresentationDesignBody = (value: string): boolean =>
   Boolean(value.replace(/^\s*#\s*DESIGN\.md\s*/i, '').trim())
 
+const normalizePresentationDesignDocument = (value: string): string =>
+  !value.includes('\n') &&
+  /^\s*#\s*DESIGN\.md\\n/i.test(value) &&
+  (value.match(/\\n/g) ?? []).length > 1
+    ? value.replace(/\\r\\n|\\n/g, '\n')
+    : value
+
 /** Extract a design snapshot from either desktop prose or Office JSON tool output. */
 export function extractPresentationDesignDocument(output: string): string | undefined {
   try {
     const value = JSON.parse(output) as { designMd?: unknown }
-    if (typeof value.designMd === 'string' && hasPresentationDesignBody(value.designMd))
-      return value.designMd.trim()
+    if (typeof value.designMd === 'string') {
+      const designMd = normalizePresentationDesignDocument(value.designMd)
+      if (hasPresentationDesignBody(designMd)) return designMd.trim()
+    }
   } catch {
     // Desktop plan output is intentionally readable prose rather than JSON.
   }

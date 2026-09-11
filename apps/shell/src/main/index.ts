@@ -2841,10 +2841,16 @@ app.whenReady().then(async () => {
           }
         }
         return enhancedDiagnostics.runSelfCheck({
-          component: async () => (await enhancedModeComponent.status()).state === 'ready',
+          component: async () =>
+            (await enhancedModeComponent.status()).state === 'ready'
+              ? true
+              : ({ status: 'failed', code: 'component_unavailable' } as const),
           authentication: async () =>
             (await requireAuthRuntime().client.getValidAccountStatus()).loggedIn === true,
-          runtime: async () => codexRuntime?.state === 'ready',
+          runtime: async () =>
+            codexRuntime?.state === 'ready'
+              ? true
+              : ({ status: 'failed', code: 'runtime_unavailable' } as const),
           mcp: async () =>
             enhancedDiagnostics.hasObserved('mcp_ready') ? true : ('not_tested' as const),
           wisusage: wisusageProbe,

@@ -1680,6 +1680,29 @@ describe('Office relay PC client', () => {
     },
   )
 
+  it('keeps an invalid verification code actionable in the public status', async () => {
+    const sockets: FakeSocket[] = []
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+      getValidAccountStatus: async () => ({ loggedIn: true, userId: 'local-account' }),
+      getAccessToken: async () => 'token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      persistentPairing: true,
+      onPending() {},
+    })
+    const claim = client.claim('123456')
+    await vi.waitFor(() => expect(sockets).toHaveLength(1))
+    sockets[0]!.open()
+    await claim
+    sockets[0]!.message({ version: 2, type: 'relay.error', code: 'invalid_code' })
+    expect(client.status()).toBe('disconnected:invalid_code')
+  })
+
   it('does not downgrade on a network close and keeps the next claim enhanced', async () => {
     const sockets: FakeSocket[] = []
     const client = createOfficeRelayClient({
