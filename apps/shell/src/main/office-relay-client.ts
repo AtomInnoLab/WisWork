@@ -812,7 +812,7 @@ export function createOfficeRelayClient(options: {
         fallbackToLegacyClaim()
       )
         return
-      return clear('relay_error', true)
+      return clear(candidate.code === 'invalid_code' ? 'invalid_code' : 'relay_error', true)
     }
     if (negotiationPending) return clear('protocol_violation', true)
     if (

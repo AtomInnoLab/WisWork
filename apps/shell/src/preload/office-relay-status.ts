@@ -17,6 +17,7 @@ const SAFE_OFFICE_RELAY_STATUSES = new Set<OfficeRelayStatus>([
   'disconnected:protocol_violation',
   'disconnected:rejected',
   'disconnected:relay_error',
+  'disconnected:invalid_code',
   'disconnected:relay_closed',
   'disconnected:session_expired',
   'disconnected:binding_unavailable',

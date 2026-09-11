@@ -187,6 +187,8 @@ export interface EnhancedSelfCheckResult {
   readonly status: 'passed' | 'failed'
   readonly checks: readonly EnhancedSelfCheckItem[]
 }
+type SelfCheckProbeResult =
+  boolean | 'not_tested' | { readonly status: 'failed'; readonly code: DiagnosticSafeCode }
 
 interface MutableTask {
   diagnosticId: string
@@ -756,7 +758,7 @@ export class EnhancedDiagnosticsStore {
   }
 
   async runSelfCheck(
-    probes: Readonly<Record<SelfCheckLayer, () => Promise<boolean | 'not_tested'>>>,
+    probes: Readonly<Record<SelfCheckLayer, () => Promise<SelfCheckProbeResult>>>,
   ): Promise<EnhancedSelfCheckResult> {
     const diagnosticId = this.#id()
     const startedAt = this.#now()
@@ -764,10 +766,14 @@ export class EnhancedDiagnosticsStore {
     for (const layer of ['component', 'authentication', 'runtime', 'mcp', 'wisusage'] as const) {
       try {
         const result = await probes[layer]()
-        checks.push({
-          layer,
-          status: result === 'not_tested' ? 'not_tested' : result ? 'passed' : 'failed',
-        })
+        checks.push(
+          typeof result === 'object'
+            ? { layer, status: result.status, code: result.code }
+            : {
+                layer,
+                status: result === 'not_tested' ? 'not_tested' : result ? 'passed' : 'failed',
+              },
+        )
       } catch {
         checks.push({ layer, status: 'failed', code: 'unknown_failure' })
       }

@@ -15,6 +15,9 @@ describe('account menu information hierarchy', () => {
       connected: false,
     })
     expect(officeConnectionCopy('zh', 'paired').detail).toBe('已连接')
+    expect(officeConnectionCopy('zh', 'disconnected:invalid_code').detail).toBe(
+      '代码已失效，请刷新 Office 中的 6 位代码后重试',
+    )
     expect(officeConnectionCopy('en', 'disconnected').label).toBe('Connect Office')
   })
 
