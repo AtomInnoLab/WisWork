@@ -309,7 +309,7 @@ describe('document-scoped tool session', () => {
     }
   })
 
-  it('still times out claimed execution after 30 seconds and rejects late receipts', async () => {
+  it('still times out claimed execution after two minutes and rejects late receipts', async () => {
     vi.useFakeTimers()
     const f = fixture()
     try {
@@ -321,7 +321,7 @@ describe('document-scoped tool session', () => {
       await vi.advanceTimersByTimeAsync(40_000)
       const claimed = f.session.mutationAuthority.claimNext()!
       expect(claimed).toBeDefined()
-      await vi.advanceTimersByTimeAsync(30_000)
+      await vi.advanceTimersByTimeAsync(2 * 60_000)
       await expect(outcome.result).resolves.toMatchObject({ output: 'tool_timeout', isError: true })
       expect(() =>
         f.session.mutationAuthority.settle(claimed.claim, { output: 'late', summary: 'late' }),
@@ -366,6 +366,30 @@ describe('document-scoped tool session', () => {
       vi.useRealTimers()
     }
     expect(() => fixture({ maxMutationMs: 5 * 60_000 + 1 })).toThrow('invalid_tool_bounds')
+  })
+
+  it('allows slow bounded rendering reads to run longer than thirty seconds', async () => {
+    vi.useFakeTimers()
+    let finish!: (value: ToolExecution) => void
+    const f = fixture({
+      maxCallMs: 2 * 60_000,
+      executeRead: vi.fn(
+        async () => await new Promise<ToolExecution>((resolve) => (finish = resolve)),
+      ),
+    })
+    try {
+      const outcome = f.session.callTool(f.session.credentials, {
+        id: 'slow-render',
+        name: readTool.name,
+        input: {},
+      })
+      await vi.advanceTimersByTimeAsync(30_001)
+      finish({ output: 'rendered', summary: 'Rendered' })
+      await expect(outcome).resolves.toMatchObject({ output: 'rendered' })
+    } finally {
+      f.session.close()
+      vi.useRealTimers()
+    }
   })
 
   it('binds canonical high-entropy credentials and immutable exact identity', () => {

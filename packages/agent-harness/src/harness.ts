@@ -20,6 +20,7 @@ export interface AgentHarness<_TSnapshot> {
   readonly messages: readonly AgentMessage[]
   subscribe(listener: () => void): () => void
   run(instruction: string, images?: AgentImage[]): boolean
+  resume(instruction: string, images?: AgentImage[]): boolean
   stop(): void
   reset(): void
   restore(messages: readonly AgentMessage[]): void
@@ -130,6 +131,31 @@ export function createAgentHarness<TSnapshot>(
     },
   })
 
+  const launch = (
+    instruction: string,
+    images: AgentImage[] | undefined,
+    resume: boolean,
+  ): boolean => {
+    if (disposed || launchPending || loop.busy || !instruction) return false
+    const generation = currentSnapshot.generation + 1
+    loopOptions.events = eventsFor(generation)
+    launchPending = true
+    publish({ status: 'running', busy: true, generation })
+    if (!isCurrent(generation) || !launchPending) return false
+    launchPending = false
+    try {
+      if (resume) loop.resume(instruction, images)
+      else loop.run(instruction, images)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      invoke(() => hostEvents?.onError?.(message))
+      if (isCurrent(generation)) {
+        publish({ status: 'error', busy: false, generation, error: message })
+      }
+    }
+    return true
+  }
+
   return {
     get snapshot() {
       return currentSnapshot
@@ -143,23 +169,10 @@ export function createAgentHarness<TSnapshot>(
       return () => listeners.delete(listener)
     },
     run(instruction, images) {
-      if (disposed || launchPending || loop.busy || !instruction) return false
-      const generation = currentSnapshot.generation + 1
-      loopOptions.events = eventsFor(generation)
-      launchPending = true
-      publish({ status: 'running', busy: true, generation })
-      if (!isCurrent(generation) || !launchPending) return false
-      launchPending = false
-      try {
-        loop.run(instruction, images)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        invoke(() => hostEvents?.onError?.(message))
-        if (isCurrent(generation)) {
-          publish({ status: 'error', busy: false, generation, error: message })
-        }
-      }
-      return true
+      return launch(instruction, images, false)
+    },
+    resume(instruction, images) {
+      return launch(instruction, images, true)
     },
     stop() {
       if (disposed) return

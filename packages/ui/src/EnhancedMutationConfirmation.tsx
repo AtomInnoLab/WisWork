@@ -1,10 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  translateEnhancedMutationConfirmation,
-  mutationExpiryStrings,
-  type EnhancedMutationConfirmationKey,
-  type Lang,
-} from '@wiswork/i18n'
+import { useEffect, useRef } from 'react'
+import { type EnhancedMutationConfirmationKey, type Lang } from '@wiswork/i18n'
 
 const MAX_ID = 160
 const MAX_TOOL = 96
@@ -102,175 +97,37 @@ export interface EnhancedMutationConfirmationProps {
 }
 
 /**
- * Renderer-only consent surface. It never receives tool arguments and never executes a writer;
- * confirmation merely asks the privileged owner to claim its exact pending proposal.
+ * Automatically submits valid bounded proposals to the privileged owner. The owner still checks
+ * the exact document, generation, catalog digest and mutation capability before executing it.
  */
-export function EnhancedMutationConfirmation({
-  api,
-  locale,
-  translate,
-}: EnhancedMutationConfirmationProps) {
-  const [pending, setPending] = useState<EnhancedMutationProposal | null>(null)
-  const [submitting, setSubmitting] = useState(false)
-  const [expired, setExpired] = useState(false)
-  const pendingRef = useRef<EnhancedMutationProposal | null>(null)
+export function EnhancedMutationConfirmation({ api }: EnhancedMutationConfirmationProps) {
   const consumedRef = useRef(new Set<string>())
-  const mountedRef = useRef(true)
-
-  const consume = useCallback(
-    async (action: 'confirm' | 'cancel', expected?: EnhancedMutationProposal) => {
-      const proposal = pendingRef.current
-      if (!api || !proposal || (expected && proposal !== expected)) return
-      const key = `${proposal.documentId}\0${proposal.generation}\0${proposal.proposalId}`
-      if (consumedRef.current.has(key)) return
-      consumedRef.current.add(key)
-      const expiredAtClick = proposal.expiresAt <= Date.now()
-      if (expiredAtClick && mountedRef.current) setExpired(true)
-      if (mountedRef.current) setSubmitting(true)
-      pendingRef.current = null
-      if (mountedRef.current) setPending(null)
-      try {
-        const method =
-          action === 'confirm' && !expiredAtClick ? api.confirmProposal : api.cancelProposal
-        await method.call(api, proposal.documentId, proposal.generation, proposal.proposalId)
-      } catch {
-        // The privileged owner remains fail-closed. The renderer must not retry a consumed
-        // consent token or infer whether the pending transaction still exists.
-      } finally {
-        if (mountedRef.current) setSubmitting(false)
-      }
-    },
-    [api],
-  )
 
   useEffect(() => {
-    mountedRef.current = true
     if (!api) return
     const unsubscribe = api.onProposal((candidate) => {
       if (!hasValidEnvelope(candidate)) return
+      const key = `${candidate.documentId}\0${candidate.generation}\0${candidate.proposalId}`
+      if (consumedRef.current.has(key)) return
+      consumedRef.current.add(key)
       if (!isEnhancedMutationSummary(candidate.summary)) {
         void api
           .cancelProposal(candidate.documentId, candidate.generation, candidate.proposalId)
           .catch(() => {})
         return
       }
-      const key = `${candidate.documentId}\0${candidate.generation}\0${candidate.proposalId}`
-      if (consumedRef.current.has(key)) return
       if (candidate.expiresAt <= Date.now()) {
-        consumedRef.current.add(key)
-        if (!pendingRef.current) setExpired(true)
         void api
           .cancelProposal(candidate.documentId, candidate.generation, candidate.proposalId)
           .catch(() => {})
         return
       }
-      const previous = pendingRef.current
-      if (previous) {
-        const previousKey = `${previous.documentId}\0${previous.generation}\0${previous.proposalId}`
-        if (previousKey === key) return
-        void consume('cancel', previous)
-      }
-      pendingRef.current = candidate
-      setExpired(false)
-      setPending(candidate)
+      void api
+        .confirmProposal(candidate.documentId, candidate.generation, candidate.proposalId)
+        .catch(() => {})
     })
-    return () => {
-      mountedRef.current = false
-      unsubscribe()
-      const current = pendingRef.current
-      if (current) void consume('cancel', current)
-    }
-  }, [api, consume])
+    return unsubscribe
+  }, [api])
 
-  useEffect(() => {
-    if (!pending) return
-    const remaining = pending.expiresAt - Date.now()
-    if (remaining <= 0) {
-      setExpired(true)
-      void consume('cancel', pending)
-      return
-    }
-    const timer = window.setTimeout(() => {
-      setExpired(true)
-      void consume('cancel', pending)
-    }, remaining)
-    return () => window.clearTimeout(timer)
-  }, [consume, pending])
-
-  if (!pending && expired) {
-    const [message, close] = mutationExpiryStrings[locale]
-    return (
-      <div className="enhanced-confirm-backdrop" role="presentation">
-        <section
-          className="enhanced-confirm-dialog"
-          role="alertdialog"
-          aria-modal="true"
-          aria-label={message}
-        >
-          <p>{message}</p>
-          <div className="enhanced-confirm-actions">
-            <button type="button" data-action="dismiss" onClick={() => setExpired(false)}>
-              {close}
-            </button>
-          </div>
-        </section>
-      </div>
-    )
-  }
-  if (!pending) return null
-  const text =
-    translate ??
-    ((key: EnhancedMutationConfirmationKey) => translateEnhancedMutationConfirmation(locale, key))
-  return (
-    <div className="enhanced-confirm-backdrop" role="presentation">
-      <section
-        className="enhanced-confirm-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="enhanced-confirm-title"
-        aria-describedby="enhanced-confirm-summary"
-      >
-        <h2 id="enhanced-confirm-title">{text('title')}</h2>
-        <dl id="enhanced-confirm-summary" className="enhanced-confirm-summary">
-          <div>
-            <dt>{text('operation')}</dt>
-            <dd>{text(`operation.${pending.summary.operation}`)}</dd>
-          </div>
-          <div>
-            <dt>{text('target')}</dt>
-            <dd>{text(`target.${pending.summary.target}`)}</dd>
-          </div>
-          <div>
-            <dt>{text('scope')}</dt>
-            <dd>{text(`scope.${pending.summary.scope}`)}</dd>
-          </div>
-          {pending.summary.count !== undefined && (
-            <div>
-              <dt>{text('count')}</dt>
-              <dd>{pending.summary.count}</dd>
-            </div>
-          )}
-        </dl>
-        <p className="enhanced-confirm-warning">{text('warning')}</p>
-        <div className="enhanced-confirm-actions">
-          <button
-            type="button"
-            data-action="cancel"
-            disabled={submitting}
-            onClick={() => void consume('cancel')}
-          >
-            {text('reject')}
-          </button>
-          <button
-            type="button"
-            data-action="confirm"
-            disabled={submitting}
-            onClick={() => void consume('confirm')}
-          >
-            {text('confirm')}
-          </button>
-        </div>
-      </section>
-    </div>
-  )
+  return null
 }

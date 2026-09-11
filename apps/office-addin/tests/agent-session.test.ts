@@ -1239,7 +1239,8 @@ describe('Office agent session', () => {
     expect(JSON.stringify(session.snapshot())).not.toContain('"summary":"bash"')
   })
 
-  it('retries the last bounded instruction after a stable run error', async () => {
+  it('automatically resumes a transient provider failure from the current document state', async () => {
+    vi.useFakeTimers()
     const harness = transportHarness()
     const session = createOfficeAgentSession({
       transport: harness.transport,
@@ -1250,16 +1251,90 @@ describe('Office agent session', () => {
     session.send('Try this')
     await Promise.resolve()
     harness.callbacks().onError('provider_unavailable')
-    session.retry()
-    await Promise.resolve()
+    expect(session.snapshot()).toMatchObject({
+      busy: true,
+      status: 'working',
+      retryable: false,
+      activity: 'Connection interrupted. Progress saved; recovering…',
+    })
+    expect(session.snapshot().error).toBeUndefined()
+
+    await vi.advanceTimersByTimeAsync(2_000)
 
     expect(session.snapshot().status).toBe('working')
+    expect(harness.stream).toHaveBeenCalledTimes(2)
     expect(
       session
         .snapshot()
         .timeline.filter((event) => event.kind === 'user')
         .map((event) => (event.kind === 'user' ? event.text : '')),
-    ).toEqual(['Try this', 'Try this'])
+    ).toEqual(['Try this'])
+    expect(harness.stream.mock.calls[1]?.[0]).toMatchObject({
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          text: expect.stringContaining('Resume the interrupted task'),
+        }),
+      ]),
+    })
+    session.dispose()
+    vi.useRealTimers()
+  })
+
+  it('shows one recoverable error only after the automatic recovery budget is exhausted', async () => {
+    vi.useFakeTimers()
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+    })
+
+    session.send('Build the deck')
+    await Promise.resolve()
+    harness.callbacks().onError('provider_unavailable')
+    await vi.advanceTimersByTimeAsync(2_000)
+    harness.callbacks().onError('provider_unavailable')
+    await vi.advanceTimersByTimeAsync(8_000)
+    harness.callbacks().onError('provider_unavailable')
+
+    expect(harness.stream).toHaveBeenCalledTimes(3)
+    expect(session.snapshot()).toMatchObject({
+      busy: false,
+      status: 'error',
+      error: 'provider_unavailable',
+      retryable: true,
+      errorMessage: 'The Agent service is temporarily unavailable. Your progress is saved.',
+    })
+    expect(session.snapshot().timeline.filter((event) => event.kind === 'error')).toHaveLength(1)
+    session.retry()
+    await Promise.resolve()
+    expect(harness.stream).toHaveBeenCalledTimes(4)
+    expect(session.snapshot()).toMatchObject({ busy: true, status: 'working', error: undefined })
+    expect(session.snapshot().timeline.filter((event) => event.kind === 'user')).toHaveLength(1)
+    session.dispose()
+    vi.useRealTimers()
+  })
+
+  it('cancels a scheduled automatic recovery when the user stops the task', async () => {
+    vi.useFakeTimers()
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+    })
+
+    session.send('Build the deck')
+    await Promise.resolve()
+    harness.callbacks().onError('network_error')
+    session.stop()
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(harness.stream).toHaveBeenCalledOnce()
+    expect(session.snapshot()).toMatchObject({ busy: false, status: 'cancelled' })
+    session.dispose()
+    vi.useRealTimers()
   })
 
   it.each([
@@ -1491,7 +1566,7 @@ describe('Office agent session', () => {
     expect(JSON.stringify(session.snapshot())).not.toContain('secret')
   })
 
-  it('reports the bounded transport deadline as a retryable request timeout', async () => {
+  it('automatically recovers from the bounded transport deadline', async () => {
     const harness = transportHarness()
     const session = createOfficeAgentSession({
       transport: harness.transport,
@@ -1504,10 +1579,12 @@ describe('Office agent session', () => {
     harness.callbacks().onError('transport_timeout')
 
     expect(session.snapshot()).toMatchObject({
-      error: 'request_timeout',
-      errorMessage: 'The Agent took too long to respond. Try again.',
-      retryable: true,
+      busy: true,
+      status: 'working',
+      activity: 'Connection interrupted. Progress saved; recovering…',
+      retryable: false,
     })
+    session.dispose()
   })
 
   it.each([
@@ -1532,7 +1609,11 @@ describe('Office agent session', () => {
       await Promise.resolve()
       diagnostics.setTool('screenshot_slide')
       harness.callbacks().onError(code)
-      expect(session.snapshot()).toMatchObject({ busy: false, status: 'error', error: expected })
+      expect(session.snapshot()).toMatchObject(
+        ['network_error', 'provider_unavailable'].includes(expected)
+          ? { busy: true, status: 'working', error: undefined }
+          : { busy: false, status: 'error', error: expected },
+      )
       expect(diagnostics.snapshot().events.at(-1)).toMatchObject({
         tool: 'agent_run',
         phase: 'transport',

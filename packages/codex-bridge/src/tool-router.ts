@@ -29,7 +29,8 @@ const MAX_ID_BYTES = 256
 const MAX_GRAPH_NODES = 20_000
 const MAX_TOTAL_GRAPH_NODES = 100_000
 const MAX_GRAPH_DEPTH = 48
-const MAX_CALL_MS = 30_000
+const DEFAULT_CALL_MS = 30_000
+const MAX_CALL_MS = 2 * 60_000
 // Human interaction is not a 30-second computation. Keep it bounded and cancellable.
 const MAX_QUESTIONNAIRE_MS = 10 * 60_000
 const MAX_CONSENT_MS = 5 * 60_000
@@ -602,7 +603,7 @@ export function createDocumentToolSession(
     manifest.authorization.host,
     manifest.authorization.generation,
   )
-  const maxCallMs = registration.maxCallMs ?? MAX_CALL_MS
+  const maxCallMs = registration.maxCallMs ?? DEFAULT_CALL_MS
   const maxMutationMs = registration.maxMutationMs ?? maxCallMs
   const maxTotalCalls = registration.maxTotalCalls ?? MAX_TOTAL_CALLS
   const maxPendingMutations = registration.maxPendingMutations ?? MAX_PENDING_MUTATIONS

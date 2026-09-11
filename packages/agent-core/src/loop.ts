@@ -438,6 +438,15 @@ export class AgentLoop<TSnapshot = unknown> {
 
   /** images: inline attachments for this user turn (vision input; see AgentImage) */
   run(instruction: string, images?: AgentImage[]): void {
+    this.startRun(instruction, images, false)
+  }
+
+  /** Resume a failed run while retaining host-owned presentation verification state. */
+  resume(instruction: string, images?: AgentImage[]): void {
+    this.startRun(instruction, images, true)
+  }
+
+  private startRun(instruction: string, images: AgentImage[] | undefined, resume: boolean): void {
     if (this.running || !instruction) return
     this.running = true
     this.cancelled = false
@@ -445,13 +454,15 @@ export class AgentLoop<TSnapshot = unknown> {
     this.finalizing = false
     this.completionReviewRetries = 0
     this.lastCompletionReviewCorrection = ''
-    this.mutationSeen = false
-    this.presentationBatchMutationSeen = false
-    this.presentationContract = null
-    this.presentationCorrectionPasses = 0
-    this.presentationPlanEmitted = false
-    this.presentationCorrectionTurns = 0
-    this.presentationCorrectionPending = false
+    if (!resume) {
+      this.mutationSeen = false
+      this.presentationBatchMutationSeen = false
+      this.presentationContract = null
+      this.presentationCorrectionPasses = 0
+      this.presentationPlanEmitted = false
+      this.presentationCorrectionTurns = 0
+      this.presentationCorrectionPending = false
+    }
     this.inputParseFails = 0
     this.lastToolBatchSignature = ''
     this.identicalToolBatches = 0

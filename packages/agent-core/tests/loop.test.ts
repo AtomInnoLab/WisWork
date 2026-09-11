@@ -164,6 +164,46 @@ describe('AgentLoop', () => {
   })
 
   describe('presentation task orchestration', () => {
+    it('resumes an interrupted presentation without discarding its acceptance contract', async () => {
+      const previousContracts: unknown[] = []
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'first', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        (cb) => cb.onError('provider_unavailable'),
+        (cb) => {
+          cb.onToolCall({ id: 'second', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+      ])
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'bypass' }),
+            enroll: (_calls, previous) => {
+              previousContracts.push(previous)
+              return { kind: 'ready', contract }
+            },
+            complete: () => ({ kind: 'receipt', receipt: receipt() }),
+          },
+        },
+      })
+
+      loop.run('build')
+      await flush()
+      await flush()
+      expect(loop.busy).toBe(false)
+      expect(typeof (loop as unknown as { resume?: unknown }).resume).toBe('function')
+      ;(loop as unknown as { resume(instruction: string): void }).resume('continue')
+      await flush()
+      await flush()
+
+      expect(previousContracts).toEqual([undefined, contract])
+    })
+
     it('enrolls exact tool calls before the first dispatch and closes through a receipt', async () => {
       let dispatched = false
       const enroll = vi.fn(async (calls: readonly AgentToolCall[]) => {

@@ -14,7 +14,7 @@ import type {
 import { CodexTurnResolver } from './codex-turn-resolver'
 
 const DEVELOPER_POLICY =
-  "Use mcp__wiswork__wiswork_read only for read tools and mcp__wiswork__wiswork_propose only for mutation proposals. A proposal never changes the document; only the host UI can confirm it later. Every carrier call MUST use exactly {capability,callId,toolName,input}: capability is the latest private wiswork_turn_capability, callId is a new short unique string, toolName is one exact semantic tool name from the document catalog, and input is that semantic tool's argument object. Never flatten semantic arguments into the carrier object. Never request shell, filesystem, Git, browser, network, or direct document writes. Never repeat a capability in prose."
+  "Use mcp__wiswork__wiswork_read only for read tools and mcp__wiswork__wiswork_propose only for mutation proposals. A proposal never changes the document; only the host UI can confirm it later. Every carrier call MUST use exactly {capability,callId,toolName,input}: capability is the latest private wiswork_turn_capability, callId is a new short unique string, toolName is one exact semantic tool name from the document catalog, and input is that semantic tool's argument object. Never flatten semantic arguments into the carrier object. The semantic read and bash tools, when advertised, operate only on the bounded attachment VFS; use them only for a listed attachment or an explicitly required conversion. Never request a native shell, native filesystem, Git, browser, network, or direct document writes. Never repeat a capability in prose."
 const TURN_IDLE_TIMEOUT_MS = 60_000
 const INTERRUPT_TIMEOUT_MS = 2_000
 

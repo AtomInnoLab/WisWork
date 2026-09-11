@@ -16,13 +16,12 @@ const proposal = (overrides: Partial<EnhancedMutationProposal> = {}): EnhancedMu
   ...overrides,
 })
 
-function setup(locale: Parameters<typeof EnhancedMutationConfirmation>[0]['locale'] = 'en') {
+function setup() {
   let listener: ((value: EnhancedMutationProposal) => void) | undefined
-  const unsubscribe = vi.fn()
   const api = {
     onProposal: vi.fn((next: (value: EnhancedMutationProposal) => void) => {
       listener = next
-      return unsubscribe
+      return vi.fn()
     }),
     confirmProposal: vi.fn(async () => undefined),
     cancelProposal: vi.fn(async () => undefined),
@@ -30,142 +29,48 @@ function setup(locale: Parameters<typeof EnhancedMutationConfirmation>[0]['local
   const node = document.createElement('div')
   document.body.append(node)
   const root = createRoot(node)
-  act(() => root.render(createElement(EnhancedMutationConfirmation, { api, locale })))
+  act(() => root.render(createElement(EnhancedMutationConfirmation, { api, locale: 'zh' })))
   return {
     api,
     node,
     root,
-    unsubscribe,
     emit: (value: EnhancedMutationProposal) => act(() => listener?.(value)),
   }
 }
 
 afterEach(() => {
   document.body.replaceChildren()
-  document.documentElement.lang = 'en'
-  vi.useRealTimers()
 })
 
 describe('Enhanced mutation confirmation', () => {
-  it('shows expiry if confirm is clicked before an overdue timer runs', async () => {
-    vi.useFakeTimers()
-    const view = setup('zh')
-    const started = Date.now()
-    view.emit(proposal({ expiresAt: started + 1_000 }))
-    vi.setSystemTime(started + 1_001)
-    await act(async () =>
-      view.node.querySelector<HTMLButtonElement>('[data-action="confirm"]')!.click(),
-    )
-    expect(view.api.confirmProposal).not.toHaveBeenCalled()
-    expect(view.node.textContent).toContain('确认已过期，本次更改未应用')
-  })
-  it('keeps the confirmation visible and usable after thirty seconds', async () => {
-    vi.useFakeTimers()
-    const view = setup()
-    view.emit(proposal({ expiresAt: Date.now() + 300_000 }))
-    await act(async () => vi.advanceTimersByTimeAsync(61_000))
-    expect(view.node.querySelector('[role="alertdialog"]')).not.toBeNull()
-    await act(async () =>
-      view.node.querySelector<HTMLButtonElement>('[data-action="confirm"]')!.click(),
-    )
-    expect(view.api.confirmProposal).toHaveBeenCalledOnce()
-    expect(view.api.cancelProposal).not.toHaveBeenCalled()
-  })
-  it('shows an explicit not-applied notice after expiry without permitting confirmation', async () => {
-    vi.useFakeTimers()
-    const view = setup('zh')
-    view.emit(proposal({ expiresAt: Date.now() + 1_000 }))
-    await act(async () => vi.advanceTimersByTimeAsync(1_001))
-    expect(view.node.textContent).toContain('确认已过期，本次更改未应用')
-    expect(view.node.querySelector('[data-action="confirm"]')).toBeNull()
-    expect(view.api.confirmProposal).not.toHaveBeenCalled()
-    await act(async () =>
-      view.node.querySelector<HTMLButtonElement>('[data-action="dismiss"]')!.click(),
-    )
-    expect(view.node.querySelector('[role="alertdialog"]')).toBeNull()
-  })
-
-  it('keeps a proposal pending until one explicit confirmation', async () => {
+  it('automatically confirms a valid bounded proposal without rendering a dialog', async () => {
     const view = setup()
     view.emit(proposal())
-    expect(view.node.textContent).toContain('Replace')
-    expect(view.node.textContent).toContain('Blocks')
-    expect(view.node.textContent).toContain('Bounded set')
-    expect(view.node.textContent).toContain('2')
-    expect(view.api.confirmProposal).not.toHaveBeenCalled()
-
-    const confirm = view.node.querySelector<HTMLButtonElement>('[data-action="confirm"]')!
-    await act(async () => confirm.click())
-    await act(async () => confirm.click())
-
-    expect(view.api.confirmProposal).toHaveBeenCalledTimes(1)
-    expect(view.api.confirmProposal).toHaveBeenCalledWith('docs:document-1', 4, 'opaque-proposal-1')
-  })
-
-  it('cancels on rejection and removes the prompt without confirming', async () => {
-    const view = setup()
-    view.emit(proposal())
-    await act(async () =>
-      view.node.querySelector<HTMLButtonElement>('[data-action="cancel"]')!.click(),
-    )
-    expect(view.api.cancelProposal).toHaveBeenCalledWith('docs:document-1', 4, 'opaque-proposal-1')
-    expect(view.api.confirmProposal).not.toHaveBeenCalled()
-    expect(view.node.querySelector('[role="alertdialog"]')).toBeNull()
-  })
-
-  it('cancels an expired proposal and a pending proposal on unmount', async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-09-02T00:00:00Z'))
-    const view = setup()
-    view.emit(proposal({ expiresAt: Date.now() + 1_000 }))
-    await act(async () => vi.advanceTimersByTimeAsync(1_001))
-    expect(view.api.cancelProposal).toHaveBeenCalledTimes(1)
-
-    view.emit(proposal({ proposalId: 'opaque-proposal-2', expiresAt: Date.now() + 5_000 }))
-    act(() => view.root.unmount())
     await act(async () => undefined)
-    expect(view.api.cancelProposal).toHaveBeenCalledWith('docs:document-1', 4, 'opaque-proposal-2')
-    expect(view.unsubscribe).toHaveBeenCalledOnce()
-  })
 
-  it('cancels malformed or generic summaries and ignores replayed events', async () => {
-    const view = setup()
-    view.emit(proposal({ summary: 'Review the proposed document change' as never }))
+    expect(view.api.confirmProposal).toHaveBeenCalledOnce()
+    expect(view.api.confirmProposal).toHaveBeenCalledWith('docs:document-1', 4, 'opaque-proposal-1')
+    expect(view.api.cancelProposal).not.toHaveBeenCalled()
     expect(view.node.querySelector('[role="alertdialog"]')).toBeNull()
-    expect(view.api.cancelProposal).toHaveBeenCalledWith('docs:document-1', 4, 'opaque-proposal-1')
+  })
 
-    const first = proposal({ proposalId: 'opaque-proposal-2' })
-    view.emit(first)
-    view.emit(first)
-    expect(view.node.textContent).toContain('Replace')
+  it('cancels expired and malformed proposals instead of approving them', async () => {
+    const view = setup()
+    view.emit(proposal({ expiresAt: Date.now() - 1 }))
+    view.emit(proposal({ proposalId: 'malformed', summary: 'unsafe' as never }))
+    await act(async () => undefined)
 
-    view.emit(proposal({ proposalId: '', documentId: '../secret', summary: undefined as never }))
-    expect(view.node.textContent).toContain('Replace')
     expect(view.api.confirmProposal).not.toHaveBeenCalled()
+    expect(view.api.cancelProposal).toHaveBeenCalledTimes(2)
   })
 
-  it('renders the informed summary and consent controls in Chinese', () => {
-    document.documentElement.lang = 'en-US'
-    const view = setup('zh')
-    view.emit(
-      proposal({
-        summary: { operation: 'format', target: 'cells', scope: 'selection', count: 12 },
-      }),
-    )
-    expect(view.node.textContent).toContain('确认文档更改')
-    expect(view.node.textContent).toContain('格式调整')
-    expect(view.node.textContent).toContain('单元格')
-    expect(view.node.textContent).toContain('当前选区')
-    expect(view.node.textContent).toContain('12')
-    expect(view.node.textContent).toContain('拒绝')
-  })
+  it('consumes a proposal only once when an event is replayed', async () => {
+    const view = setup()
+    const candidate = proposal()
+    view.emit(candidate)
+    view.emit(candidate)
+    await act(async () => undefined)
 
-  it('uses the explicit locale rather than inferring document.lang', () => {
-    document.documentElement.lang = 'en-US'
-    const view = setup('ja')
-    view.emit(proposal())
-    expect(view.node.textContent).toContain('文書の変更を確認')
-    expect(view.node.textContent).toContain('置換')
-    expect(view.node.textContent).not.toContain('Confirm document change')
+    expect(view.api.confirmProposal).toHaveBeenCalledOnce()
   })
 })

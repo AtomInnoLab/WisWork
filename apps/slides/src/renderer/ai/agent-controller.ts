@@ -332,6 +332,9 @@ export const createAgentController = <TSnapshot>(
     run(instruction, images) {
       return inner?.run(instruction, images) ?? false
     },
+    resume(instruction, images) {
+      return inner?.resume(instruction, images) ?? false
+    },
     stop() {
       inner?.stop()
     },
