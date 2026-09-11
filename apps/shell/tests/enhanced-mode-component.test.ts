@@ -20,7 +20,12 @@ class FakeSender extends EventEmitter {
 }
 
 function fixture(
-  options: { runtimeInUse?: boolean; signedIn?: boolean; policyAllowed?: boolean } = {},
+  options: {
+    runtimeInUse?: boolean
+    runtimeAvailable?: boolean
+    signedIn?: boolean
+    policyAllowed?: boolean
+  } = {},
 ) {
   const handlers = new Map<string, (event: { sender: FakeSender }, ...args: unknown[]) => unknown>()
   const component = {
@@ -38,7 +43,7 @@ function fixture(
     resolveExecutable: vi.fn(async () => '/private/component/bin/codex'),
     remove: vi.fn(async () => undefined),
   }
-  let savedMode: unknown = 'standard'
+  let savedMode: unknown = options.runtimeInUse === true ? 'enhanced' : 'standard'
   const writeMode = vi.fn((mode: 'standard' | 'enhanced') => {
     savedMode = mode
   })
@@ -56,6 +61,10 @@ function fixture(
     copyId: vi.fn(),
     export: vi.fn(async () => 'saved' as const),
   }
+  let runtimeAvailable = options.runtimeAvailable !== false
+  const recoverEnhancedRuntime = vi.fn(async () => {
+    runtimeAvailable = true
+  })
   const controller = registerEnhancedModeComponentIpc({
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as never) },
     component,
@@ -66,7 +75,8 @@ function fixture(
     runtimeInUse: () => options.runtimeInUse === true,
     authorizeEnhanced: async () => options.signedIn !== false,
     policyAllowed: () => options.policyAllowed !== false,
-    enhancedRuntimeAvailable: () => true,
+    enhancedRuntimeAvailable: () => runtimeAvailable,
+    recoverEnhancedRuntime,
     diagnostics,
   })
   return {
@@ -76,6 +86,7 @@ function fixture(
     controller,
     diagnostics,
     writeMode,
+    recoverEnhancedRuntime,
     get savedMode() {
       return savedMode
     },
@@ -120,6 +131,16 @@ describe('Enhanced mode optional component IPC', () => {
     await expect(
       f.handlers.get(ENHANCED_MODE_CHANNELS.install)!({ sender: attacker }),
     ).rejects.toThrow('enhanced_mode_untrusted_request')
+  })
+
+  it('restarts a failed Enhanced runtime after repairing its component', async () => {
+    const f = fixture({ runtimeInUse: true, runtimeAvailable: false })
+    f.component.status.mockResolvedValue({ state: 'ready', supported: true, version: '0.147.0' })
+
+    await expect(
+      f.handlers.get(ENHANCED_MODE_CHANNELS.install)!({ sender: f.sender }),
+    ).resolves.toMatchObject({ lifecycleState: 'ready' })
+    expect(f.recoverEnhancedRuntime).toHaveBeenCalledOnce()
   })
 
   it('enables only after a fresh integrity/version resolution and persists product mode names', async () => {

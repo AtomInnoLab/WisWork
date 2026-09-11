@@ -2799,6 +2799,9 @@ app.whenReady().then(async () => {
     policyAllowed: enhancedPolicyAllowed,
     // Task 6 supplies the host session adapter. Until then a saved request is visible but not active.
     enhancedRuntimeAvailable: () => codexRuntime?.state === 'ready',
+    recoverEnhancedRuntime: async () => {
+      await codexRuntime?.initialize()
+    },
     diagnostics: {
       summary: () => ({
         recent: enhancedDiagnostics.recent().map((task) => ({
@@ -2998,6 +3001,10 @@ app.whenReady().then(async () => {
           endpoint,
           getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
           getAccessToken: () => requireAuthRuntime().client.getAccessToken(),
+          refreshAccessToken: () =>
+            requireAuthRuntime()
+              .client.refresh()
+              .then((session) => session.accessToken),
           proxy: officeMessagesProxy,
           enhancedProxy: officeCodexProxy,
           enhancedStatement: (host) => {
