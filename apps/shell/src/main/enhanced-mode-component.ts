@@ -41,6 +41,7 @@ export interface RegisterEnhancedModeComponentIpcOptions {
   readonly authorizeEnhanced: () => Promise<boolean>
   readonly policyAllowed: () => boolean
   readonly enhancedRuntimeAvailable: () => boolean
+  readonly recoverEnhancedRuntime?: () => Promise<void>
   readonly diagnostics?: Readonly<{
     summary(): EnhancedDiagnosticsSummary
     selfCheck(): Promise<EnhancedSelfCheckPublicResult>
@@ -156,7 +157,10 @@ export function registerEnhancedModeComponentIpc(
     trusted(event.sender)
     if (!options.policyAllowed()) publicFail('enhanced_mode_blocked_by_policy')
     if (!(await options.authorizeEnhanced())) publicFail('auth_required')
-    await operation(event.sender, (signal) => options.component.install({ signal }))
+    await operation(event.sender, async (signal) => {
+      await options.component.install({ signal })
+      if (options.runtimeInUse()) await options.recoverEnhancedRuntime?.()
+    })
     return status()
   })
   options.ipcMain.handle(ENHANCED_MODE_CHANNELS.update, async (event, ...args) => {
@@ -164,7 +168,10 @@ export function registerEnhancedModeComponentIpc(
     trusted(event.sender)
     if (!options.policyAllowed()) publicFail('enhanced_mode_blocked_by_policy')
     if (!(await options.authorizeEnhanced())) publicFail('auth_required')
-    await operation(event.sender, (signal) => options.component.install({ signal }))
+    await operation(event.sender, async (signal) => {
+      await options.component.install({ signal })
+      if (options.runtimeInUse()) await options.recoverEnhancedRuntime?.()
+    })
     return status()
   })
   options.ipcMain.handle(ENHANCED_MODE_CHANNELS.cancel, async (event, ...args) => {

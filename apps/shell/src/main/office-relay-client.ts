@@ -84,6 +84,7 @@ const PAIRING_RESUME_FEATURE = 'pairing-resume.v1'
 export interface RelaySocket {
   readyState: number
   addEventListener(name: string, listener: (event: any) => void): void
+  onUnexpectedResponse?(listener: (statusCode: number | undefined) => void): void
   send(data: string): void
   ping?(): void
   close(code?: number, reason?: string): void
@@ -113,7 +114,19 @@ export interface OfficeRelayToolResult {
 }
 
 export function connectAuthenticatedRelaySocket(url: string, accessToken: string): RelaySocket {
-  return new WebSocket(url, { headers: { Authorization: `Bearer ${accessToken}` } }) as RelaySocket
+  const socket = new WebSocket(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+  const relaySocket = socket as unknown as RelaySocket
+  relaySocket.onUnexpectedResponse = (listener) => {
+    ;(
+      socket as unknown as {
+        on(
+          name: 'unexpected-response',
+          callback: (request: unknown, response: { statusCode?: number }) => void,
+        ): void
+      }
+    ).on('unexpected-response', (_request, response) => listener(response.statusCode))
+  }
+  return relaySocket
 }
 
 function exact(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
@@ -146,6 +159,7 @@ export function createOfficeRelayClient(options: {
   connect?: (url: string, accessToken: string) => RelaySocket
   getValidAccountStatus(): Promise<{ loggedIn: boolean; userId?: string }>
   getAccessToken(): Promise<string | null>
+  refreshAccessToken?: () => Promise<string | null>
   proxy: MessagesProxy
   enhancedProxy?: (request: {
     body: unknown
@@ -1168,7 +1182,7 @@ export function createOfficeRelayClient(options: {
       clear('auth_required', true)
       throw new Error('auth_required')
     }
-    const accessToken = await options.getAccessToken().catch((error) => {
+    let accessToken = await options.getAccessToken().catch((error) => {
       ensureCurrent()
       clear('auth_required', true)
       throw error
@@ -1190,86 +1204,118 @@ export function createOfficeRelayClient(options: {
         throw new Error('auth_required')
       }
     }
-    setStatus('connecting')
-    let next: RelaySocket
-    try {
-      next = connect(options.endpoint, accessToken)
-    } catch {
-      clear('network_error', true)
-      throw new Error('relay_connection_failed')
-    }
-    socket = next
-    let receivePending = false
-    const receiveQueue: Array<{ data?: unknown }> = []
-    const dispatch = (event: { data?: unknown }) => {
-      let nextEvent: { data?: unknown } | undefined = event
-      while (nextEvent) {
-        const result = receive(nextEvent, owner)
-        if (result) {
-          receivePending = true
-          void result
-            .catch(() => {
-              if (owner === generation) clear('protocol_violation', true)
-            })
-            .finally(() => {
-              receivePending = false
-              const queued = receiveQueue.shift()
-              if (queued) dispatch(queued)
-            })
-          return
-        }
-        nextEvent = receiveQueue.shift()
+    for (let attempt = 0; ; attempt += 1) {
+      setStatus('connecting')
+      let next: RelaySocket
+      try {
+        next = connect(options.endpoint, accessToken)
+      } catch {
+        clear('network_error', true)
+        throw new Error('relay_connection_failed')
       }
-    }
-    next.addEventListener('message', (event) => {
-      if (receivePending) receiveQueue.push(event)
-      else dispatch(event)
-    })
-    next.addEventListener('close', () => {
-      if (owner !== generation) return
-      clear('relay_closed', false)
-    })
-    next.addEventListener('error', () => {
-      if (owner === generation) clear('network_error', true)
-    })
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error('relay_connection_timeout')),
-        CONNECT_TIMEOUT_MS,
-      )
-      next.addEventListener('open', () => {
-        clearTimeout(timeout)
-        if (owner !== generation || socket !== next) {
-          reject(new Error('relay_connection_failed'))
-          return
-        }
-        const ping = () => {
-          if (owner !== generation || socket !== next || next.readyState !== 1) return
-          try {
-            next.ping?.()
-          } catch {
-            clear('network_error', true)
+      socket = next
+      let opened = false
+      let receivePending = false
+      const receiveQueue: Array<{ data?: unknown }> = []
+      const dispatch = (event: { data?: unknown }) => {
+        let nextEvent: { data?: unknown } | undefined = event
+        while (nextEvent) {
+          const result = receive(nextEvent, owner)
+          if (result) {
+            receivePending = true
+            void result
+              .catch(() => {
+                if (owner === generation && socket === next) clear('protocol_violation', true)
+              })
+              .finally(() => {
+                receivePending = false
+                const queued = receiveQueue.shift()
+                if (queued) dispatch(queued)
+              })
+            return
           }
+          nextEvent = receiveQueue.shift()
         }
-        if (next.ping) {
-          ping()
-          heartbeatTimer = (options.scheduleHeartbeat ?? setInterval)(ping, HEARTBEAT_INTERVAL_MS)
-          ;(heartbeatTimer as ReturnType<typeof setInterval> & { unref?: () => void }).unref?.()
-        }
-        resolve()
-      })
-      next.addEventListener('error', () => {
-        clearTimeout(timeout)
-        reject(new Error('relay_connection_failed'))
+      }
+      next.addEventListener('message', (event) => {
+        if (socket !== next) return
+        if (receivePending) receiveQueue.push(event)
+        else dispatch(event)
       })
       next.addEventListener('close', () => {
-        clearTimeout(timeout)
-        reject(new Error('relay_connection_failed'))
+        if (!opened || owner !== generation || socket !== next) return
+        clear('relay_closed', false)
       })
-    }).catch((error) => {
-      if (owner === generation) clear('network_error', true)
-      throw error
-    })
+      next.addEventListener('error', () => {
+        if (opened && owner === generation && socket === next) clear('network_error', true)
+      })
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(
+            () => reject(new Error('relay_connection_timeout')),
+            CONNECT_TIMEOUT_MS,
+          )
+          next.addEventListener('open', () => {
+            clearTimeout(timeout)
+            if (owner !== generation || socket !== next) {
+              reject(new Error('relay_connection_failed'))
+              return
+            }
+            opened = true
+            const ping = () => {
+              if (owner !== generation || socket !== next || next.readyState !== 1) return
+              try {
+                next.ping?.()
+              } catch {
+                clear('network_error', true)
+              }
+            }
+            if (next.ping) {
+              ping()
+              heartbeatTimer = (options.scheduleHeartbeat ?? setInterval)(
+                ping,
+                HEARTBEAT_INTERVAL_MS,
+              )
+              ;(heartbeatTimer as ReturnType<typeof setInterval> & { unref?: () => void }).unref?.()
+            }
+            resolve()
+          })
+          next.onUnexpectedResponse?.((statusCode) => {
+            clearTimeout(timeout)
+            reject(
+              new Error(statusCode === 401 ? 'relay_auth_rejected' : 'relay_connection_failed'),
+            )
+          })
+          next.addEventListener('error', () => {
+            clearTimeout(timeout)
+            reject(new Error('relay_connection_failed'))
+          })
+          next.addEventListener('close', () => {
+            clearTimeout(timeout)
+            reject(new Error('relay_connection_failed'))
+          })
+        })
+        break
+      } catch (error) {
+        if (
+          attempt === 0 &&
+          error instanceof Error &&
+          error.message === 'relay_auth_rejected' &&
+          options.refreshAccessToken
+        ) {
+          const refreshed = await options.refreshAccessToken()
+          ensureCurrent()
+          if (!refreshed || !/^[\x21-\x7e]+$/.test(refreshed)) {
+            clear('auth_required', true)
+            throw new Error('auth_required', { cause: error })
+          }
+          accessToken = refreshed
+          continue
+        }
+        if (owner === generation) clear('network_error', true)
+        throw error
+      }
+    }
     ensureCurrent()
     return { accountId: account.userId ?? null }
   }

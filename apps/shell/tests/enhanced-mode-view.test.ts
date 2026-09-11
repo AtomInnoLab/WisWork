@@ -27,6 +27,37 @@ describe('Enhanced mode user-facing copy', () => {
     expect(api.install).toHaveBeenCalledOnce()
     expect(api.setMode).toHaveBeenCalledWith('enhanced')
   })
+
+  it('repairs a missing component when Enhanced is already selected', async () => {
+    const repaired = {
+      component: 'ready',
+      requestedAgentRuntime: 'enhanced',
+      activeAgentRuntime: 'enhanced',
+      lifecycleState: 'ready',
+    } as const
+    const api = {
+      install: vi.fn(async () => repaired),
+      setMode: vi.fn(),
+    }
+
+    await expect(
+      selectEnhancedMode(
+        api as never,
+        {
+          requestedAgentRuntime: 'enhanced',
+          activeAgentRuntime: 'enhanced',
+          component: 'missing',
+          supported: true,
+          version: '0.147.0',
+          restartRequired: false,
+          lifecycleState: 'not_installed',
+        },
+        'enhanced',
+      ),
+    ).resolves.toBe(repaired)
+    expect(api.install).toHaveBeenCalledOnce()
+    expect(api.setMode).not.toHaveBeenCalled()
+  })
   it('uses only Standard mode and Enhanced mode product naming in English', () => {
     const missingStatus = {
       requestedAgentRuntime: 'standard',
