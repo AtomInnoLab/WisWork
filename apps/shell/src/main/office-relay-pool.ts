@@ -2,7 +2,8 @@ import type { OfficePairingRequest, OfficeRelayStatus } from '../shared/home-api
 import type { OfficeRelayBinding } from './office-relay-binding-store'
 import type { OfficeRelayClient } from './office-relay-client'
 
-const DEFAULT_MAX_CLIENTS = 12
+// Keep room for one active document and one standby resume per durable binding.
+const DEFAULT_MAX_CLIENTS = 24
 
 interface ChildEvents {
   onPending(pairing: OfficePairingRequest): void

@@ -601,6 +601,10 @@ async function xlsxToCsv(
 }
 
 async function defaultLoadPdf(bytes: Uint8Array): Promise<PdfDocument> {
+  // Office WebViews cannot reliably create pdf.js's nested worker. Register the
+  // bundled worker in this conversion worker first so pdf.js uses its fake-worker path.
+  // @ts-expect-error pdf.js ships this runtime entry without TypeScript declarations.
+  await import('pdfjs-dist/legacy/build/pdf.worker.mjs')
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
   const options = {
     data: bytes.slice(),

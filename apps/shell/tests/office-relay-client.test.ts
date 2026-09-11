@@ -10,12 +10,16 @@ import { createOfficeLocalSearchProxy } from '../src/main/office-retrieval-proxy
 class FakeSocket implements RelaySocket {
   readyState = 0
   sent: string[] = []
+  pings = 0
   listeners = new Map<string, Array<(event: any) => void>>()
   addEventListener(name: string, listener: (event: any) => void): void {
     this.listeners.set(name, [...(this.listeners.get(name) ?? []), listener])
   }
   send(data: string): void {
     this.sent.push(data)
+  }
+  ping(): void {
+    this.pings += 1
   }
   close(): void {
     this.readyState = 3
@@ -55,6 +59,37 @@ function setup(loggedIn = true) {
 }
 
 describe('Office relay PC client', () => {
+  it('actively keeps the PC websocket alive and stops heartbeats after close', async () => {
+    const socket = new FakeSocket()
+    let heartbeat: (() => void) | undefined
+    const clearHeartbeat = vi.fn()
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      onPending() {},
+      scheduleHeartbeat(callback, delay) {
+        expect(delay).toBe(20_000)
+        heartbeat = callback
+        return 17 as unknown as ReturnType<typeof setInterval>
+      },
+      clearHeartbeat,
+    })
+    const claim = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claim
+    expect(socket.pings).toBe(1)
+    heartbeat?.()
+    expect(socket.pings).toBe(2)
+    socket.close()
+    expect(clearHeartbeat).toHaveBeenCalledWith(17)
+    heartbeat?.()
+    expect(socket.pings).toBe(2)
+  })
+
   it.each(['revoked', 'socket-close'])(
     'clears only its own client image provenance when %s',
     async (ending) => {

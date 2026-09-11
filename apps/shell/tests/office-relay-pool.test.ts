@@ -49,7 +49,7 @@ const binding = (index: number): OfficeRelayBinding => ({
   createdAt: index + 1,
 })
 
-function harness(maxClients = 12) {
+function harness(maxClients?: number) {
   const children: Child[] = []
   const pending = vi.fn()
   const expired = vi.fn()
@@ -358,7 +358,7 @@ describe('Office relay pool', () => {
   })
 
   it('keeps twelve durable bindings in independent resume slots', async () => {
-    const { pool, children } = harness()
+    const { pool, children } = harness(12)
     await Promise.all(Array.from({ length: 12 }, (_, index) => pool.resume(binding(index))))
     expect(children).toHaveLength(12)
     expect(
@@ -380,6 +380,16 @@ describe('Office relay pool', () => {
     await vi.waitFor(() => expect(children).toHaveLength(3))
     expect(children[0]!.revoke).not.toHaveBeenCalled()
     expect(children[1]!.revoke).not.toHaveBeenCalled()
+  })
+
+  it('reserves document capacity after all twelve durable bindings are waiting', async () => {
+    const { pool, children } = harness()
+    await Promise.all(Array.from({ length: 12 }, (_, index) => pool.resume(binding(index))))
+
+    children[0]!.emitStatus('paired')
+
+    await vi.waitFor(() => expect(children).toHaveLength(13))
+    expect(children[12]!.resume).toHaveBeenCalledWith(binding(0))
   })
 
   it('retries each disconnected binding with bounded exponential backoff and cancels on shutdown', async () => {
