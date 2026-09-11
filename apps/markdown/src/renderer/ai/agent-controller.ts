@@ -29,6 +29,7 @@ export const createAgentController = <TSnapshot>(
     },
     subscribe: (listener) => inner?.subscribe(listener) ?? (() => undefined),
     run: (instruction, images) => inner?.run(instruction, images) ?? false,
+    resume: (instruction, images) => inner?.resume(instruction, images) ?? false,
     stop: () => inner?.stop(),
     reset: () => inner?.reset(),
     restore: (messages) => inner?.restore(messages),

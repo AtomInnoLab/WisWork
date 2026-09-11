@@ -221,6 +221,12 @@ function serverArguments(
     `model_providers.wiswork.base_url=${JSON.stringify(`${baseUrl}/v1`)}`,
     'model_providers.wiswork.env_key="WISWORK_CODEX_TOKEN"',
     'model_providers.wiswork.wire_api="responses"',
+    // Office turns can contain many document-tool continuations. Bound Codex's
+    // retry loop per upstream request so a provider outage is returned to the
+    // host promptly instead of leaving the Taskpane waiting for several minutes.
+    'model_providers.wiswork.request_max_retries=1',
+    'model_providers.wiswork.stream_max_retries=1',
+    'model_providers.wiswork.stream_idle_timeout_ms=60000',
     'features.shell_tool=false',
     'features.unified_exec=false',
     'features.code_mode=true',

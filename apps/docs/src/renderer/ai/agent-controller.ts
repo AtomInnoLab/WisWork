@@ -59,6 +59,7 @@ export const createAgentController = <TSnapshot>(
     },
     subscribe: (listener) => inner?.subscribe(listener) ?? (() => undefined),
     run: (instruction, images) => inner?.run(instruction, images) ?? false,
+    resume: (instruction, images) => inner?.resume(instruction, images) ?? false,
     stop: () => inner?.stop(),
     reset: () => {
       if (runtime && (inner as unknown as { mode?: string } | null)?.mode === 'enhanced') {

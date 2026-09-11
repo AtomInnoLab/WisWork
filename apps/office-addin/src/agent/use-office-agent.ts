@@ -136,7 +136,7 @@ const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
   },
   provider_unavailable: {
     code: 'provider_unavailable',
-    message: 'The Agent service is temporarily unavailable. Try again.',
+    message: 'The Agent service is temporarily unavailable. Your progress is saved.',
     retryable: true,
   },
   request_timeout: {
@@ -275,6 +275,15 @@ const AUTOMATIC_POWERPOINT_MUTATION_TOOLS = new Set([
   'insert-image',
   'insert_web_image',
 ])
+
+const AUTOMATIC_RECOVERY_DELAYS_MS = [2_000, 8_000] as const
+const AUTOMATIC_RECOVERY_ERRORS = new Set([
+  'network_error',
+  'provider_unavailable',
+  'request_timeout',
+])
+const RECOVERY_INSTRUCTION =
+  'Resume the interrupted task from the current Office document state. Inspect the document and active design contract first, preserve completed work, and continue only unfinished or failed steps. Do not repeat a successful write. Verify the final result before completing.'
 
 function diagnosticToolError(output: string): string {
   if (output.startsWith('design_contract_visual_review_failed:'))
@@ -444,6 +453,8 @@ export function createOfficeAgentSession(dependencies: {
   let clarificationResolve: ((value: ToolExecution) => void) | undefined
   let questionnaireAnsweredPendingPlan = false
   let runStartedAt = 0
+  let automaticRecoveryAttempt = 0
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined
   const staleTools = new Set<string>()
   const toolStartedAt = new Map<string, number>()
   // Canonical observation is authoritative even when a relay execution receipt arrives first.
@@ -1002,6 +1013,9 @@ export function createOfficeAgentSession(dependencies: {
         publish({ activity: 'Thinking…' })
       },
       onDone: (result) => {
+        automaticRecoveryAttempt = 0
+        if (recoveryTimer) clearTimeout(recoveryTimer)
+        recoveryTimer = undefined
         toolStartedAt.clear()
         closeAssistantSegment()
         publish({
@@ -1028,6 +1042,23 @@ export function createOfficeAgentSession(dependencies: {
           })
         })
         activeAssistantId = undefined
+        const delay = AUTOMATIC_RECOVERY_DELAYS_MS[automaticRecoveryAttempt]
+        if (AUTOMATIC_RECOVERY_ERRORS.has(safeError.code) && delay !== undefined && !disposed) {
+          automaticRecoveryAttempt += 1
+          recoveryTimer = setTimeout(() => {
+            recoveryTimer = undefined
+            startRun(RECOVERY_INSTRUCTION, '', true)
+          }, delay)
+          publish({
+            busy: true,
+            activity: 'Connection interrupted. Progress saved; recovering…',
+            status: 'working',
+            error: undefined,
+            errorMessage: undefined,
+            retryable: false,
+          })
+          return
+        }
         append({
           id: eventId(),
           kind: 'error',
@@ -1056,21 +1087,26 @@ export function createOfficeAgentSession(dependencies: {
     }
   })
 
-  const startRun = (instruction: string, displayText = instruction) => {
+  const startRun = (instruction: string, displayText = instruction, recovering = false) => {
     const value = instruction.trim()
     if (!value || harness.snapshot.busy || state.applying || disposed) return
+    if (!recovering) {
+      if (recoveryTimer) clearTimeout(recoveryTimer)
+      recoveryTimer = undefined
+      automaticRecoveryAttempt = 0
+    }
     sessionEpoch += 1
     observedTools.clear()
     recordedToolFailures.clear()
-    diagnose((diagnostics) => diagnostics.startTrace())
+    if (!recovering) diagnose((diagnostics) => diagnostics.startTrace())
     staleTools.clear()
     runStartedAt = Date.now()
     proposals.newTurn()
-    lastInstruction = value
+    if (!recovering) lastInstruction = value
     activeAssistantId = undefined
     cumulativeAssistantText = ''
     assistantSegmentPrefix = ''
-    append({ id: eventId(), kind: 'user', text: boundedText(displayText) })
+    if (displayText) append({ id: eventId(), kind: 'user', text: boundedText(displayText) })
     publish({
       assistantText: '',
       activity: 'Thinking…',
@@ -1080,7 +1116,8 @@ export function createOfficeAgentSession(dependencies: {
       errorMessage: undefined,
       retryable: false,
     })
-    harness.run(value)
+    if (recovering) harness.resume(value)
+    else harness.run(value)
   }
 
   return {
@@ -1101,6 +1138,10 @@ export function createOfficeAgentSession(dependencies: {
     },
     stop() {
       if (disposed) return
+      const wasRecovering = recoveryTimer !== undefined
+      if (recoveryTimer) clearTimeout(recoveryTimer)
+      recoveryTimer = undefined
+      automaticRecoveryAttempt = 0
       const event = pendingProposalEvent()
       if (state.applying) {
         sessionEpoch += 1
@@ -1121,6 +1162,8 @@ export function createOfficeAgentSession(dependencies: {
         )
       }
       harness.stop()
+      if (wasRecovering)
+        publish({ busy: false, activity: '', status: 'cancelled', retryable: false })
     },
     async confirm(id) {
       if (disposed || state.applying || (harness.snapshot.busy && proposals.pending()?.id !== id))
@@ -1204,6 +1247,9 @@ export function createOfficeAgentSession(dependencies: {
     },
     newTask() {
       if (disposed) return
+      if (recoveryTimer) clearTimeout(recoveryTimer)
+      recoveryTimer = undefined
+      automaticRecoveryAttempt = 0
       sessionEpoch += 1
       harness.reset()
       proposals.logout()
@@ -1220,8 +1266,8 @@ export function createOfficeAgentSession(dependencies: {
         disposed
       )
         return
-      const instruction = lastInstruction
-      startRun(instruction)
+      automaticRecoveryAttempt = 0
+      startRun(RECOVERY_INSTRUCTION, '', true)
     },
     answerQuestionnaire(answers) {
       const resolve = clarificationResolve
@@ -1270,6 +1316,8 @@ export function createOfficeAgentSession(dependencies: {
     dispose() {
       if (disposed) return
       disposed = true
+      if (recoveryTimer) clearTimeout(recoveryTimer)
+      recoveryTimer = undefined
       dependencies.transport.setToolActivityHandler?.(undefined)
       dependencies.remoteTools?.setToolHandler?.(undefined)
       sessionEpoch += 1
