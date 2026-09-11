@@ -30,7 +30,12 @@ function setup() {
   document.body.append(node)
   const root = createRoot(node)
   act(() => root.render(createElement(EnhancedMutationConfirmation, { api, locale: 'zh' })))
-  return { api, node, root, emit: (value: EnhancedMutationProposal) => act(() => listener?.(value)) }
+  return {
+    api,
+    node,
+    root,
+    emit: (value: EnhancedMutationProposal) => act(() => listener?.(value)),
+  }
 }
 
 afterEach(() => {

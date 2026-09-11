@@ -1,8 +1,5 @@
 import { useEffect, useRef } from 'react'
-import {
-  type EnhancedMutationConfirmationKey,
-  type Lang,
-} from '@wiswork/i18n'
+import { type EnhancedMutationConfirmationKey, type Lang } from '@wiswork/i18n'
 
 const MAX_ID = 160
 const MAX_TOOL = 96
