@@ -1176,7 +1176,8 @@ function AccountEntry() {
                   className={enhancedView.selectedMode === 'enhanced' ? 'selected' : ''}
                   disabled={
                     enhancedBusy ||
-                    enhancedView.selectedMode === 'enhanced' ||
+                    (enhancedView.selectedMode === 'enhanced' &&
+                      enhancedView.action !== 'install') ||
                     enhancedView.action === 'none'
                   }
                   onClick={() => runEnhancedAction(false, 'enhanced')}

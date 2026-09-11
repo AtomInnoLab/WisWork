@@ -15,6 +15,12 @@ class FakeSocket implements RelaySocket {
   addEventListener(name: string, listener: (event: any) => void): void {
     this.listeners.set(name, [...(this.listeners.get(name) ?? []), listener])
   }
+  onUnexpectedResponse(listener: (statusCode: number | undefined) => void): void {
+    this.listeners.set('unexpected-response', [
+      ...(this.listeners.get('unexpected-response') ?? []),
+      listener,
+    ])
+  }
   send(data: string): void {
     this.sent.push(data)
   }
@@ -59,6 +65,35 @@ function setup(loggedIn = true) {
 }
 
 describe('Office relay PC client', () => {
+  it('refreshes once and reconnects when a websocket handshake rejects a stale token', async () => {
+    const sockets: FakeSocket[] = []
+    const tokens: string[] = []
+    const refreshAccessToken = vi.fn(async () => 'fresh-token')
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: (_url, token) => {
+        tokens.push(token)
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+      getValidAccountStatus: async () => ({ loggedIn: true, userId: 'local-account' }),
+      getAccessToken: async () => 'stale-token',
+      refreshAccessToken,
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      onPending() {},
+    })
+
+    const claim = client.claim('123456')
+    await vi.waitFor(() => expect(sockets).toHaveLength(1))
+    sockets[0]!.emit('unexpected-response', 401)
+    await vi.waitFor(() => expect(sockets).toHaveLength(2))
+    sockets[1]!.open()
+    await expect(claim).resolves.toBeUndefined()
+    expect(tokens).toEqual(['stale-token', 'fresh-token'])
+    expect(refreshAccessToken).toHaveBeenCalledOnce()
+  })
+
   it('actively keeps the PC websocket alive and stops heartbeats after close', async () => {
     const socket = new FakeSocket()
     let heartbeat: (() => void) | undefined

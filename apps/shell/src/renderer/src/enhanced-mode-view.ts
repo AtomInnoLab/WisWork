@@ -25,7 +25,15 @@ export async function selectEnhancedMode(
   status: EnhancedModeStatus,
   target: 'standard' | 'enhanced',
 ): Promise<EnhancedModeStatus> {
-  if (status.requestedAgentRuntime === target) return status
+  if (status.requestedAgentRuntime === target) {
+    if (
+      target === 'enhanced' &&
+      (status.component === 'missing' || status.component === 'invalid')
+    ) {
+      return api.install()
+    }
+    return status
+  }
   if (target === 'standard') return api.setMode('standard')
   if (status.component === 'missing' || status.component === 'invalid') await api.install()
   return api.setMode('enhanced')
