@@ -624,6 +624,7 @@ export function registerPcCodexHosts(options: {
       manifest,
       isOpen: () => sessionOpen && !event.sender.isDestroyed(),
       executeRead: (call, signal) => dispatch(record, call, undefined, signal),
+      ...(host === 'slides' ? { maxCallMs: 2 * 60_000 } : {}),
       suspendMutation: (result) => {
         return harness.suspendToolExecution(result)
       },

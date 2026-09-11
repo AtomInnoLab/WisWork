@@ -372,6 +372,7 @@ describe('document-scoped tool session', () => {
     vi.useFakeTimers()
     let finish!: (value: ToolExecution) => void
     const f = fixture({
+      maxCallMs: 2 * 60_000,
       executeRead: vi.fn(
         async () => await new Promise<ToolExecution>((resolve) => (finish = resolve)),
       ),
