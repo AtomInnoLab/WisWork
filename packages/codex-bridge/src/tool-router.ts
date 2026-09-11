@@ -29,7 +29,7 @@ const MAX_ID_BYTES = 256
 const MAX_GRAPH_NODES = 20_000
 const MAX_TOTAL_GRAPH_NODES = 100_000
 const MAX_GRAPH_DEPTH = 48
-const MAX_CALL_MS = 30_000
+const MAX_CALL_MS = 2 * 60_000
 // Human interaction is not a 30-second computation. Keep it bounded and cancellable.
 const MAX_QUESTIONNAIRE_MS = 10 * 60_000
 const MAX_CONSENT_MS = 5 * 60_000
