@@ -212,7 +212,7 @@ describe('pinned Codex app-server process manager', () => {
       '-c',
       'model_providers.wiswork.stream_max_retries=1',
       '-c',
-      'model_providers.wiswork.stream_idle_timeout_ms=60000',
+      'model_providers.wiswork.stream_idle_timeout_ms=600000',
       '-c',
       'features.shell_tool=false',
       '-c',
