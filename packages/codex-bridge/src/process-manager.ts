@@ -226,7 +226,10 @@ function serverArguments(
     // host promptly instead of leaving the Taskpane waiting for several minutes.
     'model_providers.wiswork.request_max_retries=1',
     'model_providers.wiswork.stream_max_retries=1',
-    'model_providers.wiswork.stream_idle_timeout_ms=60000',
+    // The authenticated bridge already fails a truly idle upstream after 30 seconds
+    // and caps every request at 10 minutes. Do not let Codex abort active buffered
+    // tool input before that authoritative request deadline.
+    'model_providers.wiswork.stream_idle_timeout_ms=600000',
     'features.shell_tool=false',
     'features.unified_exec=false',
     'features.code_mode=true',
