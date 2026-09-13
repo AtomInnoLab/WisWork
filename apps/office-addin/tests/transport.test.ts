@@ -132,6 +132,53 @@ describe('Office Agent transport', () => {
     expect(cb.onError).not.toHaveBeenCalled()
   })
 
+  it('retains the cumulative event budget for standard streams', async () => {
+    const cb = callbacks()
+    createTestTransport({
+      authenticatedFetch: async () =>
+        sse(Array.from({ length: 5_000 }, () => 'data: {"type":"ping"}')),
+    }).stream(searchRequest, cb)
+
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).toHaveBeenCalledWith('transport_stream_budget_exceeded')
+  })
+
+  it('renews the Enhanced stream budget after a completed rate window', async () => {
+    vi.useFakeTimers()
+    try {
+      let source!: ReadableStreamDefaultController<Uint8Array>
+      const cb = callbacks()
+      const transport = createPcBridgeAgentTransport({
+        snapshot: () => ({ enhanced: { session_generation: 3 } }),
+        authenticatedFetch: async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                source = controller
+              },
+            }),
+          ),
+      } as any)
+      const events = (marker: string) =>
+        `${Array.from({ length: 17_000 }, () => 'data: {"type":"ping"}\n').join('')}data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: marker } })}\n`
+
+      transport.stream(searchRequest, cb)
+      source.enqueue(new TextEncoder().encode(events('first')))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(cb.onDelta).toHaveBeenCalledWith('first')
+      await vi.advanceTimersByTimeAsync(60_000)
+      source.enqueue(new TextEncoder().encode(events('second')))
+      source.close()
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(cb.onDelta).toHaveBeenCalledWith('second')
+      expect(cb.onError).not.toHaveBeenCalled()
+      expect(cb.onDone).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('observes allowed non-retrieval router rejection without executing the tool', async () => {
     const cb = callbacks(),
       observe = vi.fn(),

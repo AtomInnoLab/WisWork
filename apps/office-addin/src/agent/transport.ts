@@ -23,6 +23,7 @@ const MAX_STREAM_RESPONSE_BYTES = 1024 * 1024
 const MAX_STREAM_EVENTS = 4096
 const MAX_ENHANCED_STREAM_RESPONSE_BYTES = 8 * 1024 * 1024
 const MAX_ENHANCED_STREAM_EVENTS = 32 * 1024
+const ENHANCED_STREAM_BUDGET_WINDOW_MS = 60_000
 const MAX_SSE_LINE_LENGTH = 64 * 1024
 const MAX_PENDING_TOOL_CALLS = 16
 
@@ -228,6 +229,7 @@ async function* boundedSseLines(
   }
   signal.addEventListener('abort', abort, { once: true })
   let responseBytes = 0
+  let responseWindowStartedAt = Date.now()
   let buffer = ''
   try {
     while (true) {
@@ -236,6 +238,11 @@ async function* boundedSseLines(
       if (done) {
         finished = true
         break
+      }
+      const enhanced = isEnhanced()
+      if (enhanced && Date.now() - responseWindowStartedAt >= ENHANCED_STREAM_BUDGET_WINDOW_MS) {
+        responseBytes = 0
+        responseWindowStartedAt = Date.now()
       }
       responseBytes += value.byteLength
       const maxResponseBytes = isEnhanced()
@@ -287,14 +294,20 @@ async function consumeStream(
   const pending = new Map<number, { id: string; name: string; json: string }>()
   let stopReason: string | undefined
   let eventCount = 0
+  let eventWindowStartedAt = Date.now()
   let textLength = 0
   let completedToolCalls = 0
   for await (const line of boundedSseLines(response.body, signal, isEnhanced)) {
     if (!line.startsWith('data:')) continue
     const payload = line.slice(5).trim()
     if (!payload || payload === '[DONE]') continue
+    const enhanced = isEnhanced()
+    if (enhanced && Date.now() - eventWindowStartedAt >= ENHANCED_STREAM_BUDGET_WINDOW_MS) {
+      eventCount = 0
+      eventWindowStartedAt = Date.now()
+    }
     eventCount += 1
-    const maxEvents = isEnhanced() ? MAX_ENHANCED_STREAM_EVENTS : MAX_STREAM_EVENTS
+    const maxEvents = enhanced ? MAX_ENHANCED_STREAM_EVENTS : MAX_STREAM_EVENTS
     if (eventCount > maxEvents) {
       throw new TransportError('transport_stream_budget_exceeded')
     }
