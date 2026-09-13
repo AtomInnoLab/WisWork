@@ -21,6 +21,8 @@ export const STREAM_RESPONSE_TIMEOUT_MS = 280_000
 export const ENHANCED_TURN_TIMEOUT_MS = 30 * 60_000
 const MAX_STREAM_RESPONSE_BYTES = 1024 * 1024
 const MAX_STREAM_EVENTS = 4096
+const MAX_ENHANCED_STREAM_RESPONSE_BYTES = 8 * 1024 * 1024
+const MAX_ENHANCED_STREAM_EVENTS = 32 * 1024
 const MAX_SSE_LINE_LENGTH = 64 * 1024
 const MAX_PENDING_TOOL_CALLS = 16
 
@@ -213,6 +215,7 @@ function safeError(error: unknown): string {
 async function* boundedSseLines(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
+  isEnhanced: () => boolean,
 ): AsyncGenerator<string> {
   const decoder = new TextDecoder()
   const reader = body.getReader()
@@ -235,7 +238,10 @@ async function* boundedSseLines(
         break
       }
       responseBytes += value.byteLength
-      if (responseBytes > MAX_STREAM_RESPONSE_BYTES) {
+      const maxResponseBytes = isEnhanced()
+        ? MAX_ENHANCED_STREAM_RESPONSE_BYTES
+        : MAX_STREAM_RESPONSE_BYTES
+      if (responseBytes > maxResponseBytes) {
         throw new TransportError('transport_stream_budget_exceeded')
       }
       buffer += decoder.decode(value, { stream: true })
@@ -271,6 +277,7 @@ async function consumeStream(
   handleControl?: (event: Record<string, unknown>, signal: AbortSignal) => Promise<void>,
   handleActivity?: (event: Record<string, unknown>) => void,
   onProgress?: () => void,
+  isEnhanced: () => boolean = () => false,
 ): Promise<void> {
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined)
@@ -282,12 +289,13 @@ async function consumeStream(
   let eventCount = 0
   let textLength = 0
   let completedToolCalls = 0
-  for await (const line of boundedSseLines(response.body, signal)) {
+  for await (const line of boundedSseLines(response.body, signal, isEnhanced)) {
     if (!line.startsWith('data:')) continue
     const payload = line.slice(5).trim()
     if (!payload || payload === '[DONE]') continue
     eventCount += 1
-    if (eventCount > MAX_STREAM_EVENTS) {
+    const maxEvents = isEnhanced() ? MAX_ENHANCED_STREAM_EVENTS : MAX_STREAM_EVENTS
+    if (eventCount > maxEvents) {
       throw new TransportError('transport_stream_budget_exceeded')
     }
     let event: {
@@ -508,6 +516,7 @@ function createTransport(
               handleControl,
               handleActivity,
               renewDeadline,
+              () => enhancedGeneration() !== undefined,
             ),
           )
           const cancelled = new Promise<never>((_resolve, reject) => {

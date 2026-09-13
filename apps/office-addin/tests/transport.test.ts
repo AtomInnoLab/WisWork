@@ -119,6 +119,19 @@ describe('Office Agent transport', () => {
     },
   )
 
+  it('keeps an Enhanced document-session stream alive beyond the standard event budget', async () => {
+    const cb = callbacks()
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      authenticatedFetch: async () =>
+        sse(Array.from({ length: 5_000 }, () => 'data: {"type":"ping"}')),
+    } as any)
+
+    transport.stream(searchRequest, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).not.toHaveBeenCalled()
+  })
+
   it('observes allowed non-retrieval router rejection without executing the tool', async () => {
     const cb = callbacks(),
       observe = vi.fn(),
