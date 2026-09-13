@@ -131,6 +131,7 @@ describe('local responses bridge', () => {
         expect(result.status).toBe(200)
         expect(result.body).toContain('response.completed')
         expect(result.body).toContain(JSON.stringify(code))
+        expect(result.body).toContain(': keepalive\n\n')
         const completedCalls = result.body
           .split('\n')
           .filter((line) => line.startsWith('data: {'))

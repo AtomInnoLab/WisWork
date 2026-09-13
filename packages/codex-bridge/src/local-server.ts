@@ -376,6 +376,8 @@ export async function startResponsesBridge(
           'content-type': 'text/event-stream; charset=utf-8',
           'x-content-type-options': 'nosniff',
         })
+        let lastDownstreamWriteAt = Date.now()
+        const keepaliveIntervalMs = Math.max(1, Math.floor(maxStreamIdleMs / 2))
         const recorder = options.onProtocolRecording ? new ProtocolRecorder() : undefined
         let originalOutcome: ProtocolRecordingOutcome = 'interrupted'
         try {
@@ -386,6 +388,13 @@ export async function startResponsesBridge(
               // Active upstream bytes must refresh the socket even when it has no
               // safe downstream output yet; stalled reads/writes keep the same bound.
               response.setTimeout(maxStreamIdleMs)
+              if (
+                !response.writableNeedDrain &&
+                Date.now() - lastDownstreamWriteAt >= keepaliveIntervalMs
+              ) {
+                response.write(': keepalive\n\n')
+                lastDownstreamWriteAt = Date.now()
+              }
               try {
                 options.onStreamActivity?.(turn.turnId)
               } catch {
@@ -397,7 +406,9 @@ export async function startResponsesBridge(
             if (frame.startsWith('event: response.completed\n')) originalOutcome = 'completed'
             if (frame.startsWith('event: response.incomplete\n')) originalOutcome = 'incomplete'
             if (controller.signal.aborted) throw new RequestEndedError()
-            if (!response.write(frame))
+            const writable = response.write(frame)
+            lastDownstreamWriteAt = Date.now()
+            if (!writable)
               await new Promise<void>((resolve, reject) => {
                 response.once('drain', resolve)
                 response.once('close', () => reject(new RequestEndedError()))
