@@ -11,6 +11,7 @@ import {
   assertDeckMatchesPresentationPlan,
   parsePresentationPlan,
 } from '@wiswork/pptx-engine/presentation-plan'
+import { checkPresentationPageContent } from '@wiswork/pptx-engine/presentation-content-check'
 import type { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 
 const check = (signal: AbortSignal) => {
@@ -143,7 +144,19 @@ export async function handlePresentationProduction(
   }
   if (!record) throw new Error('not_found')
   const deck = parsePresentationDeck(record.deck)
-  assertDeckMatchesPresentationPlan(deck, parsePresentationPlan(record.plan.plan))
+  const plan = parsePresentationPlan(record.plan.plan)
+  assertDeckMatchesPresentationPlan(deck, plan)
+  if (request.operation === 'production_content_check') {
+    check(signal)
+    return {
+      projectId,
+      requestId: record.requestId,
+      planRevision: record.plan.revision,
+      inputDigest: record.inputDigest,
+      planDigest: record.planDigest,
+      report: checkPresentationPageContent(plan, deck, request.pageId as string),
+    }
+  }
   if (request.operation === 'production_page') {
     const page = record.pages.find((p) => p.pageId === request.pageId)
     if (!page) throw new Error('not_found')

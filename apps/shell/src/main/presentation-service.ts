@@ -113,6 +113,7 @@ export function createPresentationService(options: {
           'production_status',
           'production_run',
           'production_page',
+          'production_content_check',
         ].includes(request.operation as string)
       )
         throw new Error('invalid_request')
@@ -133,7 +134,9 @@ export function createPresentationService(options: {
               ? ['operation', 'documentId', 'projectId', 'requestId']
               : request.operation === 'production_run'
                 ? ['operation', 'documentId', 'projectId', 'requestId']
-                : request.operation === 'production_page'
+                : ['production_page', 'production_content_check'].includes(
+                      request.operation as string,
+                    )
                   ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
                   : request.operation === 'compile'
                     ? ['operation', 'documentId', 'projectId', 'requestId', 'deck', 'planRevision']
@@ -169,13 +172,21 @@ export function createPresentationService(options: {
         assertPresentationId(request.requestId)
       }
       if (
-        ['resume', 'production_run', 'production_page', 'production_rebuild_page'].includes(
-          request.operation as string,
-        ) ||
+        [
+          'resume',
+          'production_run',
+          'production_page',
+          'production_rebuild_page',
+          'production_content_check',
+        ].includes(request.operation as string) ||
         (request.operation === 'production_status' && request.requestId !== undefined)
       )
         assertPresentationId(request.requestId)
-      if (['production_page', 'production_rebuild_page'].includes(request.operation as string))
+      if (
+        ['production_page', 'production_rebuild_page', 'production_content_check'].includes(
+          request.operation as string,
+        )
+      )
         assertPresentationId(request.pageId)
       if (request.operation === 'production_rebuild_page') {
         assertPresentationId(request.parentRequestId)
