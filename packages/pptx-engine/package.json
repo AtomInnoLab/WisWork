@@ -8,7 +8,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./table-grid": "./src/table-grid.ts",
-    "./background-promote": "./src/background-promote.ts"
+    "./background-promote": "./src/background-promote.ts",
+    "./presentation": "./src/presentation.ts",
+    "./presentation-compiler": "./src/presentation-compiler.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -17,11 +19,11 @@
   },
   "dependencies": {
     "fast-xml-parser": "^5.3.4",
-    "jszip": "^3.10.1"
+    "jszip": "^3.10.1",
+    "pptxgenjs": "^4.0.1"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
-    "pptxgenjs": "^4.0.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
   }
