@@ -1,4 +1,8 @@
 import {
+  createPresentationProjectController,
+  type PresentationProjectController,
+} from '../skills/powerpoint/presentation-project.js'
+import {
   createPresentationDeliverySkill,
   type PresentationImportRecord,
 } from '../skills/powerpoint/presentation-delivery.js'
@@ -46,6 +50,7 @@ import {
 import { composeOfficeSkills } from './skill-registry.js'
 
 export interface OfficeHostRuntime {
+  readonly presentation?: PresentationProjectController
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   vfs: InMemoryVfs
@@ -154,6 +159,13 @@ export function createOfficeHostRuntime(
     host === 'powerpoint' && options.presentation
       ? createPresentationGenerationSkill({ ...options.presentation, vfs })
       : undefined
+  const presentation =
+    generation && options.presentation
+      ? createPresentationProjectController({
+          ...options.presentation,
+          executeTool: generation.executeTool,
+        })
+      : undefined
   const delivery =
     generation && options.presentation?.readReceipt && options.presentation.writeReceipt
       ? createPresentationDeliverySkill({
@@ -180,20 +192,30 @@ export function createOfficeHostRuntime(
         executeTool: (call, signal) =>
           call.name === 'import_generated_presentation' && delivery
             ? delivery.executeTool(call, signal)
-            : ['compile_deck_with_pptxgenjs', 'restore_presentation_project'].includes(call.name)
+            : [
+                  'compile_deck_with_pptxgenjs',
+                  'restore_presentation_project',
+                  'resume_presentation_project',
+                ].includes(call.name)
               ? generation.executeTool(call, signal)
               : base.executeTool(call, signal),
       }
     : base
-  return lifecycle(
-    skill,
-    proposals,
-    vfs,
-    skills,
-    options.packageRuntime,
-    options.enableSkillPackages !== false,
-    () => generation?.clear(),
-  )
+  return {
+    ...lifecycle(
+      skill,
+      proposals,
+      vfs,
+      skills,
+      options.packageRuntime,
+      options.enableSkillPackages !== false,
+      () => {
+        generation?.clear()
+        presentation?.clear()
+      },
+    ),
+    ...(presentation ? { presentation } : {}),
+  }
 }
 
 function lifecycle(

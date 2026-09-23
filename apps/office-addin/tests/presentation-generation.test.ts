@@ -261,7 +261,54 @@ describe('generation final document-check cancellation', () => {
       resolve('document-1')
       expect(await pending).toMatchObject({ isError: true, output: 'cancelled' })
       expect(f.vfs.list('/home/user')).toEqual([])
-      if (boundary === 2) expect(f.rememberProject).not.toHaveBeenCalled()
+      if (boundary === 2) expect(f.request).not.toHaveBeenCalled()
+    },
+  )
+})
+
+describe('durable project recovery entry', () => {
+  it('remembers the project before the first PC response can be lost', async () => {
+    const f = fixture()
+    f.request.mockImplementation(async () => {
+      expect(f.rememberProject).toHaveBeenCalledWith(deck.id)
+      throw new Error('connection_lost')
+    })
+    expect(await f.skill.executeTool(compileCall())).toMatchObject({ isError: true })
+    expect(f.rememberProject).toHaveBeenCalledWith(deck.id)
+  })
+  it('resumes a saved request without sending a replacement deck', async () => {
+    const f = fixture()
+    expect(
+      await f.skill.executeTool({
+        id: 'resume',
+        name: 'resume_presentation_project',
+        input: { project_id: deck.id, request_id: 'request-1' },
+      }),
+    ).toMatchObject({ mutated: false })
+    expect(f.request).toHaveBeenCalledWith(
+      { operation: 'resume', documentId: 'document-1', projectId: deck.id, requestId: 'request-1' },
+      undefined,
+    )
+    expect(f.vfs.list('/home/user')).toContain('/home/user/generated/research-1.pptx')
+  })
+})
+
+describe('failed recovery preserves the selected project', () => {
+  it.each(['restore_presentation_project', 'resume_presentation_project'])(
+    '%s does not replace the saved project with a missing/foreign one',
+    async (name) => {
+      const f = fixture()
+      f.request.mockResolvedValue(new Response(JSON.stringify({ error: 'not_found' })))
+      const result = await f.skill.executeTool({
+        id: 'missing',
+        name,
+        input: {
+          project_id: 'missing-project',
+          ...(name === 'resume_presentation_project' ? { request_id: 'request-1' } : {}),
+        },
+      })
+      expect(result.isError).toBe(true)
+      expect(f.rememberProject).not.toHaveBeenCalled()
     },
   )
 })

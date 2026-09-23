@@ -72,3 +72,64 @@ describe('Taskpane to durable PC compilation', () => {
     }
   })
 })
+
+describe('Taskpane project recovery controls', () => {
+  it('finds the first failed compile after reopening and resumes its saved input', async () => {
+    const { createPresentationProjectController } =
+      await import('../../office-addin/src/skills/powerpoint/presentation-project')
+    const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-presentation-recovery-'))
+    try {
+      const compile = vi
+        .fn(compilePresentationDeck)
+        .mockRejectedValueOnce(new Error('temporary_failure'))
+      let service = createPresentationService({ userDataPath, compile })
+      let remembered: string | undefined
+      const options = {
+        available: () => true,
+        documentId: async () => 'document-1',
+        lastProject: () => remembered,
+        rememberProject: async (id: string) => {
+          remembered = id
+        },
+        request: async (body: unknown, signal?: AbortSignal) =>
+          new Response(Buffer.from(await service(body, signal ?? new AbortController().signal))),
+      }
+      const original = createPresentationGenerationSkill({ ...options, vfs: new InMemoryVfs() })
+      const deck = benchmarkDeck()
+      expect(
+        await original.executeTool({
+          id: 'first',
+          name: 'compile_deck_with_pptxgenjs',
+          input: { request_id: 'request-1', deck },
+        }),
+      ).toMatchObject({ isError: true })
+      expect(remembered).toBe(deck.id)
+      service = createPresentationService({ userDataPath, compile })
+      const vfs = new InMemoryVfs()
+      const generation = createPresentationGenerationSkill({ ...options, vfs })
+      const project = createPresentationProjectController({
+        ...options,
+        executeTool: generation.executeTool,
+      })
+      await project.refresh()
+      expect(project.snapshot()).toMatchObject({
+        phase: 'idle',
+        project: { status: 'pending', latestRequestId: 'request-1', slideCount: 8 },
+      })
+      expect(project.snapshot().project?.checks).toBeUndefined()
+      await project.resume('request-1')
+      expect(project.snapshot()).toMatchObject({
+        phase: 'idle',
+        project: { status: 'compiled', checks: { render: 'not_run' } },
+      })
+      const opened = await openPptx(vfs.readBytes(`/home/user/generated/${deck.id}.pptx`))
+      expect(opened.deck.slides).toHaveLength(8)
+      expect(compile).toHaveBeenCalledTimes(2)
+      await project.restore()
+      expect(project.snapshot().error).toBeUndefined()
+      expect(compile).toHaveBeenCalledTimes(2)
+    } finally {
+      rmSync(userDataPath, { recursive: true, force: true })
+    }
+  })
+})

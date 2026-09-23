@@ -185,3 +185,33 @@ describe('presentation capability composition', () => {
     runtime.dispose()
   })
 })
+
+describe('presentation project runtime lifecycle', () => {
+  it('exposes recovery controls and invalidates pending status on clear', async () => {
+    let finish!: (response: Response) => void
+    const request = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve
+        }),
+    )
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request,
+        documentId: async () => 'document-1',
+        lastProject: () => 'project-1',
+        rememberProject: async () => undefined,
+      },
+    })
+    expect(runtime.presentation).toBeDefined()
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain('resume_presentation_project')
+    const pending = runtime.presentation!.refresh()
+    await vi.waitFor(() => expect(request).toHaveBeenCalled())
+    runtime.clearSession()
+    finish(new Response('{}'))
+    await pending
+    expect(runtime.presentation!.snapshot()).toEqual({ phase: 'idle' })
+    runtime.dispose()
+  })
+})

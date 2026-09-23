@@ -30,6 +30,20 @@ const tools: AgentToolDef[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'resume_presentation_project',
+    description:
+      'Resume a persisted compilation request on the paired PC using its original saved input and request ID. This does not import or modify slides. Completed requests return the original artifact. Use the project status to choose the request, never invent an ID.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+        request_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+      },
+      required: ['project_id', 'request_id'],
+      additionalProperties: false,
+    },
+  },
 ]
 export interface PresentationGenerationOptions {
   vfs: InMemoryVfs
@@ -91,6 +105,15 @@ export function createPresentationGenerationSkill(
           deck = parsePresentationDeck(value.deck)
           projectId = deck.id
           requestId = value.request_id
+        } else if (call.name === 'resume_presentation_project') {
+          if (
+            Object.keys(value).some((key) => !['project_id', 'request_id'].includes(key)) ||
+            !validId(value.project_id) ||
+            !validId(value.request_id)
+          )
+            throw new Error('invalid_tool_input')
+          projectId = value.project_id
+          requestId = value.request_id
         } else if (call.name === 'restore_presentation_project') {
           if (Object.keys(value).some((key) => key !== 'project_id'))
             throw new Error('invalid_tool_input')
@@ -102,9 +125,17 @@ export function createPresentationGenerationSkill(
         check()
         const body = deck
           ? { operation: 'compile', documentId, projectId, requestId, deck }
-          : { operation: 'get', documentId, projectId }
+          : requestId
+            ? { operation: 'resume', documentId, projectId, requestId }
+            : { operation: 'get', documentId, projectId }
         if (new TextEncoder().encode(JSON.stringify(body)).byteLength > 256 * 1024)
           throw new Error('presentation_request_too_large')
+        // Remember before dispatch: a lost first response must not orphan durable PC work.
+        if (deck) await options.rememberProject(projectId)
+        check()
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
         const response = await options.request(body, signal)
         check()
         if (!response.ok) throw new Error('presentation_service_unavailable')
@@ -149,11 +180,13 @@ export function createPresentationGenerationSkill(
         if ((await options.documentId()) !== documentId)
           throw new Error('presentation_document_changed')
         check()
-        await options.rememberProject(projectId)
-        check()
-        if ((await options.documentId()) !== documentId)
-          throw new Error('presentation_document_changed')
-        check()
+        if (!deck) {
+          await options.rememberProject(projectId)
+          check()
+          if ((await options.documentId()) !== documentId)
+            throw new Error('presentation_document_changed')
+          check()
+        }
         const path = `/home/user/generated/${projectId}.pptx`
         const reportPath = `/home/user/generated/${projectId}.report.json`
         options.vfs.writeBatch([
