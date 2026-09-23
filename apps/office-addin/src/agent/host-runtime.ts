@@ -1,3 +1,7 @@
+import {
+  createPresentationAttachmentSkill,
+  supportsPresentationAttachment,
+} from '../skills/powerpoint/presentation-attachments.js'
 import { createPresentationPlanningSkill } from '../skills/powerpoint/presentation-planning.js'
 import {
   createPresentationProjectController,
@@ -52,6 +56,7 @@ import { composeOfficeSkills } from './skill-registry.js'
 
 export interface OfficeHostRuntime {
   readonly presentation?: PresentationProjectController
+  durableAttachmentsAvailable?(): boolean
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   vfs: InMemoryVfs
@@ -160,6 +165,15 @@ export function createOfficeHostRuntime(
     host === 'powerpoint' && options.presentation
       ? createPresentationGenerationSkill({ ...options.presentation, vfs })
       : undefined
+  const attachments =
+    generation && options.presentation
+      ? createPresentationAttachmentSkill({
+          vfs,
+          documentId: options.presentation.documentId,
+          available: options.presentation.attachmentsAvailable ?? (() => false),
+          request: options.presentation.attachmentsRequest ?? options.presentation.request,
+        })
+      : undefined
   const planning =
     generation && options.presentation
       ? createPresentationPlanningSkill({ ...options.presentation, vfs })
@@ -191,26 +205,30 @@ export function createOfficeHostRuntime(
             ...base.tools,
             ...generation.tools,
             ...(planning?.tools ?? []),
+            ...(attachments?.tools ?? []),
             ...(delivery?.tools ?? []),
           ]
         },
         get systemPrompt() {
-          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}`
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}`
         },
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
         executeTool: (call, signal) =>
-          ['save_presentation_plan', 'read_presentation_plan'].includes(call.name) && planning
-            ? planning.executeTool(call, signal)
-            : call.name === 'import_generated_presentation' && delivery
-              ? delivery.executeTool(call, signal)
-              : [
-                    'compile_deck_with_pptxgenjs',
-                    'restore_presentation_project',
-                    'resume_presentation_project',
-                  ].includes(call.name)
-                ? generation.executeTool(call, signal)
-                : base.executeTool(call, signal),
+          ['list_presentation_attachments', 'read_presentation_attachment'].includes(call.name) &&
+          attachments
+            ? attachments.executeTool(call, signal)
+            : ['save_presentation_plan', 'read_presentation_plan'].includes(call.name) && planning
+              ? planning.executeTool(call, signal)
+              : call.name === 'import_generated_presentation' && delivery
+                ? delivery.executeTool(call, signal)
+                : [
+                      'compile_deck_with_pptxgenjs',
+                      'restore_presentation_project',
+                      'resume_presentation_project',
+                    ].includes(call.name)
+                  ? generation.executeTool(call, signal)
+                  : base.executeTool(call, signal),
       }
     : base
   return {
@@ -222,10 +240,17 @@ export function createOfficeHostRuntime(
       options.packageRuntime,
       options.enableSkillPackages !== false,
       () => {
+        attachments?.clear()
         generation?.clear()
         planning?.clear()
         presentation?.clear()
       },
+      attachments && options.presentation
+        ? {
+            available: options.presentation.attachmentsAvailable ?? (() => false),
+            upload: attachments.upload,
+          }
+        : undefined,
     ),
     ...(presentation ? { presentation } : {}),
   }
@@ -239,6 +264,10 @@ function lifecycle(
   suppliedPackageRuntime?: Pick<SkillPackageWorkerRuntime, 'parse' | 'cancelAll'>,
   skillPackagesEnabled = true,
   onClear?: () => void,
+  attachments?: {
+    available(): boolean
+    upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
+  },
 ): OfficeHostRuntime {
   const packageRuntime = suppliedPackageRuntime ?? new SkillPackageWorkerRuntime()
   let epoch = 0
@@ -260,7 +289,12 @@ function lifecycle(
     vfs,
     skills,
     skillPackagesEnabled,
+    durableAttachmentsAvailable: () => attachments?.available() ?? false,
     async uploadFile(name, content) {
+      if (disposed) throw new Error('upload_cancelled')
+      if (attachments?.available() && supportsPresentationAttachment(name)) {
+        return attachments.upload(name, content)
+      }
       const captured = epoch
       if (!name || name.length > 128 || name.includes('/') || name.includes('\\'))
         throw new Error('vfs_path_denied')

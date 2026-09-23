@@ -247,3 +247,65 @@ it('composes saved planning tools and clears their asynchronous state with the s
   expect(runtime.vfs.list('/home/user')).toEqual([])
   runtime.dispose()
 })
+it('routes supported attachments to PC and cancels outstanding reads on disposal', async () => {
+  const request = vi.fn(
+    async (_body: unknown, _signal?: AbortSignal) =>
+      new Response(JSON.stringify({ attachments: [] })),
+  )
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      attachmentsAvailable: () => true,
+      request,
+      documentId: async () => 'doc',
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+    },
+  })
+  expect(runtime.durableAttachmentsAvailable?.()).toBe(true)
+  expect(runtime.skill.tools.map((t) => t.name)).toContain('list_presentation_attachments')
+  expect(
+    await runtime.skill.executeTool({
+      id: 'list',
+      name: 'list_presentation_attachments',
+      input: {},
+    }),
+  ).toMatchObject({ output: '{"attachments":[]}', mutated: false })
+  await runtime.uploadFile('image.png', Promise.resolve(new Uint8Array([1]).buffer))
+  expect(request).toHaveBeenCalledTimes(1)
+  request.mockImplementation(async (_body, signal) => {
+    runtime.dispose()
+    expect(signal?.aborted).toBe(true)
+    return new Response('{"attachments":[]}')
+  })
+  expect(
+    await runtime.skill.executeTool({
+      id: 'list',
+      name: 'list_presentation_attachments',
+      input: {},
+    }),
+  ).toMatchObject({ isError: true, output: 'upload_cancelled' })
+  expect(runtime.vfs.list('/home/user')).toEqual([])
+  await expect(
+    runtime.uploadFile('notes.txt', Promise.resolve(new ArrayBuffer(0))),
+  ).rejects.toThrow('upload_cancelled')
+})
+it('keeps older presentation-only PCs on local attachment behavior', async () => {
+  const request = vi.fn()
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request,
+      documentId: async () => 'doc',
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+    },
+  })
+  expect(runtime.durableAttachmentsAvailable?.()).toBe(false)
+  expect(runtime.skill.tools.map((t) => t.name)).not.toContain('list_presentation_attachments')
+  expect(runtime.skill.tools.map((t) => t.name)).toContain('compile_deck_with_pptxgenjs')
+  await runtime.uploadFile('source.txt', Promise.resolve(new Uint8Array([65]).buffer))
+  expect(request).not.toHaveBeenCalled()
+  expect(runtime.vfs.list('/home/user')).toEqual(['/home/user/source.txt'])
+  runtime.dispose()
+})

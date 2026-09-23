@@ -49,6 +49,8 @@ const tools: AgentToolDef[] = [
 export interface PresentationGenerationOptions {
   vfs: InMemoryVfs
   available(): boolean
+  attachmentsAvailable?(): boolean
+  attachmentsRequest?(body: unknown, signal?: AbortSignal): Promise<Response>
   request(body: unknown, signal?: AbortSignal): Promise<Response>
   documentId(): Promise<string>
   lastProject(): string | undefined

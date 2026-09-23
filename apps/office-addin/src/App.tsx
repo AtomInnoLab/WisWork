@@ -1,3 +1,7 @@
+import {
+  MAX_PRESENTATION_ATTACHMENT_BYTES,
+  supportsPresentationAttachment,
+} from './skills/powerpoint/presentation-attachments.js'
 import { PresentationProjectCard } from './agent/presentation-project-card.js'
 import type { PresentationProjectController } from './skills/powerpoint/presentation-project.js'
 import { createBrowserPresentationDocumentBinding } from './skills/powerpoint/presentation-document.js'
@@ -154,6 +158,15 @@ function displayMegabytes(bytes: number): string {
 
 export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>): string {
   const code = error instanceof Error ? error.message : ''
+  const attachmentErrors: Record<string, string> = {
+    presentation_attachment_too_large: '制作资料每个文件最多 50 MB。',
+    presentation_attachment_failed: '资料解析未完成，请检查文件或重新上传。',
+    presentation_document_changed: '文档已改变，本次上传已停止。请在目标文档重新上传。',
+    presentation_service_unavailable: 'PC 连接不可用，请重连后重新选择同一文件续传。',
+    presentation_unavailable: 'PC 连接不可用，请重连后重新选择同一文件续传。',
+    presentation_response_invalid: '上传响应无效，请重连后重新选择同一文件续传。',
+  }
+  if (attachmentErrors[code]) return attachmentErrors[code]
   if (code === 'vfs_limit') {
     if (file && file.size > MAX_VFS_FILE_BYTES) {
       return `File is ${displayMegabytes(file.size)} MB. Attachments must be ${displayMegabytes(MAX_VFS_FILE_BYTES)} MB or smaller.`
@@ -183,6 +196,7 @@ interface SessionFile {
 
 export interface OfficeWorkspaceUi {
   readonly project?: PresentationProjectController
+  readonly durableAttachmentsAvailable?: () => boolean
   readonly attachments: () => readonly string[]
   readonly downloadFile?: (path: string) => void
   readonly skills: () => readonly string[]
@@ -228,6 +242,7 @@ export function createOfficeWorkspaceUi(
 ): OfficeWorkspaceUi {
   return Object.freeze({
     project: runtime.presentation,
+    durableAttachmentsAvailable: runtime.durableAttachmentsAvailable,
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
     downloadFile: (path: string) => downloadSessionFile(runtime.vfs, path),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
@@ -255,7 +270,10 @@ export function uploadSessionFile(runtime: OfficeHostRuntime, file: SessionFile)
     if (file.size > MAX_SKILL_BYTES) return Promise.reject(new Error('invalid_skill_package'))
     return runtime.installSkill(file.text())
   }
-  if (file.size > MAX_VFS_FILE_BYTES) return Promise.reject(new Error('vfs_limit'))
+  if (runtime.durableAttachmentsAvailable?.() && supportsPresentationAttachment(file.name)) {
+    if (file.size > MAX_PRESENTATION_ATTACHMENT_BYTES)
+      return Promise.reject(new Error('presentation_attachment_too_large'))
+  } else if (file.size > MAX_VFS_FILE_BYTES) return Promise.reject(new Error('vfs_limit'))
   return runtime.uploadFile(file.name, file.arrayBuffer())
 }
 
@@ -426,6 +444,9 @@ export function AgentWorkspace(props: {
   const [files, setFiles] = useState<readonly string[]>(ui.attachments())
   const [skills, setSkills] = useState<readonly string[]>(ui.skills())
   const [uploadError, setUploadError] = useState('')
+  const [uploadPending, setUploadPending] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState('')
+  const uploadEpoch = useRef(0)
   const [diagnosticStatus, setDiagnosticStatus] = useState('')
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
@@ -465,6 +486,7 @@ export function AgentWorkspace(props: {
     if (
       !instruction.trim() ||
       state.busy ||
+      uploadPending ||
       state.applying ||
       state.proposal ||
       (ui.project && ui.project.snapshot().phase !== 'idle')
@@ -498,6 +520,9 @@ export function AgentWorkspace(props: {
               type="button"
               className="quiet"
               onClick={() => {
+                uploadEpoch.current += 1
+                setUploadPending(false)
+                setUploadStatus('')
                 session.newTask()
                 ui.clear()
                 setFiles([])
@@ -636,10 +661,15 @@ export function AgentWorkspace(props: {
                 type="button"
                 className="secondary"
                 disabled={
-                  state.applying || state.busy || Boolean(state.proposal) || projectPhase !== 'idle'
+                  uploadPending ||
+                  state.applying ||
+                  state.busy ||
+                  Boolean(state.proposal) ||
+                  projectPhase !== 'idle'
                 }
                 onClick={() => {
-                  if (!ui.project || ui.project.snapshot().phase === 'idle') session.retry()
+                  if (!uploadPending && (!ui.project || ui.project.snapshot().phase === 'idle'))
+                    session.retry()
                 }}
               >
                 {state.error === 'proposal_stale' ? '重新生成' : 'Retry'}
@@ -677,7 +707,9 @@ export function AgentWorkspace(props: {
               <label
                 className="upload-button"
                 htmlFor="session-upload"
-                aria-disabled={state.applying}
+                aria-disabled={
+                  state.applying || state.busy || uploadPending || projectPhase !== 'idle'
+                }
               >
                 Add attachment
               </label>
@@ -685,24 +717,60 @@ export function AgentWorkspace(props: {
                 id="session-upload"
                 className="visually-hidden"
                 type="file"
-                disabled={state.applying}
+                disabled={state.applying || state.busy || uploadPending || projectPhase !== 'idle'}
                 onChange={(event) => {
                   const file = event.currentTarget.files?.[0]
-                  if (!file) return
+                  event.currentTarget.value = ''
+                  if (
+                    !file ||
+                    uploadPending ||
+                    state.busy ||
+                    state.applying ||
+                    projectPhase !== 'idle'
+                  )
+                    return
+                  const captured = ++uploadEpoch.current
+                  const durable =
+                    ui.durableAttachmentsAvailable?.() &&
+                    supportsPresentationAttachment(file.name) &&
+                    file.name !== 'SKILL.md'
+                  const current = () => mounted.current && captured === uploadEpoch.current
                   setUploadError('')
+                  setUploadStatus(durable ? '正在上传到 PC 并解析…' : '正在上传…')
+                  setUploadPending(true)
                   void ui
                     .upload(file)
-                    .then(() => mounted.current && setFiles(ui.attachments()))
-                    .catch(
-                      (error: unknown) =>
-                        mounted.current && setUploadError(safeUploadError(error, file)),
-                    )
+                    .then(() => {
+                      if (!current()) return
+                      setFiles(ui.attachments())
+                      setUploadStatus(
+                        durable
+                          ? `${file.name} 已保存到 PC 并解析，可让 Agent 读取。`
+                          : `${file.name} 已加入本次会话。`,
+                      )
+                    })
+                    .catch((error: unknown) => {
+                      if (!current()) return
+                      setUploadStatus('')
+                      setUploadError(safeUploadError(error, file))
+                    })
+                    .finally(() => {
+                      if (current()) setUploadPending(false)
+                    })
                 }}
               />
               <p>
-                Files are limited to {displayMegabytes(MAX_VFS_FILE_BYTES)} MB each and{' '}
-                {displayMegabytes(MAX_VFS_TOTAL_BYTES)} MB per session, then cleared on logout.
+                {ui.durableAttachmentsAvailable?.()
+                  ? 'PDF、Word（DOCX）、TXT、MD、CSV、JSON 资料每个最多 50 MB，保存于 PC 并绑定当前文档；退出登录不会删除。重连后可让 Agent 列出和读取，重新选择同一文件可续传。'
+                  : `Files are limited to ${displayMegabytes(MAX_VFS_FILE_BYTES)} MB each and ${displayMegabytes(MAX_VFS_TOTAL_BYTES)} MB per session, then cleared on logout.`}
               </p>
+              {ui.durableAttachmentsAvailable?.() && (
+                <p>
+                  下方仅显示本次会话可下载的副本；超过 20 MB 或会话容量的资料仍可由 Agent 在 PC
+                  读取。其他文件及技能仅保留在会话中。
+                </p>
+              )}
+              {uploadStatus && <p role="status">{uploadStatus}</p>}
               {uploadError && (
                 <p className="error-text" role="alert">
                   {uploadError}
@@ -793,7 +861,7 @@ export function AgentWorkspace(props: {
         {ui.project && (
           <PresentationProjectCard
             controller={ui.project}
-            disabled={state.busy || state.applying || Boolean(state.proposal)}
+            disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
           />
         )}
         {ui.downloadFile &&
@@ -871,6 +939,7 @@ export function AgentWorkspace(props: {
               aria-label="Send message"
               disabled={
                 !instruction.trim() ||
+                uploadPending ||
                 state.applying ||
                 Boolean(state.proposal) ||
                 projectPhase !== 'idle'
@@ -911,7 +980,7 @@ function ConfiguredApp() {
       transportMode === 'loopback'
         ? createPcBridgeSession()
         : createOfficeRelaySession({
-            capabilities: ['agent.v1', 'presentation.v1'],
+            capabilities: ['agent.v1', 'presentation.v1', 'presentation-attachments.v1'],
           }),
     [transportMode],
   )
@@ -973,6 +1042,15 @@ function ConfiguredApp() {
                       },
                       request: (body: unknown, signal?: AbortSignal) =>
                         bridge.capabilityFetch('presentation.v1', body, signal),
+                      attachmentsAvailable: () => {
+                        const snapshot = bridge.snapshot()
+                        return (
+                          snapshot.status === 'connected' &&
+                          snapshot.capabilities?.includes('presentation-attachments.v1') === true
+                        )
+                      },
+                      attachmentsRequest: (body: unknown, signal?: AbortSignal) =>
+                        bridge.capabilityFetch('presentation-attachments.v1', body, signal),
                     },
                   }
                 : {}),

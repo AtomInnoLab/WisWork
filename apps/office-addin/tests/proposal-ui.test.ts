@@ -193,3 +193,29 @@ describe('generic proposal presentation', () => {
     expect(runtime.installSkill).not.toHaveBeenCalled()
   })
 })
+it('uses the PC attachment limit for supported PPT sources before loading bytes', async () => {
+  const runtime = {
+    durableAttachmentsAvailable: () => true,
+    uploadFile: vi.fn(async () => undefined),
+  } as unknown as OfficeHostRuntime
+  const arrayBuffer = vi.fn(async () => new ArrayBuffer(0))
+  await expect(
+    uploadSessionFile(runtime, {
+      name: 'source.pdf',
+      size: 50 * 1024 * 1024,
+      arrayBuffer,
+      text: vi.fn(),
+    }),
+  ).resolves.toBeUndefined()
+  expect(arrayBuffer).toHaveBeenCalledOnce()
+  arrayBuffer.mockClear()
+  await expect(
+    uploadSessionFile(runtime, {
+      name: 'source.pdf',
+      size: 50 * 1024 * 1024 + 1,
+      arrayBuffer,
+      text: vi.fn(),
+    }),
+  ).rejects.toThrow('presentation_attachment_too_large')
+  expect(arrayBuffer).not.toHaveBeenCalled()
+})

@@ -521,3 +521,81 @@ describe('Office Agent workspace UI', () => {
     )
   })
 })
+it('serializes durable upload, permits same-file retry and drops a late result after new task', async () => {
+  const snapshot: OfficeAgentSnapshot = {
+    assistantText: 'Ready',
+    activity: '',
+    busy: false,
+    applying: false,
+    status: 'done',
+    retryable: true,
+    error: 'tool_failed',
+    errorMessage: 'Retry',
+    timeline: [{ id: 'a', kind: 'assistant', text: 'Ready' }],
+  }
+  const session = {
+    snapshot: () => snapshot,
+    subscribe: () => () => {},
+    send: vi.fn(),
+    stop: vi.fn(),
+    confirm: vi.fn(),
+    reject: vi.fn(),
+    newTask: vi.fn(),
+    retry: vi.fn(),
+    logout: vi.fn(),
+    authenticationLost: vi.fn(),
+    dispose: vi.fn(),
+  } satisfies OfficeAgentSession
+  let finish!: () => void
+  const upload = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+  )
+  const ui: OfficeWorkspaceUi = {
+    attachments: () => [],
+    skills: () => [],
+    skillPackagesEnabled: true,
+    durableAttachmentsAvailable: () => true,
+    upload,
+    clear: vi.fn(),
+  }
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+  await act(async () =>
+    root.render(
+      React.createElement(AgentWorkspace, {
+        session,
+        ui,
+        disconnect: vi.fn(),
+        host: 'powerpoint',
+        initialPanel: 'attachments',
+      }),
+    ),
+  )
+  const input = container.querySelector<HTMLInputElement>('#session-upload')!
+  Object.defineProperty(input, 'files', {
+    configurable: true,
+    value: [new File(['hello'], 'source.txt')],
+  })
+  await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
+  expect(upload).toHaveBeenCalledOnce()
+  expect(input.value).toBe('')
+  expect(input.disabled).toBe(true)
+  expect(container.textContent).toContain('正在上传到 PC 并解析')
+  expect(container.textContent).toContain('退出登录不会删除')
+  const retry = Array.from(container.querySelectorAll('button')).find(
+    (b) => b.textContent === 'Retry',
+  )!
+  expect(retry.disabled).toBe(true)
+  const newTask = Array.from(container.querySelectorAll('button')).find(
+    (b) => b.textContent === '新对话',
+  )!
+  await act(async () => newTask.click())
+  await act(async () => finish())
+  expect(container.textContent).not.toContain('source.txt 已保存')
+  await act(async () => root.unmount())
+  container.remove()
+})
