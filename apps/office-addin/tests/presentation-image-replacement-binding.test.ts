@@ -136,3 +136,56 @@ it('reserves serialized space for candidate ids and snapshots queued input', asy
   await write
   expect(f.binding.readImageReplacement(f.key)?.assetDigest).toBe('a'.repeat(64))
 })
+
+const baseline = {
+  slideId: 'host',
+  shapeId: 'old',
+  geometry: { left: 1, top: 2, width: 100, height: 50 },
+  rotation: 0,
+  name: 'Picture',
+  altTextTitle: '',
+  altTextDescription: '',
+  zOrderPosition: 0,
+  shapeIds: ['old', 'title'],
+  pictureFingerprint: 'b'.repeat(64),
+  mediaDigest: 'c'.repeat(64),
+}
+it('persists immutable recovery evidence and never upgrades legacy records with guessed evidence', async () => {
+  const f = await setup(),
+    record = { ...f.record, baseline }
+  expect(validateImageReplacementRecord(record)).toBe(true)
+  await f.binding.writeImageReplacement(f.key, record)
+  await f.binding.writeImageReplacement(f.key, { ...record, newShapeId: 'new' })
+  expect(f.create().readImageReplacement(f.key)?.baseline).toEqual(baseline)
+  await expect(
+    f.binding.writeImageReplacement(f.key, {
+      ...record,
+      newShapeId: 'new',
+      baseline: { ...baseline, pictureFingerprint: 'd'.repeat(64) },
+    }),
+  ).rejects.toThrow()
+  await expect(
+    f.binding.writeImageReplacement(f.key, { ...record, newShapeId: 'new', baseline: undefined }),
+  ).rejects.toThrow()
+  const legacy = await setup()
+  await legacy.binding.writeImageReplacement(legacy.key, legacy.record)
+  await expect(
+    legacy.binding.writeImageReplacement(legacy.key, { ...legacy.record, baseline }),
+  ).rejects.toThrow()
+})
+it('rejects unbound, malformed, oversized or candidate-aliasing recovery evidence', async () => {
+  const f = await setup()
+  for (const invalid of [
+    { ...baseline, slideId: 'other' },
+    { ...baseline, shapeId: 'other' },
+    { ...baseline, geometry: { ...baseline.geometry, width: -1 } },
+    { ...baseline, shapeIds: ['old', 'old'] },
+    { ...baseline, shapeIds: ['title', 'old'] },
+    { ...baseline, zOrderPosition: 0.5 },
+    { ...baseline, mediaDigest: 'bad' },
+    { ...baseline, extra: true },
+    { ...baseline, altTextTitle: 'a'.repeat(17000) },
+  ])
+    expect(validateImageReplacementRecord({ ...f.record, baseline: invalid })).toBe(false)
+  expect(validateImageReplacementRecord({ ...f.record, baseline, newShapeId: 'title' })).toBe(false)
+})

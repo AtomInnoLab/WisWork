@@ -73,23 +73,25 @@ async function fixture() {
       screenshot: { mime: 'image/png', base64: text === 'before' ? beforePng : afterPng },
     }),
   )
-  const runtime = createOfficeHostRuntime('powerpoint', {
-    presentation: {
-      ...binding,
-      available: () => true,
-      request: async () =>
-        new Response(
-          JSON.stringify({
-            projectId: 'project',
-            requestId: 'request',
-            status: 'compiled',
-            pptxBase64,
-            report: { deckId: 'project', slideCount: 1 },
-            pages: [{ id: 'page1', title: 'Page', sourceSlideId: '256#' }],
-          }),
-        ),
-    },
-  })
+  const createRuntime = () =>
+    createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        ...createPresentationDocumentBinding(settings, () => 'doc'),
+        available: () => true,
+        request: async () =>
+          new Response(
+            JSON.stringify({
+              projectId: 'project',
+              requestId: 'request',
+              status: 'compiled',
+              pptxBase64,
+              report: { deckId: 'project', slideCount: 1 },
+              pages: [{ id: 'page1', title: 'Page', sourceSlideId: '256#' }],
+            }),
+          ),
+      },
+    })
+  const runtime = createRuntime()
   const restored = await runtime.skill.executeTool({
     id: 'restore',
     name: 'restore_presentation_project',
@@ -130,6 +132,7 @@ async function fixture() {
     return proposals.pending()!.id
   }
   return {
+    createRuntime,
     binding,
     setText: (value: string) => {
       text = value
@@ -452,5 +455,105 @@ it.each([false, true])(
     expect(native).toHaveBeenCalledOnce()
     expect(f.proposals.pending()).toBeUndefined()
     f.runtime.dispose()
+  },
+)
+
+it.each(['ready_to_finish', 'already_applied', 'completion_save_failed'] as const)(
+  'recovers an image replacement after reopening without the original VFS asset (%s)',
+  async (scenario) => {
+    const f = await fixture(),
+      key = await imageReplacementKey('project', 'request', 'page1', 'old')
+    const baseline = {
+      slideId: 'host',
+      shapeId: 'old',
+      geometry: { left: 1, top: 2, width: 100, height: 50 },
+      rotation: 0,
+      name: 'Picture',
+      altTextTitle: '',
+      altTextDescription: '',
+      zOrderPosition: 0,
+      shapeIds: ['old'],
+      pictureFingerprint: 'a'.repeat(64),
+      mediaDigest: 'b'.repeat(64),
+    }
+    const record = {
+      version: 1 as const,
+      documentId: await f.binding.documentId(),
+      projectId: 'project',
+      requestId: 'request',
+      pageId: 'page1',
+      hostSlideId: 'host',
+      oldShapeId: 'old',
+      assetDigest: 'c'.repeat(64),
+      state: 'pending' as const,
+      baseline,
+    }
+    await f.binding.writeImageReplacement(key, record)
+    await f.binding.writeImageReplacement(key, { ...record, newShapeId: 'new' })
+    f.runtime.dispose()
+    vi.stubGlobal('createImageBitmap', undefined)
+    let status: 'ready_to_finish' | 'already_applied' =
+      scenario === 'already_applied' ? 'already_applied' : 'ready_to_finish'
+    const inspect = vi
+      .spyOn(BrowserPresentationImageAdapter.prototype, 'inspectRecovery')
+      .mockImplementation(async () => ({ status }))
+    const insert = vi.spyOn(BrowserPresentationImageAdapter.prototype, 'replace')
+    let failOnce = scenario === 'completion_save_failed'
+    const finish = vi
+      .spyOn(BrowserPresentationImageAdapter.prototype, 'finishRecovery')
+      .mockImplementation(async () => {
+        expect(f.page().recheckRequired).toBe(true)
+        status = 'already_applied'
+        if (failOnce) {
+          f.save.mockRejectedValueOnce(new Error('save_failed'))
+          failOnce = false
+        }
+        return { shapeId: 'new' }
+      })
+    const runtime = f.createRuntime(),
+      proposals = runtime.proposals as StructuredProposalController
+    expect(
+      (
+        await runtime.skill.executeTool({
+          id: 'restore',
+          name: 'restore_presentation_project',
+          input: { project_id: 'project' },
+        })
+      ).isError,
+    ).not.toBe(true)
+    const input = { page_id: 'page1', shape_id: 'old' }
+    const live = await runtime.skill.executeTool({
+      id: 'inspect',
+      name: 'inspect_presentation_image_replacement',
+      input,
+    })
+    expect(live.isError, live.output).not.toBe(true)
+    expect(live.output).toContain(status)
+    expect(f.page().recheckRequired).toBeUndefined()
+    const propose = async () => {
+      const result = await runtime.skill.executeTool({
+        id: 'resume',
+        name: 'resume_presentation_image_replacement',
+        input,
+      })
+      expect(result.isError, result.output).not.toBe(true)
+      return proposals.pending()!.id
+    }
+    const confirmed = proposals.confirm(await propose())
+    if (scenario === 'completion_save_failed') {
+      await expect(confirmed).rejects.toThrow('save_failed')
+      expect(f.binding.readImageReplacement(key)?.state).toBe('pending')
+      await proposals.confirm(await propose())
+    } else await confirmed
+    expect(f.binding.readImageReplacement(key)).toMatchObject({
+      state: 'complete',
+      newShapeId: 'new',
+      baseline,
+    })
+    expect(inspect).toHaveBeenCalled()
+    expect(finish).toHaveBeenCalledTimes(scenario === 'completion_save_failed' ? 2 : 1)
+    expect(insert).not.toHaveBeenCalled()
+    expect(f.page().recheckRequired).toBe(true)
+    runtime.dispose()
   },
 )

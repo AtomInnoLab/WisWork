@@ -269,6 +269,7 @@ export function createPresentationDocumentBinding(
               r.hostSlideId,
               r.oldShapeId,
               r.assetDigest,
+              r.baseline,
             ])
           if (
             identity(prior) !== identity(snapshot) ||

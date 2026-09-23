@@ -372,6 +372,8 @@ export function createOfficeHostRuntime(
             'edit_presentation_page_geometry',
             'replace_presentation_page_image',
             'read_presentation_image_replacement',
+            'inspect_presentation_image_replacement',
+            'resume_presentation_image_replacement',
           ].includes(call.name) && pageEditing
             ? pageEditing.executeTool(call, signal)
             : [
