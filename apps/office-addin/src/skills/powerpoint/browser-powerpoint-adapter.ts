@@ -133,6 +133,22 @@ export type PowerPointMasterOperation =
     }
 
 export interface PowerPointAdapter {
+  listPresentationPageShapes?(
+    slideId: string,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; shapes: PowerPointShape[]; shapesTruncated: boolean }>
+  readPresentationPageText?(
+    slideId: string,
+    shapeId: string,
+    signal?: AbortSignal,
+  ): Promise<SlideTextResult>
+  editPresentationPageText?(
+    slideId: string,
+    shapeId: string,
+    text: string,
+    expectedText: string,
+    signal?: AbortSignal,
+  ): Promise<void>
   inspectPresentationPage?(slideId: string, signal?: AbortSignal): Promise<PowerPointPageInspection>
   inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState>
   executeMasterOperations(
@@ -364,6 +380,94 @@ function pageScreenshot(value: unknown): string {
   return value
 }
 
+function pageId(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || !value.length || value.length > 256)
+    throw new Error('invalid_tool_input')
+}
+function boundedPageText(value: unknown): string {
+  if (typeof value !== 'string' || value.length > MAX_POWERPOINT_TEXT)
+    throw new Error('office_read_failed')
+  return value
+}
+async function getPageById(
+  context: RuntimeRecord,
+  id: string,
+  signal?: AbortSignal,
+): Promise<RuntimeRecord> {
+  const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+  if (typeof slides?.getItem !== 'function') throw new Error('office_api_unsupported')
+  const slide = (slides.getItem as (id: string) => RuntimeRecord)(id)
+  if (typeof slide?.load !== 'function') throw new Error('office_api_unsupported')
+  ;(slide.load as (properties: string) => void)('id')
+  await sync(context, signal)
+  if (slide.id !== id) throw new Error('office_read_failed')
+  return slide
+}
+async function pageTextRange(
+  context: RuntimeRecord,
+  slide: RuntimeRecord,
+  shapeId: string,
+  signal?: AbortSignal,
+): Promise<RuntimeRecord> {
+  const shapes = slide.shapes as RuntimeRecord
+  if (typeof shapes?.getItem !== 'function') throw new Error('office_api_unsupported')
+  const shape = (shapes.getItem as (id: string) => RuntimeRecord)(shapeId)
+  const range = (shape?.textFrame as RuntimeRecord | undefined)?.textRange as
+    RuntimeRecord | undefined
+  if (typeof shape?.load !== 'function' || typeof range?.load !== 'function')
+    throw new Error('office_api_unsupported')
+  ;(shape.load as (properties: string) => void)('id')
+  await sync(context, signal)
+  if (shape.id !== shapeId) throw new Error('office_read_failed')
+  return range
+}
+async function writeTextRange(
+  context: RuntimeRecord,
+  textRange: RuntimeRecord,
+  value: string,
+  signal?: AbortSignal,
+  expectedText?: string,
+): Promise<void> {
+  ;(textRange.load as (properties: string) => void)('text')
+  await sync(context, signal)
+  const readText = () =>
+    expectedText === undefined
+      ? string(textRange.text, MAX_POWERPOINT_TEXT)
+      : boundedPageText(textRange.text)
+  const before = readText()
+  if (expectedText !== undefined && before !== expectedText)
+    throw new Error('office_concurrent_change')
+  cancelled(signal)
+  textRange.text = value
+  try {
+    await sync(context, signal)
+    const applied = await readUntilConverged({
+      signal,
+      read: async () => {
+        ;(textRange.load as (properties: string) => void)('text')
+        await sync(context, signal)
+        return readText()
+      },
+      accept: (current) => current === value,
+    })
+    if (applied !== value) throw new Error('office_verify_failed')
+  } catch {
+    // A rejected Office.js sync may still have committed the assignment. Reconcile the
+    // semantic target before deciding whether the write failed or cancellation won.
+    const current = await readUntilConverged({
+      read: async () => {
+        ;(textRange.load as (properties: string) => void)('text')
+        await sync(context)
+        return readText()
+      },
+      accept: (observed) => observed === value,
+    })
+    if (current === before) throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed')
+    if (current !== value) throw new Error('office_concurrent_change')
+    return
+  }
+}
+
 export class BrowserPowerPointAdapter implements PowerPointAdapter {
   private run<T>(
     minimumVersion: '1.4' | '1.8' | '1.10',
@@ -552,6 +656,73 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         }
       }
       await sync(context, signal)
+    })
+  }
+
+  async listPresentationPageShapes(
+    slideId: string,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; shapes: PowerPointShape[]; shapesTruncated: boolean }> {
+    cancelled(signal)
+    pageId(slideId)
+    return this.run('1.10', async (context) => {
+      const slide = await getPageById(context, slideId, signal)
+      const shapes = slide.shapes as RuntimeRecord
+      if (typeof shapes?.load !== 'function') throw new Error('office_api_unsupported')
+      loadShapes(shapes)
+      await sync(context, signal)
+      if (!Array.isArray(shapes.items)) throw new Error('office_read_failed')
+      const items = (shapes.items as RuntimeRecord[]).slice(0, MAX_POWERPOINT_VERIFY_SHAPES)
+      for (const item of items)
+        if (!item || typeof item.id !== 'string' || !item.id.length || item.id.length > 256)
+          throw new Error('office_read_failed')
+      return {
+        slideId,
+        shapes: items.map(shapeInfo),
+        shapesTruncated: shapes.items.length > MAX_POWERPOINT_VERIFY_SHAPES,
+      }
+    })
+  }
+
+  async readPresentationPageText(
+    slideId: string,
+    shapeId: string,
+    signal?: AbortSignal,
+  ): Promise<SlideTextResult> {
+    cancelled(signal)
+    pageId(slideId)
+    pageId(shapeId)
+    return this.run('1.10', async (context) => {
+      const slide = await getPageById(context, slideId, signal)
+      const range = await pageTextRange(context, slide, shapeId, signal)
+      ;(range.load as (properties: string) => void)('text')
+      await sync(context, signal)
+      const text = boundedPageText(range.text)
+      return { slideId, shapeId, text, paragraphs: text.split(/\r?\n/) }
+    })
+  }
+
+  async editPresentationPageText(
+    slideId: string,
+    shapeId: string,
+    text: string,
+    expectedText: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    cancelled(signal)
+    pageId(slideId)
+    pageId(shapeId)
+    if (
+      typeof text !== 'string' ||
+      text.length > MAX_POWERPOINT_TEXT ||
+      typeof expectedText !== 'string' ||
+      expectedText.length > MAX_POWERPOINT_TEXT
+    )
+      throw new Error('invalid_tool_input')
+    await this.run('1.10', async (context) => {
+      const slide = await getPageById(context, slideId, signal)
+      const range = await pageTextRange(context, slide, shapeId, signal)
+      await writeTextRange(context, range, text, signal, expectedText)
     })
   }
 
@@ -1423,39 +1594,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         RuntimeRecord | undefined
       if (!textRange || typeof textRange.load !== 'function')
         throw new Error('office_api_unsupported')
-      ;(textRange.load as (properties: string) => void)('text')
-      await sync(context, signal)
-      const before = string(textRange.text, MAX_POWERPOINT_TEXT)
-      cancelled(signal)
-      textRange.text = value
-      try {
-        await sync(context, signal)
-        const applied = await readUntilConverged({
-          signal,
-          read: async () => {
-            ;(textRange.load as (properties: string) => void)('text')
-            await sync(context, signal)
-            return string(textRange.text, MAX_POWERPOINT_TEXT)
-          },
-          accept: (current) => current === value,
-        })
-        if (applied !== value) throw new Error('office_verify_failed')
-      } catch {
-        // A rejected Office.js sync may still have committed the assignment. Reconcile the
-        // semantic target before deciding whether the write failed or cancellation won.
-        const current = await readUntilConverged({
-          read: async () => {
-            ;(textRange.load as (properties: string) => void)('text')
-            await sync(context)
-            return string(textRange.text, MAX_POWERPOINT_TEXT)
-          },
-          accept: (observed) => observed === value,
-        })
-        if (current === before)
-          throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed')
-        if (current !== value) throw new Error('office_concurrent_change')
-        return
-      }
+      await writeTextRange(context, textRange, value, signal)
     })
   }
 
