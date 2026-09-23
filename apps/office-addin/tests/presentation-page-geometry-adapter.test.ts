@@ -197,6 +197,31 @@ describe('host-ID page geometry adapter', () => {
     expect(context.sync).toHaveBeenCalledTimes(2)
     expect(committed).toBe(before.left)
   })
+  it('does not flush if Stop arrives from a setter before dispatch', async () => {
+    const { adapter, shape, context } = setup()
+    const controller = new AbortController()
+    let committed = before.left,
+      queued: number | undefined
+    Object.defineProperty(shape, 'left', {
+      get: () => committed,
+      set: (value: number) => {
+        queued = value
+        controller.abort()
+      },
+      enumerable: true,
+    })
+    context.sync.mockImplementation(async () => {
+      if (queued !== undefined) {
+        committed = queued
+        queued = undefined
+      }
+    })
+    await expect(
+      adapter.editPresentationPageGeometry('host-29', 'shape-1', target, before, controller.signal),
+    ).rejects.toThrow('office_state_uncertain')
+    expect(context.sync).toHaveBeenCalledTimes(2)
+    expect(committed).toBe(before.left)
+  })
   it('reports partial property setter failure as uncertain rather than claiming a clean failure', async () => {
     const { adapter, shape } = setup()
     Object.defineProperty(shape, 'top', {

@@ -764,6 +764,8 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         // batch still queued in this context. Its final host state remains uncertain.
         throw new Error('office_state_uncertain')
       }
+      // Stop can also arrive from a setter before the batch has ever been dispatched.
+      if (signal?.aborted) throw new Error('office_state_uncertain')
       try {
         await sync(context, signal)
       } catch {
