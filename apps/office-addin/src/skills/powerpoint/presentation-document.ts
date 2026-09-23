@@ -1,4 +1,8 @@
 import {
+  validatePresentationGeometryChange,
+  type PresentationGeometryChange,
+} from './presentation-geometry-change.js'
+import {
   imageReplacementKey,
   imageReplacementReservedBytes,
   validateImageReplacementRecord,
@@ -16,6 +20,7 @@ import type { PresentationImportRecord } from './presentation-delivery.js'
 const ID_KEY = 'wiswork.presentation.document.v1'
 const IMPORT_KEY = 'wiswork.presentation.imports.v1'
 const IMAGE_KEY = 'wiswork.presentation.image-replacements.v1'
+const GEOMETRY_KEY = 'wiswork.presentation.geometry-change.v1'
 const QA_KEY = 'wiswork.presentation.qa.v1'
 const PROJECT_KEY = 'wiswork.presentation.project.v1'
 const validId = (value: unknown): value is string =>
@@ -204,8 +209,94 @@ export function createPresentationDocumentBinding(
       throw error
     }
   }
+  let geometryWriteFailed = false
+  const readGeometryChange = (): PresentationGeometryChange | undefined => {
+    const invalid = () => new Error('presentation_geometry_change_state_invalid')
+    if (geometryWriteFailed) throw invalid()
+    const raw = settings.get(GEOMETRY_KEY)
+    // Empty string is the tombstone for a failed first save; the settings adapter has no delete.
+    if (raw === undefined || raw === null || raw === '') return undefined
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 16 * 1024)
+      throw invalid()
+    let value: unknown
+    try {
+      value = JSON.parse(raw)
+    } catch {
+      throw invalid()
+    }
+    if (!validatePresentationGeometryChange(value)) throw invalid()
+    return value
+  }
   return {
     documentId,
+    readGeometryChange,
+    writeGeometryChange(
+      record: PresentationGeometryChange,
+      expectedChange: PresentationGeometryChange | undefined,
+    ) {
+      const snapshot = structuredClone(record),
+        expected = structuredClone(expectedChange)
+      const write = async () => {
+        const invalid = () => new Error('presentation_geometry_change_state_invalid')
+        if (
+          !validatePresentationGeometryChange(snapshot) ||
+          (expected !== undefined && !validatePresentationGeometryChange(expected))
+        )
+          throw invalid()
+        if ((await documentId()) !== snapshot.documentId)
+          throw new Error('presentation_document_changed')
+        const prior = readGeometryChange()
+        if (JSON.stringify(prior) !== JSON.stringify(expected))
+          throw new Error('presentation_geometry_change_stale')
+        if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
+        if (prior?.changeId === snapshot.changeId) {
+          const identity = (r: PresentationGeometryChange) =>
+            JSON.stringify({ ...r, state: undefined })
+          const transitions = {
+            pending: 'applied',
+            applied: 'undo_pending',
+            undo_pending: 'undone',
+            undone: undefined,
+          }
+          if (identity(prior) !== identity(snapshot) || transitions[prior.state] !== snapshot.state)
+            throw invalid()
+        } else if (
+          snapshot.state !== 'pending' ||
+          (prior && !['applied', 'undone'].includes(prior.state))
+        )
+          throw invalid()
+        const previous = settings.get(GEOMETRY_KEY),
+          location = settings.location(),
+          identity = settings.get(ID_KEY),
+          serialized = JSON.stringify(snapshot)
+        try {
+          settings.set(GEOMETRY_KEY, serialized)
+          await settings.save()
+          if (
+            settings.location() !== location ||
+            settings.get(ID_KEY) !== identity ||
+            settings.get(GEOMETRY_KEY) !== serialized
+          )
+            throw new Error('presentation_document_changed')
+        } catch (error) {
+          if (
+            settings.location() === location &&
+            settings.get(ID_KEY) === identity &&
+            settings.get(GEOMETRY_KEY) === serialized
+          ) {
+            try {
+              settings.set(GEOMETRY_KEY, typeof previous === 'string' ? previous : '')
+            } catch {
+              geometryWriteFailed = true
+            }
+          } else geometryWriteFailed = true
+          throw error
+        }
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
     readReceipt: (key: string) => readImports()[key],
     writeReceipt(key: string, record: PresentationImportRecord | undefined) {
       const write = async () => {
