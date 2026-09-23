@@ -166,3 +166,30 @@ it('shows page production states and a separate continue action without claiming
   await act(async () => view.button('继续页任务').click())
   expect(view.controller.runProduction).toHaveBeenCalledWith('pages')
 })
+it('warns when a planned project has production frozen against an older plan', async () => {
+  const { benchmarkPlan } =
+    await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
+  const view = await mount({
+    phase: 'idle',
+    project: {
+      ...pending.project!,
+      status: 'planned',
+      latestRequestId: undefined,
+      latestCompiledRequestId: undefined,
+      history: [],
+      plan: { revision: 2, value: benchmarkPlan() },
+      production: {
+        projectId: 'p1',
+        requestId: 'old-pages',
+        planRevision: 1,
+        status: 'pending',
+        compiledCount: 0,
+        total: 1,
+        pages: [{ id: 'a', title: 'First', state: 'pending', attempt: 0 }],
+      },
+    },
+  })
+  expect(view.container.textContent).toContain('页任务使用旧计划，继续任务按原快照，不代表当前计划')
+  await act(async () => view.button('继续页任务').click())
+  expect(view.controller.runProduction).toHaveBeenCalledWith('old-pages')
+})
