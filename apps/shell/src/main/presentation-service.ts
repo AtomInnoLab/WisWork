@@ -1,3 +1,4 @@
+import { createPresentationAttachmentService } from './presentation-attachments'
 import {
   parsePresentationPlan,
   assertDeckMatchesPresentationPlan,
@@ -24,6 +25,11 @@ const errorCodes = new Set([
   'not_found',
   'aborted',
   'output_too_large',
+  'unsupported_file',
+  'attachment_conflict',
+  'quota_exceeded',
+  'digest_mismatch',
+  'parse_failed',
 ])
 const encode = (value: unknown): Uint8Array => Buffer.from(JSON.stringify(value), 'utf8')
 function boundedResponse(value: unknown): Uint8Array {
@@ -47,6 +53,7 @@ export function createPresentationService(options: {
   userDataPath: string
   compile?: typeof compilePresentationDeck
 }): (body: unknown, signal: AbortSignal) => Promise<Uint8Array> {
+  const attachments = createPresentationAttachmentService(options)
   const store = new PresentationStore(options.userDataPath)
   const compile = options.compile ?? compilePresentationDeck
   return async (body, signal) => {
@@ -60,6 +67,16 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
+      if (
+        [
+          'attachment_begin',
+          'attachment_chunk',
+          'attachment_finish',
+          'attachment_list',
+          'attachment_read',
+        ].includes(request.operation as string)
+      )
+        return boundedResponse(await attachments(request, signal))
       if (
         !['compile', 'get', 'status', 'resume', 'save_plan', 'get_plan'].includes(
           request.operation as string,

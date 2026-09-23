@@ -61,7 +61,12 @@ export interface OfficeRelaySession {
 }
 
 export type OfficeRelayCapability =
-  'agent.v1' | 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1' | 'presentation.v1'
+  | 'agent.v1'
+  | 'web-search.v1'
+  | 'web-fetch.v1'
+  | 'image-search.v1'
+  | 'presentation.v1'
+  | 'presentation-attachments.v1'
 
 interface Dependencies {
   createSocket?: (url: string) => RelayWebSocket

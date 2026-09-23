@@ -721,87 +721,90 @@ describe('Office relay PC client', () => {
     client.revoke('test_complete')
   })
 
-  it('negotiates presentation only when provided and streams recoverable generation requests', async () => {
-    const socket = new FakeSocket()
-    const payload = new TextEncoder().encode(JSON.stringify({ result: 'x'.repeat(70_000) }))
-    const presentationProxy = vi
-      .fn<(body: unknown, signal: AbortSignal) => Promise<Uint8Array>>()
-      .mockRejectedValueOnce(new Error('provider_unavailable'))
-      .mockResolvedValue(payload)
-    const proxy = vi.fn()
-    const client = createOfficeRelayClient({
-      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
-      connect: () => socket,
-      getValidAccountStatus: async () => ({ loggedIn: true }),
-      getAccessToken: async () => 'token',
-      proxy,
-      presentationProxy,
-      onPending() {},
-    })
-    const claiming = client.claim('123456')
-    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
-    socket.open()
-    await claiming
-    const capabilities = ['agent.v1', 'presentation.v1']
-    expect(JSON.parse(socket.sent[0]!)).toEqual({
-      version: 2,
-      type: 'pc.negotiate',
-      verification_code: '123456',
-      capabilities,
-    })
-    socket.message({ version: 2, type: 'pc.negotiated', pairing_version: 2, capabilities })
-    socket.message({
-      version: 2,
-      type: 'pc.claimed',
-      pairing_id: 'pairing_12345678',
-      host: 'PowerPoint',
-      origin: 'https://office.8-216-134-194.sslip.io',
-      verification_code: '123456',
-      expires_in: 120,
-      capabilities,
-    })
-    await client.approve('pairing_12345678')
-    socket.message({
-      version: 2,
-      type: 'pc.approved',
-      session_id: 'session_12345678',
-      capability: 'secret-capability',
-      expires_in: 1800,
-      capabilities,
-    })
-    for (const request_id of ['request_failure', 'request_success']) {
+  it.each(['presentation.v1', 'presentation-attachments.v1'])(
+    'negotiates presentation only when provided and streams recoverable generation requests',
+    async (capabilityName) => {
+      const socket = new FakeSocket()
+      const payload = new TextEncoder().encode(JSON.stringify({ result: 'x'.repeat(70_000) }))
+      const presentationProxy = vi
+        .fn<(body: unknown, signal: AbortSignal) => Promise<Uint8Array>>()
+        .mockRejectedValueOnce(new Error('provider_unavailable'))
+        .mockResolvedValue(payload)
+      const proxy = vi.fn()
+      const client = createOfficeRelayClient({
+        endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+        connect: () => socket,
+        getValidAccountStatus: async () => ({ loggedIn: true }),
+        getAccessToken: async () => 'token',
+        proxy,
+        presentationProxy,
+        onPending() {},
+      })
+      const claiming = client.claim('123456')
+      await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+      socket.open()
+      await claiming
+      const capabilities = ['agent.v1', 'presentation.v1', 'presentation-attachments.v1']
+      expect(JSON.parse(socket.sent[0]!)).toEqual({
+        version: 2,
+        type: 'pc.negotiate',
+        verification_code: '123456',
+        capabilities,
+      })
+      socket.message({ version: 2, type: 'pc.negotiated', pairing_version: 2, capabilities })
       socket.message({
         version: 2,
-        type: 'relay.request',
-        session_id: 'session_12345678',
-        request_id,
-        capability_name: 'presentation.v1',
-        body: { instruction: 'Create a deck' },
+        type: 'pc.claimed',
+        pairing_id: 'pairing_12345678',
+        host: 'PowerPoint',
+        origin: 'https://office.8-216-134-194.sslip.io',
+        verification_code: '123456',
+        expires_in: 120,
+        capabilities,
       })
-      await vi.waitFor(() =>
-        expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual(
-          expect.objectContaining({
-            type: request_id === 'request_failure' ? 'pc.error' : 'pc.done',
-            request_id,
-          }),
-        ),
+      await client.approve('pairing_12345678')
+      socket.message({
+        version: 2,
+        type: 'pc.approved',
+        session_id: 'session_12345678',
+        capability: 'secret-capability',
+        expires_in: 1800,
+        capabilities,
+      })
+      for (const request_id of ['request_failure', 'request_success']) {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id,
+          capability_name: capabilityName,
+          body: { instruction: 'Create a deck' },
+        })
+        await vi.waitFor(() =>
+          expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual(
+            expect.objectContaining({
+              type: request_id === 'request_failure' ? 'pc.error' : 'pc.done',
+              request_id,
+            }),
+          ),
+        )
+        expect(client.status()).toBe('paired')
+      }
+      expect(presentationProxy).toHaveBeenCalledWith(
+        { instruction: 'Create a deck' },
+        expect.any(AbortSignal),
       )
-      expect(client.status()).toBe('paired')
-    }
-    expect(presentationProxy).toHaveBeenCalledWith(
-      { instruction: 'Create a deck' },
-      expect.any(AbortSignal),
-    )
-    expect(proxy).not.toHaveBeenCalled()
-    const chunks = socket.sent
-      .map((raw) => JSON.parse(raw))
-      .filter((item) => item.type === 'pc.chunk')
-    expect(chunks.map((item) => item.sequence)).toEqual([0, 1])
-    expect(Buffer.concat(chunks.map((item) => Buffer.from(item.data, 'base64')))).toEqual(
-      Buffer.from(payload),
-    )
-    client.revoke('test_complete')
-  })
+      expect(proxy).not.toHaveBeenCalled()
+      const chunks = socket.sent
+        .map((raw) => JSON.parse(raw))
+        .filter((item) => item.type === 'pc.chunk')
+      expect(chunks.map((item) => item.sequence)).toEqual([0, 1])
+      expect(Buffer.concat(chunks.map((item) => Buffer.from(item.data, 'base64')))).toEqual(
+        Buffer.from(payload),
+      )
+      client.revoke('test_complete')
+    },
+  )
 
   it('uses v2 only with a fixed retrieval proxy and dispatches negotiated web requests', async () => {
     const socket = new FakeSocket()

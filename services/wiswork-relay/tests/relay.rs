@@ -472,6 +472,11 @@ async fn v2_negotiates_presentation_and_denies_unnegotiated_requests() {
     check_v2_capability("presentation.v1").await;
 }
 
+#[tokio::test]
+async fn v2_negotiates_presentation_attachments_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-attachments.v1").await;
+}
+
 async fn check_v2_capability(capability: &str) {
     let url = server().await;
     let mut office = socket(&url, ORIGIN).await;

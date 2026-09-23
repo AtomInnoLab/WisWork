@@ -118,7 +118,8 @@ export function createOfficeRelayClient(options: {
     options.negotiateCapabilities === true ||
     Boolean(options.retrievalProxy || options.presentationProxy)
   const offeredCapabilities: string[] = options.retrievalProxy ? [...V2_CAPABILITIES] : ['agent.v1']
-  if (options.presentationProxy) offeredCapabilities.push('presentation.v1')
+  if (options.presentationProxy)
+    offeredCapabilities.push('presentation.v1', 'presentation-attachments.v1')
   let pending: (OfficePairingRequest & { capabilities?: string[] }) | null = null
   let session: { sessionId: string; capability: string; capabilities: string[] } | null = null
   let active: { requestId: string; controller: AbortController; remoteCancelled: boolean } | null =
@@ -209,7 +210,7 @@ export function createOfficeRelayClient(options: {
       if (
         typeof capabilityName !== 'string' ||
         !session.capabilities.includes(capabilityName) ||
-        (capabilityName === 'presentation.v1'
+        (capabilityName === 'presentation.v1' || capabilityName === 'presentation-attachments.v1'
           ? !options.presentationProxy
           : capabilityName !== 'agent.v1' && !options.retrievalProxy)
       )
@@ -221,7 +222,8 @@ export function createOfficeRelayClient(options: {
               status: 200,
               contentType: 'application/json',
               body:
-                capabilityName === 'presentation.v1'
+                capabilityName === 'presentation.v1' ||
+                capabilityName === 'presentation-attachments.v1'
                   ? await options.presentationProxy!(frame.body, controller.signal)
                   : await options.retrievalProxy!(capabilityName, frame.body, controller.signal),
             }

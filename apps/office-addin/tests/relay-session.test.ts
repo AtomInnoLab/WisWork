@@ -167,7 +167,7 @@ describe('Office cloud relay session', () => {
     session.disconnect()
   })
 
-  it.each(['web-search.v1', 'presentation.v1'] as const)(
+  it.each(['web-search.v1', 'presentation.v1', 'presentation-attachments.v1'] as const)(
     'negotiates %s and blocks unnegotiated requests',
     async (capability) => {
       const socket = new FakeSocket()
