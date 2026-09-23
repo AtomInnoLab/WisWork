@@ -20,6 +20,7 @@ import {
   replacePresentationEvent,
   type OfficePresentationTimeline,
   type ProposalPresentationEvent,
+  type ToolPresentationEvent,
 } from './presentation-state.js'
 import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 
@@ -346,40 +347,12 @@ export function createOfficeAgentSession(dependencies: {
     skill: sessionSkill,
     events: {
       onText: (assistantText) => {
-        if (!activeAssistantId) {
-          activeAssistantId = eventId()
-          append({
-            id: activeAssistantId,
-            kind: 'assistant',
-            text: boundedText(assistantText),
-            streaming: true,
-          })
-        } else {
-          replace(activeAssistantId, (event) => ({
-            ...event,
-            text: boundedText(assistantText),
-            streaming: true,
-          }))
-        }
+        // Presentation is driven by ACP agent_message_chunk updates below.
         publish({ assistantText: boundedText(assistantText) })
       },
       onToolStart: (call) => {
         toolStartedAt.set(call.id, Date.now())
         diagnose((diagnostics) => diagnostics.setTool(call.name))
-        if (activeAssistantId) {
-          replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
-          activeAssistantId = undefined
-        }
-        const summary = toolActivity(call.name, 'running')
-        append({
-          id: eventId(),
-          kind: 'tool',
-          callId: call.id,
-          name: boundedText(call.name),
-          summary,
-          state: 'running',
-        })
-        publish({ activity: summary })
       },
       onToolExecuted: (event) => {
         if (event.execution.isError) {
@@ -399,27 +372,7 @@ export function createOfficeAgentSession(dependencies: {
           )
         }
         toolStartedAt.delete(event.call.id)
-        const tool = [...state.timeline]
-          .reverse()
-          .find((item) => item.kind === 'tool' && item.callId === event.call.id)
-        if (tool) {
-          const summary = toolActivity(
-            event.call.name,
-            event.execution.isError ? 'error' : 'complete',
-          )
-          replace(tool.id, (item) => {
-            if (item.kind !== 'tool') return item
-            return {
-              ...item,
-              summary,
-              state: event.execution.isError ? 'error' : 'complete',
-            }
-          })
-        }
         appendPendingProposal()
-        publish({
-          activity: toolActivity(event.call.name, event.execution.isError ? 'error' : 'complete'),
-        })
       },
       onTurnEnd: () => {
         activeAssistantId = undefined
@@ -463,6 +416,71 @@ export function createOfficeAgentSession(dependencies: {
         })
       },
     },
+  })
+
+  const unsubscribeAcp = harness.subscribeAcp(({ update }) => {
+    if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
+      const chunkText = update.content.text
+      const messageId = update.messageId ?? activeAssistantId ?? eventId()
+      if (activeAssistantId !== messageId) {
+        if (activeAssistantId) {
+          replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
+        }
+        activeAssistantId = messageId
+        append({
+          id: messageId,
+          kind: 'assistant',
+          text: boundedText(chunkText),
+          streaming: true,
+        })
+      } else {
+        replace(messageId, (event) => ({
+          ...event,
+          text: boundedText(`${event.kind === 'assistant' ? event.text : ''}${chunkText}`),
+          streaming: true,
+        }))
+      }
+      return
+    }
+    if (update.sessionUpdate === 'tool_call') {
+      if (activeAssistantId) {
+        replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
+        activeAssistantId = undefined
+      }
+      const name = update.name ?? 'tool'
+      const summary = toolActivity(name, 'running')
+      append({
+        id: eventId(),
+        kind: 'tool',
+        callId: update.toolCallId,
+        name: boundedText(name),
+        summary,
+        state: 'running',
+      })
+      publish({ activity: summary })
+      return
+    }
+    if (update.sessionUpdate === 'tool_call_update') {
+      const tool = [...state.timeline]
+        .reverse()
+        .find(
+          (item): item is ToolPresentationEvent =>
+            item.kind === 'tool' && item.callId === update.toolCallId,
+        )
+      if (!tool) return
+      const terminal = update.status === 'failed' ? 'error' : 'complete'
+      const summary = toolActivity(tool.name, terminal)
+      replace(tool.id, (item) =>
+        item.kind === 'tool'
+          ? {
+              ...item,
+              summary,
+              state: terminal,
+            }
+          : item,
+      )
+      publish({ activity: summary })
+    }
   })
 
   const unsubscribeProposals = proposals.subscribe(() => {
@@ -635,6 +653,7 @@ export function createOfficeAgentSession(dependencies: {
       if (disposed) return
       disposed = true
       sessionEpoch += 1
+      unsubscribeAcp()
       unsubscribeProposals()
       harness.dispose()
       proposals.logout()

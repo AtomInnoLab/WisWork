@@ -14,6 +14,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^1.5.0",
     "@wiswork/agent-core": "*"
   },
   "devDependencies": {

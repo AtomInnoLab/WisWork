@@ -17,6 +17,9 @@ export const createAgentController = <TSnapshot>(
   let inner: AgentHarness<TSnapshot> | null = createAgentHarness(options)
   let terminal = false
   const controller: LifecycleAgentController<TSnapshot> = {
+    get sessionId() {
+      return inner?.sessionId ?? ''
+    },
     get snapshot() {
       return inner?.snapshot ?? { status: 'idle', busy: false, generation: 0 }
     },
@@ -24,6 +27,7 @@ export const createAgentController = <TSnapshot>(
       return inner?.messages ?? []
     },
     subscribe: (listener) => inner?.subscribe(listener) ?? (() => undefined),
+    subscribeAcp: (listener) => inner?.subscribeAcp(listener) ?? (() => undefined),
     run: (instruction, images) => inner?.run(instruction, images) ?? false,
     stop: () => inner?.stop(),
     reset: () => inner?.reset(),
