@@ -1,3 +1,4 @@
+import { createPresentationProductionSkill } from '../skills/powerpoint/presentation-production.js'
 import { BrowserPresentationImageAdapter } from '../skills/powerpoint/browser-presentation-image-adapter.js'
 import type { ImageReplacementRecord } from '../skills/powerpoint/presentation-image-replacement-record.js'
 import { createPresentationPageEditingSkill } from '../skills/powerpoint/presentation-page-editing.js'
@@ -245,6 +246,10 @@ export function createOfficeHostRuntime(
     generation && options.presentation
       ? createPresentationPlanningSkill({ ...options.presentation, vfs })
       : undefined
+  const production =
+    generation && options.presentation
+      ? createPresentationProductionSkill({ ...options.presentation, vfs })
+      : undefined
   const executeGeneration: AgentSkill['executeTool'] = async (call, signal) => {
     try {
       return await generation!.executeTool(call, signal)
@@ -257,9 +262,32 @@ export function createOfficeHostRuntime(
     generation && options.presentation
       ? createPresentationProjectController({
           ...options.presentation,
-          executeTool: executeGeneration,
+          executeTool: (call, signal) =>
+            call.name === 'run_presentation_production' && production
+              ? production.executeTool(call, signal)
+              : executeGeneration(call, signal),
         })
       : undefined
+  let productionEpoch = 0
+  const executeProduction: AgentSkill['executeTool'] = async (call, signal) => {
+    const captured = productionEpoch
+    const result = await production!.executeTool(call, signal)
+    if (
+      captured === productionEpoch &&
+      !signal?.aborted &&
+      !result.isError &&
+      ['start_presentation_production', 'run_presentation_production'].includes(call.name)
+    )
+      await presentation?.refresh()
+    if (captured !== productionEpoch || signal?.aborted)
+      return {
+        output: 'cancelled',
+        isError: true,
+        mutated: false,
+        summary: '已停止等待；PC可能已保存成果，可刷新查看',
+      }
+    return result
+  }
   let importRevision = 0
   const importListeners = new Set<() => void>()
   const notifyImport = () => {
@@ -381,49 +409,57 @@ export function createOfficeHostRuntime(
             ...(delivery?.tools ?? []),
             ...(qaSkill?.tools ?? []),
             ...(pageEditing?.tools ?? []),
+            ...(production?.tools ?? []),
           ]
         },
         get systemPrompt() {
-          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}`
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}`
         },
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
         executeTool: (call, signal) =>
           [
-            'read_presentation_page',
-            'edit_presentation_page_text',
-            'read_presentation_page_geometry',
-            'edit_presentation_page_geometry',
-            'replace_presentation_page_image',
-            'read_presentation_image_replacement',
-            'inspect_presentation_image_replacement',
-            'resume_presentation_image_replacement',
-          ].includes(call.name) && pageEditing
-            ? pageEditing.executeTool(call, signal)
+            'start_presentation_production',
+            'run_presentation_production',
+            'read_presentation_production',
+            'read_presentation_page_artifact',
+          ].includes(call.name) && production
+            ? executeProduction(call, signal)
             : [
-                  'capture_presentation_page_qa',
-                  'read_presentation_qa',
-                  'record_presentation_page_review',
-                ].includes(call.name) && qaSkill
-              ? qaSkill.executeTool(call, signal)
-              : ['list_presentation_attachments', 'read_presentation_attachment'].includes(
-                    call.name,
-                  ) && attachments
-                ? attachments.executeTool(call, signal)
-                : ['save_presentation_plan', 'read_presentation_plan'].includes(call.name) &&
-                    planning
-                  ? planning.executeTool(call, signal)
-                  : ['import_generated_presentation', 'read_presentation_import_status'].includes(
-                        call.name,
-                      ) && delivery
-                    ? delivery.executeTool(call, signal)
-                    : [
-                          'compile_deck_with_pptxgenjs',
-                          'restore_presentation_project',
-                          'resume_presentation_project',
-                        ].includes(call.name)
-                      ? executeGeneration(call, signal)
-                      : base.executeTool(call, signal),
+                  'read_presentation_page',
+                  'edit_presentation_page_text',
+                  'read_presentation_page_geometry',
+                  'edit_presentation_page_geometry',
+                  'replace_presentation_page_image',
+                  'read_presentation_image_replacement',
+                  'inspect_presentation_image_replacement',
+                  'resume_presentation_image_replacement',
+                ].includes(call.name) && pageEditing
+              ? pageEditing.executeTool(call, signal)
+              : [
+                    'capture_presentation_page_qa',
+                    'read_presentation_qa',
+                    'record_presentation_page_review',
+                  ].includes(call.name) && qaSkill
+                ? qaSkill.executeTool(call, signal)
+                : ['list_presentation_attachments', 'read_presentation_attachment'].includes(
+                      call.name,
+                    ) && attachments
+                  ? attachments.executeTool(call, signal)
+                  : ['save_presentation_plan', 'read_presentation_plan'].includes(call.name) &&
+                      planning
+                    ? planning.executeTool(call, signal)
+                    : ['import_generated_presentation', 'read_presentation_import_status'].includes(
+                          call.name,
+                        ) && delivery
+                      ? delivery.executeTool(call, signal)
+                      : [
+                            'compile_deck_with_pptxgenjs',
+                            'restore_presentation_project',
+                            'resume_presentation_project',
+                          ].includes(call.name)
+                        ? executeGeneration(call, signal)
+                        : base.executeTool(call, signal),
       }
     : base
   return {
@@ -435,6 +471,8 @@ export function createOfficeHostRuntime(
       options.packageRuntime,
       options.enableSkillPackages !== false,
       () => {
+        productionEpoch++
+        production?.clear()
         pageEditing?.clear()
         qaSkill?.clear()
         attachments?.clear()
