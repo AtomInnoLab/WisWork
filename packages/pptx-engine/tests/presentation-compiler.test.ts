@@ -76,6 +76,21 @@ describe('presentation contract and compiler', () => {
     expect((await openPptx(output.bytes)).deck.slides).toHaveLength(8)
   })
 
+  it.each([
+    { w: 4, h: 2, crop: { l: 0, r: 0, t: 0.25, b: 0.25 } },
+    { w: 2, h: 4, crop: { l: 0.25, r: 0.25, t: 0, b: 0 } },
+  ])('preserves square-source aspect ratio when covering $w × $h', async ({ w, h, crop }) => {
+    const deck = benchmarkDeck()
+    const image = deck.slides[2]!.elements[1]!
+    if (image.kind !== 'image') throw new Error('fixture_image_missing')
+    Object.assign(image, { fit: 'cover', w, h })
+    const { bytes } = await compilePresentationDeck(deck)
+    const opened = await openPptx(bytes)
+    const picture = opened.deck.slides[2]!.elements.find((el) => el.type === 'picture')!
+    expect(picture.type === 'picture' && picture.srcRect).toEqual(crop)
+    expect(picture.transform.offset).toMatchObject({ cx: w * 914400, cy: h * 914400 })
+  })
+
   it('reports content collisions but permits background and explicitly layered elements', async () => {
     const deck = benchmarkDeck()
     deck.slides[0]!.elements.push({

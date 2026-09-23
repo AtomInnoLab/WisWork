@@ -103,7 +103,15 @@ export async function compilePresentationDeck(
         const asset = assets.get(el.assetId)!
         // Contain uses verified dimensions. Cover uses native image crop, never rasterizes text.
         if (el.fit === 'cover') {
-          slide.addImage({ ...box, data: asset.data, sizing: { type: 'cover', w: el.w, h: el.h } })
+          // PptxGenJS derives cover's source aspect ratio from w/h, not encoded data.
+          // Supply header-verified intrinsic dimensions; sizing sets the final target box.
+          slide.addImage({
+            ...box,
+            data: asset.data,
+            w: asset.width / 96,
+            h: asset.height / 96,
+            sizing: { type: 'cover', w: el.w, h: el.h },
+          })
         } else {
           const scale = Math.min(el.w / asset.width, el.h / asset.height)
           const w = asset.width * scale,
