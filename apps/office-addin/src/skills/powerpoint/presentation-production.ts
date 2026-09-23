@@ -12,6 +12,7 @@ const errors = [
   'asset_unavailable',
 ] as const
 export interface PresentationProductionStatus {
+  revision?: { parentRequestId: string; pageId: string; parentInputDigest: string }
   projectId: string
   requestId: string
   planRevision: number
@@ -37,6 +38,7 @@ function object(v: unknown, keys: string[]): v is Record<string, unknown> {
 export function parsePresentationProductionStatus(value: unknown): PresentationProductionStatus {
   if (
     !object(value, [
+      'revision',
       'projectId',
       'requestId',
       'planRevision',
@@ -72,6 +74,17 @@ export function parsePresentationProductionStatus(value: unknown): PresentationP
       throw new Error('presentation_response_invalid')
   }
   const p = value as unknown as PresentationProductionStatus
+  if (
+    p.revision !== undefined &&
+    (!object(p.revision, ['parentRequestId', 'pageId', 'parentInputDigest']) ||
+      !id(p.revision.parentRequestId) ||
+      p.revision.parentRequestId === p.requestId ||
+      !id(p.revision.pageId) ||
+      !p.pages.some((page) => page.id === p.revision!.pageId) ||
+      typeof p.revision.parentInputDigest !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(p.revision.parentInputDigest))
+  )
+    throw new Error('presentation_response_invalid')
   const count = p.pages.filter((x) => x.state === 'compiled').length
   const state =
     count === p.total
@@ -142,6 +155,7 @@ function parsePageArtifact(value: unknown, projectId: string, requestId: string,
   }
 }
 const operations = {
+  rebuild_presentation_page: 'production_rebuild_page',
   prepare_presentation_production_import: 'production_status',
   start_presentation_production: 'production_begin',
   run_presentation_production: 'production_run',
@@ -152,37 +166,53 @@ const idSchema = { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' }
 const tools: AgentToolDef[] = Object.keys(operations).map((name) => ({
   name,
   description:
-    name === 'prepare_presentation_production_import'
-      ? 'Prepare all compiled pages of one exact production request for separately confirmed import. All pages must be compiled; preserves order and verifies the shared plan revision. Keeps only the latest prepared project in memory, within a 10 MiB decoded budget. Does not insert slides or perform QA.'
-      : name === 'start_presentation_production'
-        ? 'Freeze a saved plan revision and SlideIR as a durable page compilation task. Reuse request_id for unchanged retries. Does not import slides.'
-        : name === 'run_presentation_production'
-          ? 'Compile remaining pages of a saved task. Failed pages do not discard successful pages; retry the same request. This is PC preparation, not host delivery or QA.'
-          : name === 'read_presentation_production'
-            ? 'Read persisted page compilation states and failures; omit request_id for latest.'
-            : 'Download one compiled page and its report to session files. Does not import the page or mark QA passed.',
+    name === 'rebuild_presentation_page'
+      ? 'Create a derived production task by changing one SlideIR page from a fully compiled parent. Reuse the frozen plan, title, claims, style and registered assets. Does not run compilation or replace a host page. Derived tasks cannot be bulk imported; download the changed page for inspection.'
+      : name === 'prepare_presentation_production_import'
+        ? 'Prepare all compiled pages of one exact production request for separately confirmed import. All pages must be compiled; preserves order and verifies the shared plan revision. Keeps only the latest prepared project in memory, within a 10 MiB decoded budget. Does not insert slides or perform QA.'
+        : name === 'start_presentation_production'
+          ? 'Freeze a saved plan revision and SlideIR as a durable page compilation task. Reuse request_id for unchanged retries. Does not import slides.'
+          : name === 'run_presentation_production'
+            ? 'Compile remaining pages of a saved task. Failed pages do not discard successful pages; retry the same request. This is PC preparation, not host delivery or QA.'
+            : name === 'read_presentation_production'
+              ? 'Read persisted page compilation states and failures; omit request_id for latest.'
+              : 'Download one compiled page and its report to session files. Does not import the page or mark QA passed.',
   inputSchema: {
     type: 'object',
     properties:
-      name === 'start_presentation_production'
+      name === 'rebuild_presentation_page'
         ? {
-            request_id: idSchema,
-            deck: PRESENTATION_DECK_SCHEMA,
-            plan_revision: { type: 'integer', minimum: 1 },
-          }
-        : {
             project_id: idSchema,
+            parent_request_id: idSchema,
             request_id: idSchema,
-            ...(name === 'read_presentation_page_artifact' ? { page_id: idSchema } : {}),
-          },
+            page_id: idSchema,
+            slide: (
+              PRESENTATION_DECK_SCHEMA as unknown as {
+                properties: { slides: { items: Record<string, unknown> } }
+              }
+            ).properties.slides.items,
+          }
+        : name === 'start_presentation_production'
+          ? {
+              request_id: idSchema,
+              deck: PRESENTATION_DECK_SCHEMA,
+              plan_revision: { type: 'integer', minimum: 1 },
+            }
+          : {
+              project_id: idSchema,
+              request_id: idSchema,
+              ...(name === 'read_presentation_page_artifact' ? { page_id: idSchema } : {}),
+            },
     required:
-      name === 'start_presentation_production'
-        ? ['request_id', 'deck', 'plan_revision']
-        : name === 'read_presentation_production'
-          ? ['project_id']
-          : name === 'read_presentation_page_artifact'
-            ? ['project_id', 'request_id', 'page_id']
-            : ['project_id', 'request_id'],
+      name === 'rebuild_presentation_page'
+        ? ['project_id', 'parent_request_id', 'request_id', 'page_id', 'slide']
+        : name === 'start_presentation_production'
+          ? ['request_id', 'deck', 'plan_revision']
+          : name === 'read_presentation_production'
+            ? ['project_id']
+            : name === 'read_presentation_page_artifact'
+              ? ['project_id', 'request_id', 'page_id']
+              : ['project_id', 'request_id'],
     additionalProperties: false,
   },
 }))
@@ -207,7 +237,7 @@ export function createPresentationProductionSkill(
       return options.available() ? tools : []
     },
     systemPrompt:
-      'For page production first save the presentation plan, then start_presentation_production with that plan_revision and matching SlideIR. Run remaining pages with run_presentation_production; inspect failed states and reuse the same request for unchanged retries. Already compiled pages are preserved. Use prepare_presentation_production_import only after all pages compile to prepare a bounded ordered collection for separately confirmed import; it replaces the previous prepared collection but never inserts slides. Download individual page artifacts only as files: these are not imported, visually reviewed, source-verified or round-trip checked. Never claim the deck is delivered from compiled counts. Do not invent project/request/page IDs.',
+      'For page production first save the presentation plan, then start_presentation_production with that plan_revision and matching SlideIR. Run remaining pages with run_presentation_production; inspect failed states and reuse the same request for unchanged retries. Already compiled pages are preserved. Use prepare_presentation_production_import only after all pages compile to prepare a bounded ordered collection for separately confirmed import; it replaces the previous prepared collection but never inserts slides. Download individual page artifacts only as files: these are not imported, visually reviewed, source-verified or round-trip checked. Never claim the deck is delivered from compiled counts. Do not invent project/request/page IDs. rebuild_presentation_page creates a derived task only; run it separately to compile the changed page. Host page replacement is not connected yet. Never bulk import a derived task as a replacement; download individual page artifacts only.',
     async executeTool(call, signal) {
       const captured = epoch
       let preparation: number | undefined
@@ -228,13 +258,16 @@ export function createPresentationProductionSkill(
         const op = operations[call.name as keyof typeof operations],
           input = { ...call.input },
           begin = op === 'production_begin',
+          rebuild = op === 'production_rebuild_page',
           page = op === 'production_page',
           prepare = call.name === 'prepare_presentation_production_import'
-        const allowed = begin
-          ? ['request_id', 'deck', 'plan_revision']
-          : page
-            ? ['project_id', 'request_id', 'page_id']
-            : ['project_id', 'request_id']
+        const allowed = rebuild
+          ? ['project_id', 'parent_request_id', 'request_id', 'page_id', 'slide']
+          : begin
+            ? ['request_id', 'deck', 'plan_revision']
+            : page
+              ? ['project_id', 'request_id', 'page_id']
+              : ['project_id', 'request_id']
         if (
           !op ||
           call.inputError ||
@@ -243,6 +276,12 @@ export function createPresentationProductionSkill(
           ((op !== 'production_status' || prepare || input.request_id !== undefined) &&
             !id(input.request_id)) ||
           (page && !id(input.page_id)) ||
+          (rebuild &&
+            (!id(input.parent_request_id) ||
+              input.parent_request_id === input.request_id ||
+              !id(input.page_id) ||
+              !object(input.slide, ['id', 'title', 'elements', 'claimIds', 'notes']) ||
+              input.slide.id !== input.page_id)) ||
           (begin && !integer(input.plan_revision, 1))
         )
           throw new Error('invalid_tool_input')
@@ -250,6 +289,7 @@ export function createPresentationProductionSkill(
           projectId = deck?.id ?? input.project_id
         if (!id(projectId)) throw new Error('invalid_tool_input')
         if (prepare) preparation = ++prepareSequence
+        const slide = rebuild ? structuredClone(input.slide) : undefined
         references = !!deck?.assets.some((a) => 'attachmentId' in a)
         check()
         const documentId = await options.documentId()
@@ -267,6 +307,9 @@ export function createPresentationProductionSkill(
           ...(input.request_id ? { requestId: input.request_id } : {}),
           ...(page ? { pageId: input.page_id } : {}),
           ...(deck ? { deck, planRevision: input.plan_revision } : {}),
+          ...(rebuild
+            ? { parentRequestId: input.parent_request_id, pageId: input.page_id, slide }
+            : {}),
         }
         const fetchResponse = async (requestBody: unknown, isPage: boolean) => {
           if (new TextEncoder().encode(JSON.stringify(requestBody)).byteLength > 256 * 1024)
@@ -284,6 +327,7 @@ export function createPresentationProductionSkill(
               throw new Error('presentation_upgrade_required')
             if (
               [
+                'page_not_ready',
                 'not_found',
                 'document_mismatch',
                 'request_conflict',
@@ -311,6 +355,7 @@ export function createPresentationProductionSkill(
           const status = parsePresentationProductionStatus(value)
           if (status.projectId !== projectId || status.requestId !== input.request_id)
             throw new Error('presentation_response_invalid')
+          if (status.revision) throw new Error('presentation_page_replacement_required')
           if (status.status !== 'compiled') throw new Error('presentation_production_not_ready')
           const pages: NonNullable<CompiledPresentationArtifact['pages']> = [],
             pagePptxBase64: string[] = []
@@ -401,6 +446,10 @@ export function createPresentationProductionSkill(
           const parsed = parsePresentationProductionStatus(value)
           if (
             parsed.projectId !== projectId ||
+            (rebuild &&
+              (!parsed.revision ||
+                parsed.revision.parentRequestId !== input.parent_request_id ||
+                parsed.revision.pageId !== input.page_id)) ||
             (input.request_id && parsed.requestId !== input.request_id) ||
             (deck &&
               (parsed.planRevision !== input.plan_revision ||
@@ -418,11 +467,13 @@ export function createPresentationProductionSkill(
         return {
           output: JSON.stringify(output),
           mutated: false,
-          summary: prepare
-            ? '已准备逐页导入成果；尚未插入文稿或验收'
-            : page
-              ? '已下载单页编译成果；尚未导入或验收'
-              : '已读取页级编译进度；编译成功不代表导入或验收完成',
+          summary: rebuild
+            ? '已创建单页派生任务；尚未运行编译或替换宿主页'
+            : prepare
+              ? '已准备逐页导入成果；尚未插入文稿或验收'
+              : page
+                ? '已下载单页编译成果；尚未导入或验收'
+                : '已读取页级编译进度；编译成功不代表导入或验收完成',
         }
       } catch (error) {
         const raw = error instanceof Error ? error.message : '',
@@ -437,9 +488,11 @@ export function createPresentationProductionSkill(
           isError: true,
           mutated: false,
           summary:
-            code === 'presentation_upgrade_required'
-              ? '当前 PC 尚不支持页级生产，请升级 WisWork PC 后重试'
-              : '页级生产操作未完成；已保存成果保留，可刷新查看',
+            code === 'presentation_page_replacement_required'
+              ? '单页修订尚未接入宿主替换，不能整批追加导入；可下载目标单页检查'
+              : code === 'presentation_upgrade_required'
+                ? '当前 PC 尚不支持页级生产，请升级 WisWork PC 后重试'
+                : '页级生产操作未完成；已保存成果保留，可刷新查看',
         }
       }
     },

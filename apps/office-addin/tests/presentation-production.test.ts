@@ -546,3 +546,119 @@ it('does not invalidate an active prepare for a malformed later invocation', asy
   expect((await first).isError).not.toBe(true)
   expect(f.skill.artifact()?.requestId).toBe('r')
 })
+const rebuild = {
+  id: 'rebuild',
+  name: 'rebuild_presentation_page',
+  input: {
+    project_id: 'p',
+    parent_request_id: 'parent',
+    request_id: 'r',
+    page_id: 'one',
+    slide: deck.slides[0],
+  },
+}
+const derived = {
+  ...summary,
+  revision: { parentRequestId: 'parent', pageId: 'one', parentInputDigest: 'a'.repeat(64) },
+}
+it('creates a derived page task with validated parent identity and blocks its bulk import preparation', async () => {
+  const f = fixture()
+  f.request.mockImplementation(async () => new Response(JSON.stringify(derived)))
+  expect((await f.skill.executeTool(rebuild)).isError).not.toBe(true)
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      operation: 'production_rebuild_page',
+      parentRequestId: 'parent',
+      requestId: 'r',
+      pageId: 'one',
+      slide: deck.slides[0],
+    }),
+    undefined,
+  )
+  f.request.mockImplementation(
+    async () => new Response(JSON.stringify({ ...compiled, revision: derived.revision })),
+  )
+  expect(await f.skill.executeTool(prepare)).toMatchObject({
+    isError: true,
+    output: 'presentation_page_replacement_required',
+  })
+  expect(f.skill.artifact()).toBeUndefined()
+})
+it('rejects malformed derived metadata, wrong parent, missing revision and invalid rebuild input', async () => {
+  for (const revision of [
+    { ...derived.revision, parentInputDigest: 'bad' },
+    { ...derived.revision, pageId: 'missing' },
+    { ...derived.revision, parentRequestId: 'r' },
+    { ...derived.revision, extra: 1 },
+  ])
+    expect(() => parsePresentationProductionStatus({ ...summary, revision })).toThrow()
+  const f = fixture()
+  for (const value of [
+    summary,
+    { ...derived, revision: { ...derived.revision, parentRequestId: 'other' } },
+    { ...derived, revision: { ...derived.revision, pageId: 'two' } },
+  ]) {
+    f.request.mockImplementation(async () => new Response(JSON.stringify(value)))
+    expect(await f.skill.executeTool(rebuild)).toMatchObject({ isError: true })
+  }
+  f.request.mockClear()
+  for (const input of [
+    { ...rebuild.input, parent_request_id: 'r' },
+    { ...rebuild.input, slide: { ...deck.slides[0], id: 'two' } },
+    { ...rebuild.input, extra: 1 },
+  ])
+    expect(await f.skill.executeTool({ ...rebuild, input })).toMatchObject({
+      isError: true,
+      output: 'invalid_tool_input',
+    })
+  expect(f.request).not.toHaveBeenCalled()
+})
+it('uses the shared slide schema and supports notes while guarding rebuild size, legacy PC and late cancellation', async () => {
+  const f = fixture(),
+    tool = f.skill.tools.find((t) => t.name === 'rebuild_presentation_page')!
+  const { PRESENTATION_DECK_SCHEMA } = await import('@wiswork/pptx-engine/presentation')
+  expect((tool.inputSchema as { properties: { slide: unknown } }).properties.slide).toBe(
+    (PRESENTATION_DECK_SCHEMA as unknown as { properties: { slides: { items: unknown } } })
+      .properties.slides.items,
+  )
+  f.request.mockImplementation(async () => new Response(JSON.stringify(derived)))
+  expect(
+    (
+      await f.skill.executeTool({
+        ...rebuild,
+        input: { ...rebuild.input, slide: { ...deck.slides[0], notes: 'Source notes' } },
+      })
+    ).isError,
+  ).not.toBe(true)
+  expect(
+    await f.skill.executeTool({
+      ...rebuild,
+      input: { ...rebuild.input, slide: { ...deck.slides[0], notes: 'x'.repeat(256 * 1024) } },
+    }),
+  ).toMatchObject({ isError: true, output: 'presentation_request_too_large' })
+  f.request.mockImplementation(
+    async () => new Response(JSON.stringify({ error: 'invalid_request' })),
+  )
+  expect(await f.skill.executeTool(rebuild)).toMatchObject({
+    isError: true,
+    output: 'presentation_upgrade_required',
+  })
+  f.request.mockImplementation(async () => {
+    f.skill.clear()
+    return new Response(JSON.stringify(derived))
+  })
+  expect(await f.skill.executeTool(rebuild)).toMatchObject({ isError: true, output: 'cancelled' })
+})
+it('blocks derived preparation without erasing a prior valid non-derived cache', async () => {
+  const f = prepareFixture()
+  await f.skill.executeTool(prepare)
+  const previous = f.skill.artifact()
+  f.request.mockImplementation(
+    async () => new Response(JSON.stringify({ ...compiled, revision: derived.revision })),
+  )
+  expect(await f.skill.executeTool(prepare)).toMatchObject({
+    isError: true,
+    output: 'presentation_page_replacement_required',
+  })
+  expect(f.skill.artifact()).toBe(previous)
+})

@@ -193,3 +193,24 @@ it('warns when a planned project has production frozen against an older plan', a
   await act(async () => view.button('继续页任务').click())
   expect(view.controller.runProduction).toHaveBeenCalledWith('old-pages')
 })
+it('labels a derived page task with its parent and pending host replacement', async () => {
+  const view = await mount({
+    ...pending,
+    project: {
+      ...pending.project!,
+      production: {
+        projectId: 'p1',
+        requestId: 'child',
+        planRevision: 1,
+        status: 'pending',
+        compiledCount: 0,
+        total: 1,
+        pages: [{ id: 'a', title: 'First', state: 'pending', attempt: 0 }],
+        revision: { parentRequestId: 'parent', pageId: 'a', parentInputDigest: 'a'.repeat(64) },
+      },
+    },
+  })
+  expect(view.container.textContent).toContain('parent')
+  expect(view.container.textContent).toContain('目标页：a')
+  expect(view.container.textContent).toContain('尚未替换当前页')
+})

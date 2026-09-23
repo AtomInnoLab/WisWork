@@ -75,6 +75,13 @@ export function PresentationProjectCard(props: {
             {project.production.planRevision} 版
           </p>
           <p>单页编译成果尚未导入或验收，不代表整套交付。</p>
+          {project.production.revision && (
+            <p>
+              单页修订 · 父请求：{project.production.revision.parentRequestId} · 目标页：
+              {project.production.revision.pageId}
+              。尚未替换当前页；可下载单页检查，宿主替换待接入，禁止整批追加导入。
+            </p>
+          )}
           {project.plan && project.production.planRevision !== project.plan.revision && (
             <p>页任务使用旧计划，继续任务按原快照，不代表当前计划。</p>
           )}
