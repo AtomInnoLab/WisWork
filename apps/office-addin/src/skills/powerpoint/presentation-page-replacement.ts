@@ -305,12 +305,14 @@ export function createPresentationPageReplacementSkill(
           return {
             output: JSON.stringify({
               ...record,
+              stateSource: 'persisted_checkpoint',
               inspection: initial,
-              originalRetained: true,
+              originalRetained: initial.slideIds.includes(record.oldSlideId),
+              originalContentVerified: initial.status !== 'conflict',
               businessMappingUpdated: false,
             }),
             mutated: false,
-            summary: '已检查暂存事务，未完成页面替换',
+            summary: '已核对当前页面；事务状态为持久检查点，尚未完成替换',
           }
         if (
           (action === 'stage' && initial.status !== 'baseline') ||

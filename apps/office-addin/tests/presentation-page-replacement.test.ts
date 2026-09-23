@@ -313,3 +313,26 @@ it('retains discard_pending when the host write fails and can retry after inspec
   expect(await f.confirm()).toEqual({ status: 'confirmed' })
   expect(f.journal()?.state).toBe('discarded')
 })
+it.each(['pending', 'inserted', 'staged'] as const)(
+  'reports a missing original separately from the %s checkpoint',
+  async (state) => {
+    const f = setup()
+    await f.skill.executeTool(f.stage)
+    await f.confirm()
+    const record = { ...f.journal()!, state }
+    if (state === 'pending') delete record.newSlideId
+    f.setJournal(record)
+    f.adapter.inspect.mockResolvedValueOnce({ status: 'conflict', slideIds: ['original', 'new'] })
+    const result = await f.call('inspect')
+    expect(result.isError).not.toBe(true)
+    expect(JSON.parse(result.output)).toMatchObject({
+      state,
+      stateSource: 'persisted_checkpoint',
+      inspection: { status: 'conflict', slideIds: ['original', 'new'] },
+      originalRetained: false,
+      originalContentVerified: false,
+    })
+    expect(f.adapter.discard).not.toHaveBeenCalled()
+    expect(f.journal()).toEqual(record)
+  },
+)
