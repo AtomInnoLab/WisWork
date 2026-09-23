@@ -25,7 +25,7 @@ export function PresentationQaCard({ controller }: { controller: PresentationQaC
       {record.pages.some((page) => page.recheckRequired) && (
         <p role="status">
           {record.pages.filter((page) => page.recheckRequired).length}{' '}
-          页修改后需重新采集，历史结论不代表当前状态。
+          页已发起修改，需重新采集，历史结论不代表当前状态。
         </p>
       )}
       <details>
@@ -36,7 +36,7 @@ export function PresentationQaCard({ controller }: { controller: PresentationQaC
               <strong>{page.title}</strong>
               {page.recheckRequired && (
                 <p>
-                  <strong>修改后需重新采集</strong>
+                  <strong>已发起修改，需重新采集</strong>
                 </p>
               )}
               <p>

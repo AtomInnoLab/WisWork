@@ -41,7 +41,7 @@ it('makes post-edit recapture take precedence over a historical visual pass', ()
       controller: { read: () => record, revision: () => 0, subscribe: () => () => {} },
     }),
   )
-  expect(html).toContain('修改后需重新采集')
+  expect(html).toContain('已发起修改，需重新采集')
   expect(html).toContain('历史视觉')
   expect(html).toContain('Earlier title review')
   expect(html).not.toContain('视觉：Agent 判断通过')

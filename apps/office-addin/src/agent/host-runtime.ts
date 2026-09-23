@@ -100,6 +100,7 @@ export function createOfficeHostRuntime(
   host: OfficeHost,
   options: {
     presentation?: Omit<PresentationGenerationOptions, 'vfs'> & {
+      invalidateQa?(): Promise<void>
       readQa?(key: string): PresentationQaRecord | undefined
       writeQa?(key: string, record: PresentationQaRecord): Promise<void>
       readReceipt?(key: string): PresentationImportRecord | undefined
@@ -129,7 +130,27 @@ export function createOfficeHostRuntime(
       options.packageRuntime,
     )
   }
-  const proposals = createStructuredProposalController(options.diagnostics)
+  let mutationStarted = false
+  const proposals = createStructuredProposalController(
+    options.diagnostics,
+    host === 'powerpoint' && options.presentation?.invalidateQa
+      ? {
+          beforeWrite: async () => {
+            qaSkill?.beginMutation()
+            mutationStarted = Boolean(qaSkill)
+            await options.presentation!.invalidateQa!()
+            notifyQa()
+          },
+          afterWrite: () => {
+            if (mutationStarted) {
+              mutationStarted = false
+              qaSkill!.endMutation()
+            }
+            notifyQa()
+          },
+        }
+      : undefined,
+  )
   const shared = createSharedBrowserSkill({
     vfs,
     skills,
