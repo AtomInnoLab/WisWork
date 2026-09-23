@@ -1,3 +1,4 @@
+import { createPresentationPageEditingSkill } from '../skills/powerpoint/presentation-page-editing.js'
 import {
   createPresentationQaSkill,
   type PresentationQaRecord,
@@ -288,6 +289,18 @@ export function createOfficeHostRuntime(
           },
         })
       : undefined
+  const pageEditing =
+    generation && powerPointAdapter && options.presentation?.readReceipt
+      ? createPresentationPageEditingSkill({
+          available: () =>
+            options.presentation!.available() && supportsNativePowerPointMasterEditing(),
+          artifact: generation.artifact,
+          documentId: options.presentation.documentId,
+          readReceipt: options.presentation.readReceipt,
+          adapter: powerPointAdapter,
+          proposals,
+        })
+      : undefined
   const qa: PresentationQaController | undefined =
     qaSkill && generation
       ? {
@@ -335,37 +348,42 @@ export function createOfficeHostRuntime(
             ...(attachments?.tools ?? []),
             ...(delivery?.tools ?? []),
             ...(qaSkill?.tools ?? []),
+            ...(pageEditing?.tools ?? []),
           ]
         },
         get systemPrompt() {
-          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}`
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}`
         },
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
         executeTool: (call, signal) =>
-          [
-            'capture_presentation_page_qa',
-            'read_presentation_qa',
-            'record_presentation_page_review',
-          ].includes(call.name) && qaSkill
-            ? qaSkill.executeTool(call, signal)
-            : ['list_presentation_attachments', 'read_presentation_attachment'].includes(
-                  call.name,
-                ) && attachments
-              ? attachments.executeTool(call, signal)
-              : ['save_presentation_plan', 'read_presentation_plan'].includes(call.name) && planning
-                ? planning.executeTool(call, signal)
-                : ['import_generated_presentation', 'read_presentation_import_status'].includes(
-                      call.name,
-                    ) && delivery
-                  ? delivery.executeTool(call, signal)
-                  : [
-                        'compile_deck_with_pptxgenjs',
-                        'restore_presentation_project',
-                        'resume_presentation_project',
-                      ].includes(call.name)
-                    ? executeGeneration(call, signal)
-                    : base.executeTool(call, signal),
+          ['read_presentation_page', 'edit_presentation_page_text'].includes(call.name) &&
+          pageEditing
+            ? pageEditing.executeTool(call, signal)
+            : [
+                  'capture_presentation_page_qa',
+                  'read_presentation_qa',
+                  'record_presentation_page_review',
+                ].includes(call.name) && qaSkill
+              ? qaSkill.executeTool(call, signal)
+              : ['list_presentation_attachments', 'read_presentation_attachment'].includes(
+                    call.name,
+                  ) && attachments
+                ? attachments.executeTool(call, signal)
+                : ['save_presentation_plan', 'read_presentation_plan'].includes(call.name) &&
+                    planning
+                  ? planning.executeTool(call, signal)
+                  : ['import_generated_presentation', 'read_presentation_import_status'].includes(
+                        call.name,
+                      ) && delivery
+                    ? delivery.executeTool(call, signal)
+                    : [
+                          'compile_deck_with_pptxgenjs',
+                          'restore_presentation_project',
+                          'resume_presentation_project',
+                        ].includes(call.name)
+                      ? executeGeneration(call, signal)
+                      : base.executeTool(call, signal),
       }
     : base
   return {
@@ -377,6 +395,7 @@ export function createOfficeHostRuntime(
       options.packageRuntime,
       options.enableSkillPackages !== false,
       () => {
+        pageEditing?.clear()
         qaSkill?.clear()
         attachments?.clear()
         generation?.clear()

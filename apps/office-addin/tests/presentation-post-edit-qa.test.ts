@@ -194,3 +194,100 @@ it('retains recheck status after uncertain host write failure and releases the Q
   expect((await f.capture()).isError).not.toBe(true)
   f.runtime.dispose()
 })
+
+function stablePageHost(f: Awaited<ReturnType<typeof fixture>>) {
+  let text = 'before'
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'listPresentationPageShapes').mockResolvedValue({
+    slideId: 'host',
+    shapesTruncated: false,
+    shapes: [
+      { id: 'shape', name: 'Title', type: 'TextBox', left: 0, top: 0, width: 400, height: 100 },
+    ],
+  })
+  const read = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'readPresentationPageText')
+    .mockImplementation(async (slideId, shapeId) => {
+      expect(slideId).toBe('host')
+      expect(shapeId).toBe('shape')
+      return { slideId, shapeId, text, paragraphs: [text] }
+    })
+  const edit = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationPageText')
+    .mockImplementation(async (slideId, shapeId, next, expected) => {
+      expect(slideId).toBe('host')
+      expect(shapeId).toBe('shape')
+      expect(expected).toBe(text)
+      expect(f.page().recheckRequired).toBe(true)
+      text = next
+      f.setText(next)
+    })
+  const propose = () =>
+    f.runtime.skill.executeTool({
+      id: 'stable-edit',
+      name: 'edit_presentation_page_text',
+      input: { page_id: 'page1', shape_id: 'shape', text: 'after' },
+    })
+  return { read, edit, propose }
+}
+it('routes a business-page text edit through its host ID and then fresh QA', async () => {
+  const f = await fixture(),
+    host = stablePageHost(f)
+  const objects = await f.runtime.skill.executeTool({
+    id: 'objects',
+    name: 'read_presentation_page',
+    input: { page_id: 'page1' },
+  })
+  expect(objects.isError, objects.output).not.toBe(true)
+  expect(objects.output).toContain('shape')
+  const text = await f.runtime.skill.executeTool({
+    id: 'text',
+    name: 'read_presentation_page',
+    input: { page_id: 'page1', shape_id: 'shape' },
+  })
+  expect(text.isError, text.output).not.toBe(true)
+  expect(text.output).toContain('before')
+  const proposal = await host.propose()
+  expect(proposal.isError, proposal.output).not.toBe(true)
+  // The original index now addresses a different page; the new workflow must not consult it.
+  vi.mocked(BrowserPowerPointAdapter.prototype.readSlideText).mockResolvedValue({
+    slideId: 'other-page',
+    shapeId: 'shape',
+    text: 'unrelated',
+    paragraphs: ['unrelated'],
+  })
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(host.edit).toHaveBeenCalledOnce()
+  expect(f.edit).not.toHaveBeenCalled()
+  expect(BrowserPowerPointAdapter.prototype.readSlideText).not.toHaveBeenCalled()
+  expect(f.page().recheckRequired).toBe(true)
+  const fresh = await f.capture()
+  expect(fresh.isError).not.toBe(true)
+  expect(JSON.parse(fresh.output).page.screenshotDigest).not.toBe(f.digest)
+  expect((await f.review(JSON.parse(fresh.output).page.screenshotDigest)).isError).not.toBe(true)
+  expect(f.page().visual.status).toBe('pass')
+  f.runtime.dispose()
+})
+it.each(['deleted', 'restored'] as const)(
+  'rejects a %s stable page proposal before writing',
+  async (change) => {
+    const f = await fixture(),
+      host = stablePageHost(f)
+    const proposal = await host.propose()
+    expect(proposal.isError, proposal.output).not.toBe(true)
+    const id = f.proposals.pending()!.id
+    if (change === 'deleted') host.read.mockRejectedValue(new Error('office_read_failed'))
+    else {
+      const restored = await f.runtime.skill.executeTool({
+        id: 'restore-again',
+        name: 'restore_presentation_project',
+        input: { project_id: 'project' },
+      })
+      expect(restored.isError).not.toBe(true)
+    }
+    await expect(f.proposals.confirm(id)).rejects.toThrow()
+    expect(host.edit).not.toHaveBeenCalled()
+    expect(f.edit).not.toHaveBeenCalled()
+    expect(f.page().recheckRequired).toBeUndefined()
+    f.runtime.dispose()
+  },
+)
