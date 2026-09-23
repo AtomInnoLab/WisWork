@@ -9,6 +9,7 @@ import {
   benchmarkPlannedDeck,
 } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
 import { createPresentationService } from '../src/main/presentation-service'
+import { BrowserPowerPointAdapter } from '../../office-addin/src/skills/powerpoint/browser-powerpoint-adapter'
 import { createOfficeHostRuntime } from '../../office-addin/src/agent/host-runtime'
 import { createPresentationDocumentBinding } from '../../office-addin/src/skills/powerpoint/presentation-document'
 import { presentationArtifactContent } from '../../office-addin/src/skills/powerpoint/presentation-page-delivery'
@@ -73,6 +74,26 @@ it('commits and undoes through real adapters and durable maps, recovering termin
         }),
     }),
   }
+  const inspect = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'inspectPresentationPage')
+    .mockImplementation(async (slideId) => {
+      if (!host.has(slideId)) throw new Error('ItemNotFound')
+      return {
+        slideId,
+        slideWidth: 960,
+        slideHeight: 540,
+        shapes: [],
+        shapesTruncated: false,
+        overflows: [],
+        overlaps: [],
+        overlapsTruncated: false,
+        screenshot: {
+          mime: 'image/png',
+          base64:
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII=',
+        },
+      }
+    })
   const context = {
     presentation: {
       slides,
@@ -177,8 +198,53 @@ it('commits and undoes through real adapters and durable maps, recovering termin
       expect(r.isError, r.output).not.toBe(true)
       return runtime!.proposals.pending()!.id
     }
+    const capture = async (pageId: string, hostId: string) => {
+      const result = await tool('capture_presentation_page_qa', { page_id: pageId })
+      expect(result.isError, result.output).not.toBe(true)
+      expect(inspect).toHaveBeenLastCalledWith(hostId, undefined)
+      expect(result.modelContent?.[0]?.type).toBe('image')
+      return JSON.parse(result.output).page.screenshotDigest as string
+    }
+    const review = (pageId: string, screenshotDigest: string) =>
+      tool('record_presentation_page_review', {
+        page_id: pageId,
+        screenshot_digest: screenshotDigest,
+        outcome: 'pass',
+        notes: 'Simulated visual inspection',
+      })
+    const blockedQa = async () => {
+      const count = inspect.mock.calls.length
+      for (const name of [
+        'capture_presentation_page_qa',
+        'read_presentation_qa',
+        'record_presentation_page_review',
+      ]) {
+        const result = await tool(
+          name,
+          name === 'read_presentation_qa'
+            ? {}
+            : name === 'record_presentation_page_review'
+              ? {
+                  page_id: target.id,
+                  screenshot_digest: '0'.repeat(64),
+                  outcome: 'pass',
+                  notes: 'Must not review during replacement',
+                }
+              : { page_id: target.id },
+        )
+        expect(result).toMatchObject({ isError: true, output: 'presentation_restore_required' })
+      }
+      expect(inspect).toHaveBeenCalledTimes(count)
+      expect(runtime!.qa!.read()).toBeUndefined()
+    }
     runtime = create()
     await prepare('parent')
+    const parentScreenshot = await capture(target.id, 'host-1')
+    expect((await review(target.id, parentScreenshot)).isError).not.toBe(true)
+    await capture(deck.slides[0]!.id, 'host-0')
+    const unaffectedQa = structuredClone(
+      binding.readQa(parentKey)!.pages.find((p) => p.pageId === deck.slides[0]!.id),
+    )
     const saved = await tool('save_presentation_page_backup', {
       request_id: 'child',
       page_id: target.id,
@@ -194,6 +260,12 @@ it('commits and undoes through real adapters and durable maps, recovering termin
     expect(staged.isError, staged.output).not.toBe(true)
     await runtime.proposals.confirm(runtime.proposals.pending()!.id)
     expect(binding.readPageReplacement()?.state).toBe('staged')
+    expect(
+      binding.readQa(parentKey)!.pages.find((p) => p.pageId === target.id)?.recheckRequired,
+    ).toBe(true)
+    expect(binding.readQa(parentKey)!.pages.find((p) => p.pageId === deck.slides[0]!.id)).toEqual(
+      unaffectedQa,
+    )
     expect(inserted).toEqual(['inserted-1'])
     const commitId = await propose('commit_presentation_page_replacement')
     failState = 'applied'
@@ -204,6 +276,7 @@ it('commits and undoes through real adapters and durable maps, recovering termin
     expect(removed).toEqual(['host-1'])
     expect(ids).toHaveLength(9)
     expect(runtime.importProgress!.read()).toBeUndefined()
+    await blockedQa()
     runtime.dispose()
     service = createPresentationService({ userDataPath: root })
     runtime = create()
@@ -214,6 +287,7 @@ it('commits and undoes through real adapters and durable maps, recovering termin
     expect(() => binding.readReceipt(parentKey)).toThrow('presentation_import_superseded')
     expect(binding.readReceipt(childKey)?.slideIds?.[1]).toBe('inserted-1')
     expect(runtime.importProgress!.read()).toBeUndefined()
+    await blockedQa()
     await prepare('child')
     expect(runtime.importProgress!.read()?.pages[1]?.slideId).toBe('inserted-1')
     const parentAgain = await tool('prepare_presentation_production_import', {
@@ -221,12 +295,17 @@ it('commits and undoes through real adapters and durable maps, recovering termin
     })
     expect(parentAgain.isError).toBe(true)
     expect(runtime.importProgress!.read()?.pages[1]?.slideId).toBe('inserted-1')
+    const childScreenshot = await capture(target.id, 'inserted-1')
+    expect((await review(target.id, childScreenshot)).isError).not.toBe(true)
+    expect(binding.readQa(childKey)?.pages).toHaveLength(1)
     const undoId = await propose('undo_presentation_page_replacement')
     failState = 'undone'
     await expect(runtime.proposals.confirm(undoId)).rejects.toThrow(
       'simulated_settings_save_failure',
     )
     expect(binding.readPageReplacement()?.state).toBe('restore_inserted')
+    await blockedQa()
+    expect(binding.readQa(childKey)!.pages[0]?.recheckRequired).toBe(true)
     expect(inserted).toEqual(['inserted-1', 'inserted-2'])
     expect(removed).toEqual(['host-1', 'inserted-1'])
     expect(host.get('inserted-2')).toBe(original)
@@ -241,6 +320,18 @@ it('commits and undoes through real adapters and durable maps, recovering termin
     expect(() => binding.readReceipt(childKey)).toThrow('presentation_import_superseded')
     await prepare('parent')
     expect(runtime.importProgress!.read()?.pages[1]?.slideId).toBe('inserted-2')
+    expect((await review(target.id, parentScreenshot)).output).toBe(
+      'presentation_qa_capture_required',
+    )
+    const restoredScreenshot = await capture(target.id, 'inserted-2')
+    expect((await review(target.id, restoredScreenshot)).isError).not.toBe(true)
+    expect(binding.readQa(parentKey)!.pages.find((p) => p.pageId === target.id)).toMatchObject({
+      hostSlideId: 'inserted-2',
+      visual: { status: 'pass' },
+    })
+    expect(binding.readQa(parentKey)!.pages.find((p) => p.pageId === deck.slides[0]!.id)).toEqual(
+      unaffectedQa,
+    )
     expect(binding.readReceipt(parentKey)?.checkpoint?.artifactDigest).toBe(
       receipt.checkpoint!.artifactDigest,
     )
@@ -248,6 +339,7 @@ it('commits and undoes through real adapters and durable maps, recovering termin
       if (i !== 1) expect(host.get(id)).toBe(pages[i].pptxBase64)
   } finally {
     runtime?.dispose()
+    inspect.mockRestore()
     vi.unstubAllGlobals()
     rmSync(root, { recursive: true, force: true })
   }

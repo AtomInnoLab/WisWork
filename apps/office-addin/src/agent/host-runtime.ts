@@ -282,9 +282,9 @@ export function createOfficeHostRuntime(
     importSource === 'production'
       ? production?.artifact(projectId)
       : generation?.artifact(projectId)
-  // A cached source can outlive an atomic mapping switch; don't render it as current.
-  const visibleArtifact = () => {
-    const artifact = activeArtifact()
+  // A cached source can outlive a mapping switch; hide it from current views and QA.
+  const visibleArtifact = (projectId?: string) => {
+    const artifact = activeArtifact(projectId)
     if (!artifact) return undefined
     const change = options.presentation?.readPageReplacement?.()
     if (
@@ -436,7 +436,7 @@ export function createOfficeHostRuntime(
           vfs,
           available: () =>
             options.presentation!.available() && supportsNativePowerPointMasterEditing(),
-          artifact: activeArtifact,
+          artifact: visibleArtifact,
           documentId: options.presentation.documentId,
           readReceipt: options.presentation.readReceipt,
           inspectPage: (id, signal) => powerPointAdapter.inspectPresentationPage(id, signal),
