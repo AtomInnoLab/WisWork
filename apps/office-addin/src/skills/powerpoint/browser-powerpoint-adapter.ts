@@ -69,6 +69,18 @@ export interface SlideVerification {
   overlapsTruncated: boolean
 }
 
+export interface PowerPointPageInspection {
+  slideId: string
+  slideWidth: number
+  slideHeight: number
+  shapes: PowerPointShape[]
+  shapesTruncated: boolean
+  overflows: SlideVerification['overflows']
+  overlaps: SlideVerification['overlaps']
+  overlapsTruncated: boolean
+  screenshot: { mime: 'image/png'; base64: string }
+}
+
 export interface VerifySlidesResult {
   slideWidth: number
   slideHeight: number
@@ -121,6 +133,7 @@ export type PowerPointMasterOperation =
     }
 
 export interface PowerPointAdapter {
+  inspectPresentationPage?(slideId: string, signal?: AbortSignal): Promise<PowerPointPageInspection>
   inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState>
   executeMasterOperations(
     operations: PowerPointMasterOperation[],
@@ -305,6 +318,50 @@ function hash(value: string): string {
 function slideSemanticFingerprint(value: string): string {
   const separator = value.indexOf(':')
   return separator < 0 ? value : value.slice(separator + 1)
+}
+
+/** Validate the Office-produced screenshot envelope without claiming a visual QA pass. */
+function pageScreenshot(value: unknown): string {
+  const limit = 2 * 1024 * 1024
+  if (
+    typeof value !== 'string' ||
+    !value.length ||
+    value.length > Math.ceil(limit / 3) * 4 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  )
+    throw new Error('office_read_failed')
+  let binary: string
+  try {
+    binary = atob(value)
+  } catch {
+    throw new Error('office_read_failed')
+  }
+  if (
+    binary.length > limit ||
+    binary.length < 45 ||
+    btoa(binary) !== value ||
+    binary.slice(0, 8) !== '\x89PNG\r\n\x1a\n' ||
+    binary.slice(12, 16) !== 'IHDR' ||
+    binary.slice(-8, -4) !== 'IEND'
+  )
+    throw new Error('office_read_failed')
+  const uint32 = (offset: number) =>
+    binary.charCodeAt(offset) * 0x1000000 +
+    binary.charCodeAt(offset + 1) * 0x10000 +
+    binary.charCodeAt(offset + 2) * 0x100 +
+    binary.charCodeAt(offset + 3)
+  const width = uint32(16),
+    height = uint32(20)
+  if (
+    uint32(8) !== 13 ||
+    !width ||
+    !height ||
+    width > 8192 ||
+    height > 8192 ||
+    width * height > 16_000_000
+  )
+    throw new Error('office_read_failed')
+  return value
 }
 
 export class BrowserPowerPointAdapter implements PowerPointAdapter {
@@ -551,6 +608,119 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       await sync(context, signal)
       const value = string(textRange.text, MAX_POWERPOINT_TEXT)
       return { slideId: string(slide.id), shapeId, text: value, paragraphs: value.split(/\r?\n/) }
+    })
+  }
+
+  async inspectPresentationPage(
+    slideId: string,
+    signal?: AbortSignal,
+  ): Promise<PowerPointPageInspection> {
+    cancelled(signal)
+    if (typeof slideId !== 'string' || !slideId.length || slideId.length > 256)
+      throw new Error('invalid_tool_input')
+    return this.run('1.10', async (context) => {
+      const presentation = context.presentation as RuntimeRecord
+      const slides = presentation.slides as RuntimeRecord
+      const pageSetup = presentation.pageSetup as RuntimeRecord | undefined
+      if (typeof slides?.getItem !== 'function' || typeof pageSetup?.load !== 'function')
+        throw new Error('office_api_unsupported')
+      // Resolve the durable host ID directly; global verification only visits the first 20 pages.
+      const slide = (slides.getItem as (id: string) => RuntimeRecord)(slideId)
+      const collection = slide?.shapes as RuntimeRecord | undefined
+      if (
+        typeof slide?.load !== 'function' ||
+        typeof collection?.load !== 'function' ||
+        typeof slide.getImageAsBase64 !== 'function'
+      )
+        throw new Error('office_api_unsupported')
+      ;(slide.load as (properties: string) => void)('id')
+      ;(pageSetup.load as (properties: string[]) => void)(['slideWidth', 'slideHeight'])
+      loadShapes(collection)
+      const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
+        width: 960,
+      })
+      await sync(context, signal)
+      if (slide.id !== slideId || !Array.isArray(collection.items))
+        throw new Error('office_read_failed')
+      const slideWidth = pageSetup.slideWidth,
+        slideHeight = pageSetup.slideHeight
+      if (
+        typeof slideWidth !== 'number' ||
+        !Number.isFinite(slideWidth) ||
+        slideWidth <= 0 ||
+        typeof slideHeight !== 'number' ||
+        !Number.isFinite(slideHeight) ||
+        slideHeight <= 0
+      )
+        throw new Error('office_read_failed')
+      const raw = (collection.items as RuntimeRecord[]).slice(0, MAX_POWERPOINT_VERIFY_SHAPES)
+      for (const shape of raw) {
+        if (
+          !shape ||
+          typeof shape.id !== 'string' ||
+          !shape.id.length ||
+          shape.id.length > 256 ||
+          ['left', 'top', 'width', 'height'].some(
+            (key) => typeof shape[key] !== 'number' || !Number.isFinite(shape[key]),
+          ) ||
+          (shape.width as number) < 0 ||
+          (shape.height as number) < 0 ||
+          !Number.isFinite((shape.left as number) + (shape.width as number)) ||
+          !Number.isFinite((shape.top as number) + (shape.height as number))
+        )
+          throw new Error('office_read_failed')
+      }
+      const shapes = raw.map(shapeInfo)
+      if (new Set(shapes.map((shape) => shape.id)).size !== shapes.length)
+        throw new Error('office_read_failed')
+      const overflows: SlideVerification['overflows'] = []
+      for (const shape of shapes) {
+        if (shape.left < 0)
+          overflows.push({ shapeId: shape.id, edge: 'left', overflowBy: -shape.left })
+        if (shape.top < 0)
+          overflows.push({ shapeId: shape.id, edge: 'top', overflowBy: -shape.top })
+        if (shape.left + shape.width > slideWidth)
+          overflows.push({
+            shapeId: shape.id,
+            edge: 'right',
+            overflowBy: shape.left + shape.width - slideWidth,
+          })
+        if (shape.top + shape.height > slideHeight)
+          overflows.push({
+            shapeId: shape.id,
+            edge: 'bottom',
+            overflowBy: shape.top + shape.height - slideHeight,
+          })
+      }
+      const overlaps: SlideVerification['overlaps'] = []
+      let overlapsTruncated = false
+      for (let i = 0; i < shapes.length; i++)
+        for (let j = i + 1; j < shapes.length; j++) {
+          const a = shapes[i]!,
+            b = shapes[j]!
+          const overlapX = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left)
+          const overlapY = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top)
+          if (overlapX > 0 && overlapY > 0) {
+            if (overlaps.length === MAX_POWERPOINT_VERIFY_OVERLAPS) {
+              overlapsTruncated = true
+              break
+            }
+            overlaps.push({ shapeAId: a.id, shapeBId: b.id, overlapX, overlapY })
+          }
+        }
+      const base64 = pageScreenshot(image.value)
+      cancelled(signal)
+      return {
+        slideId,
+        slideWidth,
+        slideHeight,
+        shapes,
+        shapesTruncated: collection.items.length > MAX_POWERPOINT_VERIFY_SHAPES,
+        overflows,
+        overlaps,
+        overlapsTruncated,
+        screenshot: { mime: 'image/png', base64 },
+      }
     })
   }
 
