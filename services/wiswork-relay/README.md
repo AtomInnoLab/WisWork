@@ -21,3 +21,9 @@ The process binds only `127.0.0.1`. `WISWORK_RELAY_PORT` defaults to `43190` and
 5. Install `deploy/nginx-http-limits.conf` in nginx's `http` context and include `deploy/nginx-location.conf` inside the existing Office TLS server block. `deploy/nginx-office-site.conf` is the complete configuration used by the current development server. Reload nginx only after `nginx -t` succeeds.
 
 The public endpoint is `wss://office.8-216-134-194.sslip.io/office-relay`; the health check is `/office-relay/health`. The service validates PC Bearer tokens only against the fixed Wispaper OIDC userinfo endpoint, immediately discards them, and must never log credentials or relay payloads.
+
+## Presentation generation capability
+
+Relay v2 supports the optional `presentation.v1` capability. PC advertises it only when a presentation handler is configured; pairing negotiates the intersection of the Office and PC capabilities. Generation uses the existing request and response frames: JSON object requests up to 256 KiB, ordered chunks up to 64 KiB, and responses up to 16 MiB. One request may be active per paired session; independent document sessions can run concurrently. Relay does not interpret presentation payloads or persist projects. V1 remains agent-only.
+
+Deploy this Relay allowlist update before enabling the presentation handler in PC and requesting the capability from the task pane. An older Relay filters the capability out, so clients must check negotiated capabilities before offering generation.

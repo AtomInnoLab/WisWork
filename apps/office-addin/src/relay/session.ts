@@ -61,7 +61,7 @@ export interface OfficeRelaySession {
 }
 
 export type OfficeRelayCapability =
-  'agent.v1' | 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1'
+  'agent.v1' | 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1' | 'presentation.v1'
 
 interface Dependencies {
   createSocket?: (url: string) => RelayWebSocket
@@ -181,7 +181,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   }
 
   const handleFrame = (data: unknown, epoch: number) => {
-    if (epoch !== generation || typeof data !== 'string') return protocolFailure()
+    if (epoch !== generation) return
+    if (typeof data !== 'string') return protocolFailure()
     const frameBytes = encoder.encode(data).byteLength
     if (frameBytes > MAX_RELAY_FRAME_BYTES) return protocolFailure()
     let frame: Record<string, unknown>

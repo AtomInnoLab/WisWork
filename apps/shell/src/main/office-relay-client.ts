@@ -103,6 +103,7 @@ export function createOfficeRelayClient(options: {
   getAccessToken(): Promise<string | null>
   proxy: MessagesProxy
   retrievalProxy?: OfficeRetrievalProxy
+  presentationProxy?: (body: unknown, signal: AbortSignal) => Promise<Uint8Array>
   negotiateCapabilities?: boolean
   onPending(pairing: OfficePairingRequest): void
   onPendingExpired?: (pairingId: string) => void
@@ -114,8 +115,10 @@ export function createOfficeRelayClient(options: {
   let diagnostic: OfficeRelayStatus = 'disconnected'
   let protocolVersion: 1 | 2 = 1
   const negotiateCapabilities =
-    options.negotiateCapabilities === true || Boolean(options.retrievalProxy)
-  const offeredCapabilities = options.retrievalProxy ? [...V2_CAPABILITIES] : ['agent.v1']
+    options.negotiateCapabilities === true ||
+    Boolean(options.retrievalProxy || options.presentationProxy)
+  const offeredCapabilities: string[] = options.retrievalProxy ? [...V2_CAPABILITIES] : ['agent.v1']
+  if (options.presentationProxy) offeredCapabilities.push('presentation.v1')
   let pending: (OfficePairingRequest & { capabilities?: string[] }) | null = null
   let session: { sessionId: string; capability: string; capabilities: string[] } | null = null
   let active: { requestId: string; controller: AbortController; remoteCancelled: boolean } | null =
@@ -206,7 +209,9 @@ export function createOfficeRelayClient(options: {
       if (
         typeof capabilityName !== 'string' ||
         !session.capabilities.includes(capabilityName) ||
-        (capabilityName !== 'agent.v1' && !options.retrievalProxy)
+        (capabilityName === 'presentation.v1'
+          ? !options.presentationProxy
+          : capabilityName !== 'agent.v1' && !options.retrievalProxy)
       )
         return clear('protocol_violation', true)
       const response =
@@ -215,8 +220,12 @@ export function createOfficeRelayClient(options: {
           : {
               status: 200,
               contentType: 'application/json',
-              body: await options.retrievalProxy!(capabilityName, frame.body, controller.signal),
+              body:
+                capabilityName === 'presentation.v1'
+                  ? await options.presentationProxy!(frame.body, controller.signal)
+                  : await options.retrievalProxy!(capabilityName, frame.body, controller.signal),
             }
+      if (owner !== generation || controller.signal.aborted || !session) return
       if (
         !Number.isSafeInteger(response.status) ||
         response.status < 200 ||
@@ -292,14 +301,16 @@ export function createOfficeRelayClient(options: {
       })
     } finally {
       clearTimeout(timeout)
-      rememberTerminalRequest(frame.request_id as string)
-      if (active?.requestId === frame.request_id) active = null
+      if (owner === generation) {
+        rememberTerminalRequest(frame.request_id as string)
+        if (active?.requestId === frame.request_id) active = null
+      }
     }
   }
 
   const receive = (event: { data?: unknown }, owner: number) => {
-    if (owner !== generation || typeof event.data !== 'string')
-      return clear('protocol_violation', true)
+    if (owner !== generation) return
+    if (typeof event.data !== 'string') return clear('protocol_violation', true)
     const frameBytes = Buffer.byteLength(event.data)
     if (frameBytes > MAX_REQUEST_BYTES + MAX_CONTROL_BYTES) return clear('protocol_violation', true)
     let frame: unknown
@@ -380,7 +391,7 @@ export function createOfficeRelayClient(options: {
         typed.capabilities.every(
           (value, index, values) =>
             typeof value === 'string' &&
-            V2_CAPABILITIES.includes(value as (typeof V2_CAPABILITIES)[number]) &&
+            offeredCapabilities.includes(value) &&
             values.indexOf(value) === index,
         )
           ? (typed.capabilities as string[])

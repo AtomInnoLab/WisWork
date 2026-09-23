@@ -98,61 +98,133 @@ describe('Office cloud relay session', () => {
     expect(session.snapshot()).toEqual({ status: 'expired' })
   })
 
-  it('advertises only Relay-v2 capabilities and blocks unnegotiated requests', async () => {
+  it('ignores old socket frames after re-pairing and completes the current request', async () => {
+    const oldSocket = new FakeSocket()
     const socket = new FakeSocket()
+    const sockets = [oldSocket, socket]
     const session = createOfficeRelaySession({
-      createSocket: () => socket,
-      capabilities: ['agent.v1', 'web-search.v1', 'web-fetch.v1'],
-      randomUUID: () => 'request_12345678',
+      createSocket: () => sockets.shift()!,
+      randomUUID: () => 'request_current',
     })
-    const connecting = session.connect('word')
-    socket.open()
-    expect(frame(socket, 0)).toEqual({
-      version: 2,
-      type: 'office.create',
-      host: 'Word',
-      capabilities: ['agent.v1', 'web-search.v1', 'web-fetch.v1'],
+    for (const current of [oldSocket, socket]) {
+      const connected = session.connect('powerpoint')
+      current.open()
+      current.receive(
+        JSON.stringify({
+          version: 1,
+          type: 'office.created',
+          pairing_id: 'pair_current',
+          verification_code: '123456',
+          expires_in: 120,
+        }),
+      )
+      current.receive(
+        JSON.stringify({
+          version: 1,
+          type: 'office.approved',
+          session_id: 'session_current',
+          capability: 'cap_current',
+          expires_in: 1800,
+        }),
+      )
+      await connected
+    }
+    oldSocket.receive('malformed late frame')
+    expect(session.snapshot().status).toBe('connected')
+    const response = session.authenticatedFetch('/v1/office/messages', {
+      method: 'POST',
+      body: '{}',
     })
     socket.receive(
       JSON.stringify({
-        version: 2,
-        type: 'office.created',
-        pairing_id: 'pair_12345678',
-        verification_code: '123456',
-        expires_in: 120,
+        version: 1,
+        type: 'relay.start',
+        session_id: 'session_current',
+        request_id: 'request_current',
+        status: 200,
+        content_type: 'application/json',
       }),
     )
     socket.receive(
       JSON.stringify({
+        version: 1,
+        type: 'relay.chunk',
+        session_id: 'session_current',
+        request_id: 'request_current',
+        sequence: 0,
+        data: 'e30=',
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
+        version: 1,
+        type: 'relay.done',
+        session_id: 'session_current',
+        request_id: 'request_current',
+      }),
+    )
+    expect(await (await response).json()).toEqual({})
+    session.disconnect()
+  })
+
+  it.each(['web-search.v1', 'presentation.v1'] as const)(
+    'negotiates %s and blocks unnegotiated requests',
+    async (capability) => {
+      const socket = new FakeSocket()
+      const session = createOfficeRelaySession({
+        createSocket: () => socket,
+        capabilities: ['agent.v1', capability, 'web-fetch.v1'],
+        randomUUID: () => 'request_12345678',
+      })
+      const connecting = session.connect('word')
+      socket.open()
+      expect(frame(socket, 0)).toEqual({
         version: 2,
-        type: 'office.approved',
+        type: 'office.create',
+        host: 'Word',
+        capabilities: ['agent.v1', capability, 'web-fetch.v1'],
+      })
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'office.created',
+          pairing_id: 'pair_12345678',
+          verification_code: '123456',
+          expires_in: 120,
+        }),
+      )
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'office.approved',
+          session_id: 'session_12345678',
+          capability: 'capability_12345678',
+          expires_in: 1800,
+          capabilities: ['agent.v1', capability],
+        }),
+      )
+      await connecting
+      expect(session.snapshot()).toEqual({
+        status: 'connected',
+        capabilities: ['agent.v1', capability],
+      })
+      await expect(
+        session.capabilityFetch('web-fetch.v1', { url: 'https://example.com' }),
+      ).rejects.toThrow('relay_capability_unavailable')
+      const pending = session.capabilityFetch(capability, { query: 'office', max_results: 3 })
+      expect(frame(socket, 1)).toEqual({
+        version: 2,
+        type: 'office.request',
         session_id: 'session_12345678',
         capability: 'capability_12345678',
-        expires_in: 1800,
-        capabilities: ['agent.v1', 'web-search.v1'],
-      }),
-    )
-    await connecting
-    expect(session.snapshot()).toEqual({
-      status: 'connected',
-      capabilities: ['agent.v1', 'web-search.v1'],
-    })
-    await expect(
-      session.capabilityFetch('web-fetch.v1', { url: 'https://example.com' }),
-    ).rejects.toThrow('relay_capability_unavailable')
-    const pending = session.capabilityFetch('web-search.v1', { query: 'office', max_results: 3 })
-    expect(frame(socket, 1)).toEqual({
-      version: 2,
-      type: 'office.request',
-      session_id: 'session_12345678',
-      capability: 'capability_12345678',
-      request_id: 'request_12345678',
-      capability_name: 'web-search.v1',
-      body: { query: 'office', max_results: 3 },
-    })
-    session.disconnect()
-    await expect(pending).rejects.toThrow('relay_disconnected')
-  })
+        request_id: 'request_12345678',
+        capability_name: capability,
+        body: { query: 'office', max_results: 3 },
+      })
+      session.disconnect()
+      await expect(pending).rejects.toThrow('relay_disconnected')
+    },
+  )
 
   it('sends bounded diagnostics only over an approved v2 session', async () => {
     const socket = new FakeSocket()

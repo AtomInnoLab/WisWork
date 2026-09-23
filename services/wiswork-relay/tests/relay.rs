@@ -16,8 +16,14 @@ use wiswork_relay::{Config, app};
 fn default_request_budget_supports_complex_agent_turns() {
     assert_eq!(Config::default().request_ttl, Duration::from_secs(300));
     assert_eq!(Config::default().session_ttl, Duration::from_secs(1800));
-    assert_eq!(Config::default().auth_url, "https://auth.wispaper.ai/oidc/me");
-    assert_eq!(Config::default().jwks_url, "https://auth.wispaper.ai/oidc/jwks");
+    assert_eq!(
+        Config::default().auth_url,
+        "https://auth.wispaper.ai/oidc/me"
+    );
+    assert_eq!(
+        Config::default().jwks_url,
+        "https://auth.wispaper.ai/oidc/jwks"
+    );
     assert_eq!(Config::default().issuer, "https://auth.wispaper.ai/oidc");
     assert_eq!(Config::default().audience, "i9au2rbqzktme4runr9gy");
 }
@@ -458,11 +464,20 @@ async fn pairs_only_after_claim_and_approval_then_forwards_and_cancels() {
 
 #[tokio::test]
 async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
+    check_v2_capability("web-search.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_presentation_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation.v1").await;
+}
+
+async fn check_v2_capability(capability: &str) {
     let url = server().await;
     let mut office = socket(&url, ORIGIN).await;
     send(
         &mut office,
-        json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1","web-search.v1","web-fetch.v1","future-capability.v9"]}),
+        json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1",capability,"web-fetch.v1","future-capability.v9"]}),
     )
     .await;
     let created = recv(&mut office).await;
@@ -472,36 +487,30 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
     let mut pc = pc_socket(&url).await;
     send(
         &mut pc,
-        json!({"version":2,"type":"pc.negotiate","verification_code":code,"capabilities":["agent.v1","web-search.v1","image-search.v1","future-capability.v9"]}),
+        json!({"version":2,"type":"pc.negotiate","verification_code":code,"capabilities":["agent.v1",capability,"image-search.v1","future-capability.v9"]}),
     )
     .await;
     let negotiated = recv(&mut pc).await;
     assert_eq!(negotiated["type"], "pc.negotiated");
     assert_eq!(negotiated["pairing_version"], 2);
-    assert_eq!(
-        negotiated["capabilities"],
-        json!(["agent.v1", "web-search.v1"])
-    );
+    assert_eq!(negotiated["capabilities"], json!(["agent.v1", capability]));
     send(
         &mut pc,
-        json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1","web-search.v1","image-search.v1"]}),
+        json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1",capability,"image-search.v1"]}),
     )
     .await;
     let claimed = recv(&mut pc).await;
-    assert_eq!(
-        claimed["capabilities"],
-        json!(["agent.v1", "web-search.v1"])
-    );
+    assert_eq!(claimed["capabilities"], json!(["agent.v1", capability]));
     send(
         &mut pc,
-        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1","web-search.v1"]}),
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1",capability]}),
     )
     .await;
     let pc_ready = recv(&mut pc).await;
     let office_ready = recv(&mut office).await;
     assert_eq!(
         office_ready["capabilities"],
-        json!(["agent.v1", "web-search.v1"])
+        json!(["agent.v1", capability])
     );
 
     send(
@@ -513,12 +522,12 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
 
     send(
         &mut office,
-        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"web_request_2","capability_name":"web-search.v1","body":{"query":"office agents","max_results":5}}),
+        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"web_request_2","capability_name":capability,"body":{"query":"office agents","max_results":5}}),
     )
     .await;
     let forwarded = recv(&mut pc).await;
     assert_eq!(forwarded["version"], 2);
-    assert_eq!(forwarded["capability_name"], "web-search.v1");
+    assert_eq!(forwarded["capability_name"], capability);
     assert_eq!(
         forwarded["body"],
         json!({"query":"office agents","max_results":5})
