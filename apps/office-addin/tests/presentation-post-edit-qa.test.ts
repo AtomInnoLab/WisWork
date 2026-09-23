@@ -291,3 +291,99 @@ it.each(['deleted', 'restored'] as const)(
     f.runtime.dispose()
   },
 )
+
+function stableGeometryHost() {
+  let geometry = { left: 10, top: 20, width: 300, height: 100 }
+  const read = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'readPresentationPageGeometry')
+    .mockImplementation(async (slideId, shapeId) => {
+      expect([slideId, shapeId]).toEqual(['host', 'shape'])
+      return { slideId, shapeId, geometry: { ...geometry } }
+    })
+  const edit = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationPageGeometry')
+    .mockImplementation(async (slideId, shapeId, next, expected) => {
+      expect([slideId, shapeId]).toEqual(['host', 'shape'])
+      expect(expected).toEqual(geometry)
+      geometry = { ...next }
+    })
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'inspectPresentationPage').mockImplementation(
+    async () => ({
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes: [{ id: 'shape', name: 'Photo', type: 'Image', ...geometry }],
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: afterPng },
+    }),
+  )
+  return {
+    read,
+    edit,
+    moveManually: () => {
+      geometry.left += 20
+    },
+  }
+}
+it('moves and resizes a stable page object through confirmation and new QA without index calls', async () => {
+  const f = await fixture(),
+    host = stableGeometryHost()
+  const before = await f.runtime.skill.executeTool({
+    id: 'geometry',
+    name: 'read_presentation_page_geometry',
+    input: { page_id: 'page1', shape_id: 'shape' },
+  })
+  expect(before.isError, before.output).not.toBe(true)
+  expect(JSON.parse(before.output)).toMatchObject({
+    unit: 'pt',
+    geometry: { left: 10, top: 20, width: 300, height: 100 },
+  })
+  const next = { left: 100, top: 60, width: 500, height: 200 }
+  const proposal = await f.runtime.skill.executeTool({
+    id: 'layout',
+    name: 'edit_presentation_page_geometry',
+    input: { page_id: 'page1', shape_id: 'shape', geometry: next },
+  })
+  expect(proposal.isError, proposal.output).not.toBe(true)
+  expect(f.proposals.pending()?.after).toEqual(next)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(host.edit).toHaveBeenCalledOnce()
+  expect(f.edit).not.toHaveBeenCalled()
+  expect(BrowserPowerPointAdapter.prototype.readSlideText).not.toHaveBeenCalled()
+  expect(f.page().recheckRequired).toBe(true)
+  const after = await f.runtime.skill.executeTool({
+    id: 'geometry-after',
+    name: 'read_presentation_page_geometry',
+    input: { page_id: 'page1', shape_id: 'shape' },
+  })
+  expect(JSON.parse(after.output).geometry).toEqual(next)
+  const captured = await f.capture()
+  expect(captured.isError, captured.output).not.toBe(true)
+  expect(JSON.parse(captured.output).page.structure.shapeCount).toBe(1)
+  expect((await f.review(JSON.parse(captured.output).page.screenshotDigest)).isError).not.toBe(true)
+  expect(f.page().visual.status).toBe('pass')
+  f.runtime.dispose()
+})
+it('preserves a manual geometry change made after proposing layout adjustments', async () => {
+  const f = await fixture(),
+    host = stableGeometryHost()
+  const proposal = await f.runtime.skill.executeTool({
+    id: 'layout',
+    name: 'edit_presentation_page_geometry',
+    input: {
+      page_id: 'page1',
+      shape_id: 'shape',
+      geometry: { left: 100, top: 60, width: 500, height: 200 },
+    },
+  })
+  expect(proposal.isError, proposal.output).not.toBe(true)
+  const id = f.proposals.pending()!.id
+  host.moveManually()
+  await expect(f.proposals.confirm(id)).rejects.toThrow('proposal_stale')
+  expect(host.edit).not.toHaveBeenCalled()
+  expect(f.page().recheckRequired).toBeUndefined()
+  f.runtime.dispose()
+})

@@ -357,8 +357,12 @@ export function createOfficeHostRuntime(
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
         executeTool: (call, signal) =>
-          ['read_presentation_page', 'edit_presentation_page_text'].includes(call.name) &&
-          pageEditing
+          [
+            'read_presentation_page',
+            'edit_presentation_page_text',
+            'read_presentation_page_geometry',
+            'edit_presentation_page_geometry',
+          ].includes(call.name) && pageEditing
             ? pageEditing.executeTool(call, signal)
             : [
                   'capture_presentation_page_qa',

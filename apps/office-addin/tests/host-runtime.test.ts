@@ -347,9 +347,12 @@ it('gates QA by host support and refreshes saved QA after project restoration', 
     expect(runtime.skill.tools.map((t) => t.name)).toContain('capture_presentation_page_qa')
     expect(runtime.skill.tools.map((t) => t.name)).toContain('read_presentation_page')
     expect(runtime.skill.tools.map((t) => t.name)).toContain('edit_presentation_page_text')
+    expect(runtime.skill.tools.map((t) => t.name)).toContain('read_presentation_page_geometry')
+    expect(runtime.skill.tools.map((t) => t.name)).toContain('edit_presentation_page_geometry')
     supported = false
     expect(runtime.skill.tools.map((t) => t.name)).not.toContain('capture_presentation_page_qa')
     expect(runtime.skill.tools.map((t) => t.name)).not.toContain('edit_presentation_page_text')
+    expect(runtime.skill.tools.map((t) => t.name)).not.toContain('edit_presentation_page_geometry')
     supported = true
     const listener = vi.fn()
     runtime.qa!.subscribe(listener)
