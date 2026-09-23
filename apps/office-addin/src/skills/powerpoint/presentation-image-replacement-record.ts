@@ -1,5 +1,6 @@
 import type { PictureSnapshot } from './browser-presentation-image-adapter.js'
 export interface ImageReplacementRecord {
+  source?: 'production'
   version: 1
   documentId: string
   projectId: string
@@ -82,6 +83,7 @@ export function validateImageReplacementRecord(value: unknown): value is ImageRe
   return (
     Object.keys(r).every((key) =>
       [
+        'source',
         'version',
         'documentId',
         'projectId',
@@ -95,6 +97,7 @@ export function validateImageReplacementRecord(value: unknown): value is ImageRe
         'baseline',
       ].includes(key),
     ) &&
+    (r.source === undefined || r.source === 'production') &&
     r.version === 1 &&
     typeof r.documentId === 'string' &&
     r.documentId.length > 0 &&
@@ -123,12 +126,21 @@ export async function imageReplacementKey(
   requestId: string,
   pageId: string,
   oldShapeId: string,
+  source?: 'production',
 ): Promise<string> {
-  if (!id(projectId, 80) || !id(requestId, 128) || !id(pageId, 80) || !hostId(oldShapeId))
+  if (
+    (source !== undefined && source !== 'production') ||
+    !id(projectId, 80) ||
+    !id(requestId, 128) ||
+    !id(pageId, 80) ||
+    !hostId(oldShapeId)
+  )
     throw new Error('presentation_image_replacement_state_invalid')
   const bytes = await crypto.subtle.digest(
     'SHA-256',
-    new TextEncoder().encode(JSON.stringify([projectId, requestId, pageId, oldShapeId])),
+    new TextEncoder().encode(
+      JSON.stringify([...(source ? [source] : []), projectId, requestId, pageId, oldShapeId]),
+    ),
   )
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }

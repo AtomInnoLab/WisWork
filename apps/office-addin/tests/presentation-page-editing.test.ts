@@ -733,3 +733,174 @@ it('checks recovery context after asynchronous inspection and hides legacy adapt
     }),
   ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
 })
+function productionEditing(f = setup()) {
+  const artifact = {
+    ...f.artifact,
+    pptxBase64: '',
+    planRevision: 1,
+    pagePptxBase64: ['UEsDBAAAAAA=', 'UEsDBAEAAAA='],
+    pages: f.artifact.pages.map((p) => ({ ...p, sourceSlideId: '256#' })),
+  }
+  const content = JSON.stringify({
+    documentId: artifact.documentId,
+    projectId: artifact.projectId,
+    requestId: artifact.requestId,
+    planRevision: artifact.planRevision,
+    pages: artifact.pages,
+    pagePptxBase64: artifact.pagePptxBase64,
+  })
+  const receipt = {
+    state: 'complete' as const,
+    documentId: 'doc',
+    slideIds: ['host-first', 'host-42'],
+    checkpoint: {
+      version: 2 as const,
+      artifactDigest: createHash('sha256').update(content).digest('hex'),
+      pageIds: ['page1', 'page2'],
+      sourceSlideIds: ['256#', '256#'],
+      baselineSlideIds: ['original'],
+      completed: [
+        { sourceSlideId: '256#', slideId: 'host-first' },
+        { sourceSlideId: '256#', slideId: 'host-42' },
+      ],
+    },
+  }
+  const readReceipt = vi.fn((key: string) =>
+    key === 'production/project/request' ? receipt : undefined,
+  )
+  const options = { ...f.options, artifact: () => artifact, readReceipt },
+    skill = createPresentationPageEditingSkill(options)
+  return {
+    ...f,
+    artifact,
+    receipt,
+    options,
+    skill,
+    readReceipt,
+    edit: { ...f.edit, input: { ...f.edit.input, page_id: 'page2' } },
+  }
+}
+it('edits the second production page by business ID despite duplicate source slide IDs', async () => {
+  const f = productionEditing()
+  const result = await f.skill.executeTool(f.edit)
+  expect(result.isError, result.output).not.toBe(true)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(f.adapter.editPresentationPageText).toHaveBeenCalledWith(
+    'host-42',
+    'shape1',
+    'After',
+    'Before',
+    expect.any(AbortSignal),
+  )
+  expect(f.readReceipt).toHaveBeenCalledWith('production/project/request')
+})
+it('rejects production digest or business order changes and stale bytes after proposal', async () => {
+  for (const mode of ['digest', 'order', 'stale']) {
+    const f = productionEditing()
+    if (mode === 'digest') f.receipt.checkpoint.artifactDigest = 'a'.repeat(64)
+    if (mode === 'order') f.receipt.checkpoint.pageIds.reverse()
+    const result = await f.skill.executeTool(f.edit)
+    if (mode !== 'stale') expect(result.isError).toBe(true)
+    else {
+      expect(result.isError, result.output).not.toBe(true)
+      f.artifact.pagePptxBase64.reverse()
+      await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow()
+    }
+    expect(f.adapter.editPresentationPageText).not.toHaveBeenCalled()
+  }
+})
+it('uses isolated production image recovery records for the second page and rejects legacy source substitution', async () => {
+  const f = imageSetup(),
+    p = productionEditing(f)
+  const options = { ...f.options, artifact: () => p.artifact, readReceipt: p.readReceipt }
+  const skill = createPresentationPageEditingSkill(options),
+    call = { ...f.replace, input: { ...f.replace.input, page_id: 'page2' } }
+  f.imageAdapter.replace.mockImplementation(async (_a, _b, _c, _d, onInserted) => {
+    await onInserted('new-picture')
+    throw new Error('office_state_uncertain')
+  })
+  expect((await skill.executeTool(call)).isError).not.toBe(true)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow(
+    'office_state_uncertain',
+  )
+  const [key, record] = [...f.records.entries()][0]
+  expect(record).toMatchObject({ source: 'production', pageId: 'page2', hostSlideId: 'host-42' })
+  const { imageReplacementKey } =
+    await import('../src/skills/powerpoint/presentation-image-replacement-record.js')
+  expect(key).toBe(await imageReplacementKey('project', 'request', 'page2', 'shape1', 'production'))
+  expect(key).not.toBe(await imageReplacementKey('project', 'request', 'page2', 'shape1'))
+  const imageAdapter = {
+    ...f.imageAdapter,
+    inspectRecovery: vi.fn(async () => ({ status: 'already_applied' as const })),
+    finishRecovery: vi.fn(async () => ({ shapeId: 'new-picture' })),
+  }
+  const resumed = createPresentationPageEditingSkill({ ...options, imageAdapter }),
+    resume = {
+      id: 'resume',
+      name: 'resume_presentation_image_replacement',
+      input: { page_id: 'page2', shape_id: 'shape1' },
+    }
+  expect((await resumed.executeTool(resume)).isError).not.toBe(true)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect([...f.records.values()][0]).toMatchObject({ source: 'production', state: 'complete' })
+  const legacy = { ...record }
+  delete legacy.source
+  f.records.set(key, legacy)
+  expect(
+    await resumed.executeTool({ ...resume, name: 'read_presentation_image_replacement' }),
+  ).toMatchObject({ isError: true, output: 'presentation_image_replacement_invalid' })
+})
+it('keeps legacy image keys unchanged and validates only the explicit production source', async () => {
+  const { imageReplacementKey, validateImageReplacementRecord } =
+    await import('../src/skills/powerpoint/presentation-image-replacement-record.js')
+  expect(await imageReplacementKey('project', 'request', 'page1', 'shape1')).toBe(
+    createHash('sha256')
+      .update(JSON.stringify(['project', 'request', 'page1', 'shape1']))
+      .digest('hex'),
+  )
+  const record = {
+    version: 1,
+    documentId: 'doc',
+    projectId: 'project',
+    requestId: 'request',
+    pageId: 'page1',
+    hostSlideId: 'host',
+    oldShapeId: 'old',
+    assetDigest: 'a'.repeat(64),
+    state: 'pending',
+  }
+  expect(validateImageReplacementRecord({ ...record, source: 'production' })).toBe(true)
+  for (const source of [null, 'legacy', '', false])
+    expect(validateImageReplacementRecord({ ...record, source })).toBe(false)
+})
+it('rejects mixed receipt versions and incomplete production pages before host reads', async () => {
+  const f = productionEditing()
+  const legacy = { ...f.receipt, checkpoint: { ...f.receipt.checkpoint, version: 1 as const } }
+  const mixed = createPresentationPageEditingSkill({ ...f.options, readReceipt: () => legacy })
+  expect(await mixed.executeTool(f.edit)).toMatchObject({ isError: true })
+  const partial = {
+    ...f.receipt,
+    state: 'pending' as const,
+    slideIds: undefined,
+    checkpoint: {
+      ...f.receipt.checkpoint,
+      completed: f.receipt.checkpoint.completed.slice(0, 1),
+      inFlight: { sourceSlideId: '256#' },
+    },
+  }
+  const skill = createPresentationPageEditingSkill({ ...f.options, readReceipt: () => partial })
+  expect(await skill.executeTool(f.edit)).toMatchObject({ isError: true })
+  expect(f.adapter.readPresentationPageText).not.toHaveBeenCalled()
+})
+it('checks production content again after asynchronous host reads', async () => {
+  const f = productionEditing()
+  f.adapter.readPresentationPageText.mockImplementation(async () => {
+    f.artifact.planRevision = 2
+    return { slideId: 'host-42', shapeId: 'shape1', text: 'Before', paragraphs: ['Before'] }
+  })
+  expect(await f.skill.executeTool(f.edit)).toMatchObject({
+    isError: true,
+    output: 'presentation_page_stale',
+  })
+  expect(f.proposals.pending()).toBeUndefined()
+})

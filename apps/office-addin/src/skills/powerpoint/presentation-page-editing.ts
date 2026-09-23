@@ -24,7 +24,12 @@ import type {
   SlideTextResult,
   PresentationPageGeometry,
 } from './browser-powerpoint-adapter.js'
-import { validPresentationImportRecord } from './presentation-page-delivery.js'
+import {
+  validPresentationImportRecord,
+  presentationArtifactContent,
+  presentationImportKey,
+  presentationPageMapping,
+} from './presentation-page-delivery.js'
 export interface PresentationPageEditingAdapter {
   readPresentationPageGeometry?(
     slideId: string,
@@ -393,11 +398,12 @@ export function createPresentationPageEditingSkill(
           new Set(artifact.pages.map((p) => p.id)).size !== artifact.pages.length
         )
           throw new Error('presentation_page_binding_invalid')
-        const base64 = artifact.pptxBase64,
+        const base64 = presentationArtifactContent(artifact),
+          source = artifact.pagePptxBase64 !== undefined ? ('production' as const) : undefined,
           pagesJson = JSON.stringify(artifact.pages),
           projectId = artifact.projectId,
           requestId = artifact.requestId,
-          key = `${projectId}/${requestId}`
+          key = presentationImportKey(artifact)
         const receipt = options.readReceipt(key),
           receiptJson = JSON.stringify(receipt)
         if (
@@ -409,9 +415,7 @@ export function createPresentationPageEditingSkill(
         )
           throw new Error('presentation_page_binding_invalid')
         const page = artifact.pages.find((p) => p.id === input.page_id),
-          mapping = receipt.checkpoint.completed.find(
-            (p) => p.sourceSlideId === page?.sourceSlideId,
-          )
+          mapping = presentationPageMapping(artifact, receipt, input.page_id as string)
         if (!page || !mapping) throw new Error('presentation_page_not_imported')
         const hostSlideId = mapping.slideId
         const documentId = await options.documentId()
@@ -429,7 +433,7 @@ export function createPresentationPageEditingSkill(
             options.artifact(projectId) !== artifact ||
             artifact.projectId !== projectId ||
             artifact.requestId !== requestId ||
-            artifact.pptxBase64 !== base64 ||
+            presentationArtifactContent(artifact) !== base64 ||
             JSON.stringify(artifact.pages) !== pagesJson ||
             JSON.stringify(options.readReceipt(key)) !== receiptJson
           )
@@ -451,6 +455,7 @@ export function createPresentationPageEditingSkill(
             requestId,
             page.id,
             oldShapeId,
+            source,
           )
           await current(signal)
           const readRecord = () => {
@@ -458,6 +463,7 @@ export function createPresentationPageEditingSkill(
             if (
               record &&
               (!validateImageReplacementRecord(record) ||
+                record.source !== source ||
                 record.documentId !== documentId ||
                 record.projectId !== projectId ||
                 record.requestId !== requestId ||
@@ -698,6 +704,7 @@ export function createPresentationPageEditingSkill(
                 hostSlideId,
                 oldShapeId,
                 assetDigest,
+                ...(source ? { source } : {}),
                 state: 'pending',
                 baseline: before,
               })
