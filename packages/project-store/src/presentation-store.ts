@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
-  existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -12,6 +11,56 @@ import {
 import { dirname, join } from 'node:path'
 
 const MAX_RECORD_BYTES = 17 * 1024 * 1024
+const MAX_PLAN_BYTES = 192 * 1024
+function present(path: string): boolean {
+  return lstatSync(path, { throwIfNoEntry: false }) !== undefined
+}
+function planDigest(plan: unknown, error = 'invalid_plan'): string {
+  function validate(value: unknown, depth: number): void {
+    if (depth > 64) throw new Error(error)
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return
+    if (typeof value === 'number' && Number.isFinite(value)) return
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype)
+    )
+      throw new Error(error)
+    const keys = Object.keys(value)
+    if (
+      Array.isArray(value) &&
+      (keys.length !== value.length || keys.some((key, index) => key !== String(index)))
+    )
+      throw new Error(error)
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)!
+      if (!('value' in descriptor) || ['__proto__', 'constructor', 'prototype'].includes(key))
+        throw new Error(error)
+      validate(descriptor.value, depth + 1)
+    }
+  }
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) throw new Error(error)
+  validate(plan, 0)
+  const json = canonical(plan)
+  if (Buffer.byteLength(json) > MAX_PLAN_BYTES) throw new Error(error)
+  return digest(json)
+}
+export interface PresentationPlanBinding {
+  revision: number
+  plan: unknown
+}
+export interface PresentationPlanRecord extends PresentationPlanBinding {
+  version: 1
+  projectId: string
+  documentId: string
+  inputDigest: string
+}
+function bindingDigest(binding: PresentationPlanBinding, error = 'invalid_plan'): string {
+  if (!binding || !Number.isSafeInteger(binding.revision) || binding.revision < 1)
+    throw new Error(error)
+  planDigest(binding.plan, error)
+  return digest(canonical(binding))
+}
 export function assertPresentationId(value: unknown): asserts value is string {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value))
     throw new Error('invalid_request')
@@ -36,6 +85,8 @@ export interface PresentationReceipt {
   sequence: number
   inputDigest: string
   deck: unknown
+  plan?: PresentationPlanBinding
+  planDigest?: string
   status: 'pending' | 'compiled'
   result?: unknown
   resultDigest?: string
@@ -52,7 +103,7 @@ export class PresentationStore {
     assertPresentationId(projectId)
     const directory = join(this.base, digest(projectId))
     for (const path of [dirname(this.base), this.base, directory]) {
-      if (existsSync(path) && (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink()))
+      if (present(path) && (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink()))
         throw new Error('invalid_state')
     }
     return directory
@@ -83,7 +134,7 @@ export class PresentationStore {
       throw new Error('invalid_request')
     const directory = this.directory(projectId)
     const path = join(directory, 'project.json')
-    if (!existsSync(path)) {
+    if (!present(path)) {
       if (!create) return undefined
       mkdirSync(directory, { recursive: true })
       this.write(path, { version: 1, projectId, documentId })
@@ -120,6 +171,9 @@ export class PresentationStore {
           record.sequence < 1 ||
           (record.status !== 'pending' && record.status !== 'compiled') ||
           record.inputDigest !== digest(canonical(record.deck)) ||
+          (record.plan === undefined
+            ? record.planDigest !== undefined
+            : record.planDigest !== bindingDigest(record.plan, 'invalid_state')) ||
           (record.status === 'compiled' &&
             (record.result === undefined ||
               record.resultDigest !== digest(canonical(record.result))))
@@ -128,19 +182,71 @@ export class PresentationStore {
         return record
       })
   }
+  plan(projectId: string, documentId: string): PresentationPlanRecord | undefined {
+    const directory = this.bind(projectId, documentId, false)
+    if (!directory) return undefined
+    const path = join(directory, 'plan.json')
+    if (!present(path)) return undefined
+    const record = this.read(path) as PresentationPlanRecord | null
+    if (
+      !record ||
+      record.version !== 1 ||
+      record.projectId !== projectId ||
+      record.documentId !== documentId ||
+      !Number.isSafeInteger(record.revision) ||
+      record.revision < 1 ||
+      record.inputDigest !== planDigest(record.plan, 'invalid_state')
+    )
+      throw new Error('invalid_state')
+    return record
+  }
+  savePlan(
+    projectId: string,
+    documentId: string,
+    expectedRevision: number,
+    plan: unknown,
+  ): PresentationPlanRecord {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+      throw new Error('invalid_request')
+    const inputDigest = planDigest(plan)
+    const previous = this.plan(projectId, documentId)
+    const revision = previous?.revision ?? 0
+    if (
+      previous &&
+      previous.inputDigest === inputDigest &&
+      (expectedRevision === revision || expectedRevision === revision - 1)
+    )
+      return previous
+    if (expectedRevision !== revision || revision === Number.MAX_SAFE_INTEGER)
+      throw new Error('revision_conflict')
+    const directory = this.bind(projectId, documentId, true)!
+    const record: PresentationPlanRecord = {
+      version: 1,
+      projectId,
+      documentId,
+      revision: revision + 1,
+      plan,
+      inputDigest,
+    }
+    this.write(join(directory, 'plan.json'), record)
+    return record
+  }
   begin(
     projectId: string,
     documentId: string,
     requestId: string,
     deck: unknown,
+    planBinding?: PresentationPlanBinding,
   ): PresentationReceipt {
     assertPresentationId(requestId)
+    const planHash = planBinding === undefined ? undefined : bindingDigest(planBinding)
     const directory = this.bind(projectId, documentId, true)!
     const records = this.receipts(directory, projectId, documentId)
     const inputDigest = digest(canonical(deck))
     const previous = records.find((record) => record.requestId === requestId)
     if (previous) {
-      if (previous.inputDigest !== inputDigest) throw new Error('request_conflict')
+      if (previous.inputDigest !== inputDigest || previous.planDigest !== planHash)
+        throw new Error('request_conflict')
       return previous
     }
     const record: PresentationReceipt = {
@@ -152,12 +258,19 @@ export class PresentationStore {
       inputDigest,
       deck,
       status: 'pending',
+      ...(planBinding === undefined ? {} : { plan: planBinding, planDigest: planHash }),
     }
     this.write(join(directory, `${digest(requestId)}.json`), record)
     return record
   }
   complete(record: PresentationReceipt, result: unknown): void {
-    const existing = this.begin(record.projectId, record.documentId, record.requestId, record.deck)
+    const existing = this.begin(
+      record.projectId,
+      record.documentId,
+      record.requestId,
+      record.deck,
+      record.plan,
+    )
     if (existing.status === 'compiled') return
     this.write(join(this.directory(record.projectId), `${digest(record.requestId)}.json`), {
       ...existing,

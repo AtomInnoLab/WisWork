@@ -96,3 +96,96 @@ it('retrieves explicit requests and bounded newest-first history with document b
   expect(() => store.history('p', 'other')).toThrow('document_mismatch')
   expect(() => store.request('p', 'd', '../x')).toThrow('invalid_request')
 })
+
+function planFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'presentation-plan-'))
+  const store = new PresentationStore(root)
+  const directory = () =>
+    join(
+      root,
+      'projects',
+      'presentations',
+      readdirSync(join(root, 'projects', 'presentations'))[0]!,
+    )
+  return { root, store, directory }
+}
+
+describe('durable plans', () => {
+  it('creates and reloads document-bound plans with compare-and-swap and idempotent retries', () => {
+    const { root, store } = planFixture()
+    expect(store.plan('p', 'd')).toBeUndefined()
+    expect(() => store.savePlan('p', 'd', 1, { title: 'A' })).toThrow('revision_conflict')
+    const first = store.savePlan('p', 'd', 0, { title: 'A' })
+    expect(first.revision).toBe(1)
+    expect(new PresentationStore(root).plan('p', 'd')).toEqual(first)
+    expect(store.savePlan('p', 'd', 0, { title: 'A' })).toEqual(first)
+    expect(store.savePlan('p', 'd', 1, { title: 'A' })).toEqual(first)
+    expect(() => store.savePlan('p', 'd', 0, { title: 'B' })).toThrow('revision_conflict')
+    const second = store.savePlan('p', 'd', 1, { title: 'B' })
+    expect(second.revision).toBe(2)
+    expect(() => store.savePlan('p', 'd', 0, { title: 'B' })).toThrow('revision_conflict')
+    expect(() => store.plan('p', 'foreign')).toThrow('document_mismatch')
+    expect(() => store.savePlan('p', 'foreign', 2, {})).toThrow('document_mismatch')
+    vi.mocked(renameSync).mockImplementationOnce(() => {
+      throw new Error('disk failure')
+    })
+    expect(() => store.savePlan('p', 'd', 2, { title: 'C' })).toThrow('disk failure')
+    expect(store.plan('p', 'd')).toEqual(second)
+  })
+  it('rejects corrupted and symlinked plan files, including dangling links', () => {
+    for (const mode of ['corrupt', 'symlink', 'dangling']) {
+      const { store, directory } = planFixture()
+      store.savePlan('p', 'd', 0, { title: 'A' })
+      const path = join(directory(), 'plan.json')
+      const saved = JSON.parse(readFileSync(path, 'utf8'))
+      if (mode === 'corrupt')
+        writeFileSync(path, JSON.stringify({ ...saved, plan: { title: 'tampered' } }))
+      else {
+        renameSync(path, `${path}.original`)
+        symlinkSync(mode === 'symlink' ? `${path}.original` : `${path}.missing`, path)
+      }
+      expect(() => store.plan('p', 'd')).toThrow('invalid_state')
+      expect(() => store.savePlan('p', 'd', 1, { title: 'B' })).toThrow('invalid_state')
+    }
+  })
+  it('bounds and validates persisted JSON input', () => {
+    const { store } = planFixture()
+    for (const plan of [
+      null,
+      [],
+      { a: undefined },
+      { a: NaN },
+      { a: Array(2) },
+      { a: new Date() },
+      { title: '界'.repeat(192 * 1024) },
+    ])
+      expect(() => store.savePlan('p', 'd', 0, plan)).toThrow('invalid_plan')
+    expect(() => store.savePlan('p', 'd', -1, {})).toThrow('invalid_request')
+  })
+  it('snapshots plan revisions in receipts, preserves them on completion and detects tampering', () => {
+    const { store, directory } = planFixture()
+    const plan = { title: 'A' }
+    store.savePlan('p', 'd', 0, plan)
+    const binding = { revision: 1, plan }
+    const receipt = store.begin('p', 'd', 'r', {}, binding)
+    expect(receipt.plan).toEqual(binding)
+    expect(store.begin('p', 'd', 'r', {}, binding)).toEqual(receipt)
+    expect(() => store.begin('p', 'd', 'r', {})).toThrow('request_conflict')
+    expect(() => store.begin('p', 'd', 'r', {}, { ...binding, revision: 2 })).toThrow(
+      'request_conflict',
+    )
+    expect(() => store.begin('p', 'd', 'r', {}, { revision: 1, plan: { title: 'B' } })).toThrow(
+      'request_conflict',
+    )
+    store.savePlan('p', 'd', 1, { title: 'B' })
+    store.complete(receipt, { ok: true })
+    expect(store.request('p', 'd', 'r')?.plan).toEqual(binding)
+    const path = join(
+      directory(),
+      readdirSync(directory()).find((name) => /^[a-f0-9]{64}\.json$/.test(name))!,
+    )
+    const saved = JSON.parse(readFileSync(path, 'utf8'))
+    writeFileSync(path, JSON.stringify({ ...saved, plan: { ...binding, revision: 2 } }))
+    expect(() => store.request('p', 'd', 'r')).toThrow('invalid_state')
+  })
+})
