@@ -6,6 +6,7 @@ import {
 } from './presentation-image-replacement-record.js'
 import {
   validatePresentationQaRecord,
+  presentationQaMutationScope,
   presentationQaRecheckBytes,
   PRESENTATION_QA_RECHECK_FIELD_BYTES,
   type PresentationQaRecord,
@@ -324,22 +325,26 @@ export function createPresentationDocumentBinding(
       receiptQueue = result.catch(() => {})
       return result
     },
-    invalidateQa() {
+    invalidateQa(hostSlideIds?: readonly string[]) {
+      const scope = presentationQaMutationScope(hostSlideIds)
+      const matches = (hostSlideId: string) => scope === undefined || scope.has(hostSlideId)
       const write = async () => {
         const records = readQaRecords()
         if (
           !Object.values(records).some((record) =>
-            record.pages.some((page) => !page.recheckRequired),
+            record.pages.some((page) => matches(page.hostSlideId) && !page.recheckRequired),
           )
         )
           return
-        // ponytail: opaque scripts can touch the whole deck; narrow this only with reliable mutation ranges.
+        // Unknown mutation scope remains conservatively document-wide.
         const invalidated = Object.fromEntries(
           Object.entries(records).map(([key, record]) => [
             key,
             {
               ...record,
-              pages: record.pages.map((page) => ({ ...page, recheckRequired: true as const })),
+              pages: record.pages.map((page) =>
+                matches(page.hostSlideId) ? { ...page, recheckRequired: true as const } : page,
+              ),
             },
           ]),
         )

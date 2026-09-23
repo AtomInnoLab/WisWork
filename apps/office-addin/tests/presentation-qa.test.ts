@@ -420,3 +420,87 @@ it('rejects mutation while a QA operation is in flight without cancelling that o
   f.skill.beginMutation()
   f.skill.endMutation()
 })
+
+it('invalidates only target live screenshots and permits review of an unrelated captured page', async () => {
+  const f = setup()
+  f.artifact.slideCount = 3
+  f.artifact.pages.push({ id: 'third', title: 'Third', sourceSlideId: '258#' })
+  f.receipt.checkpoint.sourceSlideIds.push('258#')
+  f.receipt.checkpoint.completed.push({ sourceSlideId: '257#', slideId: 'host2' })
+  f.inspectPage.mockImplementation(async (...args: unknown[]) => ({
+    slideId: String(args[0]),
+    slideWidth: 960,
+    slideHeight: 540,
+    shapes: [],
+    shapesTruncated: false,
+    overflows: [],
+    overlaps: [],
+    overlapsTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: png },
+  }))
+  await f.skill.executeTool(f.capture)
+  await f.skill.executeTool({ ...f.capture, input: { page_id: 'second' } })
+  const digest = f.readQa()!.pages[0]!.screenshotDigest
+  f.skill.beginMutation(['host1'])
+  f.skill.endMutation()
+  const review = (page_id: string) => ({
+    id: 'review',
+    name: 'record_presentation_page_review',
+    input: {
+      page_id,
+      screenshot_digest: digest,
+      outcome: 'pass',
+      notes: 'Reviewed current screenshot',
+    },
+  })
+  expect(await f.skill.executeTool(review('first'))).toMatchObject({
+    isError: true,
+    output: 'presentation_qa_capture_required',
+  })
+  expect(await f.skill.executeTool(review('second'))).not.toHaveProperty('isError', true)
+})
+it('rejects invalid mutation scopes without losing live evidence or acquiring a lock', async () => {
+  const f = setup()
+  await f.skill.executeTool(f.capture)
+  for (const scope of [
+    [],
+    ['host1', 'host1'],
+    [''],
+    ['bad\n'],
+    ['bad\x7f'],
+    ['x'.repeat(257)],
+    Array.from({ length: 101 }, (_, i) => String(i)),
+    null,
+  ])
+    expect(() => f.skill.beginMutation(scope as string[])).toThrow('invalid_tool_input')
+  const screenshot_digest = f.readQa()!.pages[0]!.screenshotDigest
+  expect(
+    await f.skill.executeTool({
+      id: 'review',
+      name: 'record_presentation_page_review',
+      input: { page_id: 'first', screenshot_digest, outcome: 'pass', notes: 'Unchanged' },
+    }),
+  ).not.toHaveProperty('isError', true)
+})
+it('preserves live evidence for an unmatched maximum-sized scope', async () => {
+  const f = setup()
+  await f.skill.executeTool(f.capture)
+  f.skill.beginMutation(Array.from({ length: 100 }, (_, i) => String(i).padStart(256, 'x')))
+  expect(await f.skill.executeTool(f.capture)).toMatchObject({
+    isError: true,
+    output: 'presentation_qa_busy',
+  })
+  f.skill.endMutation()
+  expect(
+    await f.skill.executeTool({
+      id: 'review',
+      name: 'record_presentation_page_review',
+      input: {
+        page_id: 'first',
+        screenshot_digest: f.readQa()!.pages[0]!.screenshotDigest,
+        outcome: 'pass',
+        notes: 'Unchanged page',
+      },
+    }),
+  ).not.toHaveProperty('isError', true)
+})

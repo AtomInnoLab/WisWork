@@ -253,3 +253,95 @@ it('invalidates near-256KiB history and retains the original aggregate content c
   f.values.set(key, JSON.stringify(corrupted))
   expect(() => f.create().readQa('project/request-1')).toThrow('presentation_qa_state_invalid')
 })
+
+it('invalidates matching host pages across requests while retaining unrelated QA exactly', async () => {
+  const f = fixture(),
+    doc = await f.binding.documentId()
+  for (const request of ['request-1', 'request-2']) {
+    const value = record(doc, request)
+    value.pages.push({ ...structuredClone(value.pages[0]!), pageId: 'other', hostSlideId: '257' })
+    await f.binding.writeQa(`project/${request}`, value)
+  }
+  const unrelated = structuredClone(f.binding.readQa('project/request-1')!.pages[1])
+  await f.binding.invalidateQa(['256'])
+  for (const request of ['request-1', 'request-2']) {
+    const saved = f.create().readQa(`project/${request}`)!
+    expect(saved.pages[0]!.recheckRequired).toBe(true)
+    expect(saved.pages[1]).toEqual(unrelated)
+  }
+})
+it('does not save unmatched scopes and snapshots scope before joining the settings queue', async () => {
+  const values = new Map<string, string>(),
+    save = vi.fn(async () => {})
+  const binding = createPresentationDocumentBinding(
+    {
+      get: (key) => values.get(key),
+      set: (key, value) => {
+        values.set(key, value)
+      },
+      save,
+      location: () => 'test',
+    },
+    () => 'doc',
+  )
+  const value = record(await binding.documentId())
+  value.pages.push({ ...structuredClone(value.pages[0]!), pageId: 'other', hostSlideId: '257' })
+  await binding.writeQa('project/request-1', value)
+  save.mockClear()
+  await binding.invalidateQa(['unknown'])
+  expect(save).not.toHaveBeenCalled()
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  save.mockImplementationOnce(async () => {
+    await gate
+  })
+  const writing = binding.writeQa('project/request-1', value)
+  const scope = ['256']
+  const pending = binding.invalidateQa(scope)
+  scope[0] = '257'
+  release()
+  await Promise.all([writing, pending])
+  expect(binding.readQa('project/request-1')!.pages.map((page) => page.recheckRequired)).toEqual([
+    true,
+    undefined,
+  ])
+})
+it('rejects invalid explicit scopes without turning them into full-deck invalidation', async () => {
+  const f = fixture(),
+    value = record(await f.binding.documentId())
+  await f.binding.writeQa('project/request-1', value)
+  for (const scope of [
+    [],
+    ['256', '256'],
+    [''],
+    ['x'.repeat(257)],
+    ['bad\n'],
+    ['bad\x7f'],
+    Array.from({ length: 101 }, (_, i) => String(i)),
+    [null],
+    null,
+  ]) {
+    await expect(
+      Promise.resolve().then(() => f.binding.invalidateQa(scope as string[])),
+    ).rejects.toThrow('invalid_tool_input')
+    expect(f.binding.readQa('project/request-1')).toEqual(value)
+  }
+})
+it('rolls back a failed scoped save without invalidating unrelated pages', async () => {
+  const f = fixture(),
+    value = record(await f.binding.documentId())
+  value.pages.push({ ...structuredClone(value.pages[0]!), pageId: 'other', hostSlideId: '257' })
+  await f.binding.writeQa('project/request-1', value)
+  f.fail()
+  await expect(f.binding.invalidateQa(['256'])).rejects.toThrow('save_failed')
+  expect(f.binding.readQa('project/request-1')).toEqual(value)
+})
+it('accepts the maximum unique scope and ID length without broadening unmatched invalidation', async () => {
+  const f = fixture(),
+    value = record(await f.binding.documentId())
+  await f.binding.writeQa('project/request-1', value)
+  await f.binding.invalidateQa(Array.from({ length: 100 }, (_, i) => String(i).padStart(256, 'x')))
+  expect(f.binding.readQa('project/request-1')).toEqual(value)
+})
