@@ -627,3 +627,109 @@ it('does not insert if source changes while the pending reservation is saving', 
   expect(f.imageAdapter.replace).not.toHaveBeenCalled()
   expect([...f.records.values()][0]).toMatchObject({ state: 'pending' })
 })
+async function recoverySetup() {
+  const f = imageSetup()
+  f.imageAdapter.replace.mockImplementation(async (_a, _b, _c, _d, onInserted) => {
+    await onInserted('new-picture')
+    throw new Error('office_state_uncertain')
+  })
+  await f.skill.executeTool(f.replace)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow()
+  const imageAdapter = {
+    ...f.imageAdapter,
+    inspectRecovery: vi.fn(async () => ({
+      status: 'ready_to_finish' as 'ready_to_finish' | 'already_applied' | 'manual_review',
+    })),
+    finishRecovery: vi.fn(async () => ({ shapeId: 'new-picture' })),
+  }
+  const options = { ...f.options, vfs: undefined, imageAdapter },
+    skill = createPresentationPageEditingSkill(options)
+  const inspect = { ...f.status, name: 'inspect_presentation_image_replacement' },
+    resume = { ...f.status, name: 'resume_presentation_image_replacement' }
+  return { ...f, options, skill, imageAdapter, inspect, resume }
+}
+it('inspects and resumes a checkpointed replacement without source or browser decode', async () => {
+  const f = await recoverySetup()
+  expect([...f.records.values()][0]).toMatchObject({ baseline: f.snapshot })
+  vi.stubGlobal('createImageBitmap', undefined)
+  expect(f.skill.tools.map((t) => t.name)).toContain('resume_presentation_image_replacement')
+  expect(JSON.parse((await f.skill.executeTool(f.inspect)).output)).toMatchObject({
+    status: 'ready_to_finish',
+  })
+  await f.skill.executeTool(f.resume)
+  expect(f.imageAdapter.finishRecovery).not.toHaveBeenCalled()
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect([...f.records.values()][0].state).toBe('complete')
+  expect(f.imageAdapter.finishRecovery).toHaveBeenCalledWith(
+    expect.objectContaining({ state: 'pending' }),
+    'ready_to_finish',
+    expect.any(AbortSignal),
+  )
+  expect(f.imageAdapter.replace).toHaveBeenCalledOnce()
+})
+it('does not propose recovery for legacy or manual records and rejects changed inspection', async () => {
+  const f = await recoverySetup()
+  f.imageAdapter.inspectRecovery.mockResolvedValue({ status: 'manual_review' })
+  expect(await f.skill.executeTool(f.resume)).toMatchObject({ isError: true })
+  expect(f.proposals.pending()).toBeUndefined()
+  f.imageAdapter.inspectRecovery.mockResolvedValue({ status: 'ready_to_finish' })
+  await f.skill.executeTool(f.resume)
+  f.imageAdapter.inspectRecovery.mockResolvedValue({ status: 'already_applied' })
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+  expect(f.imageAdapter.finishRecovery).not.toHaveBeenCalled()
+  const g = await recoverySetup(),
+    [key, record] = [...g.records.entries()][0]
+  delete record.baseline
+  g.records.set(key, record)
+  expect(JSON.parse((await g.skill.executeTool(g.inspect)).output)).toMatchObject({
+    status: 'manual_review',
+  })
+  expect(await g.skill.executeTool(g.resume)).toMatchObject({ isError: true })
+})
+it('retains pending after recovered host succeeds but completion save fails', async () => {
+  const f = await recoverySetup()
+  f.imageAdapter.inspectRecovery.mockResolvedValue({ status: 'already_applied' })
+  f.writeImageReplacement.mockRejectedValue(new Error('save_failed'))
+  await f.skill.executeTool(f.resume)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('save_failed')
+  expect([...f.records.values()][0].state).toBe('pending')
+  expect(f.imageAdapter.finishRecovery).toHaveBeenCalledOnce()
+})
+it('rejects changed recovery records, documents, and cleared lifecycle without finishing', async () => {
+  for (const change of ['record', 'document', 'clear'] as const) {
+    const f = await recoverySetup()
+    await f.skill.executeTool(f.resume)
+    if (change === 'record') {
+      const [key, record] = [...f.records.entries()][0]
+      f.records.set(key, { ...record, assetDigest: 'c'.repeat(64) })
+    }
+    if (change === 'document') f.documentId.mockResolvedValue('another-doc')
+    if (change === 'clear') f.skill.clear()
+    await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow()
+    expect(f.imageAdapter.finishRecovery).not.toHaveBeenCalled()
+  }
+})
+it('checks recovery context after asynchronous inspection and hides legacy adapter recovery tools', async () => {
+  const f = await recoverySetup()
+  f.imageAdapter.inspectRecovery.mockImplementation(async () => {
+    f.documentId.mockResolvedValue('other-doc')
+    return { status: 'ready_to_finish' }
+  })
+  expect(await f.skill.executeTool(f.resume)).toMatchObject({
+    isError: true,
+    output: 'presentation_document_changed',
+  })
+  expect(f.proposals.pending()).toBeUndefined()
+  const g = imageSetup()
+  expect(g.skill.tools.map((t) => t.name)).not.toContain('resume_presentation_image_replacement')
+  expect(
+    await g.skill.executeTool({ ...g.status, name: 'resume_presentation_image_replacement' }),
+  ).toMatchObject({ isError: true, output: 'presentation_unavailable' })
+  const h = await recoverySetup()
+  expect(
+    await h.skill.executeTool({
+      ...h.resume,
+      input: { ...h.resume.input, path: '/home/user/new.png' },
+    }),
+  ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
+})
