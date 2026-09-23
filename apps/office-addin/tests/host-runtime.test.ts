@@ -327,3 +327,40 @@ it('retains local image uploads on PCs with document attachments but no asset ca
   expect(runtime.vfs.list('/home/user')).toContain('/home/user/photo.png')
   runtime.dispose()
 })
+
+it('gates QA by host support and refreshes saved QA after project restoration', async () => {
+  let supported = true
+  vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => supported } } })
+  try {
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request: vi.fn(async () => new Response('{}')),
+        documentId: async () => 'doc',
+        lastProject: () => undefined,
+        rememberProject: async () => {},
+        readReceipt: () => undefined,
+        readQa: () => undefined,
+        writeQa: async () => {},
+      },
+    })
+    expect(runtime.skill.tools.map((t) => t.name)).toContain('capture_presentation_page_qa')
+    supported = false
+    expect(runtime.skill.tools.map((t) => t.name)).not.toContain('capture_presentation_page_qa')
+    supported = true
+    const listener = vi.fn()
+    runtime.qa!.subscribe(listener)
+    await runtime.skill.executeTool({
+      id: 'restore',
+      name: 'restore_presentation_project',
+      input: {},
+    })
+    expect(listener).toHaveBeenCalledOnce()
+    expect(runtime.qa!.revision()).toBe(1)
+    runtime.clearSession()
+    expect(runtime.qa!.read()).toBeUndefined()
+    expect(listener).toHaveBeenCalledTimes(2)
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})

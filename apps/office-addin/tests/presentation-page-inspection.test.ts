@@ -1,3 +1,4 @@
+import { PNG } from 'pngjs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BrowserPowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter'
 const png =
@@ -74,6 +75,27 @@ describe('exact imported PowerPoint page inspection', () => {
       { shapeId: 'c', edge: 'bottom', overflowBy: 5 },
     ])
     expect(result.overlaps).toEqual([{ shapeAId: 'a', shapeBId: 'b', overlapX: 7, overlapY: 10 }])
+  })
+  it('reduces dense screenshots to the model image budget and rejects unbounded output', async () => {
+    const { adapter, slide } = setup()
+    const dense = new PNG({ width: 400, height: 200 })
+    let seed = 7
+    for (let i = 0; i < dense.data.length; i++) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+      dense.data[i] = seed >>> 24
+    }
+    const large = PNG.sync.write(dense).toString('base64')
+    expect(Buffer.from(large, 'base64').length).toBeGreaterThan(64 * 1024)
+    slide.getImageAsBase64.mockReturnValueOnce({ value: large }).mockReturnValue({ value: png })
+    expect((await adapter.inspectPresentationPage('host-page-25')).screenshot.base64).toBe(png)
+    expect(slide.getImageAsBase64.mock.calls).toEqual([[{ width: 960 }], [{ width: 640 }]])
+    slide.getImageAsBase64.mockClear().mockReturnValue({ value: large })
+    await expect(adapter.inspectPresentationPage('host-page-25')).rejects.toThrow(
+      'office_image_too_large',
+    )
+    expect(slide.getImageAsBase64.mock.calls).toEqual(
+      [960, 640, 480, 320, 240].map((width) => [{ width }]),
+    )
   })
   it('explicitly marks shape and overlap truncation instead of returning a clean result', async () => {
     const { adapter } = setup(Array.from({ length: 101 }, (_, i) => shape(String(i))))

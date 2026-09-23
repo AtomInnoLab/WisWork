@@ -1,7 +1,9 @@
+import { validatePresentationQaRecord, type PresentationQaRecord } from './presentation-qa.js'
 import { validPresentationImportRecord } from './presentation-page-delivery.js'
 import type { PresentationImportRecord } from './presentation-delivery.js'
 const ID_KEY = 'wiswork.presentation.document.v1'
 const IMPORT_KEY = 'wiswork.presentation.imports.v1'
+const QA_KEY = 'wiswork.presentation.qa.v1'
 const PROJECT_KEY = 'wiswork.presentation.project.v1'
 const validId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
@@ -74,6 +76,36 @@ export function createPresentationDocumentBinding(
     }
     return value
   }
+  let qaWriteFailed = false
+  const readQaRecords = (): Record<string, PresentationQaRecord> => {
+    if (qaWriteFailed) throw new Error('presentation_qa_state_invalid')
+    const raw = settings.get(QA_KEY)
+    if (raw === undefined || raw === null) return {}
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 256 * 1024)
+      throw new Error('presentation_qa_state_invalid')
+    let records: Record<string, PresentationQaRecord>
+    try {
+      records = JSON.parse(raw)
+    } catch {
+      throw new Error('presentation_qa_state_invalid')
+    }
+    if (
+      !records ||
+      typeof records !== 'object' ||
+      Array.isArray(records) ||
+      Object.keys(records).length > 8
+    )
+      throw new Error('presentation_qa_state_invalid')
+    for (const [key, value] of Object.entries(records)) {
+      if (
+        !/^[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_-]{1,128}$/.test(key) ||
+        !validatePresentationQaRecord(value) ||
+        key !== `${value.projectId}/${value.requestId}`
+      )
+        throw new Error('presentation_qa_state_invalid')
+    }
+    return records
+  }
   return {
     documentId,
     readReceipt: (key: string) => readImports()[key],
@@ -110,6 +142,46 @@ export function createPresentationDocumentBinding(
           throw error
         }
       }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
+    readQa: (key: string) => readQaRecords()[key],
+    writeQa(key: string, record: PresentationQaRecord) {
+      const write = async () => {
+        if (
+          !validatePresentationQaRecord(record) ||
+          key !== `${record.projectId}/${record.requestId}`
+        )
+          throw new Error('presentation_qa_state_invalid')
+        if ((await documentId()) !== record.documentId)
+          throw new Error('presentation_document_changed')
+        const records = readQaRecords()
+        const previous = settings.get(QA_KEY),
+          location = settings.location()
+        const serialized = JSON.stringify({ ...records, [key]: record })
+        if (
+          Object.keys({ ...records, [key]: record }).length > 8 ||
+          new TextEncoder().encode(serialized).byteLength > 256 * 1024
+        )
+          throw new Error('presentation_qa_history_full')
+        try {
+          settings.set(QA_KEY, serialized)
+          await settings.save()
+          if (settings.location() !== location || settings.get(QA_KEY) !== serialized)
+            throw new Error('presentation_document_changed')
+        } catch (error) {
+          if (settings.location() === location && settings.get(QA_KEY) === serialized) {
+            try {
+              settings.set(QA_KEY, typeof previous === 'string' ? previous : '{}')
+            } catch {
+              qaWriteFailed = true
+            }
+          } else qaWriteFailed = true
+          throw error
+        }
+      }
+      // Serialize settings saves with import checkpoints so the two journals cannot race.
       const result = receiptQueue.then(write)
       receiptQueue = result.catch(() => {})
       return result

@@ -1,3 +1,4 @@
+import { PresentationQaCard, type PresentationQaController } from './agent/presentation-qa-card.js'
 import {
   PresentationImportProgressCard,
   type PresentationImportProgressController,
@@ -205,6 +206,7 @@ interface SessionFile {
 export interface OfficeWorkspaceUi {
   readonly project?: PresentationProjectController
   readonly importProgress?: PresentationImportProgressController
+  readonly qa?: PresentationQaController
   readonly durableAttachmentsAvailable?: () => boolean
   readonly durableImagesAvailable?: () => boolean
   readonly attachments: () => readonly string[]
@@ -253,6 +255,7 @@ export function createOfficeWorkspaceUi(
   return Object.freeze({
     project: runtime.presentation,
     importProgress: runtime.importProgress,
+    qa: runtime.qa,
     durableAttachmentsAvailable: runtime.durableAttachmentsAvailable,
     durableImagesAvailable: runtime.durableImagesAvailable,
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
@@ -889,6 +892,7 @@ export function AgentWorkspace(props: {
           />
         )}
         {ui.importProgress && <PresentationImportProgressCard controller={ui.importProgress} />}
+        {ui.qa && <PresentationQaCard controller={ui.qa} />}
         {ui.downloadFile &&
           files.some(
             (file) => file.startsWith('/home/user/generated/') && file.endsWith('.pptx'),

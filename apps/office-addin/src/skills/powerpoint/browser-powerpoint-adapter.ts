@@ -708,7 +708,19 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             overlaps.push({ shapeAId: a.id, shapeBId: b.id, overlapX, overlapY })
           }
         }
-      const base64 = pageScreenshot(image.value)
+      let base64 = pageScreenshot(image.value)
+      // Keep a single PNG well below the Office transport's 256 KiB total request limit.
+      // Use the same deterministic widths when recapturing for a review.
+      const fitsModelBudget = () => atob(base64).length <= 64 * 1024
+      for (const width of [640, 480, 320, 240]) {
+        if (fitsModelBudget()) break
+        const smaller = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
+          width,
+        })
+        await sync(context, signal)
+        base64 = pageScreenshot(smaller.value)
+      }
+      if (!fitsModelBudget()) throw new Error('office_image_too_large')
       cancelled(signal)
       return {
         slideId,
