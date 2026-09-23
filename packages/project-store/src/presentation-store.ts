@@ -258,7 +258,7 @@ export class PresentationStore {
       inputDigest,
       deck,
       status: 'pending',
-      ...(planBinding === undefined ? {} : { plan: planBinding, planDigest: planHash }),
+      ...(planBinding === undefined ? {} : { plan: planBinding, planDigest: planHash! }),
     }
     this.write(join(directory, `${digest(requestId)}.json`), record)
     return record
