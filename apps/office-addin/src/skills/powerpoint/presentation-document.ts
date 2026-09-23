@@ -1,4 +1,9 @@
-import { validatePresentationQaRecord, type PresentationQaRecord } from './presentation-qa.js'
+import {
+  validatePresentationQaRecord,
+  presentationQaRecheckBytes,
+  PRESENTATION_QA_RECHECK_FIELD_BYTES,
+  type PresentationQaRecord,
+} from './presentation-qa.js'
 import { validPresentationImportRecord } from './presentation-page-delivery.js'
 import type { PresentationImportRecord } from './presentation-delivery.js'
 const ID_KEY = 'wiswork.presentation.document.v1'
@@ -81,7 +86,11 @@ export function createPresentationDocumentBinding(
     if (qaWriteFailed) throw new Error('presentation_qa_state_invalid')
     const raw = settings.get(QA_KEY)
     if (raw === undefined || raw === null) return {}
-    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 256 * 1024)
+    if (
+      typeof raw !== 'string' ||
+      new TextEncoder().encode(raw).byteLength >
+        256 * 1024 + 8 * 32 * PRESENTATION_QA_RECHECK_FIELD_BYTES
+    )
       throw new Error('presentation_qa_state_invalid')
     let records: Record<string, PresentationQaRecord>
     try {
@@ -104,7 +113,48 @@ export function createPresentationDocumentBinding(
       )
         throw new Error('presentation_qa_state_invalid')
     }
+    if (
+      new TextEncoder().encode(raw).byteLength -
+        Object.values(records).reduce(
+          (sum, record) => sum + presentationQaRecheckBytes(record),
+          0,
+        ) >
+      256 * 1024
+    )
+      throw new Error('presentation_qa_state_invalid')
     return records
+  }
+  const saveQaRecords = async (records: Record<string, PresentationQaRecord>) => {
+    if (Object.values(records).some((record) => !validatePresentationQaRecord(record)))
+      throw new Error('presentation_qa_state_invalid')
+    const previous = settings.get(QA_KEY),
+      location = settings.location()
+    const serialized = JSON.stringify(records)
+    if (
+      Object.keys(records).length > 8 ||
+      new TextEncoder().encode(serialized).byteLength -
+        Object.values(records).reduce(
+          (sum, record) => sum + presentationQaRecheckBytes(record),
+          0,
+        ) >
+        256 * 1024
+    )
+      throw new Error('presentation_qa_history_full')
+    try {
+      settings.set(QA_KEY, serialized)
+      await settings.save()
+      if (settings.location() !== location || settings.get(QA_KEY) !== serialized)
+        throw new Error('presentation_document_changed')
+    } catch (error) {
+      if (settings.location() === location && settings.get(QA_KEY) === serialized) {
+        try {
+          settings.set(QA_KEY, typeof previous === 'string' ? previous : '{}')
+        } catch {
+          qaWriteFailed = true
+        }
+      } else qaWriteFailed = true
+      throw error
+    }
   }
   return {
     documentId,
@@ -157,31 +207,34 @@ export function createPresentationDocumentBinding(
         if ((await documentId()) !== record.documentId)
           throw new Error('presentation_document_changed')
         const records = readQaRecords()
-        const previous = settings.get(QA_KEY),
-          location = settings.location()
-        const serialized = JSON.stringify({ ...records, [key]: record })
-        if (
-          Object.keys({ ...records, [key]: record }).length > 8 ||
-          new TextEncoder().encode(serialized).byteLength > 256 * 1024
-        )
-          throw new Error('presentation_qa_history_full')
-        try {
-          settings.set(QA_KEY, serialized)
-          await settings.save()
-          if (settings.location() !== location || settings.get(QA_KEY) !== serialized)
-            throw new Error('presentation_document_changed')
-        } catch (error) {
-          if (settings.location() === location && settings.get(QA_KEY) === serialized) {
-            try {
-              settings.set(QA_KEY, typeof previous === 'string' ? previous : '{}')
-            } catch {
-              qaWriteFailed = true
-            }
-          } else qaWriteFailed = true
-          throw error
-        }
+        await saveQaRecords({ ...records, [key]: record })
       }
       // Serialize settings saves with import checkpoints so the two journals cannot race.
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
+    invalidateQa() {
+      const write = async () => {
+        const records = readQaRecords()
+        if (
+          !Object.values(records).some((record) =>
+            record.pages.some((page) => !page.recheckRequired),
+          )
+        )
+          return
+        // ponytail: opaque scripts can touch the whole deck; narrow this only with reliable mutation ranges.
+        const invalidated = Object.fromEntries(
+          Object.entries(records).map(([key, record]) => [
+            key,
+            {
+              ...record,
+              pages: record.pages.map((page) => ({ ...page, recheckRequired: true as const })),
+            },
+          ]),
+        )
+        await saveQaRecords(invalidated)
+      }
       const result = receiptQueue.then(write)
       receiptQueue = result.catch(() => {})
       return result
