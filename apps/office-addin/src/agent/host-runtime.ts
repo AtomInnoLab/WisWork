@@ -1,3 +1,4 @@
+import { createPresentationPlanningSkill } from '../skills/powerpoint/presentation-planning.js'
 import {
   createPresentationProjectController,
   type PresentationProjectController,
@@ -159,6 +160,10 @@ export function createOfficeHostRuntime(
     host === 'powerpoint' && options.presentation
       ? createPresentationGenerationSkill({ ...options.presentation, vfs })
       : undefined
+  const planning =
+    generation && options.presentation
+      ? createPresentationPlanningSkill({ ...options.presentation, vfs })
+      : undefined
   const presentation =
     generation && options.presentation
       ? createPresentationProjectController({
@@ -182,23 +187,30 @@ export function createOfficeHostRuntime(
     ? {
         ...base,
         get tools() {
-          return [...base.tools, ...generation.tools, ...(delivery?.tools ?? [])]
+          return [
+            ...base.tools,
+            ...generation.tools,
+            ...(planning?.tools ?? []),
+            ...(delivery?.tools ?? []),
+          ]
         },
         get systemPrompt() {
-          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}`
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}`
         },
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
         executeTool: (call, signal) =>
-          call.name === 'import_generated_presentation' && delivery
-            ? delivery.executeTool(call, signal)
-            : [
-                  'compile_deck_with_pptxgenjs',
-                  'restore_presentation_project',
-                  'resume_presentation_project',
-                ].includes(call.name)
-              ? generation.executeTool(call, signal)
-              : base.executeTool(call, signal),
+          ['save_presentation_plan', 'read_presentation_plan'].includes(call.name) && planning
+            ? planning.executeTool(call, signal)
+            : call.name === 'import_generated_presentation' && delivery
+              ? delivery.executeTool(call, signal)
+              : [
+                    'compile_deck_with_pptxgenjs',
+                    'restore_presentation_project',
+                    'resume_presentation_project',
+                  ].includes(call.name)
+                ? generation.executeTool(call, signal)
+                : base.executeTool(call, signal),
       }
     : base
   return {
@@ -211,6 +223,7 @@ export function createOfficeHostRuntime(
       options.enableSkillPackages !== false,
       () => {
         generation?.clear()
+        planning?.clear()
         presentation?.clear()
       },
     ),

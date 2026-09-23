@@ -265,3 +265,131 @@ it('resume retains cancellation and output bounds without superseding newer comp
     ).latestRequestId,
   ).toBe('first')
 })
+
+const plan = () => ({
+  version: 1,
+  projectId: 'deck',
+  title: 'One',
+  brief: {
+    objective: '说明研究结果',
+    audience: '研究团队',
+    language: 'zh-CN',
+    minutes: 10,
+    requiredContent: [],
+    constraints: [],
+  },
+  sources: [],
+  claims: [],
+  style: input.deck.style,
+  slides: [
+    {
+      id: 'slide',
+      title: 'Title',
+      purpose: '说明结论',
+      claimIds: [],
+      layout: 'content',
+      requiredAssets: [],
+      acceptanceCriteria: ['文字可编辑'],
+    },
+  ],
+})
+const planRequest = (value = plan(), expectedRevision = 0) => ({
+  operation: 'save_plan',
+  documentId: input.documentId,
+  projectId: 'deck',
+  expectedRevision,
+  plan: value,
+})
+describe('durable presentation planning', () => {
+  it('saves and reloads a plan before any compile and exposes a planned project', async () => {
+    const userDataPath = root()
+    const service = createPresentationService({ userDataPath, compile: vi.fn() })
+    expect(decode(await service(planRequest(), signal()))).toMatchObject({
+      projectId: 'deck',
+      revision: 1,
+      plan: plan(),
+    })
+    const reload = createPresentationService({ userDataPath, compile: vi.fn() })
+    expect(
+      decode(
+        await reload(
+          { operation: 'get_plan', projectId: 'deck', documentId: input.documentId },
+          signal(),
+        ),
+      ),
+    ).toMatchObject({ revision: 1, plan: plan() })
+    expect(
+      decode(
+        await reload(
+          { operation: 'status', projectId: 'deck', documentId: input.documentId },
+          signal(),
+        ),
+      ),
+    ).toMatchObject({
+      status: 'planned',
+      slideCount: 1,
+      history: [],
+      plan: { revision: 1, value: plan() },
+    })
+    expect(decode(await service(planRequest({ ...plan(), title: 'Changed' }), signal()))).toEqual({
+      error: 'revision_conflict',
+    })
+    expect(decode(await service({ ...planRequest(), documentId: 'another' }, signal()))).toEqual({
+      error: 'document_mismatch',
+    })
+  })
+  it('requires a matching plan revision/contract and retains the original snapshot for retries', async () => {
+    const userDataPath = root()
+    const compile = vi.fn(async () => result())
+    const service = createPresentationService({ userDataPath, compile })
+    await service(planRequest(), signal())
+    expect(decode(await service(input, signal()))).toEqual({ error: 'revision_conflict' })
+    expect(
+      decode(
+        await service(
+          { ...input, planRevision: 1, deck: { ...input.deck, title: 'Not planned' } },
+          signal(),
+        ),
+      ),
+    ).toEqual({ error: 'plan_mismatch' })
+    const first = decode(await service({ ...input, planRevision: 1 }, signal()))
+    expect(first.status).toBe('compiled')
+    const nextPlan = { ...plan(), brief: { ...plan().brief, objective: '修订计划' } }
+    expect(decode(await service(planRequest(nextPlan, 1), signal()))).toMatchObject({ revision: 2 })
+    expect(decode(await service({ ...input, planRevision: 1 }, signal()))).toEqual(first)
+    expect(decode(await service({ ...input, planRevision: 2 }, signal()))).toEqual({
+      error: 'request_conflict',
+    })
+    const stored = new PresentationStore(userDataPath).request('deck', input.documentId, 'first')!
+    expect(stored.plan).toMatchObject({ revision: 1, plan: plan() })
+    expect(compile).toHaveBeenCalledTimes(1)
+    expect(
+      decode(await service({ ...input, requestId: 'second', planRevision: 1 }, signal())),
+    ).toEqual({ error: 'revision_conflict' })
+  })
+  it('validates save/get fields and rejects a mismatched plan before creating a project', async () => {
+    const service = createPresentationService({ userDataPath: root(), compile: vi.fn() })
+    expect(
+      decode(
+        await service({ ...planRequest(), plan: { ...plan(), projectId: 'other' } }, signal()),
+      ),
+    ).toEqual({ error: 'invalid_plan' })
+    expect(
+      decode(await service({ ...planRequest(), plan: { ...plan(), injected: true } }, signal())),
+    ).toEqual({ error: 'invalid_plan' })
+    expect(decode(await service({ ...planRequest(), unsafe: true }, signal()))).toEqual({
+      error: 'invalid_request',
+    })
+    expect(decode(await service({ ...planRequest(), expectedRevision: -1 }, signal()))).toEqual({
+      error: 'invalid_request',
+    })
+    expect(
+      decode(
+        await service(
+          { operation: 'get_plan', projectId: 'deck', documentId: input.documentId },
+          signal(),
+        ),
+      ),
+    ).toEqual({ error: 'not_found' })
+  })
+})

@@ -133,3 +133,89 @@ describe('Taskpane project recovery controls', () => {
     }
   })
 })
+
+describe('planned production across restarts', () => {
+  it('restores evidence and revision, compiles its native deck, and keeps old receipts after plan edits', async () => {
+    const { benchmarkPlan, benchmarkPlannedDeck } =
+      await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan')
+    const { createPresentationPlanningSkill } =
+      await import('../../office-addin/src/skills/powerpoint/presentation-planning')
+    const { createPresentationProjectController } =
+      await import('../../office-addin/src/skills/powerpoint/presentation-project')
+    const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-planned-production-'))
+    try {
+      const compile = vi.fn(compilePresentationDeck)
+      let service = createPresentationService({ userDataPath, compile })
+      let selected: string | undefined
+      const options = {
+        available: () => true,
+        documentId: async () => 'doc-planned',
+        lastProject: () => selected,
+        rememberProject: async (id: string) => {
+          selected = id
+        },
+        request: async (body: unknown, signal?: AbortSignal) =>
+          new Response(Buffer.from(await service(body, signal ?? new AbortController().signal))),
+      }
+      const plan = benchmarkPlan()
+      const first = createPresentationPlanningSkill({ ...options, vfs: new InMemoryVfs() })
+      expect(
+        await first.executeTool({
+          id: 'save',
+          name: 'save_presentation_plan',
+          input: { expected_revision: 0, plan },
+        }),
+      ).toMatchObject({ mutated: false })
+      expect(selected).toBe(plan.projectId)
+      service = createPresentationService({ userDataPath, compile })
+      const vfs = new InMemoryVfs()
+      const planning = createPresentationPlanningSkill({ ...options, vfs })
+      const restored = await planning.executeTool({
+        id: 'read',
+        name: 'read_presentation_plan',
+        input: {},
+      })
+      expect(restored.isError).not.toBe(true)
+      expect(JSON.parse(restored.output)).toMatchObject({ revision: 1, plan })
+      const generation = createPresentationGenerationSkill({ ...options, vfs })
+      const controller = createPresentationProjectController({
+        ...options,
+        executeTool: generation.executeTool,
+      })
+      await controller.refresh()
+      expect(controller.snapshot().project?.status).toBe('planned')
+      const call = {
+        id: 'build',
+        name: 'compile_deck_with_pptxgenjs',
+        input: { request_id: 'build-1', plan_revision: 1, deck: benchmarkPlannedDeck() },
+      }
+      expect((await generation.executeTool(call)).isError).not.toBe(true)
+      const before = vfs.readBytes(`/home/user/generated/${plan.projectId}.pptx`)
+      expect((await openPptx(before)).deck.slides).toHaveLength(8)
+      const next = { ...plan, brief: { ...plan.brief, objective: '修订汇报目标' } }
+      expect(
+        (
+          await planning.executeTool({
+            id: 'update',
+            name: 'save_presentation_plan',
+            input: { expected_revision: 1, plan: next },
+          })
+        ).isError,
+      ).not.toBe(true)
+      await controller.refresh()
+      expect(controller.snapshot().project).toMatchObject({
+        status: 'compiled',
+        plan: { revision: 2 },
+        requestPlanRevision: 1,
+      })
+      expect((await generation.executeTool(call)).isError).not.toBe(true)
+      expect(compile).toHaveBeenCalledOnce()
+      expect(vfs.readBytes(`/home/user/generated/${plan.projectId}.pptx`)).toEqual(before)
+      expect(
+        await generation.executeTool({ ...call, input: { ...call.input, request_id: 'build-2' } }),
+      ).toMatchObject({ isError: true, output: 'presentation_revision_conflict' })
+    } finally {
+      rmSync(userDataPath, { recursive: true, force: true })
+    }
+  })
+})

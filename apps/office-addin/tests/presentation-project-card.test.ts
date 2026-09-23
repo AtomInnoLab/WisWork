@@ -118,3 +118,25 @@ describe('presentation project recovery card', () => {
     expect(view.container.textContent).not.toContain('当前文档暂无已保存项目')
   })
 })
+
+it('shows a durable plan before compilation and labels its unverified evidence', async () => {
+  const { benchmarkPlan } =
+    await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
+  const plan = benchmarkPlan()
+  const view = await mount({
+    phase: 'idle',
+    project: {
+      projectId: plan.projectId,
+      title: plan.title,
+      status: 'planned',
+      slideCount: plan.slides.length,
+      slides: plan.slides.map(({ id, title }) => ({ id, title })),
+      history: [],
+      plan: { revision: 1, value: plan },
+    },
+  })
+  expect(view.container.textContent).toContain('计划已保存，尚未编译')
+  expect(view.container.textContent).toContain(plan.brief.objective)
+  expect(view.container.textContent).toContain('未核验')
+  expect(view.button('继续编译')).toBeUndefined()
+})

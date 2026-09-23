@@ -9,12 +9,13 @@ const tools: AgentToolDef[] = [
   {
     name: 'compile_deck_with_pptxgenjs',
     description:
-      'Compile a planned 16:9 presentation into editable PPTX using the paired PC. Coordinates are inches on a 13.333333 x 7.5 canvas; claimed slides reserve the bottom 0.55 inches for sources. Colors are hex without #. Entire request including inline images must be <=256 KiB; use compact prepared images. Returns downloadable PPTX and a report; it does not modify the open document. Reuse the request_id for unchanged retries; use a new request_id only when the deck changes.',
+      'For a saved plan supply its plan_revision and exact style, slide order/titles and claim mapping. Compile a planned 16:9 presentation into editable PPTX using the paired PC. Coordinates are inches on a 13.333333 x 7.5 canvas; claimed slides reserve the bottom 0.55 inches for sources. Colors are hex without #. Entire request including inline images must be <=256 KiB; use compact prepared images. Returns downloadable PPTX and a report; it does not modify the open document. Reuse the request_id for unchanged retries; use a new request_id only when the deck changes.',
     inputSchema: {
       type: 'object',
       properties: {
         request_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
         deck: PRESENTATION_DECK_SCHEMA,
+        plan_revision: { type: 'integer', minimum: 1 },
       },
       required: ['request_id', 'deck'],
       additionalProperties: false,
@@ -98,8 +99,12 @@ export function createPresentationGenerationSkill(
         let deck: ReturnType<typeof parsePresentationDeck> | undefined
         if (call.name === 'compile_deck_with_pptxgenjs') {
           if (
-            Object.keys(value).some((key) => !['request_id', 'deck'].includes(key)) ||
-            !validId(value.request_id)
+            Object.keys(value).some(
+              (key) => !['request_id', 'deck', 'plan_revision'].includes(key),
+            ) ||
+            !validId(value.request_id) ||
+            (value.plan_revision !== undefined &&
+              (!Number.isSafeInteger(value.plan_revision) || Number(value.plan_revision) < 1))
           )
             throw new Error('invalid_tool_input')
           deck = parsePresentationDeck(value.deck)
@@ -124,7 +129,14 @@ export function createPresentationGenerationSkill(
         const documentId = await options.documentId()
         check()
         const body = deck
-          ? { operation: 'compile', documentId, projectId, requestId, deck }
+          ? {
+              operation: 'compile',
+              documentId,
+              projectId,
+              requestId,
+              deck,
+              ...(value.plan_revision !== undefined ? { planRevision: value.plan_revision } : {}),
+            }
           : requestId
             ? { operation: 'resume', documentId, projectId, requestId }
             : { operation: 'get', documentId, projectId }
@@ -146,6 +158,9 @@ export function createPresentationGenerationSkill(
           result &&
           [
             'invalid_request',
+            'invalid_plan',
+            'revision_conflict',
+            'plan_mismatch',
             'invalid_deck',
             'invalid_state',
             'document_mismatch',

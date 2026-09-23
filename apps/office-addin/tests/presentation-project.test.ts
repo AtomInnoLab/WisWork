@@ -143,3 +143,28 @@ describe('presentation project controls', () => {
     expect(f.executeTool).not.toHaveBeenCalled()
   })
 })
+
+describe('plan-only project status', () => {
+  it('accepts a saved plan before compilation without inventing request history or QA', async () => {
+    const { benchmarkPlan } =
+      await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
+    const plan = benchmarkPlan()
+    const value = {
+      projectId: plan.projectId,
+      title: plan.title,
+      status: 'planned',
+      slideCount: plan.slides.length,
+      slides: plan.slides.map(({ id, title }) => ({ id, title })),
+      history: [],
+      plan: { revision: 1, value: plan },
+    }
+    const f = fixture()
+    f.lastProject.mockReturnValue(plan.projectId)
+    f.request.mockResolvedValue(new Response(JSON.stringify(value)))
+    await f.controller.refresh()
+    expect(f.controller.snapshot().error).toBeUndefined()
+    expect(f.controller.snapshot().project).toEqual(value)
+    await f.controller.resume('made-up')
+    expect(f.executeTool).not.toHaveBeenCalled()
+  })
+})

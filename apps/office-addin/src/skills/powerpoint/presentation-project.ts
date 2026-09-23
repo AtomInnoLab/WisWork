@@ -1,11 +1,17 @@
+import {
+  parsePresentationPlan,
+  type PresentationPlan,
+} from '@wiswork/pptx-engine/presentation-plan'
 import type { AgentSkill } from '@wiswork/agent-core'
 import type { PresentationGenerationOptions } from './presentation-generation.js'
 
 export interface PresentationProjectStatus {
   projectId: string
   title: string
-  status: 'pending' | 'compiled'
-  latestRequestId: string
+  status: 'planned' | 'pending' | 'compiled'
+  plan?: { revision: number; value: PresentationPlan }
+  requestPlanRevision?: number
+  latestRequestId?: string
   latestCompiledRequestId?: string
   slideCount: number
   slides: { id: string; title: string }[]
@@ -43,13 +49,28 @@ const pageCount = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 100
 function parseStatus(value: unknown, projectId: string): PresentationProjectStatus {
   const p = value as PresentationProjectStatus | undefined
+  let plan: PresentationProjectStatus['plan']
+  if (p?.plan !== undefined) {
+    if (!p.plan || !Number.isSafeInteger(p.plan.revision) || p.plan.revision < 1)
+      throw new Error('presentation_response_invalid')
+    plan = { revision: p.plan.revision, value: parsePresentationPlan(p.plan.value) }
+    if (plan.value.projectId !== projectId) throw new Error('presentation_response_invalid')
+  }
+  const planned = p?.status === 'planned'
   if (
     !p ||
     p.projectId !== projectId ||
     typeof p.title !== 'string' ||
     p.title.length > 500 ||
-    !['pending', 'compiled'].includes(p.status) ||
-    !validId(p.latestRequestId) ||
+    !['planned', 'pending', 'compiled'].includes(p.status) ||
+    (!planned && !validId(p.latestRequestId)) ||
+    (planned &&
+      (!plan ||
+        p.latestRequestId !== undefined ||
+        p.latestCompiledRequestId !== undefined ||
+        p.checks !== undefined)) ||
+    (p.requestPlanRevision !== undefined &&
+      (!Number.isSafeInteger(p.requestPlanRevision) || p.requestPlanRevision < 1)) ||
     (p.latestCompiledRequestId !== undefined && !validId(p.latestCompiledRequestId)) ||
     !pageCount(p.slideCount) ||
     !Array.isArray(p.slides) ||
@@ -59,7 +80,8 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
     ) ||
     new Set(p.slides.map((s) => s.id)).size !== p.slideCount ||
     !Array.isArray(p.history) ||
-    p.history.length < 1 ||
+    (!planned && p.history.length < 1) ||
+    (planned && p.history.length !== 0) ||
     p.history.length > 20 ||
     !p.history.every(
       (r, i) =>
@@ -72,9 +94,10 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
         (i === 0 || r.sequence < p.history[i - 1]!.sequence),
     ) ||
     new Set(p.history.map((r) => r.requestId)).size !== p.history.length ||
-    p.history[0]!.requestId !== p.latestRequestId ||
-    p.history[0]!.status !== p.status ||
-    p.history[0]!.slideCount !== p.slideCount ||
+    (!planned &&
+      (p.history[0]!.requestId !== p.latestRequestId ||
+        p.history[0]!.status !== p.status ||
+        p.history[0]!.slideCount !== p.slideCount)) ||
     (p.status === 'pending' && p.checks !== undefined) ||
     (p.status === 'compiled' && (!p.checks || p.latestCompiledRequestId !== p.latestRequestId)) ||
     (p.checks &&
@@ -90,7 +113,9 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
     projectId: p.projectId,
     title: p.title,
     status: p.status,
-    latestRequestId: p.latestRequestId,
+    ...(p.latestRequestId ? { latestRequestId: p.latestRequestId } : {}),
+    ...(plan ? { plan } : {}),
+    ...(p.requestPlanRevision ? { requestPlanRevision: p.requestPlanRevision } : {}),
     ...(p.latestCompiledRequestId ? { latestCompiledRequestId: p.latestCompiledRequestId } : {}),
     slideCount: p.slideCount,
     slides: p.slides.map(({ id, title }) => ({ id, title })),
@@ -117,6 +142,9 @@ function message(error: unknown): string {
   const code = error instanceof Error ? error.message : ''
   if (['presentation_invalid_request', 'invalid_request'].includes(code))
     return '当前 PC 尚不支持项目恢复，请升级 WisWork PC 后重试。'
+  if (code === 'presentation_revision_conflict') return '计划已有更新，请读取最新计划后继续。'
+  if (code === 'presentation_plan_mismatch')
+    return '编译内容与保存的计划不一致，请先更新计划或修正内容。'
   if (code === 'presentation_not_found')
     return 'PC 上尚未找到保存的编译请求。请重新发起制作；已有文稿不会改动。'
   if (['presentation_document_changed', 'presentation_document_mismatch'].includes(code))
@@ -201,7 +229,7 @@ export function createPresentationProjectController(
       if (!response.ok) throw new Error('presentation_service_unavailable')
       const text = await response.text()
       check()
-      if (text.length > 128 * 1024) throw new Error('presentation_response_invalid')
+      if (text.length > 384 * 1024) throw new Error('presentation_response_invalid')
       const value = JSON.parse(text)
       if (value?.error) throw new Error(`presentation_${value.error}`)
       const project = parseStatus(value, projectId)

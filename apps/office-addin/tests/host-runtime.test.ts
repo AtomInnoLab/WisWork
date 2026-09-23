@@ -215,3 +215,35 @@ describe('presentation project runtime lifecycle', () => {
     runtime.dispose()
   })
 })
+
+it('composes saved planning tools and clears their asynchronous state with the session', async () => {
+  let finish!: (response: Response) => void
+  const request = vi.fn(
+    () =>
+      new Promise<Response>((resolve) => {
+        finish = resolve
+      }),
+  )
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request,
+      documentId: async () => 'doc-1',
+      lastProject: () => 'project-1',
+      rememberProject: async () => {},
+    },
+  })
+  expect(runtime.skill.tools.map((tool) => tool.name)).toContain('save_presentation_plan')
+  expect(runtime.skill.systemPrompt).toContain('needs_review')
+  const pending = runtime.skill.executeTool({
+    id: 'read',
+    name: 'read_presentation_plan',
+    input: {},
+  })
+  await vi.waitFor(() => expect(request).toHaveBeenCalled())
+  runtime.clearSession()
+  finish(new Response('{}'))
+  expect(await pending).toMatchObject({ isError: true, output: 'cancelled' })
+  expect(runtime.vfs.list('/home/user')).toEqual([])
+  runtime.dispose()
+})

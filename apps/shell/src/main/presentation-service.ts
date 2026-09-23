@@ -1,3 +1,7 @@
+import {
+  parsePresentationPlan,
+  assertDeckMatchesPresentationPlan,
+} from '@wiswork/pptx-engine/presentation-plan'
 import { resolve } from 'node:path'
 import { PresentationStore, assertPresentationId } from '@wiswork/project-store'
 import {
@@ -10,6 +14,9 @@ const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
 const errorCodes = new Set([
   'invalid_request',
+  'invalid_plan',
+  'plan_mismatch',
+  'revision_conflict',
   'invalid_deck',
   'invalid_state',
   'document_mismatch',
@@ -53,16 +60,22 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
-      if (!['compile', 'get', 'status', 'resume'].includes(request.operation as string))
+      if (
+        !['compile', 'get', 'status', 'resume', 'save_plan', 'get_plan'].includes(
+          request.operation as string,
+        )
+      )
         throw new Error('invalid_request')
       const allowedKeys =
         request.operation === 'compile'
-          ? ['operation', 'documentId', 'projectId', 'requestId', 'deck']
+          ? ['operation', 'documentId', 'projectId', 'requestId', 'deck', 'planRevision']
           : request.operation === 'resume'
             ? ['operation', 'documentId', 'projectId', 'requestId']
-            : ['operation', 'documentId', 'projectId']
+            : request.operation === 'save_plan'
+              ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'plan']
+              : ['operation', 'documentId', 'projectId']
       const requiredKeys = allowedKeys.filter(
-        (key) => !(request.operation === 'compile' && key === 'projectId'),
+        (key) => !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)),
       )
       if (
         Object.keys(request).some((key) => !allowedKeys.includes(key)) ||
@@ -86,8 +99,25 @@ export function createPresentationService(options: {
         assertPresentationId(request.requestId)
       }
       if (request.operation === 'resume') assertPresentationId(request.requestId)
+      if (
+        request.operation === 'compile' &&
+        request.planRevision !== undefined &&
+        (!Number.isSafeInteger(request.planRevision) || Number(request.planRevision) < 1)
+      )
+        throw new Error('invalid_request')
+      let plan: ReturnType<typeof parsePresentationPlan> | undefined
+      if (request.operation === 'save_plan') {
+        if (!Number.isSafeInteger(request.expectedRevision) || Number(request.expectedRevision) < 0)
+          throw new Error('invalid_request')
+        try {
+          plan = parsePresentationPlan(request.plan)
+        } catch {
+          throw new Error('invalid_plan')
+        }
+      }
       const projectId = request.projectId ?? deck?.id
       assertPresentationId(projectId)
+      if (plan && plan.projectId !== projectId) throw new Error('invalid_plan')
       if (deck && deck.id !== projectId) throw new Error('invalid_request')
       const key = `${resolve(options.userDataPath)}\0${projectId}`
       const previous = locks.get(key) ?? Promise.resolve()
@@ -99,10 +129,37 @@ export function createPresentationService(options: {
       await previous
       try {
         checkAbort(signal)
+        if (request.operation === 'save_plan' || request.operation === 'get_plan') {
+          const record =
+            request.operation === 'save_plan'
+              ? store.savePlan(projectId, documentId, request.expectedRevision as number, plan)
+              : store.plan(projectId, documentId)
+          if (!record) throw new Error('not_found')
+          return boundedResponse({
+            projectId,
+            revision: record.revision,
+            plan: parsePresentationPlan(record.plan),
+          })
+        }
         if (request.operation === 'status') {
+          const savedPlan = store.plan(projectId, documentId)
+          const plan = savedPlan
+            ? { revision: savedPlan.revision, value: parsePresentationPlan(savedPlan.plan) }
+            : undefined
           const history = store.history(projectId, documentId)
           const latest = history[0]
-          if (!latest) throw new Error('not_found')
+          if (!latest) {
+            if (!plan) throw new Error('not_found')
+            return boundedResponse({
+              projectId,
+              title: plan.value.title,
+              status: 'planned',
+              slideCount: plan.value.slides.length,
+              slides: plan.value.slides.map(({ id, title }) => ({ id, title })),
+              history: [],
+              plan,
+            })
+          }
           const latestDeck = savedDeck(latest.deck)
           const compiled = store.latest(projectId, documentId)
           const checks =
@@ -114,6 +171,8 @@ export function createPresentationService(options: {
             title: latestDeck.title,
             status: latest.status,
             latestRequestId: latest.requestId,
+            ...(plan ? { plan } : {}),
+            ...(latest.plan ? { requestPlanRevision: latest.plan.revision } : {}),
             ...(compiled ? { latestCompiledRequestId: compiled.requestId } : {}),
             slideCount: latestDeck.slides.length,
             slides: latestDeck.slides.map(({ id, title }) => ({ id, title })),
@@ -142,14 +201,33 @@ export function createPresentationService(options: {
           return boundedResponse(record.result)
         }
         const requestId = request.requestId as string
-        const record =
-          request.operation === 'resume'
-            ? store.request(projectId, documentId, requestId)
-            : store.begin(projectId, documentId, requestId, deck)
+        let record = store.request(projectId, documentId, requestId)
+        if (request.operation === 'compile') {
+          const saved = record ? undefined : store.plan(projectId, documentId)
+          const binding =
+            record?.plan ?? (saved ? { revision: saved.revision, plan: saved.plan } : undefined)
+          if (request.planRevision !== binding?.revision)
+            throw new Error(record ? 'request_conflict' : 'revision_conflict')
+          if (binding) {
+            try {
+              assertDeckMatchesPresentationPlan(deck!, parsePresentationPlan(binding.plan))
+            } catch {
+              throw new Error(record ? 'request_conflict' : 'plan_mismatch')
+            }
+          }
+          record = store.begin(projectId, documentId, requestId, deck, binding)
+        }
         if (!record) throw new Error('not_found')
         if (record.status === 'compiled') return boundedResponse(record.result)
         const inputDeck = savedDeck(record.deck)
         if (inputDeck.id !== projectId) throw new Error('invalid_deck')
+        if (record.plan) {
+          try {
+            assertDeckMatchesPresentationPlan(inputDeck, parsePresentationPlan(record.plan.plan))
+          } catch {
+            throw new Error('plan_mismatch')
+          }
+        }
         const compiled = await compile(inputDeck)
         checkAbort(signal)
         if (compiled.bytes.byteLength > 10 * 1024 * 1024) throw new Error('output_too_large')

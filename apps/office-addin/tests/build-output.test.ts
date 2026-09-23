@@ -20,7 +20,7 @@ beforeAll(async () => {
       else process.env[key] = value
     }
   }
-})
+}, 30_000) // A production Vite build can exceed the default hook budget alongside other test workers.
 
 describe('configured Office build output', () => {
   it('emits only configured origins in the deployment manifest', async () => {

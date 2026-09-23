@@ -312,3 +312,16 @@ describe('failed recovery preserves the selected project', () => {
     },
   )
 })
+
+it('forwards a saved plan revision with a compilation request', async () => {
+  const f = fixture()
+  const result = await f.skill.executeTool({
+    ...compileCall(),
+    input: { ...compileCall().input, plan_revision: 2 },
+  })
+  expect(result.isError).not.toBe(true)
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({ operation: 'compile', planRevision: 2 }),
+    undefined,
+  )
+})

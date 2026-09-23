@@ -24,7 +24,7 @@ export function PresentationProjectCard(props: {
               resuming: '正在编译已保存版本',
             }[phase]
           : project
-            ? `${project.slideCount} 页 · ${project.status === 'pending' ? '已保存，待编译' : '已编译，尚未完成视觉验证'}`
+            ? `${project.slideCount} 页 · ${project.status === 'planned' ? '计划已保存，尚未编译' : project.status === 'pending' ? '已保存，待编译' : '已编译，尚未完成视觉验证'}`
             : error
               ? ''
               : '当前文档暂无已保存项目'}
@@ -43,11 +43,11 @@ export function PresentationProjectCard(props: {
             恢复最近完成版本
           </button>
         )}
-        {project?.status === 'pending' && (
+        {project?.status === 'pending' && project.latestRequestId && (
           <button
             type="button"
             disabled={disabled}
-            onClick={() => void controller.resume(project.latestRequestId)}
+            onClick={() => void controller.resume(project.latestRequestId!)}
           >
             继续编译
           </button>
@@ -58,6 +58,57 @@ export function PresentationProjectCard(props: {
           </button>
         )}
       </div>
+      {project?.plan && (
+        <details>
+          <summary>制作计划 · 第 {project.plan.revision} 版</summary>
+          <p>{project.plan.value.title}</p>
+          <p>目标：{project.plan.value.brief.objective}</p>
+          <p>
+            受众：{project.plan.value.brief.audience} · {project.plan.value.brief.minutes} 分钟 ·{' '}
+            {project.plan.value.brief.language}
+          </p>
+          <p>
+            字体：{project.plan.value.style.fontFace} · 主色 #{project.plan.value.style.accentColor}
+          </p>
+          <p>
+            {project.plan.value.sources.length} 个来源 · {project.plan.value.claims.length}{' '}
+            条主张（未核验）
+          </p>
+          {project.status !== 'planned' && (
+            <p>
+              {project.requestPlanRevision === project.plan.revision
+                ? '最近编译请求已关联当前计划；内容与视觉仍需验收。'
+                : '计划已有更新或尚未关联：现有编译成果不代表当前计划。'}
+            </p>
+          )}
+          <ol>
+            {project.plan.value.slides.map((slide) => (
+              <li key={slide.id}>
+                {slide.title}：{slide.purpose}
+              </li>
+            ))}
+          </ol>
+          <details>
+            <summary>来源与主张</summary>
+            <ul>
+              {project.plan.value.sources.map((source) => (
+                <li key={source.id}>
+                  {source.title} · {source.uri}
+                  {source.locator ? ` · ${source.locator}` : ''}
+                  <p>{source.excerpt}</p>
+                </li>
+              ))}
+            </ul>
+            <ul>
+              {project.plan.value.claims.map((claim) => (
+                <li key={claim.id}>
+                  {claim.statement} · {claim.type} · 待核验
+                </li>
+              ))}
+            </ul>
+          </details>
+        </details>
+      )}
       {project && (
         <details>
           <summary>页面、版本与检查</summary>
