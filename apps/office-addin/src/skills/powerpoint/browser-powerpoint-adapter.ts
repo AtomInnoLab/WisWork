@@ -132,7 +132,26 @@ export type PowerPointMasterOperation =
       show_master_graphics: boolean
     }
 
+export interface PresentationPageGeometry {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 export interface PowerPointAdapter {
+  readPresentationPageGeometry?(
+    slideId: string,
+    shapeId: string,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; shapeId: string; geometry: PresentationPageGeometry }>
+  editPresentationPageGeometry?(
+    slideId: string,
+    shapeId: string,
+    geometry: PresentationPageGeometry,
+    expectedGeometry: PresentationPageGeometry,
+    signal?: AbortSignal,
+  ): Promise<void>
   listPresentationPageShapes?(
     slideId: string,
     signal?: AbortSignal,
@@ -468,6 +487,51 @@ async function writeTextRange(
   }
 }
 
+const geometryFields = ['left', 'top', 'width', 'height'] as const
+function validPageGeometry(value: unknown): value is PresentationPageGeometry {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const item = value as Record<string, unknown>
+  return (
+    Object.keys(item).length === 4 &&
+    geometryFields.every((key) => Object.hasOwn(item, key)) &&
+    geometryFields.every(
+      (key) =>
+        typeof item[key] === 'number' &&
+        Number.isFinite(item[key]) &&
+        Math.abs(item[key] as number) <= 100000,
+    ) &&
+    (item.width as number) >= 0 &&
+    (item.height as number) >= 0
+  )
+}
+function shapeGeometry(shape: RuntimeRecord): PresentationPageGeometry {
+  const result = { left: shape.left, top: shape.top, width: shape.width, height: shape.height }
+  if (!validPageGeometry(result)) throw new Error('office_read_failed')
+  return result
+}
+async function geometryShape(
+  context: RuntimeRecord,
+  slideId: string,
+  shapeId: string,
+  signal?: AbortSignal,
+): Promise<RuntimeRecord> {
+  const slide = await getPageById(context, slideId, signal)
+  const shapes = slide.shapes as RuntimeRecord
+  if (typeof shapes?.getItem !== 'function') throw new Error('office_api_unsupported')
+  const shape = (shapes.getItem as (id: string) => RuntimeRecord)(shapeId)
+  if (typeof shape?.load !== 'function') throw new Error('office_api_unsupported')
+  ;(shape.load as (properties: string[]) => void)(['id', ...geometryFields])
+  await sync(context, signal)
+  if (shape.id !== shapeId) throw new Error('office_read_failed')
+  return shape
+}
+function geometryApplied(
+  current: PresentationPageGeometry,
+  target: PresentationPageGeometry,
+): boolean {
+  return geometryFields.every((key) => Math.abs(current[key] - target[key]) <= 0.01)
+}
+
 export class BrowserPowerPointAdapter implements PowerPointAdapter {
   private run<T>(
     minimumVersion: '1.4' | '1.8' | '1.10',
@@ -656,6 +720,72 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         }
       }
       await sync(context, signal)
+    })
+  }
+
+  async readPresentationPageGeometry(
+    slideId: string,
+    shapeId: string,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; shapeId: string; geometry: PresentationPageGeometry }> {
+    cancelled(signal)
+    pageId(slideId)
+    pageId(shapeId)
+    return this.run('1.10', async (context) => {
+      const shape = await geometryShape(context, slideId, shapeId, signal)
+      return { slideId, shapeId, geometry: shapeGeometry(shape) }
+    })
+  }
+
+  async editPresentationPageGeometry(
+    slideId: string,
+    shapeId: string,
+    geometry: PresentationPageGeometry,
+    expectedGeometry: PresentationPageGeometry,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    cancelled(signal)
+    pageId(slideId)
+    pageId(shapeId)
+    if (!validPageGeometry(geometry) || !validPageGeometry(expectedGeometry))
+      throw new Error('invalid_tool_input')
+    const target = { ...geometry },
+      expected = { ...expectedGeometry }
+    await this.run('1.10', async (context) => {
+      const shape = await geometryShape(context, slideId, shapeId, signal)
+      const before = shapeGeometry(shape)
+      if (!geometryFields.every((key) => before[key] === expected[key]))
+        throw new Error('office_concurrent_change')
+      cancelled(signal)
+      try {
+        // Property assignment itself can fail after earlier fields were queued. Keep every
+        // setter inside the reconciliation boundary; never roll back unowned host changes.
+        for (const key of geometryFields) shape[key] = target[key]
+        await sync(context, signal)
+      } catch {
+        /* A rejected setter/sync can still have applied some or all queued fields. */
+      }
+      let observed: PresentationPageGeometry
+      try {
+        observed = await readUntilConverged({
+          read: async () => {
+            ;(shape.load as (properties: string[]) => void)(['id', ...geometryFields])
+            await sync(context)
+            if (shape.id !== shapeId) throw new Error('office_read_failed')
+            return shapeGeometry(shape)
+          },
+          accept: (current) => geometryApplied(current, target),
+        })
+      } catch {
+        throw new Error('office_state_uncertain')
+      }
+      if (geometryApplied(observed, target)) return
+      if (geometryFields.every((key) => observed[key] === before[key]))
+        throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed')
+      const partial = geometryFields.every(
+        (key) => observed[key] === before[key] || Math.abs(observed[key] - target[key]) <= 0.01,
+      )
+      throw new Error(partial ? 'office_state_uncertain' : 'office_concurrent_change')
     })
   }
 
