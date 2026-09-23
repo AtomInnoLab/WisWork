@@ -234,6 +234,14 @@ export function createStructuredProposalController(
           if (hooks) {
             await hooks.beforeWrite(proposal.snapshot, controller.signal)
             if (controller.signal.aborted) throw new Error('proposal_stale')
+            // Persisting invalidation may await Office. Recheck the proposal against any
+            // document changes made during that wait before dispatching its write.
+            phase = 'validate'
+            phaseStartedAt = Date.now()
+            if (!(await proposal.request.validate(controller.signal)) || controller.signal.aborted)
+              throw new Error('proposal_stale')
+            phase = 'write'
+            phaseStartedAt = Date.now()
           }
           await proposal.request.execute(controller.signal)
           phase = 'verify'

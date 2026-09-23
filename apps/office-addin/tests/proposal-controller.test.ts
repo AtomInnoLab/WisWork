@@ -473,7 +473,7 @@ describe('structured proposal write hooks', () => {
     const proposal = controller.propose(input),
       decision = controller.waitForDecision(proposal.id)
     await controller.confirm(proposal.id)
-    expect(order).toEqual(['validate', 'before', 'execute', 'verify', 'after'])
+    expect(order).toEqual(['validate', 'before', 'validate', 'execute', 'verify', 'after'])
     expect(beforeWrite).toHaveBeenCalledWith(proposal, expect.any(AbortSignal))
     await expect(decision).resolves.toEqual({ status: 'confirmed' })
   })
@@ -546,6 +546,25 @@ describe('structured proposal write hooks', () => {
     await expect(decision).resolves.toEqual({ status: 'failed', error: 'proposal_stale' })
     expect(input.execute).not.toHaveBeenCalled()
     expect(hooks.afterWrite).toHaveBeenCalledTimes(1)
+  })
+  it('revalidates after persistence and prevents stale writes when the document changed', async () => {
+    let valid = true
+    const input = request()
+    input.validate.mockImplementation(async () => valid)
+    const hooks = {
+      beforeWrite: vi.fn(async () => {
+        valid = false
+      }),
+      afterWrite: vi.fn(),
+    }
+    const controller = createStructuredProposalController(undefined, hooks)
+    const proposal = controller.propose(input),
+      decision = controller.waitForDecision(proposal.id)
+    await expect(controller.confirm(proposal.id)).rejects.toThrow('proposal_stale')
+    expect(input.validate).toHaveBeenCalledTimes(2)
+    expect(input.execute).not.toHaveBeenCalled()
+    expect(hooks.afterWrite).toHaveBeenCalledTimes(1)
+    await expect(decision).resolves.toEqual({ status: 'failed', error: 'proposal_stale' })
   })
   it('still verifies and releases when cancellation races a committed write', async () => {
     const hooks = { beforeWrite: vi.fn(async () => {}), afterWrite: vi.fn() }
