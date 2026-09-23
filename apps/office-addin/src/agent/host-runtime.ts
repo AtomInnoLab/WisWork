@@ -1,3 +1,4 @@
+import type { PresentationGeometryChange } from '../skills/powerpoint/presentation-geometry-change.js'
 import { createPresentationProductionSkill } from '../skills/powerpoint/presentation-production.js'
 import { BrowserPresentationImageAdapter } from '../skills/powerpoint/browser-presentation-image-adapter.js'
 import type { ImageReplacementRecord } from '../skills/powerpoint/presentation-image-replacement-record.js'
@@ -108,6 +109,11 @@ export function createOfficeHostRuntime(
   host: OfficeHost,
   options: {
     presentation?: Omit<PresentationGenerationOptions, 'vfs'> & {
+      readGeometryChange?(): PresentationGeometryChange | undefined
+      writeGeometryChange?(
+        record: PresentationGeometryChange,
+        expected: PresentationGeometryChange | undefined,
+      ): Promise<void>
       readImageReplacement?(key: string): ImageReplacementRecord | undefined
       writeImageReplacement?(key: string, record: ImageReplacementRecord): Promise<void>
       invalidateQa?(hostSlideIds?: readonly string[]): Promise<void>
@@ -153,6 +159,7 @@ export function createOfficeHostRuntime(
               [
                 'edit_presentation_page_text',
                 'edit_presentation_page_geometry',
+                'undo_presentation_geometry_change',
                 'replace_presentation_page_image',
                 'resume_presentation_image_replacement',
               ].includes(proposal.operation) &&
@@ -378,6 +385,8 @@ export function createOfficeHostRuntime(
           adapter: powerPointAdapter,
           vfs,
           imageAdapter: new BrowserPresentationImageAdapter(),
+          readGeometryChange: options.presentation.readGeometryChange,
+          writeGeometryChange: options.presentation.writeGeometryChange,
           readImageReplacement: options.presentation.readImageReplacement,
           writeImageReplacement: options.presentation.writeImageReplacement,
           proposals,
@@ -493,6 +502,8 @@ export function createOfficeHostRuntime(
                   'read_presentation_page',
                   'edit_presentation_page_text',
                   'read_presentation_page_geometry',
+                  'read_presentation_geometry_change',
+                  'undo_presentation_geometry_change',
                   'edit_presentation_page_geometry',
                   'replace_presentation_page_image',
                   'read_presentation_image_replacement',
