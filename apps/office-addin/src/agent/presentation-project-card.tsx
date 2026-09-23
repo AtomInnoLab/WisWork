@@ -22,6 +22,7 @@ export function PresentationProjectCard(props: {
               loading: '正在读取项目',
               restoring: '正在恢复最近完成版本',
               resuming: '正在编译已保存版本',
+              producing: '正在编译剩余页面',
             }[phase]
           : project
             ? `${project.slideCount} 页 · ${project.status === 'planned' ? '计划已保存，尚未编译' : project.status === 'pending' ? '已保存，待编译' : '已编译，尚未完成视觉验证'}`
@@ -52,12 +53,49 @@ export function PresentationProjectCard(props: {
             继续编译
           </button>
         )}
+        {project?.production && project.production.status !== 'compiled' && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => void controller.runProduction(project.production!.requestId)}
+          >
+            继续页任务
+          </button>
+        )}
         {active && (
           <button type="button" onClick={() => controller.cancel()}>
             取消
           </button>
         )}
       </div>
+      {project?.production && (
+        <section aria-label="逐页生产进度">
+          <p>
+            已编译 {project.production.compiledCount} / {project.production.total} 页 · 计划第{' '}
+            {project.production.planRevision} 版
+          </p>
+          <p>单页编译成果尚未导入或验收，不代表整套交付。</p>
+          <ol>
+            {project.production.pages.map((page) => (
+              <li key={page.id}>
+                {page.title} ·{' '}
+                {
+                  {
+                    pending: '待制作',
+                    building: '制作中',
+                    failed: '失败待重试',
+                    compiled: '已编译（未导入验收）',
+                  }[page.state]
+                }{' '}
+                · 尝试 {page.attempt} 次
+                {page.error
+                  ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用' }[page.error]}`
+                  : ''}
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
       {project?.plan && (
         <details>
           <summary>制作计划 · 第 {project.plan.revision} 版</summary>

@@ -39,6 +39,7 @@ async function mount(snapshot: Snapshot, disabled = false) {
     refresh: vi.fn(async () => {}),
     restore: vi.fn(async () => {}),
     resume: vi.fn(async () => {}),
+    runProduction: vi.fn(async () => {}),
     cancel: vi.fn(),
     clear: vi.fn(),
   }
@@ -139,4 +140,29 @@ it('shows a durable plan before compilation and labels its unverified evidence',
   expect(view.container.textContent).toContain(plan.brief.objective)
   expect(view.container.textContent).toContain('未核验')
   expect(view.button('继续编译')).toBeUndefined()
+})
+it('shows page production states and a separate continue action without claiming delivery', async () => {
+  const view = await mount({
+    ...pending,
+    project: {
+      ...pending.project!,
+      production: {
+        projectId: 'p1',
+        requestId: 'pages',
+        planRevision: 1,
+        status: 'partial',
+        compiledCount: 1,
+        total: 2,
+        pages: [
+          { id: 'a', title: 'First', state: 'compiled', attempt: 1 },
+          { id: 'b', title: 'Second', state: 'failed', attempt: 2, error: 'compile_failed' },
+        ],
+      },
+    },
+  })
+  expect(view.container.textContent).toContain('1 / 2')
+  expect(view.container.textContent).toContain('已编译（未导入验收）')
+  expect(view.container.textContent).toContain('失败待重试')
+  await act(async () => view.button('继续页任务').click())
+  expect(view.controller.runProduction).toHaveBeenCalledWith('pages')
 })

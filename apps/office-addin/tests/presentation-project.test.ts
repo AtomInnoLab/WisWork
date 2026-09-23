@@ -168,3 +168,31 @@ describe('plan-only project status', () => {
     expect(f.executeTool).not.toHaveBeenCalled()
   })
 })
+it('projects page production and resumes its explicit request through the page tool', async () => {
+  const f = fixture(),
+    production = {
+      projectId: 'project-1',
+      requestId: 'pages-1',
+      planRevision: 1,
+      status: 'partial',
+      compiledCount: 1,
+      total: 2,
+      pages: [
+        { id: 'a', title: 'A', state: 'compiled', attempt: 1 },
+        { id: 'b', title: 'B', state: 'failed', attempt: 1, error: 'compile_failed' },
+      ],
+    }
+  f.request.mockImplementation(async () => new Response(JSON.stringify({ ...project, production })))
+  await f.controller.refresh()
+  expect(f.controller.snapshot().project?.production).toEqual(production)
+  await f.controller.runProduction('wrong')
+  expect(f.executeTool).not.toHaveBeenCalled()
+  await f.controller.runProduction('pages-1')
+  expect(f.executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'run_presentation_production',
+      input: { project_id: 'project-1', request_id: 'pages-1' },
+    }),
+    expect.any(AbortSignal),
+  )
+})

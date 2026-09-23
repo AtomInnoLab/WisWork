@@ -1,4 +1,8 @@
 import {
+  parsePresentationProductionStatus,
+  type PresentationProductionStatus,
+} from './presentation-production.js'
+import {
   parsePresentationPlan,
   type PresentationPlan,
 } from '@wiswork/pptx-engine/presentation-plan'
@@ -6,6 +10,7 @@ import type { AgentSkill } from '@wiswork/agent-core'
 import type { PresentationGenerationOptions } from './presentation-generation.js'
 
 export interface PresentationProjectStatus {
+  production?: PresentationProductionStatus
   projectId: string
   title: string
   status: 'planned' | 'pending' | 'compiled'
@@ -30,7 +35,7 @@ export interface PresentationProjectStatus {
   }
 }
 export interface PresentationProjectSnapshot {
-  phase: 'idle' | 'loading' | 'restoring' | 'resuming'
+  phase: 'idle' | 'loading' | 'restoring' | 'resuming' | 'producing'
   project?: PresentationProjectStatus
   error?: string
 }
@@ -40,6 +45,7 @@ export interface PresentationProjectController {
   refresh(): Promise<void>
   restore(): Promise<void>
   resume(requestId: string): Promise<void>
+  runProduction(requestId: string): Promise<void>
   cancel(): void
   clear(): void
 }
@@ -56,6 +62,10 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
     plan = { revision: p.plan.revision, value: parsePresentationPlan(p.plan.value) }
     if (plan.value.projectId !== projectId) throw new Error('presentation_response_invalid')
   }
+  const production =
+    p?.production === undefined ? undefined : parsePresentationProductionStatus(p.production)
+  if (production && production.projectId !== projectId)
+    throw new Error('presentation_response_invalid')
   const planned = p?.status === 'planned'
   if (
     !p ||
@@ -110,6 +120,7 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
     throw new Error('presentation_response_invalid')
   // Copy only the bounded public projection; never retain arbitrary server fields or binary data.
   return {
+    ...(production ? { production } : {}),
     projectId: p.projectId,
     title: p.title,
     status: p.status,
@@ -140,8 +151,12 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
 }
 function message(error: unknown): string {
   const code = error instanceof Error ? error.message : ''
-  if (['presentation_invalid_request', 'invalid_request'].includes(code))
-    return '当前 PC 尚不支持项目恢复，请升级 WisWork PC 后重试。'
+  if (
+    ['presentation_upgrade_required', 'presentation_invalid_request', 'invalid_request'].includes(
+      code,
+    )
+  )
+    return '当前 PC 尚不支持此项目操作，请升级 WisWork PC 后重试。'
   if (code === 'presentation_revision_conflict') return '计划已有更新，请读取最新计划后继续。'
   if (code === 'presentation_plan_mismatch')
     return '编译内容与保存的计划不一致，请先更新计划或修正内容。'
@@ -176,7 +191,10 @@ export function createPresentationProjectController(
     active = undefined
     publish({ phase: 'idle', ...(error ? { error } : {}) })
   }
-  const run = async (phase: 'loading' | 'restoring' | 'resuming', requestId?: string) => {
+  const run = async (
+    phase: 'loading' | 'restoring' | 'resuming' | 'producing',
+    requestId?: string,
+  ) => {
     if (active) return
     const projectId = phase === 'loading' ? options.lastProject() : state.project?.projectId
     if (!projectId) {
@@ -185,6 +203,10 @@ export function createPresentationProjectController(
     }
     if (
       !validId(projectId) ||
+      (phase === 'producing' &&
+        (!validId(requestId) ||
+          requestId !== state.project?.production?.requestId ||
+          state.project.production.status === 'compiled')) ||
       (phase === 'resuming' &&
         (state.project?.status !== 'pending' || requestId !== state.project.latestRequestId)) ||
       (phase === 'restoring' && !state.project?.latestCompiledRequestId)
@@ -210,7 +232,9 @@ export function createPresentationProjectController(
             name:
               phase === 'restoring'
                 ? 'restore_presentation_project'
-                : 'resume_presentation_project',
+                : phase === 'producing'
+                  ? 'run_presentation_production'
+                  : 'resume_presentation_project',
             input: { project_id: projectId, ...(requestId ? { request_id: requestId } : {}) },
           },
           controller.signal,
@@ -254,6 +278,7 @@ export function createPresentationProjectController(
     refresh: () => run('loading'),
     restore: () => run('restoring'),
     resume: (requestId) => run('resuming', requestId),
+    runProduction: (requestId) => run('producing', requestId),
     cancel: () => stop(message(new Error('cancelled'))),
     clear: () => stop(),
   }
