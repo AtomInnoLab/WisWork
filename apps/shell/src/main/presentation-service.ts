@@ -8,6 +8,7 @@ import { PresentationStore, assertPresentationId } from '@wiswork/project-store'
 import {
   parsePresentationDeck,
   type PresentationCompileReport,
+  type PresentationInlineAsset,
 } from '@wiswork/pptx-engine/presentation'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 
@@ -52,6 +53,9 @@ function checkAbort(signal: AbortSignal): void {
 export function createPresentationService(options: {
   userDataPath: string
   compile?: typeof compilePresentationDeck
+  normalizeImage?: (
+    bytes: Uint8Array,
+  ) => Promise<{ bytes: Uint8Array; width: number; height: number }>
 }): (body: unknown, signal: AbortSignal) => Promise<Uint8Array> {
   const attachments = createPresentationAttachmentService(options)
   const store = new PresentationStore(options.userDataPath)
@@ -74,6 +78,8 @@ export function createPresentationService(options: {
           'attachment_finish',
           'attachment_list',
           'attachment_read',
+          'attachment_asset',
+          'attachment_list_assets',
         ].includes(request.operation as string)
       )
         return boundedResponse(await attachments(request, signal))
@@ -245,7 +251,29 @@ export function createPresentationService(options: {
             throw new Error('plan_mismatch')
           }
         }
-        const compiled = await compile(inputDeck)
+        // Keep compact references in the durable receipt. Resolve only against this document.
+        const assets = []
+        let imageBytes = 0
+        for (const asset of inputDeck.assets) {
+          checkAbort(signal)
+          const resolved =
+            'attachmentId' in asset
+              ? {
+                  ...((await attachments(
+                    { operation: 'attachment_asset', documentId, attachmentId: asset.attachmentId },
+                    signal,
+                  )) as PresentationInlineAsset),
+                  id: asset.id,
+                }
+              : asset
+          if (!('base64' in resolved) || typeof resolved.base64 !== 'string')
+            throw new Error('invalid_state')
+          imageBytes += Buffer.byteLength(resolved.base64, 'base64')
+          if (imageBytes > 8 * 1024 * 1024) throw new Error('output_too_large')
+          assets.push(resolved)
+        }
+        checkAbort(signal)
+        const compiled = await compile({ ...inputDeck, assets })
         checkAbort(signal)
         if (compiled.bytes.byteLength > 10 * 1024 * 1024) throw new Error('output_too_large')
         const result = {

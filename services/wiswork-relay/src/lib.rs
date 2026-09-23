@@ -42,6 +42,7 @@ const SUPPORTED_CAPABILITIES: &[&str] = &[
     "image-search.v1",
     "presentation.v1",
     "presentation-attachments.v1",
+    "presentation-assets.v1",
 ];
 
 #[derive(Clone)]

@@ -721,7 +721,7 @@ describe('Office relay PC client', () => {
     client.revoke('test_complete')
   })
 
-  it.each(['presentation.v1', 'presentation-attachments.v1'])(
+  it.each(['presentation.v1', 'presentation-attachments.v1', 'presentation-assets.v1'])(
     'negotiates presentation only when provided and streams recoverable generation requests',
     async (capabilityName) => {
       const socket = new FakeSocket()
@@ -744,7 +744,12 @@ describe('Office relay PC client', () => {
       await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
       socket.open()
       await claiming
-      const capabilities = ['agent.v1', 'presentation.v1', 'presentation-attachments.v1']
+      const capabilities = [
+        'agent.v1',
+        'presentation.v1',
+        'presentation-attachments.v1',
+        'presentation-assets.v1',
+      ]
       expect(JSON.parse(socket.sent[0]!)).toEqual({
         version: 2,
         type: 'pc.negotiate',

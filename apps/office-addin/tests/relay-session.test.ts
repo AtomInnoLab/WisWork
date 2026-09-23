@@ -167,64 +167,66 @@ describe('Office cloud relay session', () => {
     session.disconnect()
   })
 
-  it.each(['web-search.v1', 'presentation.v1', 'presentation-attachments.v1'] as const)(
-    'negotiates %s and blocks unnegotiated requests',
-    async (capability) => {
-      const socket = new FakeSocket()
-      const session = createOfficeRelaySession({
-        createSocket: () => socket,
-        capabilities: ['agent.v1', capability, 'web-fetch.v1'],
-        randomUUID: () => 'request_12345678',
-      })
-      const connecting = session.connect('word')
-      socket.open()
-      expect(frame(socket, 0)).toEqual({
+  it.each([
+    'web-search.v1',
+    'presentation.v1',
+    'presentation-attachments.v1',
+    'presentation-assets.v1',
+  ] as const)('negotiates %s and blocks unnegotiated requests', async (capability) => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1', capability, 'web-fetch.v1'],
+      randomUUID: () => 'request_12345678',
+    })
+    const connecting = session.connect('word')
+    socket.open()
+    expect(frame(socket, 0)).toEqual({
+      version: 2,
+      type: 'office.create',
+      host: 'Word',
+      capabilities: ['agent.v1', capability, 'web-fetch.v1'],
+    })
+    socket.receive(
+      JSON.stringify({
         version: 2,
-        type: 'office.create',
-        host: 'Word',
-        capabilities: ['agent.v1', capability, 'web-fetch.v1'],
-      })
-      socket.receive(
-        JSON.stringify({
-          version: 2,
-          type: 'office.created',
-          pairing_id: 'pair_12345678',
-          verification_code: '123456',
-          expires_in: 120,
-        }),
-      )
-      socket.receive(
-        JSON.stringify({
-          version: 2,
-          type: 'office.approved',
-          session_id: 'session_12345678',
-          capability: 'capability_12345678',
-          expires_in: 1800,
-          capabilities: ['agent.v1', capability],
-        }),
-      )
-      await connecting
-      expect(session.snapshot()).toEqual({
-        status: 'connected',
-        capabilities: ['agent.v1', capability],
-      })
-      await expect(
-        session.capabilityFetch('web-fetch.v1', { url: 'https://example.com' }),
-      ).rejects.toThrow('relay_capability_unavailable')
-      const pending = session.capabilityFetch(capability, { query: 'office', max_results: 3 })
-      expect(frame(socket, 1)).toEqual({
+        type: 'office.created',
+        pairing_id: 'pair_12345678',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
         version: 2,
-        type: 'office.request',
+        type: 'office.approved',
         session_id: 'session_12345678',
         capability: 'capability_12345678',
-        request_id: 'request_12345678',
-        capability_name: capability,
-        body: { query: 'office', max_results: 3 },
-      })
-      session.disconnect()
-      await expect(pending).rejects.toThrow('relay_disconnected')
-    },
-  )
+        expires_in: 1800,
+        capabilities: ['agent.v1', capability],
+      }),
+    )
+    await connecting
+    expect(session.snapshot()).toEqual({
+      status: 'connected',
+      capabilities: ['agent.v1', capability],
+    })
+    await expect(
+      session.capabilityFetch('web-fetch.v1', { url: 'https://example.com' }),
+    ).rejects.toThrow('relay_capability_unavailable')
+    const pending = session.capabilityFetch(capability, { query: 'office', max_results: 3 })
+    expect(frame(socket, 1)).toEqual({
+      version: 2,
+      type: 'office.request',
+      session_id: 'session_12345678',
+      capability: 'capability_12345678',
+      request_id: 'request_12345678',
+      capability_name: capability,
+      body: { query: 'office', max_results: 3 },
+    })
+    session.disconnect()
+    await expect(pending).rejects.toThrow('relay_disconnected')
+  })
 
   it('sends bounded diagnostics only over an approved v2 session', async () => {
     const socket = new FakeSocket()
