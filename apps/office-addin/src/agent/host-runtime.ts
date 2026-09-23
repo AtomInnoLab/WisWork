@@ -160,6 +160,7 @@ export function createOfficeHostRuntime(
                 'edit_presentation_page_text',
                 'edit_presentation_page_geometry',
                 'undo_presentation_geometry_change',
+                'resume_presentation_geometry_change',
                 'replace_presentation_page_image',
                 'resume_presentation_image_replacement',
               ].includes(proposal.operation) &&
@@ -503,6 +504,8 @@ export function createOfficeHostRuntime(
                   'edit_presentation_page_text',
                   'read_presentation_page_geometry',
                   'read_presentation_geometry_change',
+                  'inspect_presentation_geometry_change',
+                  'resume_presentation_geometry_change',
                   'undo_presentation_geometry_change',
                   'edit_presentation_page_geometry',
                   'replace_presentation_page_image',

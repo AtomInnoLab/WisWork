@@ -99,3 +99,7 @@ reviewer_and_date: 待执行
 ### 几何保存点与撤销进展（2026-09-23）
 
 新增最近一次稳定页位置/尺寸修改的持久化保存点和撤销，详见[几何撤销阶段报告](./wiswork-ppt-agent-geometry-undo-progress-2026-09-23.md)。不覆盖文字富文本、图片、整页或通用ChangeSet；不确定记录禁止自动重放。完整撤销、单页重做、真实RoundTrip和20项实机验收仍为首批缺口。
+
+### 几何保存点恢复进展（2026-09-23）
+
+已补pending/undo_pending几何记录的只读检查与确认恢复，目标已达到时仅补回执、原值明确匹配时才写入，模糊或混合状态需人工核对。详见[几何恢复阶段报告](./wiswork-ppt-agent-geometry-recovery-progress-2026-09-23.md)。完整撤销、单页重做、证据QA及实机RoundTrip仍未完成。
