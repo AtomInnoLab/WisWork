@@ -904,3 +904,140 @@ it('checks production content again after asynchronous host reads', async () => 
   })
   expect(f.proposals.pending()).toBeUndefined()
 })
+function undoSetup() {
+  const f = geometrySetup()
+  let record:
+    | import('../src/skills/powerpoint/presentation-geometry-change.js').PresentationGeometryChange
+    | undefined
+  const readGeometryChange = () => record,
+    writeGeometryChange = vi.fn(
+      async (next: NonNullable<typeof record>, expected: typeof record) => {
+        expect(record).toEqual(expected)
+        record = structuredClone(next)
+      },
+    )
+  const options = { ...f.options, readGeometryChange, writeGeometryChange },
+    skill = createPresentationPageEditingSkill(options),
+    undo = { id: 'undo', name: 'undo_presentation_geometry_change', input: { page_id: 'page1' } }
+  return { ...f, options, skill, undo, readGeometryChange, writeGeometryChange }
+}
+it('persists the latest geometry before writing and supports confirmed idempotent undo after recreation', async () => {
+  const f = undoSetup()
+  await f.skill.executeTool(f.edit)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(f.writeGeometryChange.mock.calls.map(([r]) => r.state)).toEqual(['pending', 'applied'])
+  const skill = createPresentationPageEditingSkill(f.options)
+  expect((await skill.executeTool(f.undo)).isError).not.toBe(true)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(f.readGeometryChange()?.state).toBe('undone')
+  expect((await skill.executeTool(f.undo)).output).toContain('already_undone')
+  expect(f.adapter.editPresentationPageGeometry).toHaveBeenCalledTimes(2)
+})
+it('rejects manual geometry drift and preserves pending after an uncertain write', async () => {
+  const f = undoSetup()
+  await f.skill.executeTool(f.edit)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  f.setGeometry({ left: 999, top: 0, width: 1, height: 1 })
+  expect(await f.skill.executeTool(f.undo)).toMatchObject({ isError: true })
+  const g = undoSetup()
+  g.adapter.editPresentationPageGeometry.mockRejectedValue(new Error('office_state_uncertain'))
+  await g.skill.executeTool(g.edit)
+  await expect(g.proposals.confirm(g.proposals.pending()!.id)).rejects.toThrow()
+  expect(g.readGeometryChange()?.state).toBe('pending')
+  expect(await g.skill.executeTool(g.edit)).toMatchObject({ isError: true })
+})
+it('does not write geometry when pending persistence fails or is cancelled while saving', async () => {
+  for (const mode of ['failed', 'cancelled']) {
+    const f = undoSetup(),
+      save = f.writeGeometryChange.getMockImplementation()!
+    f.writeGeometryChange.mockImplementation(async (next, expected) => {
+      if (mode === 'failed') throw new Error('save_failed')
+      await save(next, expected)
+      f.skill.clear()
+    })
+    await f.skill.executeTool(f.edit)
+    await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow()
+    expect(f.adapter.editPresentationPageGeometry).not.toHaveBeenCalled()
+  }
+})
+it('retains applied or uncertain undo records on storage failures and uses actual tolerated host value', async () => {
+  const f = undoSetup()
+  await f.skill.executeTool(f.edit)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  const close = { ...f.edit.input.geometry, left: f.edit.input.geometry.left + 0.005 }
+  f.setGeometry(close)
+  await f.skill.executeTool(f.undo)
+  const save = f.writeGeometryChange.getMockImplementation()!
+  f.writeGeometryChange.mockImplementation(async (next, expected) => {
+    if (next.state === 'undone') throw new Error('save_failed')
+    await save(next, expected)
+  })
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('save_failed')
+  expect(f.adapter.editPresentationPageGeometry).toHaveBeenLastCalledWith(
+    'host-42',
+    'shape1',
+    expect.any(Object),
+    close,
+    expect.any(AbortSignal),
+  )
+  expect(f.readGeometryChange()?.state).toBe('undo_pending')
+  expect(await f.skill.executeTool(f.undo)).toMatchObject({ isError: true })
+})
+it('leaves no-op geometry without a record and rejects changed journal proposals', async () => {
+  const f = undoSetup()
+  expect(
+    (
+      await f.skill.executeTool({
+        ...f.edit,
+        input: { ...f.edit.input, geometry: { left: 10, top: 20, width: 100, height: 50 } },
+      })
+    ).output,
+  ).toContain('unchanged')
+  expect(f.writeGeometryChange).not.toHaveBeenCalled()
+  await f.skill.executeTool(f.edit)
+  const id = f.proposals.pending()!.id
+  f.options.readGeometryChange = () => undefined
+  const g = undoSetup()
+  await g.skill.executeTool(g.edit)
+  await g.proposals.confirm(g.proposals.pending()!.id)
+  f.options.readGeometryChange = () => g.readGeometryChange()
+  await expect(f.proposals.confirm(id)).rejects.toThrow('proposal_stale')
+  expect(f.adapter.editPresentationPageGeometry).not.toHaveBeenCalled()
+})
+it('reads only a matching saved geometry source and keeps historical undone idempotent', async () => {
+  const f = undoSetup()
+  await f.skill.executeTool(f.edit)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  const read = { ...f.undo, name: 'read_presentation_geometry_change' }
+  expect(JSON.parse((await f.skill.executeTool(read)).output)).toMatchObject({
+    historical: true,
+    record: { state: 'applied' },
+  })
+  const record = f.readGeometryChange()!
+  f.options.readGeometryChange = () => ({ ...record, source: 'production' })
+  expect(await f.skill.executeTool(read)).toMatchObject({ isError: true })
+})
+it('blocks new geometry across projects while a document journal is pending and keeps pending on failed applied save', async () => {
+  const f = undoSetup(),
+    save = f.writeGeometryChange.getMockImplementation()!
+  f.writeGeometryChange.mockImplementation(async (next, expected) => {
+    if (next.state === 'applied') throw new Error('save_failed')
+    await save(next, expected)
+  })
+  await f.skill.executeTool(f.edit)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('save_failed')
+  expect(f.readGeometryChange()?.state).toBe('pending')
+  const record = f.readGeometryChange()!
+  f.options.readGeometryChange = () => ({
+    ...record,
+    projectId: 'another-project',
+    source: 'production',
+  })
+  expect(
+    await f.skill.executeTool({
+      ...f.edit,
+      input: { ...f.edit.input, geometry: { left: 1, top: 2, width: 3, height: 4 } },
+    }),
+  ).toMatchObject({ isError: true, output: 'presentation_geometry_change_uncertain' })
+  expect(f.adapter.editPresentationPageGeometry).toHaveBeenCalledOnce()
+})
