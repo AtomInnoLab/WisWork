@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto'
-import { expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import { PNG } from 'pngjs'
+import { InMemoryVfs } from '../src/skills/shared/vfs.js'
+import type { ImageReplacementRecord } from '../src/skills/powerpoint/presentation-image-replacement-record.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { createPresentationPageEditingSkill } from '../src/skills/powerpoint/presentation-page-editing.js'
 function setup() {
@@ -425,4 +428,202 @@ it('guards geometry awaits against cancellation and context changes and freezes 
     expect.any(Object),
     expect.any(AbortSignal),
   )
+})
+
+afterEach(() => vi.unstubAllGlobals())
+function imageSetup() {
+  const f = setup(),
+    vfs = new InMemoryVfs(),
+    records = new Map<string, ImageReplacementRecord>()
+  const png = new PNG({ width: 1, height: 1 })
+  png.data.fill(120)
+  const bytes = PNG.sync.write(png)
+  vfs.writeFile('/home/user/new.png', bytes)
+  vi.stubGlobal(
+    'createImageBitmap',
+    vi.fn(async () => ({ width: 1, height: 1, close: () => {} })),
+  )
+  const snapshot = {
+    slideId: 'host-42',
+    shapeId: 'shape1',
+    geometry: { left: 1, top: 2, width: 100, height: 50 },
+    rotation: 0,
+    name: 'Picture',
+    altTextTitle: 'alt',
+    altTextDescription: 'description',
+    zOrderPosition: 0,
+    shapeIds: ['shape1', 'title'],
+    pictureFingerprint: 'a'.repeat(64),
+    mediaDigest: 'b'.repeat(64),
+  }
+  const imageAdapter = {
+    inspect: vi.fn(async () => structuredClone(snapshot)),
+    replace: vi.fn(
+      async (
+        _slide: string,
+        _shape: string,
+        _base64: string,
+        _expected: typeof snapshot,
+        onInserted: (id: string) => Promise<void>,
+      ) => {
+        await onInserted('new-picture')
+        return { shapeId: 'new-picture' }
+      },
+    ),
+  }
+  const readImageReplacement = (key: string) => records.get(key),
+    writeImageReplacement = vi.fn(async (key: string, record: ImageReplacementRecord) => {
+      records.set(key, structuredClone(record))
+    })
+  const options = { ...f.options, vfs, imageAdapter, readImageReplacement, writeImageReplacement },
+    skill = createPresentationPageEditingSkill(options)
+  const replace = {
+    id: 'replace',
+    name: 'replace_presentation_page_image',
+    input: { page_id: 'page1', shape_id: 'shape1', path: '/home/user/new.png' },
+  }
+  const status = {
+    id: 'status',
+    name: 'read_presentation_image_replacement',
+    input: { page_id: 'page1', shape_id: 'shape1' },
+  }
+  return {
+    ...f,
+    vfs,
+    records,
+    imageAdapter,
+    readImageReplacement,
+    writeImageReplacement,
+    options,
+    skill,
+    replace,
+    status,
+    snapshot,
+  }
+}
+it('confirms image replacement and persists pending, candidate, then complete without replay', async () => {
+  const f = imageSetup()
+  expect(f.skill.tools.map((tool) => tool.name)).toContain('replace_presentation_page_image')
+  await f.skill.executeTool(f.replace)
+  expect(f.imageAdapter.replace).not.toHaveBeenCalled()
+  f.imageAdapter.replace.mockImplementation(
+    async (_slide, _shape, _base64, _expected, onInserted) => {
+      expect([...f.records.values()][0]).toMatchObject({ state: 'pending', oldShapeId: 'shape1' })
+      await onInserted('new-picture')
+      expect([...f.records.values()][0]).toMatchObject({
+        state: 'pending',
+        newShapeId: 'new-picture',
+      })
+      return { shapeId: 'new-picture' }
+    },
+  )
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect([...f.records.values()][0]).toMatchObject({ state: 'complete', newShapeId: 'new-picture' })
+  expect(await f.skill.executeTool(f.replace)).toMatchObject({
+    output: expect.stringContaining('already_replaced'),
+  })
+  const result = JSON.parse((await f.skill.executeTool(f.status)).output)
+  expect(result).toMatchObject({
+    historical: true,
+    record: { state: 'complete', newShapeId: 'new-picture' },
+  })
+  expect(f.imageAdapter.replace).toHaveBeenCalledOnce()
+})
+it('keeps failed image replacements pending across recreation and rejects changed VFS sources', async () => {
+  const f = imageSetup()
+  f.imageAdapter.replace.mockRejectedValue(new Error('office_state_uncertain'))
+  await f.skill.executeTool(f.replace)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow(
+    'office_state_uncertain',
+  )
+  expect(await createPresentationPageEditingSkill(f.options).executeTool(f.replace)).toMatchObject({
+    isError: true,
+    output: 'presentation_image_replacement_uncertain',
+  })
+  expect(f.imageAdapter.replace).toHaveBeenCalledOnce()
+  const g = imageSetup()
+  await g.skill.executeTool(g.replace)
+  g.vfs.writeFile('/home/user/new.png', new Uint8Array([1, 2, 3]))
+  await expect(g.proposals.confirm(g.proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+  expect(g.writeImageReplacement).not.toHaveBeenCalled()
+  expect(g.imageAdapter.replace).not.toHaveBeenCalled()
+})
+it('does not call image adapter if reservation fails and retains candidate on completion save failure', async () => {
+  const f = imageSetup()
+  f.writeImageReplacement.mockRejectedValue(new Error('save_failed'))
+  await f.skill.executeTool(f.replace)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow()
+  expect(f.imageAdapter.replace).not.toHaveBeenCalled()
+  const g = imageSetup(),
+    write = g.writeImageReplacement.getMockImplementation()!
+  g.writeImageReplacement.mockImplementation(async (key, record) => {
+    if (record.state === 'complete') throw new Error('save_failed')
+    await write(key, record)
+  })
+  await g.skill.executeTool(g.replace)
+  await expect(g.proposals.confirm(g.proposals.pending()!.id)).rejects.toThrow()
+  expect([...g.records.values()][0]).toMatchObject({ state: 'pending', newShapeId: 'new-picture' })
+  expect(await g.skill.executeTool(g.replace)).toMatchObject({
+    isError: true,
+    output: 'presentation_image_replacement_uncertain',
+  })
+})
+it('keeps history readable without browser decode and hides unsupported replacement', async () => {
+  const f = imageSetup()
+  await f.skill.executeTool(f.replace)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  vi.stubGlobal('createImageBitmap', undefined)
+  const skill = createPresentationPageEditingSkill({ ...f.options, imageAdapter: undefined })
+  expect(skill.tools.map((t) => t.name)).not.toContain('replace_presentation_page_image')
+  expect(skill.tools.map((t) => t.name)).toContain('read_presentation_image_replacement')
+  expect(JSON.parse((await skill.executeTool(f.status)).output)).toMatchObject({
+    historical: true,
+    record: { state: 'complete' },
+  })
+  expect(await skill.executeTool(f.replace)).toMatchObject({
+    isError: true,
+    output: 'presentation_unavailable',
+  })
+})
+it('rejects changed original pictures, document changes, and lifecycle cancellation before insertion', async () => {
+  for (const change of ['picture', 'document', 'clear'] as const) {
+    const f = imageSetup()
+    await f.skill.executeTool(f.replace)
+    if (change === 'picture') f.snapshot.mediaDigest = 'c'.repeat(64)
+    if (change === 'document') f.documentId.mockResolvedValue('other-document')
+    if (change === 'clear') f.skill.clear()
+    await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow()
+    expect(f.writeImageReplacement).not.toHaveBeenCalled()
+    expect(f.imageAdapter.replace).not.toHaveBeenCalled()
+  }
+})
+it('retains pending state when candidate persistence fails and rejects forged history scope', async () => {
+  const f = imageSetup(),
+    write = f.writeImageReplacement.getMockImplementation()!
+  f.writeImageReplacement.mockImplementation(async (key, record) => {
+    if (record.newShapeId) throw new Error('save_failed')
+    await write(key, record)
+  })
+  await f.skill.executeTool(f.replace)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('save_failed')
+  expect([...f.records.values()][0]).toMatchObject({ state: 'pending' })
+  expect([...f.records.values()][0].newShapeId).toBeUndefined()
+  const [key, record] = [...f.records.entries()][0]
+  f.records.set(key, { ...record, documentId: 'another-doc' })
+  expect(await f.skill.executeTool(f.status)).toMatchObject({
+    isError: true,
+    output: 'presentation_image_replacement_invalid',
+  })
+})
+it('does not insert if source changes while the pending reservation is saving', async () => {
+  const f = imageSetup(),
+    write = f.writeImageReplacement.getMockImplementation()!
+  f.writeImageReplacement.mockImplementation(async (key, record) => {
+    await write(key, record)
+    f.vfs.writeFile('/home/user/new.png', new Uint8Array([1, 2, 3]))
+  })
+  await f.skill.executeTool(f.replace)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+  expect(f.imageAdapter.replace).not.toHaveBeenCalled()
+  expect([...f.records.values()][0]).toMatchObject({ state: 'pending' })
 })
