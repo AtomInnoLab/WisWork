@@ -20,7 +20,10 @@ export function PresentationQaCard({ controller }: { controller: PresentationQaC
   if (!record) return null
   return (
     <section className="presentation-project" aria-label="页面 QA 记录">
-      <strong>页面 QA 记录 · {record.pages.length} 页</strong>
+      <strong>
+        {record.source === 'production' ? '页生产任务 QA 记录' : '页面 QA 记录'} ·{' '}
+        {record.pages.length} 页
+      </strong>
       <p>以下为历史检查记录，需重新采集才能确认当前状态；不代表来源核验或保存重开验收。</p>
       {record.pages.some((page) => page.recheckRequired) && (
         <p role="status">

@@ -256,6 +256,10 @@ export function createOfficeHostRuntime(
       : undefined
   let importSource: 'generation' | 'production' = 'generation'
   let importSelectionEpoch = 0
+  const activeArtifact = (projectId?: string) =>
+    importSource === 'production'
+      ? production?.artifact(projectId)
+      : generation?.artifact(projectId)
   const executeGeneration: AgentSkill['executeTool'] = async (call, signal) => {
     const selection = ++importSelectionEpoch
     try {
@@ -349,8 +353,7 @@ export function createOfficeHostRuntime(
           vfs,
           available: () =>
             options.presentation!.available() && supportsNativePowerPointMasterEditing(),
-          artifact: (projectId) =>
-            importSource === 'production' ? undefined : generation.artifact(projectId),
+          artifact: activeArtifact,
           documentId: options.presentation.documentId,
           readReceipt: options.presentation.readReceipt,
           inspectPage: (id, signal) => powerPointAdapter.inspectPresentationPage(id, signal),
@@ -369,8 +372,7 @@ export function createOfficeHostRuntime(
       ? createPresentationPageEditingSkill({
           available: () =>
             options.presentation!.available() && supportsNativePowerPointMasterEditing(),
-          artifact: (projectId) =>
-            importSource === 'production' ? undefined : generation.artifact(projectId),
+          artifact: activeArtifact,
           documentId: options.presentation.documentId,
           readReceipt: options.presentation.readReceipt,
           adapter: powerPointAdapter,
@@ -385,9 +387,9 @@ export function createOfficeHostRuntime(
     qaSkill && generation
       ? {
           read: () => {
-            const artifact = importSource === 'production' ? undefined : generation.artifact()
+            const artifact = activeArtifact()
             return artifact
-              ? options.presentation!.readQa!(`${artifact.projectId}/${artifact.requestId}`)
+              ? options.presentation!.readQa!(presentationImportKey(artifact))
               : undefined
           },
           revision: () => qaRevision,
@@ -474,7 +476,7 @@ export function createOfficeHostRuntime(
           ]
         },
         get systemPrompt() {
-          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}`
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}\nQA and stable page editing use the currently selected artifact: a successfully prepared production task or explicitly compiled/restored whole deck. Select the intended source before acting; do not substitute another task with the same IDs.`
         },
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),

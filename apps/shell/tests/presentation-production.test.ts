@@ -300,6 +300,43 @@ it('prepares real page files and resumes confirmed Office import without mixing 
   await f.call('production_begin', { requestId: 'run', planRevision: 1, deck: f.deck })
   await f.call('production_run', { requestId: 'run' })
   await f.call('compile', { requestId: 'whole', planRevision: 1, deck: f.deck })
+  const { BrowserPowerPointAdapter } =
+    await import('../../office-addin/src/skills/powerpoint/browser-powerpoint-adapter')
+  const inspect = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'inspectPresentationPage')
+    .mockImplementation(async (slideId) => ({
+      slideId,
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes: [],
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: {
+        mime: 'image/png',
+        base64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII=',
+      },
+    }))
+  let pageText = 'before'
+  const readText = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'readPresentationPageText')
+    .mockImplementation(async (slideId, shapeId) => ({
+      slideId,
+      shapeId,
+      text: pageText,
+      paragraphs: [pageText],
+    }))
+  const editText = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationPageText')
+    .mockImplementation(async (_slide, _shape, text) => {
+      pageText = text
+    })
+  const qaRecords = new Map<
+    string,
+    import('../../office-addin/src/skills/powerpoint/presentation-qa').PresentationQaRecord
+  >()
   const settings = new Map<string, unknown>()
   const binding = createPresentationDocumentBinding(
     {
@@ -350,6 +387,15 @@ it('prepares real page files and resumes confirmed Office import without mixing 
       presentation: {
         ...binding,
         documentId: async () => 'doc',
+        readQa: (key) => qaRecords.get(key),
+        writeQa: async (key, value) => {
+          qaRecords.set(key, structuredClone(value))
+        },
+        invalidateQa: async (ids) => {
+          for (const record of qaRecords.values())
+            for (const page of record.pages)
+              if (!ids || ids.includes(page.hostSlideId)) page.recheckRequired = true
+        },
         available: () => true,
         assetsAvailable: () => true,
         request: async (body, signal) =>
@@ -405,7 +451,56 @@ it('prepares real page files and resumes confirmed Office import without mixing 
       name: 'read_presentation_qa',
       input: { project_id: f.deck.id },
     })
-    expect(qa).toMatchObject({ isError: true, output: 'presentation_restore_required' })
+    expect(qa.isError, qa.output).not.toBe(true)
+    for (const page of f.deck.slides.slice(0, 2)) {
+      const captured = await runtime.skill.executeTool({
+        id: 'capture',
+        name: 'capture_presentation_page_qa',
+        input: { project_id: f.deck.id, page_id: page.id },
+      })
+      expect(captured.isError, captured.output).not.toBe(true)
+    }
+    expect(inspect).toHaveBeenLastCalledWith('host-2', undefined)
+    expect(runtime.qa!.read()).toMatchObject({
+      source: 'production',
+      pages: [{ hostSlideId: 'host-1' }, { hostSlideId: 'host-2' }],
+    })
+    expect(qaRecords.has(`${f.deck.id}/run`)).toBe(false)
+    const edit = await runtime.skill.executeTool({
+      id: 'edit',
+      name: 'edit_presentation_page_text',
+      input: {
+        project_id: f.deck.id,
+        page_id: f.deck.slides[1]!.id,
+        shape_id: 'title',
+        text: 'after',
+      },
+    })
+    expect(edit.isError, edit.output).not.toBe(true)
+    await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+    expect(editText.mock.calls[0]?.slice(0, 2)).toEqual(['host-2', 'title'])
+    expect(pageText).toBe('after')
+    expect(runtime.qa!.read()!.pages.map((p) => p.recheckRequired)).toEqual([undefined, true])
+    const pendingEdit = await runtime.skill.executeTool({
+      id: 'pending-edit',
+      name: 'edit_presentation_page_text',
+      input: {
+        project_id: f.deck.id,
+        page_id: f.deck.slides[1]!.id,
+        shape_id: 'title',
+        text: 'must-not-write',
+      },
+    })
+    expect(pendingEdit.isError, pendingEdit.output).not.toBe(true)
+    const pendingId = runtime.proposals.pending()!.id
+    const switchSource = await runtime.skill.executeTool({
+      id: 'switch',
+      name: 'restore_presentation_project',
+      input: { project_id: f.deck.id },
+    })
+    expect(switchSource.isError, switchSource.output).not.toBe(true)
+    await expect(runtime.proposals.confirm(pendingId)).rejects.toThrow('proposal_stale')
+    expect(pageText).toBe('after')
     expect(runtime.qa!.read()).toBeUndefined()
     const old = await runtime.skill.executeTool({
       id: 'old',
@@ -427,6 +522,9 @@ it('prepares real page files and resumes confirmed Office import without mixing 
     }
   } finally {
     runtime.dispose()
+    inspect.mockRestore()
+    readText.mockRestore()
+    editText.mockRestore()
     vi.unstubAllGlobals()
   }
 })

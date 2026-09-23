@@ -9,6 +9,8 @@ import {
 import {
   createPresentationProductionDeliverySkill,
   presentationImportKey,
+  presentationArtifactContent,
+  presentationPageMapping,
   validPresentationImportRecord,
 } from '../src/skills/powerpoint/presentation-page-delivery'
 function fixture() {
@@ -280,4 +282,37 @@ it('preserves legacy two-segment keys whose project ID is production', async () 
   expect(createPresentationDocumentBinding(settings).readReceipt('production/request-v1')).toEqual(
     v1,
   )
+})
+
+it('shares the exact persisted digest and maps duplicate selectors by business page identity', async () => {
+  const f = fixture()
+  await f.confirm()
+  const record = f.receipts.get(presentationImportKey(f.artifact))!
+  const digest = Array.from(
+    new Uint8Array(
+      await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(presentationArtifactContent(f.artifact)),
+      ),
+    ),
+    (b) => b.toString(16).padStart(2, '0'),
+  ).join('')
+  expect(digest).toBe(record.checkpoint!.artifactDigest)
+  expect(presentationPageMapping(f.artifact, record, 'page1')).toEqual({
+    sourceSlideId: '256#',
+    slideId: 'host2',
+  })
+  const partial = structuredClone(record)
+  partial.state = 'pending'
+  delete partial.slideIds
+  partial.checkpoint!.completed = partial.checkpoint!.completed.slice(0, 1)
+  partial.checkpoint!.inFlight = { sourceSlideId: '256#' }
+  expect(presentationPageMapping(f.artifact, partial, 'page1')).toBeUndefined()
+  expect(presentationPageMapping(f.artifact, partial, 'page0')?.slideId).toBe('host1')
+  const changed = structuredClone(f.artifact)
+  changed.pages!.reverse()
+  expect(presentationPageMapping(changed, record, 'page1')).toBeUndefined()
+  expect(
+    presentationPageMapping(f.artifact, { ...record, documentId: 'other' }, 'page1'),
+  ).toBeUndefined()
 })

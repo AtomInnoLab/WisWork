@@ -163,6 +163,29 @@ function validPages(artifact: CompiledPresentationArtifact): boolean {
       new Set(artifact.pages.map((p) => p.sourceSlideId)).size === artifact.pages.length),
   )
 }
+// Keep v1 byte hashing and v2 bundle serialization identical to persisted import receipts.
+export function presentationArtifactContent(artifact: CompiledPresentationArtifact): string {
+  if (artifact.pagePptxBase64 === undefined) return artifact.pptxBase64
+  if (!validPages(artifact)) throw new Error('presentation_import_state_invalid')
+  presentationImportKey(artifact)
+  return JSON.stringify({
+    documentId: artifact.documentId,
+    projectId: artifact.projectId,
+    requestId: artifact.requestId,
+    planRevision: artifact.planRevision,
+    pages: artifact.pages,
+    pagePptxBase64: artifact.pagePptxBase64,
+  })
+}
+export function presentationPageMapping(
+  artifact: CompiledPresentationArtifact,
+  record: PresentationImportRecord | undefined,
+  pageId: string,
+): { sourceSlideId: string; slideId: string } | undefined {
+  if (!record?.checkpoint || !summarizePresentationImport(artifact, record)) return undefined
+  const index = artifact.pages!.findIndex((page) => page.id === pageId)
+  return index < 0 ? undefined : record.checkpoint.completed[index]
+}
 export function presentationImportKey(artifact: CompiledPresentationArtifact): string {
   if (
     typeof artifact.projectId !== 'string' ||
@@ -349,18 +372,7 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
           new Uint8Array(
             await crypto.subtle.digest(
               'SHA-256',
-              new TextEncoder().encode(
-                production
-                  ? JSON.stringify({
-                      documentId: artifact.documentId,
-                      projectId: artifact.projectId,
-                      requestId: artifact.requestId,
-                      planRevision: artifact.planRevision,
-                      pages: artifact.pages,
-                      pagePptxBase64: pageBytes,
-                    })
-                  : artifact.pptxBase64,
-              ),
+              new TextEncoder().encode(presentationArtifactContent(artifact)),
             ),
           ),
           (b) => b.toString(16).padStart(2, '0'),
