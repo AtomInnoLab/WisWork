@@ -1,3 +1,5 @@
+import { BrowserPresentationImageAdapter } from '../skills/powerpoint/browser-presentation-image-adapter.js'
+import type { ImageReplacementRecord } from '../skills/powerpoint/presentation-image-replacement-record.js'
 import { createPresentationPageEditingSkill } from '../skills/powerpoint/presentation-page-editing.js'
 import {
   createPresentationQaSkill,
@@ -101,6 +103,8 @@ export function createOfficeHostRuntime(
   host: OfficeHost,
   options: {
     presentation?: Omit<PresentationGenerationOptions, 'vfs'> & {
+      readImageReplacement?(key: string): ImageReplacementRecord | undefined
+      writeImageReplacement?(key: string, record: ImageReplacementRecord): Promise<void>
       invalidateQa?(): Promise<void>
       readQa?(key: string): PresentationQaRecord | undefined
       writeQa?(key: string, record: PresentationQaRecord): Promise<void>
@@ -298,6 +302,10 @@ export function createOfficeHostRuntime(
           documentId: options.presentation.documentId,
           readReceipt: options.presentation.readReceipt,
           adapter: powerPointAdapter,
+          vfs,
+          imageAdapter: new BrowserPresentationImageAdapter(),
+          readImageReplacement: options.presentation.readImageReplacement,
+          writeImageReplacement: options.presentation.writeImageReplacement,
           proposals,
         })
       : undefined
@@ -362,6 +370,8 @@ export function createOfficeHostRuntime(
             'edit_presentation_page_text',
             'read_presentation_page_geometry',
             'edit_presentation_page_geometry',
+            'replace_presentation_page_image',
+            'read_presentation_image_replacement',
           ].includes(call.name) && pageEditing
             ? pageEditing.executeTool(call, signal)
             : [

@@ -1,4 +1,10 @@
 import {
+  imageReplacementKey,
+  imageReplacementReservedBytes,
+  validateImageReplacementRecord,
+  type ImageReplacementRecord,
+} from './presentation-image-replacement-record.js'
+import {
   validatePresentationQaRecord,
   presentationQaRecheckBytes,
   PRESENTATION_QA_RECHECK_FIELD_BYTES,
@@ -8,6 +14,7 @@ import { validPresentationImportRecord } from './presentation-page-delivery.js'
 import type { PresentationImportRecord } from './presentation-delivery.js'
 const ID_KEY = 'wiswork.presentation.document.v1'
 const IMPORT_KEY = 'wiswork.presentation.imports.v1'
+const IMAGE_KEY = 'wiswork.presentation.image-replacements.v1'
 const QA_KEY = 'wiswork.presentation.qa.v1'
 const PROJECT_KEY = 'wiswork.presentation.project.v1'
 const validId = (value: unknown): value is string =>
@@ -124,6 +131,39 @@ export function createPresentationDocumentBinding(
       throw new Error('presentation_qa_state_invalid')
     return records
   }
+  let imageWriteFailed = false
+  const imageBytes = (raw: string, records: Record<string, ImageReplacementRecord>) =>
+    new TextEncoder().encode(raw).byteLength +
+    Object.values(records).reduce((sum, record) => sum + imageReplacementReservedBytes(record), 0)
+  const readImageRecords = (): Record<string, ImageReplacementRecord> => {
+    const invalid = () => new Error('presentation_image_replacement_state_invalid')
+    if (imageWriteFailed) throw invalid()
+    const raw = settings.get(IMAGE_KEY)
+    if (raw === undefined || raw === null) return {}
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 128 * 1024)
+      throw invalid()
+    let records: Record<string, ImageReplacementRecord>
+    try {
+      records = JSON.parse(raw)
+    } catch {
+      throw invalid()
+    }
+    if (
+      !records ||
+      typeof records !== 'object' ||
+      Array.isArray(records) ||
+      Object.keys(records).length > 32
+    )
+      throw invalid()
+    if (
+      Object.entries(records).some(
+        ([key, value]) => !/^[a-f0-9]{64}$/.test(key) || !validateImageReplacementRecord(value),
+      )
+    )
+      throw invalid()
+    if (imageBytes(raw, records) > 128 * 1024) throw invalid()
+    return records
+  }
   const saveQaRecords = async (records: Record<string, PresentationQaRecord>) => {
     if (Object.values(records).some((record) => !validatePresentationQaRecord(record)))
       throw new Error('presentation_qa_state_invalid')
@@ -189,6 +229,75 @@ export function createPresentationDocumentBinding(
               receiptWriteFailed = true
             }
           } else receiptWriteFailed = true
+          throw error
+        }
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
+    readImageReplacement: (key: string) => readImageRecords()[key],
+    writeImageReplacement(key: string, record: ImageReplacementRecord) {
+      // Copy before queueing so callers cannot change the reservation during another save.
+      const snapshot = structuredClone(record)
+      const write = async () => {
+        const invalid = () => new Error('presentation_image_replacement_state_invalid')
+        if (
+          !validateImageReplacementRecord(snapshot) ||
+          key !==
+            (await imageReplacementKey(
+              snapshot.projectId,
+              snapshot.requestId,
+              snapshot.pageId,
+              snapshot.oldShapeId,
+            ))
+        )
+          throw invalid()
+        if ((await documentId()) !== snapshot.documentId)
+          throw new Error('presentation_document_changed')
+        const records = readImageRecords(),
+          prior = records[key]
+        if (!prior) {
+          if (snapshot.state !== 'pending' || snapshot.newShapeId !== undefined) throw invalid()
+        } else {
+          const identity = (r: ImageReplacementRecord) =>
+            JSON.stringify([
+              r.documentId,
+              r.projectId,
+              r.requestId,
+              r.pageId,
+              r.hostSlideId,
+              r.oldShapeId,
+              r.assetDigest,
+            ])
+          if (
+            identity(prior) !== identity(snapshot) ||
+            (prior.newShapeId !== undefined && prior.newShapeId !== snapshot.newShapeId) ||
+            (snapshot.state === 'complete' && !prior.newShapeId) ||
+            (prior.state === 'complete' && snapshot.state !== 'complete')
+          )
+            throw invalid()
+          if (prior.state === 'complete') return
+        }
+        records[key] = snapshot
+        const serialized = JSON.stringify(records)
+        if (Object.keys(records).length > 32 || imageBytes(serialized, records) > 128 * 1024)
+          throw new Error('presentation_image_replacement_history_full')
+        const previous = settings.get(IMAGE_KEY),
+          location = settings.location()
+        try {
+          settings.set(IMAGE_KEY, serialized)
+          await settings.save()
+          if (settings.location() !== location || settings.get(IMAGE_KEY) !== serialized)
+            throw new Error('presentation_document_changed')
+        } catch (error) {
+          if (settings.location() === location && settings.get(IMAGE_KEY) === serialized) {
+            try {
+              settings.set(IMAGE_KEY, typeof previous === 'string' ? previous : '{}')
+            } catch {
+              imageWriteFailed = true
+            }
+          } else imageWriteFailed = true
           throw error
         }
       }

@@ -1,3 +1,6 @@
+import { PNG } from 'pngjs'
+import { BrowserPresentationImageAdapter } from '../src/skills/powerpoint/browser-presentation-image-adapter'
+import { imageReplacementKey } from '../src/skills/powerpoint/presentation-image-replacement-record'
 import { createHash } from 'node:crypto'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime'
@@ -387,3 +390,67 @@ it('preserves a manual geometry change made after proposing layout adjustments',
   expect(f.page().recheckRequired).toBeUndefined()
   f.runtime.dispose()
 })
+
+it.each([false, true])(
+  'persists image replacement through runtime and blocks replay (interrupted=%s)',
+  async (interrupted) => {
+    const f = await fixture()
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(async () => ({ width: 1, height: 1, close() {} })),
+    )
+    const png = new PNG({ width: 1, height: 1 })
+    png.data.fill(120)
+    f.runtime.vfs.writeFile('/home/user/replacement.png', PNG.sync.write(png))
+    const snapshot = {
+      slideId: 'host',
+      shapeId: 'old',
+      geometry: { left: 1, top: 2, width: 100, height: 50 },
+      rotation: 0,
+      name: 'Picture',
+      altTextTitle: '',
+      altTextDescription: '',
+      zOrderPosition: 0,
+      shapeIds: ['old'],
+      pictureFingerprint: 'a'.repeat(64),
+      mediaDigest: 'b'.repeat(64),
+    }
+    vi.spyOn(BrowserPresentationImageAdapter.prototype, 'inspect').mockResolvedValue(snapshot)
+    const key = await imageReplacementKey('project', 'request', 'page1', 'old')
+    const native = vi
+      .spyOn(BrowserPresentationImageAdapter.prototype, 'replace')
+      .mockImplementation(async (_slide, _shape, _base64, _expected, onInserted) => {
+        expect(f.page().recheckRequired).toBe(true)
+        expect(f.binding.readImageReplacement(key)?.state).toBe('pending')
+        await onInserted('new')
+        expect(f.binding.readImageReplacement(key)?.newShapeId).toBe('new')
+        if (interrupted) throw new Error('office_write_uncertain')
+        return { shapeId: 'new' }
+      })
+    const call = {
+      id: 'replace-image',
+      name: 'replace_presentation_page_image',
+      input: { page_id: 'page1', shape_id: 'old', path: '/home/user/replacement.png' },
+    }
+    expect((await f.runtime.skill.executeTool(call)).isError).not.toBe(true)
+    const confirmation = f.proposals.confirm(f.proposals.pending()!.id)
+    if (interrupted) await expect(confirmation).rejects.toThrow('office_write_uncertain')
+    else await confirmation
+    expect(f.binding.readImageReplacement(key)).toMatchObject({
+      state: interrupted ? 'pending' : 'complete',
+      newShapeId: 'new',
+      hostSlideId: 'host',
+    })
+    const status = await f.runtime.skill.executeTool({
+      id: 'status',
+      name: 'read_presentation_image_replacement',
+      input: { page_id: 'page1', shape_id: 'old' },
+    })
+    expect(status.isError).not.toBe(true)
+    expect(status.output).toContain(interrupted ? 'pending' : 'complete')
+    await f.runtime.skill.executeTool(call)
+    expect(native).toHaveBeenCalledOnce()
+    expect(f.proposals.pending()).toBeUndefined()
+    f.runtime.dispose()
+  },
+)
