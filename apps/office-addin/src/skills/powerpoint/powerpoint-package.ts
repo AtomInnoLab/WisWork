@@ -520,3 +520,24 @@ export async function inspectPowerPointPicturePackage(
   if (signal?.aborted) throw new Error('cancelled')
   return { pictureFingerprint, mediaDigest, shapeIds: ids as string[] }
 }
+
+/** Hash entry bytes and paths, excluding ZIP compression and timestamp metadata. */
+export async function presentationPackageDigest(
+  base64: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const zip = await loadBoundedZip(base64, signal)
+  const sha = async (bytes: Uint8Array): Promise<string> => {
+    if (signal?.aborted) throw new Error('cancelled')
+    const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes))
+    if (signal?.aborted) throw new Error('cancelled')
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
+  const entries: [string, string][] = []
+  for (const path of Object.keys(zip.files).sort()) {
+    const file = zip.files[path]!
+    if (!file.dir) entries.push([path, await sha(await file.async('uint8array'))])
+  }
+  if (!entries.length) throw new Error('invalid_tool_input')
+  return sha(new TextEncoder().encode(JSON.stringify(entries)))
+}
