@@ -1,3 +1,5 @@
+import { summarizePresentationImport } from '../skills/powerpoint/presentation-page-delivery.js'
+import type { PresentationImportProgressController } from './presentation-import-progress.js'
 import {
   createPresentationAttachmentSkill,
   supportsPresentationAttachment,
@@ -56,6 +58,7 @@ import { composeOfficeSkills } from './skill-registry.js'
 
 export interface OfficeHostRuntime {
   readonly presentation?: PresentationProjectController
+  readonly importProgress?: PresentationImportProgressController
   durableAttachmentsAvailable?(): boolean
   durableImagesAvailable?(): boolean
   skill: AgentSkill
@@ -191,6 +194,33 @@ export function createOfficeHostRuntime(
           executeTool: generation.executeTool,
         })
       : undefined
+  let importRevision = 0
+  const importListeners = new Set<() => void>()
+  const notifyImport = () => {
+    importRevision++
+    for (const listener of importListeners) listener()
+  }
+  const importProgress: PresentationImportProgressController | undefined =
+    generation && options.presentation?.readReceipt
+      ? {
+          read: () => {
+            const artifact = generation.artifact()
+            return artifact
+              ? summarizePresentationImport(
+                  artifact,
+                  options.presentation!.readReceipt!(`${artifact.projectId}/${artifact.requestId}`),
+                )
+              : undefined
+          },
+          revision: () => importRevision,
+          subscribe: (listener) => {
+            importListeners.add(listener)
+            return () => {
+              importListeners.delete(listener)
+            }
+          },
+        }
+      : undefined
   const delivery =
     generation && options.presentation?.readReceipt && options.presentation.writeReceipt
       ? createPresentationDeliverySkill({
@@ -200,7 +230,13 @@ export function createOfficeHostRuntime(
           available: options.presentation.available,
           documentId: options.presentation.documentId,
           readReceipt: options.presentation.readReceipt,
-          writeReceipt: options.presentation.writeReceipt,
+          writeReceipt: async (key, record) => {
+            try {
+              await options.presentation!.writeReceipt!(key, record)
+            } finally {
+              notifyImport()
+            }
+          },
         })
       : undefined
   const skill: AgentSkill = generation
@@ -226,7 +262,9 @@ export function createOfficeHostRuntime(
             ? attachments.executeTool(call, signal)
             : ['save_presentation_plan', 'read_presentation_plan'].includes(call.name) && planning
               ? planning.executeTool(call, signal)
-              : call.name === 'import_generated_presentation' && delivery
+              : ['import_generated_presentation', 'read_presentation_import_status'].includes(
+                    call.name,
+                  ) && delivery
                 ? delivery.executeTool(call, signal)
                 : [
                       'compile_deck_with_pptxgenjs',
@@ -250,6 +288,7 @@ export function createOfficeHostRuntime(
         generation?.clear()
         planning?.clear()
         presentation?.clear()
+        notifyImport()
       },
       attachments && options.presentation
         ? {
@@ -264,6 +303,7 @@ export function createOfficeHostRuntime(
         : undefined,
     ),
     ...(presentation ? { presentation } : {}),
+    ...(importProgress ? { importProgress } : {}),
   }
 }
 

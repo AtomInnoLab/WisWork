@@ -356,3 +356,21 @@ it('requires negotiated asset references while allowing compact reference compil
   ).not.toHaveProperty('isError', true)
   expect(request).toHaveBeenCalledWith(expect.objectContaining({ deck: referenced }), undefined)
 })
+
+it('retains immutable source-page metadata and rejects mismatched page identities', async () => {
+  const f = fixture()
+  const value = await response().json()
+  const pages = [{ id: 'slide-1', title: 'Result', sourceSlideId: '256#' }]
+  f.request.mockResolvedValueOnce(new Response(JSON.stringify({ ...value, pages })))
+  expect((await f.skill.executeTool(compileCall())).isError).not.toBe(true)
+  expect(f.skill.artifact()?.pages).toEqual(pages)
+  expect(Object.isFrozen(f.skill.artifact()?.pages)).toBe(true)
+  for (const page of [
+    { ...pages[0], id: 'other' },
+    { ...pages[0], sourceSlideId: '256' },
+    { ...pages[0], sourceSlideId: '4294967296#' },
+  ]) {
+    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ ...value, pages: [page] })))
+    expect((await f.skill.executeTool(compileCall())).output).toBe('presentation_response_invalid')
+  }
+})

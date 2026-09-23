@@ -195,6 +195,45 @@ export function createPresentationGenerationSkill(
           !/^[A-Za-z0-9+/]+={0,2}$/.test(result.pptxBase64)
         )
           throw new Error('presentation_response_invalid')
+        let pages: Array<{ id: string; title: string; sourceSlideId: string }> | undefined
+        if (result.pages !== undefined) {
+          if (
+            !Array.isArray(result.pages) ||
+            result.pages.length !== result.report.slideCount ||
+            result.pages.length > 32
+          )
+            throw new Error('presentation_response_invalid')
+          const parsedPages: NonNullable<typeof pages> = result.pages.map(
+            (page: unknown, index: number) => {
+              if (!page || typeof page !== 'object' || Array.isArray(page))
+                throw new Error('presentation_response_invalid')
+              const value = page as { id: string; title: string; sourceSlideId: string }
+              if (
+                Object.keys(value).some((key) => !['id', 'title', 'sourceSlideId'].includes(key)) ||
+                !validId(value.id) ||
+                typeof value.title !== 'string' ||
+                !value.title ||
+                value.title.length > 300 ||
+                typeof value.sourceSlideId !== 'string' ||
+                !/^[1-9][0-9]{0,9}#$/.test(value.sourceSlideId) ||
+                Number(value.sourceSlideId.slice(0, -1)) < 256 ||
+                Number(value.sourceSlideId.slice(0, -1)) > 4294967295 ||
+                (deck &&
+                  (value.id !== deck.slides[index]?.id ||
+                    value.title !== deck.slides[index]?.title))
+              )
+                throw new Error('presentation_response_invalid')
+              return Object.freeze({ ...value })
+            },
+          )
+          pages = parsedPages
+          if (
+            new Set(pages.map((page) => page.id)).size !== pages.length ||
+            new Set(pages.map((page) => page.sourceSlideId)).size !== pages.length
+          )
+            throw new Error('presentation_response_invalid')
+          Object.freeze(pages)
+        }
         const binary = atob(result.pptxBase64)
         if (binary.length < 4 || binary.slice(0, 4) !== 'PK\u0003\u0004')
           throw new Error('presentation_response_invalid')
@@ -225,6 +264,7 @@ export function createPresentationGenerationSkill(
             requestId: result.requestId,
             pptxBase64: result.pptxBase64,
             slideCount: result.report.slideCount,
+            ...(pages ? { pages } : {}),
           }),
         )
         // Keep the in-memory import cache bounded; persisted projects remain restorable.

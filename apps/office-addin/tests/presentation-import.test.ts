@@ -5,14 +5,16 @@ function host(initial: string[] = ['original-1', 'original-2']) {
   let ids = [...initial]
   let queued = false
   let afterWrite: (() => void) | undefined
-  const insert = vi.fn(() => {
+  let pageCount = 2
+  const insert = vi.fn((_base64?: string, options?: { sourceSlideIds?: string[] }) => {
+    pageCount = options?.sourceSlideIds?.length ?? 2
     queued = true
   })
   const slides = { items: [] as Array<{ id: string }>, load: vi.fn() }
   const sync = vi.fn(async () => {
     if (queued) {
       queued = false
-      ids.push('generated-1', 'generated-2')
+      ids.push(...['generated-1', 'generated-2'].slice(0, pageCount))
       afterWrite?.()
     }
     slides.items = ids.map((id) => ({ id }))
@@ -154,3 +156,28 @@ describe('PowerPoint generated-deck import', () => {
     await expect(adapter.snapshot()).rejects.toThrow('office_api_unsupported')
   })
 })
+
+it('inserts exactly one selected source page and preserves the structural baseline', async () => {
+  const runtime = host(['256'])
+  const adapter = createBrowserPresentationImportAdapter()
+  const before = await adapter.snapshot()
+  const receipt = await adapter.insertPage!('UEs=', '257#', before)
+  expect(runtime.insert).toHaveBeenCalledWith('UEs=', {
+    formatting: 'KeepSourceFormatting',
+    targetSlideId: '256#',
+    sourceSlideIds: ['257#'],
+  })
+  expect(receipt.slideIds).toEqual(['generated-1'])
+  expect(await adapter.verify(receipt, before)).toBe(true)
+})
+it.each(['0#', '255#', '4294967296#', '256', 'x#', '0256#'])(
+  'rejects an invalid source page selector %s before queuing Office writes',
+  async (id) => {
+    const runtime = host()
+    const adapter = createBrowserPresentationImportAdapter()
+    await expect(adapter.insertPage!('UEs=', id, await adapter.snapshot())).rejects.toThrow(
+      'invalid_tool_input',
+    )
+    expect(runtime.insert).not.toHaveBeenCalled()
+  },
+)

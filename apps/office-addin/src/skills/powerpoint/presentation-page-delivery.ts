@@ -188,7 +188,7 @@ export function createPresentationPageDeliverySkill(
     id: 'office-presentation-page-delivery',
     tools: [tool],
     systemPrompt:
-      'Read saved page import progress after interruption. Resume only confirmed completed pages with no uncertain page. Never delete or replay an uncertain page automatically.',
+      'Read saved page import progress after interruption. Resume only the remaining pages after the confirmed completed prefix, and only when there is no uncertain page. Never repeat completed pages. Never delete or replay an uncertain page automatically.',
     async executeTool(call, signal) {
       try {
         const read = call.name === tool.name

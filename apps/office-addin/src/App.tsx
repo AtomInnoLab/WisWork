@@ -1,4 +1,8 @@
 import {
+  PresentationImportProgressCard,
+  type PresentationImportProgressController,
+} from './agent/presentation-import-progress.js'
+import {
   MAX_PRESENTATION_ATTACHMENT_BYTES,
   MAX_PRESENTATION_IMAGE_BYTES,
   isPresentationImage,
@@ -200,6 +204,7 @@ interface SessionFile {
 
 export interface OfficeWorkspaceUi {
   readonly project?: PresentationProjectController
+  readonly importProgress?: PresentationImportProgressController
   readonly durableAttachmentsAvailable?: () => boolean
   readonly durableImagesAvailable?: () => boolean
   readonly attachments: () => readonly string[]
@@ -247,6 +252,7 @@ export function createOfficeWorkspaceUi(
 ): OfficeWorkspaceUi {
   return Object.freeze({
     project: runtime.presentation,
+    importProgress: runtime.importProgress,
     durableAttachmentsAvailable: runtime.durableAttachmentsAvailable,
     durableImagesAvailable: runtime.durableImagesAvailable,
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
@@ -882,6 +888,7 @@ export function AgentWorkspace(props: {
             disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
           />
         )}
+        {ui.importProgress && <PresentationImportProgressCard controller={ui.importProgress} />}
         {ui.downloadFile &&
           files.some(
             (file) => file.startsWith('/home/user/generated/') && file.endsWith('.pptx'),
