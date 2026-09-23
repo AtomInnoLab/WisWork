@@ -265,3 +265,153 @@ describe('durable page production', () => {
       ).toThrow('invalid_state')
   })
 })
+
+function compiledParent(f: ReturnType<typeof setup>) {
+  let parent = f.store.beginProduction('project', 'doc', 'request', deck(), plan())
+  for (const page of parent.pages) {
+    parent = f.store.updateProductionPage(parent, page.pageId, { state: 'building', attempt: 1 })
+    parent = f.store.updateProductionPage(parent, page.pageId, {
+      state: 'compiled',
+      attempt: 1,
+      result: result(),
+    })
+  }
+  return parent
+}
+it('atomically derives only the requested page and preserves parent and copied results', () => {
+  const f = setup(),
+    parent = compiledParent(f),
+    before = readFileSync(f.path(), 'utf8'),
+    input = deck()
+  input.slides[1]!.title = 'Rebuilt'
+  const child = f.store.deriveProduction('project', 'doc', 'request', 'child', 'second', input)
+  expect(child.revision).toEqual({
+    parentRequestId: 'request',
+    pageId: 'second',
+    parentInputDigest: parent.inputDigest,
+  })
+  expect(child.pages).toEqual([parent.pages[0], { pageId: 'second', state: 'pending', attempt: 0 }])
+  expect(child.plan).toEqual(parent.plan)
+  expect(readFileSync(f.path(), 'utf8')).toBe(before)
+  expect(new PresentationStore(f.root).production('project', 'doc', 'child')).toEqual(child)
+  expect(f.store.deriveProduction('project', 'doc', 'request', 'child', 'second', input)).toEqual(
+    child,
+  )
+  expect(() => f.store.beginProduction('project', 'doc', 'child', input, plan())).toThrow(
+    'request_conflict',
+  )
+  expect(() =>
+    f.store.deriveProduction('project', 'doc', 'request', 'child', 'first', deck()),
+  ).toThrow('request_conflict')
+  input.slides[1]!.title = 'Mutated'
+  expect(f.store.production('project', 'doc', 'child')?.deck).toEqual({
+    ...deck(),
+    slides: [deck().slides[0], { id: 'second', title: 'Rebuilt' }],
+  })
+})
+it('rejects incomplete parents, shared resource changes and non-target modifications', () => {
+  const f = setup()
+  f.store.beginProduction('project', 'doc', 'request', deck(), plan())
+  expect(() =>
+    f.store.deriveProduction('project', 'doc', 'request', 'child', 'second', deck()),
+  ).toThrow('page_not_ready')
+  compiledParent(f)
+  for (const input of [
+    { ...deck(), theme: 'different' },
+    { ...deck(), slides: [{ id: 'first', title: 'changed' }, deck().slides[1]] },
+    { ...deck(), slides: deck().slides.reverse() },
+  ])
+    expect(() =>
+      f.store.deriveProduction('project', 'doc', 'request', 'child', 'second', input),
+    ).toThrow('invalid_request')
+  expect(() =>
+    f.store.deriveProduction('project', 'doc', 'request', 'request', 'second', deck()),
+  ).toThrow('invalid_request')
+  expect(() =>
+    f.store.deriveProduction('project', 'doc', 'request', 'child', 'missing', deck()),
+  ).toThrow('invalid_request')
+  expect(f.store.production('project', 'doc', 'child')).toBeUndefined()
+})
+it('keeps revision immutable during page CAS and validates parent digest on reload', () => {
+  const f = setup()
+  compiledParent(f)
+  const child = f.store.deriveProduction('project', 'doc', 'request', 'child', 'second', deck())
+  expect(() =>
+    f.store.updateProductionPage(
+      { ...child, revision: { ...child.revision!, parentInputDigest: 'a'.repeat(64) } },
+      'second',
+      { state: 'building', attempt: 1 },
+    ),
+  ).toThrow('invalid_state')
+  const tampered = JSON.parse(readFileSync(f.path('child'), 'utf8'))
+  tampered.revision.parentInputDigest = 'a'.repeat(64)
+  writeFileSync(f.path('child'), JSON.stringify(tampered))
+  expect(() => new PresentationStore(f.root).production('project', 'doc', 'child')).toThrow(
+    'invalid_state',
+  )
+})
+it('retries only the derived page and preserves inherited outputs through another derivation', () => {
+  const f = setup(),
+    parent = compiledParent(f)
+  let child = f.store.deriveProduction('project', 'doc', 'request', 'child', 'second', deck())
+  child = f.store.updateProductionPage(child, 'second', { state: 'building', attempt: 1 })
+  child = f.store.updateProductionPage(child, 'second', {
+    state: 'failed',
+    attempt: 1,
+    error: 'compile_failed',
+  })
+  expect(f.store.deriveProduction('project', 'doc', 'request', 'child', 'second', deck())).toEqual(
+    child,
+  )
+  child = f.store.updateProductionPage(child, 'second', { state: 'building', attempt: 2 })
+  child = f.store.updateProductionPage(child, 'second', {
+    state: 'compiled',
+    attempt: 2,
+    result: { ...result(), pptxBase64: 'UEsDBAEAAAA=' },
+  })
+  expect(child.pages[0]).toEqual(parent.pages[0])
+  expect(f.store.production('project', 'doc', 'request')).toEqual(parent)
+  const next = f.store.deriveProduction('project', 'doc', 'child', 'grandchild', 'first', deck())
+  expect(next.pages[1]).toEqual(child.pages[1])
+  expect(new PresentationStore(f.root).production('project', 'doc', 'grandchild')).toEqual(next)
+})
+it('keeps derivation atomic, cleans failed writes and enforces the shared request cap', () => {
+  const f = setup(),
+    parent = compiledParent(f)
+  vi.mocked(renameSync).mockImplementationOnce(() => {
+    throw new Error('disk failure')
+  })
+  expect(() =>
+    f.store.deriveProduction('project', 'doc', 'request', 'child', 'second', deck()),
+  ).toThrow('disk failure')
+  expect(f.store.production('project', 'doc', 'child')).toBeUndefined()
+  expect(f.store.production('project', 'doc', 'request')).toEqual(parent)
+  expect(readdirSync(join(f.path(), '..')).some((name) => name.endsWith('.tmp'))).toBe(false)
+  for (let i = 0; i < 31; i++)
+    f.store.deriveProduction('project', 'doc', 'request', `child-${i}`, 'second', deck())
+  expect(() =>
+    f.store.deriveProduction('project', 'doc', 'request', 'extra', 'second', deck()),
+  ).toThrow('output_too_large')
+  expect(
+    f.store.deriveProduction('project', 'doc', 'request', 'child-0', 'second', deck()).requestId,
+  ).toBe('child-0')
+})
+it('rejects malformed revision, missing parent and altered inherited page records', () => {
+  const f = setup()
+  compiledParent(f)
+  const child = f.store.deriveProduction('project', 'doc', 'request', 'child', 'second', deck())
+  for (const revision of [
+    { ...child.revision!, extra: true },
+    { ...child.revision!, parentRequestId: 'child' },
+    { ...child.revision!, pageId: 'missing' },
+    { ...child.revision!, parentRequestId: 'missing' },
+  ]) {
+    writeFileSync(f.path('child'), JSON.stringify({ ...child, revision }))
+    expect(() => f.store.production('project', 'doc', 'child')).toThrow('invalid_state')
+  }
+  writeFileSync(
+    f.path('child'),
+    JSON.stringify({ ...child, pages: [{ ...child.pages[0], attempt: 2 }, child.pages[1]] }),
+  )
+  expect(() => f.store.production('project', 'doc', 'child')).toThrow('invalid_state')
+})

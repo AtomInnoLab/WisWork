@@ -115,6 +115,7 @@ export interface PresentationProductionRecord {
   plan: PresentationPlanBinding
   planDigest: string
   pages: PresentationProductionPage[]
+  revision?: { parentRequestId: string; pageId: string; parentInputDigest: string }
 }
 const PRODUCTION_ERRORS = new Set([
   'compile_failed',
@@ -208,6 +209,7 @@ function productionRecord(
           'plan',
           'planDigest',
           'pages',
+          'revision',
         ].includes(key),
     ) ||
     record.version !== 1 ||
@@ -222,7 +224,27 @@ function productionRecord(
     record.sequence < 1
   )
     throw new Error('invalid_state')
+  const revision = record.revision
+  if (
+    revision !== undefined &&
+    (!revision ||
+      typeof revision !== 'object' ||
+      Array.isArray(revision) ||
+      Object.keys(revision).length !== 3 ||
+      Object.keys(revision).some(
+        (key) => !['parentRequestId', 'pageId', 'parentInputDigest'].includes(key),
+      ) ||
+      typeof revision.parentRequestId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(revision.parentRequestId) ||
+      revision.parentRequestId === record.requestId ||
+      typeof revision.pageId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(revision.pageId) ||
+      typeof revision.parentInputDigest !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(revision.parentInputDigest))
+  )
+    throw new Error('invalid_state')
   const ids = productionIds(record.deck, 'invalid_state')
+  if (revision && !ids.includes(revision.pageId)) throw new Error('invalid_state')
   if (
     record.inputDigest !== jsonDigest(record.deck, MAX_RECORD_BYTES, 'invalid_state') ||
     !record.plan ||
@@ -239,6 +261,20 @@ function productionRecord(
   })
   if (total > 10 * 1024 * 1024) throw new Error(budgetError)
   jsonDigest(record, MAX_RECORD_BYTES, budgetError)
+}
+
+function sameUnchangedPages(parent: unknown, child: unknown, pageId: string): boolean {
+  const { slides: original, ...parentShared } = parent as { slides: Array<{ id: string }> }
+  const { slides: revised, ...childShared } = child as { slides: Array<{ id: string }> }
+  return (
+    canonical(parentShared) === canonical(childShared) &&
+    original.length === revised.length &&
+    original.every(
+      (slide, index) =>
+        slide.id === revised[index]?.id &&
+        (slide.id === pageId || canonical(slide) === canonical(revised[index])),
+    )
+  )
 }
 
 export class PresentationStore {
@@ -350,6 +386,24 @@ export class PresentationStore {
         throw new Error('invalid_state')
       return record
     })
+    for (const record of records) {
+      if (!record.revision) continue
+      const parent = records.find((value) => value.requestId === record.revision!.parentRequestId)
+      if (
+        !parent ||
+        parent.sequence >= record.sequence ||
+        parent.inputDigest !== record.revision.parentInputDigest ||
+        parent.planDigest !== record.planDigest ||
+        parent.pages.some((page) => page.state !== 'compiled') ||
+        !sameUnchangedPages(parent.deck, record.deck, record.revision.pageId) ||
+        record.pages.some(
+          (page, index) =>
+            page.pageId !== record.revision!.pageId &&
+            canonical(page) !== canonical(parent.pages[index]),
+        )
+      )
+        throw new Error('invalid_state')
+    }
     if (new Set(records.map((record) => record.sequence)).size !== records.length)
       throw new Error('invalid_state')
     return records
@@ -371,7 +425,11 @@ export class PresentationStore {
     const records = this.productions(directory, projectId, documentId)
     const previous = records.find((record) => record.requestId === requestId)
     if (previous) {
-      if (previous.inputDigest !== inputDigest || previous.planDigest !== planHash)
+      if (
+        previous.revision ||
+        previous.inputDigest !== inputDigest ||
+        previous.planDigest !== planHash
+      )
         throw new Error('request_conflict')
       return previous
     }
@@ -390,6 +448,59 @@ export class PresentationStore {
     }
     productionRecord(record, 'output_too_large')
     const frozen = JSON.parse(canonical(record)) as PresentationProductionRecord
+    this.write(join(directory, `production-${digest(requestId)}.json`), frozen)
+    return frozen
+  }
+  deriveProduction(
+    projectId: string,
+    documentId: string,
+    parentRequestId: string,
+    requestId: string,
+    pageId: string,
+    deck: unknown,
+  ): PresentationProductionRecord {
+    assertPresentationId(parentRequestId)
+    assertPresentationId(requestId)
+    assertPresentationId(pageId)
+    if (parentRequestId === requestId) throw new Error('invalid_request')
+    const ids = productionIds(deck, 'invalid_request')
+    if (!ids.includes(pageId)) throw new Error('invalid_request')
+    const directory = this.bind(projectId, documentId, false)
+    if (!directory) throw new Error('page_not_ready')
+    const records = this.productions(directory, projectId, documentId)
+    const parent = records.find((record) => record.requestId === parentRequestId)
+    if (!parent || parent.pages.some((page) => page.state !== 'compiled'))
+      throw new Error('page_not_ready')
+    const inputDigest = jsonDigest(deck, MAX_RECORD_BYTES, 'invalid_request')
+    const revision = { parentRequestId, pageId, parentInputDigest: parent.inputDigest }
+    const previous = records.find((record) => record.requestId === requestId)
+    if (previous) {
+      if (
+        previous.inputDigest !== inputDigest ||
+        canonical(previous.revision) !== canonical(revision)
+      )
+        throw new Error('request_conflict')
+      return previous
+    }
+    if (!sameUnchangedPages(parent.deck, deck, pageId)) throw new Error('invalid_request')
+    if (records.length >= 32) throw new Error('output_too_large')
+    const child: PresentationProductionRecord = {
+      version: 1,
+      projectId,
+      documentId,
+      requestId,
+      sequence: Math.max(...records.map((record) => record.sequence)) + 1,
+      inputDigest,
+      deck,
+      plan: parent.plan,
+      planDigest: parent.planDigest,
+      revision,
+      pages: parent.pages.map((page) =>
+        page.pageId === pageId ? { pageId, state: 'pending', attempt: 0 } : page,
+      ),
+    }
+    productionRecord(child, 'output_too_large')
+    const frozen = JSON.parse(canonical(child)) as PresentationProductionRecord
     this.write(join(directory, `production-${digest(requestId)}.json`), frozen)
     return frozen
   }
@@ -417,7 +528,8 @@ export class PresentationStore {
       !current ||
       current.sequence !== record.sequence ||
       current.inputDigest !== record.inputDigest ||
-      current.planDigest !== record.planDigest
+      current.planDigest !== record.planDigest ||
+      canonical(current.revision) !== canonical(record.revision)
     )
       throw new Error('invalid_state')
     const index = current.pages.findIndex((page) => page.pageId === pageId)
