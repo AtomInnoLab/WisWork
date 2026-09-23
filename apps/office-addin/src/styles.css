@@ -816,3 +816,35 @@ p {
   overflow-wrap: anywhere;
   text-align: left;
 }
+
+.presentation-project {
+  max-height: 30vh;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-20);
+  font-size: 12px;
+}
+
+.presentation-project p {
+  margin: 6px 0;
+}
+
+.presentation-project-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.presentation-project-actions button {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.presentation-project summary {
+  cursor: pointer;
+}

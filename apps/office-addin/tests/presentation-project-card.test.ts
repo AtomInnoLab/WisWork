@@ -1,0 +1,120 @@
+// @vitest-environment jsdom
+import React, { act } from 'react'
+import { createRoot } from 'react-dom/client'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { PresentationProjectCard } from '../src/agent/presentation-project-card.js'
+import type { PresentationProjectController } from '../src/skills/powerpoint/presentation-project.js'
+
+type Snapshot = ReturnType<PresentationProjectController['snapshot']>
+const pending: Snapshot = {
+  phase: 'idle',
+  project: {
+    projectId: 'p1',
+    title: '季度计划',
+    status: 'pending',
+    latestRequestId: 'latest',
+    latestCompiledRequestId: 'old',
+    slideCount: 1,
+    slides: [{ id: 's1', title: '目标' }],
+    history: [
+      { requestId: 'latest', sequence: 2, status: 'pending', slideCount: 1 },
+      { requestId: 'old', sequence: 1, status: 'compiled', slideCount: 1 },
+    ],
+  },
+}
+const roots: ReturnType<typeof createRoot>[] = []
+afterEach(async () => {
+  for (const root of roots.splice(0)) await act(async () => root.unmount())
+})
+async function mount(snapshot: Snapshot, disabled = false) {
+  const listeners = new Set<() => void>()
+  const controller: PresentationProjectController = {
+    snapshot: () => snapshot,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    refresh: vi.fn(async () => {}),
+    restore: vi.fn(async () => {}),
+    resume: vi.fn(async () => {}),
+    cancel: vi.fn(),
+    clear: vi.fn(),
+  }
+  const container = document.createElement('div')
+  const root = createRoot(container)
+  roots.push(root)
+  await act(async () =>
+    root.render(React.createElement(PresentationProjectCard, { controller, disabled })),
+  )
+  const button = (label: string) =>
+    Array.from(container.querySelectorAll('button')).find((item) => item.textContent === label)!
+  return {
+    container,
+    controller,
+    button,
+    update: async (next: Snapshot) => {
+      snapshot = next
+      await act(async () => listeners.forEach((listener) => listener()))
+    },
+  }
+}
+describe('presentation project recovery card', () => {
+  it('shows saved pending state and resumes only the explicit latest request', async () => {
+    const view = await mount(pending)
+    expect(view.container.textContent).toContain('已保存，待编译')
+    expect(view.container.textContent).toContain('目标')
+    expect(view.container.querySelectorAll('details')).toHaveLength(1)
+    await act(async () => view.button('继续编译').click())
+    expect(view.controller.resume).toHaveBeenCalledWith('latest')
+    await act(async () => view.button('恢复最近完成版本').click())
+    expect(view.controller.restore).toHaveBeenCalledOnce()
+    await act(async () => view.button('刷新').click())
+    expect(view.controller.refresh).toHaveBeenCalledOnce()
+  })
+  it('shows honest checks and never offers resume for a completed project', async () => {
+    const view = await mount({
+      phase: 'idle',
+      project: {
+        ...pending.project!,
+        status: 'compiled',
+        checks: {
+          structure: 'passed',
+          geometry: 'warning',
+          render: 'not_run',
+          sources: 'not_verified',
+          roundTrip: 'not_run',
+        },
+      },
+    })
+    expect(view.button('继续编译')).toBeUndefined()
+    expect(view.container.textContent).toContain('已编译，尚未完成视觉验证')
+    expect(view.container.textContent).toContain('几何检查：有警告')
+    expect(view.container.textContent).toContain('来源：未核验')
+    expect(view.container.textContent).toContain('Office 往返检查：未执行')
+  })
+  it('disables project operations while another agent action is active', async () => {
+    const view = await mount(pending, true)
+    expect(
+      Array.from(view.container.querySelectorAll('button')).every((button) => button.disabled),
+    ).toBe(true)
+  })
+  it('subscribes to operation state and permits cancellation', async () => {
+    const view = await mount(pending)
+    await view.update({ ...pending, phase: 'resuming' })
+    expect(view.button('继续编译').disabled).toBe(true)
+    expect(view.container.textContent).toContain('正在编译已保存版本')
+    await act(async () => view.button('取消').click())
+    expect(view.controller.cancel).toHaveBeenCalledOnce()
+  })
+  it('shows empty and upgrade states without presenting an error as an empty project', async () => {
+    const view = await mount({ phase: 'idle' })
+    expect(view.container.textContent).toContain('当前文档暂无已保存项目')
+    await view.update({ phase: 'idle', error: '请升级 WisWork PC 后重试。' })
+    expect(view.container.querySelector('[role="alert"]')?.textContent).toBe(
+      '请升级 WisWork PC 后重试。',
+    )
+    expect(view.container.textContent).not.toContain('当前文档暂无已保存项目')
+  })
+})

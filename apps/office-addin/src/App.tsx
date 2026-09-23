@@ -1,3 +1,5 @@
+import { PresentationProjectCard } from './agent/presentation-project-card.js'
+import type { PresentationProjectController } from './skills/powerpoint/presentation-project.js'
 import { createBrowserPresentationDocumentBinding } from './skills/powerpoint/presentation-document.js'
 import { downloadSessionFile } from './agent/session-download.js'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
@@ -180,6 +182,7 @@ interface SessionFile {
 }
 
 export interface OfficeWorkspaceUi {
+  readonly project?: PresentationProjectController
   readonly attachments: () => readonly string[]
   readonly downloadFile?: (path: string) => void
   readonly skills: () => readonly string[]
@@ -224,6 +227,7 @@ export function createOfficeWorkspaceUi(
     ?.clipboard,
 ): OfficeWorkspaceUi {
   return Object.freeze({
+    project: runtime.presentation,
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
     downloadFile: (path: string) => downloadSessionFile(runtime.vfs, path),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
@@ -413,6 +417,11 @@ export function AgentWorkspace(props: {
 }) {
   const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
+  const projectPhase = useSyncExternalStore(
+    (listener) => ui.project?.subscribe(listener) ?? (() => undefined),
+    () => ui.project?.snapshot().phase ?? 'idle',
+    () => ui.project?.snapshot().phase ?? 'idle',
+  )
   const [instruction, setInstruction] = useState('')
   const [files, setFiles] = useState<readonly string[]>(ui.attachments())
   const [skills, setSkills] = useState<readonly string[]>(ui.skills())
@@ -446,8 +455,21 @@ export function AgentWorkspace(props: {
     setFiles(ui.attachments())
   }, [ui, state.timeline])
 
+  useEffect(() => {
+    if (!state.busy) void ui.project?.refresh()
+  }, [ui.project, state.busy])
+
+  useEffect(() => ui.project?.subscribe(() => setFiles(ui.attachments())), [ui])
+
   function send() {
-    if (!instruction.trim()) return
+    if (
+      !instruction.trim() ||
+      state.busy ||
+      state.applying ||
+      state.proposal ||
+      (ui.project && ui.project.snapshot().phase !== 'idle')
+    )
+      return
     session.send(instruction)
     setInstruction('')
   }
@@ -613,8 +635,12 @@ export function AgentWorkspace(props: {
               <button
                 type="button"
                 className="secondary"
-                disabled={state.applying}
-                onClick={() => session.retry()}
+                disabled={
+                  state.applying || state.busy || Boolean(state.proposal) || projectPhase !== 'idle'
+                }
+                onClick={() => {
+                  if (!ui.project || ui.project.snapshot().phase === 'idle') session.retry()
+                }}
               >
                 {state.error === 'proposal_stale' ? '重新生成' : 'Retry'}
               </button>
@@ -764,6 +790,12 @@ export function AgentWorkspace(props: {
       )}
 
       <section className="composer-shell" aria-label="Message WisWork Agent">
+        {ui.project && (
+          <PresentationProjectCard
+            controller={ui.project}
+            disabled={state.busy || state.applying || Boolean(state.proposal)}
+          />
+        )}
         {ui.downloadFile &&
           files.some(
             (file) => file.startsWith('/home/user/generated/') && file.endsWith('.pptx'),
@@ -837,7 +869,12 @@ export function AgentWorkspace(props: {
               className="send-button"
               type="button"
               aria-label="Send message"
-              disabled={!instruction.trim() || state.applying}
+              disabled={
+                !instruction.trim() ||
+                state.applying ||
+                Boolean(state.proposal) ||
+                projectPhase !== 'idle'
+              }
               onClick={send}
             >
               ↑
