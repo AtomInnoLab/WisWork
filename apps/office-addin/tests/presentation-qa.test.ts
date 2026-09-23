@@ -317,3 +317,106 @@ it('invalidates prior visual review after recapture', async () => {
   expect(f.readQa()!.pages[0]!.visual).toEqual({ status: 'needs_review' })
   expect(f.vfs.list('/home/user')).toContain('/home/user/generated/project.qa.json')
 })
+it('accepts only an explicit true recheck flag and preserves the old review as history until recapture', async () => {
+  const f = setup()
+  await f.skill.executeTool(f.capture)
+  const page = f.readQa()!.pages[0]!
+  await f.skill.executeTool({
+    id: 'review',
+    name: 'record_presentation_page_review',
+    input: {
+      page_id: 'first',
+      screenshot_digest: page.screenshotDigest,
+      outcome: 'pass',
+      notes: 'The title is legible',
+    },
+  })
+  const old = structuredClone(f.readQa()!)
+  const flagged = {
+    ...old,
+    pages: old.pages.map((p) => ({ ...p, recheckRequired: true as const })),
+  }
+  expect(validatePresentationQaRecord(old)).toBe(true)
+  expect(validatePresentationQaRecord(flagged)).toBe(true)
+  for (const value of [false, null, 'true', 1])
+    expect(
+      validatePresentationQaRecord({
+        ...old,
+        pages: old.pages.map((p) => ({ ...p, recheckRequired: value })),
+      }),
+    ).toBe(false)
+  await f.writeQa('project/request', flagged)
+  const historical = await f.skill.executeTool({
+    id: 'read',
+    name: 'read_presentation_qa',
+    input: {},
+  })
+  expect(JSON.parse(historical.output).record.pages[0]).toMatchObject({
+    recheckRequired: true,
+    visual: { status: 'pass', reviewer: 'agent' },
+  })
+  expect(
+    await f.skill.executeTool({
+      id: 'review',
+      name: 'record_presentation_page_review',
+      input: {
+        page_id: 'first',
+        screenshot_digest: page.screenshotDigest,
+        outcome: 'pass',
+        notes: 'Reuse old review',
+      },
+    }),
+  ).toMatchObject({ isError: true, output: 'presentation_qa_capture_required' })
+  await f.skill.executeTool(f.capture)
+  expect(f.readQa()!.pages[0]!.recheckRequired).toBeUndefined()
+  expect(f.readQa()!.pages[0]!.visual.status).toBe('needs_review')
+})
+it('holds the mutation lock across session clear and invalidates earlier live captures', async () => {
+  const f = setup()
+  await f.skill.executeTool(f.capture)
+  const screenshotDigest = f.readQa()!.pages[0]!.screenshotDigest
+  f.skill.beginMutation()
+  expect(() => f.skill.beginMutation()).toThrow('presentation_qa_busy')
+  f.skill.clear()
+  for (const call of [
+    f.capture,
+    { id: 'read', name: 'read_presentation_qa', input: {} },
+    {
+      id: 'review',
+      name: 'record_presentation_page_review',
+      input: {
+        page_id: 'first',
+        screenshot_digest: screenshotDigest,
+        outcome: 'pass',
+        notes: 'Old image',
+      },
+    },
+  ]) {
+    expect(await f.skill.executeTool(call)).toMatchObject({
+      isError: true,
+      output: 'presentation_qa_busy',
+    })
+  }
+  f.skill.endMutation()
+  expect(
+    await f.skill.executeTool({
+      id: 'review',
+      name: 'record_presentation_page_review',
+      input: {
+        page_id: 'first',
+        screenshot_digest: screenshotDigest,
+        outcome: 'pass',
+        notes: 'Old image',
+      },
+    }),
+  ).toMatchObject({ isError: true, output: 'presentation_qa_capture_required' })
+  expect(await f.skill.executeTool(f.capture)).not.toHaveProperty('isError', true)
+})
+it('rejects mutation while a QA operation is in flight without cancelling that operation', async () => {
+  const f = setup()
+  const pending = f.skill.executeTool(f.capture)
+  expect(() => f.skill.beginMutation()).toThrow('presentation_qa_busy')
+  expect(await pending).not.toHaveProperty('isError', true)
+  f.skill.beginMutation()
+  f.skill.endMutation()
+})
