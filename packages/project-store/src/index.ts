@@ -20,6 +20,8 @@ export type {
 export { PresentationStore, assertPresentationId } from './presentation-store.js'
 export type {
   PresentationReceipt,
+  PresentationProductionPage,
+  PresentationProductionRecord,
   PresentationPlanBinding,
   PresentationPlanRecord,
 } from './presentation-store.js'
