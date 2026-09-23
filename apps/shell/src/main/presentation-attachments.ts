@@ -4,6 +4,12 @@ import { lstat, mkdir, open, readdir, rename, rm } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
 import { parseFileToText } from '@wiswork/file-parse'
+import {
+  inspectPresentationImage,
+  normalizePresentationImage,
+  PRESENTATION_IMAGE_INPUT_LIMIT,
+  PRESENTATION_IMAGE_CACHE_LIMIT,
+} from './presentation-image'
 
 const FILE_LIMIT = 50 * 1024 * 1024
 const CHUNK_LIMIT = 128 * 1024
@@ -30,8 +36,17 @@ function filename(name: unknown): name is string {
     name !== '..'
   )
 }
+function imageFile(name: string) {
+  return ['.png', '.jpg', '.jpeg'].includes(extname(name).toLowerCase())
+}
+function fileLimit(name: string) {
+  return imageFile(name) ? PRESENTATION_IMAGE_INPUT_LIMIT : FILE_LIMIT
+}
 function supported(name: string) {
-  return ['.pdf', '.docx', '.txt', '.md', '.csv', '.json'].includes(extname(name).toLowerCase())
+  return (
+    imageFile(name) ||
+    ['.pdf', '.docx', '.txt', '.md', '.csv', '.json'].includes(extname(name).toLowerCase())
+  )
 }
 interface Metadata {
   attachmentId: string
@@ -39,7 +54,11 @@ interface Metadata {
   sizeBytes: number
   sha256: string
   status: 'uploading' | 'ready' | 'failed'
-  kind?: 'text'
+  kind?: 'text' | 'image'
+  mime?: 'image/png'
+  width?: number
+  height?: number
+  assetSha256?: string
   error?: string
   totalChars?: number
   textDigest?: string
@@ -128,15 +147,26 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
     m.sha256 !== id ||
     !filename(m.name) ||
     !supported(m.name) ||
-    !integer(m.sizeBytes, 0, FILE_LIMIT) ||
+    !integer(m.sizeBytes, 0, fileLimit(m.name)) ||
     !['uploading', 'ready', 'failed'].includes(m.status)
   )
     fail('invalid_state')
-  if (
-    m.status === 'ready' &&
-    (m.kind !== 'text' || !integer(m.totalChars, 0, TEXT_LIMIT) || !isId(m.textDigest))
-  )
-    fail('invalid_state')
+  if (m.status === 'ready') {
+    if (imageFile(m.name)) {
+      if (
+        m.kind !== 'image' ||
+        m.mime !== 'image/png' ||
+        !integer(m.width, 1, 8192) ||
+        !integer(m.height, 1, 8192) ||
+        m.width * m.height > 16_000_000 ||
+        !isId(m.assetSha256) ||
+        m.totalChars !== undefined ||
+        m.textDigest !== undefined
+      )
+        fail('invalid_state')
+    } else if (m.kind !== 'text' || !integer(m.totalChars, 0, TEXT_LIMIT) || !isId(m.textDigest))
+      fail('invalid_state')
+  }
   if (m.status === 'failed' && m.error !== 'parse_failed') fail('invalid_state')
   return m
 }
@@ -150,7 +180,24 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
   ...(m.kind ? { kind: m.kind } : {}),
   ...(m.error ? { error: m.error } : {}),
   ...(m.totalChars !== undefined ? { totalChars: m.totalChars } : {}),
+  ...(m.kind === 'image'
+    ? { mime: m.mime, width: m.width, height: m.height, assetSha256: m.assetSha256 }
+    : {}),
 })
+
+async function cachedImage(dir: string, m: Metadata): Promise<Buffer> {
+  if (m.status !== 'ready' || m.kind !== 'image') fail('invalid_state')
+  const value = await bytes(join(dir, 'image.png'), PRESENTATION_IMAGE_CACHE_LIMIT)
+  const info = inspectPresentationImage(value)
+  if (
+    hash(value) !== m.assetSha256 ||
+    info.mime !== 'image/png' ||
+    info.width !== m.width ||
+    info.height !== m.height
+  )
+    fail('invalid_state')
+  return value
+}
 
 // Preflight every ZIP member with bounded inflation, before the DOCX parser allocates XML.
 // Classic ZIP only: ZIP64/encryption/unknown compression fail closed. PDF parsing is
@@ -209,9 +256,11 @@ function checkDocx(data: Buffer) {
 export function createPresentationAttachmentService(options: {
   userDataPath: string
   parse?: typeof parseFileToText
+  normalizeImage?: typeof normalizePresentationImage
 }) {
   const root = join(resolve(options.userDataPath), 'presentation-attachments')
   const parse = options.parse ?? parseFileToText
+  const normalizeImage = options.normalizeImage ?? normalizePresentationImage
   return async (body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> => {
     checkAbort(signal)
     const fields: Record<string, string[]> = {
@@ -219,6 +268,8 @@ export function createPresentationAttachmentService(options: {
       attachment_chunk: ['attachmentId', 'offset', 'base64'],
       attachment_finish: ['attachmentId'],
       attachment_list: [],
+      attachment_list_assets: [],
+      attachment_asset: ['attachmentId'],
       attachment_read: ['attachmentId', 'offset', 'maxChars'],
     }
     const op = body.operation
@@ -236,12 +287,13 @@ export function createPresentationAttachmentService(options: {
       allowed.some((k) => !Object.hasOwn(body, k))
     )
       fail('invalid_request')
-    if (op !== 'attachment_list' && !isId(body.attachmentId)) fail('invalid_request')
+    if (!['attachment_list', 'attachment_list_assets'].includes(op) && !isId(body.attachmentId))
+      fail('invalid_request')
     if (op === 'attachment_begin') {
       if (
         !filename(body.name) ||
         body.sha256 !== body.attachmentId ||
-        !integer(body.sizeBytes, 0, FILE_LIMIT)
+        !integer(body.sizeBytes, 0, fileLimit(body.name))
       )
         fail('invalid_request')
       if (!supported(body.name)) fail('unsupported_file')
@@ -263,10 +315,11 @@ export function createPresentationAttachmentService(options: {
       const id = body.attachmentId as string
       const dir = id ? join(doc, id) : doc
       const exists = entries.includes(id)
-      if (op === 'attachment_list') {
+      if (op === 'attachment_list' || op === 'attachment_list_assets') {
         const attachments = []
         for (const entry of entries) {
           const m = await metadata(join(doc, entry), entry)
+          if (op === 'attachment_list' && imageFile(m.name)) continue
           const received = await rawSize(join(doc, entry, `raw${extname(m.name).toLowerCase()}`))
           if (received > m.sizeBytes) fail('invalid_state')
           attachments.push(publicMetadata(m, received))
@@ -336,27 +389,60 @@ export function createPresentationAttachmentService(options: {
         if (hash(raw) !== id) fail('digest_mismatch')
         if (m.status !== 'ready') {
           try {
-            if (extname(m.name).toLowerCase() === '.docx') checkDocx(raw)
-            checkAbort(signal)
-            const parsed = await parse(rawPath)
-            checkAbort(signal)
-            if (
-              !parsed.ok ||
-              parsed.kind !== 'text' ||
-              typeof parsed.text !== 'string' ||
-              parsed.text.length > TEXT_LIMIT
-            )
-              fail('parse_failed')
-            await atomic(join(dir, 'text.txt'), parsed.text)
-            m = {
-              attachmentId: id,
-              sha256: id,
-              name: m.name,
-              sizeBytes: m.sizeBytes,
-              status: 'ready',
-              kind: 'text',
-              totalChars: parsed.text.length,
-              textDigest: hash(parsed.text),
+            if (imageFile(m.name)) {
+              const info = inspectPresentationImage(raw)
+              const expected = extname(m.name).toLowerCase() === '.png' ? 'image/png' : 'image/jpeg'
+              if (info.mime !== expected) fail('parse_failed')
+              checkAbort(signal)
+              const image = await normalizeImage(raw)
+              checkAbort(signal)
+              const normalized = inspectPresentationImage(image.bytes)
+              if (
+                image.bytes.length > PRESENTATION_IMAGE_CACHE_LIMIT ||
+                normalized.mime !== 'image/png' ||
+                image.width !== info.width ||
+                image.height !== info.height ||
+                normalized.width !== image.width ||
+                normalized.height !== image.height
+              )
+                fail('parse_failed')
+              await atomic(join(dir, 'image.png'), Buffer.from(image.bytes))
+              checkAbort(signal)
+              m = {
+                attachmentId: id,
+                sha256: id,
+                name: m.name,
+                sizeBytes: m.sizeBytes,
+                status: 'ready',
+                kind: 'image',
+                mime: 'image/png',
+                width: image.width,
+                height: image.height,
+                assetSha256: hash(image.bytes),
+              }
+            } else {
+              if (extname(m.name).toLowerCase() === '.docx') checkDocx(raw)
+              checkAbort(signal)
+              const parsed = await parse(rawPath)
+              checkAbort(signal)
+              if (
+                !parsed.ok ||
+                parsed.kind !== 'text' ||
+                typeof parsed.text !== 'string' ||
+                parsed.text.length > TEXT_LIMIT
+              )
+                fail('parse_failed')
+              await atomic(join(dir, 'text.txt'), parsed.text)
+              m = {
+                attachmentId: id,
+                sha256: id,
+                name: m.name,
+                sizeBytes: m.sizeBytes,
+                status: 'ready',
+                kind: 'text',
+                totalChars: parsed.text.length,
+                textDigest: hash(parsed.text),
+              }
             }
           } catch {
             checkAbort(signal)
@@ -371,11 +457,25 @@ export function createPresentationAttachmentService(options: {
           }
           await atomic(join(dir, 'metadata.json'), JSON.stringify(m))
         }
+        if (m.kind === 'image') await cachedImage(dir, m)
+        checkAbort(signal)
         return publicMetadata(m, received)
+      }
+      if (op === 'attachment_asset') {
+        const image = await cachedImage(dir, m)
+        checkAbort(signal)
+        return {
+          id,
+          mime: 'image/png',
+          base64: image.toString('base64'),
+          width: m.width,
+          height: m.height,
+          source: `attachment:${id}`,
+        }
       }
       if (!integer(body.offset, 0, TEXT_LIMIT) || !integer(body.maxChars, 1, 24000))
         fail('invalid_request')
-      if (m.status !== 'ready') fail('invalid_state')
+      if (m.status !== 'ready' || m.kind !== 'text') fail('invalid_state')
       const text = (await bytes(join(dir, 'text.txt'), TEXT_LIMIT * 4)).toString('utf8')
       if (text.length !== m.totalChars || hash(text) !== m.textDigest || body.offset > text.length)
         fail('invalid_state')

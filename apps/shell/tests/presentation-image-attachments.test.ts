@@ -1,0 +1,226 @@
+import { afterEach, describe, expect, it } from 'vitest'
+import { mkdtemp, rm, writeFile, symlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { createPresentationAttachmentService } from '../src/main/presentation-attachments'
+const png = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII=',
+  'base64',
+)
+const hash = (v: string | Uint8Array) => createHash('sha256').update(v).digest('hex')
+const dirs: string[] = []
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+})
+async function setup(
+  normalizeImage: NonNullable<
+    Parameters<typeof createPresentationAttachmentService>[0]['normalizeImage']
+  > = async () => ({ bytes: png, width: 1, height: 1 }),
+) {
+  const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-image-'))
+  dirs.push(userDataPath)
+  const service = createPresentationAttachmentService({ userDataPath, normalizeImage })
+  const call = (body: Record<string, unknown>, signal = new AbortController().signal) =>
+    service({ documentId: 'doc', ...body }, signal)
+  return { call, userDataPath }
+}
+async function upload(
+  call: Awaited<ReturnType<typeof setup>>['call'],
+  bytes = png,
+  name = 'photo.png',
+) {
+  const attachmentId = hash(bytes)
+  await call({
+    operation: 'attachment_begin',
+    attachmentId,
+    sha256: attachmentId,
+    name,
+    sizeBytes: bytes.length,
+  })
+  await call({
+    operation: 'attachment_chunk',
+    attachmentId,
+    offset: 0,
+    base64: bytes.toString('base64'),
+  })
+  return attachmentId
+}
+describe('durable presentation image assets', () => {
+  it('normalizes once, preserves original hash, and restores validated cache after restart', async () => {
+    let calls = 0
+    const { call, userDataPath } = await setup(async () => {
+      calls++
+      return { bytes: png, width: 1, height: 1 }
+    })
+    const id = await upload(call)
+    expect(await call({ operation: 'attachment_finish', attachmentId: id })).toEqual({
+      attachmentId: id,
+      name: 'photo.png',
+      sizeBytes: png.length,
+      sha256: id,
+      receivedBytes: png.length,
+      status: 'ready',
+      kind: 'image',
+      mime: 'image/png',
+      width: 1,
+      height: 1,
+      assetSha256: hash(png),
+    })
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      normalizeImage: async () => {
+        throw new Error('must not decode twice')
+      },
+    })
+    expect(
+      await service(
+        { operation: 'attachment_finish', documentId: 'doc', attachmentId: id },
+        new AbortController().signal,
+      ),
+    ).toMatchObject({ kind: 'image' })
+    expect(calls).toBe(1)
+    expect(await call({ operation: 'attachment_asset', attachmentId: id })).toEqual({
+      id,
+      mime: 'image/png',
+      base64: png.toString('base64'),
+      width: 1,
+      height: 1,
+      source: `attachment:${id}`,
+    })
+    expect(await call({ operation: 'attachment_list_assets' })).toMatchObject({
+      attachments: [{ kind: 'image', width: 1 }],
+    })
+    await expect(
+      call({ operation: 'attachment_asset', documentId: 'different', attachmentId: id }),
+    ).rejects.toThrow('not_found')
+    await expect(
+      call({ operation: 'attachment_read', attachmentId: id, offset: 0, maxChars: 10 }),
+    ).rejects.toThrow('invalid_state')
+  })
+  it('preserves the legacy text list while the new list includes images in every status', async () => {
+    const { call } = await setup()
+    const text = await upload(call, Buffer.from('evidence'), 'source.txt')
+    await call({ operation: 'attachment_finish', attachmentId: text })
+    const image = await upload(call)
+    expect(await call({ operation: 'attachment_list' })).toMatchObject({
+      attachments: [{ attachmentId: text, kind: 'text' }],
+    })
+    const pending = (await call({ operation: 'attachment_list_assets' })) as {
+      attachments: unknown[]
+    }
+    expect(pending.attachments).toHaveLength(2)
+    await call({ operation: 'attachment_finish', attachmentId: image })
+    expect(await call({ operation: 'attachment_list' })).toMatchObject({
+      attachments: [{ attachmentId: text, kind: 'text' }],
+    })
+    const ready = (await call({ operation: 'attachment_list_assets' })) as {
+      attachments: unknown[]
+    }
+    expect(ready.attachments).toHaveLength(2)
+  })
+  it('keeps original JPEG identity when its normalized PNG has different bytes', async () => {
+    const { call } = await setup()
+    const jpeg = Buffer.from([255, 216, 255, 192, 0, 11, 8, 0, 1, 0, 1, 1, 1, 17, 0, 255, 217])
+    const id = await upload(call, jpeg, 'photo.jpeg')
+    expect(await call({ operation: 'attachment_finish', attachmentId: id })).toMatchObject({
+      sha256: hash(jpeg),
+      assetSha256: hash(png),
+      mime: 'image/png',
+    })
+    expect(await call({ operation: 'attachment_asset', attachmentId: id })).toMatchObject({
+      id: hash(jpeg),
+      base64: png.toString('base64'),
+    })
+  })
+  it('rejects spoofed MIME and pixel-limit headers before invoking normalization', async () => {
+    let calls = 0
+    const { call } = await setup(async () => {
+      calls++
+      return { bytes: png, width: 1, height: 1 }
+    })
+    const id = await upload(call, png, 'spoof.jpg')
+    expect(await call({ operation: 'attachment_finish', attachmentId: id })).toMatchObject({
+      status: 'failed',
+      error: 'parse_failed',
+    })
+    const large = Buffer.from(png)
+    large.writeUInt32BE(8000, 16)
+    large.writeUInt32BE(8000, 20)
+    const largeId = await upload(call, large, 'large.png')
+    expect(await call({ operation: 'attachment_finish', attachmentId: largeId })).toMatchObject({
+      status: 'failed',
+    })
+    expect(calls).toBe(0)
+    await expect(
+      call({
+        operation: 'attachment_begin',
+        attachmentId: id,
+        sha256: id,
+        name: 'huge.png',
+        sizeBytes: 10 * 1024 * 1024 + 1,
+      }),
+    ).rejects.toThrow('invalid_request')
+  })
+  it('denies tampered or symlinked normalized cache and does not repair silently on repeated finish', async () => {
+    const { call, userDataPath } = await setup()
+    const id = await upload(call)
+    await call({ operation: 'attachment_finish', attachmentId: id })
+    const path = join(userDataPath, 'presentation-attachments', hash('doc'), id, 'image.png')
+    const bad = Buffer.from(png)
+    bad[45] = bad[45]! ^ 1
+    await writeFile(path, bad)
+    await expect(call({ operation: 'attachment_asset', attachmentId: id })).rejects.toThrow(
+      'invalid_state',
+    )
+    await expect(call({ operation: 'attachment_finish', attachmentId: id })).rejects.toThrow(
+      'invalid_state',
+    )
+    await rm(path)
+    await symlink('/etc/passwd', path)
+    await expect(call({ operation: 'attachment_asset', attachmentId: id })).rejects.toThrow(
+      'invalid_state',
+    )
+  })
+  it('cancels normalization without publishing ready and retries safely', async () => {
+    const controller = new AbortController()
+    let first = true
+    const { call } = await setup(async () => {
+      if (first) {
+        first = false
+        controller.abort()
+      }
+      return { bytes: png, width: 1, height: 1 }
+    })
+    const id = await upload(call)
+    await expect(
+      call({ operation: 'attachment_finish', attachmentId: id }, controller.signal),
+    ).rejects.toThrow('aborted')
+    expect(await call({ operation: 'attachment_list_assets' })).toMatchObject({
+      attachments: [{ status: 'uploading' }],
+    })
+    expect(await call({ operation: 'attachment_finish', attachmentId: id })).toMatchObject({
+      status: 'ready',
+    })
+  })
+  it('rejects oversized or inconsistent normalizer output', async () => {
+    for (const output of [
+      { bytes: png, width: 2, height: 1 },
+      { bytes: Buffer.alloc(4 * 1024 * 1024 + 1), width: 1, height: 1 },
+    ]) {
+      const { call } = await setup(async () => output)
+      const id = await upload(call)
+      expect(await call({ operation: 'attachment_finish', attachmentId: id })).toMatchObject({
+        status: 'failed',
+      })
+    }
+  })
+  it('does not expose text attachments through the image route', async () => {
+    const { call } = await setup()
+    const id = await upload(call, Buffer.from('text'), 'source.txt')
+    await call({ operation: 'attachment_finish', attachmentId: id })
+    await expect(call({ operation: 'attachment_asset', attachmentId: id })).rejects.toThrow(
+      'invalid_state',
+    )
+  })
+})
