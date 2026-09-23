@@ -587,6 +587,7 @@ export function createOfficeHostRuntime(
                     'run_presentation_production',
                     'read_presentation_production',
                     'read_presentation_page_artifact',
+                    'check_presentation_page_content',
                     'prepare_presentation_production_import',
                   ].includes(call.name) && production
                 ? executeProduction(call, signal)

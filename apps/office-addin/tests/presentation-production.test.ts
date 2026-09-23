@@ -739,3 +739,135 @@ it('rejects superseded and racing receipts without replacing the prepared cache'
   expect(await f.skill.executeTool(prepare)).toMatchObject({ isError: true })
   expect(f.skill.artifact()).toBe(cached)
 })
+
+const contentCall = {
+  id: 'content',
+  name: 'check_presentation_page_content',
+  input: { project_id: 'p', request_id: 'r', page_id: 'one' },
+}
+const contentResponse = () => ({
+  projectId: 'p',
+  requestId: 'r',
+  planRevision: 1,
+  inputDigest: 'a'.repeat(64),
+  planDigest: 'b'.repeat(64),
+  report: {
+    version: 1,
+    pageId: 'one',
+    claimIds: ['c1'],
+    findings: [{ code: 'claim_text_not_found', claimId: 'c1' }],
+    checks: {
+      content: 'needs_review',
+      sources: 'not_verified',
+      calculations: 'not_verified',
+      timeliness: 'not_verified',
+      host: 'not_checked',
+    },
+  },
+})
+it('checks frozen page content without publishing artifacts, remembering a project or marking QA passed', async () => {
+  const f = fixture()
+  f.request.mockResolvedValue(new Response(JSON.stringify(contentResponse())))
+  expect(f.skill.tools.map((t) => t.name)).toContain(contentCall.name)
+  const result = await f.skill.executeTool(contentCall)
+  expect(result.isError, result.output).not.toBe(true)
+  expect(JSON.parse(result.output)).toMatchObject(contentResponse())
+  expect(JSON.parse(result.output).recommendations[0]).toMatchObject({
+    code: 'claim_text_not_found',
+    action: expect.any(String),
+  })
+  expect(f.request).toHaveBeenCalledWith(
+    {
+      operation: 'production_content_check',
+      documentId: 'doc',
+      projectId: 'p',
+      requestId: 'r',
+      pageId: 'one',
+    },
+    undefined,
+  )
+  expect(f.rememberProject).not.toHaveBeenCalled()
+  expect(f.vfs.list('/home/user')).toEqual([])
+  expect(f.skill.artifact()).toBeUndefined()
+  expect(f.readReceipt).not.toHaveBeenCalled()
+})
+it('rejects mismatched or forged content reports including fabricated pass and oversized responses', async () => {
+  const f = fixture()
+  const values = [
+    { ...contentResponse(), projectId: 'other' },
+    { ...contentResponse(), requestId: 'other' },
+    { ...contentResponse(), planRevision: 0 },
+    { ...contentResponse(), inputDigest: 'invalid' },
+    { ...contentResponse(), planDigest: 'invalid' },
+    { ...contentResponse(), extra: true },
+    { ...contentResponse(), report: { ...contentResponse().report, pageId: 'other' } },
+    {
+      ...contentResponse(),
+      report: {
+        ...contentResponse().report,
+        checks: { ...contentResponse().report.checks, sources: 'passed' },
+      },
+    },
+    {
+      ...contentResponse(),
+      report: {
+        ...contentResponse().report,
+        findings: [{ code: 'claim_text_not_found', claimId: 'unknown' }],
+      },
+    },
+    { ...contentResponse(), padding: 'x'.repeat(65536) },
+  ]
+  for (const value of values) {
+    f.request.mockResolvedValue(new Response(JSON.stringify(value)))
+    expect(await f.skill.executeTool(contentCall)).toMatchObject({
+      isError: true,
+      output: 'presentation_response_invalid',
+    })
+  }
+  expect(f.rememberProject).not.toHaveBeenCalled()
+})
+it('requires exact page and request for content checks and handles old PC clearly', async () => {
+  const f = fixture()
+  for (const input of [
+    { project_id: 'p', request_id: 'r' },
+    { project_id: 'p', page_id: 'one' },
+    { ...contentCall.input, extra: 1 },
+  ])
+    expect(await f.skill.executeTool({ ...contentCall, input })).toMatchObject({
+      isError: true,
+      output: 'invalid_tool_input',
+    })
+  expect(f.request).not.toHaveBeenCalled()
+  f.request.mockResolvedValue(new Response(JSON.stringify({ error: 'invalid_request' })))
+  expect(await f.skill.executeTool(contentCall)).toMatchObject({
+    isError: true,
+    output: 'presentation_upgrade_required',
+  })
+})
+it('does not publish content prechecks after clear, cancellation or document switch', async () => {
+  for (const mode of ['clear', 'abort', 'document']) {
+    const f = fixture(),
+      ac = new AbortController()
+    f.request.mockImplementation(async () => {
+      if (mode === 'clear') f.skill.clear()
+      if (mode === 'abort') ac.abort()
+      if (mode === 'document') f.documentId.mockResolvedValue('other')
+      return new Response(JSON.stringify(contentResponse()))
+    })
+    expect(await f.skill.executeTool(contentCall, ac.signal)).toMatchObject({ isError: true })
+    expect(f.rememberProject).not.toHaveBeenCalled()
+    expect(f.vfs.list('/home/user')).toEqual([])
+  }
+})
+it('preserves an already prepared artifact when checking a frozen page', async () => {
+  const f = prepareFixture()
+  expect((await f.skill.executeTool(prepare)).isError).not.toBe(true)
+  const original = f.skill.artifact(),
+    files = f.vfs.list('/home/user')
+  f.rememberProject.mockClear()
+  f.request.mockResolvedValue(new Response(JSON.stringify(contentResponse())))
+  expect((await f.skill.executeTool(contentCall)).isError).not.toBe(true)
+  expect(f.skill.artifact()).toBe(original)
+  expect(f.vfs.list('/home/user')).toEqual(files)
+  expect(f.rememberProject).not.toHaveBeenCalled()
+})
