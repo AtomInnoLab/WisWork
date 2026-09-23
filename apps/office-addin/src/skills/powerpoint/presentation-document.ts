@@ -1,3 +1,4 @@
+import { validPresentationImportRecord } from './presentation-page-delivery.js'
 import type { PresentationImportRecord } from './presentation-delivery.js'
 const ID_KEY = 'wiswork.presentation.document.v1'
 const IMPORT_KEY = 'wiswork.presentation.imports.v1'
@@ -48,7 +49,10 @@ export function createPresentationDocumentBinding(
     })
     return pending
   }
+  let receiptWriteFailed = false
+  let receiptQueue: Promise<void> = Promise.resolve()
   const readImports = (): Record<string, PresentationImportRecord> => {
+    if (receiptWriteFailed) throw new Error('presentation_import_state_invalid')
     const raw = settings.get(IMPORT_KEY)
     if (raw === undefined || raw === null) return {}
     if (typeof raw !== 'string' || raw.length > 100_000)
@@ -62,16 +66,9 @@ export function createPresentationDocumentBinding(
     )
       throw new Error('presentation_import_state_invalid')
     for (const [key, record] of Object.entries(value)) {
-      const r = record as PresentationImportRecord
       if (
         !/^[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_-]{1,128}$/.test(key) ||
-        !r ||
-        !['pending', 'complete'].includes(r.state) ||
-        typeof r.documentId !== 'string' ||
-        (r.state === 'complete' &&
-          (!Array.isArray(r.slideIds) ||
-            r.slideIds.length > 100 ||
-            !r.slideIds.every((id) => typeof id === 'string' && id.length <= 256)))
+        !validPresentationImportRecord(record)
       )
         throw new Error('presentation_import_state_invalid')
     }
@@ -80,17 +77,42 @@ export function createPresentationDocumentBinding(
   return {
     documentId,
     readReceipt: (key: string) => readImports()[key],
-    async writeReceipt(key: string, record: PresentationImportRecord | undefined) {
-      if (!/^[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_-]{1,128}$/.test(key))
-        throw new Error('presentation_import_state_invalid')
-      const imports = readImports()
-      if (record) imports[key] = record
-      else delete imports[key]
-      const serialized = JSON.stringify(imports)
-      if (Object.keys(imports).length > 32 || serialized.length > 100_000)
-        throw new Error('presentation_import_history_full')
-      settings.set(IMPORT_KEY, serialized)
-      await settings.save()
+    writeReceipt(key: string, record: PresentationImportRecord | undefined) {
+      const write = async () => {
+        if (
+          !/^[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_-]{1,128}$/.test(key) ||
+          (record !== undefined && !validPresentationImportRecord(record))
+        )
+          throw new Error('presentation_import_state_invalid')
+        const imports = readImports()
+        const previousRaw = settings.get(IMPORT_KEY)
+        const location = settings.location()
+        if (record) imports[key] = record
+        else delete imports[key]
+        const serialized = JSON.stringify(imports)
+        if (Object.keys(imports).length > 32 || serialized.length > 100_000)
+          throw new Error('presentation_import_history_full')
+        try {
+          settings.set(IMPORT_KEY, serialized)
+          await settings.save()
+          if (settings.location() !== location || settings.get(IMPORT_KEY) !== serialized)
+            throw new Error('presentation_document_changed')
+        } catch (error) {
+          // A failed completion save must leave the earlier in-flight marker visible.
+          // Initial reservations fail before any Office write, so restoring their prior state is safe.
+          if (settings.location() === location && settings.get(IMPORT_KEY) === serialized) {
+            try {
+              settings.set(IMPORT_KEY, typeof previousRaw === 'string' ? previousRaw : '{}')
+            } catch {
+              receiptWriteFailed = true
+            }
+          } else receiptWriteFailed = true
+          throw error
+        }
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
     },
     lastProject(): string | undefined {
       const id = settings.get(PROJECT_KEY)

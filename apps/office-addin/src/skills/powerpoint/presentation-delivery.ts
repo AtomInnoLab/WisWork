@@ -1,3 +1,4 @@
+import { createPresentationPageDeliverySkill } from './presentation-page-delivery.js'
 import type { AgentSkill } from '@wiswork/agent-core'
 import {
   selectionFingerprint,
@@ -11,11 +12,21 @@ export interface CompiledPresentationArtifact {
   requestId: string
   pptxBase64: string
   slideCount: number
+  pages?: { id: string; title: string; sourceSlideId: string }[]
 }
 export interface PresentationImportRecord {
   state: 'pending' | 'complete'
   documentId: string
   slideIds?: string[]
+  checkpoint?: PresentationImportCheckpoint
+}
+export interface PresentationImportCheckpoint {
+  version: 1
+  artifactDigest: string
+  sourceSlideIds: string[]
+  baselineSlideIds: string[]
+  completed: { sourceSlideId: string; slideId: string }[]
+  inFlight?: { sourceSlideId: string }
 }
 export interface PresentationDeliveryOptions {
   adapter: PresentationImportAdapter
@@ -38,14 +49,22 @@ const tool = {
 }
 
 export function createPresentationDeliverySkill(options: PresentationDeliveryOptions): AgentSkill {
+  const pages = createPresentationPageDeliverySkill(options)
   return {
     id: 'office-presentation-delivery',
     systemPrompt:
-      'After compilation or restoration, use import_generated_presentation when the user wants the generated pages in the current PowerPoint. This appends pages with one confirmation and preserves existing content. Do not retry an uncertain import; inspect the document first. After import use screenshot_slide and verify_slides for actual host review; do not equate page-count verification with complete QA.',
+      'After compilation or restoration, use import_generated_presentation when the user wants the generated pages in the current PowerPoint. This appends pages with one confirmation and preserves existing content. After interruption, read_presentation_import_status to inspect saved page progress. A new confirmation resumes remaining pages only when prior pages and document order match. Do not retry an uncertain import; inspect the document first. After import use screenshot_slide and verify_slides for actual host review; do not equate page-count verification with complete QA.',
     get tools() {
-      return options.available() && options.adapter.available() ? [tool] : []
+      return options.available() && options.adapter.available() ? [tool, ...pages.tools] : []
     },
     async executeTool(call, signal) {
+      if (
+        call.name === 'read_presentation_import_status' ||
+        (call.name === tool.name &&
+          options.adapter.insertPage &&
+          options.artifact(call.input.project_id as string | undefined)?.pages)
+      )
+        return pages.executeTool(call, signal)
       try {
         if (signal?.aborted) throw new Error('cancelled')
         if (!options.available() || !options.adapter.available())
