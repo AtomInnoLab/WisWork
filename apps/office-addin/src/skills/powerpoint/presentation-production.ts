@@ -102,7 +102,12 @@ export function parsePresentationProductionStatus(value: unknown): PresentationP
     throw new Error('presentation_response_invalid')
   return structuredClone(p)
 }
-function parsePageArtifact(value: unknown, projectId: string, requestId: string, pageId: string) {
+export function parsePresentationPageArtifact(
+  value: unknown,
+  projectId: string,
+  requestId: string,
+  pageId: string,
+) {
   if (
     !object(value, [
       'projectId',
@@ -372,7 +377,12 @@ export function createPresentationProductionSkill(
               true,
             )
             await current()
-            const result = parsePageArtifact(response, projectId, status.requestId, planned.id)
+            const result = parsePresentationPageArtifact(
+              response,
+              projectId,
+              status.requestId,
+              planned.id,
+            )
             if (result.planRevision !== status.planRevision)
               throw new Error('presentation_response_invalid')
             decodedBytes += result.binary.length
@@ -407,7 +417,7 @@ export function createPresentationProductionSkill(
             pages,
           }
         } else if (page) {
-          const { report, binary, sourceSlideId, planRevision } = parsePageArtifact(
+          const { report, binary, sourceSlideId, planRevision } = parsePresentationPageArtifact(
             value,
             projectId,
             input.request_id as string,

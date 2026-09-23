@@ -1,3 +1,6 @@
+import type { PresentationPageReplacement } from '../skills/powerpoint/presentation-page-replacement-record.js'
+import { createPresentationPageReplacementSkill } from '../skills/powerpoint/presentation-page-replacement.js'
+import { BrowserPresentationPageReplacementAdapter } from '../skills/powerpoint/browser-presentation-page-replacement-adapter.js'
 import { createPresentationPageBackupSkill } from '../skills/powerpoint/presentation-page-backup.js'
 import type { PresentationGeometryChange } from '../skills/powerpoint/presentation-geometry-change.js'
 import { createPresentationProductionSkill } from '../skills/powerpoint/presentation-production.js'
@@ -110,6 +113,11 @@ export function createOfficeHostRuntime(
   host: OfficeHost,
   options: {
     presentation?: Omit<PresentationGenerationOptions, 'vfs'> & {
+      readPageReplacement?(): PresentationPageReplacement | undefined
+      writePageReplacement?(
+        record: PresentationPageReplacement,
+        expected: PresentationPageReplacement | undefined,
+      ): Promise<void>
       readGeometryChange?(): PresentationGeometryChange | undefined
       writeGeometryChange?(
         record: PresentationGeometryChange,
@@ -158,6 +166,9 @@ export function createOfficeHostRuntime(
             const target = proposal.impact.targets[0]
             const hostSlideIds =
               [
+                'stage_presentation_page_replacement',
+                'resume_presentation_page_replacement',
+                'discard_presentation_page_replacement',
                 'edit_presentation_page_text',
                 'edit_presentation_page_geometry',
                 'undo_presentation_geometry_change',
@@ -279,6 +290,24 @@ export function createOfficeHostRuntime(
           artifact: activeArtifact,
           readReceipt: options.presentation.readReceipt,
           adapter: powerPointAdapter,
+        })
+      : undefined
+  const pageReplacement =
+    pageBackup &&
+    options.presentation?.readReceipt &&
+    options.presentation.readPageReplacement &&
+    options.presentation.writePageReplacement
+      ? createPresentationPageReplacementSkill({
+          available: options.presentation.available,
+          request: options.presentation.request,
+          documentId: options.presentation.documentId,
+          artifact: activeArtifact,
+          readReceipt: options.presentation.readReceipt,
+          readPageReplacement: options.presentation.readPageReplacement,
+          writePageReplacement: options.presentation.writePageReplacement,
+          loadBackup: pageBackup.loadBackup,
+          adapter: new BrowserPresentationPageReplacementAdapter(),
+          proposals,
         })
       : undefined
   const executeGeneration: AgentSkill['executeTool'] = async (call, signal) => {
@@ -501,71 +530,80 @@ export function createOfficeHostRuntime(
             ...(pageEditing?.tools ?? []),
             ...(production?.tools ?? []),
             ...(pageBackup?.tools ?? []),
+            ...(pageReplacement?.tools ?? []),
           ]
         },
         get systemPrompt() {
-          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}\n${pageBackup?.tools.length ? pageBackup.systemPrompt : ''}\nQA and stable page editing use the currently selected artifact: a successfully prepared production task or explicitly compiled/restored whole deck. Select the intended source before acting; do not substitute another task with the same IDs.`
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}\n${pageBackup?.tools.length ? pageBackup.systemPrompt : ''}\n${pageReplacement?.tools.length ? pageReplacement.systemPrompt : ''}\nQA and stable page editing use the currently selected artifact: a successfully prepared production task or explicitly compiled/restored whole deck. Select the intended source before acting; do not substitute another task with the same IDs.`
         },
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
         executeTool: (call, signal) =>
-          ['save_presentation_page_backup', 'read_presentation_page_backup'].includes(call.name) &&
-          pageBackup
-            ? pageBackup.executeTool(call, signal)
-            : [
-                  'start_presentation_production',
-                  'rebuild_presentation_page',
-                  'run_presentation_production',
-                  'read_presentation_production',
-                  'read_presentation_page_artifact',
-                  'prepare_presentation_production_import',
-                ].includes(call.name) && production
-              ? executeProduction(call, signal)
+          [
+            'stage_presentation_page_replacement',
+            'inspect_presentation_page_replacement',
+            'resume_presentation_page_replacement',
+            'discard_presentation_page_replacement',
+          ].includes(call.name) && pageReplacement
+            ? pageReplacement.executeTool(call, signal)
+            : ['save_presentation_page_backup', 'read_presentation_page_backup'].includes(
+                  call.name,
+                ) && pageBackup
+              ? pageBackup.executeTool(call, signal)
               : [
-                    'read_presentation_page',
-                    'edit_presentation_page_text',
-                    'read_presentation_page_geometry',
-                    'read_presentation_geometry_change',
-                    'inspect_presentation_geometry_change',
-                    'resume_presentation_geometry_change',
-                    'undo_presentation_geometry_change',
-                    'edit_presentation_page_geometry',
-                    'replace_presentation_page_image',
-                    'read_presentation_image_replacement',
-                    'inspect_presentation_image_replacement',
-                    'resume_presentation_image_replacement',
-                  ].includes(call.name) && pageEditing
-                ? pageEditing.executeTool(call, signal)
+                    'start_presentation_production',
+                    'rebuild_presentation_page',
+                    'run_presentation_production',
+                    'read_presentation_production',
+                    'read_presentation_page_artifact',
+                    'prepare_presentation_production_import',
+                  ].includes(call.name) && production
+                ? executeProduction(call, signal)
                 : [
-                      'capture_presentation_page_qa',
-                      'read_presentation_qa',
-                      'record_presentation_page_review',
-                    ].includes(call.name) && qaSkill
-                  ? qaSkill.executeTool(call, signal)
-                  : ['list_presentation_attachments', 'read_presentation_attachment'].includes(
-                        call.name,
-                      ) && attachments
-                    ? attachments.executeTool(call, signal)
-                    : ['save_presentation_plan', 'read_presentation_plan'].includes(call.name) &&
-                        planning
-                      ? planning.executeTool(call, signal)
-                      : [
-                            'import_presentation_production',
-                            'read_presentation_production_import_status',
-                          ].includes(call.name) && productionDelivery
-                        ? executeDelivery(call, signal)
+                      'read_presentation_page',
+                      'edit_presentation_page_text',
+                      'read_presentation_page_geometry',
+                      'read_presentation_geometry_change',
+                      'inspect_presentation_geometry_change',
+                      'resume_presentation_geometry_change',
+                      'undo_presentation_geometry_change',
+                      'edit_presentation_page_geometry',
+                      'replace_presentation_page_image',
+                      'read_presentation_image_replacement',
+                      'inspect_presentation_image_replacement',
+                      'resume_presentation_image_replacement',
+                    ].includes(call.name) && pageEditing
+                  ? pageEditing.executeTool(call, signal)
+                  : [
+                        'capture_presentation_page_qa',
+                        'read_presentation_qa',
+                        'record_presentation_page_review',
+                      ].includes(call.name) && qaSkill
+                    ? qaSkill.executeTool(call, signal)
+                    : ['list_presentation_attachments', 'read_presentation_attachment'].includes(
+                          call.name,
+                        ) && attachments
+                      ? attachments.executeTool(call, signal)
+                      : ['save_presentation_plan', 'read_presentation_plan'].includes(call.name) &&
+                          planning
+                        ? planning.executeTool(call, signal)
                         : [
-                              'import_generated_presentation',
-                              'read_presentation_import_status',
-                            ].includes(call.name) && delivery
+                              'import_presentation_production',
+                              'read_presentation_production_import_status',
+                            ].includes(call.name) && productionDelivery
                           ? executeDelivery(call, signal)
                           : [
-                                'compile_deck_with_pptxgenjs',
-                                'restore_presentation_project',
-                                'resume_presentation_project',
-                              ].includes(call.name)
-                            ? executeGeneration(call, signal)
-                            : base.executeTool(call, signal),
+                                'import_generated_presentation',
+                                'read_presentation_import_status',
+                              ].includes(call.name) && delivery
+                            ? executeDelivery(call, signal)
+                            : [
+                                  'compile_deck_with_pptxgenjs',
+                                  'restore_presentation_project',
+                                  'resume_presentation_project',
+                                ].includes(call.name)
+                              ? executeGeneration(call, signal)
+                              : base.executeTool(call, signal),
       }
     : base
   return {
@@ -582,6 +620,7 @@ export function createOfficeHostRuntime(
         productionEpoch++
         production?.clear()
         pageBackup?.clear()
+        pageReplacement?.clear()
         pageEditing?.clear()
         qaSkill?.clear()
         attachments?.clear()

@@ -72,7 +72,7 @@ async function digest(bytes: Uint8Array): Promise<string> {
     (b) => b.toString(16).padStart(2, '0'),
   ).join('')
 }
-interface Metadata {
+export interface PresentationPageBackupMetadata {
   backupId: string
   projectId: string
   documentId: string
@@ -88,6 +88,7 @@ interface Metadata {
   status: 'uploading' | 'ready'
   receivedBytes: number
 }
+type Metadata = PresentationPageBackupMetadata
 function metadata(value: unknown): Metadata {
   if (
     !object(value, [
@@ -157,12 +158,115 @@ const tools: AgentToolDef[] = [
     additionalProperties: false,
   },
 }))
+async function backupResponse(
+  options: PresentationPageBackupOptions,
+  payload: Record<string, unknown>,
+  current: () => Promise<void>,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  await current()
+  if (new TextEncoder().encode(JSON.stringify(payload)).length > 256 * 1024)
+    throw new Error('presentation_request_too_large')
+  const response = await options.request(payload, signal)
+  await current()
+  const text = await response.text()
+  await current()
+  if (new TextEncoder().encode(text).length > 256 * 1024) invalid()
+  const value: unknown = JSON.parse(text)
+  if (value && typeof value === 'object' && 'error' in value) {
+    const error = value as { error: unknown; message?: unknown }
+    if (
+      error.error === 'unsupported' ||
+      error.error === 'unsupported_operation' ||
+      (error.error === 'invalid_request' &&
+        typeof error.message === 'string' &&
+        /(?:unsupported|unknown) operation/i.test(error.message))
+    )
+      throw new Error('presentation_upgrade_required')
+    if (typeof error.error === 'string' && /^[a-z_]{1,80}$/.test(error.error))
+      throw new Error(`presentation_${error.error}`)
+    invalid()
+  }
+  if (!response.ok) invalid()
+  return value
+}
+async function readBackupBytes(
+  request: (operation: string, body: Record<string, unknown>) => Promise<unknown>,
+  parse: (value: unknown) => Metadata,
+  current: () => Promise<void>,
+  backupId: string,
+): Promise<{ metadata: Metadata; bytes: Uint8Array }> {
+  const record = parse(await request('page_backup_status', { backupId }))
+  if (record.status !== 'ready') throw new Error('presentation_page_backup_not_ready')
+  const bytes = new Uint8Array(record.sizeBytes)
+  for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
+    const length = Math.min(CHUNK_BYTES, bytes.length - offset)
+    const part = await request('page_backup_read', { backupId, offset, length })
+    if (
+      !object(part, ['backupId', 'offset', 'sizeBytes', 'sha256', 'base64']) ||
+      part.backupId !== backupId ||
+      part.offset !== offset ||
+      part.sizeBytes !== record.sizeBytes ||
+      part.sha256 !== record.sha256
+    )
+      invalid()
+    const chunk = decode(part.base64, length)
+    if (chunk.length !== length) invalid()
+    bytes.set(chunk, offset)
+  }
+  const actual = await digest(bytes)
+  await current()
+  if (actual !== record.sha256) invalid()
+  return { metadata: record, bytes }
+}
+
 export function createPresentationPageBackupSkill(
   options: PresentationPageBackupOptions,
-): AgentSkill & { clear(): void } {
+): AgentSkill & {
+  clear(): void
+  loadBackup(
+    projectId: string,
+    backupId: string,
+    signal?: AbortSignal,
+  ): Promise<{ metadata: PresentationPageBackupMetadata; base64: string }>
+} {
   let epoch = 0
   return {
     id: 'office-presentation-page-backup',
+    async loadBackup(projectId, backupId, signal) {
+      const captured = epoch
+      const check = () => {
+        if (signal?.aborted || captured !== epoch) throw new Error('cancelled')
+        if (!options.available()) throw new Error('presentation_unavailable')
+      }
+      check()
+      if (!id(projectId) || !requestId(backupId)) throw new Error('invalid_tool_input')
+      const documentId = await options.documentId()
+      check()
+      if (typeof documentId !== 'string' || !documentId || documentId.length > 4096)
+        throw new Error('presentation_document_changed')
+      const current = async () => {
+        check()
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
+      }
+      const request = (operation: string, body: Record<string, unknown>) =>
+        backupResponse(options, { operation, documentId, projectId, ...body }, current, signal)
+      const parse = (value: unknown) => {
+        const result = metadata(value)
+        if (
+          result.documentId !== documentId ||
+          result.projectId !== projectId ||
+          result.backupId !== backupId
+        )
+          invalid()
+        return result
+      }
+      const loaded = await readBackupBytes(request, parse, current, backupId)
+      await current()
+      return { metadata: loaded.metadata, base64: encode(loaded.bytes) }
+    },
     get tools() {
       return options.available() ? tools : []
     },
@@ -211,32 +315,12 @@ export function createPresentationPageBackupSkill(
           bindingCheck()
         }
         const request = async (operation: string, body: Record<string, unknown>) => {
-          await current()
-          const payload = { operation, documentId, projectId, ...body }
-          if (new TextEncoder().encode(JSON.stringify(payload)).length > 256 * 1024)
-            throw new Error('presentation_request_too_large')
-          const response = await options.request(payload, signal)
-          await current()
-          const text = await response.text()
-          await current()
-          if (new TextEncoder().encode(text).length > 256 * 1024) invalid()
-          const value: unknown = JSON.parse(text)
-          if (value && typeof value === 'object' && 'error' in value) {
-            const error = value as { error: unknown; message?: unknown }
-            if (
-              error.error === 'unsupported' ||
-              error.error === 'unsupported_operation' ||
-              (error.error === 'invalid_request' &&
-                typeof error.message === 'string' &&
-                /(?:unsupported|unknown) operation/i.test(error.message))
-            )
-              throw new Error('presentation_upgrade_required')
-            if (typeof error.error === 'string' && /^[a-z_]{1,80}$/.test(error.error))
-              throw new Error(`presentation_${error.error}`)
-            invalid()
-          }
-          if (!response.ok) invalid()
-          return value
+          return backupResponse(
+            options,
+            { operation, documentId, projectId, ...body },
+            current,
+            signal,
+          )
         }
         const parse = (value: unknown) => {
           const result = metadata(value)
@@ -259,27 +343,12 @@ export function createPresentationPageBackupSkill(
           summary: path ? '已下载原页历史备份，未恢复宿主页' : '已保存原页历史备份，未替换宿主页',
         })
         if (!save) {
-          const record = parse(await request('page_backup_status', { backupId }))
-          if (record.status !== 'ready') throw new Error('presentation_page_backup_not_ready')
-          const bytes = new Uint8Array(record.sizeBytes)
-          for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
-            const length = Math.min(CHUNK_BYTES, bytes.length - offset)
-            const part = await request('page_backup_read', { backupId, offset, length })
-            if (
-              !object(part, ['backupId', 'offset', 'sizeBytes', 'sha256', 'base64']) ||
-              part.backupId !== backupId ||
-              part.offset !== offset ||
-              part.sizeBytes !== record.sizeBytes ||
-              part.sha256 !== record.sha256
-            )
-              invalid()
-            const chunk = decode(part.base64, length)
-            if (chunk.length !== length) invalid()
-            bytes.set(chunk, offset)
-          }
-          const actual = await digest(bytes)
-          await current()
-          if (actual !== record.sha256) invalid()
+          const { metadata: record, bytes } = await readBackupBytes(
+            request,
+            parse,
+            current,
+            backupId,
+          )
           const filename = await digest(
             new TextEncoder().encode(JSON.stringify([documentId, projectId, backupId])),
           )

@@ -1,3 +1,5 @@
+import { createPresentationDocumentBinding } from '../../office-addin/src/skills/powerpoint/presentation-document'
+import { BrowserPresentationPageReplacementAdapter } from '../../office-addin/src/skills/powerpoint/browser-presentation-page-replacement-adapter'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -18,8 +20,49 @@ import type {
   PresentationImportRecord,
 } from '../../office-addin/src/skills/powerpoint/presentation-delivery'
 
-it('backs up the actual imported parent page and downloads its exact bytes after PC and Taskpane restart', async () => {
+it('backs up, stages and discards a page revision across PC and Taskpane restart while preserving the original', async () => {
   const root = mkdtempSync(join(tmpdir(), 'wiswork-page-backup-integration-'))
+  const settings = new Map<string, string>([['wiswork.presentation.document.v1', 'docid']])
+  const binding = createPresentationDocumentBinding({
+    get: (key) => settings.get(key),
+    set: (key, value) => {
+      settings.set(key, value)
+    },
+    save: async () => {},
+    location: () => 'file://deck.pptx',
+  })
+  const documentId = await binding.documentId()
+  let staged = false
+  const inspectStage = vi
+    .spyOn(BrowserPresentationPageReplacementAdapter.prototype, 'inspect')
+    .mockImplementation(async (record) => ({
+      status: staged ? 'staged' : 'baseline',
+      slideIds: staged
+        ? [
+            ...record.beforeSlideIds.slice(0, record.beforeSlideIds.indexOf(record.oldSlideId) + 1),
+            'staged-host',
+            ...record.beforeSlideIds.slice(record.beforeSlideIds.indexOf(record.oldSlideId) + 1),
+          ]
+        : record.beforeSlideIds,
+    }))
+  const insertStage = vi
+    .spyOn(BrowserPresentationPageReplacementAdapter.prototype, 'stage')
+    .mockImplementation(async (record, base64, onInserted, assertCurrent) => {
+      expect(binding.readPageReplacement()?.state).toBe('pending')
+      expect((await openPptx(Buffer.from(base64, 'base64'))).deck.slides).toHaveLength(1)
+      await assertCurrent()
+      staged = true
+      await onInserted('staged-host')
+      expect(binding.readPageReplacement()?.state).toBe('inserted')
+      expect(record.oldSlideId).toBe('host-1')
+    })
+  const discardStage = vi
+    .spyOn(BrowserPresentationPageReplacementAdapter.prototype, 'discard')
+    .mockImplementation(async (_record, assertCurrent) => {
+      expect(binding.readPageReplacement()?.state).toBe('discard_pending')
+      await assertCurrent()
+      staged = false
+    })
   let service = createPresentationService({ userDataPath: root })
   const deck = benchmarkPlannedDeck(),
     signal = new AbortController().signal
@@ -29,7 +72,7 @@ it('backs up the actual imported parent page and downloads its exact bytes after
         await service(
           {
             operation,
-            documentId: 'doc',
+            documentId,
             projectId: deck.id,
             ...extra,
           },
@@ -59,7 +102,7 @@ it('backs up the actual imported parent page and downloads its exact bytes after
       status: 'compiled',
     })
     const artifact: CompiledPresentationArtifact = {
-      documentId: 'doc',
+      documentId,
       projectId: deck.id,
       requestId: 'parent',
       planRevision: 1,
@@ -75,7 +118,7 @@ it('backs up the actual imported parent page and downloads its exact bytes after
     const hostIds = deck.slides.map((_, i) => `host-${i}`)
     const receipt: PresentationImportRecord = {
       state: 'complete',
-      documentId: 'doc',
+      documentId,
       slideIds: hostIds,
       checkpoint: {
         version: 2,
@@ -107,8 +150,9 @@ it('backs up the actual imported parent page and downloads its exact bytes after
     const create = () =>
       createOfficeHostRuntime('powerpoint', {
         presentation: {
+          ...binding,
           available: () => true,
-          documentId: async () => 'doc',
+          documentId: binding.documentId,
           lastProject: () => deck.id,
           rememberProject: async () => {},
           readReceipt: (key) => (key === `production/${deck.id}/parent` ? receipt : undefined),
@@ -147,9 +191,60 @@ it('backs up the actual imported parent page and downloads its exact bytes after
       hostSlideId: hostIds[1],
       slideIds: ['existing', ...hostIds],
     })
+    const parentReceipt = JSON.stringify(receipt)
+    const stage = await runtime.skill.executeTool({
+      id: 'stage',
+      name: 'stage_presentation_page_replacement',
+      input: {
+        project_id: deck.id,
+        request_id: 'child',
+        page_id: target.id,
+        backup_id: 'backup-1',
+        change_id: 'stage-1',
+      },
+    })
+    expect(stage.isError, stage.output).not.toBe(true)
+    expect(staged).toBe(false)
+    expect(binding.readPageReplacement()).toBeUndefined()
+    await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+    expect(binding.readPageReplacement()).toMatchObject({
+      state: 'staged',
+      newSlideId: 'staged-host',
+      oldSlideId: hostIds[1],
+    })
+    expect(staged).toBe(true)
+    expect(JSON.stringify(receipt)).toBe(parentReceipt)
     runtime.dispose()
     service = createPresentationService({ userDataPath: root })
     runtime = create()
+    expect(
+      (
+        await runtime.skill.executeTool({
+          id: 'prepare-again',
+          name: 'prepare_presentation_production_import',
+          input: { project_id: deck.id, request_id: 'parent' },
+        })
+      ).isError,
+    ).not.toBe(true)
+    const inspected = await runtime.skill.executeTool({
+      id: 'inspect',
+      name: 'inspect_presentation_page_replacement',
+      input: { project_id: deck.id, change_id: 'stage-1' },
+    })
+    expect(inspected.isError, inspected.output).not.toBe(true)
+    expect(inspected.output).toContain('staged')
+    expect(insertStage).toHaveBeenCalledTimes(1)
+    const discard = await runtime.skill.executeTool({
+      id: 'discard',
+      name: 'discard_presentation_page_replacement',
+      input: { project_id: deck.id, change_id: 'stage-1' },
+    })
+    expect(discard.isError, discard.output).not.toBe(true)
+    await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+    expect(staged).toBe(false)
+    expect(discardStage).toHaveBeenCalledTimes(1)
+    expect(binding.readPageReplacement()?.state).toBe('discarded')
+    expect(JSON.stringify(receipt)).toBe(parentReceipt)
     const downloaded = await runtime.skill.executeTool({
       id: 'read',
       name: 'read_presentation_page_backup',
@@ -178,6 +273,9 @@ it('backs up the actual imported parent page and downloads its exact bytes after
   } finally {
     runtime?.dispose()
     exported?.mockRestore()
+    inspectStage.mockRestore()
+    insertStage.mockRestore()
+    discardStage.mockRestore()
     rmSync(root, { recursive: true, force: true })
   }
 })

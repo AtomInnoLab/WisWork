@@ -378,3 +378,31 @@ it('supports a 128-character backup ID without exceeding VFS filename limits', a
   expect(result.isError).not.toBe(true)
   expect(f.options.vfs.readBytes(JSON.parse(result.output).path)).toEqual(new Uint8Array(f.bytes))
 })
+
+it('loads verified backup bytes for a transaction without writing session files', async () => {
+  const f = setup()
+  f.metadata.status = 'ready'
+  f.metadata.receivedBytes = f.bytes.length
+  const loaded = await f.skill.loadBackup('project', 'backup')
+  expect(loaded.metadata.sha256).toBe(f.metadata.sha256)
+  expect(Buffer.from(loaded.base64, 'base64')).toEqual(f.bytes)
+  expect(f.options.vfs.list('/home/user')).toEqual([])
+})
+it('cancels transaction backup loading after session clear and refuses a digest mismatch', async () => {
+  const f = setup()
+  f.metadata.status = 'ready'
+  f.metadata.receivedBytes = f.bytes.length
+  const original = f.request.getMockImplementation()!
+  f.request.mockImplementation(async (body) => {
+    const result = await original(body)
+    f.skill.clear()
+    return result
+  })
+  await expect(f.skill.loadBackup('project', 'backup')).rejects.toThrow('cancelled')
+  f.request.mockImplementation(original)
+  f.metadata.sha256 = 'f'.repeat(64)
+  await expect(f.skill.loadBackup('project', 'backup')).rejects.toThrow(
+    'presentation_response_invalid',
+  )
+  expect(f.options.vfs.list('/home/user')).toEqual([])
+})
