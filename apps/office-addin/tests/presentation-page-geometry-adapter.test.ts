@@ -167,7 +167,37 @@ describe('host-ID page geometry adapter', () => {
     ).rejects.toThrow('cancelled')
     expect(shape).toMatchObject(before)
   })
-  it('reconciles partial property setter failure rather than leaking a false clean failure', async () => {
+  it('does not flush queued partial assignments merely to reconcile a setter exception', async () => {
+    const { adapter, shape, context } = setup()
+    let committed = before.left,
+      queued: number | undefined
+    Object.defineProperty(shape, 'left', {
+      get: () => committed,
+      set: (value: number) => {
+        queued = value
+      },
+      enumerable: true,
+    })
+    Object.defineProperty(shape, 'top', {
+      get: () => before.top,
+      set: () => {
+        throw new Error('setter failed')
+      },
+      enumerable: true,
+    })
+    context.sync.mockImplementation(async () => {
+      if (queued !== undefined) {
+        committed = queued
+        queued = undefined
+      }
+    })
+    await expect(
+      adapter.editPresentationPageGeometry('host-29', 'shape-1', target, before),
+    ).rejects.toThrow('office_state_uncertain')
+    expect(context.sync).toHaveBeenCalledTimes(2)
+    expect(committed).toBe(before.left)
+  })
+  it('reports partial property setter failure as uncertain rather than claiming a clean failure', async () => {
     const { adapter, shape } = setup()
     Object.defineProperty(shape, 'top', {
       get: () => before.top,

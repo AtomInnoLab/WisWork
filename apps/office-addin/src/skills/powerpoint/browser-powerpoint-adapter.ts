@@ -758,12 +758,16 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         throw new Error('office_concurrent_change')
       cancelled(signal)
       try {
-        // Property assignment itself can fail after earlier fields were queued. Keep every
-        // setter inside the reconciliation boundary; never roll back unowned host changes.
         for (const key of geometryFields) shape[key] = target[key]
+      } catch {
+        // Do not sync merely to inspect a failed setter: that could dispatch the partial
+        // batch still queued in this context. Its final host state remains uncertain.
+        throw new Error('office_state_uncertain')
+      }
+      try {
         await sync(context, signal)
       } catch {
-        /* A rejected setter/sync can still have applied some or all queued fields. */
+        /* A rejected sync can still have applied some or all queued fields. */
       }
       let observed: PresentationPageGeometry
       try {
