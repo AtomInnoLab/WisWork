@@ -1,4 +1,8 @@
 import {
+  validatePresentationPageReplacement,
+  type PresentationPageReplacement,
+} from './presentation-page-replacement-record.js'
+import {
   validatePresentationGeometryChange,
   type PresentationGeometryChange,
 } from './presentation-geometry-change.js'
@@ -20,6 +24,7 @@ import type { PresentationImportRecord } from './presentation-delivery.js'
 const ID_KEY = 'wiswork.presentation.document.v1'
 const IMPORT_KEY = 'wiswork.presentation.imports.v1'
 const IMAGE_KEY = 'wiswork.presentation.image-replacements.v1'
+const PAGE_REPLACEMENT_KEY = 'wiswork.presentation.page-replacement.v1'
 const GEOMETRY_KEY = 'wiswork.presentation.geometry-change.v1'
 const QA_KEY = 'wiswork.presentation.qa.v1'
 const PROJECT_KEY = 'wiswork.presentation.project.v1'
@@ -227,8 +232,96 @@ export function createPresentationDocumentBinding(
     if (!validatePresentationGeometryChange(value)) throw invalid()
     return value
   }
+  let pageReplacementWriteFailed = false
+  const readPageReplacement = (): PresentationPageReplacement | undefined => {
+    const invalid = () => new Error('presentation_page_replacement_state_invalid')
+    if (pageReplacementWriteFailed) throw invalid()
+    const raw = settings.get(PAGE_REPLACEMENT_KEY)
+    // Empty string is the tombstone for a failed first save; the settings adapter has no delete.
+    if (raw === undefined || raw === null || raw === '') return undefined
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 192 * 1024)
+      throw invalid()
+    let value: unknown
+    try {
+      value = JSON.parse(raw)
+    } catch {
+      throw invalid()
+    }
+    if (!validatePresentationPageReplacement(value)) throw invalid()
+    return value
+  }
   return {
     documentId,
+    readPageReplacement,
+    writePageReplacement(
+      record: PresentationPageReplacement,
+      expectedChange: PresentationPageReplacement | undefined,
+    ) {
+      const snapshot = structuredClone(record),
+        expected = structuredClone(expectedChange)
+      const write = async () => {
+        const invalid = () => new Error('presentation_page_replacement_state_invalid')
+        if (
+          !validatePresentationPageReplacement(snapshot) ||
+          (expected !== undefined && !validatePresentationPageReplacement(expected))
+        )
+          throw invalid()
+        if ((await documentId()) !== snapshot.documentId)
+          throw new Error('presentation_document_changed')
+        const prior = readPageReplacement()
+        if (JSON.stringify(prior) !== JSON.stringify(expected))
+          throw new Error('presentation_page_replacement_stale')
+        if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
+        if (prior?.changeId === snapshot.changeId) {
+          const identity = (r: PresentationPageReplacement) =>
+            JSON.stringify({ ...r, state: undefined, newSlideId: undefined })
+          const transitions = {
+            pending: 'inserted',
+            inserted: 'staged',
+            staged: 'discard_pending',
+            discard_pending: 'discarded',
+            discarded: undefined,
+          }
+          if (
+            identity(prior) !== identity(snapshot) ||
+            transitions[prior.state] !== snapshot.state ||
+            (prior.state !== 'pending' && prior.newSlideId !== snapshot.newSlideId)
+          )
+            throw invalid()
+        } else if (snapshot.state !== 'pending' || (prior && prior.state !== 'discarded'))
+          throw invalid()
+        const previous = settings.get(PAGE_REPLACEMENT_KEY),
+          location = settings.location(),
+          identity = settings.get(ID_KEY),
+          serialized = JSON.stringify(snapshot)
+        try {
+          settings.set(PAGE_REPLACEMENT_KEY, serialized)
+          await settings.save()
+          if (
+            settings.location() !== location ||
+            settings.get(ID_KEY) !== identity ||
+            settings.get(PAGE_REPLACEMENT_KEY) !== serialized
+          )
+            throw new Error('presentation_document_changed')
+        } catch (error) {
+          if (
+            settings.location() === location &&
+            settings.get(ID_KEY) === identity &&
+            settings.get(PAGE_REPLACEMENT_KEY) === serialized
+          ) {
+            try {
+              settings.set(PAGE_REPLACEMENT_KEY, typeof previous === 'string' ? previous : '')
+            } catch {
+              pageReplacementWriteFailed = true
+            }
+          } else pageReplacementWriteFailed = true
+          throw error
+        }
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
     readGeometryChange,
     writeGeometryChange(
       record: PresentationGeometryChange,
