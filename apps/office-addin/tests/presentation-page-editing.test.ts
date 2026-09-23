@@ -1041,3 +1041,154 @@ it('blocks new geometry across projects while a document journal is pending and 
   ).toMatchObject({ isError: true, output: 'presentation_geometry_change_uncertain' })
   expect(f.adapter.editPresentationPageGeometry).toHaveBeenCalledOnce()
 })
+async function interruptedGeometry(undo = false, applied = false) {
+  const f = undoSetup()
+  await f.skill.executeTool(f.edit)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  const record = f.readGeometryChange()!
+  const state = undo ? 'undo_pending' : 'pending'
+  f.options.readGeometryChange = () => ({ ...record, state }) as typeof record
+  let current = { ...record, state } as typeof record
+  f.options.readGeometryChange = () => current
+  f.options.writeGeometryChange = vi.fn(async (next, expected) => {
+    expect(current).toEqual(expected)
+    current = structuredClone(next)
+  })
+  f.setGeometry(
+    applied ? (undo ? record.before : record.after) : undo ? record.after : record.before,
+  )
+  const skill = createPresentationPageEditingSkill(f.options)
+  return {
+    ...f,
+    skill,
+    record,
+    resume: {
+      id: 'resume-geo',
+      name: 'resume_presentation_geometry_change',
+      input: { page_id: 'page1' },
+    },
+    inspect: {
+      id: 'inspect-geo',
+      name: 'inspect_presentation_geometry_change',
+      input: { page_id: 'page1' },
+    },
+    getRecord: () => current,
+  }
+}
+it.each([
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+])(
+  'recovers geometry pending undo=%s applied=%s only after confirmation',
+  async (undo, applied) => {
+    const f = await interruptedGeometry(undo, applied)
+    const writes = f.adapter.editPresentationPageGeometry.mock.calls.length
+    expect(JSON.parse((await f.skill.executeTool(f.inspect)).output).status).toBe(
+      applied ? 'already_applied' : 'ready_to_apply',
+    )
+    expect((await f.skill.executeTool(f.resume)).isError).not.toBe(true)
+    await f.proposals.confirm(f.proposals.pending()!.id)
+    expect(f.getRecord().state).toBe(undo ? 'undone' : 'applied')
+    expect(f.adapter.editPresentationPageGeometry).toHaveBeenCalledTimes(writes + (applied ? 0 : 1))
+    expect(JSON.parse((await f.skill.executeTool(f.resume)).output).status).toBe('not_pending')
+  },
+)
+it('requires manual review when pending geometry matches both or neither endpoint', async () => {
+  for (const both of [true, false]) {
+    const f = await interruptedGeometry()
+    if (both) {
+      f.getRecord().after = { ...f.record.before, left: f.record.before.left + 0.005 }
+      f.setGeometry(f.record.before)
+    } else f.setGeometry({ left: 999, top: 9, width: 9, height: 9 })
+    expect(JSON.parse((await f.skill.executeTool(f.inspect)).output).status).toBe('manual_review')
+    expect(await f.skill.executeTool(f.resume)).toMatchObject({
+      isError: true,
+      output: 'presentation_geometry_change_manual_review',
+    })
+    expect(f.proposals.pending()).toBeUndefined()
+  }
+})
+it('rejects tiny observed drift, cancellation and document changes after recovery proposal', async () => {
+  for (const mode of ['drift', 'clear', 'document']) {
+    const f = await interruptedGeometry()
+    await f.skill.executeTool(f.resume)
+    if (mode === 'drift') f.setGeometry({ ...f.record.before, left: f.record.before.left + 0.001 })
+    if (mode === 'clear') f.skill.clear()
+    if (mode === 'document') f.documentId.mockResolvedValue('other')
+    await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow()
+    expect(f.getRecord().state).toBe('pending')
+    expect(f.adapter.editPresentationPageGeometry).toHaveBeenCalledTimes(1)
+  }
+})
+it('passes quantized actual geometry as expected and leaves pending if completion save fails', async () => {
+  const f = await interruptedGeometry()
+  const actual = { ...f.record.before, left: f.record.before.left + 0.005 }
+  f.setGeometry(actual)
+  await f.skill.executeTool(f.resume)
+  f.options.writeGeometryChange = vi.fn(async () => {
+    throw new Error('save_failed')
+  })
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('save_failed')
+  expect(f.adapter.editPresentationPageGeometry).toHaveBeenLastCalledWith(
+    'host-42',
+    'shape1',
+    f.record.after,
+    actual,
+    expect.any(AbortSignal),
+  )
+  expect(f.getRecord().state).toBe('pending')
+})
+it('does not read or write the host for terminal geometry inspection', async () => {
+  const f = undoSetup()
+  await f.skill.executeTool(f.edit)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  f.adapter.readPresentationPageGeometry.mockClear()
+  expect(
+    JSON.parse(
+      (
+        await f.skill.executeTool({
+          id: 'inspect',
+          name: 'inspect_presentation_geometry_change',
+          input: { page_id: 'page1' },
+        })
+      ).output,
+    ),
+  ).toMatchObject({ status: 'not_pending', historical: true })
+  expect(f.adapter.readPresentationPageGeometry).not.toHaveBeenCalled()
+})
+it('still verifies a committed geometry recovery when Stop races the host write', async () => {
+  const f = await interruptedGeometry(),
+    write = f.adapter.editPresentationPageGeometry.getMockImplementation()!
+  f.adapter.editPresentationPageGeometry.mockImplementation(async (...args) => {
+    await write(...args)
+    f.proposals.newTurn()
+  })
+  await f.skill.executeTool(f.resume)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(f.getRecord().state).toBe('applied')
+})
+it('rejects recovery classification drift and record changes during host inspection', async () => {
+  const f = await interruptedGeometry()
+  await f.skill.executeTool(f.resume)
+  f.setGeometry(f.record.after)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+  const g = await interruptedGeometry(),
+    read = g.adapter.readPresentationPageGeometry.getMockImplementation()!
+  g.adapter.readPresentationPageGeometry.mockImplementation(async () => {
+    const result = await read()
+    g.getRecord().changeId = 'changed'
+    return result
+  })
+  expect(await g.skill.executeTool(g.inspect)).toMatchObject({ isError: true })
+})
+it('describes geometry inspection as read-only and recovery as direction-aware reconciliation', () => {
+  const f = undoSetup(),
+    inspect = f.skill.tools.find((t) => t.name === 'inspect_presentation_geometry_change')!,
+    resume = f.skill.tools.find((t) => t.name === 'resume_presentation_geometry_change')!
+  expect(inspect.description).toContain('Read-only')
+  expect(resume.description).toContain('pending direction')
+  expect(resume.description).toContain('without another write')
+  expect(inspect.description).not.toContain('Propose undoing')
+})
