@@ -17,3 +17,5 @@ export type {
   ResolveChatArgs,
   ResolveChatResult,
 } from './ipc.js'
+export { PresentationStore, assertPresentationId } from './presentation-store.js'
+export type { PresentationReceipt } from './presentation-store.js'
