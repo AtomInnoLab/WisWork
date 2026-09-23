@@ -1,5 +1,5 @@
 import type { PresentationClaim, PresentationDeck, PresentationStyle } from './presentation'
-import { PRESENTATION_DECK_SCHEMA } from './presentation'
+import { PRESENTATION_DECK_SCHEMA, PRESENTATION_TEXT_BUDGET } from './presentation'
 import { type Schema, text, number, choice, array, object, id, valid } from './presentation-schema'
 
 /** Durable planning metadata; source URIs are never fetched or treated as verified evidence. */
@@ -150,13 +150,21 @@ export function parsePresentationPlan(input: unknown): PresentationPlan {
     unique(slide.claimIds, 'claim_reference')
     if (slide.claimIds.some((claim) => !claimIds.has(claim))) reject('claim_reference')
   }
+  const requiredText = mappedClaims(plan).reduce(
+    (sum, claim) => sum + claim.text.length + claim.source.length + (claim.locator?.length ?? 0),
+    plan.slides.reduce((sum, slide) => sum + slide.title.length, 0),
+  )
+  if (requiredText > PRESENTATION_TEXT_BUDGET) reject('text_budget')
   return structuredClone(plan)
 }
 
 export function presentationPlanClaims(plan: PresentationPlan): PresentationClaim[] {
-  const checked = parsePresentationPlan(plan)
-  const sources = new Map(checked.sources.map((source) => [source.id, source]))
-  return checked.claims.map((claim) => {
+  return mappedClaims(parsePresentationPlan(plan))
+}
+
+function mappedClaims(plan: PresentationPlan): PresentationClaim[] {
+  const sources = new Map(plan.sources.map((source) => [source.id, source]))
+  return plan.claims.map((claim) => {
     const evidence = claim.sourceIds.map((id) => sources.get(id)!)
     const locator = evidence
       .map((source) => source.locator)

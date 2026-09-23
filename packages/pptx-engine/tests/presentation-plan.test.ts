@@ -89,6 +89,49 @@ describe('durable presentation plan', () => {
     plan.slides = Array.from({ length: 32 }, (_, i) => ({ ...plan.slides[0]!, id: `s${i}` }))
     expect(parsePresentationPlan(plan).slides).toHaveLength(32)
   })
+  it('rejects expanded claims beyond the deck text budget even when the plan fits its byte budget', () => {
+    const plan = benchmarkPlan()
+    plan.sources = Array.from({ length: 3 }, (_, i) => ({
+      id: `source-${i}`,
+      title: 'Source',
+      uri: 'u'.repeat(499),
+      excerpt: '',
+    }))
+    plan.claims = Array.from({ length: 256 }, (_, i) => ({
+      ...plan.claims[0]!,
+      id: `claim-${i}`,
+      statement: 'Claim',
+      sourceIds: plan.sources.map((source) => source.id),
+    }))
+    plan.slides.forEach((slide) => {
+      slide.claimIds = []
+    })
+    expect(new TextEncoder().encode(JSON.stringify(plan)).byteLength).toBeLessThan(192 * 1024)
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:text_budget')
+  })
+  it('counts mapped statements, source separators, locators and slide titles at the exact budget boundary', () => {
+    const plan = benchmarkPlan()
+    plan.sources = Array.from({ length: 3 }, (_, i) => ({
+      id: `source-${i}`,
+      title: 'Source',
+      uri: 'u'.repeat(400),
+      locator: 'l'.repeat(10),
+      excerpt: '',
+    }))
+    plan.claims = Array.from({ length: 200 }, (_, i) => ({
+      ...plan.claims[0]!,
+      id: `claim-${i}`,
+      statement: 'C',
+      sourceIds: plan.sources.map((source) => source.id),
+    }))
+    plan.slides.forEach((slide) => {
+      slide.claimIds = []
+      slide.title = 't'.repeat(175)
+    })
+    expect(() => parsePresentationPlan(plan)).not.toThrow()
+    plan.slides[0]!.title += 't'
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:text_budget')
+  })
   it('preserves unverified provenance and joins only nonempty locators', () => {
     const plan = benchmarkPlan()
     plan.sources.push({

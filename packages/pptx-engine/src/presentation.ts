@@ -13,6 +13,7 @@ import {
 /** Browser-safe, fixed 16:9 presentation contract. Coordinates are inches, text sizes points. */
 export const PRESENTATION_WIDTH = 13.333333
 export const PRESENTATION_HEIGHT = 7.5
+export const PRESENTATION_TEXT_BUDGET = 250_000
 export interface PresentationStyle {
   fontFace: string
   background: string
@@ -276,7 +277,7 @@ export function parsePresentationDeck(input: unknown): PresentationDeck {
       }
     }
   }
-  if (textBudget > 250_000) reject('text_budget')
+  if (textBudget > PRESENTATION_TEXT_BUDGET) reject('text_budget')
   return structuredClone(deck)
 }
 
