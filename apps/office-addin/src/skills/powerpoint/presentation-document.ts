@@ -28,6 +28,16 @@ interface DocumentSettings {
   location(): string
 }
 
+function validImportKey(key: string, record?: PresentationImportRecord): boolean {
+  if (!/^(?:production\/)?[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_-]{1,128}$/.test(key)) return false
+  return (
+    record === undefined ||
+    (key.split('/').length === 3
+      ? record?.checkpoint?.version === 2
+      : record?.checkpoint?.version !== 2)
+  )
+}
+
 export function createPresentationDocumentBinding(
   settings: DocumentSettings,
   randomUUID: () => string = () => crypto.randomUUID(),
@@ -81,10 +91,7 @@ export function createPresentationDocumentBinding(
     )
       throw new Error('presentation_import_state_invalid')
     for (const [key, record] of Object.entries(value)) {
-      if (
-        !/^[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_-]{1,128}$/.test(key) ||
-        !validPresentationImportRecord(record)
-      )
+      if (!validPresentationImportRecord(record) || !validImportKey(key, record))
         throw new Error('presentation_import_state_invalid')
     }
     return value
@@ -203,7 +210,7 @@ export function createPresentationDocumentBinding(
     writeReceipt(key: string, record: PresentationImportRecord | undefined) {
       const write = async () => {
         if (
-          !/^[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_-]{1,128}$/.test(key) ||
+          !validImportKey(key, record) ||
           (record !== undefined && !validPresentationImportRecord(record))
         )
           throw new Error('presentation_import_state_invalid')

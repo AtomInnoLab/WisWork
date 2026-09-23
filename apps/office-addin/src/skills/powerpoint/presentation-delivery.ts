@@ -1,3 +1,7 @@
+export {
+  createPresentationProductionDeliverySkill,
+  presentationImportKey,
+} from './presentation-page-delivery.js'
 import { createPresentationPageDeliverySkill } from './presentation-page-delivery.js'
 import type { AgentSkill } from '@wiswork/agent-core'
 import {
@@ -11,6 +15,8 @@ export interface CompiledPresentationArtifact {
   projectId: string
   requestId: string
   pptxBase64: string
+  pagePptxBase64?: string[]
+  planRevision?: number
   slideCount: number
   pages?: { id: string; title: string; sourceSlideId: string }[]
 }
@@ -21,7 +27,8 @@ export interface PresentationImportRecord {
   checkpoint?: PresentationImportCheckpoint
 }
 export interface PresentationImportCheckpoint {
-  version: 1
+  version: 1 | 2
+  pageIds?: string[]
   artifactDigest: string
   sourceSlideIds: string[]
   baselineSlideIds: string[]
@@ -81,6 +88,8 @@ export function createPresentationDeliverySkill(options: PresentationDeliveryOpt
           throw new Error('invalid_tool_input')
         const artifact = options.artifact(call.input.project_id as string | undefined)
         if (!artifact) throw new Error('presentation_restore_required')
+        if (artifact.pagePptxBase64 !== undefined)
+          throw new Error('presentation_import_state_invalid')
         const documentId = await options.documentId()
         if (documentId !== artifact.documentId) throw new Error('presentation_document_changed')
         const isCurrent = () =>

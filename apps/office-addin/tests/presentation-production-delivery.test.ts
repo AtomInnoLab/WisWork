@@ -1,0 +1,283 @@
+import { expect, it, vi } from 'vitest'
+import { createStructuredProposalController } from '../src/agent/proposal-controller'
+import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
+import {
+  createPresentationDeliverySkill,
+  type CompiledPresentationArtifact,
+  type PresentationImportRecord,
+} from '../src/skills/powerpoint/presentation-delivery'
+import {
+  createPresentationProductionDeliverySkill,
+  presentationImportKey,
+  validPresentationImportRecord,
+} from '../src/skills/powerpoint/presentation-page-delivery'
+function fixture() {
+  const artifact: CompiledPresentationArtifact = {
+    documentId: 'doc',
+    projectId: 'project',
+    requestId: 'request',
+    pptxBase64: '',
+    planRevision: 1,
+    pagePptxBase64: ['UEsDBAAAAAA=', 'UEsDBAEAAAA=', 'UEsDBAIAAAA='],
+    slideCount: 3,
+    pages: [0, 1, 2].map((i) => ({ id: `page${i}`, title: `Page ${i}`, sourceSlideId: '256#' })),
+  }
+  const host = ['old'],
+    receipts = new Map<string, PresentationImportRecord>(),
+    proposals = createStructuredProposalController()
+  const adapter = {
+    available: () => true,
+    snapshot: vi.fn(async () => ({ slideIds: [...host], fingerprint: JSON.stringify(host) })),
+    insert: vi.fn(),
+    insertPage: vi.fn(async (_bytes: string, _source: string) => {
+      const id = `host${host.length}`
+      host.push(id)
+      return { slideIds: [id] }
+    }),
+    verify: vi.fn(async () => true),
+  }
+  const options = {
+    adapter,
+    proposals,
+    available: () => true,
+    artifact: () => artifact,
+    documentId: async () => 'doc',
+    readReceipt: (key: string) => receipts.get(key),
+    writeReceipt: async (key: string, record: PresentationImportRecord | undefined) => {
+      if (record) receipts.set(key, structuredClone(record))
+      else receipts.delete(key)
+    },
+  }
+  const skill = createPresentationProductionDeliverySkill(options),
+    call = {
+      id: 'import',
+      name: 'import_presentation_production',
+      input: { project_id: 'project' },
+    }
+  const confirm = async () => {
+    const result = await skill.executeTool(call)
+    expect(result.isError).not.toBe(true)
+    await proposals.confirm(proposals.pending()!.id)
+  }
+  return { artifact, host, receipts, proposals, adapter, options, skill, call, confirm }
+}
+it('imports separate PPTX files with duplicate source IDs and isolates their checkpoint namespace', async () => {
+  const f = fixture()
+  f.receipts.set('project/request', { state: 'complete', documentId: 'doc', slideIds: ['legacy'] })
+  await f.confirm()
+  expect(f.adapter.insert).not.toHaveBeenCalled()
+  expect(f.adapter.insertPage.mock.calls.map((call) => call.slice(0, 2))).toEqual(
+    f.artifact.pagePptxBase64!.map((bytes) => [bytes, '256#']),
+  )
+  expect(presentationImportKey(f.artifact)).toBe('production/project/request')
+  expect(f.receipts.get('production/project/request')).toMatchObject({
+    state: 'complete',
+    checkpoint: {
+      version: 2,
+      pageIds: ['page0', 'page1', 'page2'],
+      sourceSlideIds: ['256#', '256#', '256#'],
+    },
+  })
+  expect(f.receipts.get('project/request')!.slideIds).toEqual(['legacy'])
+  expect(await f.skill.executeTool(f.call)).toMatchObject({
+    output: expect.stringContaining('already_imported'),
+  })
+})
+it('resumes only the remaining page files after a known pre-write failure', async () => {
+  const f = fixture(),
+    insert = f.adapter.insertPage.getMockImplementation()!
+  f.adapter.insertPage.mockImplementationOnce(insert).mockRejectedValueOnce(new Error('cancelled'))
+  await expect(f.confirm()).rejects.toThrow('cancelled')
+  expect(f.receipts.get(presentationImportKey(f.artifact))?.checkpoint?.completed).toHaveLength(1)
+  await f.confirm()
+  expect(f.host).toEqual(['old', 'host1', 'host2', 'host3'])
+  expect(f.adapter.insertPage.mock.calls.map((call) => call[0])).toEqual([
+    f.artifact.pagePptxBase64![0],
+    f.artifact.pagePptxBase64![1],
+    f.artifact.pagePptxBase64![1],
+    f.artifact.pagePptxBase64![2],
+  ])
+})
+it('does not replay an uncertain page or permit bundle identity changes', async () => {
+  const f = fixture()
+  f.adapter.insertPage.mockRejectedValueOnce(new Error('office_state_uncertain'))
+  await expect(f.confirm()).rejects.toThrow('office_state_uncertain')
+  expect(await f.skill.executeTool(f.call)).toMatchObject({
+    isError: true,
+    output: 'presentation_import_uncertain',
+  })
+  expect(f.adapter.insertPage).toHaveBeenCalledTimes(1)
+  for (const change of [
+    () => {
+      f.artifact.pagePptxBase64![0] = 'UEsDBAMAAAA='
+    },
+    () => {
+      f.artifact.pages![0]!.id = 'changed'
+    },
+    () => {
+      f.artifact.planRevision = 2
+    },
+  ]) {
+    change()
+    expect(await f.skill.executeTool(f.call)).toMatchObject({
+      isError: true,
+      output: 'presentation_import_state_invalid',
+    })
+  }
+})
+it('rejects a changed page order after a proposal and never sends bundles to bulk fallback', async () => {
+  const f = fixture()
+  await f.skill.executeTool(f.call)
+  f.artifact.pages!.reverse()
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+  expect(f.adapter.insertPage).not.toHaveBeenCalled()
+  const old = createPresentationDeliverySkill({
+    ...f.options,
+    adapter: { ...f.adapter, insertPage: undefined },
+  })
+  expect(await old.executeTool({ ...f.call, name: 'import_generated_presentation' })).toMatchObject(
+    { isError: true, output: 'presentation_import_state_invalid' },
+  )
+  expect(f.adapter.insert).not.toHaveBeenCalled()
+})
+it('strictly separates checkpoint versions and persists v2 only under production namespace', async () => {
+  const f = fixture()
+  await f.confirm()
+  const saved = f.receipts.get(presentationImportKey(f.artifact))!
+  expect(validPresentationImportRecord(saved)).toBe(true)
+  expect(
+    validPresentationImportRecord({ ...saved, checkpoint: { ...saved.checkpoint, version: 1 } }),
+  ).toBe(false)
+  expect(
+    validPresentationImportRecord({
+      ...saved,
+      checkpoint: { ...saved.checkpoint, pageIds: ['same', 'same', 'same'] },
+    }),
+  ).toBe(false)
+  const values = new Map<string, string>(),
+    settings = {
+      get: (key: string) => values.get(key),
+      set: (key: string, value: string) => {
+        values.set(key, value)
+      },
+      save: async () => {},
+      location: () => 'test',
+    }
+  const binding = createPresentationDocumentBinding(settings, () => 'doc')
+  await binding.writeReceipt('production/project/request', saved)
+  expect(
+    createPresentationDocumentBinding(settings, () => 'doc').readReceipt(
+      'production/project/request',
+    ),
+  ).toEqual(saved)
+  await expect(binding.writeReceipt('project/request', saved)).rejects.toThrow(
+    'presentation_import_state_invalid',
+  )
+  await expect(
+    binding.writeReceipt('production/project/legacy', { state: 'pending', documentId: 'doc' }),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
+it('rejects v2 checkpoints persisted under the legacy namespace on settings reload', async () => {
+  const f = fixture()
+  await f.confirm()
+  const saved = f.receipts.get(presentationImportKey(f.artifact))!
+  const values = new Map<string, string>(),
+    settings = {
+      get: (key: string) => values.get(key),
+      set: (key: string, value: string) => {
+        values.set(key, value)
+      },
+      save: async () => {},
+      location: () => 'test',
+    }
+  values.set('wiswork.presentation.imports.v1', JSON.stringify({ 'project/request': saved }))
+  expect(() => createPresentationDocumentBinding(settings).readReceipt('project/request')).toThrow(
+    'presentation_import_state_invalid',
+  )
+  values.set(
+    'wiswork.presentation.imports.v1',
+    JSON.stringify({ 'production/project/request': { state: 'pending', documentId: 'doc' } }),
+  )
+  expect(() =>
+    createPresentationDocumentBinding(settings).readReceipt('production/project/request'),
+  ).toThrow('presentation_import_state_invalid')
+})
+it('blocks a byte change during awaited document checks and identifies progress as production', async () => {
+  const f = fixture()
+  const progress = await f.skill.executeTool({
+    id: 'status',
+    name: 'read_presentation_production_import_status',
+    input: {},
+  })
+  expect(JSON.parse(progress.output)).toMatchObject({ source: 'production', status: 'not_started' })
+  await f.skill.executeTool(f.call)
+  const original = f.options.documentId
+  let checks = 0
+  f.options.documentId = async () => {
+    if (++checks === 1) f.artifact.pagePptxBase64![0] = 'UEsDBAMAAAA='
+    return original()
+  }
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+  expect(f.adapter.insertPage).not.toHaveBeenCalled()
+})
+it('rejects production bundles with missing revision, mismatched files or invalid base64', async () => {
+  for (const mutate of [
+    (artifact: CompiledPresentationArtifact) => {
+      delete artifact.planRevision
+    },
+    (artifact: CompiledPresentationArtifact) => {
+      artifact.pagePptxBase64!.pop()
+    },
+    (artifact: CompiledPresentationArtifact) => {
+      artifact.pagePptxBase64![0] = '%%%invalid'
+    },
+    (artifact: CompiledPresentationArtifact) => {
+      artifact.pptxBase64 = 'UEsDBAAAAAA='
+    },
+  ]) {
+    const f = fixture()
+    mutate(f.artifact)
+    expect(await f.skill.executeTool(f.call)).toMatchObject({
+      isError: true,
+      output: 'presentation_import_state_invalid',
+    })
+    expect(f.adapter.insertPage).not.toHaveBeenCalled()
+  }
+})
+it('preserves legacy two-segment keys whose project ID is production', async () => {
+  const values = new Map<string, string>(),
+    settings = {
+      get: (key: string) => values.get(key),
+      set: (key: string, value: string) => {
+        values.set(key, value)
+      },
+      save: async () => {},
+      location: () => 'test',
+    }
+  const binding = createPresentationDocumentBinding(settings)
+  const record: PresentationImportRecord = { state: 'pending', documentId: 'doc' }
+  await binding.writeReceipt('production/request', record)
+  expect(createPresentationDocumentBinding(settings).readReceipt('production/request')).toEqual(
+    record,
+  )
+  const f = fixture()
+  await f.confirm()
+  const source = f.receipts.get(presentationImportKey(f.artifact))!
+  const v1: PresentationImportRecord = {
+    ...source,
+    checkpoint: {
+      version: 1,
+      artifactDigest: source.checkpoint!.artifactDigest,
+      sourceSlideIds: ['256#', '257#', '258#'],
+      baselineSlideIds: ['old'],
+      completed: source.checkpoint!.completed.map((page, i) => ({
+        ...page,
+        sourceSlideId: `${256 + i}#`,
+      })),
+    },
+  }
+  await binding.writeReceipt('production/request-v1', v1)
+  expect(createPresentationDocumentBinding(settings).readReceipt('production/request-v1')).toEqual(
+    v1,
+  )
+})

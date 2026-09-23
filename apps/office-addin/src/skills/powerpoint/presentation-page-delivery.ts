@@ -7,6 +7,7 @@ import type {
   PresentationImportRecord,
 } from './presentation-delivery.js'
 export interface PresentationImportProgress {
+  source?: 'production'
   total: number
   completed: number
   status: 'not_started' | 'partial' | 'uncertain' | 'complete'
@@ -55,15 +56,23 @@ export function validPresentationImportRecord(value: unknown): value is Presenta
           'baselineSlideIds',
           'completed',
           'inFlight',
+          ...(c.version === 2 ? ['pageIds'] : []),
         ].includes(k),
     ) ||
-    c.version !== 1 ||
+    ![1, 2].includes(c.version) ||
     !/^[a-f0-9]{64}$/.test(c.artifactDigest) ||
     !Array.isArray(c.sourceSlideIds) ||
     c.sourceSlideIds.length < 1 ||
     c.sourceSlideIds.length > 32 ||
-    !c.sourceSlideIds.every(validSourceSlideId) ||
-    new Set(c.sourceSlideIds).size !== c.sourceSlideIds.length ||
+    !Array.from(c.sourceSlideIds).every(validSourceSlideId) ||
+    (c.version === 1 && new Set(c.sourceSlideIds).size !== c.sourceSlideIds.length) ||
+    (c.version === 2 &&
+      (!Array.isArray(c.pageIds) ||
+        c.pageIds.length !== c.sourceSlideIds.length ||
+        Array.from(c.pageIds).some(
+          (id) => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(id),
+        ) ||
+        new Set(c.pageIds).size !== c.pageIds.length)) ||
     !hostIds(c.baselineSlideIds) ||
     !Array.isArray(c.completed) ||
     c.completed.length > c.sourceSlideIds.length
@@ -107,12 +116,40 @@ export function validPresentationImportRecord(value: unknown): value is Presenta
   )
 }
 function validPages(artifact: CompiledPresentationArtifact): boolean {
+  const production = artifact.pagePptxBase64 !== undefined
+  if (production) {
+    if (
+      !Array.isArray(artifact.pagePptxBase64) ||
+      artifact.pagePptxBase64.length !== artifact.slideCount ||
+      artifact.pptxBase64 !== '' ||
+      !Number.isSafeInteger(artifact.planRevision) ||
+      artifact.planRevision! < 1
+    )
+      return false
+    let bytes = 0
+    for (const base64 of artifact.pagePptxBase64) {
+      if (
+        typeof base64 !== 'string' ||
+        !base64.length ||
+        base64.length > Math.ceil((10 * 1024 * 1024) / 3) * 4
+      )
+        return false
+      try {
+        const binary = atob(base64)
+        if (btoa(binary) !== base64) return false
+        bytes += binary.length
+      } catch {
+        return false
+      }
+      if (bytes > 10 * 1024 * 1024) return false
+    }
+  }
   return Boolean(
     artifact.pages &&
     artifact.pages.length === artifact.slideCount &&
     artifact.pages.length > 0 &&
     artifact.pages.length <= 32 &&
-    artifact.pages.every(
+    Array.from(artifact.pages).every(
       (p) =>
         p &&
         typeof p.id === 'string' &&
@@ -122,8 +159,19 @@ function validPages(artifact: CompiledPresentationArtifact): boolean {
         validSourceSlideId(p.sourceSlideId),
     ) &&
     new Set(artifact.pages.map((p) => p.id)).size === artifact.pages.length &&
-    new Set(artifact.pages.map((p) => p.sourceSlideId)).size === artifact.pages.length,
+    (production ||
+      new Set(artifact.pages.map((p) => p.sourceSlideId)).size === artifact.pages.length),
   )
+}
+export function presentationImportKey(artifact: CompiledPresentationArtifact): string {
+  if (
+    typeof artifact.projectId !== 'string' ||
+    typeof artifact.requestId !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(artifact.projectId) ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(artifact.requestId)
+  )
+    throw new Error('presentation_import_state_invalid')
+  return `${artifact.pagePptxBase64 !== undefined ? 'production/' : ''}${artifact.projectId}/${artifact.requestId}`
 }
 export function summarizePresentationImport(
   artifact: CompiledPresentationArtifact,
@@ -138,6 +186,17 @@ export function summarizePresentationImport(
   if (record?.state === 'complete' && record.slideIds?.length !== artifact.slideCount)
     return undefined
   const checkpoint = record?.checkpoint
+  const production = artifact.pagePptxBase64 !== undefined
+  if (record && (production ? checkpoint?.version !== 2 : checkpoint?.version === 2))
+    return undefined
+  if (
+    checkpoint?.version === 2 &&
+    !same(
+      checkpoint.pageIds,
+      artifact.pages!.map((page) => page.id),
+    )
+  )
+    return undefined
   if (
     checkpoint &&
     !same(
@@ -150,6 +209,7 @@ export function summarizePresentationImport(
     record?.state === 'complete' ? artifact.slideCount : (checkpoint?.completed.length ?? 0)
   const uncertain = record?.state === 'pending' && (!checkpoint || Boolean(checkpoint.inFlight))
   return {
+    ...(production ? { source: 'production' as const } : {}),
     total: artifact.slideCount,
     completed,
     status:
@@ -184,16 +244,44 @@ const tool = {
 export function createPresentationPageDeliverySkill(
   options: PresentationDeliveryOptions,
 ): AgentSkill {
+  return createPageDelivery(options, false)
+}
+export function createPresentationProductionDeliverySkill(
+  options: PresentationDeliveryOptions,
+): AgentSkill {
+  return createPageDelivery(options, true)
+}
+function createPageDelivery(options: PresentationDeliveryOptions, production: boolean): AgentSkill {
+  const importName = production ? 'import_presentation_production' : 'import_generated_presentation'
+  const readTool = {
+    ...tool,
+    name: production ? 'read_presentation_production_import_status' : tool.name,
+  }
   return {
-    id: 'office-presentation-page-delivery',
-    tools: [tool],
+    id: production
+      ? 'office-presentation-production-delivery'
+      : 'office-presentation-page-delivery',
+    get tools() {
+      if (production && (!options.available() || !options.adapter.available())) return []
+      return production
+        ? [
+            {
+              ...readTool,
+              name: importName,
+              description:
+                'Propose appending the prepared ordered single-page PPTX production outputs. Confirm once; interrupted pages use durable checkpoints. Import is not QA.',
+            },
+            readTool,
+          ]
+        : [readTool]
+    },
     systemPrompt:
       'Read saved page import progress after interruption. Resume only the remaining pages after the confirmed completed prefix, and only when there is no uncertain page. Never repeat completed pages. Never delete or replay an uncertain page automatically.',
     async executeTool(call, signal) {
       try {
-        const read = call.name === tool.name
+        const read = call.name === readTool.name
         if (
-          (!read && call.name !== 'import_generated_presentation') ||
+          (!read && call.name !== importName) ||
           call.inputError ||
           call.truncated ||
           Object.keys(call.input).some((k) => k !== 'project_id') ||
@@ -207,16 +295,39 @@ export function createPresentationPageDeliverySkill(
           throw new Error('presentation_unavailable')
         const artifact = options.artifact(call.input.project_id as string | undefined)
         if (!artifact) throw new Error('presentation_restore_required')
-        if (!validPages(artifact)) throw new Error('presentation_import_state_invalid')
+        if (!validPages(artifact) || production !== (artifact.pagePptxBase64 !== undefined))
+          throw new Error('presentation_import_state_invalid')
         const artifactBase64 = artifact.pptxBase64
         const artifactPages = JSON.stringify(artifact.pages)
+        const pageBytes = artifact.pagePptxBase64?.slice()
+        const identity = JSON.stringify([
+          artifact.documentId,
+          artifact.projectId,
+          artifact.requestId,
+          artifact.planRevision,
+          artifact.slideCount,
+        ])
         const documentId = await options.documentId()
-        const current = async (checkSignal?: AbortSignal) => {
+        const checkArtifact = () => {
           if (
             artifact.pptxBase64 !== artifactBase64 ||
-            JSON.stringify(artifact.pages) !== artifactPages
+            JSON.stringify(artifact.pages) !== artifactPages ||
+            (production &&
+              (JSON.stringify([
+                artifact.documentId,
+                artifact.projectId,
+                artifact.requestId,
+                artifact.planRevision,
+                artifact.slideCount,
+              ]) !== identity ||
+                !Array.isArray(artifact.pagePptxBase64) ||
+                artifact.pagePptxBase64.length !== pageBytes!.length ||
+                pageBytes!.some((bytes, index) => bytes !== artifact.pagePptxBase64![index])))
           )
             throw new Error('presentation_import_state_invalid')
+        }
+        const current = async (checkSignal?: AbortSignal) => {
+          checkArtifact()
           if (
             checkSignal?.aborted ||
             !options.available() ||
@@ -225,6 +336,7 @@ export function createPresentationPageDeliverySkill(
             throw new Error('cancelled')
           if ((await options.documentId()) !== documentId || documentId !== artifact.documentId)
             throw new Error('presentation_document_changed')
+          checkArtifact()
           if (
             checkSignal?.aborted ||
             !options.available() ||
@@ -235,12 +347,26 @@ export function createPresentationPageDeliverySkill(
         await current(signal)
         const digest = Array.from(
           new Uint8Array(
-            await crypto.subtle.digest('SHA-256', new TextEncoder().encode(artifact.pptxBase64)),
+            await crypto.subtle.digest(
+              'SHA-256',
+              new TextEncoder().encode(
+                production
+                  ? JSON.stringify({
+                      documentId: artifact.documentId,
+                      projectId: artifact.projectId,
+                      requestId: artifact.requestId,
+                      planRevision: artifact.planRevision,
+                      pages: artifact.pages,
+                      pagePptxBase64: pageBytes,
+                    })
+                  : artifact.pptxBase64,
+              ),
+            ),
           ),
           (b) => b.toString(16).padStart(2, '0'),
         ).join('')
         await current(signal)
-        const key = `${artifact.projectId}/${artifact.requestId}`,
+        const key = presentationImportKey(artifact),
           previous = options.readReceipt(key),
           progress = summarizePresentationImport(artifact, previous)
         if (!progress || (previous?.checkpoint && previous.checkpoint.artifactDigest !== digest))
@@ -268,7 +394,8 @@ export function createPresentationPageDeliverySkill(
         )
           throw new Error('office_state_uncertain')
         const initial: PresentationImportCheckpoint = previous?.checkpoint ?? {
-          version: 1,
+          version: production ? 2 : 1,
+          ...(production ? { pageIds: artifact.pages!.map((page) => page.id) } : {}),
           artifactDigest: digest,
           sourceSlideIds: artifact.pages!.map((p) => p.sourceSlideId),
           baselineSlideIds: before.slideIds,
@@ -284,8 +411,8 @@ export function createPresentationPageDeliverySkill(
         const unchanged = () => JSON.stringify(options.readReceipt(key)) === previousRaw
         let last: PresentationImportRecord | undefined
         const proposal = options.proposals.propose({
-          operation: 'import_generated_presentation',
-          toolName: 'import_generated_presentation',
+          operation: importName,
+          toolName: importName,
           title: `添加剩余 ${artifact.slideCount - initial.completed.length} 页，保留已完成页面`,
           preview: {
             project: artifact.projectId,
@@ -347,7 +474,7 @@ export function createPresentationPageDeliverySkill(
               try {
                 await current(s)
                 receipt = await options.adapter.insertPage!(
-                  artifact.pptxBase64,
+                  pageBytes?.[checkpoint.completed.length] ?? artifact.pptxBase64,
                   sourceSlideId,
                   baseline,
                   s,
