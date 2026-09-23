@@ -267,3 +267,51 @@ it('fingerprints every entry and path in sorted order, but ignores directories a
     presentationPackageDigest(await encode(new JSZip().file('../escape.xml', 'bad'))),
   ).rejects.toThrow('invalid_tool_input')
 })
+
+it('checks ZIP limits before inflation and bounds real inflated bytes even with forged sizes', async () => {
+  const oversized = new JSZip().file('ppt/slides/slide1.xml', 'x'.repeat(2 * 1024 * 1024 + 1))
+  const bytes = await oversized.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+  const load = vi.spyOn(JSZip, 'loadAsync')
+  try {
+    await expect(presentationPackageDigest(Buffer.from(bytes).toString('base64'))).rejects.toThrow(
+      'invalid_tool_input',
+    )
+    expect(load).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({ checkCRC32: false }),
+    )
+    const forged = new Uint8Array(bytes),
+      view = new DataView(forged.buffer)
+    for (let i = 0; i + 30 <= forged.length; i++) {
+      const signature = view.getUint32(i, true)
+      if (signature === 0x04034b50) view.setUint32(i + 22, 1, true)
+      if (signature === 0x02014b50) view.setUint32(i + 24, 1, true)
+    }
+    await expect(presentationPackageDigest(Buffer.from(forged).toString('base64'))).rejects.toThrow(
+      'invalid_tool_input',
+    )
+  } finally {
+    load.mockRestore()
+  }
+})
+
+it('rechecks staged content after obtaining the exact deletion proxy', async () => {
+  const f = await setup()
+  await f.adapter.stage(
+    f.record,
+    f.replacement,
+    async (id) => {
+      f.record = { ...f.record, state: 'discard_pending', newSlideId: id }
+    },
+    vi.fn(),
+  )
+  f.context.presentation.slides.getItem.mockClear()
+  f.context.sync.mockImplementation(async () => {
+    if (
+      f.context.presentation.slides.getItem.mock.calls.filter(([id]) => id === 'new').length === 2
+    )
+      f.packages.new = f.original
+  })
+  await expect(f.adapter.discard(f.record, vi.fn())).rejects.toThrow('office_concurrent_change')
+  expect(f.remove).not.toHaveBeenCalled()
+})

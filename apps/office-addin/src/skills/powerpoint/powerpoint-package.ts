@@ -136,13 +136,17 @@ function compressedMetadata(file: unknown): { compressed?: number; uncompressed?
   }
 }
 
-async function loadBoundedZip(base64: string, signal?: AbortSignal): Promise<JSZip> {
+async function loadBoundedZip(
+  base64: string,
+  signal?: AbortSignal,
+  checkCRC32 = true,
+): Promise<JSZip> {
   if (signal?.aborted) throw new Error('cancelled')
   if (!base64 || base64.length > Math.ceil(MAX_PPTX_PACKAGE_BYTES / 3) * 4)
     throw new Error('invalid_tool_input')
   let zip: JSZip
   try {
-    zip = await JSZip.loadAsync(base64, { base64: true, checkCRC32: true, createFolders: false })
+    zip = await JSZip.loadAsync(base64, { base64: true, checkCRC32, createFolders: false })
   } catch {
     throw new Error('invalid_tool_input')
   }
@@ -521,12 +525,70 @@ export async function inspectPowerPointPicturePackage(
   return { pictureFingerprint, mediaDigest, shapeIds: ids as string[] }
 }
 
+/** Read only bounded chunks: ZIP headers are untrusted and may understate inflated size. */
+async function boundedEntryBytes(
+  file: JSZip.JSZipObject,
+  remaining: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  if (signal?.aborted) throw new Error('cancelled')
+  // JSZip 3.10 exposes this browser stream API, but omits it from JSZipObject's types.
+  const source = file as JSZip.JSZipObject & {
+    internalStream(type: 'uint8array'): JSZip.JSZipStreamHelper<Uint8Array>
+  }
+  const stream = source.internalStream('uint8array')
+  return new Promise((resolve, reject) => {
+    const chunks: Uint8Array[] = []
+    let size = 0,
+      settled = false
+    const fail = (message: string) => {
+      if (settled) return
+      settled = true
+      stream.pause()
+      signal?.removeEventListener('abort', abort)
+      chunks.length = 0
+      reject(new Error(message))
+    }
+    const abort = () => fail('cancelled')
+    signal?.addEventListener('abort', abort, { once: true })
+    stream
+      .on('data', (chunk) => {
+        if (settled) return
+        if (signal?.aborted) {
+          abort()
+          return
+        }
+        size += chunk.byteLength
+        if (size > MAX_PPTX_ENTRY_BYTES || size > remaining) {
+          fail('invalid_tool_input')
+          return
+        }
+        chunks.push(chunk)
+      })
+      .on('error', () => fail('invalid_tool_input'))
+      .on('end', () => {
+        if (settled) return
+        settled = true
+        signal?.removeEventListener('abort', abort)
+        const result = new Uint8Array(size)
+        let offset = 0
+        for (const chunk of chunks) {
+          result.set(chunk, offset)
+          offset += chunk.byteLength
+        }
+        resolve(result)
+      })
+    stream.resume()
+  })
+}
+
 /** Hash entry bytes and paths, excluding ZIP compression and timestamp metadata. */
 export async function presentationPackageDigest(
   base64: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const zip = await loadBoundedZip(base64, signal)
+  // Parse the index without CRC inflation; validate declared limits before reading any entry.
+  const zip = await loadBoundedZip(base64, signal, false)
   const sha = async (bytes: Uint8Array): Promise<string> => {
     if (signal?.aborted) throw new Error('cancelled')
     const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes))
@@ -534,9 +596,13 @@ export async function presentationPackageDigest(
     return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
   }
   const entries: [string, string][] = []
+  let total = 0
   for (const path of Object.keys(zip.files).sort()) {
     const file = zip.files[path]!
-    if (!file.dir) entries.push([path, await sha(await file.async('uint8array'))])
+    if (file.dir) continue
+    const bytes = await boundedEntryBytes(file, MAX_PPTX_PACKAGE_BYTES - total, signal)
+    total += bytes.byteLength
+    entries.push([path, await sha(bytes)])
   }
   if (!entries.length) throw new Error('invalid_tool_input')
   return sha(new TextEncoder().encode(JSON.stringify(entries)))

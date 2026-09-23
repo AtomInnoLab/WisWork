@@ -198,6 +198,9 @@ export class BrowserPresentationPageReplacementAdapter implements PresentationPa
       }
       const slide = await page(context, saved.newSlideId!, signal)
       if (typeof slide.delete !== 'function') throw new Error('office_api_unsupported')
+      // Obtaining the deletion proxy syncs with Office: recheck content after that await.
+      if ((await inspect(context, saved, signal)).status !== 'staged')
+        throw new Error('office_concurrent_change')
       await assertCurrent()
       check(signal)
       slide.delete()
