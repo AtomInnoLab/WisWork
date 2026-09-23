@@ -7,7 +7,11 @@ import {
   type PresentationQaRecord,
 } from '../skills/powerpoint/presentation-qa.js'
 import type { PresentationQaController } from './presentation-qa-card.js'
-import { summarizePresentationImport } from '../skills/powerpoint/presentation-page-delivery.js'
+import {
+  createPresentationProductionDeliverySkill,
+  presentationImportKey,
+  summarizePresentationImport,
+} from '../skills/powerpoint/presentation-page-delivery.js'
 import type { PresentationImportProgressController } from './presentation-import-progress.js'
 import {
   createPresentationAttachmentSkill,
@@ -250,9 +254,15 @@ export function createOfficeHostRuntime(
     generation && options.presentation
       ? createPresentationProductionSkill({ ...options.presentation, vfs })
       : undefined
+  let importSource: 'generation' | 'production' = 'generation'
+  let importSelectionEpoch = 0
   const executeGeneration: AgentSkill['executeTool'] = async (call, signal) => {
+    const selection = ++importSelectionEpoch
     try {
-      return await generation!.executeTool(call, signal)
+      const result = await generation!.executeTool(call, signal)
+      if (!result.isError && !signal?.aborted && selection === importSelectionEpoch)
+        importSource = 'generation'
+      return result
     } finally {
       notifyImport()
       notifyQa()
@@ -271,6 +281,8 @@ export function createOfficeHostRuntime(
   let productionEpoch = 0
   const executeProduction: AgentSkill['executeTool'] = async (call, signal) => {
     const captured = productionEpoch
+    const selection =
+      call.name === 'prepare_presentation_production_import' ? ++importSelectionEpoch : undefined
     const result = await production!.executeTool(call, signal)
     if (
       captured === productionEpoch &&
@@ -286,6 +298,11 @@ export function createOfficeHostRuntime(
         mutated: false,
         summary: '已停止等待；PC可能已保存成果，可刷新查看',
       }
+    if (!result.isError && selection !== undefined && selection === importSelectionEpoch) {
+      importSource = 'production'
+      notifyImport()
+      notifyQa()
+    }
     return result
   }
   let importRevision = 0
@@ -298,11 +315,12 @@ export function createOfficeHostRuntime(
     generation && options.presentation?.readReceipt
       ? {
           read: () => {
-            const artifact = generation.artifact()
+            const artifact =
+              importSource === 'production' ? production?.artifact() : generation.artifact()
             return artifact
               ? summarizePresentationImport(
                   artifact,
-                  options.presentation!.readReceipt!(`${artifact.projectId}/${artifact.requestId}`),
+                  options.presentation!.readReceipt!(presentationImportKey(artifact)),
                 )
               : undefined
           },
@@ -331,7 +349,8 @@ export function createOfficeHostRuntime(
           vfs,
           available: () =>
             options.presentation!.available() && supportsNativePowerPointMasterEditing(),
-          artifact: generation.artifact,
+          artifact: (projectId) =>
+            importSource === 'production' ? undefined : generation.artifact(projectId),
           documentId: options.presentation.documentId,
           readReceipt: options.presentation.readReceipt,
           inspectPage: (id, signal) => powerPointAdapter.inspectPresentationPage(id, signal),
@@ -350,7 +369,8 @@ export function createOfficeHostRuntime(
       ? createPresentationPageEditingSkill({
           available: () =>
             options.presentation!.available() && supportsNativePowerPointMasterEditing(),
-          artifact: generation.artifact,
+          artifact: (projectId) =>
+            importSource === 'production' ? undefined : generation.artifact(projectId),
           documentId: options.presentation.documentId,
           readReceipt: options.presentation.readReceipt,
           adapter: powerPointAdapter,
@@ -365,7 +385,7 @@ export function createOfficeHostRuntime(
     qaSkill && generation
       ? {
           read: () => {
-            const artifact = generation.artifact()
+            const artifact = importSource === 'production' ? undefined : generation.artifact()
             return artifact
               ? options.presentation!.readQa!(`${artifact.projectId}/${artifact.requestId}`)
               : undefined
@@ -397,6 +417,46 @@ export function createOfficeHostRuntime(
           },
         })
       : undefined
+  const productionDelivery =
+    production && options.presentation?.readReceipt && options.presentation.writeReceipt
+      ? createPresentationProductionDeliverySkill({
+          adapter: createBrowserPresentationImportAdapter(),
+          proposals,
+          artifact: production.artifact,
+          available: options.presentation.available,
+          documentId: options.presentation.documentId,
+          readReceipt: options.presentation.readReceipt,
+          writeReceipt: async (key, record) => {
+            try {
+              await options.presentation!.writeReceipt!(key, record)
+            } finally {
+              notifyImport()
+            }
+          },
+        })
+      : undefined
+  const executeDelivery: AgentSkill['executeTool'] = async (call, signal) => {
+    const selection = ++importSelectionEpoch
+    const captured = productionEpoch
+    const isProduction = [
+      'import_presentation_production',
+      'read_presentation_production_import_status',
+    ].includes(call.name)
+    const result = await (isProduction ? productionDelivery! : delivery!).executeTool(call, signal)
+    if (captured !== productionEpoch || signal?.aborted)
+      return {
+        output: 'cancelled',
+        isError: true,
+        mutated: false,
+        summary: '已停止等待；请重新读取导入记录',
+      }
+    if (!result.isError && selection === importSelectionEpoch) {
+      importSource = isProduction ? 'production' : 'generation'
+      notifyImport()
+      notifyQa()
+    }
+    return result
+  }
   const skill: AgentSkill = generation
     ? {
         ...base,
@@ -407,13 +467,14 @@ export function createOfficeHostRuntime(
             ...(planning?.tools ?? []),
             ...(attachments?.tools ?? []),
             ...(delivery?.tools ?? []),
+            ...(productionDelivery?.tools ?? []),
             ...(qaSkill?.tools ?? []),
             ...(pageEditing?.tools ?? []),
             ...(production?.tools ?? []),
           ]
         },
         get systemPrompt() {
-          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}`
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}`
         },
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
@@ -423,6 +484,7 @@ export function createOfficeHostRuntime(
             'run_presentation_production',
             'read_presentation_production',
             'read_presentation_page_artifact',
+            'prepare_presentation_production_import',
           ].includes(call.name) && production
             ? executeProduction(call, signal)
             : [
@@ -449,17 +511,23 @@ export function createOfficeHostRuntime(
                   : ['save_presentation_plan', 'read_presentation_plan'].includes(call.name) &&
                       planning
                     ? planning.executeTool(call, signal)
-                    : ['import_generated_presentation', 'read_presentation_import_status'].includes(
-                          call.name,
-                        ) && delivery
-                      ? delivery.executeTool(call, signal)
+                    : [
+                          'import_presentation_production',
+                          'read_presentation_production_import_status',
+                        ].includes(call.name) && productionDelivery
+                      ? executeDelivery(call, signal)
                       : [
-                            'compile_deck_with_pptxgenjs',
-                            'restore_presentation_project',
-                            'resume_presentation_project',
-                          ].includes(call.name)
-                        ? executeGeneration(call, signal)
-                        : base.executeTool(call, signal),
+                            'import_generated_presentation',
+                            'read_presentation_import_status',
+                          ].includes(call.name) && delivery
+                        ? executeDelivery(call, signal)
+                        : [
+                              'compile_deck_with_pptxgenjs',
+                              'restore_presentation_project',
+                              'resume_presentation_project',
+                            ].includes(call.name)
+                          ? executeGeneration(call, signal)
+                          : base.executeTool(call, signal),
       }
     : base
   return {
@@ -471,6 +539,8 @@ export function createOfficeHostRuntime(
       options.packageRuntime,
       options.enableSkillPackages !== false,
       () => {
+        importSource = 'generation'
+        importSelectionEpoch++
         productionEpoch++
         production?.clear()
         pageEditing?.clear()

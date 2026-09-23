@@ -291,3 +291,198 @@ it.each(['clearSession', 'abort'] as const)(
     runtime.dispose()
   },
 )
+
+it('prepares real page files and resumes confirmed Office import without mixing whole-deck receipts', async () => {
+  const { createOfficeHostRuntime } = await import('../../office-addin/src/agent/host-runtime')
+  const { createPresentationDocumentBinding } =
+    await import('../../office-addin/src/skills/powerpoint/presentation-document')
+  const f = await setup()
+  await f.call('production_begin', { requestId: 'run', planRevision: 1, deck: f.deck })
+  await f.call('production_run', { requestId: 'run' })
+  await f.call('compile', { requestId: 'whole', planRevision: 1, deck: f.deck })
+  const settings = new Map<string, unknown>()
+  const binding = createPresentationDocumentBinding(
+    {
+      get: (key) => settings.get(key),
+      set: (key, value) => {
+        settings.set(key, value)
+      },
+      save: async () => {},
+      location: () => 'location',
+    },
+    () => 'doc',
+  )
+  const hostIds = ['original']
+  const slides = { items: [] as { id: string }[], load: () => {} }
+  const bytes: string[] = []
+  let queued = false,
+    stopAfterThree = true
+  let runtime: ReturnType<typeof createOfficeHostRuntime>
+  const insert = vi.fn((base64: string, options: { sourceSlideIds: string[] }) => {
+    expect(options.sourceSlideIds).toEqual(['256#'])
+    bytes.push(base64)
+    queued = true
+  })
+  const context = {
+    presentation: { slides, insertSlidesFromBase64: insert },
+    sync: async () => {
+      if (queued) {
+        queued = false
+        hostIds.push(`host-${hostIds.length}`)
+        if (hostIds.length === 4 && stopAfterThree) runtime.proposals.newTurn()
+      }
+      slides.items = hostIds.map((id) => ({ id }))
+    },
+  }
+  vi.stubGlobal('Office', {
+    context: {
+      host: 'PowerPoint',
+      requirements: {
+        isSetSupported: (_name: string, version: string) => ['1.2', '1.10'].includes(version),
+      },
+    },
+  })
+  vi.stubGlobal('PowerPoint', {
+    run: async (action: (ctx: typeof context) => Promise<unknown>) => action(context),
+  })
+  const create = () =>
+    createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        ...binding,
+        documentId: async () => 'doc',
+        available: () => true,
+        assetsAvailable: () => true,
+        request: async (body, signal) =>
+          new Response(Buffer.from(await f.service(body, signal ?? new AbortController().signal))),
+      },
+    })
+  runtime = create()
+  const prepare = {
+    id: 'prepare',
+    name: 'prepare_presentation_production_import',
+    input: { project_id: f.deck.id, request_id: 'run' },
+  }
+  const importCall = {
+    id: 'import',
+    name: 'import_presentation_production',
+    input: { project_id: f.deck.id },
+  }
+  try {
+    const prepared = await runtime.skill.executeTool(prepare)
+    expect(prepared.isError, prepared.output).not.toBe(true)
+    expect(runtime.importProgress!.read()).toMatchObject({ total: 8, completed: 0 })
+    expect((await runtime.skill.executeTool(importCall)).isError).not.toBe(true)
+    await expect(runtime.proposals.confirm(runtime.proposals.pending()!.id)).rejects.toThrow(
+      'cancelled',
+    )
+    expect(hostIds).toHaveLength(4)
+    expect(binding.readReceipt(`${f.deck.id}/run`)).toBeUndefined()
+    expect(binding.readReceipt(`production/${f.deck.id}/run`)?.checkpoint).toMatchObject({
+      version: 2,
+      pageIds: f.deck.slides.map((p) => p.id),
+      completed: [{ slideId: 'host-1' }, { slideId: 'host-2' }, { slideId: 'host-3' }],
+    })
+    runtime.dispose()
+    stopAfterThree = false
+    runtime = create()
+    const restored = await runtime.skill.executeTool({
+      id: 'restore',
+      name: 'restore_presentation_project',
+      input: { project_id: f.deck.id },
+    })
+    expect(restored.isError, restored.output).not.toBe(true)
+    expect((await runtime.skill.executeTool(prepare)).isError).not.toBe(true)
+    expect(runtime.importProgress!.read()).toMatchObject({ completed: 3, status: 'partial' })
+    expect((await runtime.skill.executeTool(importCall)).isError).not.toBe(true)
+    await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+    expect(hostIds).toHaveLength(9)
+    expect(insert).toHaveBeenCalledTimes(8)
+    expect(runtime.importProgress!.read()).toMatchObject({ completed: 8, status: 'complete' })
+    expect((await runtime.skill.executeTool(importCall)).output).toContain('already_imported')
+    expect(insert).toHaveBeenCalledTimes(8)
+    const qa = await runtime.skill.executeTool({
+      id: 'qa',
+      name: 'read_presentation_qa',
+      input: { project_id: f.deck.id },
+    })
+    expect(qa).toMatchObject({ isError: true, output: 'presentation_restore_required' })
+    expect(runtime.qa!.read()).toBeUndefined()
+    const old = await runtime.skill.executeTool({
+      id: 'old',
+      name: 'import_generated_presentation',
+      input: { project_id: f.deck.id },
+    })
+    expect(old.isError, old.output).not.toBe(true)
+    expect(old.output).toContain('awaiting_confirmation')
+    runtime.proposals.reject()
+    expect(insert).toHaveBeenCalledTimes(8)
+    for (const [index, base64] of bytes.entries()) {
+      const saved = await f.call('production_page', {
+        requestId: 'run',
+        pageId: f.deck.slides[index]!.id,
+      })
+      expect(base64).toBe(saved.pptxBase64)
+      const parsed = await openPptx(Buffer.from(base64, 'base64'))
+      expect(parsed.deck.slides).toHaveLength(1)
+    }
+  } finally {
+    runtime.dispose()
+    vi.unstubAllGlobals()
+  }
+})
+
+it('keeps the latest explicitly selected import view when an earlier preparation finishes late', async () => {
+  const { createOfficeHostRuntime } = await import('../../office-addin/src/agent/host-runtime')
+  const f = await setup()
+  await f.call('production_begin', { requestId: 'run', planRevision: 1, deck: f.deck })
+  await f.call('production_run', { requestId: 'run' })
+  await f.call('compile', { requestId: 'whole', planRevision: 1, deck: f.deck })
+  let release!: () => void, entered!: () => void
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const started = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      documentId: async () => 'doc',
+      lastProject: () => f.deck.id,
+      rememberProject: async () => {},
+      readReceipt: () => undefined,
+      writeReceipt: async () => {},
+      request: async (body, signal) => {
+        if ((body as { operation: string }).operation === 'production_status') {
+          entered()
+          await waiting
+        }
+        return new Response(
+          Buffer.from(await f.service(body, signal ?? new AbortController().signal)),
+        )
+      },
+    },
+  })
+  try {
+    const earlier = runtime.skill.executeTool({
+      id: 'p',
+      name: 'prepare_presentation_production_import',
+      input: { project_id: f.deck.id, request_id: 'run' },
+    })
+    await started
+    const latest = await runtime.skill.executeTool({
+      id: 'r',
+      name: 'restore_presentation_project',
+      input: { project_id: f.deck.id },
+    })
+    expect(latest.isError, latest.output).not.toBe(true)
+    release()
+    const prepared = await earlier
+    expect(prepared.isError, prepared.output).not.toBe(true)
+    expect(runtime.importProgress!.read()).toMatchObject({ total: 8, completed: 0 })
+    expect(runtime.importProgress!.read()?.source).toBeUndefined()
+  } finally {
+    release()
+    runtime.dispose()
+  }
+})

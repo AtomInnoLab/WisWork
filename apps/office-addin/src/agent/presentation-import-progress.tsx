@@ -26,7 +26,10 @@ export function PresentationImportProgressCard({
   if (!progress) return null
   return (
     <section className="presentation-project" aria-label="页面导入记录">
-      <strong>页面导入记录</strong>
+      <strong>{progress.source === 'production' ? '页生产任务导入记录' : '页面导入记录'}</strong>
+      {progress.source === 'production' && (
+        <p>本记录仅确认页面编号与顺序。该任务的逐页质量检查和编辑绑定尚未接入。</p>
+      )}
       <p role="status">
         已记录完成 {progress.completed} / {progress.total} 页
       </p>
