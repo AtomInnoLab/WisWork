@@ -363,3 +363,160 @@ export async function capturePowerPointPackage(
   }
   return { changedPaths: [], afterHashes: {}, preservedHashes }
 }
+
+export interface PowerPointPicturePackageInspection {
+  pictureFingerprint: string
+  mediaDigest: string
+  shapeIds: string[]
+}
+/** Inspect a conservative, lossless subset: one ordinary top-level embedded raster picture. */
+export async function inspectPowerPointPicturePackage(
+  base64: string,
+  shapeId: string,
+  signal?: AbortSignal,
+): Promise<PowerPointPicturePackageInspection> {
+  const unsupported = (): never => {
+    throw new Error('office_api_unsupported')
+  }
+  const zip = await loadBoundedZip(base64, signal)
+  const paths = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
+  if (paths.length !== 1) unsupported()
+  const path = paths[0]!
+  const xml = await zip.file(path)!.async('string')
+  if (
+    xml.length > MAX_PPTX_XML_BYTES ||
+    /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) ||
+    XMLValidator.validate(xml) !== true
+  )
+    unsupported()
+  type Node = Record<string, unknown>
+  const children = (node: Node, tag: string): Node[] =>
+    Array.isArray(node[tag]) ? (node[tag] as Node[]) : []
+  const child = (nodes: Node[], tag: string): Node =>
+    nodes.find((node) => Object.hasOwn(node, tag)) ?? {}
+  const root = xmlParser.parse(xml) as Node[]
+  const slide = children(child(root, 'p:sld'), 'p:sld')
+  // A slide animation can target the picture indirectly through nested timing nodes.
+  if (slide.some((node) => Object.hasOwn(node, 'p:timing'))) unsupported()
+  const tree = children(child(children(child(slide, 'p:cSld'), 'p:cSld'), 'p:spTree'), 'p:spTree')
+  const shapes = tree.filter((node) =>
+    ['p:sp', 'p:pic', 'p:graphicFrame', 'p:cxnSp', 'p:grpSp'].some((tag) =>
+      Object.hasOwn(node, tag),
+    ),
+  )
+  const findNv = (node: Node): Node | undefined => {
+    if (Object.hasOwn(node, 'p:cNvPr')) return node
+    for (const value of Object.values(node))
+      if (Array.isArray(value))
+        for (const nested of value as Node[]) {
+          const found = findNv(nested)
+          if (found) return found
+        }
+    return undefined
+  }
+  const ids = shapes.map((node) => (findNv(node)?.[':@'] as Node | undefined)?.['@_id'])
+  if (
+    ids.length > 100 ||
+    ids.some((id) => typeof id !== 'string' || !id.length || id.length > 256) ||
+    new Set(ids).size !== ids.length
+  )
+    unsupported()
+  const picture = shapes[ids.indexOf(shapeId)]
+  if (!picture || !Object.hasOwn(picture, 'p:pic')) unsupported()
+  const allowed: Record<string, string[]> = {
+    'p:pic': [],
+    'p:nvPicPr': [],
+    'p:cNvPr': ['id', 'name', 'descr', 'title'],
+    'p:cNvPicPr': [],
+    'p:nvPr': [],
+    'a:picLocks': ['noChangeAspect'],
+    'p:blipFill': ['dpi', 'rotWithShape'],
+    'a:blip': ['r:embed', 'cstate'],
+    'a:stretch': [],
+    'a:fillRect': [],
+    'a:srcRect': ['l', 't', 'r', 'b'],
+    'p:spPr': ['bwMode'],
+    'a:xfrm': ['rot'],
+    'a:off': ['x', 'y'],
+    'a:ext': ['cx', 'cy'],
+    'a:prstGeom': ['prst'],
+    'a:avLst': [],
+  }
+  let embed: string | undefined
+  const inspect = (node: Node) => {
+    const tag = Object.keys(node).find((key) => key !== ':@' && key !== '#text')
+    if (!tag) {
+      if (typeof node['#text'] === 'string' && !/^\s*$/.test(node['#text'])) unsupported()
+      return
+    }
+    if (!Object.hasOwn(allowed, tag)) unsupported()
+    const attributes = (node[':@'] ?? {}) as Node
+    if (Object.keys(attributes).some((key) => !allowed[tag]!.includes(key.slice(2)))) unsupported()
+    if (
+      tag === 'p:spPr' &&
+      attributes['@_bwMode'] !== undefined &&
+      attributes['@_bwMode'] !== 'auto'
+    )
+      unsupported()
+    if (
+      tag === 'p:blipFill' &&
+      attributes['@_rotWithShape'] !== undefined &&
+      !['1', 'true'].includes(String(attributes['@_rotWithShape']))
+    )
+      unsupported()
+    if (tag === 'p:blipFill' && attributes['@_dpi'] !== undefined) unsupported()
+    if (tag === 'a:srcRect' && Object.values(attributes).some((value) => Number(value) !== 0))
+      unsupported()
+    if (tag === 'a:prstGeom' && attributes['@_prst'] !== 'rect') unsupported()
+    if (tag === 'a:blip') {
+      if (embed || typeof attributes['@_r:embed'] !== 'string') unsupported()
+      embed = attributes['@_r:embed'] as string
+    }
+    for (const nested of children(node, tag)) inspect(nested)
+  }
+  inspect(picture!)
+  if (!embed) unsupported()
+  const relPath = path.replace('/slides/', '/slides/_rels/') + '.rels'
+  const relFile = zip.file(relPath)
+  if (!relFile) unsupported()
+  const relXml = await relFile!.async('string')
+  if (
+    relXml.length > MAX_PPTX_XML_BYTES ||
+    /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(relXml) ||
+    XMLValidator.validate(relXml) !== true
+  )
+    unsupported()
+  const rels = children(child(xmlParser.parse(relXml) as Node[], 'Relationships'), 'Relationships')
+    .filter((node) => Object.hasOwn(node, 'Relationship'))
+    .map((node) => (node[':@'] ?? {}) as Node)
+  if (new Set(rels.map((rel) => rel['@_Id'])).size !== rels.length) unsupported()
+  const rel = rels.find((item) => item['@_Id'] === embed)
+  if (
+    !rel ||
+    rel['@_TargetMode'] !== undefined ||
+    rel['@_Type'] !== 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image' ||
+    typeof rel['@_Target'] !== 'string' ||
+    !/^\.\.\/media\/[A-Za-z0-9_.-]+\.(?:png|jpe?g)$/i.test(rel['@_Target'])
+  )
+    unsupported()
+  const media = zip.file('ppt/' + (rel!['@_Target'] as string).slice(3))
+  if (!media) unsupported()
+  const bytes = await media!.async('uint8array')
+  if (
+    !bytes.length ||
+    bytes.length > 2 * 1024 * 1024 ||
+    (!(bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71) &&
+      !(bytes[0] === 255 && bytes[1] === 216))
+  )
+    unsupported()
+  const sha = async (value: Uint8Array) =>
+    Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(value))))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('')
+  const mediaDigest = await sha(bytes)
+  const pictureFingerprint = await sha(
+    new TextEncoder().encode(JSON.stringify([stableValue(picture), mediaDigest])),
+  )
+  if (signal?.aborted) throw new Error('cancelled')
+  return { pictureFingerprint, mediaDigest, shapeIds: ids as string[] }
+}
