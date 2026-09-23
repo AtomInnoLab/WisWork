@@ -1,7 +1,6 @@
 import type { PresentationPageReplacement } from './presentation-page-replacement-record.js'
 import { presentationPackageDigest } from './powerpoint-package.js'
 
-type Runtime = Record<string, any>
 type AssertCurrent = () => void | Promise<void>
 export interface PresentationPageReplacementInspection {
   status: 'baseline' | 'staged' | 'conflict'
@@ -28,17 +27,20 @@ export interface PresentationPageReplacementAdapter {
 function check(signal?: AbortSignal) {
   if (signal?.aborted) throw new Error('cancelled')
 }
-function runtime(): Runtime {
-  const root = globalThis as Runtime
+function runtime(): typeof PowerPoint {
+  const root = globalThis as typeof globalThis & {
+    Office?: typeof Office
+    PowerPoint?: typeof PowerPoint
+  }
   if (
-    root.Office?.context?.host !== 'PowerPoint' ||
+    String(root.Office?.context?.host) !== 'PowerPoint' ||
     !root.Office?.context?.requirements?.isSetSupported?.('PowerPointApi', '1.8') ||
     typeof root.PowerPoint?.run !== 'function'
   )
     throw new Error('office_api_unsupported')
   return root.PowerPoint
 }
-async function sync(context: Runtime, signal?: AbortSignal) {
+async function sync(context: PowerPoint.RequestContext, signal?: AbortSignal) {
   check(signal)
   await context.sync()
   check(signal)
@@ -49,14 +51,14 @@ function stagedIds(record: PresentationPageReplacement): string[] {
   if (record.newSlideId) ids.splice(ids.indexOf(record.oldSlideId) + 1, 0, record.newSlideId)
   return ids
 }
-async function order(context: Runtime, signal?: AbortSignal): Promise<string[]> {
+async function order(context: PowerPoint.RequestContext, signal?: AbortSignal): Promise<string[]> {
   const slides = context.presentation.slides
   if (typeof slides?.load !== 'function') throw new Error('office_api_unsupported')
   slides.load({ $top: 514, id: true })
   await sync(context, signal)
   if (!Array.isArray(slides.items) || !slides.items.length || slides.items.length > 513)
     throw new Error('office_read_failed')
-  const ids = slides.items.map((item: Runtime) => item?.id)
+  const ids = slides.items.map((item: PowerPoint.Slide) => item?.id)
   if (
     ids.some(
       (id: unknown) =>
@@ -73,7 +75,11 @@ async function order(context: Runtime, signal?: AbortSignal): Promise<string[]> 
     throw new Error('office_read_failed')
   return ids
 }
-async function page(context: Runtime, id: string, signal?: AbortSignal): Promise<Runtime> {
+async function page(
+  context: PowerPoint.RequestContext,
+  id: string,
+  signal?: AbortSignal,
+): Promise<PowerPoint.Slide> {
   if (typeof context.presentation.slides.getItem !== 'function')
     throw new Error('office_api_unsupported')
   const slide = context.presentation.slides.getItem(id)
@@ -83,7 +89,11 @@ async function page(context: Runtime, id: string, signal?: AbortSignal): Promise
   if (slide.id !== id) throw new Error('office_concurrent_change')
   return slide
 }
-async function digest(context: Runtime, id: string, signal?: AbortSignal): Promise<string> {
+async function digest(
+  context: PowerPoint.RequestContext,
+  id: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const slide = await page(context, id, signal)
   if (typeof slide.exportAsBase64 !== 'function') throw new Error('office_api_unsupported')
   const exported = slide.exportAsBase64()
@@ -92,7 +102,7 @@ async function digest(context: Runtime, id: string, signal?: AbortSignal): Promi
   return presentationPackageDigest(exported.value, signal)
 }
 async function inspect(
-  context: Runtime,
+  context: PowerPoint.RequestContext,
   record: PresentationPageReplacement,
   signal?: AbortSignal,
 ): Promise<PresentationPageReplacementInspection> {
@@ -121,7 +131,7 @@ export class BrowserPresentationPageReplacementAdapter implements PresentationPa
   ): Promise<PresentationPageReplacementInspection> {
     check(signal)
     const saved = structuredClone(record)
-    return runtime().run((context: Runtime) => inspect(context, saved, signal))
+    return runtime().run((context: PowerPoint.RequestContext) => inspect(context, saved, signal))
   }
   async stage(
     record: PresentationPageReplacement,
@@ -137,7 +147,7 @@ export class BrowserPresentationPageReplacementAdapter implements PresentationPa
       throw new Error('office_concurrent_change')
     await assertCurrent()
     check(signal)
-    await runtime().run(async (context: Runtime) => {
+    await runtime().run(async (context: PowerPoint.RequestContext) => {
       if (typeof context.presentation.insertSlidesFromBase64 !== 'function')
         throw new Error('office_api_unsupported')
       if ((await inspect(context, saved, signal)).status !== 'baseline')
@@ -178,7 +188,7 @@ export class BrowserPresentationPageReplacementAdapter implements PresentationPa
       throw new Error('office_concurrent_change')
     await assertCurrent()
     check(signal)
-    await runtime().run(async (context: Runtime) => {
+    await runtime().run(async (context: PowerPoint.RequestContext) => {
       const current = await inspect(context, saved, signal)
       if (current.status === 'conflict') throw new Error('office_concurrent_change')
       if (current.status === 'baseline') {
