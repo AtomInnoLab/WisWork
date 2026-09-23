@@ -285,3 +285,199 @@ it('does not publish artifact paths when the VFS batch fails', async () => {
   expect(result.output).not.toContain('/home/user')
   expect(f.vfs.list('/home/user')).toEqual([])
 })
+const prepare = {
+  id: 'prepare',
+  name: 'prepare_presentation_production_import',
+  input: { project_id: 'p', request_id: 'r' },
+}
+const compiled = {
+  ...summary,
+  status: 'compiled',
+  compiledCount: 2,
+  pages: summary.pages.map((p) => ({ id: p.id, title: p.title, state: 'compiled', attempt: 1 })),
+}
+function pageArtifact(pageId: string, extra = {}) {
+  return {
+    projectId: 'p',
+    requestId: 'r',
+    pageId,
+    planRevision: 1,
+    status: 'compiled',
+    pptxBase64: 'UEsDBAAAAAA=',
+    sourceSlideId: '256#',
+    report: { deckId: 'p', slideCount: 1 },
+    ...extra,
+  }
+}
+function prepareFixture() {
+  const f = fixture()
+  f.request.mockImplementation(async (body) => {
+    const b = body as { operation: string; pageId?: string }
+    return new Response(
+      JSON.stringify(b.operation === 'production_status' ? compiled : pageArtifact(b.pageId!)),
+    )
+  })
+  return f
+}
+it('prepares ordered independent pages atomically without VFS publication and replaces cache identity on retry', async () => {
+  const f = prepareFixture()
+  expect(f.skill.artifact()).toBeUndefined()
+  expect((await f.skill.executeTool(prepare)).isError).not.toBe(true)
+  const first = f.skill.artifact('p')!
+  expect(first).toMatchObject({
+    documentId: 'doc',
+    projectId: 'p',
+    requestId: 'r',
+    slideCount: 2,
+    pptxBase64: '',
+    planRevision: 1,
+    pagePptxBase64: ['UEsDBAAAAAA=', 'UEsDBAAAAAA='],
+    pages: [
+      { id: 'one', title: 'One', sourceSlideId: '256#' },
+      { id: 'two', title: 'Two', sourceSlideId: '256#' },
+    ],
+  })
+  expect(f.request.mock.calls.map(([b]) => (b as { operation: string }).operation)).toEqual([
+    'production_status',
+    'production_page',
+    'production_page',
+  ])
+  expect(f.vfs.list('/home/user')).toEqual([])
+  await f.skill.executeTool(prepare)
+  expect(f.skill.artifact()).not.toBe(first)
+  f.skill.clear()
+  expect(f.skill.artifact()).toBeUndefined()
+})
+it('keeps previous cache if partial production or a later page has wrong revision or identity', async () => {
+  const f = prepareFixture()
+  await f.skill.executeTool(prepare)
+  const first = f.skill.artifact()
+  for (const bad of [summary, pageArtifact('two', { planRevision: 2 }), pageArtifact('wrong')]) {
+    f.request.mockImplementation(async (body) => {
+      const b = body as { operation: string; pageId?: string }
+      return new Response(
+        JSON.stringify(
+          b.operation === 'production_status'
+            ? 'pages' in bad
+              ? bad
+              : compiled
+            : b.pageId === 'two'
+              ? bad
+              : pageArtifact(b.pageId!),
+        ),
+      )
+    })
+    expect(await f.skill.executeTool(prepare)).toMatchObject({ isError: true })
+    expect(f.skill.artifact()).toBe(first)
+  }
+})
+it('never publishes a prepared artifact when cancelled or document changes between pages or during remember', async () => {
+  for (const mode of ['clear', 'abort', 'document', 'remember']) {
+    const f = prepareFixture(),
+      ac = new AbortController()
+    f.request.mockImplementation(async (body) => {
+      const b = body as { operation: string; pageId?: string }
+      if (b.pageId === 'two') {
+        if (mode === 'clear') f.skill.clear()
+        if (mode === 'abort') ac.abort()
+        if (mode === 'document') f.documentId.mockResolvedValue('other')
+      }
+      return new Response(
+        JSON.stringify(b.operation === 'production_status' ? compiled : pageArtifact(b.pageId!)),
+      )
+    })
+    if (mode === 'remember')
+      f.rememberProject.mockImplementation(async () => {
+        f.documentId.mockResolvedValue('other')
+      })
+    expect(await f.skill.executeTool(prepare, ac.signal)).toMatchObject({ isError: true })
+    expect(f.skill.artifact()).toBeUndefined()
+  }
+})
+it('enforces cumulative decoded preparation budget and requires explicit request identity', async () => {
+  const f = prepareFixture(),
+    bytes = Buffer.alloc(6 * 1024 * 1024)
+  bytes.write('PK\x03\x04')
+  f.request.mockImplementation(async (body) => {
+    const b = body as { operation: string; pageId?: string }
+    return new Response(
+      JSON.stringify(
+        b.operation === 'production_status'
+          ? compiled
+          : pageArtifact(b.pageId!, { pptxBase64: bytes.toString('base64') }),
+      ),
+    )
+  })
+  expect(await f.skill.executeTool(prepare)).toMatchObject({
+    isError: true,
+    output: 'presentation_output_too_large',
+  })
+  expect(f.skill.artifact()).toBeUndefined()
+  expect(await f.skill.executeTool({ ...prepare, input: { project_id: 'p' } })).toMatchObject({
+    isError: true,
+    output: 'invalid_tool_input',
+  })
+})
+it('keeps only the last prepared project and ordinary downloads never replace its import cache', async () => {
+  const f = prepareFixture()
+  await f.skill.executeTool(prepare)
+  const previous = f.skill.artifact()!
+  f.request.mockImplementation(async (body) => {
+    const b = body as { operation: string; projectId: string; pageId?: string }
+    return new Response(
+      JSON.stringify(
+        b.operation === 'production_status'
+          ? { ...compiled, projectId: b.projectId }
+          : pageArtifact(b.pageId!, {
+              projectId: b.projectId,
+              report: { deckId: b.projectId, slideCount: 1 },
+            }),
+      ),
+    )
+  })
+  expect(
+    (
+      await f.skill.executeTool({
+        id: 'download',
+        name: 'read_presentation_page_artifact',
+        input: { project_id: 'q', request_id: 'r', page_id: 'one' },
+      })
+    ).isError,
+  ).not.toBe(true)
+  expect(f.skill.artifact()).toBe(previous)
+  expect(
+    (await f.skill.executeTool({ ...prepare, input: { project_id: 'q', request_id: 'r' } }))
+      .isError,
+  ).not.toBe(true)
+  expect(f.skill.artifact('p')).toBeUndefined()
+  expect(f.skill.artifact('q')?.projectId).toBe('q')
+  expect(Object.isFrozen(f.skill.artifact())).toBe(true)
+  expect(Object.isFrozen(f.skill.artifact()?.pagePptxBase64)).toBe(true)
+})
+it('does not replace a valid cache when final project persistence fails', async () => {
+  const f = prepareFixture()
+  await f.skill.executeTool(prepare)
+  const previous = f.skill.artifact()
+  f.rememberProject.mockRejectedValue(new Error('save_failed'))
+  expect(await f.skill.executeTool(prepare)).toMatchObject({ isError: true })
+  expect(f.skill.artifact()).toBe(previous)
+})
+it('accepts exactly 10MiB across two pages and retains duplicate numeric source IDs', async () => {
+  const f = prepareFixture(),
+    bytes = Buffer.alloc(5 * 1024 * 1024)
+  bytes.write('PK\x03\x04')
+  f.request.mockImplementation(async (body) => {
+    const b = body as { operation: string; pageId?: string }
+    return new Response(
+      JSON.stringify(
+        b.operation === 'production_status'
+          ? compiled
+          : pageArtifact(b.pageId!, { pptxBase64: bytes.toString('base64') }),
+      ),
+    )
+  })
+  expect((await f.skill.executeTool(prepare)).isError).not.toBe(true)
+  expect(
+    f.skill.artifact()?.pagePptxBase64?.reduce((n, s) => n + Buffer.from(s, 'base64').length, 0),
+  ).toBe(10 * 1024 * 1024)
+})
