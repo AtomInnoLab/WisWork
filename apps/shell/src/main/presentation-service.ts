@@ -1,3 +1,4 @@
+import { createPresentationPageBackupService } from './presentation-page-backups'
 import {
   handlePresentationProduction,
   presentationProductionSummary,
@@ -62,6 +63,7 @@ export function createPresentationService(options: {
     bytes: Uint8Array,
   ) => Promise<{ bytes: Uint8Array; width: number; height: number }>
 }): (body: unknown, signal: AbortSignal) => Promise<Uint8Array> {
+  const pageBackups = createPresentationPageBackupService(options)
   const attachments = createPresentationAttachmentService(options)
   const store = new PresentationStore(options.userDataPath)
   const compile = options.compile ?? compilePresentationDeck
@@ -76,6 +78,16 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
+      if (
+        [
+          'page_backup_begin',
+          'page_backup_chunk',
+          'page_backup_finish',
+          'page_backup_status',
+          'page_backup_read',
+        ].includes(request.operation as string)
+      )
+        return boundedResponse(await pageBackups(request, signal))
       if (
         [
           'attachment_begin',

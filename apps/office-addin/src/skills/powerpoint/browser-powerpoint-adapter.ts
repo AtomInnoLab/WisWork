@@ -140,6 +140,10 @@ export interface PresentationPageGeometry {
 }
 
 export interface PowerPointAdapter {
+  exportPresentationPagePackage?(
+    slideId: string,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; slideIds: string[]; base64: string }>
   readPresentationPageGeometry?(
     slideId: string,
     shapeId: string,
@@ -1165,6 +1169,56 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         })
         .sort((first, second) => first.id.localeCompare(second.id))
       return { slideId, fingerprint: `${slideId}:${hash(JSON.stringify(semanticShapes))}` }
+    })
+  }
+
+  async exportPresentationPagePackage(
+    slideId: string,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; slideIds: string[]; base64: string }> {
+    cancelled(signal)
+    pageId(slideId)
+    return this.run('1.8', async (context) => {
+      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+      if (typeof slides?.load !== 'function') throw new Error('office_api_unsupported')
+      const readOrder = async (): Promise<string[]> => {
+        ;(slides.load as (properties: unknown) => void)({ $top: 513, id: true })
+        await sync(context, signal)
+        if (!Array.isArray(slides.items) || slides.items.length < 1 || slides.items.length > 512)
+          throw new Error('office_read_failed')
+        const ids = (slides.items as RuntimeRecord[]).map((item) => item?.id)
+        if (
+          ids.some(
+            (id) =>
+              typeof id !== 'string' ||
+              !id ||
+              id.length > 256 ||
+              Array.from(id).some(
+                (char) =>
+                  char.charCodeAt(0) < 32 ||
+                  (char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159),
+              ),
+          ) ||
+          new Set(ids).size !== ids.length ||
+          !ids.includes(slideId)
+        )
+          throw new Error('office_read_failed')
+        return ids as string[]
+      }
+      const slideIds = await readOrder()
+      const slide = await getPageById(context, slideId, signal)
+      if (typeof slide.exportAsBase64 !== 'function') throw new Error('office_api_unsupported')
+      const exported = (slide.exportAsBase64 as () => RuntimeRecord)()
+      await sync(context, signal)
+      if (
+        typeof exported.value !== 'string' ||
+        !exported.value ||
+        exported.value.length > Math.ceil((8 * 1024 * 1024) / 3) * 4
+      )
+        throw new Error('office_read_failed')
+      if (JSON.stringify(await readOrder()) !== JSON.stringify(slideIds))
+        throw new Error('office_concurrent_change')
+      return { slideId, slideIds, base64: exported.value }
     })
   }
 

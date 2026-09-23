@@ -25,15 +25,15 @@
 
 以下为本轮起始状态；局部QA失效正在同批实现，合并工程证据后仍需真实宿主验收。测试链接表示可查代码，不表示本次文档工作重新执行了测试。
 
-| 原方案章节/阶段 | 现能力 | 工程证据 | 尚缺与验收任务 | 阶段状态 |
-| --- | --- | --- | --- | --- |
-| §15阶段0、§17：样本与指标 | 合成8页、故障注入；新增20项真实任务规格 | [样本](../../packages/pptx-engine/tests/fixtures/presentation-benchmark.ts)、[工程端到端](../../apps/shell/tests/presentation-end-to-end.test.ts) | 实料、人工标注、业务诊断关联、真实耗时/成功率基线；全部20项 | 进行中 |
-| §10 O0、§15阶段1：身份与恢复 | 文档绑定、能力协商、多连接池、回执防重 | [会话测试](../../apps/office-addin/tests/relay-session.test.ts)、[连接池测试](../../apps/shell/tests/office-relay-pool.test.ts) | 三份真实PPT同时运行、另存隔离、断线自动恢复；任务16/17/20 | 进行中 |
-| §10 O1、§4/§7：项目工作台 | 持久化计划/成果、项目/导入/QA卡片 | [项目测试](../../apps/office-addin/tests/presentation-project.test.ts)、[进度测试](../../apps/office-addin/tests/presentation-import-progress.test.ts) | 完整Project/SlideTask状态机、业务语义时间线与重放、阶段进度及控制；任务16/18/20 | 进行中 |
-| §10 O2、§15阶段2、§8.8：资料与图片 | 50MiB附件分块、PC PDF/DOCX/文本解析、PNG/JPEG规范化和引用 | [附件集成](../../apps/shell/tests/presentation-attachments-integration.test.ts)、[素材集成](../../apps/shell/tests/presentation-assets-integration.test.ts) | 真实50MB PDF、网络下载恢复/许可、更广格式；仍有数量限制，不满足无演示文稿级图片硬上限目标；任务10–14/16 | 进行中 |
-| §10 O3、§15阶段3：IR与写入 | IR→PptxGenJS、原生对象、整稿编译后逐页导入检查点 | [编译测试](../../packages/pptx-engine/tests/presentation-compiler.test.ts)、[逐页交付](../../apps/shell/tests/presentation-page-delivery-integration.test.ts) | 独立页面生产/重编译、完整Office.js同IR编译、双端结构等价和真实可编辑性；任务1/9/12/18 | 进行中 |
-| §10 O4、§15阶段4、§6.4/§8.9：分层QA | 几何、稳定页截图、实际模型图片传递、防陈旧复核；本轮收窄稳定操作的失效范围 | [QA测试](../../apps/office-addin/tests/presentation-qa.test.ts)、[修改后QA](../../apps/office-addin/tests/presentation-post-edit-qa.test.ts) | Content/证据QA、真实RoundTrip、合法重叠分类、独立失败页修复闭环；任务1–9/15/18/20 | 进行中 |
-| §21首批修改（与完整O5区分） | 已绑定页文本/几何/普通图片替换、图片中断确认恢复 | [稳定页工具](../../apps/office-addin/tests/presentation-page-editing.test.ts)、[图片适配](../../apps/office-addin/tests/presentation-image-adapter.test.ts) | 任意现稿完整基线、重做单页、持久化撤销；任务13/15/18/19 | 进行中 |
+| 原方案章节/阶段                     | 现能力                                                                     | 工程证据                                                                                                                                                      | 尚缺与验收任务                                                                                          | 阶段状态 |
+| ----------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | -------- |
+| §15阶段0、§17：样本与指标           | 合成8页、故障注入；新增20项真实任务规格                                    | [样本](../../packages/pptx-engine/tests/fixtures/presentation-benchmark.ts)、[工程端到端](../../apps/shell/tests/presentation-end-to-end.test.ts)             | 实料、人工标注、业务诊断关联、真实耗时/成功率基线；全部20项                                             | 进行中   |
+| §10 O0、§15阶段1：身份与恢复        | 文档绑定、能力协商、多连接池、回执防重                                     | [会话测试](../../apps/office-addin/tests/relay-session.test.ts)、[连接池测试](../../apps/shell/tests/office-relay-pool.test.ts)                               | 三份真实PPT同时运行、另存隔离、断线自动恢复；任务16/17/20                                               | 进行中   |
+| §10 O1、§4/§7：项目工作台           | 持久化计划/成果、项目/导入/QA卡片                                          | [项目测试](../../apps/office-addin/tests/presentation-project.test.ts)、[进度测试](../../apps/office-addin/tests/presentation-import-progress.test.ts)        | 完整Project/SlideTask状态机、业务语义时间线与重放、阶段进度及控制；任务16/18/20                         | 进行中   |
+| §10 O2、§15阶段2、§8.8：资料与图片  | 50MiB附件分块、PC PDF/DOCX/文本解析、PNG/JPEG规范化和引用                  | [附件集成](../../apps/shell/tests/presentation-attachments-integration.test.ts)、[素材集成](../../apps/shell/tests/presentation-assets-integration.test.ts)   | 真实50MB PDF、网络下载恢复/许可、更广格式；仍有数量限制，不满足无演示文稿级图片硬上限目标；任务10–14/16 | 进行中   |
+| §10 O3、§15阶段3：IR与写入          | IR→PptxGenJS、原生对象、整稿编译后逐页导入检查点                           | [编译测试](../../packages/pptx-engine/tests/presentation-compiler.test.ts)、[逐页交付](../../apps/shell/tests/presentation-page-delivery-integration.test.ts) | 独立页面生产/重编译、完整Office.js同IR编译、双端结构等价和真实可编辑性；任务1/9/12/18                   | 进行中   |
+| §10 O4、§15阶段4、§6.4/§8.9：分层QA | 几何、稳定页截图、实际模型图片传递、防陈旧复核；本轮收窄稳定操作的失效范围 | [QA测试](../../apps/office-addin/tests/presentation-qa.test.ts)、[修改后QA](../../apps/office-addin/tests/presentation-post-edit-qa.test.ts)                  | Content/证据QA、真实RoundTrip、合法重叠分类、独立失败页修复闭环；任务1–9/15/18/20                       | 进行中   |
+| §21首批修改（与完整O5区分）         | 已绑定页文本/几何/普通图片替换、图片中断确认恢复                           | [稳定页工具](../../apps/office-addin/tests/presentation-page-editing.test.ts)、[图片适配](../../apps/office-addin/tests/presentation-image-adapter.test.ts)   | 任意现稿完整基线、重做单页、持久化撤销；任务13/15/18/19                                                 | 进行中   |
 
 §15阶段1–4与O0–O4有交叉依赖；本表不因一个组件通过测试而将任一总体阶段标为完成。完整差距参见[方案核对报告](./wiswork-ppt-agent-plan-implementation-audit-2026-09-23.md)，其中局部QA的旧状态需结合本轮报告阅读。
 
@@ -75,12 +75,12 @@ reviewer_and_date: 待执行
 
 阶段报告按§20列目标、交付、验证证据、未完成项、风险、下一步及入口条件；不能把“进行中”自动推进为下一阶段已获验收。
 
-| 部署层 | 当前验收状态 | 需保留证据 |
-| --- | --- | --- |
-| PC应用/服务与解析编译 | 工程证据已有；发布组合待选定 | 版本、包哈希、服务/模型配置、诊断 |
-| Relay/协议 | 工程证据已有；真实网络/混合版本待执行 | 版本协商、断线时间线、路由隔离记录 |
-| Taskpane/Addin | 工程证据已有；宿主加载及发布验收待执行 | manifest/版本、加载入口、能力声明 |
-| PowerPoint Windows/Mac/Web | 本目录均未执行；具体版本待登记 | 宿主版本、受支持/不支持能力、截图与重开文件 |
+| 部署层                     | 当前验收状态                           | 需保留证据                                  |
+| -------------------------- | -------------------------------------- | ------------------------------------------- |
+| PC应用/服务与解析编译      | 工程证据已有；发布组合待选定           | 版本、包哈希、服务/模型配置、诊断           |
+| Relay/协议                 | 工程证据已有；真实网络/混合版本待执行  | 版本协商、断线时间线、路由隔离记录          |
+| Taskpane/Addin             | 工程证据已有；宿主加载及发布验收待执行 | manifest/版本、加载入口、能力声明           |
+| PowerPoint Windows/Mac/Web | 本目录均未执行；具体版本待登记         | 宿主版本、受支持/不支持能力、截图与重开文件 |
 
 优先补材料与执行基线，同时推进原方案的页面生产/失败页重编译、业务进度、内容证据QA和RoundTrip；保留重做单页与撤销首批缺口。完成这些证据之前不宣布P0或O0–O4验收通过。
 
@@ -107,3 +107,7 @@ reviewer_and_date: 待执行
 ### 单页派生重编译进展（2026-09-23）
 
 新增冻结父任务的单页修订：仅目标页重新编译，其他成功页原样复用，保留父成果；详见[单页重编译阶段报告](./wiswork-ppt-agent-page-rebuild-progress-2026-09-23.md)。修订任务禁止整批导入，宿主页替换、原页备份与整页撤销仍待实现，不能将本批视为首批单页重做已完成。
+
+### 原页持久备份进展（2026-09-23）
+
+单页修订已补当前宿主页原始PPTX的PC持久备份、同字节断点续传与重启后下载，严格绑定父子任务、文档和稳定页ID；详见[原页备份阶段报告](./wiswork-ppt-agent-page-backup-progress-2026-09-23.md)。备份是历史保存点，不代表宿主替换或整页撤销已完成；重复导出字节稳定性与真实Office保存重开仍待实机验证。O3/O5及P0继续进行中。
