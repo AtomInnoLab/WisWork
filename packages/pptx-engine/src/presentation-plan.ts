@@ -2,6 +2,12 @@ import type { PresentationClaim, PresentationDeck, PresentationStyle } from './p
 import { PRESENTATION_DECK_SCHEMA, PRESENTATION_TEXT_BUDGET } from './presentation'
 import { type Schema, text, number, choice, array, object, id, valid } from './presentation-schema'
 
+/** Mandatory deck JSON may consume 192 KiB of the 256 KiB compile transport.
+ * The remaining 64 KiB accommodates content/geometry and the request envelope;
+ * optional content and assets still require the normal compile transport checks.
+ */
+export const PRESENTATION_PLAN_COMPILED_BYTE_BUDGET = 192 * 1024
+
 /** Durable planning metadata; source URIs are never fetched or treated as verified evidence. */
 export interface PresentationPlan {
   version: 1
@@ -150,11 +156,26 @@ export function parsePresentationPlan(input: unknown): PresentationPlan {
     unique(slide.claimIds, 'claim_reference')
     if (slide.claimIds.some((claim) => !claimIds.has(claim))) reject('claim_reference')
   }
-  const requiredText = mappedClaims(plan).reduce(
+  const claims = mappedClaims(plan)
+  const requiredText = claims.reduce(
     (sum, claim) => sum + claim.text.length + claim.source.length + (claim.locator?.length ?? 0),
     plan.slides.reduce((sum, slide) => sum + slide.title.length, 0),
   )
   if (requiredText > PRESENTATION_TEXT_BUDGET) reject('text_budget')
+  const mandatoryDeck = {
+    version: 1,
+    id: plan.projectId,
+    title: plan.title,
+    style: plan.style,
+    assets: [],
+    claims,
+    slides: plan.slides.map(({ id, title, claimIds }) => ({ id, title, claimIds, elements: [] })),
+  }
+  if (
+    new TextEncoder().encode(JSON.stringify(mandatoryDeck)).byteLength >
+    PRESENTATION_PLAN_COMPILED_BYTE_BUDGET
+  )
+    reject('compiled_byte_budget')
   return structuredClone(plan)
 }
 

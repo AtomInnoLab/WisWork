@@ -109,7 +109,7 @@ describe('durable presentation plan', () => {
     expect(new TextEncoder().encode(JSON.stringify(plan)).byteLength).toBeLessThan(192 * 1024)
     expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:text_budget')
   })
-  it('counts mapped statements, source separators, locators and slide titles at the exact budget boundary', () => {
+  it('rejects the character budget boundary when transport bytes already exceed their limit', () => {
     const plan = benchmarkPlan()
     plan.sources = Array.from({ length: 3 }, (_, i) => ({
       id: `source-${i}`,
@@ -128,9 +128,78 @@ describe('durable presentation plan', () => {
       slide.claimIds = []
       slide.title = 't'.repeat(175)
     })
-    expect(() => parsePresentationPlan(plan)).not.toThrow()
+    expect(() => parsePresentationPlan(plan)).toThrow(
+      'presentation_plan_invalid:compiled_byte_budget',
+    )
     plan.slides[0]!.title += 't'
     expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:text_budget')
+  })
+  it('rejects multibyte source expansion below the deck character limit', () => {
+    const plan = benchmarkPlan()
+    plan.sources = Array.from({ length: 3 }, (_, i) => ({
+      id: `s${i}`,
+      title: 'Source',
+      uri: '汉'.repeat(499),
+      excerpt: '',
+    }))
+    plan.claims = Array.from({ length: 100 }, (_, i) => ({
+      ...plan.claims[0]!,
+      id: `c${i}`,
+      statement: 'C',
+      sourceIds: plan.sources.map((source) => source.id),
+    }))
+    plan.slides.forEach((slide) => {
+      slide.claimIds = []
+    })
+    expect(new TextEncoder().encode(JSON.stringify(plan)).byteLength).toBeLessThan(192 * 1024)
+    expect(() => parsePresentationPlan(plan)).toThrow(
+      'presentation_plan_invalid:compiled_byte_budget',
+    )
+  })
+  it('accepts exactly 192 KiB of mandatory deck JSON and rejects one additional byte', () => {
+    const plan = benchmarkPlan()
+    plan.sources = Array.from({ length: 3 }, (_, i) => ({
+      id: `s${i}`,
+      title: 'Source',
+      uri: 'u'.repeat(400),
+      excerpt: '',
+    }))
+    plan.claims = Array.from({ length: 120 }, (_, i) => ({
+      ...plan.claims[0]!,
+      id: `c${i}`,
+      statement: 'C',
+      sourceIds: plan.sources.map((source) => source.id),
+    }))
+    plan.slides.forEach((slide) => {
+      slide.claimIds = []
+    })
+    const mandatoryDeck = {
+      version: 1,
+      id: plan.projectId,
+      title: plan.title,
+      style: plan.style,
+      assets: [],
+      claims: presentationPlanClaims(plan),
+      slides: plan.slides.map((slide) => ({
+        id: slide.id,
+        title: slide.title,
+        claimIds: slide.claimIds,
+        elements: [],
+      })),
+    }
+    let remaining = 192 * 1024 - new TextEncoder().encode(JSON.stringify(mandatoryDeck)).byteLength
+    expect(remaining).toBeGreaterThan(0)
+    for (const claim of plan.claims) {
+      const padding = Math.min(remaining, 11998)
+      claim.statement += 'x'.repeat(padding)
+      remaining -= padding
+    }
+    expect(remaining).toBe(0)
+    expect(() => parsePresentationPlan(plan)).not.toThrow()
+    plan.claims[0]!.statement += 'x'
+    expect(() => parsePresentationPlan(plan)).toThrow(
+      'presentation_plan_invalid:compiled_byte_budget',
+    )
   })
   it('preserves unverified provenance and joins only nonempty locators', () => {
     const plan = benchmarkPlan()
