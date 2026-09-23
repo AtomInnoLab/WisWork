@@ -345,3 +345,71 @@ it('accepts the maximum unique scope and ID length without broadening unmatched 
   await f.binding.invalidateQa(Array.from({ length: 100 }, (_, i) => String(i).padStart(256, 'x')))
   expect(f.binding.readQa('project/request-1')).toEqual(value)
 })
+
+it('isolates production QA records and invalidates shared host pages across namespaces', async () => {
+  const f = fixture(),
+    value = record(await f.binding.documentId())
+  const production = { ...structuredClone(value), source: 'production' as const }
+  await f.binding.writeQa('project/request-1', value)
+  await f.binding.writeQa('production/project/request-1', production)
+  expect(f.create().readQa('production/project/request-1')).toEqual(production)
+  await expect(f.binding.writeQa('project/request-1', production)).rejects.toThrow(
+    'presentation_qa_state_invalid',
+  )
+  await expect(f.binding.writeQa('production/project/request-1', value)).rejects.toThrow(
+    'presentation_qa_state_invalid',
+  )
+  await f.binding.invalidateQa(['256'])
+  for (const key of ['project/request-1', 'production/project/request-1']) {
+    expect(f.create().readQa(key)?.pages[0]?.recheckRequired).toBe(true)
+  }
+  f.values.set('wiswork.presentation.qa.v1', JSON.stringify({ 'project/request-1': production }))
+  expect(() => f.create().readQa('project/request-1')).toThrow('presentation_qa_state_invalid')
+})
+it('retains legacy QA project named production and rejects unsupported source values', async () => {
+  const f = fixture(),
+    value = { ...record(await f.binding.documentId()), projectId: 'production' }
+  await f.binding.writeQa('production/request-1', value)
+  expect(f.create().readQa('production/request-1')).toEqual(value)
+  await expect(
+    f.binding.writeQa('production/request-1', {
+      ...value,
+      source: 'legacy',
+    } as unknown as PresentationQaRecord),
+  ).rejects.toThrow('presentation_qa_state_invalid')
+})
+it('persists image source namespaces and refuses adding source to a prior image record', async () => {
+  const { imageReplacementKey } =
+    await import('../src/skills/powerpoint/presentation-image-replacement-record')
+  const f = fixture(),
+    documentId = await f.binding.documentId()
+  const value = {
+    version: 1 as const,
+    documentId,
+    projectId: 'project',
+    requestId: 'request',
+    pageId: 'page',
+    hostSlideId: 'host',
+    oldShapeId: 'old',
+    assetDigest: 'a'.repeat(64),
+    state: 'pending' as const,
+  }
+  const oldKey = await imageReplacementKey('project', 'request', 'page', 'old')
+  const productionKey = await imageReplacementKey('project', 'request', 'page', 'old', 'production')
+  const production = { ...value, source: 'production' as const }
+  await f.binding.writeImageReplacement(oldKey, value)
+  await expect(f.binding.writeImageReplacement(oldKey, production)).rejects.toThrow(
+    'presentation_image_replacement_state_invalid',
+  )
+  await f.binding.writeImageReplacement(productionKey, production)
+  expect(f.create().readImageReplacement(productionKey)).toEqual(production)
+  expect(f.create().readImageReplacement(oldKey)).toEqual(value)
+  // Even a manually mis-keyed record cannot change its original source while saving a candidate.
+  f.values.set(
+    'wiswork.presentation.image-replacements.v1',
+    JSON.stringify({ [productionKey]: value }),
+  )
+  await expect(
+    f.binding.writeImageReplacement(productionKey, { ...production, newShapeId: 'candidate' }),
+  ).rejects.toThrow('presentation_image_replacement_state_invalid')
+})

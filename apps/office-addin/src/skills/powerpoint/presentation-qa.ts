@@ -4,10 +4,15 @@ import type {
   CompiledPresentationArtifact,
   PresentationImportRecord,
 } from './presentation-delivery.js'
-import { validPresentationImportRecord } from './presentation-page-delivery.js'
+import {
+  presentationArtifactContent,
+  presentationImportKey,
+  presentationPageMapping,
+} from './presentation-page-delivery.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
 export interface PresentationQaRecord {
   version: 1
+  source?: 'production'
   documentId: string
   projectId: string
   requestId: string
@@ -77,6 +82,7 @@ export function validatePresentationQaRecord(value: unknown): value is Presentat
     if (
       !object(value, [
         'version',
+        'source',
         'documentId',
         'projectId',
         'requestId',
@@ -84,6 +90,7 @@ export function validatePresentationQaRecord(value: unknown): value is Presentat
         'pages',
       ]) ||
       value.version !== 1 ||
+      (value.source !== undefined && value.source !== 'production') ||
       !text(value.documentId, 4096) ||
       !id(value.projectId) ||
       !text(value.requestId, 128) ||
@@ -360,9 +367,7 @@ export function presentationQaMutationScope(
   return new Set(ids)
 }
 
-export function createPresentationQaSkill(
-  options: PresentationQaOptions,
-): AgentSkill & {
+export function createPresentationQaSkill(options: PresentationQaOptions): AgentSkill & {
   clear(): void
   beginMutation(hostSlideIds?: readonly string[]): void
   endMutation(): void
@@ -443,7 +448,9 @@ export function createPresentationQaSkill(
         const artifact = options.artifact(input.project_id as string | undefined)
         if (!artifact) throw new Error('presentation_restore_required')
         const artifactJson = JSON.stringify(artifact.pages),
-          artifactBase64 = artifact.pptxBase64
+          artifactContent = presentationArtifactContent(artifact),
+          key = presentationImportKey(artifact),
+          source = artifact.pagePptxBase64 !== undefined ? ('production' as const) : undefined
         if (!id(artifact.projectId) || !text(artifact.requestId, 128))
           throw new Error('presentation_qa_state_invalid')
         const documentId = await options.documentId()
@@ -455,19 +462,20 @@ export function createPresentationQaSkill(
           check()
           if (
             options.artifact(artifact.projectId) !== artifact ||
-            artifact.pptxBase64 !== artifactBase64 ||
+            presentationArtifactContent(artifact) !== artifactContent ||
+            presentationImportKey(artifact) !== key ||
             JSON.stringify(artifact.pages) !== artifactJson
           )
             throw new Error('presentation_qa_stale')
         }
         await current()
-        const artifactDigest = await digest(new TextEncoder().encode(artifactBase64))
+        const artifactDigest = await digest(new TextEncoder().encode(artifactContent))
         await current()
-        const key = `${artifact.projectId}/${artifact.requestId}`,
-          stored = options.readQa(key)
+        const stored = options.readQa(key)
         if (
           stored &&
           (!validatePresentationQaRecord(stored) ||
+            stored.source !== source ||
             stored.documentId !== documentId ||
             stored.projectId !== artifact.projectId ||
             stored.requestId !== artifact.requestId ||
@@ -486,21 +494,9 @@ export function createPresentationQaSkill(
           }
         const page = artifact.pages?.find((p) => p.id === input.page_id),
           receipt = options.readReceipt(key)
-        if (
-          !page ||
-          !receipt ||
-          !validPresentationImportRecord(receipt) ||
-          receipt.documentId !== documentId ||
-          !receipt.checkpoint ||
-          receipt.checkpoint.artifactDigest !== artifactDigest ||
-          JSON.stringify(receipt.checkpoint.sourceSlideIds) !==
-            JSON.stringify(artifact.pages?.map((p) => p.sourceSlideId))
-        )
+        const mapping = receipt && page && presentationPageMapping(artifact, receipt, page.id)
+        if (!page || !mapping || receipt?.checkpoint?.artifactDigest !== artifactDigest)
           throw new Error('presentation_qa_page_not_imported')
-        const mapping = receipt.checkpoint.completed.find(
-          (p) => p.sourceSlideId === page.sourceSlideId,
-        )
-        if (!mapping) throw new Error('presentation_qa_page_not_imported')
         const receiptJson = JSON.stringify(receipt),
           storedJson = JSON.stringify(stored),
           liveKey = `${key}/${page.id}`
@@ -558,6 +554,7 @@ export function createPresentationQaSkill(
             }
         const record: PresentationQaRecord = {
           version: 1,
+          ...(source ? { source } : {}),
           documentId,
           projectId: artifact.projectId,
           requestId: artifact.requestId,
@@ -565,7 +562,19 @@ export function createPresentationQaSkill(
           pages: [...(stored?.pages.filter((p) => p.pageId !== page.id) ?? []), entry],
         }
         if (!validatePresentationQaRecord(record)) throw new Error('presentation_qa_state_invalid')
-        let path = `/home/user/generated/qa-${artifact.projectId}-${page.id}.png`
+        let path = `/home/user/generated/qa-${artifact.projectId}-${page!.id}.png`
+        let recordPath = `/home/user/generated/${artifact.projectId}.qa.json`
+        if (source) {
+          const prefix = JSON.stringify([
+            documentId,
+            source,
+            artifact.projectId,
+            artifact.requestId,
+          ])
+          path = `/home/user/generated/qa-${await digest(new TextEncoder().encode(JSON.stringify([documentId, source, artifact.projectId, artifact.requestId, page!.id])))}.png`
+          recordPath = `/home/user/generated/qa-${await digest(new TextEncoder().encode(prefix))}.json`
+          await consistent()
+        }
         if (new TextEncoder().encode(path.split('/').at(-1)!).length > 128) {
           path = `/home/user/generated/qa-${await digest(new TextEncoder().encode(`${artifact.projectId}/${page.id}`))}.png`
           await consistent()
@@ -579,10 +588,7 @@ export function createPresentationQaSkill(
         )
           throw new Error('presentation_qa_stale')
         if (review) {
-          options.vfs.writeFile(
-            `/home/user/generated/${artifact.projectId}.qa.json`,
-            JSON.stringify(record, null, 2),
-          )
+          options.vfs.writeFile(recordPath, JSON.stringify(record, null, 2))
           live.delete(liveKey)
           return {
             output: JSON.stringify({ page: entry, reviewer: 'agent', needs_recapture: true }),
@@ -592,7 +598,7 @@ export function createPresentationQaSkill(
         }
         options.vfs.writeBatch([
           [path, inspected.bytes],
-          [`/home/user/generated/${artifact.projectId}.qa.json`, JSON.stringify(record, null, 2)],
+          [recordPath, JSON.stringify(record, null, 2)],
         ])
         live.delete(liveKey)
         live.set(liveKey, {

@@ -122,9 +122,9 @@ export function createPresentationDocumentBinding(
       throw new Error('presentation_qa_state_invalid')
     for (const [key, value] of Object.entries(records)) {
       if (
-        !/^[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_-]{1,128}$/.test(key) ||
         !validatePresentationQaRecord(value) ||
-        key !== `${value.projectId}/${value.requestId}`
+        key !==
+          `${value.source === 'production' ? 'production/' : ''}${value.projectId}/${value.requestId}`
       )
         throw new Error('presentation_qa_state_invalid')
     }
@@ -258,6 +258,7 @@ export function createPresentationDocumentBinding(
               snapshot.requestId,
               snapshot.pageId,
               snapshot.oldShapeId,
+              snapshot.source,
             ))
         )
           throw invalid()
@@ -271,6 +272,7 @@ export function createPresentationDocumentBinding(
           const identity = (r: ImageReplacementRecord) =>
             JSON.stringify([
               r.documentId,
+              r.source,
               r.projectId,
               r.requestId,
               r.pageId,
@@ -319,7 +321,8 @@ export function createPresentationDocumentBinding(
       const write = async () => {
         if (
           !validatePresentationQaRecord(record) ||
-          key !== `${record.projectId}/${record.requestId}`
+          key !==
+            `${record.source === 'production' ? 'production/' : ''}${record.projectId}/${record.requestId}`
         )
           throw new Error('presentation_qa_state_invalid')
         if ((await documentId()) !== record.documentId)

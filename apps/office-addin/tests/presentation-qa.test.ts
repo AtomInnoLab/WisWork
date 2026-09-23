@@ -5,6 +5,7 @@ import {
   type PresentationQaRecord,
   validatePresentationQaRecord,
 } from '../src/skills/powerpoint/presentation-qa.js'
+import type { PresentationImportRecord } from '../src/skills/powerpoint/presentation-delivery.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
 const png =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII='
@@ -503,4 +504,178 @@ it('preserves live evidence for an unmatched maximum-sized scope', async () => {
       },
     }),
   ).not.toHaveProperty('isError', true)
+})
+
+function productionSetup() {
+  const f = setup()
+  const artifact = {
+    ...f.artifact,
+    pptxBase64: '',
+    pagePptxBase64: ['UEsDBAAAAAA=', 'UEsDBAEAAAA='],
+    planRevision: 1,
+    pages: f.artifact.pages.map((p) => ({ ...p, sourceSlideId: '256#' })),
+  }
+  const artifactDigest = createHash('sha256')
+    .update(
+      JSON.stringify({
+        documentId: artifact.documentId,
+        projectId: artifact.projectId,
+        requestId: artifact.requestId,
+        planRevision: artifact.planRevision,
+        pages: artifact.pages,
+        pagePptxBase64: artifact.pagePptxBase64,
+      }),
+    )
+    .digest('hex')
+  const receipt: PresentationImportRecord = {
+    ...f.receipt,
+    state: 'complete',
+    slideIds: ['host1', 'host2'],
+    checkpoint: {
+      ...f.receipt.checkpoint,
+      version: 2 as const,
+      artifactDigest,
+      pageIds: ['first', 'second'],
+      sourceSlideIds: ['256#', '256#'],
+      completed: [
+        { sourceSlideId: '256#', slideId: 'host1' },
+        { sourceSlideId: '256#', slideId: 'host2' },
+      ],
+    },
+  }
+  const records = new Map<string, PresentationQaRecord>()
+  const options = {
+    ...f.options,
+    artifact: () => artifact,
+    readReceipt: (key: string) => (key === 'production/project/request' ? receipt : undefined),
+    readQa: (key: string) => records.get(key),
+    writeQa: vi.fn(async (key: string, value: PresentationQaRecord) => {
+      records.set(key, structuredClone(value))
+    }),
+  }
+  f.inspectPage.mockImplementation(async () => ({
+    slideId: 'host2',
+    slideWidth: 960,
+    slideHeight: 540,
+    shapes: [],
+    shapesTruncated: false,
+    overflows: [],
+    overlaps: [],
+    overlapsTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: png },
+  }))
+  return {
+    ...f,
+    artifact,
+    receipt,
+    records,
+    options,
+    skill: createPresentationQaSkill(options),
+    capture: { ...f.capture, input: { page_id: 'second' } },
+  }
+}
+it('captures the second production business page with repeated source IDs and isolated QA', async () => {
+  const f = productionSetup()
+  expect((await f.skill.executeTool(f.capture)).isError).not.toBe(true)
+  expect(f.inspectPage).toHaveBeenCalledWith('host2', undefined)
+  expect(f.records.get('production/project/request')).toMatchObject({
+    source: 'production',
+    pages: [{ pageId: 'second', hostSlideId: 'host2' }],
+  })
+  expect(f.records.has('project/request')).toBe(false)
+})
+it('rejects changed production bytes or page order and uncompleted pages', async () => {
+  for (const change of ['bytes', 'order', 'pending'] as const) {
+    const f = productionSetup()
+    if (change === 'bytes') f.artifact.pagePptxBase64[1] = 'UEsDBAIAAAA='
+    if (change === 'order') f.artifact.pages.reverse()
+    if (change === 'pending') {
+      f.receipt.state = 'pending'
+      delete f.receipt.slideIds
+      f.receipt.checkpoint!.completed.pop()
+    }
+    expect((await f.skill.executeTool(f.capture)).isError).toBe(true)
+    expect(f.inspectPage).not.toHaveBeenCalled()
+  }
+})
+it('rejects production changes during awaited capture without publishing QA', async () => {
+  const f = productionSetup(),
+    original = f.inspectPage.getMockImplementation()!
+  f.inspectPage.mockImplementation(async () => {
+    const result = await original()
+    f.artifact.planRevision++
+    return result
+  })
+  expect((await f.skill.executeTool(f.capture)).isError).toBe(true)
+  expect(f.options.writeQa).not.toHaveBeenCalled()
+})
+
+it('reviews a live production capture and rejects a mixed-source stored record', async () => {
+  const f = productionSetup()
+  const captured = await f.skill.executeTool(f.capture)
+  const record = f.records.get('production/project/request')!
+  const result = await f.skill.executeTool({
+    id: 'review',
+    name: 'record_presentation_page_review',
+    input: {
+      page_id: 'second',
+      screenshot_digest: record.pages[0]!.screenshotDigest,
+      outcome: 'pass',
+      notes: '布局清晰',
+    },
+  })
+  expect(result.isError).not.toBe(true)
+  expect(f.inspectPage).toHaveBeenCalledTimes(2)
+  expect(f.records.get('production/project/request')?.pages[0]?.visual.status).toBe('pass')
+  expect(JSON.parse(captured.output).path).toMatch(/qa-[a-f0-9]{64}\.png$/)
+  const contaminated = structuredClone(record)
+  delete contaminated.source
+  f.records.set('production/project/request', contaminated)
+  expect(await f.skill.executeTool(f.capture)).toMatchObject({
+    isError: true,
+    output: 'presentation_qa_state_invalid',
+  })
+})
+it('allows only confirmed production prefix pages while the next page is uncertain', async () => {
+  const f = productionSetup()
+  f.receipt.state = 'pending'
+  delete f.receipt.slideIds
+  f.receipt.checkpoint!.completed.pop()
+  f.receipt.checkpoint!.inFlight = { sourceSlideId: '256#' }
+  expect(await f.skill.executeTool(f.capture)).toMatchObject({
+    isError: true,
+    output: 'presentation_qa_page_not_imported',
+  })
+  const original = f.inspectPage.getMockImplementation()!
+  f.inspectPage.mockImplementation(async () => ({ ...(await original()), slideId: 'host1' }))
+  expect(
+    (await f.skill.executeTool({ ...f.capture, input: { page_id: 'first' } })).isError,
+  ).not.toBe(true)
+  expect(f.inspectPage).toHaveBeenCalledWith('host1', undefined)
+})
+it('keeps production screenshot and metadata paths distinct between requests', async () => {
+  const paths = []
+  for (const request of ['request', 'other']) {
+    const f = productionSetup()
+    f.artifact.requestId = request
+    // The artifact and receipt are rebuilt together, as when a separate production is selected.
+    f.receipt.checkpoint!.artifactDigest = createHash('sha256')
+      .update(
+        JSON.stringify({
+          documentId: f.artifact.documentId,
+          projectId: f.artifact.projectId,
+          requestId: request,
+          planRevision: f.artifact.planRevision,
+          pages: f.artifact.pages,
+          pagePptxBase64: f.artifact.pagePptxBase64,
+        }),
+      )
+      .digest('hex')
+    f.options.readReceipt = () => f.receipt
+    const result = await createPresentationQaSkill(f.options).executeTool(f.capture)
+    expect(result.isError).not.toBe(true)
+    paths.push(JSON.parse(result.output).path)
+    expect(f.vfs.list('/home/user').filter((path) => path.endsWith('.json'))).toHaveLength(1)
+  }
+  expect(new Set(paths).size).toBe(2)
 })
