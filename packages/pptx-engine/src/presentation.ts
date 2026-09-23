@@ -1,3 +1,15 @@
+import {
+  type Schema,
+  text,
+  number,
+  choice,
+  array,
+  object,
+  id,
+  color,
+  valid,
+} from './presentation-schema'
+
 /** Browser-safe, fixed 16:9 presentation contract. Coordinates are inches, text sizes points. */
 export const PRESENTATION_WIDTH = 13.333333
 export const PRESENTATION_HEIGHT = 7.5
@@ -85,41 +97,6 @@ export interface PresentationCompileReport {
   }
 }
 
-type Schema = {
-  type?: string
-  properties?: Record<string, Schema>
-  required?: string[]
-  additionalProperties?: false
-  items?: Schema
-  minItems?: number
-  maxItems?: number
-  minLength?: number
-  maxLength?: number
-  minimum?: number
-  maximum?: number
-  pattern?: string
-  enum?: readonly unknown[]
-  anyOf?: Schema[]
-}
-const text = (maxLength: number, minLength = 0): Schema => ({
-  type: 'string',
-  minLength,
-  maxLength,
-})
-const number = (minimum: number, maximum: number): Schema => ({ type: 'number', minimum, maximum })
-const choice = (...values: string[]): Schema => ({ type: 'string', enum: values })
-const array = (items: Schema, maxItems: number, minItems = 0): Schema => ({
-  type: 'array',
-  items,
-  minItems,
-  maxItems,
-})
-const object = (
-  properties: Record<string, Schema>,
-  required = Object.keys(properties),
-): Schema => ({ type: 'object', properties, required, additionalProperties: false })
-const id: Schema = { ...text(80, 1), pattern: '^[A-Za-z0-9_-]+$' }
-const color: Schema = { ...text(6, 6), pattern: '^[A-Fa-f0-9]{6}$' }
 const geometry = {
   id,
   x: number(0, PRESENTATION_WIDTH),
@@ -232,46 +209,6 @@ export const PRESENTATION_DECK_SCHEMA: Schema = object({
   ),
 })
 
-function valid(value: unknown, schema: Schema): boolean {
-  if (schema.anyOf) return schema.anyOf.some((candidate) => valid(value, candidate))
-  if (schema.enum && !schema.enum.includes(value)) return false
-  if (schema.type === 'string')
-    return (
-      typeof value === 'string' &&
-      value.length >= (schema.minLength ?? 0) &&
-      value.length <= (schema.maxLength ?? Infinity) &&
-      // eslint-disable-next-line no-control-regex -- Reject characters forbidden by XML 1.0.
-      !/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(value) &&
-      (!schema.pattern || new RegExp(schema.pattern).test(value))
-    )
-  if (schema.type === 'number')
-    return (
-      typeof value === 'number' &&
-      Number.isFinite(value) &&
-      value >= (schema.minimum ?? -Infinity) &&
-      value <= (schema.maximum ?? Infinity)
-    )
-  if (schema.type === 'boolean') return typeof value === 'boolean'
-  if (schema.type === 'array')
-    return (
-      Array.isArray(value) &&
-      value.length >= (schema.minItems ?? 0) &&
-      value.length <= (schema.maxItems ?? Infinity) &&
-      value.every((item) => valid(item, schema.items!))
-    )
-  if (schema.type === 'object') {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-    const obj = value as Record<string, unknown>
-    return (
-      (schema.required ?? []).every((key) => Object.hasOwn(obj, key)) &&
-      Object.keys(obj).every(
-        (key) =>
-          Object.hasOwn(schema.properties!, key) && valid(obj[key], schema.properties![key]!),
-      )
-    )
-  }
-  return false
-}
 function reject(reason: string): never {
   throw new Error(`presentation_invalid:${reason}`)
 }

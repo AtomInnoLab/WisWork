@@ -10,6 +10,7 @@
     "./table-grid": "./src/table-grid.ts",
     "./background-promote": "./src/background-promote.ts",
     "./presentation": "./src/presentation.ts",
+    "./presentation-plan": "./src/presentation-plan.ts",
     "./presentation-compiler": "./src/presentation-compiler.ts"
   },
   "scripts": {

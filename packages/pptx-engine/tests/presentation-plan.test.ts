@@ -1,0 +1,150 @@
+import { describe, expect, it } from 'vitest'
+import { parsePresentationDeck } from '../src/presentation'
+import {
+  parsePresentationPlan,
+  presentationPlanClaims,
+  assertDeckMatchesPresentationPlan,
+} from '../src/presentation-plan'
+import { benchmarkPlan } from './fixtures/presentation-plan'
+import { benchmarkDeck } from './fixtures/presentation-benchmark'
+
+describe('durable presentation plan', () => {
+  it('clones a valid plan and maps the benchmark deck exactly', () => {
+    const plan = benchmarkPlan()
+    expect(parsePresentationPlan(plan)).toEqual(plan)
+    expect(parsePresentationPlan(plan)).not.toBe(plan)
+    expect(presentationPlanClaims(plan)).toEqual(benchmarkDeck().claims)
+    expect(() => assertDeckMatchesPresentationPlan(benchmarkDeck(), plan)).not.toThrow()
+    expect(parsePresentationDeck(benchmarkDeck()).id).toBe(plan.projectId)
+  })
+  it('rejects forged verification, missing sources and invalid calculations', () => {
+    for (const change of [
+      { reviewStatus: 'verified' },
+      { type: 'fact', sourceIds: [] },
+      { type: 'quote', sourceIds: [] },
+      { type: 'calculation' },
+      { type: 'calculation', calculation: { formula: '1+1', inputs: [] } },
+    ]) {
+      const plan = benchmarkPlan()
+      Object.assign(plan.claims[0]!, change)
+      expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:')
+    }
+    const plan = benchmarkPlan()
+    Object.assign(plan.claims[0]!, {
+      type: 'calculation',
+      calculation: { formula: 'x * 2', inputs: ['x=1'], unit: 'count' },
+    })
+    expect(parsePresentationPlan(plan)).toEqual(plan)
+  })
+  it('rejects duplicate IDs/references and dangling references', () => {
+    const changes = [
+      (p: ReturnType<typeof benchmarkPlan>) => p.slides.push(p.slides[0]!),
+      (p: ReturnType<typeof benchmarkPlan>) => p.sources.push(p.sources[0]!),
+      (p: ReturnType<typeof benchmarkPlan>) => p.claims.push(p.claims[0]!),
+      (p: ReturnType<typeof benchmarkPlan>) => p.claims[0]!.sourceIds.push('source'),
+      (p: ReturnType<typeof benchmarkPlan>) => p.claims[0]!.sourceIds.push('missing'),
+      (p: ReturnType<typeof benchmarkPlan>) => p.slides[0]!.claimIds.push('missing'),
+      (p: ReturnType<typeof benchmarkPlan>) => p.slides[0]!.claimIds.push('source-1'),
+    ]
+    for (const change of changes) {
+      const plan = benchmarkPlan()
+      change(plan)
+      expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:')
+    }
+  })
+  it('bounds fields, slide count and serialized UTF-8 bytes', () => {
+    for (const change of [
+      (p: ReturnType<typeof benchmarkPlan>) => {
+        p.projectId = 'a'.repeat(81)
+      },
+      (p: ReturnType<typeof benchmarkPlan>) => {
+        p.sources[0]!.uri = 'x'.repeat(501)
+      },
+      (p: ReturnType<typeof benchmarkPlan>) => {
+        p.sources[0]!.locator = 'x'.repeat(201)
+      },
+      (p: ReturnType<typeof benchmarkPlan>) => {
+        p.slides = []
+      },
+      (p: ReturnType<typeof benchmarkPlan>) => {
+        p.slides = Array.from({ length: 33 }, (_, i) => ({ ...p.slides[0]!, id: `s${i}` }))
+      },
+      (p: ReturnType<typeof benchmarkPlan>) => {
+        p.sources = Array.from({ length: 30 }, (_, i) => ({
+          ...p.sources[0]!,
+          id: `source${i}`,
+          excerpt: '汉'.repeat(3000),
+        }))
+        p.claims = []
+        p.slides.forEach((s) => {
+          s.claimIds = []
+        })
+      },
+    ]) {
+      const plan = benchmarkPlan()
+      change(plan)
+      expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:')
+    }
+    const plan = benchmarkPlan()
+    plan.slides = Array.from({ length: 32 }, (_, i) => ({ ...plan.slides[0]!, id: `s${i}` }))
+    expect(parsePresentationPlan(plan).slides).toHaveLength(32)
+  })
+  it('preserves unverified provenance and joins only nonempty locators', () => {
+    const plan = benchmarkPlan()
+    plan.sources.push({
+      id: 'other',
+      title: 'other',
+      uri: 'https://example.test/private',
+      excerpt: '',
+    })
+    plan.claims[0]!.sourceIds.push('other')
+    expect(presentationPlanClaims(plan)[0]).toEqual({
+      ...benchmarkDeck().claims[0],
+      source: '研究报告（合成基准） ; https://example.test/private',
+    })
+    plan.claims[0]!.sourceIds = []
+    expect(presentationPlanClaims(plan)[0]).toEqual({
+      id: 'source-1',
+      text: '示例数据仅用于测试',
+      source: '未核验：assumption',
+    })
+  })
+  it('rejects content/style drift while ignoring unclaimed visual QA', () => {
+    const changes = [
+      (d: ReturnType<typeof benchmarkDeck>) => {
+        d.id = 'other'
+      },
+      (d: ReturnType<typeof benchmarkDeck>) => {
+        d.title = 'other'
+      },
+      (d: ReturnType<typeof benchmarkDeck>) => {
+        d.style.accentColor = '000000'
+      },
+      (d: ReturnType<typeof benchmarkDeck>) => {
+        d.slides.reverse()
+      },
+      (d: ReturnType<typeof benchmarkDeck>) => {
+        d.slides[0]!.title = 'other'
+      },
+      (d: ReturnType<typeof benchmarkDeck>) => {
+        d.slides[0]!.claimIds = []
+      },
+      (d: ReturnType<typeof benchmarkDeck>) => {
+        d.claims[0]!.text = 'other'
+      },
+      (d: ReturnType<typeof benchmarkDeck>) => {
+        d.claims[0]!.source = 'other'
+      },
+      (d: ReturnType<typeof benchmarkDeck>) => {
+        delete d.claims[0]!.locator
+      },
+    ]
+    for (const change of changes) {
+      const deck = benchmarkDeck()
+      change(deck)
+      expect(() => assertDeckMatchesPresentationPlan(deck, benchmarkPlan())).toThrow(
+        'presentation_plan_mismatch:',
+      )
+    }
+  })
+})
