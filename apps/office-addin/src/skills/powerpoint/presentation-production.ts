@@ -1,7 +1,16 @@
-import type { CompiledPresentationArtifact } from './presentation-delivery.js'
+import type {
+  CompiledPresentationArtifact,
+  PresentationImportRecord,
+} from './presentation-delivery.js'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import { parsePresentationDeck, PRESENTATION_DECK_SCHEMA } from '@wiswork/pptx-engine/presentation'
 import type { PresentationGenerationOptions } from './presentation-generation.js'
+import {
+  presentationArtifactContent,
+  presentationImportKey,
+  presentationPageMapping,
+  validPresentationImportRecord,
+} from './presentation-page-delivery.js'
 const id = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v)
 const integer = (v: unknown, min = 0) => Number.isSafeInteger(v) && Number(v) >= min
 const errors = [
@@ -222,7 +231,9 @@ const tools: AgentToolDef[] = Object.keys(operations).map((name) => ({
   },
 }))
 export function createPresentationProductionSkill(
-  options: PresentationGenerationOptions,
+  options: PresentationGenerationOptions & {
+    readReceipt?(key: string): PresentationImportRecord | undefined
+  },
 ): AgentSkill & {
   clear(): void
   artifact(projectId?: string): CompiledPresentationArtifact | undefined
@@ -242,7 +253,7 @@ export function createPresentationProductionSkill(
       return options.available() ? tools : []
     },
     systemPrompt:
-      'For page production first save the presentation plan, then start_presentation_production with that plan_revision and matching SlideIR. Run remaining pages with run_presentation_production; inspect failed states and reuse the same request for unchanged retries. Already compiled pages are preserved. Use prepare_presentation_production_import only after all pages compile to prepare a bounded ordered collection for separately confirmed import; it replaces the previous prepared collection but never inserts slides. Download individual page artifacts only as files: these are not imported, visually reviewed, source-verified or round-trip checked. Never claim the deck is delivered from compiled counts. Do not invent project/request/page IDs. rebuild_presentation_page creates a derived task only; run it separately to compile the changed page. Host page replacement is not connected yet. Never bulk import a derived task as a replacement; download individual page artifacts only.',
+      'For page production first save the presentation plan, then start_presentation_production with that plan_revision and matching SlideIR. Run remaining pages with run_presentation_production; inspect failed states and reuse the same request for unchanged retries. Already compiled pages are preserved. Use prepare_presentation_production_import only after all pages compile to prepare a bounded ordered collection for separately confirmed import; it replaces the previous prepared collection but never inserts slides. Download individual page artifacts only as files: these are not imported, visually reviewed, source-verified or round-trip checked. Never claim the deck is delivered from compiled counts. Do not invent project/request/page IDs. rebuild_presentation_page creates a derived task only; run it separately to compile the changed page. Use the confirmed page replacement tools for host replacement. Preparing a derived task requires its already committed complete business mapping; it never authorizes bulk append. After commit prepare the child; after undo prepare the parent before editing or QA.',
     async executeTool(call, signal) {
       const captured = epoch
       let preparation: number | undefined
@@ -356,11 +367,24 @@ export function createPresentationProductionSkill(
         await current()
         let output: unknown, files: [string, string | Uint8Array][] | undefined
         let prepared: CompiledPresentationArtifact | undefined
+        let preparedReceiptJson: string | undefined
+        let preparedImported = false
         if (prepare) {
           const status = parsePresentationProductionStatus(value)
           if (status.projectId !== projectId || status.requestId !== input.request_id)
             throw new Error('presentation_response_invalid')
-          if (status.revision) throw new Error('presentation_page_replacement_required')
+          const receiptKey = `production/${projectId}/${status.requestId}`
+          const savedReceipt = options.readReceipt?.(receiptKey)
+          const savedReceiptJson = JSON.stringify(savedReceipt)
+          preparedReceiptJson = savedReceiptJson
+          preparedImported = savedReceipt?.state === 'complete'
+          if (
+            status.revision &&
+            (!validPresentationImportRecord(savedReceipt) ||
+              savedReceipt.state !== 'complete' ||
+              savedReceipt.checkpoint?.version !== 2)
+          )
+            throw new Error('presentation_page_replacement_required')
           if (status.status !== 'compiled') throw new Error('presentation_production_not_ready')
           const pages: NonNullable<CompiledPresentationArtifact['pages']> = [],
             pagePptxBase64: string[] = []
@@ -404,6 +428,37 @@ export function createPresentationProductionSkill(
             pagePptxBase64,
             planRevision: status.planRevision,
           }
+          if (savedReceipt !== undefined) {
+            const artifactDigest = Array.from(
+              new Uint8Array(
+                await crypto.subtle.digest(
+                  'SHA-256',
+                  new TextEncoder().encode(presentationArtifactContent(prepared)),
+                ),
+              ),
+              (b) => b.toString(16).padStart(2, '0'),
+            ).join('')
+            await current()
+            if (
+              !validPresentationImportRecord(savedReceipt) ||
+              savedReceipt.documentId !== documentId ||
+              savedReceipt.checkpoint?.version !== 2 ||
+              savedReceipt.checkpoint.artifactDigest !== artifactDigest ||
+              JSON.stringify(savedReceipt.checkpoint.pageIds) !==
+                JSON.stringify(pages.map((p) => p.id)) ||
+              JSON.stringify(savedReceipt.checkpoint.sourceSlideIds) !==
+                JSON.stringify(pages.map((p) => p.sourceSlideId)) ||
+              (savedReceipt.state === 'complete' &&
+                pages.some((p) => !presentationPageMapping(prepared!, savedReceipt, p.id)))
+            )
+              throw new Error('presentation_page_binding_invalid')
+          }
+          await current()
+          if (
+            JSON.stringify(options.readReceipt?.(presentationImportKey(prepared))) !==
+            savedReceiptJson
+          )
+            throw new Error('presentation_page_binding_invalid')
           pages.forEach(Object.freeze)
           Object.freeze(pages)
           Object.freeze(pagePptxBase64)
@@ -473,6 +528,12 @@ export function createPresentationProductionSkill(
         await options.rememberProject(projectId)
         await current()
         if (files) options.vfs.writeBatch(files)
+        if (
+          prepared &&
+          JSON.stringify(options.readReceipt?.(presentationImportKey(prepared))) !==
+            preparedReceiptJson
+        )
+          throw new Error('presentation_page_binding_invalid')
         if (prepared) artifact = prepared // Publish only the complete collection; one project keeps the total cache bounded.
         return {
           output: JSON.stringify(output),
@@ -480,7 +541,9 @@ export function createPresentationProductionSkill(
           summary: rebuild
             ? '已创建单页派生任务；尚未运行编译或替换宿主页'
             : prepare
-              ? '已准备逐页导入成果；尚未插入文稿或验收'
+              ? preparedImported
+                ? '已恢复已导入页面的产物与映射；验收需另行执行'
+                : '已准备逐页导入成果；尚未插入文稿或验收'
               : page
                 ? '已下载单页编译成果；尚未导入或验收'
                 : '已读取页级编译进度；编译成功不代表导入或验收完成',
@@ -499,7 +562,7 @@ export function createPresentationProductionSkill(
           mutated: false,
           summary:
             code === 'presentation_page_replacement_required'
-              ? '单页修订尚未接入宿主替换，不能整批追加导入；可下载目标单页检查'
+              ? '当前修订尚无已提交页面映射，不能整批追加导入；请先完成页面替换'
               : code === 'presentation_upgrade_required'
                 ? '当前 PC 尚不支持页级生产，请升级 WisWork PC 后重试'
                 : '页级生产操作未完成；已保存成果保留，可刷新查看',

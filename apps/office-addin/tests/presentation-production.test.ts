@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto'
+import type { PresentationImportRecord } from '../src/skills/powerpoint/presentation-delivery.js'
+import { presentationArtifactContent } from '../src/skills/powerpoint/presentation-page-delivery.js'
 import { expect, it, vi } from 'vitest'
 import {
   createPresentationProductionSkill,
@@ -32,6 +35,7 @@ const deck = {
   ],
 }
 function fixture() {
+  const readReceipt = vi.fn((_key: string): PresentationImportRecord | undefined => undefined)
   const vfs = new InMemoryVfs(),
     documentId = vi.fn(async () => 'doc'),
     request = vi.fn(
@@ -45,8 +49,9 @@ function fixture() {
     rememberProject,
     available: () => true,
     lastProject: () => 'p',
+    readReceipt: (key) => readReceipt(key),
   })
-  return { vfs, documentId, request, rememberProject, skill }
+  return { vfs, documentId, request, rememberProject, skill, readReceipt }
 }
 const run = {
   id: 'c',
@@ -661,4 +666,76 @@ it('blocks derived preparation without erasing a prior valid non-derived cache',
     output: 'presentation_page_replacement_required',
   })
   expect(f.skill.artifact()).toBe(previous)
+})
+
+it('loads a committed derived bundle only with its exact complete receipt', async () => {
+  const f = prepareFixture()
+  await f.skill.executeTool(prepare)
+  const artifact = f.skill.artifact()!
+  const receipt: PresentationImportRecord = {
+    state: 'complete',
+    documentId: 'doc',
+    slideIds: ['host1', 'host2'],
+    checkpoint: {
+      version: 2,
+      artifactDigest: createHash('sha256')
+        .update(presentationArtifactContent(artifact))
+        .digest('hex'),
+      sourceSlideIds: ['256#', '256#'],
+      pageIds: ['one', 'two'],
+      baselineSlideIds: [],
+      completed: [
+        { sourceSlideId: '256#', slideId: 'host1' },
+        { sourceSlideId: '256#', slideId: 'host2' },
+      ],
+    },
+  }
+  f.readReceipt.mockReturnValue(receipt)
+  f.request.mockImplementation(async (body) => {
+    const b = body as { operation: string; pageId: string }
+    return Response.json(
+      b.operation === 'production_status'
+        ? { ...compiled, revision: derived.revision }
+        : pageArtifact(b.pageId),
+    )
+  })
+  expect((await f.skill.executeTool(prepare)).isError).not.toBe(true)
+  expect(f.skill.artifact()).not.toBe(artifact)
+  const prepared = f.skill.artifact()
+  for (const mutation of ['digest', 'document', 'pages', 'sources', 'incomplete']) {
+    const bad = structuredClone(receipt)
+    if (mutation === 'digest') bad.checkpoint!.artifactDigest = '0'.repeat(64)
+    if (mutation === 'document') bad.documentId = 'other'
+    if (mutation === 'pages') (bad.checkpoint as { pageIds: string[] }).pageIds.reverse()
+    if (mutation === 'sources') bad.checkpoint!.sourceSlideIds[0] = '257#'
+    if (mutation === 'incomplete') {
+      bad.state = 'pending'
+      delete bad.slideIds
+      bad.checkpoint!.completed = []
+    }
+    f.readReceipt.mockReturnValue(bad)
+    expect(await f.skill.executeTool(prepare)).toMatchObject({ isError: true })
+    expect(f.skill.artifact()).toBe(prepared)
+  }
+})
+it('rejects superseded and racing receipts without replacing the prepared cache', async () => {
+  const f = prepareFixture()
+  await f.skill.executeTool(prepare)
+  const cached = f.skill.artifact()
+  f.readReceipt.mockImplementation(() => {
+    throw new Error('presentation_import_superseded')
+  })
+  expect(await f.skill.executeTool(prepare)).toMatchObject({
+    isError: true,
+    output: 'presentation_import_superseded',
+  })
+  expect(f.skill.artifact()).toBe(cached)
+  f.readReceipt.mockReturnValue(undefined)
+  f.rememberProject.mockImplementation(async () => {
+    f.readReceipt.mockImplementation(() => {
+      throw new Error('presentation_import_superseded')
+    })
+  })
+  expect(await f.skill.executeTool(prepare)).toMatchObject({ isError: true })
+  expect(f.skill.artifact()).toBe(cached)
 })
