@@ -45,7 +45,8 @@ class TransportError extends Error {
 }
 
 function messagesForProvider(messages: AgentMessage[]): unknown[] {
-  return messages.map((message) => {
+  const newestToolIndex = messages.map((message) => message.role).lastIndexOf('tool')
+  return messages.map((message, messageIndex) => {
     if (message.role === 'user') return { role: 'user', content: message.text }
     if (message.role === 'assistant') {
       return {
@@ -66,7 +67,21 @@ function messagesForProvider(messages: AgentMessage[]): unknown[] {
       content: message.results.map((result) => ({
         type: 'tool_result',
         tool_use_id: result.id,
-        content: result.output,
+        content: result.content?.length
+          ? messageIndex === newestToolIndex
+            ? [
+                { type: 'text', text: result.output },
+                ...result.content.map((block) => ({
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: block.image.mime,
+                    data: block.image.base64,
+                  },
+                })),
+              ]
+            : `${result.output}\n[Historical tool images are not included in this request. Do not infer current visual quality from this text; capture the page again before a new visual judgment.]`
+          : result.output,
         ...(result.isError ? { is_error: true } : {}),
       })),
     }
@@ -261,7 +276,7 @@ function createTransport(fetchMessages: (init: RequestInit) => Promise<Response>
             })),
             stream: true,
           })
-          if (body.length > MAX_REQUEST_BODY_LENGTH)
+          if (new TextEncoder().encode(body).byteLength > MAX_REQUEST_BODY_LENGTH)
             throw new TransportError('transport_request_too_large')
           const operation = fetchMessages({
             method: 'POST',

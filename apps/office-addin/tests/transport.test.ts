@@ -254,3 +254,166 @@ describe('Office Agent transport', () => {
     vi.useRealTimers()
   })
 })
+it('sends the actual QA capture image through the PC provider request', async () => {
+  const { createPresentationQaSkill } = await import('../src/skills/powerpoint/presentation-qa.js')
+  const { InMemoryVfs } = await import('../src/skills/shared/vfs.js')
+  const { createHash } = await import('node:crypto')
+  const png =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII='
+  const artifact = {
+    documentId: 'doc',
+    projectId: 'project',
+    requestId: 'request',
+    pptxBase64: 'UEsDBAAAAAA=',
+    slideCount: 1,
+    pages: [{ id: 'page1', title: 'First', sourceSlideId: '256#' }],
+  }
+  let record: import('../src/skills/powerpoint/presentation-qa.js').PresentationQaRecord | undefined
+  const skill = createPresentationQaSkill({
+    available: () => true,
+    artifact: () => artifact,
+    documentId: async () => 'doc',
+    readReceipt: () => ({
+      state: 'complete',
+      documentId: 'doc',
+      slideIds: ['host'],
+      checkpoint: {
+        version: 1,
+        artifactDigest: createHash('sha256').update(artifact.pptxBase64).digest('hex'),
+        sourceSlideIds: ['256#'],
+        baselineSlideIds: [],
+        completed: [{ sourceSlideId: '256#', slideId: 'host' }],
+      },
+    }),
+    inspectPage: async () => ({
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes: [],
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: png },
+    }),
+    readQa: () => record,
+    writeQa: async (_key, value) => {
+      record = value
+    },
+    vfs: new InMemoryVfs(),
+  })
+  const execution = await skill.executeTool({
+    id: 'capture',
+    name: 'capture_presentation_page_qa',
+    input: { page_id: 'page1' },
+  })
+  expect(execution.isError).not.toBe(true)
+  const authenticatedFetch = vi.fn().mockResolvedValue(sse([])),
+    cb = callbacks()
+  createTestTransport({ authenticatedFetch }).stream(
+    {
+      system: 'Review actual image',
+      messages: [
+        {
+          role: 'assistant',
+          text: '',
+          toolCalls: [
+            { id: 'capture', name: 'capture_presentation_page_qa', input: { page_id: 'page1' } },
+          ],
+        },
+        {
+          role: 'tool',
+          results: [
+            {
+              id: 'capture',
+              name: 'capture_presentation_page_qa',
+              output: execution.output,
+              content: execution.modelContent,
+            },
+          ],
+        },
+      ],
+      tools: [],
+    },
+    cb,
+  )
+  await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+  expect(cb.onError).not.toHaveBeenCalled()
+  const body = JSON.parse(authenticatedFetch.mock.calls[0]![1].body as string)
+  expect(body.messages[1].content[0].content).toEqual([
+    { type: 'text', text: execution.output },
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png } },
+  ])
+})
+it('discloses removed historical images while preserving every newest tool image', async () => {
+  const authenticatedFetch = vi.fn().mockResolvedValue(sse([])),
+    cb = callbacks()
+  const result = (id: string) => ({
+    id,
+    name: 'screenshot_slide',
+    output: 'screenshot',
+    content: [
+      {
+        type: 'image' as const,
+        image: { mime: 'image/png' as const, base64: id === 'old' ? 'b2xk' : 'bmV3' },
+      },
+    ],
+  })
+  createTestTransport({ authenticatedFetch }).stream(
+    {
+      system: '',
+      messages: [
+        { role: 'tool', results: [result('old')] },
+        { role: 'assistant', text: 'Inspect next slide' },
+        { role: 'tool', results: [result('new')] },
+      ],
+      tools: [],
+    },
+    cb,
+  )
+  await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+  const body = JSON.parse(authenticatedFetch.mock.calls[0]![1].body as string)
+  expect(body.messages[0].content[0].content).toContain('not included in this request')
+  expect(body.messages[0].content[0].content).toContain('capture')
+  expect(body.messages[2].content[0].content[1]).toEqual({
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/png', data: 'bmV3' },
+  })
+})
+it('rejects oversized current images and multibyte requests without silently dropping media', async () => {
+  for (const request of [
+    {
+      system: '',
+      messages: [
+        {
+          role: 'tool' as const,
+          results: [
+            {
+              id: 'latest',
+              name: 'screenshot_slide',
+              output: 'screenshot',
+              content: [
+                {
+                  type: 'image' as const,
+                  image: {
+                    mime: 'image/png' as const,
+                    base64: 'A'.repeat(MAX_REQUEST_BODY_LENGTH),
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      tools: [],
+    },
+    { system: '中'.repeat(Math.ceil(MAX_REQUEST_BODY_LENGTH / 2)), messages: [], tools: [] },
+  ]) {
+    const authenticatedFetch = vi.fn(),
+      cb = callbacks()
+    createTestTransport({ authenticatedFetch }).stream(request, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).toHaveBeenCalledWith('transport_request_too_large')
+    expect(authenticatedFetch).not.toHaveBeenCalled()
+  }
+})
