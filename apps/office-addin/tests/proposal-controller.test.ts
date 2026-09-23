@@ -436,3 +436,143 @@ describe('proposal controller', () => {
     expect(verify).toHaveBeenCalledOnce()
   })
 })
+
+describe('structured proposal write hooks', () => {
+  function request() {
+    return {
+      operation: 'edit',
+      title: 'Edit page',
+      preview: {},
+      impact: { host: 'powerpoint', targets: ['slide'], count: 1 },
+      fingerprint: 'v1',
+      validate: vi.fn(async () => true),
+      execute: vi.fn(async () => {}),
+      verify: vi.fn(async () => {}),
+    }
+  }
+  it('runs hooks around write and verification after successful validation', async () => {
+    const order: string[] = []
+    const beforeWrite = vi.fn(async () => {
+      order.push('before')
+    })
+    const afterWrite = vi.fn(() => {
+      order.push('after')
+    })
+    const controller = createStructuredProposalController(undefined, { beforeWrite, afterWrite })
+    const input = request()
+    input.validate.mockImplementation(async () => {
+      order.push('validate')
+      return true
+    })
+    input.execute.mockImplementation(async () => {
+      order.push('execute')
+    })
+    input.verify.mockImplementation(async () => {
+      order.push('verify')
+    })
+    const proposal = controller.propose(input),
+      decision = controller.waitForDecision(proposal.id)
+    await controller.confirm(proposal.id)
+    expect(order).toEqual(['validate', 'before', 'execute', 'verify', 'after'])
+    expect(beforeWrite).toHaveBeenCalledWith(proposal, expect.any(AbortSignal))
+    await expect(decision).resolves.toEqual({ status: 'confirmed' })
+  })
+  it.each(['reject', 'invalid', 'validation_error'] as const)(
+    'skips hooks for %s',
+    async (outcome) => {
+      const hooks = { beforeWrite: vi.fn(async () => {}), afterWrite: vi.fn() }
+      const controller = createStructuredProposalController(undefined, hooks),
+        input = request()
+      if (outcome === 'invalid') input.validate.mockResolvedValue(false)
+      if (outcome === 'validation_error')
+        input.validate.mockRejectedValue(new Error('office_verify_failed'))
+      const proposal = controller.propose(input),
+        decision = controller.waitForDecision(proposal.id)
+      if (outcome === 'reject') controller.reject()
+      else await expect(controller.confirm(proposal.id)).rejects.toThrow()
+      await decision
+      expect(hooks.beforeWrite).not.toHaveBeenCalled()
+      expect(hooks.afterWrite).not.toHaveBeenCalled()
+      expect(input.execute).not.toHaveBeenCalled()
+    },
+  )
+  it.each(['before', 'execute', 'verify', 'after'] as const)(
+    'releases after %s failure without confirming',
+    async (failure) => {
+      const input = request()
+      const hooks = { beforeWrite: vi.fn(async () => {}), afterWrite: vi.fn() }
+      if (failure === 'before')
+        hooks.beforeWrite.mockRejectedValue(new Error('office_write_failed'))
+      if (failure === 'execute') input.execute.mockRejectedValue(new Error('office_write_failed'))
+      if (failure === 'verify') input.verify.mockRejectedValue(new Error('office_verify_failed'))
+      if (failure === 'after')
+        hooks.afterWrite.mockImplementation(() => {
+          throw new Error('release failed')
+        })
+      const controller = createStructuredProposalController(undefined, hooks)
+      const proposal = controller.propose(input),
+        decision = controller.waitForDecision(proposal.id)
+      await expect(controller.confirm(proposal.id)).rejects.toThrow()
+      expect(hooks.afterWrite).toHaveBeenCalledTimes(1)
+      if (failure === 'before') expect(input.execute).not.toHaveBeenCalled()
+      await expect(decision).resolves.toMatchObject({ status: 'failed' })
+      expect(() => controller.propose(request())).not.toThrow()
+    },
+  )
+  it('releases and prevents execution when cancellation races the before-write hook', async () => {
+    let entered!: () => void, release!: () => void
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const hooks = {
+      beforeWrite: vi.fn(async () => {
+        entered()
+        await pending
+      }),
+      afterWrite: vi.fn(),
+    }
+    const controller = createStructuredProposalController(undefined, hooks),
+      input = request()
+    const proposal = controller.propose(input),
+      decision = controller.waitForDecision(proposal.id)
+    const confirmation = controller.confirm(proposal.id)
+    await ready
+    controller.newTurn()
+    release()
+    await expect(confirmation).rejects.toThrow('proposal_stale')
+    await expect(decision).resolves.toEqual({ status: 'failed', error: 'proposal_stale' })
+    expect(input.execute).not.toHaveBeenCalled()
+    expect(hooks.afterWrite).toHaveBeenCalledTimes(1)
+  })
+  it('still verifies and releases when cancellation races a committed write', async () => {
+    const hooks = { beforeWrite: vi.fn(async () => {}), afterWrite: vi.fn() }
+    const controller = createStructuredProposalController(undefined, hooks)
+    const input = request()
+    input.execute.mockImplementation(async () => {
+      controller.newTurn()
+    })
+    const proposal = controller.propose(input),
+      decision = controller.waitForDecision(proposal.id)
+    await controller.confirm(proposal.id)
+    expect(input.verify).toHaveBeenCalledWith(undefined)
+    expect(hooks.afterWrite).toHaveBeenCalledTimes(1)
+    await expect(decision).resolves.toEqual({ status: 'confirmed' })
+  })
+  it('preserves the primary write failure when release also throws', async () => {
+    const input = request()
+    input.execute.mockRejectedValue(new Error('office_state_uncertain'))
+    const controller = createStructuredProposalController(undefined, {
+      beforeWrite: async () => {},
+      afterWrite: () => {
+        throw new Error('cleanup')
+      },
+    })
+    const proposal = controller.propose(input),
+      decision = controller.waitForDecision(proposal.id)
+    await expect(controller.confirm(proposal.id)).rejects.toThrow('office_state_uncertain')
+    await expect(decision).resolves.toEqual({ status: 'failed', error: 'office_state_uncertain' })
+  })
+})

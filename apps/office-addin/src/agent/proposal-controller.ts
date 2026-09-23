@@ -41,6 +41,11 @@ interface ProposalDecisionLifecycle {
   settled: boolean
 }
 
+export interface StructuredProposalWriteHooks {
+  beforeWrite(proposal: StructuredProposal, signal: AbortSignal): Promise<void>
+  afterWrite(): void
+}
+
 export interface StructuredProposalController {
   pending(): StructuredProposal | undefined
   subscribe(listener: () => void): () => void
@@ -119,6 +124,7 @@ function deepFreeze<T>(value: T): T {
 
 export function createStructuredProposalController(
   diagnostics?: Pick<OfficeDiagnostics, 'setTool' | 'record'>,
+  hooks?: StructuredProposalWriteHooks,
 ): StructuredProposalController {
   const diagnose = (action: () => void) => {
     try {
@@ -222,12 +228,29 @@ export function createStructuredProposalController(
         }
         phase = 'write'
         phaseStartedAt = Date.now()
-        await proposal.request.execute(controller.signal)
-        phase = 'verify'
-        phaseStartedAt = Date.now()
-        // Once execute resolves, cancellation cannot truthfully imply that the write was not
-        // applied. Always reconcile/verify; use an un-aborted signal when Stop raced the commit.
-        await proposal.request.verify?.(controller.signal.aborted ? undefined : controller.signal)
+        let releaseFailed = false
+        let releaseError: unknown
+        try {
+          if (hooks) {
+            await hooks.beforeWrite(proposal.snapshot, controller.signal)
+            if (controller.signal.aborted) throw new Error('proposal_stale')
+          }
+          await proposal.request.execute(controller.signal)
+          phase = 'verify'
+          phaseStartedAt = Date.now()
+          // Once execute resolves, cancellation cannot truthfully imply that the write was not
+          // applied. Always reconcile/verify; use an un-aborted signal when Stop raced the commit.
+          await proposal.request.verify?.(controller.signal.aborted ? undefined : controller.signal)
+        } finally {
+          try {
+            hooks?.afterWrite()
+          } catch (error) {
+            releaseFailed = true
+            releaseError = error
+          }
+        }
+        // Keep the primary write error when both write and release fail.
+        if (releaseFailed) throw releaseError
         settle(proposal.decision, { status: 'confirmed' })
       } catch (error) {
         const code = stableProposalError(error)
