@@ -105,7 +105,7 @@ export function createOfficeHostRuntime(
     presentation?: Omit<PresentationGenerationOptions, 'vfs'> & {
       readImageReplacement?(key: string): ImageReplacementRecord | undefined
       writeImageReplacement?(key: string, record: ImageReplacementRecord): Promise<void>
-      invalidateQa?(): Promise<void>
+      invalidateQa?(hostSlideIds?: readonly string[]): Promise<void>
       readQa?(key: string): PresentationQaRecord | undefined
       writeQa?(key: string, record: PresentationQaRecord): Promise<void>
       readReceipt?(key: string): PresentationImportRecord | undefined
@@ -140,10 +140,34 @@ export function createOfficeHostRuntime(
     options.diagnostics,
     host === 'powerpoint' && options.presentation?.invalidateQa
       ? {
-          beforeWrite: async () => {
-            qaSkill?.beginMutation()
+          beforeWrite: async (proposal) => {
+            // Only these internally constructed operations resolve a stable host page before
+            // proposing. Generic script/index-based impact labels cannot prove their write scope.
+            const target = proposal.impact.targets[0]
+            const hostSlideIds =
+              [
+                'edit_presentation_page_text',
+                'edit_presentation_page_geometry',
+                'replace_presentation_page_image',
+                'resume_presentation_image_replacement',
+              ].includes(proposal.operation) &&
+              proposal.operation === proposal.toolName &&
+              proposal.impact.host === 'powerpoint' &&
+              proposal.impact.count === 1 &&
+              proposal.impact.targets.length === 1 &&
+              typeof target === 'string' &&
+              target.length > 0 &&
+              target.length <= 256 &&
+              !Array.from(target).some(
+                (char) =>
+                  char.charCodeAt(0) < 32 ||
+                  (char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159),
+              )
+                ? [target]
+                : undefined
+            qaSkill?.beginMutation(hostSlideIds)
             mutationStarted = Boolean(qaSkill)
-            await options.presentation!.invalidateQa!()
+            await options.presentation!.invalidateQa!(hostSlideIds)
             notifyQa()
           },
           afterWrite: () => {

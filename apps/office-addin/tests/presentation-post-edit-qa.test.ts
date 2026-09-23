@@ -16,7 +16,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
-async function fixture() {
+async function fixture(withSecondPage = false) {
   vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => true } } })
   const values = new Map<string, string>()
   const save = vi.fn(async () => {})
@@ -34,13 +34,16 @@ async function fixture() {
   await binding.writeReceipt('project/request', {
     state: 'complete',
     documentId,
-    slideIds: ['host'],
+    slideIds: withSecondPage ? ['host', 'host-2'] : ['host'],
     checkpoint: {
       version: 1,
       artifactDigest: createHash('sha256').update(pptxBase64).digest('hex'),
-      sourceSlideIds: ['256#'],
+      sourceSlideIds: withSecondPage ? ['256#', '257#'] : ['256#'],
       baselineSlideIds: [],
-      completed: [{ sourceSlideId: '256#', slideId: 'host' }],
+      completed: [
+        { sourceSlideId: '256#', slideId: 'host' },
+        ...(withSecondPage ? [{ sourceSlideId: '257#', slideId: 'host-2' }] : []),
+      ],
     },
   })
   let text = 'before'
@@ -61,8 +64,8 @@ async function fixture() {
       text = next
     })
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'inspectPresentationPage').mockImplementation(
-    async () => ({
-      slideId: 'host',
+    async (slideId) => ({
+      slideId,
       slideWidth: 960,
       slideHeight: 540,
       shapes: [],
@@ -70,7 +73,10 @@ async function fixture() {
       overflows: [],
       overlaps: [],
       overlapsTruncated: false,
-      screenshot: { mime: 'image/png', base64: text === 'before' ? beforePng : afterPng },
+      screenshot: {
+        mime: 'image/png',
+        base64: slideId === 'host-2' || text === 'before' ? beforePng : afterPng,
+      },
     }),
   )
   const createRuntime = () =>
@@ -85,8 +91,13 @@ async function fixture() {
               requestId: 'request',
               status: 'compiled',
               pptxBase64,
-              report: { deckId: 'project', slideCount: 1 },
-              pages: [{ id: 'page1', title: 'Page', sourceSlideId: '256#' }],
+              report: { deckId: 'project', slideCount: withSecondPage ? 2 : 1 },
+              pages: [
+                { id: 'page1', title: 'Page', sourceSlideId: '256#' },
+                ...(withSecondPage
+                  ? [{ id: 'page2', title: 'Page 2', sourceSlideId: '257#' }]
+                  : []),
+              ],
             }),
           ),
       },
@@ -98,18 +109,18 @@ async function fixture() {
     input: { project_id: 'project' },
   })
   expect(restored.isError).not.toBe(true)
-  const capture = () =>
+  const capture = (pageId = 'page1') =>
     runtime.skill.executeTool({
       id: 'capture',
       name: 'capture_presentation_page_qa',
-      input: { page_id: 'page1' },
+      input: { page_id: pageId },
     })
-  const review = (digest: string) =>
+  const review = (digest: string, pageId = 'page1') =>
     runtime.skill.executeTool({
       id: 'review',
       name: 'record_presentation_page_review',
       input: {
-        page_id: 'page1',
+        page_id: pageId,
         screenshot_digest: digest,
         outcome: 'pass',
         notes: '测试Agent复核',
@@ -121,6 +132,14 @@ async function fixture() {
   expect((await review(digest)).isError).not.toBe(true)
   // Keep live evidence too: a pending write must invalidate even unreviewed captures.
   expect((await capture()).isError).not.toBe(true)
+  let secondDigest: string | undefined
+  if (withSecondPage) {
+    const second = await capture('page2')
+    expect(second.isError, second.output).not.toBe(true)
+    secondDigest = JSON.parse(second.output).page.screenshotDigest
+    expect((await review(secondDigest!, 'page2')).isError).not.toBe(true)
+    expect((await capture('page2')).isError).not.toBe(true)
+  }
   const proposals = runtime.proposals as StructuredProposalController
   const propose = async () => {
     const result = await runtime.skill.executeTool({
@@ -145,7 +164,10 @@ async function fixture() {
     capture,
     review,
     digest,
-    page: () => binding.readQa('project/request')!.pages[0]!,
+    secondDigest,
+    secondPage: () =>
+      binding.readQa('project/request')!.pages.find((page) => page.pageId === 'page2')!,
+    page: () => binding.readQa('project/request')!.pages.find((page) => page.pageId === 'page1')!,
   }
 }
 it('invalidates before a confirmed edit, blocks concurrent QA, and requires fresh review after it', async () => {
@@ -335,7 +357,7 @@ function stableGeometryHost() {
   }
 }
 it('moves and resizes a stable page object through confirmation and new QA without index calls', async () => {
-  const f = await fixture(),
+  const f = await fixture(true),
     host = stableGeometryHost()
   const before = await f.runtime.skill.executeTool({
     id: 'geometry',
@@ -371,6 +393,7 @@ it('moves and resizes a stable page object through confirmation and new QA witho
   expect(JSON.parse(captured.output).page.structure.shapeCount).toBe(1)
   expect((await f.review(JSON.parse(captured.output).page.screenshotDigest)).isError).not.toBe(true)
   expect(f.page().visual.status).toBe('pass')
+  expect(f.secondPage().recheckRequired).toBeUndefined()
   f.runtime.dispose()
 })
 it('preserves a manual geometry change made after proposing layout adjustments', async () => {
@@ -397,7 +420,7 @@ it('preserves a manual geometry change made after proposing layout adjustments',
 it.each([false, true])(
   'persists image replacement through runtime and blocks replay (interrupted=%s)',
   async (interrupted) => {
-    const f = await fixture()
+    const f = await fixture(true)
     vi.stubGlobal(
       'createImageBitmap',
       vi.fn(async () => ({ width: 1, height: 1, close() {} })),
@@ -454,6 +477,7 @@ it.each([false, true])(
     await f.runtime.skill.executeTool(call)
     expect(native).toHaveBeenCalledOnce()
     expect(f.proposals.pending()).toBeUndefined()
+    expect(f.secondPage().recheckRequired).toBeUndefined()
     f.runtime.dispose()
   },
 )
@@ -461,7 +485,7 @@ it.each([false, true])(
 it.each(['ready_to_finish', 'already_applied', 'completion_save_failed'] as const)(
   'recovers an image replacement after reopening without the original VFS asset (%s)',
   async (scenario) => {
-    const f = await fixture(),
+    const f = await fixture(true),
       key = await imageReplacementKey('project', 'request', 'page1', 'old')
     const baseline = {
       slideId: 'host',
@@ -554,6 +578,46 @@ it.each(['ready_to_finish', 'already_applied', 'completion_save_failed'] as cons
     expect(finish).toHaveBeenCalledTimes(scenario === 'completion_save_failed' ? 2 : 1)
     expect(insert).not.toHaveBeenCalled()
     expect(f.page().recheckRequired).toBe(true)
+    expect(f.secondPage().recheckRequired).toBeUndefined()
     runtime.dispose()
   },
 )
+
+it('keeps another page review and live capture valid after a stable page text edit', async () => {
+  const f = await fixture(true),
+    host = stablePageHost(f)
+  const previous = structuredClone(f.secondPage())
+  expect((await host.propose()).isError).not.toBe(true)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(f.page().recheckRequired).toBe(true)
+  expect(f.secondPage()).toEqual(previous)
+  expect((await f.review(f.digest)).output).toBe('presentation_qa_capture_required')
+  const review = await f.review(f.secondDigest!, 'page2')
+  expect(review.isError, review.output).not.toBe(true)
+  f.runtime.dispose()
+})
+it('still invalidates every page for an index-based operation with uncertain impact', async () => {
+  const f = await fixture(true)
+  await f.proposals.confirm(await f.propose())
+  expect(f.page().recheckRequired).toBe(true)
+  expect(f.secondPage().recheckRequired).toBe(true)
+  expect((await f.review(f.secondDigest!, 'page2')).output).toBe('presentation_qa_capture_required')
+  f.runtime.dispose()
+})
+it('does not trust a stable tool label on a general script proposal', async () => {
+  const f = await fixture(true)
+  const proposal = f.proposals.propose({
+    operation: 'execute_office_js',
+    toolName: 'edit_presentation_page_text',
+    title: 'Script',
+    preview: {},
+    impact: { host: 'powerpoint', targets: ['host'], count: 1 },
+    fingerprint: 'test',
+    validate: () => true,
+    execute: () => {},
+  })
+  await f.proposals.confirm(proposal.id)
+  expect(f.page().recheckRequired).toBe(true)
+  expect(f.secondPage().recheckRequired).toBe(true)
+  f.runtime.dispose()
+})
