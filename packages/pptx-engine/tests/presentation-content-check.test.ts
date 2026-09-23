@@ -59,12 +59,32 @@ describe('presentation page content precheck', () => {
         kind: 'chart',
         chartType: 'bar',
         categories: ['category'],
-        series: [{ name: 'Revenue grew 20%', values: [1] }],
+        series: [
+          { name: 'Revenue grew 20%', values: [1] },
+          { name: 'Other series', values: [2] },
+        ],
       },
     ] satisfies SlideIRElement[]) {
       const { plan, deck, pageId } = fixture()
       deck.slides[0]!.elements = [element]
       expect(checkPresentationPageContent(plan, deck, pageId).findings).toEqual([])
+    }
+  })
+  it('ignores hidden single-series names and pie category labels', () => {
+    for (const chartType of ['bar', 'line', 'pie'] as const) {
+      const { plan, deck, pageId } = fixture()
+      deck.slides[0]!.elements = [
+        {
+          ...box,
+          kind: 'chart',
+          chartType,
+          categories: [chartType === 'pie' ? 'Revenue grew 20%' : 'Category'],
+          series: [{ name: 'Revenue grew 20%', values: [1] }],
+        },
+      ]
+      expect(checkPresentationPageContent(plan, deck, pageId).findings).toEqual([
+        { code: 'claim_text_not_found', claimId: 'source-1' },
+      ])
     }
   })
   it('does not join elements, cells or labels, or count metadata and notes', () => {

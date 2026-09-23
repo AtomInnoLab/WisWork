@@ -91,8 +91,15 @@ export function checkPresentationPageContent(
     .flatMap((element): string[] => {
       if (element.kind === 'text') return [element.text]
       if (element.kind === 'table') return element.rows.flat()
-      if (element.kind === 'chart')
-        return [...element.categories, ...element.series.map((series) => series.name)]
+      if (element.kind === 'chart') {
+        // Match compiler visibility: pie has no axis/legend/category labels;
+        // bar/line series names appear only in the multi-series legend.
+        if (element.chartType === 'pie') return []
+        return [
+          ...element.categories,
+          ...(element.series.length > 1 ? element.series.map((series) => series.name) : []),
+        ]
+      }
       return []
     })
     .map(normalize)
