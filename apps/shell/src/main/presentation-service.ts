@@ -1,3 +1,7 @@
+import {
+  handlePresentationProduction,
+  presentationProductionSummary,
+} from './presentation-production'
 import { createPresentationAttachmentService } from './presentation-attachments'
 import {
   parsePresentationPlan,
@@ -31,6 +35,7 @@ const errorCodes = new Set([
   'quota_exceeded',
   'digest_mismatch',
   'parse_failed',
+  'page_not_ready',
 ])
 const encode = (value: unknown): Uint8Array => Buffer.from(JSON.stringify(value), 'utf8')
 function boundedResponse(value: unknown): Uint8Array {
@@ -84,21 +89,40 @@ export function createPresentationService(options: {
       )
         return boundedResponse(await attachments(request, signal))
       if (
-        !['compile', 'get', 'status', 'resume', 'save_plan', 'get_plan'].includes(
-          request.operation as string,
-        )
+        ![
+          'compile',
+          'get',
+          'status',
+          'resume',
+          'save_plan',
+          'get_plan',
+          'production_begin',
+          'production_status',
+          'production_run',
+          'production_page',
+        ].includes(request.operation as string)
       )
         throw new Error('invalid_request')
       const allowedKeys =
-        request.operation === 'compile'
-          ? ['operation', 'documentId', 'projectId', 'requestId', 'deck', 'planRevision']
-          : request.operation === 'resume'
+        request.operation === 'production_begin'
+          ? ['operation', 'documentId', 'projectId', 'requestId', 'planRevision', 'deck']
+          : request.operation === 'production_status'
             ? ['operation', 'documentId', 'projectId', 'requestId']
-            : request.operation === 'save_plan'
-              ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'plan']
-              : ['operation', 'documentId', 'projectId']
+            : request.operation === 'production_run'
+              ? ['operation', 'documentId', 'projectId', 'requestId']
+              : request.operation === 'production_page'
+                ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
+                : request.operation === 'compile'
+                  ? ['operation', 'documentId', 'projectId', 'requestId', 'deck', 'planRevision']
+                  : request.operation === 'resume'
+                    ? ['operation', 'documentId', 'projectId', 'requestId']
+                    : request.operation === 'save_plan'
+                      ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'plan']
+                      : ['operation', 'documentId', 'projectId']
       const requiredKeys = allowedKeys.filter(
-        (key) => !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)),
+        (key) =>
+          !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)) &&
+          !(request.operation === 'production_status' && key === 'requestId'),
       )
       if (
         Object.keys(request).some((key) => !allowedKeys.includes(key)) ||
@@ -113,7 +137,7 @@ export function createPresentationService(options: {
         throw new Error('invalid_request')
       const documentId = request.documentId
       let deck: ReturnType<typeof parsePresentationDeck> | undefined
-      if (request.operation === 'compile') {
+      if (request.operation === 'compile' || request.operation === 'production_begin') {
         try {
           deck = parsePresentationDeck(request.deck)
         } catch {
@@ -121,9 +145,14 @@ export function createPresentationService(options: {
         }
         assertPresentationId(request.requestId)
       }
-      if (request.operation === 'resume') assertPresentationId(request.requestId)
       if (
-        request.operation === 'compile' &&
+        ['resume', 'production_run', 'production_page'].includes(request.operation as string) ||
+        (request.operation === 'production_status' && request.requestId !== undefined)
+      )
+        assertPresentationId(request.requestId)
+      if (request.operation === 'production_page') assertPresentationId(request.pageId)
+      if (
+        ['compile', 'production_begin'].includes(request.operation as string) &&
         request.planRevision !== undefined &&
         (!Number.isSafeInteger(request.planRevision) || Number(request.planRevision) < 1)
       )
@@ -152,6 +181,10 @@ export function createPresentationService(options: {
       await previous
       try {
         checkAbort(signal)
+        if ((request.operation as string).startsWith('production_'))
+          return boundedResponse(
+            await handlePresentationProduction(request, { store, compile, attachments }, signal),
+          )
         if (request.operation === 'save_plan' || request.operation === 'get_plan') {
           const record =
             request.operation === 'save_plan'
@@ -165,6 +198,10 @@ export function createPresentationService(options: {
           })
         }
         if (request.operation === 'status') {
+          const productionRecord = store.production(projectId, documentId)
+          const production = productionRecord
+            ? presentationProductionSummary(productionRecord)
+            : undefined
           const savedPlan = store.plan(projectId, documentId)
           const plan = savedPlan
             ? { revision: savedPlan.revision, value: parsePresentationPlan(savedPlan.plan) }
@@ -177,6 +214,7 @@ export function createPresentationService(options: {
               projectId,
               title: plan.value.title,
               status: 'planned',
+              ...(production ? { production } : {}),
               slideCount: plan.value.slides.length,
               slides: plan.value.slides.map(({ id, title }) => ({ id, title })),
               history: [],
@@ -193,6 +231,7 @@ export function createPresentationService(options: {
             projectId,
             title: latestDeck.title,
             status: latest.status,
+            ...(production ? { production } : {}),
             latestRequestId: latest.requestId,
             ...(plan ? { plan } : {}),
             ...(latest.plan ? { requestPlanRevision: latest.plan.revision } : {}),
