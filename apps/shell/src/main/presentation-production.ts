@@ -23,6 +23,7 @@ export function presentationProductionSummary(record: PresentationProductionReco
     projectId: record.projectId,
     requestId: record.requestId,
     planRevision: record.plan.revision,
+    ...(record.revision ? { revision: record.revision } : {}),
     status:
       compiledCount === record.pages.length
         ? 'compiled'
@@ -87,6 +88,44 @@ export async function handlePresentationProduction(
     documentId = request.documentId as string,
     requestId = request.requestId as string | undefined
   let record = store.production(projectId, documentId, requestId)
+  if (request.operation === 'production_rebuild_page') {
+    const parent = store.production(projectId, documentId, request.parentRequestId as string)
+    if (!parent) throw new Error('not_found')
+    if (parent.pages.some((page) => page.state !== 'compiled')) throw new Error('page_not_ready')
+    const original = parsePresentationDeck(parent.deck)
+    const index = original.slides.findIndex((slide) => slide.id === request.pageId)
+    if (index < 0) throw new Error('not_found')
+    const slide = request.slide
+    if (
+      !slide ||
+      typeof slide !== 'object' ||
+      Array.isArray(slide) ||
+      (slide as { id?: unknown }).id !== request.pageId
+    )
+      throw new Error('invalid_deck')
+    let revised: ReturnType<typeof parsePresentationDeck>
+    try {
+      revised = parsePresentationDeck({
+        ...original,
+        slides: original.slides.map((page, i) => (i === index ? slide : page)),
+      })
+    } catch {
+      throw new Error('invalid_deck')
+    }
+    try {
+      assertDeckMatchesPresentationPlan(revised, parsePresentationPlan(parent.plan.plan))
+    } catch {
+      throw new Error('plan_mismatch')
+    }
+    record = store.deriveProduction(
+      projectId,
+      documentId,
+      parent.requestId,
+      requestId!,
+      request.pageId as string,
+      revised,
+    )
+  }
   if (request.operation === 'production_begin') {
     const saved = record ? record.plan : store.plan(projectId, documentId)
     if (!saved || saved.revision !== request.planRevision)

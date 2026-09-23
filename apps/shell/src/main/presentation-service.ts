@@ -97,6 +97,7 @@ export function createPresentationService(options: {
           'save_plan',
           'get_plan',
           'production_begin',
+          'production_rebuild_page',
           'production_status',
           'production_run',
           'production_page',
@@ -104,21 +105,31 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const allowedKeys =
-        request.operation === 'production_begin'
-          ? ['operation', 'documentId', 'projectId', 'requestId', 'planRevision', 'deck']
-          : request.operation === 'production_status'
-            ? ['operation', 'documentId', 'projectId', 'requestId']
-            : request.operation === 'production_run'
+        request.operation === 'production_rebuild_page'
+          ? [
+              'operation',
+              'documentId',
+              'projectId',
+              'parentRequestId',
+              'requestId',
+              'pageId',
+              'slide',
+            ]
+          : request.operation === 'production_begin'
+            ? ['operation', 'documentId', 'projectId', 'requestId', 'planRevision', 'deck']
+            : request.operation === 'production_status'
               ? ['operation', 'documentId', 'projectId', 'requestId']
-              : request.operation === 'production_page'
-                ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
-                : request.operation === 'compile'
-                  ? ['operation', 'documentId', 'projectId', 'requestId', 'deck', 'planRevision']
-                  : request.operation === 'resume'
-                    ? ['operation', 'documentId', 'projectId', 'requestId']
-                    : request.operation === 'save_plan'
-                      ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'plan']
-                      : ['operation', 'documentId', 'projectId']
+              : request.operation === 'production_run'
+                ? ['operation', 'documentId', 'projectId', 'requestId']
+                : request.operation === 'production_page'
+                  ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
+                  : request.operation === 'compile'
+                    ? ['operation', 'documentId', 'projectId', 'requestId', 'deck', 'planRevision']
+                    : request.operation === 'resume'
+                      ? ['operation', 'documentId', 'projectId', 'requestId']
+                      : request.operation === 'save_plan'
+                        ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'plan']
+                        : ['operation', 'documentId', 'projectId']
       const requiredKeys = allowedKeys.filter(
         (key) =>
           !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)) &&
@@ -146,11 +157,18 @@ export function createPresentationService(options: {
         assertPresentationId(request.requestId)
       }
       if (
-        ['resume', 'production_run', 'production_page'].includes(request.operation as string) ||
+        ['resume', 'production_run', 'production_page', 'production_rebuild_page'].includes(
+          request.operation as string,
+        ) ||
         (request.operation === 'production_status' && request.requestId !== undefined)
       )
         assertPresentationId(request.requestId)
-      if (request.operation === 'production_page') assertPresentationId(request.pageId)
+      if (['production_page', 'production_rebuild_page'].includes(request.operation as string))
+        assertPresentationId(request.pageId)
+      if (request.operation === 'production_rebuild_page') {
+        assertPresentationId(request.parentRequestId)
+        if (request.parentRequestId === request.requestId) throw new Error('invalid_request')
+      }
       if (
         ['compile', 'production_begin'].includes(request.operation as string) &&
         request.planRevision !== undefined &&

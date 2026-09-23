@@ -584,3 +584,133 @@ it('keeps the latest explicitly selected import view when an earlier preparation
     runtime.dispose()
   }
 })
+
+it('derives a frozen single-page revision, reuses seven exact artifacts, and retries only its failed target', async () => {
+  const { createOfficeHostRuntime } = await import('../../office-addin/src/agent/host-runtime')
+  let failTarget = true
+  const compile = vi.fn(async (input: unknown) => {
+    const deck = parsePresentationDeck(input)
+    if (deck.slides[0]?.notes === 'Single page revision' && failTarget) {
+      failTarget = false
+      throw new Error('temporary')
+    }
+    return compilePresentationDeck(deck)
+  })
+  const f = await setup(compile)
+  await f.call('production_begin', { requestId: 'parent', planRevision: 1, deck: f.deck })
+  expect(
+    await f.call('production_rebuild_page', {
+      parentRequestId: 'parent',
+      requestId: 'child',
+      pageId: f.deck.slides[1]!.id,
+      slide: f.deck.slides[1],
+    }),
+  ).toEqual({ error: 'page_not_ready' })
+  await f.call('production_run', { requestId: 'parent' })
+  const originals = await Promise.all(
+    f.deck.slides.map((slide) =>
+      f.call('production_page', { requestId: 'parent', pageId: slide.id }),
+    ),
+  )
+  const slide = structuredClone(f.deck.slides[1]!)
+  slide.notes = 'Single page revision'
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      assetsAvailable: () => true,
+      documentId: async () => 'doc',
+      lastProject: () => f.deck.id,
+      rememberProject: async () => {},
+      request: async (body, signal) =>
+        new Response(Buffer.from(await f.service(body, signal ?? new AbortController().signal))),
+    },
+  })
+  const input = {
+    project_id: f.deck.id,
+    parent_request_id: 'parent',
+    request_id: 'child',
+    page_id: slide.id,
+    slide,
+  }
+  try {
+    const created = await runtime.skill.executeTool({
+      id: 'rebuild',
+      name: 'rebuild_presentation_page',
+      input,
+    })
+    expect(created.isError, created.output).not.toBe(true)
+    expect(JSON.parse(created.output)).toMatchObject({
+      requestId: 'child',
+      compiledCount: 7,
+      revision: { parentRequestId: 'parent', pageId: slide.id },
+    })
+    expect(runtime.presentation!.snapshot().project?.production).toMatchObject({
+      requestId: 'child',
+      compiledCount: 7,
+    })
+    expect(compile).toHaveBeenCalledTimes(8)
+    expect(await f.call('production_run', { requestId: 'child' })).toMatchObject({
+      status: 'partial',
+      compiledCount: 7,
+    })
+    const restarted = createPresentationService({ userDataPath: f.userDataPath, compile })
+    const result = decode(
+      await restarted(
+        {
+          operation: 'production_run',
+          documentId: 'doc',
+          projectId: f.deck.id,
+          requestId: 'child',
+        },
+        new AbortController().signal,
+      ),
+    )
+    expect(result).toMatchObject({ status: 'compiled', compiledCount: 8 })
+    expect(compile).toHaveBeenCalledTimes(10)
+    for (const [index, page] of f.deck.slides.entries()) {
+      expect(await f.call('production_page', { requestId: 'parent', pageId: page.id })).toEqual(
+        originals[index],
+      )
+      const child = await f.call('production_page', { requestId: 'child', pageId: page.id })
+      if (index !== 1) expect(child.pptxBase64).toBe(originals[index].pptxBase64)
+      else expect(child.pptxBase64).not.toBe(originals[index].pptxBase64)
+      expect((await openPptx(Buffer.from(child.pptxBase64, 'base64'))).deck.slides).toHaveLength(1)
+    }
+    const plan = structuredClone(f.plan)
+    plan.brief.objective = 'Updated current plan'
+    await f.call('save_plan', { expectedRevision: 1, plan })
+    expect(
+      (await runtime.skill.executeTool({ id: 'repeat', name: 'rebuild_presentation_page', input }))
+        .isError,
+    ).not.toBe(true)
+    expect(compile).toHaveBeenCalledTimes(10)
+    const blocked = await runtime.skill.executeTool({
+      id: 'prepare',
+      name: 'prepare_presentation_production_import',
+      input: { project_id: f.deck.id, request_id: 'child' },
+    })
+    expect(blocked).toMatchObject({
+      isError: true,
+      output: 'presentation_page_replacement_required',
+    })
+    expect(
+      await f.call('production_rebuild_page', {
+        documentId: 'foreign',
+        parentRequestId: 'parent',
+        requestId: 'other',
+        pageId: slide.id,
+        slide,
+      }),
+    ).toEqual({ error: 'document_mismatch' })
+    expect(
+      await f.call('production_rebuild_page', {
+        parentRequestId: 'parent',
+        requestId: 'bad',
+        pageId: slide.id,
+        slide: { ...slide, title: 'Changed plan title' },
+      }),
+    ).toEqual({ error: 'plan_mismatch' })
+  } finally {
+    runtime.dispose()
+  }
+})

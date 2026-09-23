@@ -300,7 +300,11 @@ export function createOfficeHostRuntime(
       captured === productionEpoch &&
       !signal?.aborted &&
       !result.isError &&
-      ['start_presentation_production', 'run_presentation_production'].includes(call.name)
+      [
+        'start_presentation_production',
+        'run_presentation_production',
+        'rebuild_presentation_page',
+      ].includes(call.name)
     )
       await presentation?.refresh()
     if (captured !== productionEpoch || signal?.aborted)
@@ -493,6 +497,7 @@ export function createOfficeHostRuntime(
         executeTool: (call, signal) =>
           [
             'start_presentation_production',
+            'rebuild_presentation_page',
             'run_presentation_production',
             'read_presentation_production',
             'read_presentation_page_artifact',
