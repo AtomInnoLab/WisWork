@@ -22,6 +22,10 @@ export function createPresentationService(options: {
       if (!body || typeof body !== 'object' || Array.isArray(body) || Buffer.byteLength(JSON.stringify(body)) > 256 * 1024) throw new Error('invalid_request')
       const request = body as Record<string, unknown>
       if (request.operation !== 'compile' && request.operation !== 'get') throw new Error('invalid_request')
+      const allowedKeys = request.operation === 'compile'
+        ? ['operation', 'documentId', 'projectId', 'requestId', 'deck']
+        : ['operation', 'documentId', 'projectId']
+      if (Object.keys(request).some(key => !allowedKeys.includes(key))) throw new Error('invalid_request')
       if (typeof request.documentId !== 'string' || !request.documentId.trim() || request.documentId.length > 2048) throw new Error('invalid_request')
       const documentId = request.documentId
       let deck: ReturnType<typeof parsePresentationDeck> | undefined

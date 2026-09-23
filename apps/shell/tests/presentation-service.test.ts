@@ -47,6 +47,8 @@ describe('presentation service', () => {
   it('denies document mismatch, traversal and oversized output with bounded errors', async () => {
     const compile = vi.fn(async () => result())
     const service = createPresentationService({ userDataPath: root(), compile })
+    expect(decode(await service({ ...input, outputPath: '/tmp/arbitrary' }, signal()))).toEqual({ error: 'invalid_request' })
+    expect(decode(await service({ operation: 'get', projectId: 'deck', documentId: input.documentId, requestId: 'first' }, signal()))).toEqual({ error: 'invalid_request' })
     expect(decode(await service({ ...input, deck: { ...input.deck, arbitraryCode: 'evil' } }, signal()))).toEqual({ error: 'invalid_deck' })
     await service(input, signal())
     expect(decode(await service({ ...input, documentId: 'other' }, signal()))).toEqual({ error: 'document_mismatch' })
