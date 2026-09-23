@@ -1,4 +1,5 @@
-import { validSourceSlideId } from './presentation-page-delivery.js'
+import type { PresentationImportRecord } from './presentation-delivery.js'
+import { validPresentationImportRecord, validSourceSlideId } from './presentation-page-delivery.js'
 
 export interface PresentationPageReplacement {
   version: 1
@@ -16,8 +17,21 @@ export interface PresentationPageReplacement {
   sourceSlideId: string
   oldSlideId: string
   beforeSlideIds: string[]
-  state: 'pending' | 'inserted' | 'staged' | 'discard_pending' | 'discarded'
+  state:
+    | 'pending'
+    | 'inserted'
+    | 'staged'
+    | 'discard_pending'
+    | 'discarded'
+    | 'commit_pending'
+    | 'applied'
+    | 'undo_pending'
+    | 'restore_inserted'
+    | 'undone'
   newSlideId?: string
+  parentReceipt?: PresentationImportRecord
+  childReceipt?: PresentationImportRecord
+  restoredSlideId?: string
 }
 const id = (value: unknown, max: number) =>
   typeof value === 'string' && new RegExp(`^[A-Za-z0-9_-]{1,${max}}$`).test(value)
@@ -54,6 +68,9 @@ export function validatePresentationPageReplacement(
         'beforeSlideIds',
         'state',
         'newSlideId',
+        'parentReceipt',
+        'childReceipt',
+        'restoredSlideId',
       ].includes(key),
     ) &&
     r.version === 1 &&
@@ -79,14 +96,76 @@ export function validatePresentationPageReplacement(
     Array.from(r.beforeSlideIds).every(hostId) &&
     new Set(r.beforeSlideIds).size === r.beforeSlideIds.length &&
     r.beforeSlideIds.includes(r.oldSlideId) &&
-    ['pending', 'inserted', 'staged', 'discard_pending', 'discarded'].includes(r.state) &&
+    [
+      'pending',
+      'inserted',
+      'staged',
+      'discard_pending',
+      'discarded',
+      'commit_pending',
+      'applied',
+      'undo_pending',
+      'restore_inserted',
+      'undone',
+    ].includes(r.state) &&
     (r.state === 'pending'
       ? r.newSlideId === undefined
       : hostId(r.newSlideId) && !r.beforeSlideIds.includes(r.newSlideId)) &&
+    (['restore_inserted', 'undone'].includes(r.state)
+      ? hostId(r.restoredSlideId) &&
+        r.restoredSlideId !== r.newSlideId &&
+        !r.beforeSlideIds.includes(r.restoredSlideId)
+      : r.restoredSlideId === undefined) &&
+    validReceipts(r) &&
     // Reserve the largest UTF-8 host ID before insertion so recording it cannot exceed the limit.
     new TextEncoder().encode(
-      JSON.stringify({ ...r, newSlideId: '界'.repeat(256), state: 'discard_pending' }),
+      JSON.stringify({
+        ...r,
+        newSlideId: '\uffff'.repeat(256),
+        restoredSlideId: '\uffff'.repeat(256),
+        state: 'restore_inserted',
+      }),
     ).byteLength <=
       192 * 1024
+  )
+}
+
+function validReceipts(r: PresentationPageReplacement): boolean {
+  if (
+    !['commit_pending', 'applied', 'undo_pending', 'restore_inserted', 'undone'].includes(r.state)
+  )
+    return r.parentReceipt === undefined && r.childReceipt === undefined
+  const parent = r.parentReceipt,
+    child = r.childReceipt
+  if (
+    !validPresentationImportRecord(parent) ||
+    !validPresentationImportRecord(child) ||
+    parent.state !== 'complete' ||
+    child.state !== 'complete' ||
+    parent.documentId !== r.documentId ||
+    child.documentId !== r.documentId ||
+    parent.checkpoint?.version !== 2 ||
+    child.checkpoint?.version !== 2
+  )
+    return false
+  const p = parent.checkpoint,
+    c = child.checkpoint
+  const index = p.pageIds!.indexOf(r.pageId)
+  return (
+    index >= 0 &&
+    p.artifactDigest === r.parentArtifactDigest &&
+    JSON.stringify(p.pageIds) === JSON.stringify(c.pageIds) &&
+    JSON.stringify(p.baselineSlideIds) === JSON.stringify(c.baselineSlideIds) &&
+    p.completed[index].slideId === r.oldSlideId &&
+    c.completed[index].slideId === r.newSlideId &&
+    c.sourceSlideIds[index] === r.sourceSlideId &&
+    p.completed.every(
+      (page, i) =>
+        hostId(page.slideId) &&
+        r.beforeSlideIds.includes(page.slideId) &&
+        (i === index ||
+          (page.slideId === c.completed[i].slideId &&
+            page.sourceSlideId === c.completed[i].sourceSlideId)),
+    )
   )
 }

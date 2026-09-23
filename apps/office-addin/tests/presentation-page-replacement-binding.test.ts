@@ -216,3 +216,123 @@ it('locks if rollback cannot restore settings', async () => {
     'presentation_page_replacement_state_invalid',
   )
 })
+
+async function committedFixture() {
+  const f = await fixture()
+  const parentReceipt = {
+    state: 'complete' as const,
+    documentId: f.record.documentId,
+    slideIds: ['old'],
+    checkpoint: {
+      version: 2 as const,
+      pageIds: ['page'],
+      artifactDigest: f.record.parentArtifactDigest,
+      sourceSlideIds: ['256#'],
+      baselineSlideIds: ['first'],
+      completed: [{ sourceSlideId: '256#', slideId: 'old' }],
+    },
+  }
+  const childReceipt = structuredClone(parentReceipt)
+  childReceipt.slideIds = ['new']
+  childReceipt.checkpoint.completed[0].slideId = 'new'
+  childReceipt.checkpoint.artifactDigest = 'e'.repeat(64)
+  const staged = { ...f.inserted, state: 'staged' as const }
+  const commit = { ...staged, state: 'commit_pending' as const, parentReceipt, childReceipt }
+  await f.binding.writeReceipt('production/project/parent', parentReceipt)
+  await f.binding.writePageReplacement(f.record, undefined)
+  await f.binding.writePageReplacement(f.inserted, f.record)
+  await f.binding.writePageReplacement(staged, f.inserted)
+  return { ...f, staged, commit, parentReceipt, childReceipt }
+}
+it('atomically switches complete receipt mappings and restores parent mapping on undo', async () => {
+  const f = await committedFixture()
+  await f.binding.writePageReplacement(f.commit, f.staged)
+  const applied = { ...f.commit, state: 'applied' as const }
+  await f.binding.writePageReplacement(applied, f.commit)
+  expect(() => f.create().readReceipt('production/project/parent')).toThrow(
+    'presentation_import_superseded',
+  )
+  expect(f.create().readReceipt('production/project/child')).toEqual(f.childReceipt)
+  await expect(f.binding.writeReceipt('production/project/child', undefined)).rejects.toThrow(
+    'presentation_import_superseded',
+  )
+  const pending = { ...applied, state: 'undo_pending' as const }
+  const restored = { ...pending, state: 'restore_inserted' as const, restoredSlideId: 'restored' }
+  const undone = { ...restored, state: 'undone' as const }
+  await f.binding.writePageReplacement(pending, applied)
+  await f.binding.writePageReplacement(restored, pending)
+  await f.binding.writePageReplacement(undone, restored)
+  expect(f.create().readReceipt('production/project/parent')?.slideIds).toEqual(['restored'])
+  expect(() => f.create().readReceipt('production/project/child')).toThrow(
+    'presentation_import_superseded',
+  )
+  await f.binding.writePageReplacement({ ...f.record, changeId: 'next' }, undone)
+  expect(f.create().readReceipt('production/project/parent')?.slideIds).toEqual(['restored'])
+})
+it('keeps mappings unchanged if terminal save fails and rejects corrupt overlays/Save As reads', async () => {
+  const f = await committedFixture()
+  await f.binding.writePageReplacement(f.commit, f.staged)
+  f.save.mockRejectedValueOnce(new Error('save_failed'))
+  await expect(
+    f.binding.writePageReplacement({ ...f.commit, state: 'applied' }, f.commit),
+  ).rejects.toThrow('save_failed')
+  expect(f.create().readReceipt('production/project/parent')).toEqual(f.parentReceipt)
+  await f.binding.writePageReplacement({ ...f.commit, state: 'applied' }, f.commit)
+  const envelope = JSON.parse(f.values.get(key)!)
+  envelope.receipts['production/project/parent'] = f.parentReceipt
+  f.values.set(key, JSON.stringify(envelope))
+  expect(() => f.create().readPageReplacement()).toThrow(
+    'presentation_page_replacement_state_invalid',
+  )
+  f.values.set(key, JSON.stringify(f.record))
+  expect(f.create().readPageReplacement()).toEqual(f.record)
+  f.move()
+  expect(() => f.create().readPageReplacement()).toThrow('presentation_document_changed')
+})
+it('preflights overlay capacity and validates frozen receipt identities before commit', async () => {
+  const f = await committedFixture()
+  for (const patch of [
+    { parentReceipt: { ...f.parentReceipt, documentId: 'other' } },
+    { childReceipt: { ...f.childReceipt, slideIds: ['wrong'] } },
+    { restoredSlideId: 'early' },
+  ])
+    expect(validatePresentationPageReplacement({ ...f.commit, ...patch })).toBe(false)
+  const envelope = JSON.parse(f.values.get(key)!)
+  for (let i = 0; i < 31; i++) envelope.receipts[`production/history/task${i}`] = null
+  f.values.set(key, JSON.stringify(envelope))
+  await expect(f.binding.writePageReplacement(f.commit, f.staged)).rejects.toThrow(
+    'presentation_import_history_full',
+  )
+  expect(f.binding.readPageReplacement()).toEqual(f.staged)
+  expect(f.binding.readReceipt('production/project/parent')).toEqual(f.parentReceipt)
+})
+it('freezes pending commit receipt keys and immutable recovery receipt fields', async () => {
+  const f = await committedFixture()
+  await f.binding.writePageReplacement(f.commit, f.staged)
+  await expect(f.binding.writeReceipt('production/project/parent', undefined)).rejects.toThrow(
+    'presentation_import_superseded',
+  )
+  await expect(f.binding.writeReceipt('production/project/child', f.childReceipt)).rejects.toThrow(
+    'presentation_import_superseded',
+  )
+  const changed = structuredClone(f.commit)
+  changed.childReceipt.checkpoint.artifactDigest = 'f'.repeat(64)
+  await expect(
+    f.binding.writePageReplacement({ ...changed, state: 'applied' }, f.commit),
+  ).rejects.toThrow('presentation_page_replacement_state_invalid')
+})
+it('reserves receipt byte budget before committing a large mapping', async () => {
+  const f = await committedFixture()
+  const baseline = Array.from({ length: 400 }, (_, i) => String(i) + 'x'.repeat(200))
+  f.commit.parentReceipt.checkpoint.baselineSlideIds = baseline
+  f.commit.childReceipt.checkpoint.baselineSlideIds = baseline
+  await f.binding.writeReceipt('production/project/parent', f.commit.parentReceipt)
+  const envelope = JSON.parse(f.values.get(key)!)
+  envelope.receipts['production/history/task'] = f.commit.parentReceipt
+  f.values.set(key, JSON.stringify(envelope))
+  expect(validatePresentationPageReplacement(f.commit)).toBe(true)
+  await expect(f.binding.writePageReplacement(f.commit, f.staged)).rejects.toThrow(
+    'presentation_import_history_full',
+  )
+  expect(f.binding.readPageReplacement()).toEqual(f.staged)
+})

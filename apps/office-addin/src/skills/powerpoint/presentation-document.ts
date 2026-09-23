@@ -233,22 +233,109 @@ export function createPresentationDocumentBinding(
     return value
   }
   let pageReplacementWriteFailed = false
-  const readPageReplacement = (): PresentationPageReplacement | undefined => {
+  type Overrides = Record<string, PresentationImportRecord | null>
+  const replacementKeys = (r: PresentationPageReplacement) => [
+    `production/${r.projectId}/${r.parentRequestId}`,
+    `production/${r.projectId}/${r.requestId}`,
+  ]
+  const replacementMappings = (
+    r: PresentationPageReplacement,
+    receipts: Overrides,
+    undone = false,
+    restoredId = r.restoredSlideId,
+  ): Overrides => {
+    const [parentKey, childKey] = replacementKeys(r)
+    if (!undone) return { ...receipts, [parentKey]: null, [childKey]: r.childReceipt! }
+    const parent = structuredClone(r.parentReceipt!)
+    const index = parent.checkpoint!.pageIds!.indexOf(r.pageId)
+    parent.slideIds![index] = restoredId!
+    parent.checkpoint!.completed[index].slideId = restoredId!
+    return { ...receipts, [parentKey]: parent, [childKey]: null }
+  }
+  const validOverrides = (receipts: unknown, document: string): receipts is Overrides => {
+    if (
+      !receipts ||
+      typeof receipts !== 'object' ||
+      Array.isArray(receipts) ||
+      Object.keys(receipts).length > 32 ||
+      new TextEncoder().encode(JSON.stringify(receipts)).byteLength > 100_000
+    )
+      return false
+    return Object.entries(receipts).every(
+      ([key, receipt]) =>
+        key.startsWith('production/') &&
+        validImportKey(key) &&
+        (receipt === null ||
+          (validPresentationImportRecord(receipt) &&
+            receipt.state === 'complete' &&
+            receipt.checkpoint?.version === 2 &&
+            receipt.documentId === document)),
+    )
+  }
+  const readReplacementEnvelope = (): {
+    change?: PresentationPageReplacement
+    receipts: Overrides
+  } => {
     const invalid = () => new Error('presentation_page_replacement_state_invalid')
     if (pageReplacementWriteFailed) throw invalid()
     const raw = settings.get(PAGE_REPLACEMENT_KEY)
-    // Empty string is the tombstone for a failed first save; the settings adapter has no delete.
-    if (raw === undefined || raw === null || raw === '') return undefined
-    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 192 * 1024)
+    if (raw === undefined || raw === null || raw === '') return { receipts: {} }
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 192 * 1024 + 100_128)
       throw invalid()
-    let value: unknown
+    let value
     try {
       value = JSON.parse(raw)
     } catch {
       throw invalid()
     }
-    if (!validatePresentationPageReplacement(value)) throw invalid()
-    return value
+    const envelope = value?.version === 2
+    const change = envelope ? value.change : value
+    if (!validatePresentationPageReplacement(change)) throw invalid()
+    if (change.documentId !== JSON.stringify([settings.get(ID_KEY), settings.location()]))
+      throw new Error('presentation_document_changed')
+    const receipts = envelope ? value.receipts : {}
+    if (
+      (envelope &&
+        Object.keys(value).some((k) => !['version', 'change', 'receipts'].includes(k))) ||
+      !validOverrides(receipts, change.documentId)
+    )
+      throw invalid()
+    if (['applied', 'undo_pending', 'restore_inserted', 'undone'].includes(change.state)) {
+      const expected = replacementMappings(change, receipts, change.state === 'undone')
+      for (const key of replacementKeys(change))
+        if (JSON.stringify(receipts[key]) !== JSON.stringify(expected[key])) throw invalid()
+    }
+    if (change.state === 'commit_pending') {
+      const [parentKey, childKey] = replacementKeys(change)
+      const parent = Object.hasOwn(receipts, parentKey)
+        ? receipts[parentKey]
+        : readImports()[parentKey]
+      if (
+        JSON.stringify(parent) !== JSON.stringify(change.parentReceipt) ||
+        Object.hasOwn(receipts, childKey) ||
+        readImports()[childKey] !== undefined
+      )
+        throw invalid()
+    }
+    if (
+      change.parentReceipt &&
+      (!validOverrides(replacementMappings(change, receipts), change.documentId) ||
+        !validOverrides(
+          replacementMappings(change, receipts, true, '\uffff'.repeat(256)),
+          change.documentId,
+        ))
+    )
+      throw invalid()
+    return { change, receipts }
+  }
+  const readPageReplacement = () => readReplacementEnvelope().change
+  const readReceipt = (key: string): PresentationImportRecord | undefined => {
+    const { receipts } = readReplacementEnvelope()
+    if (Object.hasOwn(receipts, key)) {
+      if (receipts[key] === null) throw new Error('presentation_import_superseded')
+      return receipts[key]
+    }
+    return readImports()[key]
   }
   return {
     documentId,
@@ -274,26 +361,70 @@ export function createPresentationDocumentBinding(
         if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
         if (prior?.changeId === snapshot.changeId) {
           const identity = (r: PresentationPageReplacement) =>
-            JSON.stringify({ ...r, state: undefined, newSlideId: undefined })
-          const transitions = {
-            pending: 'inserted',
-            inserted: 'staged',
-            staged: 'discard_pending',
-            discard_pending: 'discarded',
-            discarded: undefined,
+            JSON.stringify({
+              ...r,
+              state: undefined,
+              newSlideId: undefined,
+              parentReceipt: undefined,
+              childReceipt: undefined,
+              restoredSlideId: undefined,
+            })
+          const transitions: Record<PresentationPageReplacement['state'], string[]> = {
+            pending: ['inserted'],
+            inserted: ['staged'],
+            staged: ['discard_pending', 'commit_pending'],
+            discard_pending: ['discarded'],
+            discarded: [],
+            commit_pending: ['applied'],
+            applied: ['undo_pending'],
+            undo_pending: ['restore_inserted'],
+            restore_inserted: ['undone'],
+            undone: [],
           }
           if (
             identity(prior) !== identity(snapshot) ||
-            transitions[prior.state] !== snapshot.state ||
-            (prior.state !== 'pending' && prior.newSlideId !== snapshot.newSlideId)
+            !transitions[prior.state].includes(snapshot.state) ||
+            (prior.newSlideId !== undefined && prior.newSlideId !== snapshot.newSlideId) ||
+            (prior.parentReceipt !== undefined &&
+              JSON.stringify(prior.parentReceipt) !== JSON.stringify(snapshot.parentReceipt)) ||
+            (prior.childReceipt !== undefined &&
+              JSON.stringify(prior.childReceipt) !== JSON.stringify(snapshot.childReceipt)) ||
+            (prior.restoredSlideId !== undefined &&
+              prior.restoredSlideId !== snapshot.restoredSlideId)
           )
             throw invalid()
-        } else if (snapshot.state !== 'pending' || (prior && prior.state !== 'discarded'))
+        } else if (
+          snapshot.state !== 'pending' ||
+          (prior && !['discarded', 'undone'].includes(prior.state))
+        )
           throw invalid()
+        let { receipts } = readReplacementEnvelope()
+        if (snapshot.state === 'commit_pending') {
+          const [parentKey, childKey] = replacementKeys(snapshot)
+          if (
+            JSON.stringify(readReceipt(parentKey)) !== JSON.stringify(snapshot.parentReceipt) ||
+            Object.hasOwn(receipts, childKey) ||
+            readImports()[childKey] !== undefined
+          )
+            throw new Error('presentation_page_replacement_stale')
+          // Reserve both terminal mappings before any destructive host write, including a maximal restored ID.
+          if (
+            !validOverrides(replacementMappings(snapshot, receipts), snapshot.documentId) ||
+            !validOverrides(
+              replacementMappings(snapshot, receipts, true, '\uffff'.repeat(256)),
+              snapshot.documentId,
+            )
+          )
+            throw new Error('presentation_import_history_full')
+        }
+        if (snapshot.state === 'applied' || snapshot.state === 'undone')
+          receipts = replacementMappings(snapshot, receipts, snapshot.state === 'undone')
+        if (!validOverrides(receipts, snapshot.documentId))
+          throw new Error('presentation_import_history_full')
         const previous = settings.get(PAGE_REPLACEMENT_KEY),
           location = settings.location(),
           identity = settings.get(ID_KEY),
-          serialized = JSON.stringify(snapshot)
+          serialized = JSON.stringify({ version: 2, change: snapshot, receipts })
         try {
           settings.set(PAGE_REPLACEMENT_KEY, serialized)
           await settings.save()
@@ -390,7 +521,7 @@ export function createPresentationDocumentBinding(
       receiptQueue = result.catch(() => {})
       return result
     },
-    readReceipt: (key: string) => readImports()[key],
+    readReceipt,
     writeReceipt(key: string, record: PresentationImportRecord | undefined) {
       const write = async () => {
         if (
@@ -398,6 +529,20 @@ export function createPresentationDocumentBinding(
           (record !== undefined && !validPresentationImportRecord(record))
         )
           throw new Error('presentation_import_state_invalid')
+        const { change, receipts } = readReplacementEnvelope()
+        if (change?.state === 'commit_pending' && replacementKeys(change).includes(key)) {
+          if (
+            key === replacementKeys(change)[0] &&
+            JSON.stringify(record) === JSON.stringify(change.parentReceipt)
+          )
+            return
+          throw new Error('presentation_import_superseded')
+        }
+        if (Object.hasOwn(receipts, key)) {
+          if (receipts[key] !== null && JSON.stringify(receipts[key]) === JSON.stringify(record))
+            return
+          throw new Error('presentation_import_superseded')
+        }
         const imports = readImports()
         const previousRaw = settings.get(IMPORT_KEY)
         const location = settings.location()
