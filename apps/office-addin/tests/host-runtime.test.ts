@@ -152,3 +152,36 @@ describe('host runtime composition', () => {
     ).rejects.toThrow('office_capability_disabled')
   })
 })
+
+describe('presentation capability composition', () => {
+  it('exposes generation only after negotiation and removes it after disconnect', async () => {
+    let connected = false
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => connected,
+        request: vi.fn(),
+        documentId: async () => 'document-1',
+        lastProject: () => undefined,
+        rememberProject: async () => undefined,
+      },
+    })
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain(
+      'compile_deck_with_pptxgenjs',
+    )
+    connected = true
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain('compile_deck_with_pptxgenjs')
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain('restore_presentation_project')
+    connected = false
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain(
+      'compile_deck_with_pptxgenjs',
+    )
+    expect(
+      await runtime.skill.executeTool({
+        id: 'stale',
+        name: 'compile_deck_with_pptxgenjs',
+        input: {},
+      }),
+    ).toMatchObject({ isError: true, output: 'presentation_unavailable' })
+    runtime.dispose()
+  })
+})

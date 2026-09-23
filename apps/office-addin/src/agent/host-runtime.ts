@@ -1,3 +1,8 @@
+import {
+  createPresentationDeliverySkill,
+  type PresentationImportRecord,
+} from '../skills/powerpoint/presentation-delivery.js'
+import { createBrowserPresentationImportAdapter } from '../skills/powerpoint/presentation-import.js'
 import type { AgentSkill } from '@wiswork/agent-core'
 import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 import {
@@ -19,6 +24,10 @@ import {
   supportsPowerPointImportMedia,
 } from '../skills/powerpoint/browser-powerpoint-import-media-adapter.js'
 import { createPowerPointImportMediaSkill } from '../skills/powerpoint/powerpoint-import-media.js'
+import {
+  createPresentationGenerationSkill,
+  type PresentationGenerationOptions,
+} from '../skills/powerpoint/presentation-generation.js'
 import { createPowerPointSkill } from '../skills/powerpoint/powerpoint-skill.js'
 import { createSharedBrowserSkill } from '../skills/shared/shared-skill.js'
 import { supportsBrowserMediaValidation } from '../skills/shared/import-media.js'
@@ -69,6 +78,10 @@ function supportsNativePowerPointMasterEditing(): boolean {
 export function createOfficeHostRuntime(
   host: OfficeHost,
   options: {
+    presentation?: Omit<PresentationGenerationOptions, 'vfs'> & {
+      readReceipt?(key: string): PresentationImportRecord | undefined
+      writeReceipt?(key: string, record: PresentationImportRecord | undefined): Promise<void>
+    }
     enableHostSkills?: boolean
     document?: OfficeDocumentClient
     packageRuntime?: Pick<SkillPackageWorkerRuntime, 'parse' | 'cancelAll'>
@@ -136,13 +149,50 @@ export function createOfficeHostRuntime(
               }),
             ]
           : []
+  const base = composeOfficeSkills(hostSkill, shared, extensions)
+  const generation =
+    host === 'powerpoint' && options.presentation
+      ? createPresentationGenerationSkill({ ...options.presentation, vfs })
+      : undefined
+  const delivery =
+    generation && options.presentation?.readReceipt && options.presentation.writeReceipt
+      ? createPresentationDeliverySkill({
+          adapter: createBrowserPresentationImportAdapter(),
+          proposals,
+          artifact: generation.artifact,
+          available: options.presentation.available,
+          documentId: options.presentation.documentId,
+          readReceipt: options.presentation.readReceipt,
+          writeReceipt: options.presentation.writeReceipt,
+        })
+      : undefined
+  const skill: AgentSkill = generation
+    ? {
+        ...base,
+        get tools() {
+          return [...base.tools, ...generation.tools, ...(delivery?.tools ?? [])]
+        },
+        get systemPrompt() {
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}`
+        },
+        buildContext: () =>
+          [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
+        executeTool: (call, signal) =>
+          call.name === 'import_generated_presentation' && delivery
+            ? delivery.executeTool(call, signal)
+            : ['compile_deck_with_pptxgenjs', 'restore_presentation_project'].includes(call.name)
+              ? generation.executeTool(call, signal)
+              : base.executeTool(call, signal),
+      }
+    : base
   return lifecycle(
-    composeOfficeSkills(hostSkill, shared, extensions),
+    skill,
     proposals,
     vfs,
     skills,
     options.packageRuntime,
     options.enableSkillPackages !== false,
+    () => generation?.clear(),
   )
 }
 
@@ -153,6 +203,7 @@ function lifecycle(
   skills: SkillRegistry,
   suppliedPackageRuntime?: Pick<SkillPackageWorkerRuntime, 'parse' | 'cancelAll'>,
   skillPackagesEnabled = true,
+  onClear?: () => void,
 ): OfficeHostRuntime {
   const packageRuntime = suppliedPackageRuntime ?? new SkillPackageWorkerRuntime()
   let epoch = 0
@@ -166,6 +217,7 @@ function lifecycle(
     proposals.logout()
     skills.clear()
     vfs.clear()
+    onClear?.()
   }
   return {
     skill,

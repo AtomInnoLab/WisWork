@@ -1,3 +1,5 @@
+import { createBrowserPresentationDocumentBinding } from './skills/powerpoint/presentation-document.js'
+import { downloadSessionFile } from './agent/session-download.js'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Markdown } from '@wiswork/ui'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
@@ -179,6 +181,7 @@ interface SessionFile {
 
 export interface OfficeWorkspaceUi {
   readonly attachments: () => readonly string[]
+  readonly downloadFile?: (path: string) => void
   readonly skills: () => readonly string[]
   readonly skillPackagesEnabled: boolean
   readonly upload: (file: SessionFile) => Promise<void>
@@ -222,6 +225,7 @@ export function createOfficeWorkspaceUi(
 ): OfficeWorkspaceUi {
   return Object.freeze({
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
+    downloadFile: (path: string) => downloadSessionFile(runtime.vfs, path),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
     skillPackagesEnabled: runtime.skillPackagesEnabled,
     upload: (file: SessionFile) => uploadSessionFile(runtime, file),
@@ -437,6 +441,10 @@ export function AgentWorkspace(props: {
     if (!viewport || !followLatest.current || typeof viewport.scrollTo !== 'function') return
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: state.busy ? 'auto' : 'smooth' })
   }, [state.busy, state.timeline])
+
+  useEffect(() => {
+    setFiles(ui.attachments())
+  }, [ui, state.timeline])
 
   function send() {
     if (!instruction.trim()) return
@@ -676,7 +684,15 @@ export function AgentWorkspace(props: {
               )}
               <ul>
                 {files.map((file) => (
-                  <li key={file}>{file.split('/').at(-1)}</li>
+                  <li key={file}>
+                    {ui.downloadFile ? (
+                      <button type="button" onClick={() => ui.downloadFile?.(file)}>
+                        {file.split('/').at(-1)} · 下载
+                      </button>
+                    ) : (
+                      file.split('/').at(-1)
+                    )}
+                  </li>
                 ))}
               </ul>
               {!files.length && <p>No session attachments.</p>}
@@ -748,6 +764,26 @@ export function AgentWorkspace(props: {
       )}
 
       <section className="composer-shell" aria-label="Message WisWork Agent">
+        {ui.downloadFile &&
+          files.some(
+            (file) => file.startsWith('/home/user/generated/') && file.endsWith('.pptx'),
+          ) && (
+            <section aria-label="生成的演示文稿" className="presentation-downloads">
+              {files
+                .filter(
+                  (file) =>
+                    file.startsWith('/home/user/generated/') &&
+                    (file.endsWith('.pptx') || file.endsWith('.report.json')),
+                )
+                .slice(-4)
+                .map((file) => (
+                  <button type="button" key={file} onClick={() => ui.downloadFile?.(file)}>
+                    {file.endsWith('.pptx') ? '下载 PPTX' : '下载验收报告'} ·{' '}
+                    {file.split('/').at(-1)}
+                  </button>
+                ))}
+            </section>
+          )}
         <label className="visually-hidden" htmlFor="instruction">
           Message WisWork Agent
         </label>
@@ -838,9 +874,9 @@ function ConfiguredApp() {
       transportMode === 'loopback'
         ? createPcBridgeSession()
         : createOfficeRelaySession({
-            ...(remoteDiagnosticsEnabled ? { capabilities: ['agent.v1'] } : {}),
+            capabilities: ['agent.v1', 'presentation.v1'],
           }),
-    [remoteDiagnosticsEnabled, transportMode],
+    [transportMode],
   )
   const bridgeState = useSyncExternalStore(
     (listener) => bridge.subscribe(listener),
@@ -887,6 +923,22 @@ function ConfiguredApp() {
               enableImportMedia: capabilityFlags.importMedia,
               document,
               diagnostics,
+              ...(activeHost === 'powerpoint' && 'capabilityFetch' in bridge
+                ? {
+                    presentation: {
+                      ...createBrowserPresentationDocumentBinding(),
+                      available: () => {
+                        const snapshot = bridge.snapshot()
+                        return (
+                          snapshot.status === 'connected' &&
+                          snapshot.capabilities?.includes('presentation.v1') === true
+                        )
+                      },
+                      request: (body: unknown, signal?: AbortSignal) =>
+                        bridge.capabilityFetch('presentation.v1', body, signal),
+                    },
+                  }
+                : {}),
             })
             const session = createOfficeAgentSession({
               transport: createPcBridgeAgentTransport(bridge),

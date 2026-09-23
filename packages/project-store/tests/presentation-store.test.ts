@@ -1,4 +1,11 @@
-import { mkdtempSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -16,8 +23,13 @@ describe('presentation receipts', () => {
     const first = store.begin('project', 'opaque:/document', 'one', { title: 'A' })
     store.complete(first, { status: 'compiled', pptxBase64: 'eA==' })
     const reload = new PresentationStore(root)
-    expect(reload.begin('project', 'opaque:/document', 'one', { title: 'A' }).result).toEqual({ status: 'compiled', pptxBase64: 'eA==' })
-    expect(() => reload.begin('project', 'opaque:/document', 'one', { title: 'B' })).toThrow('request_conflict')
+    expect(reload.begin('project', 'opaque:/document', 'one', { title: 'A' }).result).toEqual({
+      status: 'compiled',
+      pptxBase64: 'eA==',
+    })
+    expect(() => reload.begin('project', 'opaque:/document', 'one', { title: 'B' })).toThrow(
+      'request_conflict',
+    )
     reload.begin('project', 'opaque:/document', 'two', { title: 'B' })
     expect(reload.latest('project', 'opaque:/document')?.requestId).toBe('one')
     expect(() => reload.latest('project', 'another')).toThrow('document_mismatch')
@@ -30,7 +42,12 @@ describe('presentation receipts', () => {
       expect(() => store.begin('ok', 'doc', id, {})).toThrow('invalid_request')
     }
     store.begin('ok', 'doc', 'one', {})
-    const directory = join(root, 'projects', 'presentations', readdirSync(join(root, 'projects', 'presentations'))[0]!)
+    const directory = join(
+      root,
+      'projects',
+      'presentations',
+      readdirSync(join(root, 'projects', 'presentations'))[0]!,
+    )
     const path = join(directory, 'project.json')
     const bad = JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), version: 42 })
     writeFileSync(path, bad)
@@ -49,7 +66,9 @@ describe('presentation receipts', () => {
     const store = new PresentationStore(mkdtempSync(join(tmpdir(), 'presentation-store-')))
     store.complete(store.begin('p', 'd', 'first', {}), { value: 1 })
     const next = store.begin('p', 'd', 'next', {})
-    vi.mocked(renameSync).mockImplementationOnce(() => { throw new Error('disk failure') })
+    vi.mocked(renameSync).mockImplementationOnce(() => {
+      throw new Error('disk failure')
+    })
     expect(() => store.complete(next, { value: 2 })).toThrow('disk failure')
     expect(store.latest('p', 'd')?.requestId).toBe('first')
     store.complete(next, { value: 2 })
@@ -62,5 +81,4 @@ describe('presentation receipts', () => {
     expect(() => new PresentationStore(root).begin('p', 'd', 'r', {})).toThrow('invalid_state')
     expect(readdirSync(outside)).toEqual([])
   })
-
 })

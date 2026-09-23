@@ -1,3 +1,4 @@
+import { createPresentationService } from './presentation-service'
 import { execSync, spawn } from 'node:child_process'
 import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
@@ -2542,6 +2543,7 @@ app.whenReady().then(async () => {
         })
       : undefined
     const endpoint = officeRelayEndpointFromEnv(process.env)
+    const presentationProxy = createPresentationService({ userDataPath: app.getPath('userData') })
     officeRelay = createOfficeRelayPool({
       createClient: (events) =>
         createOfficeRelayClient({
@@ -2550,6 +2552,7 @@ app.whenReady().then(async () => {
           getAccessToken: () => requireAuthRuntime().client.getAccessToken(),
           proxy: officeMessagesProxy,
           retrievalProxy,
+          presentationProxy,
           negotiateCapabilities: true,
           onPending: events.onPending,
           onPendingExpired: events.onPendingExpired,

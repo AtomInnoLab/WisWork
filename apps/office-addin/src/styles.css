@@ -804,3 +804,15 @@ p {
     transition-duration: 0.01ms !important;
   }
 }
+
+.presentation-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.presentation-downloads button {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: left;
+}

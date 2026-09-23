@@ -12,7 +12,8 @@
     "@wiswork/ui": "*",
     "fast-xml-parser": "5.10.1",
     "jszip": "3.10.1",
-    "pdfjs-dist": "5.7.284"
+    "pdfjs-dist": "5.7.284",
+    "@wiswork/pptx-engine": "*"
   },
   "scripts": {
     "dev": "vite --mode development",

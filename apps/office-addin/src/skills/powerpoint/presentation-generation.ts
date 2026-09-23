@@ -1,0 +1,205 @@
+import type { CompiledPresentationArtifact } from './presentation-delivery.js'
+import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
+import { parsePresentationDeck, PRESENTATION_DECK_SCHEMA } from '@wiswork/pptx-engine/presentation'
+import type { InMemoryVfs } from '../shared/vfs.js'
+
+const validId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
+const tools: AgentToolDef[] = [
+  {
+    name: 'compile_deck_with_pptxgenjs',
+    description:
+      'Compile a planned 16:9 presentation into editable PPTX using the paired PC. Coordinates are inches on a 13.333333 x 7.5 canvas; claimed slides reserve the bottom 0.55 inches for sources. Colors are hex without #. Entire request including inline images must be <=256 KiB; use compact prepared images. Returns downloadable PPTX and a report; it does not modify the open document. Reuse the request_id for unchanged retries; use a new request_id only when the deck changes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        request_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+        deck: PRESENTATION_DECK_SCHEMA,
+      },
+      required: ['request_id', 'deck'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'restore_presentation_project',
+    description:
+      'Restore the last compiled PPTX for this document from the paired PC after interruption or reopening the Taskpane. An optional project_id selects a known project bound to this document.',
+    inputSchema: {
+      type: 'object',
+      properties: { project_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' } },
+      additionalProperties: false,
+    },
+  },
+]
+export interface PresentationGenerationOptions {
+  vfs: InMemoryVfs
+  available(): boolean
+  request(body: unknown, signal?: AbortSignal): Promise<Response>
+  documentId(): Promise<string>
+  lastProject(): string | undefined
+  rememberProject(id: string): Promise<void>
+}
+const abort = (signal?: AbortSignal) => {
+  if (signal?.aborted) throw new Error('cancelled')
+}
+
+export function createPresentationGenerationSkill(
+  options: PresentationGenerationOptions,
+): AgentSkill & {
+  artifact(projectId?: string): CompiledPresentationArtifact | undefined
+  clear(): void
+} {
+  const artifacts = new Map<string, CompiledPresentationArtifact>()
+  let epoch = 0
+  return {
+    artifact: (projectId?: string) =>
+      artifacts.get(projectId ?? [...artifacts.keys()].at(-1) ?? ''),
+    clear: () => {
+      epoch += 1
+      artifacts.clear()
+    },
+    id: 'office-presentation-generation',
+    systemPrompt: `For a new presentation, read user materials first, establish evidence and the per-page story, then choose a consistent visual style. When presentation compilation is available, use compile_deck_with_pptxgenjs with validated SlideIR to create a downloadable native PPTX. Prefer native charts/tables for factual data. Assets must already be prepared inline PNG/JPEG images, never paths or external URLs. Do not invent sources. Preserve project ID and request ID on unchanged retries. Compiled is not visually reviewed: explain checks marked not_run or not_verified and use existing Office tools for subsequent editing and host verification. The PPTX and report are available in Session attachments. Restore a prior compiled result with restore_presentation_project.`,
+    get tools() {
+      return options.available() ? tools : []
+    },
+    buildContext: () =>
+      options.available()
+        ? `Presentation compilation available.${options.lastProject() ? ` Last project: ${options.lastProject()}.` : ''}`
+        : '',
+    async executeTool(call, signal) {
+      const captured = epoch
+      const check = () => {
+        abort(signal)
+        if (captured !== epoch) throw new Error('cancelled')
+        if (!options.available()) throw new Error('presentation_unavailable')
+      }
+      try {
+        check()
+        if (!options.available()) throw new Error('presentation_unavailable')
+        if (call.inputError || call.truncated) throw new Error('invalid_tool_input')
+        const value = call.input
+        let projectId: string
+        let requestId: string | undefined
+        let deck: ReturnType<typeof parsePresentationDeck> | undefined
+        if (call.name === 'compile_deck_with_pptxgenjs') {
+          if (
+            Object.keys(value).some((key) => !['request_id', 'deck'].includes(key)) ||
+            !validId(value.request_id)
+          )
+            throw new Error('invalid_tool_input')
+          deck = parsePresentationDeck(value.deck)
+          projectId = deck.id
+          requestId = value.request_id
+        } else if (call.name === 'restore_presentation_project') {
+          if (Object.keys(value).some((key) => key !== 'project_id'))
+            throw new Error('invalid_tool_input')
+          const id = value.project_id ?? options.lastProject()
+          if (!validId(id)) throw new Error('presentation_project_missing')
+          projectId = id
+        } else throw new Error('invalid_tool_input')
+        const documentId = await options.documentId()
+        check()
+        const body = deck
+          ? { operation: 'compile', documentId, projectId, requestId, deck }
+          : { operation: 'get', documentId, projectId }
+        if (new TextEncoder().encode(JSON.stringify(body)).byteLength > 256 * 1024)
+          throw new Error('presentation_request_too_large')
+        const response = await options.request(body, signal)
+        check()
+        if (!response.ok) throw new Error('presentation_service_unavailable')
+        const text = await response.text()
+        if (text.length > 16 * 1024 * 1024) throw new Error('presentation_response_invalid')
+        const result = JSON.parse(text)
+        if (
+          result &&
+          [
+            'invalid_request',
+            'invalid_deck',
+            'invalid_state',
+            'document_mismatch',
+            'request_conflict',
+            'not_found',
+            'aborted',
+            'output_too_large',
+            'compile_failed',
+          ].includes(result.error)
+        )
+          throw new Error(`presentation_${result.error}`)
+        if (
+          !result ||
+          result.status !== 'compiled' ||
+          result.projectId !== projectId ||
+          !validId(result.requestId) ||
+          (requestId && result.requestId !== requestId) ||
+          result.report?.deckId !== projectId ||
+          !Number.isSafeInteger(result.report?.slideCount) ||
+          result.report.slideCount < 1 ||
+          (deck && result.report.slideCount !== deck.slides.length) ||
+          typeof result.pptxBase64 !== 'string' ||
+          result.pptxBase64.length > 14 * 1024 * 1024 ||
+          !/^[A-Za-z0-9+/]+={0,2}$/.test(result.pptxBase64)
+        )
+          throw new Error('presentation_response_invalid')
+        const binary = atob(result.pptxBase64)
+        if (binary.length < 4 || binary.slice(0, 4) !== 'PK\u0003\u0004')
+          throw new Error('presentation_response_invalid')
+        const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+        check()
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
+        await options.rememberProject(projectId)
+        check()
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
+        const path = `/home/user/generated/${projectId}.pptx`
+        const reportPath = `/home/user/generated/${projectId}.report.json`
+        options.vfs.writeBatch([
+          [path, bytes],
+          [reportPath, JSON.stringify(result.report, null, 2)],
+        ])
+        artifacts.delete(projectId)
+        artifacts.set(
+          projectId,
+          Object.freeze({
+            documentId,
+            projectId,
+            requestId: result.requestId,
+            pptxBase64: result.pptxBase64,
+            slideCount: result.report.slideCount,
+          }),
+        )
+        // Keep the in-memory import cache bounded; persisted projects remain restorable.
+        while (artifacts.size > 4) artifacts.delete(artifacts.keys().next().value!)
+        return {
+          output: JSON.stringify({
+            projectId,
+            requestId: result.requestId,
+            status: 'compiled',
+            path,
+            reportPath,
+            report: result.report,
+          }),
+          mutated: false,
+          summary: `已生成 ${result.report.slideCount} 页可编辑 PPTX，可在附件中下载；请查看待验收项`,
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : ''
+        const code =
+          message === 'cancelled' ||
+          message === 'invalid_tool_input' ||
+          /^presentation_[a-z_]{1,80}$/.test(message)
+            ? message
+            : 'presentation_operation_failed'
+        return {
+          output: code,
+          isError: true,
+          mutated: false,
+          summary: 'PPT 生成未完成，已有成果已保留',
+        }
+      }
+    },
+  }
+}
