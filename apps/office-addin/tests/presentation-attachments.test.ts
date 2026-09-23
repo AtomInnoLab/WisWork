@@ -278,6 +278,8 @@ it('uploads image originals and lists validated compact asset metadata on the ne
 it.each([
   { width: 0 },
   { height: 16385 },
+  { width: 9000, height: 1 },
+  { width: 5000, height: 4000 },
   { width: 10000, height: 10000 },
   { assetSha256: 'wrong' },
   { mime: 'image/jpeg' },

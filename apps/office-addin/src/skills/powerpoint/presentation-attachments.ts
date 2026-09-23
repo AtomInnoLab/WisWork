@@ -86,9 +86,9 @@ function metadata(value: unknown): Metadata {
       !image ||
       v.status !== 'ready' ||
       v.mime !== 'image/png' ||
-      !integer(v.width, 1, 16384) ||
-      !integer(v.height, 1, 16384) ||
-      v.width * v.height > 40_000_000 ||
+      !integer(v.width, 1, 8192) ||
+      !integer(v.height, 1, 8192) ||
+      v.width * v.height > 16_000_000 ||
       !idValid(v.assetSha256) ||
       v.totalChars !== undefined
     )
