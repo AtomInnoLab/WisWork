@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { PresentationCompileReport } from '@wiswork/pptx-engine/presentation'
+import { PresentationStore } from '@wiswork/project-store'
 import { createPresentationService } from '../src/main/presentation-service.js'
 
 vi.mock('@wiswork/pptx-engine/presentation-compiler', () => ({ compilePresentationDeck: vi.fn() }))
@@ -137,4 +138,130 @@ describe('presentation service', () => {
       ),
     ).toEqual({ error: 'not_found' })
   })
+})
+
+describe('durable project recovery', () => {
+  const query = { operation: 'status', projectId: 'deck', documentId: input.documentId }
+  it('reports latest pending slides and resumes the explicit saved request after recreation', async () => {
+    const userDataPath = root()
+    const compile = vi.fn(async (_deck: unknown) => result())
+    const service = createPresentationService({ userDataPath, compile })
+    const first = decode(await service(input, signal()))
+    const controller = new AbortController()
+    compile.mockImplementationOnce(async () => {
+      controller.abort()
+      return result()
+    })
+    const second = {
+      ...input,
+      requestId: 'second',
+      deck: {
+        ...input.deck,
+        title: 'Second',
+        slides: [{ ...input.deck.slides[0], id: 'next', title: 'Next' }],
+      },
+    }
+    expect(decode(await service(second, controller.signal))).toEqual({ error: 'aborted' })
+    const reload = createPresentationService({ userDataPath, compile })
+    expect(decode(await reload(query, signal()))).toEqual({
+      projectId: 'deck',
+      title: 'Second',
+      status: 'pending',
+      latestRequestId: 'second',
+      latestCompiledRequestId: 'first',
+      slideCount: 1,
+      slides: [{ id: 'next', title: 'Next' }],
+      history: [
+        { requestId: 'second', sequence: 2, status: 'pending', slideCount: 1 },
+        { requestId: 'first', sequence: 1, status: 'compiled', slideCount: 1 },
+      ],
+    })
+    const resume = { ...query, operation: 'resume', requestId: 'second' }
+    const [a, b] = await Promise.all([reload(resume, signal()), reload(resume, signal())])
+    expect(decode(a).requestId).toBe('second')
+    expect(decode(b)).toEqual(decode(a))
+    expect(compile).toHaveBeenCalledTimes(3)
+    expect(compile.mock.calls.at(-1)?.[0]).toEqual(second.deck)
+    expect(decode(await reload(query, signal())).checks).toEqual(report.checks)
+    expect(decode(await reload({ ...resume, requestId: 'first' }, signal()))).toEqual(first)
+    expect(decode(await reload({ ...query, operation: 'get' }, signal()))).toEqual(decode(a))
+  })
+  it('bounds history and refuses unknown, extra, inherited and cross-document requests', async () => {
+    const userDataPath = root()
+    const store = new PresentationStore(userDataPath)
+    for (let i = 0; i < 25; i++) store.begin('deck', input.documentId, `r${i}`, input.deck)
+    const service = createPresentationService({ userDataPath })
+    const status = decode(await service(query, signal()))
+    expect(status.history).toHaveLength(20)
+    expect(status.history.map((r: { sequence: number }) => r.sequence)).toEqual(
+      Array.from({ length: 20 }, (_, i) => 25 - i),
+    )
+    expect(status).not.toHaveProperty('checks')
+    expect(status).not.toHaveProperty('latestCompiledRequestId')
+    for (const operation of ['status', 'resume']) {
+      const request = {
+        ...query,
+        operation,
+        ...(operation === 'resume' ? { requestId: 'r0' } : {}),
+      }
+      expect(decode(await service({ ...request, documentId: 'other' }, signal()))).toEqual({
+        error: 'document_mismatch',
+      })
+      expect(decode(await service({ ...request, deck: input.deck }, signal()))).toEqual({
+        error: 'invalid_request',
+      })
+      expect(decode(await service(Object.create(request), signal()))).toEqual({
+        error: 'invalid_request',
+      })
+    }
+    expect(
+      decode(await service({ ...query, operation: 'resume', requestId: 'unknown' }, signal())),
+    ).toEqual({ error: 'not_found' })
+    store.begin('deck', input.documentId, 'invalid', { ...input.deck, extra: true })
+    expect(
+      decode(await service({ ...query, operation: 'resume', requestId: 'invalid' }, signal())),
+    ).toEqual({ error: 'invalid_deck' })
+  })
+})
+
+it('resume retains cancellation and output bounds without superseding newer completed work', async () => {
+  const userDataPath = root()
+  const store = new PresentationStore(userDataPath)
+  store.begin('deck', input.documentId, 'old', input.deck)
+  const compile = vi.fn(async () => result())
+  const service = createPresentationService({ userDataPath, compile })
+  const latest = decode(await service(input, signal()))
+  const resume = {
+    operation: 'resume',
+    projectId: 'deck',
+    documentId: input.documentId,
+    requestId: 'old',
+  }
+  const controller = new AbortController()
+  compile.mockImplementationOnce(async () => {
+    controller.abort()
+    return result()
+  })
+  expect(decode(await service(resume, controller.signal))).toEqual({ error: 'aborted' })
+  expect(store.request('deck', input.documentId, 'old')?.status).toBe('pending')
+  compile.mockResolvedValueOnce({ bytes: new Uint8Array(11 * 1024 * 1024), report })
+  expect(decode(await service(resume, signal()))).toEqual({ error: 'output_too_large' })
+  expect(store.request('deck', input.documentId, 'old')?.status).toBe('pending')
+  expect(decode(await service(resume, signal())).requestId).toBe('old')
+  expect(
+    decode(
+      await service(
+        { operation: 'get', projectId: 'deck', documentId: input.documentId },
+        signal(),
+      ),
+    ),
+  ).toEqual(latest)
+  expect(
+    decode(
+      await service(
+        { operation: 'status', projectId: 'deck', documentId: input.documentId },
+        signal(),
+      ),
+    ).latestRequestId,
+  ).toBe('first')
 })

@@ -82,3 +82,17 @@ describe('presentation receipts', () => {
     expect(readdirSync(outside)).toEqual([])
   })
 })
+
+it('retrieves explicit requests and bounded newest-first history with document binding', () => {
+  const store = new PresentationStore(mkdtempSync(join(tmpdir(), 'presentation-store-')))
+  for (let i = 0; i < 25; i++) store.begin('p', 'd', `r${i}`, { title: `${i}` })
+  expect(store.history('p', 'd').map((r) => r.sequence)).toEqual(
+    Array.from({ length: 20 }, (_, i) => 25 - i),
+  )
+  expect(store.request('p', 'd', 'r0')?.deck).toEqual({ title: '0' })
+  expect(store.request('p', 'd', 'missing')).toBeUndefined()
+  expect(store.history('missing', 'd')).toEqual([])
+  expect(() => store.request('p', 'other', 'r0')).toThrow('document_mismatch')
+  expect(() => store.history('p', 'other')).toThrow('document_mismatch')
+  expect(() => store.request('p', 'd', '../x')).toThrow('invalid_request')
+})

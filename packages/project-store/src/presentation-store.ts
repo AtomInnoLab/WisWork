@@ -166,6 +166,25 @@ export class PresentationStore {
       resultDigest: digest(canonical(result)),
     })
   }
+  request(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+  ): PresentationReceipt | undefined {
+    assertPresentationId(requestId)
+    const directory = this.bind(projectId, documentId, false)
+    if (!directory) return undefined
+    return this.receipts(directory, projectId, documentId).find(
+      (record) => record.requestId === requestId,
+    )
+  }
+  history(projectId: string, documentId: string): PresentationReceipt[] {
+    const directory = this.bind(projectId, documentId, false)
+    if (!directory) return []
+    return this.receipts(directory, projectId, documentId)
+      .sort((a, b) => b.sequence - a.sequence)
+      .slice(0, 20)
+  }
   latest(projectId: string, documentId: string): PresentationReceipt | undefined {
     const directory = this.bind(projectId, documentId, false)
     if (!directory) return undefined
