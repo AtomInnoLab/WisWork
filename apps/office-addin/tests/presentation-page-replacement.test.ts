@@ -400,6 +400,7 @@ it('commits with a frozen complete child mapping then undoes from the original b
   expect(await f.call('undo')).toMatchObject({
     output: expect.stringContaining('awaiting_confirmation'),
   })
+  expect(f.proposals.pending()?.impact).toEqual({ host: 'powerpoint', targets: ['new'], count: 1 })
   expect(await f.confirm()).toEqual({ status: 'confirmed' })
   expect(f.journal()).toMatchObject({ state: 'undone', restoredSlideId: 'restored' })
   expect(f.receipts.get('production/project/parent')?.slideIds).toEqual(['restored'])

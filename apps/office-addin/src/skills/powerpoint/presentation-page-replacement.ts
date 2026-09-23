@@ -553,7 +553,11 @@ export function createPresentationPageReplacementSkill(
             originalRetained: action !== 'commit',
             businessMappingUpdated: action === 'commit' || action === 'undo',
           },
-          impact: { host: 'powerpoint', targets: [record.oldSlideId], count: 1 },
+          impact: {
+            host: 'powerpoint',
+            targets: [action === 'undo' ? record.newSlideId! : record.oldSlideId],
+            count: 1,
+          },
           fingerprint: selectionFingerprint(JSON.stringify([record, initial])),
           validate: async (s) => {
             try {
