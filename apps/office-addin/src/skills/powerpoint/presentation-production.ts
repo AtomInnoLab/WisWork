@@ -193,6 +193,7 @@ export function createPresentationProductionSkill(
   artifact(projectId?: string): CompiledPresentationArtifact | undefined
 } {
   let epoch = 0
+  let prepareSequence = 0
   let artifact: CompiledPresentationArtifact | undefined
   return {
     id: 'office-presentation-production',
@@ -209,9 +210,15 @@ export function createPresentationProductionSkill(
       'For page production first save the presentation plan, then start_presentation_production with that plan_revision and matching SlideIR. Run remaining pages with run_presentation_production; inspect failed states and reuse the same request for unchanged retries. Already compiled pages are preserved. Use prepare_presentation_production_import only after all pages compile to prepare a bounded ordered collection for separately confirmed import; it replaces the previous prepared collection but never inserts slides. Download individual page artifacts only as files: these are not imported, visually reviewed, source-verified or round-trip checked. Never claim the deck is delivered from compiled counts. Do not invent project/request/page IDs.',
     async executeTool(call, signal) {
       const captured = epoch
+      let preparation: number | undefined
       let references = false
       const check = () => {
-        if (captured !== epoch || signal?.aborted) throw new Error('cancelled')
+        if (
+          captured !== epoch ||
+          signal?.aborted ||
+          (preparation !== undefined && preparation !== prepareSequence)
+        )
+          throw new Error('cancelled')
         if (!options.available()) throw new Error('presentation_unavailable')
         if (references && !options.assetsAvailable?.())
           throw new Error('presentation_assets_unavailable')
@@ -242,6 +249,7 @@ export function createPresentationProductionSkill(
         const deck = begin ? parsePresentationDeck(input.deck) : undefined,
           projectId = deck?.id ?? input.project_id
         if (!id(projectId)) throw new Error('invalid_tool_input')
+        if (prepare) preparation = ++prepareSequence
         references = !!deck?.assets.some((a) => 'attachmentId' in a)
         check()
         const documentId = await options.documentId()

@@ -481,3 +481,68 @@ it('accepts exactly 10MiB across two pages and retains duplicate numeric source 
     f.skill.artifact()?.pagePptxBase64?.reduce((n, s) => n + Buffer.from(s, 'base64').length, 0),
   ).toBe(10 * 1024 * 1024)
 })
+it('does not let an older pending prepare overwrite a newer request for the same project', async () => {
+  const f = prepareFixture()
+  let release!: () => void, entered!: () => void
+  const waiting = new Promise<void>((resolve) => {
+      release = resolve
+    }),
+    started = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+  f.request.mockImplementation(async (body) => {
+    const b = body as { operation: string; requestId: string; pageId?: string }
+    if (b.operation === 'production_page' && b.requestId === 'old' && b.pageId === 'one') {
+      entered()
+      await waiting
+    }
+    return new Response(
+      JSON.stringify(
+        b.operation === 'production_status'
+          ? { ...compiled, requestId: b.requestId }
+          : pageArtifact(b.pageId!, { requestId: b.requestId }),
+      ),
+    )
+  })
+  const old = f.skill.executeTool({ ...prepare, input: { project_id: 'p', request_id: 'old' } })
+  await started
+  expect(
+    (await f.skill.executeTool({ ...prepare, input: { project_id: 'p', request_id: 'new' } }))
+      .isError,
+  ).not.toBe(true)
+  const latest = f.skill.artifact()!
+  expect(latest.requestId).toBe('new')
+  release()
+  expect(await old).toMatchObject({ isError: true, output: 'cancelled' })
+  expect(f.skill.artifact()).toBe(latest)
+  expect(f.rememberProject).toHaveBeenCalledTimes(1)
+})
+it('does not invalidate an active prepare for a malformed later invocation', async () => {
+  const f = prepareFixture()
+  let release!: () => void, entered!: () => void
+  const waiting = new Promise<void>((resolve) => {
+      release = resolve
+    }),
+    started = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+  f.request.mockImplementation(async (body) => {
+    const b = body as { operation: string; pageId?: string }
+    if (b.pageId === 'one') {
+      entered()
+      await waiting
+    }
+    return new Response(
+      JSON.stringify(b.operation === 'production_status' ? compiled : pageArtifact(b.pageId!)),
+    )
+  })
+  const first = f.skill.executeTool(prepare)
+  await started
+  expect(await f.skill.executeTool({ ...prepare, input: { project_id: 'p' } })).toMatchObject({
+    isError: true,
+    output: 'invalid_tool_input',
+  })
+  release()
+  expect((await first).isError).not.toBe(true)
+  expect(f.skill.artifact()?.requestId).toBe('r')
+})
