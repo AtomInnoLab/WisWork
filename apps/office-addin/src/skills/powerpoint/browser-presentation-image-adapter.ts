@@ -1,7 +1,15 @@
 import { inspectPowerPointPicturePackage } from './powerpoint-package.js'
+import {
+  validateImageReplacementRecord,
+  type ImageReplacementRecord,
+} from './presentation-image-replacement-record.js'
 import type { PresentationPageGeometry } from './browser-powerpoint-adapter.js'
 
 type Runtime = Record<string, any>
+export interface ImageRecoveryStatus {
+  status: 'ready_to_finish' | 'already_applied' | 'manual_review'
+  reason?: string
+}
 export interface PictureSnapshot {
   slideId: string
   shapeId: string
@@ -97,7 +105,9 @@ export class BrowserPresentationImageAdapter {
       )
         throw new Error('office_read_failed')
       const shape = ordered.find((value) => value.id === shapeId)
-      if (!shape || shape.type !== 'Image') throw new Error('office_api_unsupported')
+      if (!shape) throw new Error('office_read_failed')
+      if (shape.type !== 'Image')
+        throw Object.assign(new Error('office_api_unsupported'), { pictureUnsupported: true })
       const geometry = {
         left: shape.left,
         top: shape.top,
@@ -119,7 +129,14 @@ export class BrowserPresentationImageAdapter {
         )
       )
         throw new Error('office_read_failed')
-      const proof = await inspectPowerPointPicturePackage(exported.value, shapeId, signal)
+      let proof: Awaited<ReturnType<typeof inspectPowerPointPicturePackage>>
+      try {
+        proof = await inspectPowerPointPicturePackage(exported.value, shapeId, signal)
+      } catch (error) {
+        if (error instanceof Error && error.message === 'office_api_unsupported')
+          throw Object.assign(error, { pictureUnsupported: true })
+        throw error
+      }
       if (
         !same(
           proof.shapeIds,
@@ -139,6 +156,132 @@ export class BrowserPresentationImageAdapter {
         ...proof,
       }
     })
+  }
+
+  async inspectRecovery(
+    record: ImageReplacementRecord,
+    signal?: AbortSignal,
+  ): Promise<ImageRecoveryStatus> {
+    check(signal)
+    const manual = (reason: string): ImageRecoveryStatus => ({ status: 'manual_review', reason })
+    if (!validateImageReplacementRecord(record)) return manual('invalid_evidence')
+    if (record.state !== 'pending') return manual('not_pending')
+    const baseline = record.baseline,
+      newId = record.newShapeId
+    if (!baseline || !newId) return manual('missing_evidence')
+    id(record.hostSlideId)
+    id(record.oldShapeId)
+    id(newId)
+    if (
+      baseline.slideId !== record.hostSlideId ||
+      baseline.shapeId !== record.oldShapeId ||
+      !Array.isArray(baseline.shapeIds) ||
+      baseline.shapeIds[baseline.zOrderPosition] !== record.oldShapeId ||
+      baseline.shapeIds.includes(newId) ||
+      newId === record.oldShapeId
+    )
+      return manual('invalid_evidence')
+    // Absence is established from a successful explicit collection read, never an exception.
+    const ids: string[] = await runtime().run(async (context: Runtime) => {
+      const page = await slide(context, record.hostSlideId, signal)
+      if (typeof page.shapes?.load !== 'function') throw new Error('office_api_unsupported')
+      page.shapes.load({ $top: 101, id: true, zOrderPosition: true })
+      await context.sync()
+      check(signal)
+      const items = page.shapes.items as Runtime[]
+      if (!Array.isArray(items) || items.length > 100) throw new Error('office_read_failed')
+      const ordered = [...items].sort((a, b) => a.zOrderPosition - b.zOrderPosition)
+      if (
+        ordered.some(
+          (shape, index) =>
+            typeof shape.id !== 'string' ||
+            !shape.id.length ||
+            shape.id.length > 256 ||
+            shape.zOrderPosition !== index,
+        ) ||
+        new Set(ordered.map((shape) => shape.id)).size !== ordered.length
+      )
+        throw new Error('office_read_failed')
+      return ordered.map((shape) => shape.id)
+    })
+    if (!ids.includes(newId)) return manual('candidate_missing')
+    const oldPresent = ids.includes(record.oldShapeId)
+    const expectedOrder = [...baseline.shapeIds]
+    if (oldPresent) expectedOrder.splice(baseline.zOrderPosition + 1, 0, newId)
+    else expectedOrder[baseline.zOrderPosition] = newId
+    if (!same(ids, expectedOrder)) return manual('object_order_changed')
+    let candidate: PictureSnapshot, old: PictureSnapshot | undefined
+    try {
+      candidate = await this.inspect(record.hostSlideId, newId, signal)
+      if (oldPresent) old = await this.inspect(record.hostSlideId, record.oldShapeId, signal)
+    } catch (error) {
+      // A readable object that is no longer an ordinary picture cannot be safely recovered.
+      check(signal)
+      if (
+        error instanceof Error &&
+        (error as Error & { pictureUnsupported?: boolean }).pictureUnsupported === true
+      )
+        return manual('unsupported_picture')
+      throw error
+    }
+    check(signal)
+    if (
+      candidate.mediaDigest !== record.assetDigest ||
+      !placement(candidate, baseline) ||
+      !same(candidate.shapeIds, expectedOrder) ||
+      candidate.zOrderPosition !== baseline.zOrderPosition + (oldPresent ? 1 : 0)
+    )
+      return manual('candidate_changed')
+    if (
+      old &&
+      (old.pictureFingerprint !== baseline.pictureFingerprint ||
+        old.mediaDigest !== baseline.mediaDigest ||
+        !placement(old, baseline) ||
+        old.zOrderPosition !== baseline.zOrderPosition ||
+        !same(old.shapeIds, expectedOrder))
+    )
+      return manual('original_changed')
+    return { status: oldPresent ? 'ready_to_finish' : 'already_applied' }
+  }
+
+  async finishRecovery(
+    record: ImageReplacementRecord,
+    expectedStatus: 'ready_to_finish' | 'already_applied',
+    signal?: AbortSignal,
+  ): Promise<{ shapeId: string }> {
+    check(signal)
+    if (!['ready_to_finish', 'already_applied'].includes(expectedStatus))
+      throw new Error('invalid_tool_input')
+    const current = await this.inspectRecovery(record, signal)
+    if (current.status !== expectedStatus || !record.newShapeId)
+      throw new Error('office_concurrent_change')
+    check(signal)
+    if (expectedStatus === 'already_applied') return { shapeId: record.newShapeId }
+    await runtime().run(async (context: Runtime) => {
+      const page = await slide(context, record.hostSlideId, signal)
+      const old = page.shapes.getItem(record.oldShapeId)
+      if (typeof old?.delete !== 'function') throw new Error('office_api_unsupported')
+      check(signal)
+      try {
+        old.delete()
+      } catch {
+        throw new Error('office_state_uncertain')
+      }
+      if (signal?.aborted) throw new Error('office_state_uncertain')
+      try {
+        await context.sync()
+      } catch {
+        /* Only a fresh, read-only proof can establish completion. */
+      }
+    })
+    let final: ImageRecoveryStatus
+    try {
+      final = await this.inspectRecovery(record)
+    } catch {
+      throw new Error('office_state_uncertain')
+    }
+    if (final.status !== 'already_applied') throw new Error('office_state_uncertain')
+    return { shapeId: record.newShapeId }
   }
 
   async replace(

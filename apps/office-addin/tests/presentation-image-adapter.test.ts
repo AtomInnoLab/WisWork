@@ -256,3 +256,147 @@ describe('ordinary image replacement transaction', () => {
     expect(shapes.some((shape) => shape.id === '1')).toBe(true)
   })
 })
+
+async function pendingRecovery() {
+  const host = setup()
+  const baseline = await host.adapter.inspect('host-30', '1')
+  await expect(
+    host.adapter.replace('host-30', '1', next, baseline, async () => {
+      throw new Error('interrupted')
+    }),
+  ).rejects.toThrow('interrupted')
+  const candidate = await host.adapter.inspect('host-30', '3')
+  const record = {
+    version: 1 as const,
+    documentId: 'doc',
+    projectId: 'project',
+    requestId: 'request',
+    pageId: 'page',
+    hostSlideId: 'host-30',
+    oldShapeId: '1',
+    assetDigest: candidate.mediaDigest,
+    state: 'pending' as const,
+    newShapeId: '3',
+    baseline,
+  }
+  return { ...host, record }
+}
+describe('interrupted image replacement recovery', () => {
+  it('inspects both verified objects and completes by deleting only the old image', async () => {
+    const { adapter, record, shapes, additions } = await pendingRecovery()
+    expect(await adapter.inspectRecovery(record)).toEqual({ status: 'ready_to_finish' })
+    await expect(adapter.finishRecovery(record, 'ready_to_finish')).resolves.toEqual({
+      shapeId: '3',
+    })
+    expect(shapes.map((shape) => shape.id)).toEqual(['3', '2'])
+    expect(additions()).toBe(1)
+    expect(await adapter.inspectRecovery(record)).toEqual({ status: 'already_applied' })
+    const candidate = shapes[0]!,
+      calls = candidate.setZOrder.mock.calls.length
+    await expect(adapter.finishRecovery(record, 'already_applied')).resolves.toEqual({
+      shapeId: '3',
+    })
+    expect(candidate.setZOrder).toHaveBeenCalledTimes(calls)
+    expect(additions()).toBe(1)
+  })
+  it.each(['missing', 'old-drift', 'candidate-drift', 'order-drift'] as const)(
+    'requires manual review for %s',
+    async (state) => {
+      const { adapter, record, shapes, additions } = await pendingRecovery()
+      if (state === 'missing')
+        shapes.splice(
+          shapes.findIndex((shape) => shape.id === '3'),
+          1,
+        )
+      if (state === 'old-drift') shapes.find((shape) => shape.id === '1')!.left++
+      if (state === 'candidate-drift') shapes.find((shape) => shape.id === '3')!.media = png
+      if (state === 'order-drift') shapes.reverse()
+      expect(await adapter.inspectRecovery(record)).toMatchObject({ status: 'manual_review' })
+      await expect(adapter.finishRecovery(record, 'ready_to_finish')).rejects.toThrow(
+        'office_concurrent_change',
+      )
+      expect(shapes.some((shape) => shape.id === '1')).toBe(true)
+      expect(additions()).toBe(1)
+    },
+  )
+  it('does not infer absence from host read errors or missing recovery evidence', async () => {
+    const { adapter, record, setOnSync, shapes } = await pendingRecovery()
+    expect(await adapter.inspectRecovery({ ...record, baseline: undefined })).toMatchObject({
+      status: 'manual_review',
+    })
+    expect(await adapter.inspectRecovery({ ...record, newShapeId: undefined })).toMatchObject({
+      status: 'manual_review',
+    })
+    expect(await adapter.inspectRecovery({ ...record, state: 'complete' })).toMatchObject({
+      status: 'manual_review',
+    })
+    setOnSync(() => {
+      throw new Error('read failed')
+    })
+    await expect(adapter.inspectRecovery(record)).rejects.toThrow('read failed')
+    expect(shapes.some((shape) => shape.id === '1')).toBe(true)
+  })
+  it('rejects stale expected recovery state before deletion', async () => {
+    const { adapter, record, shapes } = await pendingRecovery()
+    await expect(adapter.finishRecovery(record, 'already_applied')).rejects.toThrow(
+      'office_concurrent_change',
+    )
+    expect(shapes.some((shape) => shape.id === '1')).toBe(true)
+  })
+  it('does not flush a queued deletion when delete throws', async () => {
+    const { adapter, record, shapes, syncs } = await pendingRecovery()
+    let atThrow = -1
+    shapes
+      .find((shape) => shape.id === '1')!
+      .delete.mockImplementation(() => {
+        atThrow = syncs()
+        throw new Error('queue failure')
+      })
+    await expect(adapter.finishRecovery(record, 'ready_to_finish')).rejects.toThrow(
+      'office_state_uncertain',
+    )
+    expect(syncs()).toBe(atThrow)
+    expect(shapes.some((shape) => shape.id === '1')).toBe(true)
+  })
+  it('cancels before writes and reconciles cancellation after a committed deletion', async () => {
+    const { adapter, record, shapes, setOnSync } = await pendingRecovery()
+    const before = new AbortController()
+    before.abort()
+    await expect(adapter.finishRecovery(record, 'ready_to_finish', before.signal)).rejects.toThrow(
+      'cancelled',
+    )
+    expect(shapes.some((shape) => shape.id === '1')).toBe(true)
+    const after = new AbortController()
+    setOnSync(() => {
+      if (!shapes.some((shape) => shape.id === '1')) after.abort()
+    })
+    await expect(adapter.finishRecovery(record, 'ready_to_finish', after.signal)).resolves.toEqual({
+      shapeId: '3',
+    })
+  })
+  it('treats unsupported picture content as manual review but propagates unsupported host reads', async () => {
+    const { adapter, record, shapes } = await pendingRecovery()
+    shapes.find((shape) => shape.id === '3')!.type = 'TextBox'
+    expect(await adapter.inspectRecovery(record)).toMatchObject({
+      status: 'manual_review',
+      reason: 'unsupported_picture',
+    })
+    shapes.find((shape) => shape.id === '3')!.type = 'Image'
+    vi.spyOn(adapter, 'inspect').mockRejectedValueOnce(new Error('office_api_unsupported'))
+    await expect(adapter.inspectRecovery(record)).rejects.toThrow('office_api_unsupported')
+  })
+  it('requires proof of completed deletion and does not convert final read failures to success', async () => {
+    for (const mode of ['not-deleted', 'read-failed']) {
+      const { adapter, record, shapes, setOnSync } = await pendingRecovery()
+      if (mode === 'not-deleted')
+        shapes.find((shape) => shape.id === '1')!.delete.mockImplementation(() => {})
+      else
+        setOnSync(() => {
+          if (!shapes.some((shape) => shape.id === '1')) throw new Error('read failed')
+        })
+      await expect(adapter.finishRecovery(record, 'ready_to_finish')).rejects.toThrow(
+        'office_state_uncertain',
+      )
+    }
+  })
+})
