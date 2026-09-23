@@ -220,3 +220,102 @@ it('accepts a durable original above the session file limit without a local copy
   expect(request).toHaveBeenCalledOnce()
   expect(vfs.list('/home/user')).toEqual([])
 })
+function imageFixture(overrides: Record<string, unknown> = {}) {
+  const bytes = new Uint8Array([1, 2, 3]),
+    attachmentId = createHash('sha256').update(bytes).digest('hex')
+  const value = {
+    attachmentId,
+    name: 'photo.jpg',
+    sha256: attachmentId,
+    sizeBytes: 3,
+    receivedBytes: 3,
+    status: 'ready',
+    kind: 'image',
+    mime: 'image/png',
+    width: 800,
+    height: 600,
+    assetSha256: 'b'.repeat(64),
+    ...overrides,
+  }
+  const imagesAvailable = vi.fn(() => true),
+    documentId = vi.fn(async () => 'doc')
+  const request = vi.fn(
+    async (body: unknown) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'attachment_list_assets'
+            ? { attachments: [value] }
+            : value,
+        ),
+      ),
+  )
+  const vfs = new InMemoryVfs(),
+    skill = createPresentationAttachmentSkill({
+      available: () => true,
+      imagesAvailable,
+      request,
+      documentId,
+      vfs,
+    })
+  return { bytes, value, imagesAvailable, request, vfs, skill, documentId }
+}
+it('uploads image originals and lists validated compact asset metadata on the negotiated channel', async () => {
+  const f = imageFixture()
+  await f.skill.upload('photo.jpg', Promise.resolve(f.bytes.buffer))
+  const result = await f.skill.executeTool({
+    id: 'list',
+    name: 'list_presentation_attachments',
+    input: {},
+  })
+  expect(JSON.parse(result.output)).toEqual({ attachments: [f.value] })
+  expect(result.output).not.toContain('base64')
+  expect(f.request).toHaveBeenLastCalledWith(
+    { operation: 'attachment_list_assets', documentId: 'doc' },
+    expect.any(AbortSignal),
+  )
+  expect(f.skill.systemPrompt).toContain('attachmentId: listed_attachmentId')
+})
+it.each([
+  { width: 0 },
+  { height: 16385 },
+  { width: 10000, height: 10000 },
+  { assetSha256: 'wrong' },
+  { mime: 'image/jpeg' },
+  { totalChars: 5 },
+  { kind: 'text' },
+  { source: 'file:///secret' },
+])('rejects forged image metadata %j', async (overrides) => {
+  const f = imageFixture(overrides)
+  expect(
+    await f.skill.executeTool({ id: 'list', name: 'list_presentation_attachments', input: {} }),
+  ).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+  await expect(f.skill.upload('photo.jpg', Promise.resolve(f.bytes.buffer))).rejects.toThrow(
+    'presentation_response_invalid',
+  )
+  expect(f.vfs.list('/home/user')).toEqual([])
+})
+it('does not publish image upload results after image capability loss', async () => {
+  const f = imageFixture(),
+    original = f.request.getMockImplementation()!
+  f.request.mockImplementation(async (body) => {
+    const response = await original(body)
+    f.imagesAvailable.mockReturnValue(false)
+    return response
+  })
+  await expect(f.skill.upload('photo.jpg', Promise.resolve(f.bytes.buffer))).rejects.toThrow(
+    'presentation_assets_unavailable',
+  )
+  expect(f.vfs.list('/home/user')).toEqual([])
+})
+it('rejects oversized images and unnegotiated image uploads without dispatch', async () => {
+  const f = imageFixture()
+  await expect(
+    f.skill.upload('large.png', Promise.resolve(new ArrayBuffer(10 * 1024 * 1024 + 1))),
+  ).rejects.toThrow('presentation_image_too_large')
+  f.imagesAvailable.mockReturnValue(false)
+  await expect(f.skill.upload('photo.jpg', Promise.resolve(f.bytes.buffer))).rejects.toThrow(
+    'presentation_assets_unavailable',
+  )
+  expect(f.request).not.toHaveBeenCalled()
+  expect(f.skill.systemPrompt).not.toContain('attachmentId: listed_attachmentId')
+})

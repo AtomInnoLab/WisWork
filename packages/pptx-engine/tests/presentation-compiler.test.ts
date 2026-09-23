@@ -112,3 +112,23 @@ describe('presentation contract and compiler', () => {
     await expect(compilePresentationDeck(deck)).rejects.toThrow(/presentation_geometry/)
   })
 })
+it('accepts compact attachment references but never compiles unresolved asset bytes', async () => {
+  const deck: import('../src/presentation').PresentationDeck = benchmarkDeck()
+  deck.assets = [{ id: deck.assets[0]!.id, attachmentId: 'a'.repeat(64) }]
+  expect(parsePresentationDeck(deck)).toEqual(deck)
+  await expect(compilePresentationDeck(deck)).rejects.toThrow(
+    'presentation_invalid:unresolved_asset',
+  )
+  expect(() =>
+    parsePresentationDeck({
+      ...deck,
+      assets: [{ ...deck.assets[0], source: 'https://untrusted.example' }],
+    }),
+  ).toThrow('schema')
+  expect(() =>
+    parsePresentationDeck({ ...deck, assets: [{ ...deck.assets[0], attachmentId: '../asset' }] }),
+  ).toThrow('schema')
+  expect(() =>
+    parsePresentationDeck({ ...deck, assets: [deck.assets[0], deck.assets[0]] }),
+  ).toThrow('duplicate_asset')
+})

@@ -20,7 +20,8 @@ export interface PresentationStyle {
   textColor: string
   accentColor: string
 }
-export interface PresentationAsset {
+export type PresentationAsset = PresentationInlineAsset | { id: string; attachmentId: string }
+export interface PresentationInlineAsset {
   id: string
   mime: 'image/png' | 'image/jpeg'
   base64: string
@@ -121,17 +122,22 @@ export const PRESENTATION_DECK_SCHEMA: Schema = object({
     accentColor: color,
   }),
   assets: array(
-    object(
-      {
-        id,
-        mime: choice('image/png', 'image/jpeg'),
-        base64: { ...text(5_600_000, 4), pattern: '^[A-Za-z0-9+/]*={0,2}$' },
-        width: number(1, 16384),
-        height: number(1, 16384),
-        source: text(2000, 1),
-      },
-      ['id', 'mime', 'base64', 'width', 'height'],
-    ),
+    {
+      anyOf: [
+        object({ id, attachmentId: { ...text(64, 64), pattern: '^[a-f0-9]{64}$' } }),
+        object(
+          {
+            id,
+            mime: choice('image/png', 'image/jpeg'),
+            base64: { ...text(5_600_000, 4), pattern: '^[A-Za-z0-9+/]*={0,2}$' },
+            width: number(1, 16384),
+            height: number(1, 16384),
+            source: text(2000, 1),
+          },
+          ['id', 'mime', 'base64', 'width', 'height'],
+        ),
+      ],
+    },
     32,
   ),
   claims: array(
@@ -223,10 +229,14 @@ export function parsePresentationDeck(input: unknown): PresentationDeck {
   unique(deck.slides, 'slide')
   unique(deck.assets, 'asset')
   unique(deck.claims, 'claim')
-  if (deck.assets.reduce((sum, asset) => sum + asset.base64.length, 0) > 28_000_000)
+  if (
+    deck.assets.reduce((sum, asset) => sum + ('base64' in asset ? asset.base64.length : 0), 0) >
+    28_000_000
+  )
     reject('asset_budget')
-  // Only trusted, inlined raster assets: no URLs, SVG, file paths, or executable options.
+  // Attachment references must be resolved by the document-bound PC service before compilation.
   for (const asset of deck.assets) {
+    if ('attachmentId' in asset) continue
     if (asset.base64.length % 4 !== 0) reject('image_encoding')
     if (
       !Number.isInteger(asset.width) ||

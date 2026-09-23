@@ -4,12 +4,12 @@ import {
   parsePresentationDeck,
   PRESENTATION_HEIGHT,
   PRESENTATION_WIDTH,
-  type PresentationAsset,
+  type PresentationInlineAsset,
   type PresentationCompileReport,
 } from './presentation'
 
 /** Validate encoded raster dimensions before passing bytes to the PPTX writer. No external I/O. */
-function imageData(asset: PresentationAsset): string {
+function imageData(asset: PresentationInlineAsset): string {
   const bytes = Buffer.from(asset.base64, 'base64')
   if (bytes.toString('base64') !== asset.base64)
     throw new Error('presentation_invalid:image_encoding')
@@ -63,7 +63,10 @@ export async function compilePresentationDeck(
   if (geometry.some((issue) => issue.kind === 'out_of_bounds'))
     throw new Error('presentation_geometry:out_of_bounds')
   const assets = new Map(
-    deck.assets.map((asset) => [asset.id, { ...asset, data: imageData(asset) }]),
+    deck.assets.map((asset) => {
+      if ('attachmentId' in asset) throw new Error('presentation_invalid:unresolved_asset')
+      return [asset.id, { ...asset, data: imageData(asset) }] as const
+    }),
   )
   const pptx = new PptxGenJS()
   pptx.defineLayout({

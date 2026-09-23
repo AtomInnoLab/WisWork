@@ -219,3 +219,31 @@ it('uses the PC attachment limit for supported PPT sources before loading bytes'
   ).rejects.toThrow('presentation_attachment_too_large')
   expect(arrayBuffer).not.toHaveBeenCalled()
 })
+it('enforces the image limit only when the PC asset capability is negotiated', async () => {
+  const arrayBuffer = vi.fn(async () => new ArrayBuffer(0)),
+    uploadFile = vi.fn(async () => {})
+  const runtime = {
+    durableAttachmentsAvailable: () => true,
+    durableImagesAvailable: () => true,
+    uploadFile,
+  } as unknown as OfficeHostRuntime
+  await expect(
+    uploadSessionFile(runtime, {
+      name: 'photo.jpg',
+      size: 10 * 1024 * 1024 + 1,
+      arrayBuffer,
+      text: vi.fn(),
+    }),
+  ).rejects.toThrow('presentation_image_too_large')
+  expect(arrayBuffer).not.toHaveBeenCalled()
+  runtime.durableImagesAvailable = () => false
+  await expect(
+    uploadSessionFile(runtime, {
+      name: 'photo.jpg',
+      size: 10 * 1024 * 1024 + 1,
+      arrayBuffer,
+      text: vi.fn(),
+    }),
+  ).resolves.toBeUndefined()
+  expect(uploadFile).toHaveBeenCalledOnce()
+})

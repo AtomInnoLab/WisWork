@@ -309,3 +309,21 @@ it('keeps older presentation-only PCs on local attachment behavior', async () =>
   expect(runtime.vfs.list('/home/user')).toEqual(['/home/user/source.txt'])
   runtime.dispose()
 })
+it('retains local image uploads on PCs with document attachments but no asset capability', async () => {
+  const request = vi.fn()
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      attachmentsAvailable: () => true,
+      request,
+      documentId: async () => 'doc',
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+    },
+  })
+  expect(runtime.durableImagesAvailable?.()).toBe(false)
+  await runtime.uploadFile('photo.png', Promise.resolve(new Uint8Array([65]).buffer))
+  expect(request).not.toHaveBeenCalled()
+  expect(runtime.vfs.list('/home/user')).toContain('/home/user/photo.png')
+  runtime.dispose()
+})

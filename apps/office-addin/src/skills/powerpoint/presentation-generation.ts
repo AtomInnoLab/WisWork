@@ -49,6 +49,7 @@ const tools: AgentToolDef[] = [
 export interface PresentationGenerationOptions {
   vfs: InMemoryVfs
   available(): boolean
+  assetsAvailable?(): boolean
   attachmentsAvailable?(): boolean
   attachmentsRequest?(body: unknown, signal?: AbortSignal): Promise<Response>
   request(body: unknown, signal?: AbortSignal): Promise<Response>
@@ -76,7 +77,7 @@ export function createPresentationGenerationSkill(
       artifacts.clear()
     },
     id: 'office-presentation-generation',
-    systemPrompt: `For a new presentation, read user materials first, establish evidence and the per-page story, then choose a consistent visual style. When presentation compilation is available, use compile_deck_with_pptxgenjs with validated SlideIR to create a downloadable native PPTX. Prefer native charts/tables for factual data. Assets must already be prepared inline PNG/JPEG images, never paths or external URLs. Do not invent sources. Preserve project ID and request ID on unchanged retries. Compiled is not visually reviewed: explain checks marked not_run or not_verified and use existing Office tools for subsequent editing and host verification. The PPTX and report are available in Session attachments. Restore a prior compiled result with restore_presentation_project.`,
+    systemPrompt: `For a new presentation, read user materials first, establish evidence and the per-page story, then choose a consistent visual style. When presentation compilation is available, use compile_deck_with_pptxgenjs with validated SlideIR to create a downloadable native PPTX. Prefer native charts/tables for factual data. Assets can be prepared inline PNG/JPEG images, never paths or external URLs. When presentation-assets.v1 is available, prefer compact attachment references from list_presentation_attachments; the PC resolves cached image data. Do not invent sources. Preserve project ID and request ID on unchanged retries. Compiled is not visually reviewed: explain checks marked not_run or not_verified and use existing Office tools for subsequent editing and host verification. The PPTX and report are available in Session attachments. Restore a prior compiled result with restore_presentation_project.`,
     get tools() {
       return options.available() ? tools : []
     },
@@ -86,10 +87,13 @@ export function createPresentationGenerationSkill(
         : '',
     async executeTool(call, signal) {
       const captured = epoch
+      let usesAssetReferences = false
       const check = () => {
         abort(signal)
         if (captured !== epoch) throw new Error('cancelled')
         if (!options.available()) throw new Error('presentation_unavailable')
+        if (usesAssetReferences && !options.assetsAvailable?.())
+          throw new Error('presentation_assets_unavailable')
       }
       try {
         check()
@@ -110,6 +114,8 @@ export function createPresentationGenerationSkill(
           )
             throw new Error('invalid_tool_input')
           deck = parsePresentationDeck(value.deck)
+          usesAssetReferences = deck.assets.some((asset) => 'attachmentId' in asset)
+          check()
           projectId = deck.id
           requestId = value.request_id
         } else if (call.name === 'resume_presentation_project') {
@@ -247,7 +253,10 @@ export function createPresentationGenerationSkill(
           output: code,
           isError: true,
           mutated: false,
-          summary: 'PPT 生成未完成，已有成果已保留',
+          summary:
+            code === 'presentation_assets_unavailable'
+              ? '请更新并连接支持图片素材的 PC 端后重试'
+              : 'PPT 生成未完成，已有成果已保留',
         }
       }
     },

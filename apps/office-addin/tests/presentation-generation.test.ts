@@ -325,3 +325,34 @@ it('forwards a saved plan revision with a compilation request', async () => {
     undefined,
   )
 })
+it('requires negotiated asset references while allowing compact reference compilation on new PCs', async () => {
+  const referenced = { ...deck, assets: [{ id: 'photo', attachmentId: 'a'.repeat(64) }] }
+  const old = fixture()
+  expect(
+    await old.skill.executeTool({
+      id: 'ref',
+      name: 'compile_deck_with_pptxgenjs',
+      input: { request_id: 'request-1', deck: referenced },
+    }),
+  ).toMatchObject({ isError: true, output: 'presentation_assets_unavailable' })
+  expect(old.request).not.toHaveBeenCalled()
+  const request = vi.fn(async () => response()),
+    assetsAvailable = vi.fn(() => true)
+  const skill = createPresentationGenerationSkill({
+    vfs: new InMemoryVfs(),
+    available: () => true,
+    assetsAvailable,
+    request,
+    documentId: async () => 'doc',
+    lastProject: () => undefined,
+    rememberProject: async () => {},
+  })
+  expect(
+    await skill.executeTool({
+      id: 'ref',
+      name: 'compile_deck_with_pptxgenjs',
+      input: { request_id: 'request-1', deck: referenced },
+    }),
+  ).not.toHaveProperty('isError', true)
+  expect(request).toHaveBeenCalledWith(expect.objectContaining({ deck: referenced }), undefined)
+})

@@ -1,7 +1,11 @@
-import type { PresentationDeck, SlideIRElement } from '../../src/presentation'
+import type {
+  PresentationDeck,
+  PresentationInlineAsset,
+  SlideIRElement,
+} from '../../src/presentation'
 
 /** Eight-page 16:9 Chinese fixture; metrics are synthetic, never presented as researched facts. */
-export function benchmarkDeck(): PresentationDeck {
+export function benchmarkDeck(): PresentationDeck & { assets: PresentationInlineAsset[] } {
   const title = (text: string): SlideIRElement => ({
     kind: 'text',
     id: 'title',
@@ -31,7 +35,7 @@ export function benchmarkDeck(): PresentationDeck {
     '数据图表',
     '总结',
   ]
-  const deck: PresentationDeck = {
+  const deck: PresentationDeck & { assets: PresentationInlineAsset[] } = {
     version: 1,
     id: 'benchmark-eight',
     title: '八页可编辑基准',

@@ -57,6 +57,7 @@ import { composeOfficeSkills } from './skill-registry.js'
 export interface OfficeHostRuntime {
   readonly presentation?: PresentationProjectController
   durableAttachmentsAvailable?(): boolean
+  durableImagesAvailable?(): boolean
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   vfs: InMemoryVfs
@@ -172,6 +173,11 @@ export function createOfficeHostRuntime(
           documentId: options.presentation.documentId,
           available: options.presentation.attachmentsAvailable ?? (() => false),
           request: options.presentation.attachmentsRequest ?? options.presentation.request,
+          imagesAvailable: () =>
+            Boolean(
+              options.presentation?.attachmentsAvailable?.() &&
+              options.presentation?.assetsAvailable?.(),
+            ),
         })
       : undefined
   const planning =
@@ -249,6 +255,11 @@ export function createOfficeHostRuntime(
         ? {
             available: options.presentation.attachmentsAvailable ?? (() => false),
             upload: attachments.upload,
+            imagesAvailable: () =>
+              Boolean(
+                options.presentation?.attachmentsAvailable?.() &&
+                options.presentation?.assetsAvailable?.(),
+              ),
           }
         : undefined,
     ),
@@ -266,6 +277,7 @@ function lifecycle(
   onClear?: () => void,
   attachments?: {
     available(): boolean
+    imagesAvailable(): boolean
     upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
   },
 ): OfficeHostRuntime {
@@ -290,9 +302,13 @@ function lifecycle(
     skills,
     skillPackagesEnabled,
     durableAttachmentsAvailable: () => attachments?.available() ?? false,
+    durableImagesAvailable: () => attachments?.imagesAvailable() ?? false,
     async uploadFile(name, content) {
       if (disposed) throw new Error('upload_cancelled')
-      if (attachments?.available() && supportsPresentationAttachment(name)) {
+      if (
+        attachments?.available() &&
+        supportsPresentationAttachment(name, attachments.imagesAvailable())
+      ) {
         return attachments.upload(name, content)
       }
       const captured = epoch

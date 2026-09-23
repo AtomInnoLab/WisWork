@@ -1,5 +1,7 @@
 import {
   MAX_PRESENTATION_ATTACHMENT_BYTES,
+  MAX_PRESENTATION_IMAGE_BYTES,
+  isPresentationImage,
   supportsPresentationAttachment,
 } from './skills/powerpoint/presentation-attachments.js'
 import { PresentationProjectCard } from './agent/presentation-project-card.js'
@@ -160,6 +162,8 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
   const code = error instanceof Error ? error.message : ''
   const attachmentErrors: Record<string, string> = {
     presentation_attachment_too_large: '制作资料每个文件最多 50 MB。',
+    presentation_image_too_large: '图片每个文件最多 10 MB。',
+    presentation_assets_unavailable: '请更新并连接支持图片素材的 PC 端后重试。',
     presentation_attachment_failed: '资料解析未完成，请检查文件或重新上传。',
     presentation_document_changed: '文档已改变，本次上传已停止。请在目标文档重新上传。',
     presentation_service_unavailable: 'PC 连接不可用，请重连后重新选择同一文件续传。',
@@ -197,6 +201,7 @@ interface SessionFile {
 export interface OfficeWorkspaceUi {
   readonly project?: PresentationProjectController
   readonly durableAttachmentsAvailable?: () => boolean
+  readonly durableImagesAvailable?: () => boolean
   readonly attachments: () => readonly string[]
   readonly downloadFile?: (path: string) => void
   readonly skills: () => readonly string[]
@@ -243,6 +248,7 @@ export function createOfficeWorkspaceUi(
   return Object.freeze({
     project: runtime.presentation,
     durableAttachmentsAvailable: runtime.durableAttachmentsAvailable,
+    durableImagesAvailable: runtime.durableImagesAvailable,
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
     downloadFile: (path: string) => downloadSessionFile(runtime.vfs, path),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
@@ -270,9 +276,15 @@ export function uploadSessionFile(runtime: OfficeHostRuntime, file: SessionFile)
     if (file.size > MAX_SKILL_BYTES) return Promise.reject(new Error('invalid_skill_package'))
     return runtime.installSkill(file.text())
   }
-  if (runtime.durableAttachmentsAvailable?.() && supportsPresentationAttachment(file.name)) {
-    if (file.size > MAX_PRESENTATION_ATTACHMENT_BYTES)
-      return Promise.reject(new Error('presentation_attachment_too_large'))
+  if (
+    runtime.durableAttachmentsAvailable?.() &&
+    supportsPresentationAttachment(file.name, runtime.durableImagesAvailable?.())
+  ) {
+    const image = isPresentationImage(file.name)
+    if (file.size > (image ? MAX_PRESENTATION_IMAGE_BYTES : MAX_PRESENTATION_ATTACHMENT_BYTES))
+      return Promise.reject(
+        new Error(image ? 'presentation_image_too_large' : 'presentation_attachment_too_large'),
+      )
   } else if (file.size > MAX_VFS_FILE_BYTES) return Promise.reject(new Error('vfs_limit'))
   return runtime.uploadFile(file.name, file.arrayBuffer())
 }
@@ -732,7 +744,7 @@ export function AgentWorkspace(props: {
                   const captured = ++uploadEpoch.current
                   const durable =
                     ui.durableAttachmentsAvailable?.() &&
-                    supportsPresentationAttachment(file.name) &&
+                    supportsPresentationAttachment(file.name, ui.durableImagesAvailable?.()) &&
                     file.name !== 'SKILL.md'
                   const current = () => mounted.current && captured === uploadEpoch.current
                   setUploadError('')
@@ -764,6 +776,12 @@ export function AgentWorkspace(props: {
                   ? 'PDF、Word（DOCX）、TXT、MD、CSV、JSON 资料每个最多 50 MB，保存于 PC 并绑定当前文档；退出登录不会删除。重连后可让 Agent 列出和读取，重新选择同一文件可续传。'
                   : `Files are limited to ${displayMegabytes(MAX_VFS_FILE_BYTES)} MB each and ${displayMegabytes(MAX_VFS_TOTAL_BYTES)} MB per session, then cleared on logout.`}
               </p>
+              {ui.durableImagesAvailable?.() && (
+                <p>
+                  PNG、JPEG 图片每个最多 10 MB，上传后在 PC
+                  校验并缓存；可直接用于制作，无需将图片编码发给 Agent。
+                </p>
+              )}
               {ui.durableAttachmentsAvailable?.() && (
                 <p>
                   下方仅显示本次会话可下载的副本；超过 20 MB 或会话容量的资料仍可由 Agent 在 PC
@@ -980,7 +998,12 @@ function ConfiguredApp() {
       transportMode === 'loopback'
         ? createPcBridgeSession()
         : createOfficeRelaySession({
-            capabilities: ['agent.v1', 'presentation.v1', 'presentation-attachments.v1'],
+            capabilities: [
+              'agent.v1',
+              'presentation.v1',
+              'presentation-attachments.v1',
+              'presentation-assets.v1',
+            ],
           }),
     [transportMode],
   )
@@ -1042,6 +1065,13 @@ function ConfiguredApp() {
                       },
                       request: (body: unknown, signal?: AbortSignal) =>
                         bridge.capabilityFetch('presentation.v1', body, signal),
+                      assetsAvailable: () => {
+                        const snapshot = bridge.snapshot()
+                        return (
+                          snapshot.status === 'connected' &&
+                          snapshot.capabilities?.includes('presentation-assets.v1') === true
+                        )
+                      },
                       attachmentsAvailable: () => {
                         const snapshot = bridge.snapshot()
                         return (
