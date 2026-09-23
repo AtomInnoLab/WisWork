@@ -115,3 +115,7 @@ reviewer_and_date: 待执行
 ### 单页替换暂存与撤回进展（2026-09-23）
 
 新增确认后的修订页暂存、持久pending/inserted/staged回执、已知新页的恢复核对与暂存撤回；原页及业务映射保留。详见[替换暂存阶段报告](./wiswork-ppt-agent-page-replacement-stage-progress-2026-09-23.md)。正式替换提交、整页撤销、写后验收和真实Office兼容仍未完成，O3/O5及P0保持进行中。
+
+### 单页替换正式提交与整页撤销进展（2026-09-23）
+
+已接通确认式正式替换、原页备份恢复、原子事务/业务映射切换和终态保存失败后的只补回执恢复；详见[正式替换与撤销阶段报告](./wiswork-ppt-agent-page-replacement-commit-progress-2026-09-23.md)。派生 prepare 仅开放给具有完整已提交映射的任务。真实 Office 兼容、写后质量验收、通用撤销和 20 项专业任务仍未完成，O3/O5 及 P0 保持进行中。

@@ -169,6 +169,8 @@ export function createOfficeHostRuntime(
                 'stage_presentation_page_replacement',
                 'resume_presentation_page_replacement',
                 'discard_presentation_page_replacement',
+                'commit_presentation_page_replacement',
+                'undo_presentation_page_replacement',
                 'edit_presentation_page_text',
                 'edit_presentation_page_geometry',
                 'undo_presentation_geometry_change',
@@ -280,6 +282,27 @@ export function createOfficeHostRuntime(
     importSource === 'production'
       ? production?.artifact(projectId)
       : generation?.artifact(projectId)
+  // A cached source can outlive an atomic mapping switch; don't render it as current.
+  const visibleArtifact = () => {
+    const artifact = activeArtifact()
+    if (!artifact) return undefined
+    const change = options.presentation?.readPageReplacement?.()
+    if (
+      change?.documentId === artifact.documentId &&
+      change.projectId === artifact.projectId &&
+      [change.parentRequestId, change.requestId].includes(artifact.requestId) &&
+      ['commit_pending', 'undo_pending', 'restore_inserted'].includes(change.state)
+    )
+      return undefined
+    try {
+      options.presentation?.readReceipt?.(presentationImportKey(artifact))
+    } catch (error) {
+      if (error instanceof Error && error.message === 'presentation_import_superseded')
+        return undefined
+      throw error
+    }
+    return artifact
+  }
   const pageBackup =
     production && powerPointAdapter && options.presentation?.readReceipt
       ? createPresentationPageBackupSkill({
@@ -304,7 +327,14 @@ export function createOfficeHostRuntime(
           artifact: activeArtifact,
           readReceipt: options.presentation.readReceipt,
           readPageReplacement: options.presentation.readPageReplacement,
-          writePageReplacement: options.presentation.writePageReplacement,
+          writePageReplacement: async (record, expected) => {
+            try {
+              await options.presentation!.writePageReplacement!(record, expected)
+            } finally {
+              notifyImport()
+              notifyQa()
+            }
+          },
           loadBackup: pageBackup.loadBackup,
           adapter: new BrowserPresentationPageReplacementAdapter(),
           proposals,
@@ -373,8 +403,7 @@ export function createOfficeHostRuntime(
     generation && options.presentation?.readReceipt
       ? {
           read: () => {
-            const artifact =
-              importSource === 'production' ? production?.artifact() : generation.artifact()
+            const artifact = visibleArtifact()
             return artifact
               ? summarizePresentationImport(
                   artifact,
@@ -443,7 +472,7 @@ export function createOfficeHostRuntime(
     qaSkill && generation
       ? {
           read: () => {
-            const artifact = activeArtifact()
+            const artifact = visibleArtifact()
             return artifact
               ? options.presentation!.readQa!(presentationImportKey(artifact))
               : undefined
@@ -544,6 +573,8 @@ export function createOfficeHostRuntime(
             'inspect_presentation_page_replacement',
             'resume_presentation_page_replacement',
             'discard_presentation_page_replacement',
+            'commit_presentation_page_replacement',
+            'undo_presentation_page_replacement',
           ].includes(call.name) && pageReplacement
             ? pageReplacement.executeTool(call, signal)
             : ['save_presentation_page_backup', 'read_presentation_page_backup'].includes(
