@@ -132,3 +132,19 @@ it('accepts compact attachment references but never compiles unresolved asset by
     parsePresentationDeck({ ...deck, assets: [deck.assets[0], deck.assets[0]] }),
   ).toThrow('duplicate_asset')
 })
+
+it('returns Office source slide IDs from the final OOXML in deck order on repeated compilation', async () => {
+  const deck = benchmarkDeck()
+  const first = await compilePresentationDeck(deck)
+  const second = await compilePresentationDeck(deck)
+  const xml = await (
+    await JSZip.loadAsync(first.bytes)
+  )
+    .file('ppt/presentation.xml')!
+    .async('string')
+  const ids = [...xml.matchAll(/<p:sldId\s+id="(\d+)"/g)].map((match) => `${match[1]}#`)
+  expect(ids).toHaveLength(8)
+  expect(first.sourceSlideIds).toEqual(ids)
+  expect(second.sourceSlideIds).toEqual(ids)
+  expect(new Set(ids).size).toBe(8)
+})

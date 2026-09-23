@@ -276,7 +276,32 @@ export function createPresentationService(options: {
         const compiled = await compile({ ...inputDeck, assets })
         checkAbort(signal)
         if (compiled.bytes.byteLength > 10 * 1024 * 1024) throw new Error('output_too_large')
+        const sourceSlideIds = compiled.sourceSlideIds
+        if (
+          sourceSlideIds !== undefined &&
+          (!Array.isArray(sourceSlideIds) ||
+            sourceSlideIds.length !== inputDeck.slides.length ||
+            new Set(sourceSlideIds).size !== sourceSlideIds.length ||
+            sourceSlideIds.some(
+              (id) =>
+                typeof id !== 'string' ||
+                !/^[1-9]\d*#$/.test(id) ||
+                !Number.isSafeInteger(Number(id.slice(0, -1))) ||
+                Number(id.slice(0, -1)) < 256 ||
+                Number(id.slice(0, -1)) > 0xffffffff,
+            ))
+        )
+          throw new Error('compile_failed')
         const result = {
+          ...(sourceSlideIds
+            ? {
+                pages: inputDeck.slides.map((slide, i) => ({
+                  id: slide.id,
+                  title: slide.title,
+                  sourceSlideId: sourceSlideIds[i]!,
+                })),
+              }
+            : {}),
           projectId,
           requestId,
           status: 'compiled',

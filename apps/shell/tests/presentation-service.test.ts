@@ -393,3 +393,68 @@ describe('durable presentation planning', () => {
     ).toEqual({ error: 'not_found' })
   })
 })
+
+it('persists ordered source page metadata and restores it after service restart', async () => {
+  const userDataPath = root()
+  const deck = {
+    ...input.deck,
+    slides: [
+      input.deck.slides[0]!,
+      { ...input.deck.slides[0]!, id: 'second-slide', title: 'Second' },
+    ],
+  }
+  const compile = vi.fn(async () => ({ ...result(), sourceSlideIds: ['300#', '257#'] }))
+  const service = createPresentationService({ userDataPath, compile })
+  const response = decode(await service({ ...input, deck }, signal()))
+  const pages = [
+    { id: 'slide', title: 'Title', sourceSlideId: '300#' },
+    { id: 'second-slide', title: 'Second', sourceSlideId: '257#' },
+  ]
+  expect(response.pages).toEqual(pages)
+  const reload = createPresentationService({ userDataPath, compile })
+  expect(
+    decode(
+      await reload({ operation: 'get', projectId: 'deck', documentId: input.documentId }, signal()),
+    ).pages,
+  ).toEqual(pages)
+  expect(
+    decode(
+      await reload(
+        {
+          operation: 'resume',
+          projectId: 'deck',
+          documentId: input.documentId,
+          requestId: 'first',
+        },
+        signal(),
+      ),
+    ).pages,
+  ).toEqual(pages)
+  expect(compile).toHaveBeenCalledTimes(1)
+})
+it.each(
+  [[], ['255#'], ['4294967296#'], ['256'], ['0256#'], ['NaN#'], ['256#', '256#']].map(
+    (sourceSlideIds) => ({ sourceSlideIds }),
+  ),
+)(
+  'rejects malformed compiler source IDs $sourceSlideIds before persisting a completed result',
+  async ({ sourceSlideIds }) => {
+    const userDataPath = root()
+    const compile = vi.fn(async () => ({ ...result(), sourceSlideIds }))
+    const service = createPresentationService({ userDataPath, compile })
+    const request =
+      sourceSlideIds.length === 2
+        ? {
+            ...input,
+            deck: {
+              ...input.deck,
+              slides: [input.deck.slides[0]!, { ...input.deck.slides[0]!, id: 'second-slide' }],
+            },
+          }
+        : input
+    expect(decode(await service(request, signal()))).toEqual({ error: 'compile_failed' })
+    expect(
+      new PresentationStore(userDataPath).request('deck', input.documentId, 'first')?.status,
+    ).toBe('pending')
+  },
+)

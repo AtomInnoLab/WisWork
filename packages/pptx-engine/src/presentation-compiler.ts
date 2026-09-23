@@ -1,4 +1,6 @@
 import PptxGenJS from 'pptxgenjs'
+import JSZip from 'jszip'
+import { XMLParser } from 'fast-xml-parser'
 import {
   inspectPresentationGeometry,
   parsePresentationDeck,
@@ -57,7 +59,7 @@ function imageData(asset: PresentationInlineAsset): string {
 /** Deterministic mapping from validated IR to editable OOXML; this is not a rendered visual review. */
 export async function compilePresentationDeck(
   input: unknown,
-): Promise<{ bytes: Uint8Array; report: PresentationCompileReport }> {
+): Promise<{ bytes: Uint8Array; report: PresentationCompileReport; sourceSlideIds?: string[] }> {
   const deck = parsePresentationDeck(input)
   const geometry = inspectPresentationGeometry(deck)
   if (geometry.some((issue) => issue.kind === 'out_of_bounds'))
@@ -201,8 +203,37 @@ export async function compilePresentationDeck(
   }
   const output = await pptx.write({ outputType: 'uint8array', compression: true })
   if (!(output instanceof Uint8Array)) throw new Error('presentation_compile:unexpected_output')
+  const zip = await JSZip.loadAsync(output)
+  const presentation = zip.file('ppt/presentation.xml')
+  if (!presentation) throw new Error('presentation_compile:missing_presentation')
+  const parsed = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    parseAttributeValue: false,
+    isArray: (name) => name === 'p:sldId',
+  }).parse(await presentation.async('string')) as {
+    'p:presentation'?: { 'p:sldIdLst'?: { 'p:sldId'?: Array<{ '@_id'?: unknown }> } }
+  }
+  const slideIds = parsed['p:presentation']?.['p:sldIdLst']?.['p:sldId']
+  if (!Array.isArray(slideIds) || slideIds.length !== deck.slides.length)
+    throw new Error('presentation_compile:invalid_slide_ids')
+  const sourceSlideIds = slideIds.map((slide) => {
+    const id = slide['@_id']
+    if (
+      typeof id !== 'string' ||
+      !/^[1-9]\d*$/.test(id) ||
+      !Number.isSafeInteger(Number(id)) ||
+      Number(id) < 256 ||
+      Number(id) > 0xffffffff
+    )
+      throw new Error('presentation_compile:invalid_slide_ids')
+    return `${id}#`
+  })
+  if (new Set(sourceSlideIds).size !== sourceSlideIds.length)
+    throw new Error('presentation_compile:invalid_slide_ids')
   return {
     bytes: output,
+    sourceSlideIds,
     report: {
       deckId: deck.id,
       slideCount: deck.slides.length,
