@@ -11,7 +11,8 @@
     "./background-promote": "./src/background-promote.ts",
     "./presentation": "./src/presentation.ts",
     "./presentation-plan": "./src/presentation-plan.ts",
-    "./presentation-compiler": "./src/presentation-compiler.ts"
+    "./presentation-compiler": "./src/presentation-compiler.ts",
+    "./presentation-content-check": "./src/presentation-content-check.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
