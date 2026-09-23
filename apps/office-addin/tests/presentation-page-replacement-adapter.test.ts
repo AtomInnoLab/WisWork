@@ -315,3 +315,214 @@ it('rechecks staged content after obtaining the exact deletion proxy', async () 
   await expect(f.adapter.discard(f.record, vi.fn())).rejects.toThrow('office_concurrent_change')
   expect(f.remove).not.toHaveBeenCalled()
 })
+
+async function staged() {
+  const f = await setup()
+  await f.adapter.stage(
+    f.record,
+    f.replacement,
+    async (id) => {
+      f.record = { ...f.record, state: 'commit_pending', newSlideId: id }
+    },
+    vi.fn(),
+  )
+  return f
+}
+async function applied() {
+  const f = await staged()
+  await f.adapter.commit(f.record, vi.fn())
+  f.record = { ...f.record, state: 'undo_pending' }
+  f.insert.mockImplementation((base64) => {
+    f.setIds(['before', 'new', 'restored', 'after'])
+    f.packages.restored = base64
+  })
+  return f
+}
+it('commits exact staged pages, restores originals before deletion, and only reads already completed writes', async () => {
+  const f = await staged()
+  await f.adapter.commit(f.record, vi.fn())
+  await f.adapter.commit(f.record, vi.fn())
+  expect(f.remove).toHaveBeenCalledExactlyOnceWith('old')
+  expect((await f.adapter.inspect(f.record)).status).toBe('applied')
+  const g = await applied()
+  const journal = vi.fn(async (id: string) => {
+    expect(g.remove).toHaveBeenCalledTimes(1)
+    g.record = { ...g.record, state: 'restore_inserted', restoredSlideId: id }
+  })
+  await g.adapter.undo(g.record, g.original, journal, vi.fn())
+  expect(journal).toHaveBeenCalledExactlyOnceWith('restored')
+  expect(g.insert).toHaveBeenLastCalledWith(g.original, {
+    targetSlideId: 'new',
+    formatting: 'KeepSourceFormatting',
+  })
+  expect((await g.adapter.inspect(g.record)).status).toBe('undone')
+  await g.adapter.undo(g.record, g.original, journal, vi.fn())
+  expect(g.remove.mock.calls).toEqual([['old'], ['new']])
+  expect(g.insert).toHaveBeenCalledTimes(2)
+})
+it('recovers commit after deletion applied but sync failed without deleting twice', async () => {
+  const f = await staged()
+  f.context.sync.mockImplementation(async () => {
+    if (f.remove.mock.calls.length) throw new Error('connection_lost')
+  })
+  await expect(f.adapter.commit(f.record, vi.fn())).rejects.toThrow('connection_lost')
+  f.context.sync.mockResolvedValue()
+  await f.adapter.commit(f.record, vi.fn())
+  expect(f.remove).toHaveBeenCalledExactlyOnceWith('old')
+})
+it('retains replacement after failed restore receipt and never guesses unknown inserted identity', async () => {
+  const f = await applied()
+  await expect(
+    f.adapter.undo(
+      f.record,
+      f.original,
+      async () => {
+        throw new Error('receipt_failed')
+      },
+      vi.fn(),
+    ),
+  ).rejects.toThrow('receipt_failed')
+  await expect(f.adapter.undo(f.record, f.original, vi.fn(), vi.fn())).rejects.toThrow(
+    'office_concurrent_change',
+  )
+  expect(f.insert).toHaveBeenCalledTimes(2)
+  expect(f.remove).toHaveBeenCalledExactlyOnceWith('old')
+})
+it('resumes journalled restoration and partially applied deletion without reinserting', async () => {
+  const f = await applied()
+  await expect(
+    f.adapter.undo(
+      f.record,
+      f.original,
+      async (id) => {
+        f.record = { ...f.record, state: 'restore_inserted', restoredSlideId: id }
+        throw new Error('lost_response')
+      },
+      vi.fn(),
+    ),
+  ).rejects.toThrow('lost_response')
+  expect((await f.adapter.inspect(f.record)).status).toBe('restore_staged')
+  f.context.sync.mockImplementation(async () => {
+    if (f.remove.mock.calls.length === 2) throw new Error('connection_lost')
+  })
+  await expect(f.adapter.undo(f.record, f.original, vi.fn(), vi.fn())).rejects.toThrow(
+    'connection_lost',
+  )
+  f.context.sync.mockResolvedValue()
+  await f.adapter.undo(f.record, f.original, vi.fn(), vi.fn())
+  expect(f.insert).toHaveBeenCalledTimes(2)
+  expect(f.remove).toHaveBeenCalledTimes(2)
+})
+it('blocks commit on content, order, support, cancellation, state and final binding changes', async () => {
+  for (const mode of ['original', 'replacement', 'order', 'support', 'cancel', 'state', 'guard']) {
+    const f = await staged()
+    if (mode === 'original') f.packages.old = f.replacement
+    if (mode === 'replacement') f.packages.new = f.original
+    if (mode === 'order') f.setIds(['old', 'new', 'before', 'after'])
+    if (mode === 'support') f.support.mockReturnValue(false)
+    if (mode === 'state') f.record.state = 'staged'
+    let calls = 0
+    await expect(
+      f.adapter.commit(
+        f.record,
+        () => {
+          if (mode === 'guard' && ++calls === 2) throw new Error('document_changed')
+        },
+        mode === 'cancel' ? AbortSignal.abort() : undefined,
+      ),
+    ).rejects.toThrow()
+    expect(f.remove).not.toHaveBeenCalled()
+  }
+})
+it('retains replacement when restored content, replacement content, position or receipt guards differ', async () => {
+  for (const mode of ['original', 'replacement', 'order', 'guard', 'cancel']) {
+    const f = await applied(),
+      controller = new AbortController()
+    await expect(
+      f.adapter.undo(
+        f.record,
+        f.original,
+        async (id) => {
+          f.record = { ...f.record, state: 'restore_inserted', restoredSlideId: id }
+          if (mode === 'original') f.packages.restored = f.replacement
+          if (mode === 'replacement') f.packages.new = f.original
+          if (mode === 'order') f.setIds(['before', 'restored', 'new', 'after'])
+          if (mode === 'guard') throw new Error('document_changed')
+          if (mode === 'cancel') controller.abort()
+        },
+        vi.fn(),
+        controller.signal,
+      ),
+    ).rejects.toThrow()
+    expect(f.remove).toHaveBeenCalledExactlyOnceWith('old')
+  }
+})
+it('requires matching backup bytes and explicit pending states before restoration', async () => {
+  const f = await staged()
+  await f.adapter.commit(f.record, vi.fn())
+  await expect(f.adapter.undo(f.record, f.original, vi.fn(), vi.fn())).rejects.toThrow()
+  f.record = { ...f.record, state: 'undo_pending' }
+  await expect(f.adapter.undo(f.record, f.replacement, vi.fn(), vi.fn())).rejects.toThrow(
+    'office_concurrent_change',
+  )
+  expect(f.insert).toHaveBeenCalledTimes(1)
+})
+it('rechecks original content after loading the commit deletion proxy', async () => {
+  const f = await staged()
+  f.context.presentation.slides.getItem.mockClear()
+  f.context.sync.mockImplementation(async () => {
+    if (
+      f.context.presentation.slides.getItem.mock.calls.filter(([id]) => id === 'old').length === 2
+    )
+      f.packages.old = f.replacement
+  })
+  await expect(f.adapter.commit(f.record, vi.fn())).rejects.toThrow('office_concurrent_change')
+  expect(f.remove).not.toHaveBeenCalled()
+})
+it('checks both pages again after obtaining the undo deletion proxy', async () => {
+  const f = await applied()
+  await expect(
+    f.adapter.undo(
+      f.record,
+      f.original,
+      async (id) => {
+        f.record = { ...f.record, state: 'restore_inserted', restoredSlideId: id }
+        throw new Error('lost_response')
+      },
+      vi.fn(),
+    ),
+  ).rejects.toThrow('lost_response')
+  f.context.presentation.slides.getItem.mockClear()
+  f.context.sync.mockImplementation(async () => {
+    if (
+      f.context.presentation.slides.getItem.mock.calls.filter(([id]) => id === 'new').length === 2
+    )
+      f.packages.restored = f.replacement
+  })
+  await expect(f.adapter.undo(f.record, f.original, vi.fn(), vi.fn())).rejects.toThrow(
+    'office_concurrent_change',
+  )
+  expect(f.remove).toHaveBeenCalledExactlyOnceWith('old')
+})
+it('stops after cancelled or uncertain restoration writes without inferring ownership or deleting', async () => {
+  for (const mode of ['cancel', 'partial', 'foreign']) {
+    const f = await applied(),
+      controller = new AbortController(),
+      journal = vi.fn()
+    f.insert.mockImplementation((base64) => {
+      f.setIds(['before', 'new', 'restored', ...(mode === 'foreign' ? ['external'] : []), 'after'])
+      f.packages.restored = base64
+      if (mode === 'cancel') controller.abort()
+      if (mode === 'partial') throw new Error('connection_lost')
+    })
+    await expect(
+      f.adapter.undo(f.record, f.original, journal, vi.fn(), controller.signal),
+    ).rejects.toThrow()
+    expect(journal).not.toHaveBeenCalled()
+    expect(f.remove).toHaveBeenCalledExactlyOnceWith('old')
+    await expect(f.adapter.undo(f.record, f.original, journal, vi.fn())).rejects.toThrow(
+      'office_concurrent_change',
+    )
+    expect(f.insert).toHaveBeenCalledTimes(2)
+  }
+})

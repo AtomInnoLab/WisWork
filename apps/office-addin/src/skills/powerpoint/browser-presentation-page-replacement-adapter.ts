@@ -3,7 +3,7 @@ import { presentationPackageDigest } from './powerpoint-package.js'
 
 type AssertCurrent = () => void | Promise<void>
 export interface PresentationPageReplacementInspection {
-  status: 'baseline' | 'staged' | 'conflict'
+  status: 'baseline' | 'staged' | 'applied' | 'restore_staged' | 'undone' | 'conflict'
   slideIds: string[]
 }
 export interface PresentationPageReplacementAdapter {
@@ -20,6 +20,18 @@ export interface PresentationPageReplacementAdapter {
   ): Promise<void>
   discard(
     record: PresentationPageReplacement,
+    assertCurrent: AssertCurrent,
+    signal?: AbortSignal,
+  ): Promise<void>
+  commit(
+    record: PresentationPageReplacement,
+    assertCurrent: AssertCurrent,
+    signal?: AbortSignal,
+  ): Promise<void>
+  undo(
+    record: PresentationPageReplacement,
+    backupBase64: string,
+    onRestored: (id: string) => Promise<void>,
     assertCurrent: AssertCurrent,
     signal?: AbortSignal,
   ): Promise<void>
@@ -49,6 +61,18 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
 function stagedIds(record: PresentationPageReplacement): string[] {
   const ids = [...record.beforeSlideIds]
   if (record.newSlideId) ids.splice(ids.indexOf(record.oldSlideId) + 1, 0, record.newSlideId)
+  return ids
+}
+function appliedIds(record: PresentationPageReplacement): string[] {
+  return record.beforeSlideIds.map((id) => (id === record.oldSlideId ? record.newSlideId! : id))
+}
+function restoredIds(record: PresentationPageReplacement, staged = false): string[] {
+  const ids = appliedIds(record)
+  ids.splice(
+    ids.indexOf(record.newSlideId!) + (staged ? 1 : 0),
+    staged ? 0 : 1,
+    record.restoredSlideId!,
+  )
   return ids
 }
 async function order(context: PowerPoint.RequestContext, signal?: AbortSignal): Promise<string[]> {
@@ -110,20 +134,27 @@ async function inspect(
   let status: PresentationPageReplacementInspection['status'] = 'conflict'
   if (same(slideIds, record.beforeSlideIds)) status = 'baseline'
   else if (record.newSlideId && same(slideIds, stagedIds(record))) status = 'staged'
+  else if (record.newSlideId && same(slideIds, appliedIds(record))) status = 'applied'
+  else if (record.newSlideId && record.restoredSlideId && same(slideIds, restoredIds(record, true)))
+    status = 'restore_staged'
+  else if (record.restoredSlideId && same(slideIds, restoredIds(record))) status = 'undone'
   if (status !== 'conflict') {
-    if ((await digest(context, record.oldSlideId, signal)) !== record.originalPackageDigest)
-      status = 'conflict'
-    if (
-      status === 'staged' &&
-      (await digest(context, record.newSlideId!, signal)) !== record.replacementPackageDigest
-    )
-      status = 'conflict'
+    const checks: [string, string][] = []
+    if (status === 'baseline' || status === 'staged')
+      checks.push([record.oldSlideId, record.originalPackageDigest])
+    if (status === 'staged' || status === 'applied' || status === 'restore_staged')
+      checks.push([record.newSlideId!, record.replacementPackageDigest])
+    if (status === 'restore_staged' || status === 'undone')
+      checks.push([record.restoredSlideId!, record.originalPackageDigest])
+    for (const [id, expected] of checks) {
+      if ((await digest(context, id, signal)) !== expected) status = 'conflict'
+    }
     if (!same(await order(context, signal), slideIds)) status = 'conflict'
   }
   return { status, slideIds }
 }
 
-/** A durable pending journal must exist before stage; this adapter never deletes the original. */
+/** Every write requires its durable intent and exact page identity/content proof. */
 export class BrowserPresentationPageReplacementAdapter implements PresentationPageReplacementAdapter {
   async inspect(
     record: PresentationPageReplacement,
@@ -190,7 +221,8 @@ export class BrowserPresentationPageReplacementAdapter implements PresentationPa
     check(signal)
     await runtime().run(async (context: PowerPoint.RequestContext) => {
       const current = await inspect(context, saved, signal)
-      if (current.status === 'conflict') throw new Error('office_concurrent_change')
+      if (current.status !== 'baseline' && current.status !== 'staged')
+        throw new Error('office_concurrent_change')
       if (current.status === 'baseline') {
         await assertCurrent()
         check(signal)
@@ -206,6 +238,104 @@ export class BrowserPresentationPageReplacementAdapter implements PresentationPa
       slide.delete()
       await sync(context, signal)
       if ((await inspect(context, saved, signal)).status !== 'baseline')
+        throw new Error('office_concurrent_change')
+      await assertCurrent()
+      check(signal)
+    })
+  }
+  async commit(
+    record: PresentationPageReplacement,
+    assertCurrent: AssertCurrent,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const saved = structuredClone(record)
+    check(signal)
+    if (saved.state !== 'commit_pending' || !saved.newSlideId)
+      throw new Error('office_concurrent_change')
+    await assertCurrent()
+    check(signal)
+    await runtime().run(async (context: PowerPoint.RequestContext) => {
+      const current = await inspect(context, saved, signal)
+      if (current.status === 'applied') {
+        await assertCurrent()
+        check(signal)
+        return
+      }
+      if (current.status !== 'staged') throw new Error('office_concurrent_change')
+      const slide = await page(context, saved.oldSlideId, signal)
+      if (typeof slide.delete !== 'function') throw new Error('office_api_unsupported')
+      if ((await inspect(context, saved, signal)).status !== 'staged')
+        throw new Error('office_concurrent_change')
+      await assertCurrent()
+      check(signal)
+      slide.delete()
+      await sync(context, signal)
+      if ((await inspect(context, saved, signal)).status !== 'applied')
+        throw new Error('office_concurrent_change')
+      await assertCurrent()
+      check(signal)
+    })
+  }
+  async undo(
+    record: PresentationPageReplacement,
+    backupBase64: string,
+    onRestored: (id: string) => Promise<void>,
+    assertCurrent: AssertCurrent,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let saved = structuredClone(record)
+    check(signal)
+    if (
+      !saved.newSlideId ||
+      !['undo_pending', 'restore_inserted'].includes(saved.state) ||
+      (saved.state === 'undo_pending' ? !!saved.restoredSlideId : !saved.restoredSlideId)
+    )
+      throw new Error('office_concurrent_change')
+    if ((await presentationPackageDigest(backupBase64, signal)) !== saved.originalPackageDigest)
+      throw new Error('office_concurrent_change')
+    await assertCurrent()
+    check(signal)
+    await runtime().run(async (context: PowerPoint.RequestContext) => {
+      const current = await inspect(context, saved, signal)
+      if (saved.state === 'undo_pending') {
+        if (current.status !== 'applied') throw new Error('office_concurrent_change')
+        if (typeof context.presentation.insertSlidesFromBase64 !== 'function')
+          throw new Error('office_api_unsupported')
+        await assertCurrent()
+        check(signal)
+        context.presentation.insertSlidesFromBase64(backupBase64, {
+          targetSlideId: saved.newSlideId,
+          formatting: 'KeepSourceFormatting',
+        })
+        await sync(context, signal)
+        const after = await order(context, signal)
+        const added = after.filter((id) => !current.slideIds.includes(id))
+        if (
+          added.length !== 1 ||
+          saved.beforeSlideIds.includes(added[0]!) ||
+          !same(after, restoredIds({ ...saved, restoredSlideId: added[0]! }, true))
+        )
+          throw new Error('office_concurrent_change')
+        await assertCurrent()
+        check(signal)
+        await onRestored(added[0]!)
+        saved = { ...saved, state: 'restore_inserted', restoredSlideId: added[0]! }
+        await assertCurrent()
+        check(signal)
+      } else if (current.status === 'undone') {
+        await assertCurrent()
+        check(signal)
+        return
+      } else if (current.status !== 'restore_staged') throw new Error('office_concurrent_change')
+      const slide = await page(context, saved.newSlideId!, signal)
+      if (typeof slide.delete !== 'function') throw new Error('office_api_unsupported')
+      if ((await inspect(context, saved, signal)).status !== 'restore_staged')
+        throw new Error('office_concurrent_change')
+      await assertCurrent()
+      check(signal)
+      slide.delete()
+      await sync(context, signal)
+      if ((await inspect(context, saved, signal)).status !== 'undone')
         throw new Error('office_concurrent_change')
       await assertCurrent()
       check(signal)
