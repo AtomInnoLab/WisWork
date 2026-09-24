@@ -26,3 +26,10 @@ export type {
   PresentationPlanBinding,
   PresentationPlanRecord,
 } from './presentation-store.js'
+export { parsePresentationProductionJob } from './presentation-job.js'
+export type {
+  PresentationProductionJob,
+  PresentationProductionJobEvent,
+  PresentationProductionJobEventInput,
+  PresentationProductionJobState,
+} from './presentation-job.js'

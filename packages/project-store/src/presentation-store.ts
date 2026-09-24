@@ -1,3 +1,9 @@
+import {
+  parsePresentationProductionJob,
+  presentationProductionJobStateAfter,
+  type PresentationProductionJob,
+  type PresentationProductionJobEventInput,
+} from './presentation-job.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   lstatSync,
@@ -585,6 +591,135 @@ export class PresentationStore {
     if (!production) return undefined
     const path = join(this.directory(projectId), `claim-reviews-${digest(requestId)}.json`)
     return this.claimReviews(path, production).find((record) => record.reviewId === reviewId)
+  }
+  productionJob(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+  ): PresentationProductionJob | undefined {
+    const production = this.production(projectId, documentId, requestId)
+    if (!production) return undefined
+    const path = join(this.directory(projectId), `production-job-${digest(requestId)}.json`)
+    if (!present(path)) return undefined
+    if (lstatSync(path).size > 256 * 1024) throw new Error('invalid_state')
+    const record = this.read(path) as { job?: unknown; checksum?: unknown } | null
+    if (
+      !record ||
+      Object.keys(record).length !== 2 ||
+      !Object.hasOwn(record, 'job') ||
+      record.checksum !== jsonDigest(record.job, 256 * 1024, 'invalid_state')
+    )
+      throw new Error('invalid_state')
+    const job = parsePresentationProductionJob(record.job)
+    if (
+      job.projectId !== projectId ||
+      job.documentId !== documentId ||
+      job.requestId !== requestId ||
+      job.inputDigest !== production.inputDigest ||
+      job.planDigest !== production.planDigest ||
+      job.planRevision !== production.plan.revision
+    )
+      throw new Error('invalid_state')
+    for (const event of job.events) {
+      if (!('pageId' in event)) continue
+      const page = production.pages.find((page) => page.pageId === event.pageId)
+      if (
+        !page ||
+        event.attempt > page.attempt ||
+        (event.type === 'page.compiled' &&
+          (page.state !== 'compiled' || page.attempt !== event.attempt)) ||
+        (event.type === 'page.failed' &&
+          event.attempt === page.attempt &&
+          (page.state !== 'failed' || page.error !== event.error))
+      )
+        throw new Error('invalid_state')
+    }
+    if (job.state === 'completed' && production.pages.some((page) => page.state !== 'compiled'))
+      throw new Error('invalid_state')
+    return job
+  }
+  appendProductionJobEvent(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+    expectedRevision: number,
+    event: PresentationProductionJobEventInput,
+  ): PresentationProductionJob {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+      throw new Error('invalid_request')
+    const production = this.production(projectId, documentId, requestId)
+    if (!production) throw new Error('page_not_ready')
+    const previous = this.productionJob(projectId, documentId, requestId)
+    if (
+      expectedRevision !== (previous?.revision ?? 0) ||
+      expectedRevision === Number.MAX_SAFE_INTEGER
+    )
+      throw new Error('revision_conflict')
+    jsonDigest(event, 2048, 'invalid_state')
+    if (
+      !event ||
+      typeof event !== 'object' ||
+      Object.hasOwn(event, 'sequence') ||
+      Object.hasOwn(event, 'createdAt')
+    )
+      throw new Error('invalid_state')
+    const state = presentationProductionJobStateAfter(previous?.state, event)
+    const now = new Date().toISOString()
+    const lastTime = previous?.events.at(-1)?.createdAt ?? now
+    const job = parsePresentationProductionJob({
+      version: 1,
+      projectId,
+      documentId,
+      requestId,
+      inputDigest: production.inputDigest,
+      planDigest: production.planDigest,
+      planRevision: production.plan.revision,
+      revision: expectedRevision + 1,
+      state,
+      events: [
+        ...(previous?.events ?? []),
+        { ...event, sequence: expectedRevision + 1, createdAt: now < lastTime ? lastTime : now },
+      ].slice(-128),
+    })
+    if ('pageId' in event) {
+      const page = production.pages.find((page) => page.pageId === event.pageId)
+      const wanted =
+        event.type === 'page.started'
+          ? 'building'
+          : event.type === 'page.compiled'
+            ? 'compiled'
+            : 'failed'
+      if (
+        !page ||
+        page.state !== wanted ||
+        page.attempt !== event.attempt ||
+        (event.type === 'page.failed' && page.error !== event.error)
+      )
+        throw new Error('invalid_state')
+      const latest = previous?.events
+        .slice()
+        .reverse()
+        .find((value) => 'pageId' in value && value.pageId === event.pageId)
+      if (
+        latest &&
+        'attempt' in latest &&
+        (event.type === 'page.started'
+          ? event.attempt <= latest.attempt
+          : latest.type !== 'page.started' || latest.attempt !== event.attempt)
+      )
+        throw new Error('invalid_state')
+      if (event.type !== 'page.started' && !latest) throw new Error('invalid_state')
+    }
+    if (
+      event.type === 'run.completed' &&
+      production.pages.some((page) => page.state !== 'compiled')
+    )
+      throw new Error('invalid_state')
+    this.write(join(this.directory(projectId), `production-job-${digest(requestId)}.json`), {
+      job,
+      checksum: jsonDigest(job, 256 * 1024, 'invalid_state'),
+    })
+    return job
   }
   beginProduction(
     projectId: string,
