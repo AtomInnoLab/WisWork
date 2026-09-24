@@ -1,4 +1,9 @@
 import {
+  validatePresentationExistingChange,
+  existingChangeReservedBytes,
+  type PresentationExistingChange,
+} from './presentation-existing-change.js'
+import {
   validatePresentationTextChange,
   type PresentationTextChange,
 } from './presentation-text-change.js'
@@ -16,6 +21,7 @@ import {
   type PresentationPageReplacement,
 } from './presentation-page-replacement-record.js'
 type Records = {
+  existing: PresentationExistingChange
   text: PresentationTextChange
   geometry: PresentationGeometryChange
   image: ImageReplacementRecord
@@ -56,20 +62,22 @@ export function validatePresentationHistoryEntry(
         ? validatePresentationGeometryChange(e.record)
         : e.kind === 'image'
           ? validateImageReplacementRecord(e.record)
-          : e.kind === 'page'
-            ? validatePresentationPageReplacement(e.record)
-            : false
+          : e.kind === 'existing'
+            ? validatePresentationExistingChange(e.record)
+            : e.kind === 'page'
+              ? validatePresentationPageReplacement(e.record)
+              : false
   return valid && e.id === historyEntryId(e.kind, e.record)
 }
 export interface PresentationHistoryEnvelope {
   version: 1
   entries: PresentationHistoryEntry[]
-  heads: Partial<Record<'text' | 'geometry' | 'page', string>>
+  heads: Partial<Record<'text' | 'geometry' | 'page' | 'existing', string>>
 }
 export const presentationHistoryBytes = (history: PresentationHistoryEnvelope) =>
   new TextEncoder().encode(JSON.stringify(history)).byteLength +
   // Updating an older record can lengthen the current-head ID without adding an entry.
-  (['text', 'geometry', 'page'] as const).reduce(
+  (['text', 'geometry', 'page', 'existing'] as const).reduce(
     (sum, kind) =>
       sum +
       (history.heads[kind] === undefined ? 0 : kind.length + 1 + 128 - history.heads[kind]!.length),
@@ -78,10 +86,12 @@ export const presentationHistoryBytes = (history: PresentationHistoryEnvelope) =
   history.entries.reduce(
     (sum, e) =>
       sum +
-      (e.kind === 'page'
-        ? Math.max(0, 192 * 1024 - new TextEncoder().encode(JSON.stringify(e.record)).byteLength)
-        : e.kind === 'image'
-          ? imageReplacementReservedBytes(e.record)
-          : 'undo_pending'.length - e.record.state.length),
+      (e.kind === 'existing'
+        ? existingChangeReservedBytes(e.record)
+        : e.kind === 'page'
+          ? Math.max(0, 192 * 1024 - new TextEncoder().encode(JSON.stringify(e.record)).byteLength)
+          : e.kind === 'image'
+            ? imageReplacementReservedBytes(e.record)
+            : 'undo_pending'.length - e.record.state.length),
     0,
   )

@@ -16,6 +16,15 @@ export interface PresentationChangeSetSummary {
 export function presentationChangeSetSummary(
   entry: PresentationHistoryEntry,
 ): PresentationChangeSetSummary {
+  if (entry.kind === 'existing')
+    return {
+      scope: { slideIds: [entry.record.hostSlideId], shapeIds: [entry.record.shapeId] },
+      intent: entry.record.kind === 'text' ? '修改现稿文字' : '调整现稿位置与尺寸',
+      operations: [{ kind: 'existing', pageId: entry.record.hostSlideId }],
+      preserved: ['目标以外对象（需复核）'],
+      validation: ['目标对象回读', '受影响页面截图复核'],
+      risk: 'medium',
+    }
   const { kind, record: r } = entry
   const scope =
     entry.kind === 'page'
@@ -60,7 +69,7 @@ export async function selectPresentationHistory(
   entries: PresentationHistoryEntry[],
   artifact: CompiledPresentationArtifact,
   documentId: string,
-): Promise<PresentationHistoryEntry[]> {
+): Promise<Exclude<PresentationHistoryEntry, { kind: 'existing' }>[]> {
   if (
     !Array.isArray(entries) ||
     entries.length > 64 ||
@@ -82,6 +91,9 @@ export async function selectPresentationHistory(
   ).join('')
   const source = artifact.pagePptxBase64 === undefined ? undefined : 'production'
   return entries
+    .filter(
+      (e): e is Exclude<PresentationHistoryEntry, { kind: 'existing' }> => e.kind !== 'existing',
+    )
     .filter((e) => {
       const r = e.record
       if (

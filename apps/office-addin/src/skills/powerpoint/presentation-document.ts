@@ -1,4 +1,8 @@
 import {
+  validatePresentationExistingChange,
+  type PresentationExistingChange,
+} from './presentation-existing-change.js'
+import {
   historyEntryId,
   validatePresentationHistoryEntry,
   presentationHistoryBytes,
@@ -36,6 +40,7 @@ const ID_KEY = 'wiswork.presentation.document.v1'
 const IMPORT_KEY = 'wiswork.presentation.imports.v1'
 const IMAGE_KEY = 'wiswork.presentation.image-replacements.v1'
 const PAGE_REPLACEMENT_KEY = 'wiswork.presentation.page-replacement.v1'
+const EXISTING_KEY = 'wiswork.presentation.existing-change.v1'
 const HISTORY_KEY = 'wiswork.presentation.change-history.v1'
 const TEXT_KEY = 'wiswork.presentation.text-change.v1'
 const GEOMETRY_KEY = 'wiswork.presentation.geometry-change.v1'
@@ -263,6 +268,23 @@ export function createPresentationDocumentBinding(
     if (!validatePresentationTextChange(value)) throw invalid()
     return value
   }
+  let existingWriteFailed = false
+  const readRawExistingChange = (): PresentationExistingChange | undefined => {
+    const invalid = () => new Error('presentation_existing_change_state_invalid')
+    if (existingWriteFailed) throw invalid()
+    const raw = settings.get(EXISTING_KEY)
+    if (raw === undefined || raw === null || raw === '') return undefined
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 192 * 1024)
+      throw invalid()
+    let value: unknown
+    try {
+      value = JSON.parse(raw)
+    } catch {
+      throw invalid()
+    }
+    if (!validatePresentationExistingChange(value)) throw invalid()
+    return value
+  }
   let pageReplacementWriteFailed = false
   type Overrides = Record<string, PresentationImportRecord | null>
   const replacementKeys = (r: PresentationPageReplacement) => [
@@ -363,6 +385,7 @@ export function createPresentationDocumentBinding(
   let historyWriteFailed = false
   const invalidHistory = () => new Error('presentation_change_history_state_invalid')
   const rawHeads = () => ({
+    existing: readRawExistingChange(),
     text: readRawTextChange(),
     geometry: readRawGeometryChange(),
     page: readRawPageReplacement(),
@@ -374,7 +397,7 @@ export function createPresentationDocumentBinding(
       raw = settings.get(HISTORY_KEY)
     if (raw === undefined || raw === null || raw === '') {
       const history: PresentationHistoryEnvelope = { version: 1, entries: [], heads: {} }
-      for (const kind of ['text', 'geometry', 'page'] as const) {
+      for (const kind of ['text', 'geometry', 'page', 'existing'] as const) {
         const record = heads[kind]
         if (!record) continue
         const id = historyEntryId(kind, record)
@@ -414,7 +437,7 @@ export function createPresentationDocumentBinding(
       !h.heads ||
       typeof h.heads !== 'object' ||
       Array.isArray(h.heads) ||
-      Object.keys(h.heads).some((k) => !['text', 'geometry', 'page'].includes(k))
+      Object.keys(h.heads).some((k) => !['text', 'geometry', 'page', 'existing'].includes(k))
     )
       throw invalidHistory()
     const ids = new Set<string>()
@@ -426,7 +449,7 @@ export function createPresentationDocumentBinding(
       sequence = e.sequence
     }
     if (presentationHistoryBytes(h) > 1024 * 1024) throw invalidHistory()
-    for (const kind of ['text', 'geometry', 'page'] as const) {
+    for (const kind of ['text', 'geometry', 'page', 'existing'] as const) {
       const head = h.entries.find((e) => e.id === h.heads[kind])
       if ((head && head.kind !== kind) || (!head && h.entries.some((e) => e.kind === kind)))
         throw invalidHistory()
@@ -470,6 +493,11 @@ export function createPresentationDocumentBinding(
             e.kind === 'geometry' && e.record.changeId === changeId,
         )?.record
   }
+  const readExistingChange = (changeId: string): PresentationExistingChange | undefined =>
+    readHistory().entries.find(
+      (e): e is Extract<PresentationHistoryEntry, { kind: 'existing' }> =>
+        e.kind === 'existing' && e.record.changeId === changeId,
+    )?.record
   const readPageReplacement = () => {
     const raw = readRawPageReplacement()
     readHistory()
@@ -560,6 +588,61 @@ export function createPresentationDocumentBinding(
   return {
     documentId,
     listChangeHistory: () => structuredClone(readHistory().entries),
+    readExistingChange,
+    writeExistingChange(
+      record: PresentationExistingChange,
+      expectedChange: PresentationExistingChange | undefined,
+    ) {
+      const snapshot = structuredClone(record),
+        expected = structuredClone(expectedChange)
+      const write = async () => {
+        const invalid = () => new Error('presentation_existing_change_state_invalid')
+        if (
+          !validatePresentationExistingChange(snapshot) ||
+          (expected !== undefined && !validatePresentationExistingChange(expected))
+        )
+          throw invalid()
+        if ((await documentId()) !== snapshot.documentId)
+          throw new Error('presentation_document_changed')
+        const prior = readExistingChange(snapshot.changeId)
+        if (JSON.stringify(prior) !== JSON.stringify(expected))
+          throw new Error('presentation_existing_change_stale')
+        if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
+        if (prior) {
+          const core = (r: PresentationExistingChange) =>
+            JSON.stringify({ ...r, state: undefined, review: undefined })
+          const transitions = {
+            pending: 'applied',
+            applied: 'undo_pending',
+            undo_pending: 'undone',
+            undone: undefined,
+          }
+          if (
+            core(prior) !== core(snapshot) ||
+            (prior.state !== snapshot.state &&
+              (transitions[prior.state] !== snapshot.state || snapshot.review !== undefined))
+          )
+            throw invalid()
+        } else if (snapshot.state !== 'pending' || snapshot.review !== undefined) throw invalid()
+        await saveWithHistory(
+          EXISTING_KEY,
+          JSON.stringify(snapshot),
+          {
+            id: historyEntryId('existing', snapshot),
+            kind: 'existing',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            existingWriteFailed = true
+          },
+        )
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
     readPageReplacement,
     writePageReplacement(
       record: PresentationPageReplacement,
