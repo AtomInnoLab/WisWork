@@ -496,7 +496,7 @@ async function pageTableCell(
   if (rowIndex >= rowCount || columnIndex >= columnCount) throw new Error('invalid_tool_input')
   const cell = (table.getCellOrNullObject as (row: number, column: number) => RuntimeRecord)(rowIndex, columnIndex)
   if (typeof cell?.load !== 'function') throw new Error('office_api_unsupported')
-  ;(cell.load as (properties: string) => void)('isNullObject,rowIndex,columnIndex,rowCount,columnCount,text')
+  ;(cell.load as (properties: string) => void)('rowIndex,columnIndex,rowCount,columnCount,text')
   await sync(context, signal)
   if (cell.isNullObject || cell.rowCount !== 1 || cell.columnCount !== 1)
     throw new Error('office_api_unsupported')

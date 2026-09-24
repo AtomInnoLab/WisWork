@@ -38,6 +38,7 @@ const inventories = {
     'record_existing_presentation_batch_page_review',
     'edit_existing_presentation_text',
     'edit_existing_presentation_geometry',
+    'edit_existing_presentation_table_cell',
     'list_existing_presentation_changes',
     'inspect_existing_presentation_change',
     'undo_existing_presentation_change',

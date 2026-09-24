@@ -22,6 +22,7 @@ interface ExistingChangeBase {
 export type PresentationExistingChange = ExistingChangeBase &
   (
     | { kind: 'text'; before: string; after: string }
+    | { kind: 'table_cell'; rowIndex: number; columnIndex: number; cellStructureDigest: string; before: string; after: string }
     | { kind: 'geometry'; before: PresentationPageGeometry; after: PresentationPageGeometry }
   )
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength
@@ -71,6 +72,9 @@ export function validatePresentationExistingChange(
         'shapeId',
         'shapeType',
         'kind',
+        'rowIndex',
+        'columnIndex',
+        'cellStructureDigest',
         'before',
         'after',
         'state',
@@ -98,15 +102,26 @@ export function validatePresentationExistingChange(
       (!ids(r.scope.shapeIds) || !r.scope.shapeIds.includes(r.shapeId)))
   )
     return false
+  const cell = r.kind === 'table_cell'
   if (
-    r.kind === 'text'
+    cell &&
+    (r.shapeType !== 'Table' ||
+      !digest(r.cellStructureDigest) ||
+      !Number.isSafeInteger(r.rowIndex) ||
+      !Number.isSafeInteger(r.columnIndex) ||
+      r.rowIndex < 0 || r.rowIndex > 1000 ||
+      r.columnIndex < 0 || r.columnIndex > 1000)
+  ) return false
+  if (
+    r.kind === 'text' || cell
       ? typeof r.before !== 'string' ||
         r.before.length > 12000 ||
         typeof r.after !== 'string' ||
-        r.after.length > 12000
+        r.after.length > (cell ? 128 : 12000)
       : r.kind !== 'geometry' || !geometry(r.before) || !geometry(r.after)
   )
     return false
+  if (!cell && ('rowIndex' in r || 'columnIndex' in r || 'cellStructureDigest' in r)) return false
   if (r.review !== undefined) {
     const v = r.review
     const timestamp = (s: unknown): s is string =>

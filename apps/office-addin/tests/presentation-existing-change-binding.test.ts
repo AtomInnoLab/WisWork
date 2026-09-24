@@ -54,6 +54,16 @@ it('validates exact bounded records and rejects forged scope and reviews on pend
   ).toBe(false)
   expect(validatePresentationExistingChange({ ...record, projectId: 'fake' })).toBe(false)
 })
+it('validates a native table cell savepoint with exact bounded coordinates', async () => {
+  const { record } = await fixture()
+  const cell = { ...record, shapeType: 'Table', kind: 'table_cell', rowIndex: 1, columnIndex: 2, cellStructureDigest: 'b'.repeat(64) }
+  expect(validatePresentationExistingChange(cell)).toBe(true)
+  expect(validatePresentationExistingChange({ ...cell, rowIndex: -1 })).toBe(false)
+  expect(validatePresentationExistingChange({ ...cell, columnIndex: 1.5 })).toBe(false)
+  expect(validatePresentationExistingChange({ ...cell, shapeType: 'TextBox' })).toBe(false)
+  expect(validatePresentationExistingChange({ ...cell, cellStructureDigest: 'bad' })).toBe(false)
+  expect(validatePresentationExistingChange({ ...record, rowIndex: 0 })).toBe(false)
+})
 it('persists exact-ID records across reopen and requires CAS on transitions', async () => {
   const f = await fixture()
   await f.binding.writeExistingChange(f.record, undefined)

@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
+import JSZip from 'jszip'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime'
 import type { StructuredProposalController } from '../src/agent/proposal-controller'
 import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
@@ -11,6 +12,66 @@ const otherPng =
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+})
+it('confirms a simple native table cell edit with a durable savepoint and reopens for undo', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_table_cell', {
+    baseline_id, slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after',
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  expect(f.tableText()).toBe('before')
+  await f.confirm()
+  expect(f.tableText()).toBe('after')
+  expect(f.records()[0]!.record).toMatchObject({
+    kind: 'table_cell', rowIndex: 0, columnIndex: 0, before: 'before', after: 'after', state: 'applied',
+  })
+  f.reopen()
+  const change_id = f.records()[0]!.record.changeId
+  const inspected = await f.call('inspect_existing_presentation_change', { change_id })
+  expect(JSON.parse(inspected.output).status).toBe('not_pending')
+  const undo = await f.call('undo_existing_presentation_change', { change_id })
+  expect(undo.isError, undo.output).not.toBe(true)
+  await f.confirm()
+  expect(f.tableText()).toBe('before')
+  expect(f.records()[0]!.record.state).toBe('undone')
+  expect(f.editTableCell).toHaveBeenCalledTimes(2)
+})
+it('rejects a table cell target changed after its baseline package read', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'readPresentationTableCell').mockResolvedValue({
+    slideId: 'slide', shapeId: 'shape', rowIndex: 0, columnIndex: 0,
+    text: 'manual', rowCount: 1, columnCount: 1,
+  })
+  const result = await f.call('edit_existing_presentation_table_cell', {
+    baseline_id, slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after',
+  })
+  expect(result.output).toBe('presentation_baseline_changed')
+  expect(f.records()).toHaveLength(0)
+})
+it('refuses table cell undo when the host cell becomes multi-run with the same text', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_table_cell', {
+    baseline_id, slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after',
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  await f.confirm()
+  const zip = new JSZip()
+  zip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="shape" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>af</a:t></a:r><a:r><a:t>ter</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>')
+  const base64 = await zip.generateAsync({ type: 'base64' })
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'exportPresentationPagePackage').mockResolvedValue({
+    slideId: 'slide', slideIds: ['slide', 'other'], base64,
+  })
+  const change_id = f.records()[0]!.record.changeId
+  const undo = await f.call('undo_existing_presentation_change', { change_id })
+  expect(undo.output).toBe('presentation_existing_target_unsupported')
+  expect(f.tableText()).toBe('after')
+  expect(f.editTableCell).toHaveBeenCalledTimes(1)
 })
 it('returns unreviewed post-write evidence for a verified native text change', async () => {
   const f = await fixture()
@@ -70,6 +131,7 @@ async function fixture() {
   vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => true } } })
   let location = 'file://existing.pptx',
     text = 'before',
+    tableText = 'before',
     otherText = 'other-before',
     geometry = { left: 1, top: 2, width: 100, height: 40 },
     shapeType = 'TextBox',
@@ -140,6 +202,25 @@ async function fixture() {
         throw new Error('office_concurrent_change')
       geometry = { ...next }
     })
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'readPresentationTableCell').mockImplementation(
+    async (slideId, shapeId, rowIndex, columnIndex) => ({
+      slideId, shapeId, rowIndex, columnIndex, text: tableText, rowCount: 1, columnCount: 1,
+    }),
+  )
+  const editTableCell = vi.spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationTableCell').mockImplementation(
+    async (_slideId, _shapeId, _rowIndex, _columnIndex, next, expected) => {
+      if (tableText !== expected) throw new Error('office_concurrent_change')
+      tableText = next
+    },
+  )
+  const zip = new JSZip()
+  const tableXml = () => `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="shape" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>${tableText}</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'exportPresentationPagePackage').mockImplementation(
+    async (slideId) => {
+      zip.file('ppt/slides/slide1.xml', tableXml())
+      return { slideId, slideIds: ['slide', 'other'], base64: await zip.generateAsync({ type: 'base64' }) }
+    },
+  )
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'inspectPresentationPage').mockImplementation(
     async (slideId) => ({
       slideId,
@@ -202,6 +283,8 @@ async function fixture() {
     save,
     editText,
     editGeometry,
+    editTableCell,
+    tableText: () => tableText,
     invalidateQa,
     binding: bind,
     getRuntime: () => runtime,

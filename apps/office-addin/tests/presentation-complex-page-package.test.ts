@@ -1,6 +1,6 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
-import { inspectPowerPointComplexPagePackage } from '../src/skills/powerpoint/presentation-complex-page-package.js'
+import { inspectPowerPointComplexPagePackage, inspectPowerPointTableCellPackage } from '../src/skills/powerpoint/presentation-complex-page-package.js'
 
 async function packageWith(slide: string, rels = '', chart = ''): Promise<string> {
   const zip = new JSZip()
@@ -20,7 +20,7 @@ describe('complex PowerPoint page package read', () => {
   it('reads native table cells and chart cached series without claiming source data', async () => {
     const result = await inspectPowerPointComplexPagePackage(await packageWith(slide(table + chartFrame), rels, chart))
     expect(result).toMatchObject({
-      tables: [{ shapeId: '7', rows: [['North', '42']] }],
+      tables: [{ shapeId: '7', rows: [['North', '42']], simpleCells: [[true, true]] }],
       charts: [{ shapeId: '8', cacheOnly: true, series: [{ name: 'Revenue', categories: ['Q1', 'Q2'], values: ['12', '34'] }] }],
       truncated: false,
     })
@@ -43,6 +43,22 @@ describe('complex PowerPoint page package read', () => {
     const result = await inspectPowerPointComplexPagePackage(await packageWith(slide(long)))
     expect(result.tables[0]?.rows[0]?.[0].length).toBeLessThanOrEqual(128)
     expect(result.truncated).toBe(true)
+  })
+  it('marks table cells in a merged table ineligible for coordinate edits', async () => {
+    const merged = table.replace('<a:tc>', '<a:tc gridSpan="2">')
+    const result = await inspectPowerPointComplexPagePackage(await packageWith(slide(merged)))
+    expect(result.tables[0]?.simpleCells).toEqual([[false, false]])
+    await expect(inspectPowerPointTableCellPackage(await packageWith(slide(merged)), '7', 0, 0)).rejects.toThrow('presentation_existing_target_unsupported')
+  })
+  it('binds a reversible cell to its entire table layout and other cell contents', async () => {
+    const original = await inspectPowerPointTableCellPackage(await packageWith(slide(table)), '7', 0, 0)
+    const changedTarget = table.replace('North', 'South')
+    const changed = await inspectPowerPointTableCellPackage(await packageWith(slide(changedTarget)), '7', 0, 0)
+    expect(changed.structureDigest).toBe(original.structureDigest)
+    const inserted = table.replace('<a:tbl>', '<a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>North</a:t></a:r></a:p></a:txBody></a:tc></a:tr>')
+    const shifted = await inspectPowerPointTableCellPackage(await packageWith(slide(inserted)), '7', 0, 0)
+    expect(shifted.text).toBe(original.text)
+    expect(shifted.structureDigest).not.toBe(original.structureDigest)
   })
 
   it('bounds the entire serialized summary even with many large cells', async () => {

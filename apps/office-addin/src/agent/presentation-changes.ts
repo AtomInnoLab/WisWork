@@ -44,7 +44,7 @@ export interface PresentationChangeEntry {
   legacy?: boolean
   changeSet?: PresentationChangeSetSummary
   id: string
-  kind: 'text' | 'geometry' | 'image' | 'page'
+  kind: 'text' | 'geometry' | 'table_cell' | 'image' | 'page'
   pageId: string
   state: string
   before: string
@@ -342,13 +342,17 @@ export function createPresentationChangesController(
                         pageId: saved.record.hostSlideId,
                         state: saved.record.state,
                         before:
-                          typeof saved.record.before === 'string'
-                            ? saved.record.before
-                            : JSON.stringify(saved.record.before, null, 2),
+                          saved.record.kind === 'table_cell'
+                            ? `单元格 (${saved.record.rowIndex}, ${saved.record.columnIndex}): ${saved.record.before}`
+                            : typeof saved.record.before === 'string'
+                              ? saved.record.before
+                              : JSON.stringify(saved.record.before, null, 2),
                         after:
-                          typeof saved.record.after === 'string'
-                            ? saved.record.after
-                            : JSON.stringify(saved.record.after, null, 2),
+                          saved.record.kind === 'table_cell'
+                            ? `单元格 (${saved.record.rowIndex}, ${saved.record.columnIndex}): ${saved.record.after}`
+                            : typeof saved.record.after === 'string'
+                              ? saved.record.after
+                              : JSON.stringify(saved.record.after, null, 2),
                         review: copy(saved.record.review),
                         actions:
                           saved.record.state === 'applied'

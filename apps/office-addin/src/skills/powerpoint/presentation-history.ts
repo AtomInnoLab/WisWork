@@ -19,7 +19,7 @@ export function presentationChangeSetSummary(
   if (entry.kind === 'existing')
     return {
       scope: { slideIds: [entry.record.hostSlideId], shapeIds: [entry.record.shapeId] },
-      intent: entry.record.kind === 'text' ? '修改现稿文字' : '调整现稿位置与尺寸',
+      intent: entry.record.kind === 'text' ? '修改现稿文字' : entry.record.kind === 'table_cell' ? '修改现稿表格单元格文字' : '调整现稿位置与尺寸',
       operations: [{ kind: 'existing', pageId: entry.record.hostSlideId }],
       preserved: ['目标以外对象（需复核）'],
       validation: ['目标对象回读', '受影响页面截图复核'],
