@@ -57,6 +57,7 @@ export interface PresentationChangesSnapshot {
   projectId?: string
   requestId?: string
   entries: PresentationChangeEntry[]
+  backupAudit?: { active: number; unmatched: number }
   notice?: string
   error?: string
 }
@@ -70,6 +71,7 @@ export interface PresentationChangesController {
 type Read<T> = () => T | undefined | Promise<T | undefined>
 export interface PresentationChangesOptions {
   listChangeHistory?: () => PresentationHistoryEntry[]
+  listExistingPageBackups?: (documentId: string) => Promise<{ backupId: string; status: string }[]>
   existingAvailable?: () => boolean
   available(): boolean
   artifact(): CompiledPresentationArtifact | undefined
@@ -492,6 +494,18 @@ export function createPresentationChangesController(
     try {
       const rows = await read(copy(artifact), scope!, ticket)
       if (ticket !== generation) return
+      let backupAudit: PresentationChangesSnapshot['backupAudit']
+      if (options.listExistingPageBackups && boundDocument) {
+        try {
+          const backups = await options.listExistingPageBackups(boundDocument)
+          if (!Array.isArray(backups) || backups.length > 8 || backups.some((b) =>
+            !b || typeof b.backupId !== 'string' || !['ready', 'uploading'].includes(b.status))) throw new Error('invalid')
+          const known = new Set(rows.filter((r) => r.entry.source === 'existing_chart')
+            .map((r) => (r.record as PresentationExistingChartChange).backup.backupId))
+          backupAudit = { active: backups.length, unmatched: backups.filter((b) => !known.has(b.backupId)).length }
+        } catch { /* Backup inventory is advisory; history remains available. */ }
+      }
+      if (ticket !== generation || !current(scope, await options.documentId())) return
       saved = rows
       bound = scope
       state = {
@@ -499,6 +513,7 @@ export function createPresentationChangesController(
         projectId: artifact?.projectId,
         requestId: artifact?.requestId,
         entries: rows.map((r) => copy(r.entry)),
+        backupAudit,
       }
     } catch {
       if (ticket !== generation) return

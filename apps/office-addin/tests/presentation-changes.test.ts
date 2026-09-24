@@ -127,16 +127,22 @@ it('offers one chart backup release after cancellation and accepts the receipt u
     afterPackageDigest: 'b'.repeat(64), backup: { backupId: 'backup', sha256: 'c'.repeat(64), sizeBytes: 120 },
     state: 'cancelled',
   }
+  let inventoryAvailable = true
   const executeTool = vi.fn(async () => ({ output: '{}', mutated: false, summary: 'proposed' }))
   const controller = createPresentationChangesController({
     available: () => false, existingAvailable: () => true, artifact: () => undefined,
     documentId: async () => 'doc',
     listChangeHistory: () => [{ id: 'existing_chart:chart-release', kind: 'existing_chart', sequence: 1, legacy: false, record }],
+    listExistingPageBackups: async () => {
+      if (!inventoryAvailable) throw new Error('pc_offline')
+      return [{ backupId: 'backup', status: 'ready' }, { backupId: 'unmatched', status: 'ready' }]
+    },
     executeTool,
   })
   await controller.refresh()
   const row = controller.snapshot().entries[0]!
   expect(row.actions).toEqual(['inspect', 'release'])
+  expect(controller.snapshot().backupAudit).toEqual({ active: 2, unmatched: 1 })
   await controller.run(row.id, 'release')
   expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({
     name: 'release_slide_chart_values_change', input: { change_id: 'chart-release' },
@@ -147,6 +153,10 @@ it('offers one chart backup release after cancellation and accepts the receipt u
   await controller.refresh()
   expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect'])
   expect(controller.snapshot().error).toBeUndefined()
+  inventoryAvailable = false
+  await controller.refresh()
+  expect(controller.snapshot().entries).toHaveLength(1)
+  expect(controller.snapshot().backupAudit).toBeUndefined()
 })
 it('rejects changed fingerprints and invalid actions', async () => {
   const { controller, executeTool, change } = await setup()

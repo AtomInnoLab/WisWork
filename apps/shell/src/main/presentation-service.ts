@@ -101,6 +101,7 @@ export function createPresentationService(options: {
           'existing_page_backup_status',
           'existing_page_backup_read',
           'existing_page_backup_release',
+          'existing_page_backup_list',
         ].includes(request.operation as string)
       )
         return boundedResponse(await existingPageBackups(request, signal))

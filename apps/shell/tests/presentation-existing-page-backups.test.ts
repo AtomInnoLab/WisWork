@@ -148,3 +148,11 @@ it('refuses unready, missing, foreign and damaged backup release', async () => {
   writeFileSync(path, Buffer.alloc(f.raw.length))
   expect(await f.call('existing_page_backup_release', f.begin)).toEqual({ error: 'digest_mismatch' })
 })
+it('lists only active backup metadata for the requested document', async () => {
+  const f = await fixture()
+  expect(await f.call('existing_page_backup_list')).toEqual({ documentId: 'document-1', backups: [] })
+  await f.call('existing_page_backup_begin', f.begin)
+  expect(await f.call('existing_page_backup_list')).toMatchObject({ backups: [{ backupId: f.begin.backupId, status: 'uploading' }] })
+  expect(await f.call('existing_page_backup_list', {}, 'another-document')).toEqual({ documentId: 'another-document', backups: [] })
+  expect(await f.call('existing_page_backup_list', { backupId: f.begin.backupId })).toEqual({ error: 'invalid_request' })
+})

@@ -150,6 +150,7 @@ export function createPresentationExistingPageBackupService(options: { userDataP
       existing_page_backup_status: ['backupId'],
       existing_page_backup_read: ['backupId', 'offset', 'length'],
       existing_page_backup_release: beginFields,
+      existing_page_backup_list: [],
     }
     const op = request.operation
     if (typeof op !== 'string' || !Object.hasOwn(fields, op)) fail('invalid_request')
@@ -163,16 +164,17 @@ export function createPresentationExistingPageBackupService(options: { userDataP
       Buffer.byteLength(JSON.stringify(request)) > 256 * 1024
     )
       fail('invalid_request')
-    assertPresentationId(request.backupId)
+    if (op !== 'existing_page_backup_list') assertPresentationId(request.backupId)
     if (op === 'existing_page_backup_begin' || op === 'existing_page_backup_release') validBegin(request)
     // Snapshot caller-owned arrays before awaiting the document lock.
     const body = structuredClone(request),
       documentId = body.documentId as string,
-      backupId = body.backupId as string
+      backupId = body.backupId as string,
+      backupHash = op === 'existing_page_backup_list' ? '' : hash(backupId)
     const document = join(root, hash(documentId)),
-      dir = join(document, hash(backupId)),
+      dir = join(document, backupHash),
       receiptDocument = join(root, '.released', hash(documentId)),
-      receiptPath = join(receiptDocument, `${hash(backupId)}.json`),
+      receiptPath = join(receiptDocument, `${backupHash}.json`),
       previous = locks.get(document) ?? Promise.resolve()
     let release!: () => void
     const tail = new Promise<void>((resolve) => {
@@ -188,6 +190,16 @@ export function createPresentationExistingPageBackupService(options: { userDataP
       await directory(receiptDocument)
       const entries = await readdir(document)
       if (entries.length > 8 || entries.some((entry) => !digest(entry))) fail('invalid_state')
+      if (op === 'existing_page_backup_list') {
+        const backups = []
+        for (const entry of entries) {
+          check(signal)
+          const stored = await metadata(join(document, entry))
+          if (stored.documentId !== documentId || hash(stored.backupId) !== entry) fail('invalid_state')
+          backups.push(stored)
+        }
+        return { documentId, backups }
+      }
       const exists = entries.includes(hash(backupId))
       let hasReceipt = false
       try {

@@ -45,6 +45,7 @@ export function PresentationChangesCard({
       {snapshot.phase === 'acting' && <p role="status">正在检查并准备操作…</p>}
       {snapshot.notice && <p role="status">{snapshot.notice}</p>}
       {snapshot.error && <p role="alert">{snapshot.error}</p>}
+      {snapshot.backupAudit && <p role="status">当前文档 PC 活动备份：{snapshot.backupAudit.active}/8；其中 {snapshot.backupAudit.unmatched} 份未在当前保存点历史中找到对应图表记录，需人工核查，暂不自动删除。</p>}
       {snapshot.phase === 'idle' && !snapshot.entries.length && (
         <p>当前文档或任务暂无可用保存点。</p>
       )}

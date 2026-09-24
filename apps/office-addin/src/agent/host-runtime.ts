@@ -865,6 +865,13 @@ export function createOfficeHostRuntime(
       artifact: activeArtifact,
       documentId: localBinding!.documentId,
       listChangeHistory: localBinding!.listChangeHistory,
+      listExistingPageBackups: options.presentation?.request ? async (documentId) => {
+        const response = await options.presentation!.request!({ operation: 'existing_page_backup_list', documentId })
+        if (!response.ok) throw new Error('backup_inventory_unavailable')
+        const value = await response.json() as { documentId?: unknown; backups?: unknown }
+        if (value.documentId !== documentId || !Array.isArray(value.backups)) throw new Error('backup_inventory_invalid')
+        return value.backups as { backupId: string; status: string }[]
+      } : undefined,
       readTextChange: options.presentation?.readTextChange,
       readGeometryChange: options.presentation?.readGeometryChange,
       readPageReplacement: options.presentation?.readPageReplacement,
