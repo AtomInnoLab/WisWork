@@ -44,6 +44,7 @@ import type { PresentationImportProgressController } from './presentation-import
 import {
   createPresentationAttachmentSkill,
   supportsPresentationAttachment,
+  type PresentationAttachmentMetadata,
 } from '../skills/powerpoint/presentation-attachments.js'
 import { createPresentationPlanningSkill } from '../skills/powerpoint/presentation-planning.js'
 import {
@@ -104,6 +105,8 @@ export interface OfficeHostRuntime {
   readonly changes?: PresentationChangesController
   durableAttachmentsAvailable?(): boolean
   durableImagesAvailable?(): boolean
+  listDurableAttachments?(): Promise<PresentationAttachmentMetadata[]>
+  deleteDurableAttachment?(attachmentId: string): Promise<void>
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   vfs: InMemoryVfs
@@ -221,8 +224,7 @@ export function createOfficeHostRuntime(
     ReturnType<typeof createPresentationExistingBatchEditingSkill> | undefined
   let existingImageEditing:
     ReturnType<typeof createPresentationExistingImageEditingSkill> | undefined
-  let existingPageEditing:
-    ReturnType<typeof createPresentationExistingPageEditingSkill> | undefined
+  let existingPageEditing: ReturnType<typeof createPresentationExistingPageEditingSkill> | undefined
   let mutationStarted = false
   const proposals = createStructuredProposalController(
     options.diagnostics,
@@ -357,14 +359,17 @@ export function createOfficeHostRuntime(
         vfs,
         nativeMasterEditingSupported: supportsNativePowerPointMasterEditing(),
         platform: options.platform ?? currentOfficePlatform(),
-        chartSavepoint: localBinding?.readExistingChartChange && localBinding.writeExistingChartChange && options.presentation?.request
-          ? {
-              documentId: localBinding.documentId,
-              request: options.presentation.request,
-              readExistingChartChange: localBinding.readExistingChartChange,
-              writeExistingChartChange: localBinding.writeExistingChartChange,
-            }
-          : undefined,
+        chartSavepoint:
+          localBinding?.readExistingChartChange &&
+          localBinding.writeExistingChartChange &&
+          options.presentation?.request
+            ? {
+                documentId: localBinding.documentId,
+                request: options.presentation.request,
+                readExistingChartChange: localBinding.readExistingChartChange,
+                writeExistingChartChange: localBinding.writeExistingChartChange,
+              }
+            : undefined,
       }),
   }[host]()
   const extensions =
@@ -445,8 +450,7 @@ export function createOfficeHostRuntime(
     existingImageEditing = createPresentationExistingImageEditingSkill({
       baseline: baselineSkill,
       imageAdapter: new BrowserPresentationImageAdapter(),
-      inspectPage: (slideId, signal) =>
-        powerPointAdapter.inspectPresentationPage(slideId, signal),
+      inspectPage: (slideId, signal) => powerPointAdapter.inspectPresentationPage(slideId, signal),
       imageBackup,
       vfs,
       proposals,
@@ -471,8 +475,7 @@ export function createOfficeHostRuntime(
       baseline: baselineSkill,
       adapter: new BrowserPresentationPageReplacementAdapter(),
       exportAdapter: powerPointAdapter,
-      inspectPage: (slideId, signal) =>
-        powerPointAdapter.inspectPresentationPage(slideId, signal),
+      inspectPage: (slideId, signal) => powerPointAdapter.inspectPresentationPage(slideId, signal),
       vfs,
       request: options.presentation.request,
       proposals,
@@ -861,17 +864,32 @@ export function createOfficeHostRuntime(
     changes = createPresentationChangesController({
       available: options.presentation?.available ?? (() => false),
       existingAvailable: () =>
-        Boolean(existingEditing || existingBatchEditing || existingImageEditing || existingPageEditing),
+        Boolean(
+          existingEditing || existingBatchEditing || existingImageEditing || existingPageEditing,
+        ),
       artifact: activeArtifact,
       documentId: localBinding!.documentId,
       listChangeHistory: localBinding!.listChangeHistory,
-      listExistingPageBackups: options.presentation?.request ? async (documentId) => {
-        const response = await options.presentation!.request!({ operation: 'existing_page_backup_list', documentId })
-        if (!response.ok) throw new Error('backup_inventory_unavailable')
-        const value = await response.json() as { documentId?: unknown; backups?: unknown }
-        if (value.documentId !== documentId || !Array.isArray(value.backups)) throw new Error('backup_inventory_invalid')
-        return value.backups as { backupId: string; status: string; hostSlideId: string; slideIds: string[]; sha256: string; sizeBytes: number }[]
-      } : undefined,
+      listExistingPageBackups: options.presentation?.request
+        ? async (documentId) => {
+            const response = await options.presentation!.request!({
+              operation: 'existing_page_backup_list',
+              documentId,
+            })
+            if (!response.ok) throw new Error('backup_inventory_unavailable')
+            const value = (await response.json()) as { documentId?: unknown; backups?: unknown }
+            if (value.documentId !== documentId || !Array.isArray(value.backups))
+              throw new Error('backup_inventory_invalid')
+            return value.backups as {
+              backupId: string
+              status: string
+              hostSlideId: string
+              slideIds: string[]
+              sha256: string
+              sizeBytes: number
+            }[]
+          }
+        : undefined,
       readTextChange: options.presentation?.readTextChange,
       readGeometryChange: options.presentation?.readGeometryChange,
       readPageReplacement: options.presentation?.readPageReplacement,
@@ -1114,6 +1132,8 @@ export function createOfficeHostRuntime(
         ? {
             available: options.presentation.attachmentsAvailable ?? (() => false),
             upload: attachments.upload,
+            list: attachments.list,
+            remove: attachments.remove,
             imagesAvailable: () =>
               Boolean(
                 options.presentation?.attachmentsAvailable?.() &&
@@ -1141,6 +1161,8 @@ function lifecycle(
     available(): boolean
     imagesAvailable(): boolean
     upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
+    list(): Promise<PresentationAttachmentMetadata[]>
+    remove(attachmentId: string): Promise<void>
   },
 ): OfficeHostRuntime {
   const packageRuntime = suppliedPackageRuntime ?? new SkillPackageWorkerRuntime()
@@ -1165,6 +1187,9 @@ function lifecycle(
     skillPackagesEnabled,
     durableAttachmentsAvailable: () => attachments?.available() ?? false,
     durableImagesAvailable: () => attachments?.imagesAvailable() ?? false,
+    listDurableAttachments: () => attachments?.list() ?? Promise.resolve([]),
+    deleteDurableAttachment: (attachmentId) =>
+      attachments?.remove(attachmentId) ?? Promise.reject(new Error('presentation_unavailable')),
     async uploadFile(name, content) {
       if (disposed) throw new Error('upload_cancelled')
       if (

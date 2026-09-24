@@ -24,7 +24,7 @@ function nameValid(value: unknown): value is string {
     supportsPresentationAttachment(value, true)
   )
 }
-interface Metadata {
+export interface PresentationAttachmentMetadata {
   attachmentId: string
   name: string
   sizeBytes: number
@@ -39,9 +39,9 @@ interface Metadata {
   error?: string
   totalChars?: number
 }
-function metadata(value: unknown): Metadata {
+function metadata(value: unknown): PresentationAttachmentMetadata {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid()
-  const v = value as Metadata
+  const v = value as PresentationAttachmentMetadata
   if (
     Object.keys(v).some(
       (k) =>
@@ -135,6 +135,8 @@ export function createPresentationAttachmentSkill(
   },
 ): AgentSkill & {
   upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
+  list(): Promise<PresentationAttachmentMetadata[]>
+  remove(attachmentId: string): Promise<void>
   clear(): void
 } {
   let epoch = 0
@@ -218,6 +220,39 @@ export function createPresentationAttachmentSkill(
       epoch++
       for (const controller of active) controller.abort()
       active.clear()
+    },
+    async list() {
+      return scope(undefined, async (request) => {
+        const value = (await request({ operation: 'attachment_list_assets' })) as {
+          attachments?: unknown[]
+        }
+        if (
+          !value ||
+          Object.keys(value).length !== 1 ||
+          !Array.isArray(value.attachments) ||
+          value.attachments.length > 32
+        )
+          return invalid()
+        const attachments = value.attachments.map(metadata)
+        if (new Set(attachments.map((item) => item.attachmentId)).size !== attachments.length)
+          return invalid()
+        return attachments
+      })
+    },
+    async remove(attachmentId) {
+      if (!idValid(attachmentId)) throw new Error('invalid_tool_input')
+      await scope(undefined, async (request) => {
+        const value = await request({ operation: 'attachment_delete', attachmentId })
+        if (
+          !value ||
+          typeof value !== 'object' ||
+          Array.isArray(value) ||
+          Object.keys(value).length !== 2 ||
+          (value as { attachmentId?: unknown }).attachmentId !== attachmentId ||
+          (value as { deleted?: unknown }).deleted !== true
+        )
+          return invalid()
+      })
     },
     async upload(name, content) {
       await scope(undefined, async (send, check) => {

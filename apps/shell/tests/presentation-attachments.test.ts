@@ -179,6 +179,40 @@ describe('durable presentation attachments', () => {
     await symlink(tmpdir(), root)
     await expect(call({ operation: 'attachment_list' })).rejects.toThrow('invalid_state')
   })
+  it('deletes only the named document attachment and releases declared capacity', async () => {
+    const { call } = await setup()
+    for (let i = 0; i < 10; i++) {
+      const id = hash(String(i))
+      await call({
+        operation: 'attachment_begin',
+        attachmentId: id,
+        sha256: id,
+        name: `${i}.txt`,
+        sizeBytes: 10 * 1024 * 1024,
+      })
+    }
+    const removed = hash('0')
+    await expect(
+      call({ operation: 'attachment_delete', documentId: 'other', attachmentId: removed }),
+    ).rejects.toThrow('not_found')
+    expect(await call({ operation: 'attachment_delete', attachmentId: removed })).toEqual({
+      attachmentId: removed,
+      deleted: true,
+    })
+    await expect(call({ operation: 'attachment_delete', attachmentId: removed })).rejects.toThrow(
+      'not_found',
+    )
+    const replacement = hash('replacement')
+    expect(
+      await call({
+        operation: 'attachment_begin',
+        attachmentId: replacement,
+        sha256: replacement,
+        name: 'replacement.txt',
+        sizeBytes: 10 * 1024 * 1024,
+      }),
+    ).toMatchObject({ attachmentId: replacement })
+  })
   it('recovers a partially persisted chunk and serializes separate service instances', async () => {
     const { call, userDataPath } = await setup()
     const data = Buffer.from('abcdef')

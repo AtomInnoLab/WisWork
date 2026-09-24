@@ -11,6 +11,8 @@ function setup() {
     if (body.operation === 'attachment_chunk')
       receivedBytes = body.offset + atob(body.base64).length
     if (body.operation === 'attachment_finish') status = 'ready'
+    if (body.operation === 'attachment_delete')
+      return new Response(JSON.stringify({ attachmentId: body.attachmentId, deleted: true }))
     const metadata = {
       attachmentId,
       name: 'notes.txt',
@@ -22,7 +24,7 @@ function setup() {
     }
     return new Response(
       JSON.stringify(
-        body.operation === 'attachment_list'
+        body.operation === 'attachment_list' || body.operation === 'attachment_list_assets'
           ? { attachments: [metadata] }
           : body.operation === 'attachment_read'
             ? {
@@ -47,6 +49,21 @@ function setup() {
   })
   return { bytes, attachmentId, request, documentId, vfs, skill }
 }
+it('lists document-scoped PC copies and deletes only a validated selected ID', async () => {
+  const f = setup()
+  expect(await f.skill.list()).toMatchObject([{ attachmentId: f.attachmentId }])
+  await expect(f.skill.remove('bad')).rejects.toThrow('invalid_tool_input')
+  await f.skill.remove(f.attachmentId)
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      operation: 'attachment_delete',
+      documentId: 'doc1',
+      attachmentId: f.attachmentId,
+    }),
+    expect.any(AbortSignal),
+  )
+  expect(f.skill.tools.map((tool) => tool.name)).not.toContain('delete_presentation_attachment')
+})
 it('uploads chunks and reads durable sources after reconnect', async () => {
   const f = setup()
   await f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))

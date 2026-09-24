@@ -120,6 +120,7 @@ export function createPresentationService(options: {
           'attachment_begin',
           'attachment_chunk',
           'attachment_finish',
+          'attachment_delete',
           'attachment_list',
           'attachment_read',
           'attachment_asset',
@@ -428,8 +429,11 @@ export function createPresentationService(options: {
             : undefined
           const savedPlan = store.plan(projectId, documentId)
           const plan = savedPlan
-            ? { revision: savedPlan.revision, value: parsePresentationPlan(savedPlan.plan),
-                ...(savedPlan.revisions ? { revisions: savedPlan.revisions } : {}) }
+            ? {
+                revision: savedPlan.revision,
+                value: parsePresentationPlan(savedPlan.plan),
+                ...(savedPlan.revisions ? { revisions: savedPlan.revisions } : {}),
+              }
             : undefined
           const history = store.history(projectId, documentId)
           const latest = history[0]

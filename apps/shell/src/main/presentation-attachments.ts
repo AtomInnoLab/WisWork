@@ -272,6 +272,7 @@ export function createPresentationAttachmentService(options: {
       attachment_begin: ['attachmentId', 'name', 'sizeBytes', 'sha256'],
       attachment_chunk: ['attachmentId', 'offset', 'base64'],
       attachment_finish: ['attachmentId'],
+      attachment_delete: ['attachmentId'],
       attachment_list: [],
       attachment_list_assets: [],
       attachment_asset: ['attachmentId'],
@@ -334,6 +335,12 @@ export function createPresentationAttachmentService(options: {
         return { attachments }
       }
       if (!exists && op !== 'attachment_begin') fail('not_found')
+      if (op === 'attachment_delete') {
+        await metadata(dir, id)
+        checkAbort(signal)
+        await rm(dir, { recursive: true })
+        return { attachmentId: id, deleted: true }
+      }
       if (op === 'attachment_begin' && !exists) {
         let declared = 0
         for (const entry of entries) declared += (await metadata(join(doc, entry), entry)).sizeBytes

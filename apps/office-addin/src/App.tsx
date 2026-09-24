@@ -20,6 +20,7 @@ import { downloadSessionFile } from './agent/session-download.js'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Markdown } from '@wiswork/ui'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
+import type { PresentationAttachmentMetadata } from './skills/powerpoint/presentation-attachments.js'
 import {
   officeCapabilityFlags,
   officeRemoteDiagnosticsEnabled,
@@ -181,6 +182,10 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
     presentation_image_too_large: '图片每个文件最多 10 MB。',
     presentation_assets_unavailable: '请更新并连接支持图片素材的 PC 端后重试。',
     presentation_attachment_failed: '资料解析未完成，请检查文件或重新上传。',
+    presentation_not_found: '这份 PC 资料已不存在，请刷新附件列表。',
+    presentation_invalid_state: 'PC 资料状态异常，请重连后重试。',
+    presentation_quota_exceeded:
+      '当前文档在 PC 的资料容量已满（最多 32 个文件、总计 100 MB）。请删除不再需要的资料后重试。',
     presentation_document_changed: '文档已改变，本次上传已停止。请在目标文档重新上传。',
     presentation_service_unavailable: 'PC 连接不可用，请重连后重新选择同一文件续传。',
     presentation_unavailable: 'PC 连接不可用，请重连后重新选择同一文件续传。',
@@ -221,6 +226,8 @@ export interface OfficeWorkspaceUi {
   readonly changes?: PresentationChangesController
   readonly durableAttachmentsAvailable?: () => boolean
   readonly durableImagesAvailable?: () => boolean
+  readonly listDurableAttachments?: () => Promise<PresentationAttachmentMetadata[]>
+  readonly deleteDurableAttachment?: (attachmentId: string) => Promise<void>
   readonly attachments: () => readonly string[]
   readonly downloadFile?: (path: string) => void
   readonly skills: () => readonly string[]
@@ -271,6 +278,8 @@ export function createOfficeWorkspaceUi(
     changes: runtime.changes,
     durableAttachmentsAvailable: runtime.durableAttachmentsAvailable,
     durableImagesAvailable: runtime.durableImagesAvailable,
+    listDurableAttachments: runtime.listDurableAttachments,
+    deleteDurableAttachment: runtime.deleteDurableAttachment,
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
     downloadFile: (path: string) => downloadSessionFile(runtime.vfs, path),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
@@ -476,6 +485,7 @@ export function AgentWorkspace(props: {
   )
   const [instruction, setInstruction] = useState('')
   const [files, setFiles] = useState<readonly string[]>(ui.attachments())
+  const [durableFiles, setDurableFiles] = useState<PresentationAttachmentMetadata[]>([])
   const [skills, setSkills] = useState<readonly string[]>(ui.skills())
   const [uploadError, setUploadError] = useState('')
   const [uploadPending, setUploadPending] = useState(false)
@@ -494,6 +504,15 @@ export function AgentWorkspace(props: {
     },
     [],
   )
+  useEffect(() => {
+    if (!ui.durableAttachmentsAvailable?.()) return
+    void ui
+      .listDurableAttachments?.()
+      .then((items) => {
+        if (mounted.current) setDurableFiles(items)
+      })
+      .catch(() => undefined)
+  }, [ui])
   useEffect(() => {
     const heading = panelHeading.current
     const opener = panelOpener.current
@@ -777,6 +796,12 @@ export function AgentWorkspace(props: {
                     .then(() => {
                       if (!current()) return
                       setFiles(ui.attachments())
+                      void ui
+                        .listDurableAttachments?.()
+                        .then((items) => {
+                          if (current()) setDurableFiles(items)
+                        })
+                        .catch(() => undefined)
                       setUploadStatus(
                         durable
                           ? `${file.name} 已保存到 PC 并解析，可让 Agent 读取。`
@@ -815,6 +840,43 @@ export function AgentWorkspace(props: {
                 <p className="error-text" role="alert">
                   {uploadError}
                 </p>
+              )}
+              {ui.durableAttachmentsAvailable?.() && durableFiles.length > 0 && (
+                <ul>
+                  {durableFiles.map((file) => (
+                    <li key={file.attachmentId}>
+                      {file.name} · {file.status}
+                      <button
+                        type="button"
+                        disabled={uploadPending || state.busy}
+                        onClick={() => {
+                          if (
+                            !window.confirm(
+                              `删除 PC 中的“${file.name}”？此操作会移除原文件及解析结果，之后使用需重新上传。`,
+                            )
+                          )
+                            return
+                          setUploadPending(true)
+                          void ui
+                            .deleteDurableAttachment?.(file.attachmentId)
+                            .then(async () => {
+                              if (!mounted.current) return
+                              setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
+                              setUploadStatus(`${file.name} 已从 PC 删除。`)
+                            })
+                            .catch((error: unknown) => {
+                              if (mounted.current) setUploadError(safeUploadError(error))
+                            })
+                            .finally(() => {
+                              if (mounted.current) setUploadPending(false)
+                            })
+                        }}
+                      >
+                        删除 PC 副本
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               )}
               <ul>
                 {files.map((file) => (
@@ -898,8 +960,14 @@ export function AgentWorkspace(props: {
       )}
 
       <section className="composer-shell" aria-label="Message WisWork Agent">
-        {ui.project && <PresentationWorkflowCard project={ui.project} imported={ui.importProgress} qa={ui.qa}
-          disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)} />}
+        {ui.project && (
+          <PresentationWorkflowCard
+            project={ui.project}
+            imported={ui.importProgress}
+            qa={ui.qa}
+            disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
+          />
+        )}
         {ui.project && (
           <PresentationProjectCard
             controller={ui.project}

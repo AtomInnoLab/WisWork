@@ -93,6 +93,75 @@ function workspaceMarkup(
 }
 
 describe('Office Agent workspace UI', () => {
+  it('requires a user confirmation before deleting a PC attachment', async () => {
+    const id = 'a'.repeat(64)
+    const list = vi
+      .fn()
+      .mockResolvedValue([
+        {
+          attachmentId: id,
+          name: 'source.pdf',
+          sizeBytes: 1,
+          sha256: id,
+          receivedBytes: 1,
+          status: 'ready',
+          kind: 'text',
+          totalChars: 1,
+        },
+      ])
+    const remove = vi.fn().mockResolvedValue(undefined)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const snapshot = {
+      assistantText: '',
+      activity: '',
+      busy: false,
+      applying: false,
+      status: 'done',
+      retryable: false,
+      timeline: Object.freeze([]),
+    } as OfficeAgentSnapshot
+    const session = {
+      snapshot: () => snapshot,
+      subscribe: () => () => undefined,
+    } as unknown as OfficeAgentSession
+    const ui = {
+      attachments: () => [],
+      skills: () => [],
+      skillPackagesEnabled: true,
+      upload: vi.fn(),
+      clear: vi.fn(),
+      durableAttachmentsAvailable: () => true,
+      listDurableAttachments: list,
+      deleteDurableAttachment: remove,
+    } as OfficeWorkspaceUi
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    await act(async () =>
+      root.render(
+        React.createElement(AgentWorkspace, {
+          session,
+          ui,
+          disconnect: vi.fn(),
+          host: 'powerpoint',
+        }),
+      ),
+    )
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Attachments"]')!.click(),
+    )
+    const button = Array.from(container.querySelectorAll('button')).find(
+      (item) => item.textContent === '删除 PC 副本',
+    )!
+    await act(async () => button.click())
+    expect(remove).not.toHaveBeenCalled()
+    confirm.mockReturnValue(true)
+    await act(async () => button.click())
+    expect(remove).toHaveBeenCalledWith(id)
+    await act(async () => root.unmount())
+    container.remove()
+    confirm.mockRestore()
+  })
   it('renders an accessible full workspace with causal timeline and inline proposal actions', () => {
     const html = workspaceMarkup()
     expect(html).toContain('aria-label="Agent conversation"')
