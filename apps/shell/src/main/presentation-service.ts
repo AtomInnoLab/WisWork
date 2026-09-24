@@ -8,6 +8,7 @@ import {
 } from './presentation-jobs'
 import { parsePresentationClaimReview } from '@wiswork/pptx-engine/presentation-claim-review'
 import { createPresentationPageBackupService } from './presentation-page-backups'
+import { createPresentationExistingPageBackupService } from './presentation-existing-page-backups'
 import {
   handlePresentationProduction,
   presentationProductionSummary,
@@ -77,6 +78,7 @@ export function createPresentationService(options: {
   ) => Promise<{ bytes: Uint8Array; width: number; height: number }>
 }): (body: unknown, signal: AbortSignal) => Promise<Uint8Array> {
   const pageBackups = createPresentationPageBackupService(options)
+  const existingPageBackups = createPresentationExistingPageBackupService(options)
   const attachments = createPresentationAttachmentService(options)
   const store = new PresentationStore(options.userDataPath)
   const compile = options.compile ?? compilePresentationDeck
@@ -91,6 +93,16 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
+      if (
+        [
+          'existing_page_backup_begin',
+          'existing_page_backup_chunk',
+          'existing_page_backup_finish',
+          'existing_page_backup_status',
+          'existing_page_backup_read',
+        ].includes(request.operation as string)
+      )
+        return boundedResponse(await existingPageBackups(request, signal))
       if (
         [
           'page_backup_begin',
