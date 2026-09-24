@@ -30,7 +30,7 @@ export function PresentationChangesCard({
       <strong>修改差异与撤销</strong>
       <p>
         变更历史最多 64 条，达到容量上限后停止新增；旧版本仅有最近保存点，不完整历史的先后顺序未知。
-        每次撤销仍检查当前对象；对象 ID 或内容已变化时可能无法继续撤销。图片恢复后对象 ID 会改变。
+        每次撤销仍检查当前对象；对象 ID 或内容已变化时可能无法继续撤销。图片或整页恢复后对象 ID 会改变。
       </p>
       {snapshot.projectId && (
         <p>
@@ -65,6 +65,8 @@ export function PresentationChangesCard({
                 ? '现稿批量 · '
                 : entry.source === 'existing_image'
                   ? '现稿图片 · '
+                  : entry.source === 'existing_page'
+                    ? '现稿整页 · '
                   : entry.source === 'existing'
                     ? '现稿 · '
                     : ''}

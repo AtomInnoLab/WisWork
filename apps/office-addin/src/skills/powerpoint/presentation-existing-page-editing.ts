@@ -1,5 +1,4 @@
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
-import { openPptx } from '@wiswork/pptx-engine'
 import JSZip from 'jszip'
 import { selectionFingerprint, type StructuredProposalController } from '../../agent/proposal-controller.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
@@ -48,12 +47,18 @@ async function oneSlide(bytesValue: Uint8Array, signal?: AbortSignal) {
   if (!bytesValue.length || bytesValue.length > MAX_PPTX_PACKAGE_BYTES) throw new Error('presentation_page_source_invalid')
   const base64 = b64(bytesValue)
   const digest = await presentationPackageDigest(base64, signal)
-  const opened = await openPptx(bytesValue)
-  if (opened.deck.slides.length !== 1) throw new Error('presentation_page_source_invalid')
   const zip = await JSZip.loadAsync(bytesValue)
   const xml = await zip.file('ppt/presentation.xml')?.async('string')
   const ids = [...(xml ?? '').matchAll(/<p:sldId\b[^>]*\bid="([0-9]+)"[^>]*\/?\s*>/g)]
-  if (ids.length !== 1 || Number(ids[0]![1]) < 256 || Number(ids[0]![1]) > 4294967295)
+  const slidePaths = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
+  const relations = await zip.file('ppt/_rels/presentation.xml.rels')?.async('string')
+  if (
+    ids.length !== 1 ||
+    Number(ids[0]![1]) < 256 ||
+    Number(ids[0]![1]) > 4294967295 ||
+    slidePaths.length !== 1 ||
+    !relations?.includes(`Target="slides/${slidePaths[0]!.split('/').at(-1)}"`)
+  )
     throw new Error('presentation_page_source_invalid')
   return { base64, digest, sourceSlideId: `${ids[0]![1]}#`, sha256: await sha(bytesValue), sizeBytes: bytesValue.length }
 }
@@ -138,7 +143,20 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
         const inspect = async () => { await current(); saved(); const state = await options.adapter.inspect(projected(record), signal); await current(); saved(); return state }
         if (action === 'inspect') {
           const observed = await inspect()
-          return { output: output({ changeId: record.changeId, state: record.state, inspection: observed, currentHostVerified: observed.status !== 'conflict' && record.state !== 'pending' && record.state !== 'undo_pending', manualReview: record.state === 'pending' || record.state === 'undo_pending' || observed.status === 'conflict', qaPassed: false }), mutated: false, summary: '已检查现稿单页变更' }
+          const expectedStatuses: Record<PresentationExistingPageChange['state'], string[]> = {
+            pending: [],
+            inserted: ['staged'],
+            staged: ['staged'],
+            commit_pending: ['staged', 'applied'],
+            applied: ['applied'],
+            discard_pending: ['staged', 'baseline'],
+            discarded: ['baseline'],
+            undo_pending: ['applied'],
+            restore_inserted: ['restore_staged', 'undone'],
+            undone: ['undone'],
+          }
+          const verified = expectedStatuses[record.state].includes(observed.status)
+          return { output: output({ changeId: record.changeId, state: record.state, inspection: observed, currentHostVerified: verified, manualReview: !verified, qaPassed: false }), mutated: false, summary: '已检查现稿单页变更' }
         }
         const observed = action === 'stage' ? undefined : await inspect()
         if (action === 'stage') {

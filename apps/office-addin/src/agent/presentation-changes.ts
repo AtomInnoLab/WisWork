@@ -1,6 +1,7 @@
 import type { PresentationExistingChange } from '../skills/powerpoint/presentation-existing-change.js'
 import type { PresentationExistingBatch } from '../skills/powerpoint/presentation-existing-batch.js'
 import type { PresentationExistingImageChange } from '../skills/powerpoint/presentation-existing-image.js'
+import type { PresentationExistingPageChange } from '../skills/powerpoint/presentation-existing-page.js'
 import {
   presentationChangeSetSummary,
   selectPresentationHistory,
@@ -32,7 +33,7 @@ import {
 
 export type PresentationChangeAction = 'inspect' | 'undo' | 'resume' | 'commit' | 'discard'
 export interface PresentationChangeEntry {
-  source?: 'existing' | 'existing_batch' | 'existing_image'
+  source?: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page'
   review?: PresentationExistingChange['review']
   reviews?: PresentationExistingBatch['reviews']
   affectedPageCount?: number
@@ -87,6 +88,7 @@ interface SavedEntry {
     | PresentationExistingChange
     | PresentationExistingBatch
     | PresentationExistingImageChange
+    | PresentationExistingPageChange
   fingerprint: string
   historical?: boolean
 }
@@ -221,7 +223,8 @@ export function createPresentationChangesController(
             (e) =>
               (e.kind === 'existing' ||
                 e.kind === 'existing_batch' ||
-                e.kind === 'existing_image') &&
+                e.kind === 'existing_image' ||
+                e.kind === 'existing_page') &&
               e.record.documentId === documentId,
           ),
         )
@@ -238,7 +241,22 @@ export function createPresentationChangesController(
         .sort((a, b) => Number(a.legacy) - Number(b.legacy) || b.sequence - a.sequence)
         .map((saved) => {
           const row: SavedEntry =
-            saved.kind === 'existing_image'
+            saved.kind === 'existing_page'
+              ? {
+                  entry: {
+                    id: saved.id,
+                    source: 'existing_page',
+                    kind: 'page',
+                    pageId: saved.record.oldSlideId,
+                    state: saved.record.state,
+                    before: `原页：${saved.record.oldSlideId}\n包摘要：${saved.record.originalPackageDigest}\n原页已持久备份`,
+                    after: `新页：${saved.record.newSlideId ?? '尚未记录'}\n包摘要：${saved.record.replacementPackageDigest}${saved.record.restoredSlideId ? `\n恢复页面：${saved.record.restoredSlideId}` : ''}`,
+                    actions: pageActions[saved.record.state],
+                  },
+                  record: copy(saved.record),
+                  fingerprint: JSON.stringify(saved),
+                }
+              : saved.kind === 'existing_image'
               ? {
                   entry: {
                     id: saved.id,
@@ -501,13 +519,15 @@ export function createPresentationChangesController(
         const input: Record<string, unknown> =
           selected.entry.source === 'existing' ||
           selected.entry.source === 'existing_batch' ||
-          selected.entry.source === 'existing_image'
+          selected.entry.source === 'existing_image' ||
+          selected.entry.source === 'existing_page'
             ? {
                 change_id: (
                   r as
                     | PresentationExistingChange
                     | PresentationExistingBatch
                     | PresentationExistingImageChange
+                    | PresentationExistingPageChange
                 ).changeId,
               }
             : {
@@ -527,8 +547,10 @@ export function createPresentationChangesController(
           {
             id: `change-${ticket}`,
             name:
-              selected.entry.source === 'existing_image'
-                ? `${action}_existing_presentation_image_change`
+              selected.entry.source === 'existing_page'
+                ? `${action}_existing_presentation_page_change`
+                : selected.entry.source === 'existing_image'
+                  ? `${action}_existing_presentation_image_change`
                 : selected.entry.source === 'existing_batch'
                   ? `${action}_existing_presentation_batch`
                   : selected.entry.source === 'existing'
@@ -545,7 +567,8 @@ export function createPresentationChangesController(
         if (
           selected.entry.source === 'existing' ||
           selected.entry.source === 'existing_batch' ||
-          selected.entry.source === 'existing_image'
+          selected.entry.source === 'existing_image' ||
+          selected.entry.source === 'existing_page'
         ) {
           const latest = (await read(copy(artifact), scope, ticket)).find(
             (row) => row.entry.id === id,
@@ -556,7 +579,8 @@ export function createPresentationChangesController(
               | RecordValue
               | PresentationExistingChange
               | PresentationExistingBatch
-              | PresentationExistingImageChange,
+              | PresentationExistingImageChange
+              | PresentationExistingPageChange,
           ) => {
             const {
               state: _state,

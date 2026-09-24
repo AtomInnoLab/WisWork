@@ -7,7 +7,6 @@ import type { PresentationBaselineSkill } from '../src/skills/powerpoint/present
 import type { PresentationPageReplacementInspection } from '../src/skills/powerpoint/browser-presentation-page-replacement-adapter'
 import type { InMemoryVfs } from '../src/skills/shared/vfs'
 
-vi.mock('@wiswork/pptx-engine', () => ({ openPptx: async () => ({ deck: { slides: [{}] } }) }))
 vi.mock('../src/skills/powerpoint/powerpoint-package', () => ({
   MAX_PPTX_PACKAGE_BYTES: 8 * 1024 * 1024,
   presentationPackageDigest: async (base64: string) => {
@@ -21,6 +20,7 @@ async function fixture() {
   const make = async (text: string) => {
     const zip = new JSZip()
     zip.file('ppt/presentation.xml', '<p:presentation><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>')
+    zip.file('ppt/_rels/presentation.xml.rels', '<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/></Relationships>')
     zip.file('ppt/slides/slide1.xml', text)
     return zip.generateAsync({ type: 'uint8array' })
   }
@@ -76,7 +76,7 @@ async function fixture() {
   })
   const call = (action: string, input: Record<string, unknown>) => skill.executeTool({ id: 'tool', name: `${action}_existing_presentation_page_change`, input })
   const confirm = () => proposals.confirm(proposals.pending()!.id)
-  return { call, confirm, records, adapter, request, setWriteFailure: (value: boolean) => { failWrite = value }, source: () => source, changeSource: (value: Uint8Array) => { source = value }, changeBackup: (value: Uint8Array) => { backupBytes = value }, digest, data: () => data }
+  return { call, confirm, records, adapter, request, setWriteFailure: (value: boolean) => { failWrite = value }, removeStaged: () => { slideIds = ['old'] }, source: () => source, changeSource: (value: Uint8Array) => { source = value }, changeBackup: (value: Uint8Array) => { backupBytes = value }, digest, data: () => data }
 }
 
 it('stages with durable backup, then separately commits and restores after reopen', async () => {
@@ -165,4 +165,17 @@ it('resumes a known inserted page without running insertion again', async () => 
   await f.confirm()
   expect(f.records.get(id)?.state).toBe('staged')
   expect(f.adapter.stage).toHaveBeenCalledTimes(1)
+})
+it('does not report a staged page as verified after that page disappears', async () => {
+  const f = await fixture()
+  const proposed = await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/home/user/rebuilt.pptx' })
+  await f.confirm()
+  f.removeStaged()
+  const inspected = await f.call('inspect', { change_id: JSON.parse(proposed.output).changeId })
+  expect(JSON.parse(inspected.output)).toMatchObject({
+    state: 'staged',
+    inspection: { status: 'baseline' },
+    currentHostVerified: false,
+    manualReview: true,
+  })
 })

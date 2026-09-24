@@ -1,7 +1,9 @@
 import { createPresentationExistingEditingSkill } from '../skills/powerpoint/presentation-existing-editing.js'
 import { createPresentationExistingBatchEditingSkill } from '../skills/powerpoint/presentation-existing-batch-editing.js'
 import { createPresentationExistingImageEditingSkill } from '../skills/powerpoint/presentation-existing-image-editing.js'
+import { createPresentationExistingPageEditingSkill } from '../skills/powerpoint/presentation-existing-page-editing.js'
 import type { PresentationExistingImageChange } from '../skills/powerpoint/presentation-existing-image.js'
+import type { PresentationExistingPageChange } from '../skills/powerpoint/presentation-existing-page.js'
 import type { PresentationExistingBatch } from '../skills/powerpoint/presentation-existing-batch.js'
 import type { PresentationExistingChange } from '../skills/powerpoint/presentation-existing-change.js'
 import { createPresentationBaselineSkill } from '../skills/powerpoint/presentation-baseline.js'
@@ -137,6 +139,11 @@ export function createOfficeHostRuntime(
       readExistingChange?(changeId: string): PresentationExistingChange | undefined
       readExistingBatch?(changeId: string): PresentationExistingBatch | undefined
       readExistingImageChange?(changeId: string): PresentationExistingImageChange | undefined
+      readExistingPageChange?(changeId: string): PresentationExistingPageChange | undefined
+      writeExistingPageChange?(
+        record: PresentationExistingPageChange,
+        expected: PresentationExistingPageChange | undefined,
+      ): Promise<void>
       writeExistingImageChange?(
         record: PresentationExistingImageChange,
         expected: PresentationExistingImageChange | undefined,
@@ -208,6 +215,8 @@ export function createOfficeHostRuntime(
     ReturnType<typeof createPresentationExistingBatchEditingSkill> | undefined
   let existingImageEditing:
     ReturnType<typeof createPresentationExistingImageEditingSkill> | undefined
+  let existingPageEditing:
+    ReturnType<typeof createPresentationExistingPageEditingSkill> | undefined
   let mutationStarted = false
   const proposals = createStructuredProposalController(
     options.diagnostics,
@@ -226,6 +235,11 @@ export function createOfficeHostRuntime(
                 'replace_existing_presentation_image',
                 'resume_existing_presentation_image_change',
                 'undo_existing_presentation_image_change',
+                'stage_existing_presentation_page_change',
+                'resume_existing_presentation_page_change',
+                'commit_existing_presentation_page_change',
+                'discard_existing_presentation_page_change',
+                'undo_existing_presentation_page_change',
                 'stage_presentation_page_replacement',
                 'resume_presentation_page_replacement',
                 'discard_presentation_page_replacement',
@@ -430,6 +444,31 @@ export function createOfficeHostRuntime(
   if (
     baselineSkill &&
     powerPointAdapter &&
+    options.presentation &&
+    localBinding?.readExistingPageChange &&
+    localBinding.writeExistingPageChange
+  )
+    existingPageEditing = createPresentationExistingPageEditingSkill({
+      baseline: baselineSkill,
+      adapter: new BrowserPresentationPageReplacementAdapter(),
+      exportAdapter: powerPointAdapter,
+      vfs,
+      request: options.presentation.request,
+      proposals,
+      documentId: localBinding.documentId,
+      readExistingPageChange: localBinding.readExistingPageChange,
+      writeExistingPageChange: async (record, expected) => {
+        try {
+          await localBinding.writeExistingPageChange!(record, expected)
+        } finally {
+          void changes?.refresh()
+        }
+      },
+      available: options.presentation.available,
+    })
+  if (
+    baselineSkill &&
+    powerPointAdapter &&
     localBinding?.readExistingBatch &&
     localBinding.writeExistingBatch
   )
@@ -454,6 +493,7 @@ export function createOfficeHostRuntime(
     ...(existingEditing ? [existingEditing] : []),
     ...(existingBatchEditing ? [existingBatchEditing] : []),
     ...(existingImageEditing ? [existingImageEditing] : []),
+    ...(existingPageEditing ? [existingPageEditing] : []),
   ])
   const generation =
     host === 'powerpoint' && options.presentation
@@ -761,11 +801,13 @@ export function createOfficeHostRuntime(
         ? existingBatchEditing
         : existingImageEditing?.tools.some((tool) => tool.name === call.name)
           ? existingImageEditing
-          : pageEditing?.tools.some((tool) => tool.name === call.name)
-            ? pageEditing
-            : pageReplacement?.tools.some((tool) => tool.name === call.name)
-              ? pageReplacement
-              : undefined
+          : existingPageEditing?.tools.some((tool) => tool.name === call.name)
+            ? existingPageEditing
+            : pageEditing?.tools.some((tool) => tool.name === call.name)
+              ? pageEditing
+              : pageReplacement?.tools.some((tool) => tool.name === call.name)
+                ? pageReplacement
+                : undefined
     return owner
       ? owner.executeTool(call, signal)
       : Promise.resolve({
@@ -786,6 +828,7 @@ export function createOfficeHostRuntime(
     existingEditing ||
     existingBatchEditing ||
     existingImageEditing ||
+    existingPageEditing ||
     (generation &&
       options.presentation &&
       (options.presentation.listChangeHistory ||
@@ -797,7 +840,7 @@ export function createOfficeHostRuntime(
     changes = createPresentationChangesController({
       available: options.presentation?.available ?? (() => false),
       existingAvailable: () =>
-        Boolean(existingEditing || existingBatchEditing || existingImageEditing),
+        Boolean(existingEditing || existingBatchEditing || existingImageEditing || existingPageEditing),
       artifact: activeArtifact,
       documentId: localBinding!.documentId,
       listChangeHistory: localBinding!.listChangeHistory,
@@ -1028,6 +1071,7 @@ export function createOfficeHostRuntime(
         existingEditing?.clear()
         existingBatchEditing?.clear()
         existingImageEditing?.clear()
+        existingPageEditing?.clear()
         pageEditing?.clear()
         changes?.clear()
         qaSkill?.clear()

@@ -2,6 +2,7 @@ import { expect, it, vi } from 'vitest'
 import { createPresentationChangesController } from '../src/agent/presentation-changes.js'
 import type { CompiledPresentationArtifact } from '../src/skills/powerpoint/presentation-delivery.js'
 import type { PresentationGeometryChange } from '../src/skills/powerpoint/presentation-geometry-change.js'
+import type { PresentationExistingPageChange } from '../src/skills/powerpoint/presentation-existing-page.js'
 const artifact: CompiledPresentationArtifact = {
   documentId: 'doc',
   projectId: 'project',
@@ -70,6 +71,48 @@ it('reads only current records and clones snapshots; routes undo through the too
     expect.any(AbortSignal),
   )
   expect(JSON.stringify(controller.snapshot())).not.toContain('unsafe')
+})
+it('shows existing-page identity diff offline and routes commit by exact change ID', async () => {
+  const record: PresentationExistingPageChange = {
+    version: 1,
+    changeId: 'native-page',
+    documentId: 'doc',
+    baselineId: 'baseline',
+    baselineDigest: 'a'.repeat(64),
+    scope: { slideIds: ['old'] },
+    oldSlideId: 'old',
+    beforeSlideIds: ['old', 'other'],
+    originalPackageDigest: 'b'.repeat(64),
+    replacementPackageDigest: 'c'.repeat(64),
+    sourceSlideId: '256#',
+    backup: { backupId: 'backup', sha256: 'd'.repeat(64), sizeBytes: 120 },
+    state: 'staged',
+    newSlideId: 'new',
+  }
+  const executeTool = vi.fn(async () => ({ output: '{}', summary: 'proposed' }))
+  const controller = createPresentationChangesController({
+    available: () => false,
+    existingAvailable: () => true,
+    artifact: () => undefined,
+    documentId: async () => 'doc',
+    listChangeHistory: () => [
+      { id: 'existing_page:native-page', kind: 'existing_page', sequence: 1, legacy: false, record },
+    ],
+    executeTool,
+  })
+  await controller.refresh()
+  const row = controller.snapshot().entries[0]!
+  expect(row).toMatchObject({ source: 'existing_page', kind: 'page', actions: ['inspect', 'commit', 'discard'] })
+  expect(row.before).toContain('old')
+  expect(row.after).toContain('new')
+  await controller.run(row.id, 'commit')
+  expect(executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'commit_existing_presentation_page_change',
+      input: { change_id: 'native-page' },
+    }),
+    expect.any(AbortSignal),
+  )
 })
 it('rejects changed fingerprints and invalid actions', async () => {
   const { controller, executeTool, change } = await setup()

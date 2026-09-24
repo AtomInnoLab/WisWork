@@ -14,6 +14,7 @@ import {
 } from './presentation-existing-change.js'
 import { validatePresentationExistingBatch } from './presentation-existing-batch.js'
 import { validatePresentationExistingImageChange } from './presentation-existing-image.js'
+import { validatePresentationExistingPageChange } from './presentation-existing-page.js'
 import type { PresentationHistoryEntry } from './presentation-change-history.js'
 interface Options {
   baseline: PresentationBaselineSkill
@@ -83,7 +84,7 @@ const tools: AgentToolDef[] = names.map((name) => {
       : review
         ? 'Record a historical visual assessment only for this session’s captured screenshot, after freshly recapturing and matching it. Not a current or whole-deck acceptance claim.'
         : list
-          ? 'List native text/geometry, ordered batch and picture savepoints for this existing document, independently of generated projects. History is not proof of current host state.'
+          ? 'List native text/geometry, ordered batch, picture and single-page savepoints for this existing document, independently of generated projects. History is not proof of current host state.'
           : name.startsWith('capture_')
             ? 'Capture the saved change target page for local visual review after matching the current target state. This does not pass visual QA.'
             : name.startsWith('inspect_')
@@ -227,11 +228,12 @@ export function createPresentationExistingEditingSkill(
               e,
             ): e is Extract<
               PresentationHistoryEntry,
-              { kind: 'existing' | 'existing_batch' | 'existing_image' }
+              { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' }
             > =>
               (e.kind === 'existing' ||
                 e.kind === 'existing_batch' ||
-                e.kind === 'existing_image') &&
+                e.kind === 'existing_image' ||
+                e.kind === 'existing_page') &&
               e.record.documentId === documentId,
           )
           if (
@@ -240,7 +242,9 @@ export function createPresentationExistingEditingSkill(
                 ? !validatePresentationExistingChange(e.record)
                 : e.kind === 'existing_batch'
                   ? !validatePresentationExistingBatch(e.record)
-                  : !validatePresentationExistingImageChange(e.record),
+                  : e.kind === 'existing_image'
+                    ? !validatePresentationExistingImageChange(e.record)
+                    : !validatePresentationExistingPageChange(e.record),
             )
           )
             throw new Error('presentation_existing_change_invalid')
@@ -252,7 +256,18 @@ export function createPresentationExistingEditingSkill(
               documentId,
               currentHostVerified: false,
               changes: entries.map((e) =>
-                e.kind === 'existing_image'
+                e.kind === 'existing_page'
+                  ? {
+                      changeId: e.record.changeId,
+                      kind: 'page',
+                      oldSlideId: e.record.oldSlideId,
+                      newSlideId: e.record.newSlideId ?? null,
+                      restoredSlideId: e.record.restoredSlideId ?? null,
+                      state: e.record.state,
+                      sequence: e.sequence,
+                      currentHostVerified: false,
+                    }
+                  : e.kind === 'existing_image'
                   ? {
                       changeId: e.record.changeId,
                       kind: 'image',

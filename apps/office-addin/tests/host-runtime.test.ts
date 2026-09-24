@@ -526,3 +526,36 @@ it('exposes durable text and image undo with a changes workbench through the run
     vi.unstubAllGlobals()
   }
 })
+
+it('exposes existing-page rebuild and routes saved-page inspection through the runtime', async () => {
+  vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => true } } })
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      documentId: async () => 'doc',
+      request: async () => new Response('{}'),
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+      readExistingPageChange: () => undefined,
+      writeExistingPageChange: async () => {},
+    },
+  })
+  try {
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
+      'stage_existing_presentation_page_change',
+    )
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
+      'undo_existing_presentation_page_change',
+    )
+    expect(runtime.changes).toBeDefined()
+    const inspected = await runtime.skill.executeTool({
+      id: 'inspect',
+      name: 'inspect_existing_presentation_page_change',
+      input: { change_id: 'absent' },
+    })
+    expect(inspected).toMatchObject({ isError: true, output: 'presentation_existing_page_missing' })
+  } finally {
+    runtime.dispose()
+    vi.unstubAllGlobals()
+  }
+})

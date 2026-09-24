@@ -46,6 +46,15 @@ export function presentationChangeSetSummary(
       validation: ['原图备份和新图回读', '受影响页面截图复核'],
       risk: 'high',
     }
+  if (entry.kind === 'existing_page')
+    return {
+      scope: entry.record.scope,
+      intent: '重做现稿单页',
+      operations: [{ kind: 'existing_page', pageId: entry.record.oldSlideId }],
+      preserved: ['其它页面（需复核）'],
+      validation: ['原页备份与新页回读', '受影响页面截图复核'],
+      risk: 'high',
+    }
   const { kind, record: r } = entry
   const scope =
     entry.kind === 'page'
@@ -91,7 +100,7 @@ export async function selectPresentationHistory(
   artifact: CompiledPresentationArtifact,
   documentId: string,
 ): Promise<
-  Exclude<PresentationHistoryEntry, { kind: 'existing' | 'existing_batch' | 'existing_image' }>[]
+  Exclude<PresentationHistoryEntry, { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' }>[]
 > {
   if (
     !Array.isArray(entries) ||
@@ -119,8 +128,12 @@ export async function selectPresentationHistory(
         e,
       ): e is Exclude<
         PresentationHistoryEntry,
-        { kind: 'existing' | 'existing_batch' | 'existing_image' }
-      > => e.kind !== 'existing' && e.kind !== 'existing_batch' && e.kind !== 'existing_image',
+        { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' }
+      > =>
+        e.kind !== 'existing' &&
+        e.kind !== 'existing_batch' &&
+        e.kind !== 'existing_image' &&
+        e.kind !== 'existing_page',
     )
     .filter((e) => {
       const r = e.record
