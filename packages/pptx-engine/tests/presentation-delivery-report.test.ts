@@ -298,6 +298,15 @@ describe('delivery evidence report', () => {
     expect(markdown).toContain('All source review history')
     expect(markdown).toContain('All disposition history')
     expect(markdown).toContain('NOT VERIFIED')
+    for (const source of value.plan.sources) source.excerpt = '<'.repeat(12000)
+    for (const claim of value.plan.claims) claim.statement = '<'.repeat(900)
+    value.deck.claims = presentationPlanClaims(value.plan)
+    const escapedMarkdown = presentationDeliveryMarkdown(
+      await buildPresentationDeliveryReport(value),
+    )
+    expect(new TextEncoder().encode(escapedMarkdown).byteLength).toBeLessThan(20 * 1024 * 1024)
+    expect(escapedMarkdown).not.toContain('<')
+    expect(escapedMarkdown).toContain('&#60;'.repeat(12000))
   }, 20000)
   it('bounds report bytes, page issue counts and exact states', async () => {
     const report = await buildPresentationDeliveryReport(input())
