@@ -397,6 +397,48 @@ describe('Office agent session', () => {
     },
   )
 
+  it('forwards post-write screenshots to the Agent without claiming QA passed', async () => {
+    const harness = transportHarness()
+    const proposals = createStructuredProposalController()
+    const pngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII='
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'powerpoint',
+        systemPrompt: 'test',
+        tools: [{ name: 'edit_slide_text', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool: () => {
+          const proposal = proposals.propose({
+            operation: 'edit_slide_text', title: 'Edit', preview: {},
+            impact: { host: 'powerpoint', targets: ['slide-1'], count: 1 },
+            fingerprint: 'v1', validate: () => true, execute: () => {},
+            postWrite: () => ({
+              status: 'captured', pages: [{ slideId: 'slide-1', pngBase64,
+                digest: 'f4b555ad4009f54a1a37dc29e7ccf9f8f4cfe22410ba7769061c0328cdb6db67' }],
+            }),
+          })
+          return { output: JSON.stringify({ proposalId: proposal.id }), mutated: false, summary: 'Awaiting confirmation' }
+        },
+      },
+      proposals,
+    })
+    session.send('edit')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'write', name: 'edit_slide_text', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().proposal).toBeDefined())
+    await session.confirm(session.snapshot().proposal!.id)
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    const resumed = harness.stream.mock.calls[1]?.[0] as {
+      messages: Array<{ results?: Array<{ output: string; content?: unknown }> }>
+    }
+    const result = resumed.messages.at(-1)?.results?.[0]
+    expect(JSON.parse(result!.output)).toMatchObject({ status: 'applied', qaPassed: false,
+      postWrite: { status: 'captured', pages: [{ slideId: 'slide-1' }] } })
+    expect(result!.content).toEqual([{ type: 'image', image: { mime: 'image/png', base64: pngBase64 } }])
+  })
+
   it('rejects an in-loop proposal immediately and resumes without executing the write', async () => {
     const harness = transportHarness()
     const proposals = createStructuredProposalController()

@@ -266,6 +266,30 @@ export function createOfficeAgentSession(dependencies: {
   ): Promise<ToolExecution> => {
     const decision = await proposals.waitForDecision(proposalId)
     if (decision.status === 'confirmed') {
+      const postWrite = decision.postWrite
+      if (postWrite) {
+        const pages = postWrite.status === 'captured' ? postWrite.pages : []
+        return {
+          output: JSON.stringify({
+            proposalId,
+            status: 'applied',
+            qaPassed: false,
+            postWrite: postWrite.status === 'captured'
+              ? { status: 'captured', pages: pages.map(({ slideId, digest }) => ({ slideId, digest })) }
+              : postWrite,
+          }),
+          mutated: true,
+          summary: 'Applied approved change; visual review pending',
+          modelContent: pages.map((page) => ({
+            type: 'image' as const,
+            image: { mime: 'image/png', base64: page.pngBase64 },
+          })),
+          display: pages.length ? {
+            kind: 'images',
+            items: pages.map((page) => ({ url: `data:image/png;base64,${page.pngBase64}`, title: page.slideId })),
+          } : undefined,
+        }
+      }
       return {
         output: JSON.stringify({ proposalId, status: 'applied' }),
         mutated: true,

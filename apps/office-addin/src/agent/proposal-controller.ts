@@ -1,9 +1,19 @@
 import type { OfficeDocumentClient } from '../office-document.js'
 import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
+import { validatePowerPointPageScreenshot } from '../skills/powerpoint/browser-powerpoint-adapter.js'
 
 export type ProposalOperation = 'replace' | 'append'
 export const MAX_PROPOSAL_SELECTION_LENGTH = 12_000
 export const MAX_PROPOSAL_PREVIEW_BYTES = 64 * 1024
+const MAX_POST_WRITE_PAGES = 8
+const MAX_POST_WRITE_BYTES = 8 * 1024 * 1024
+
+export type ProposalPostWriteEvidence =
+  | {
+      status: 'captured'
+      pages: readonly { slideId: string; pngBase64: string; digest: string }[]
+    }
+  | { status: 'unavailable'; reason: string }
 
 export interface ProposalImpact {
   host: string
@@ -28,10 +38,11 @@ export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id'
   validate(signal?: AbortSignal): boolean | Promise<boolean>
   execute(signal?: AbortSignal): void | Promise<void>
   verify?(signal?: AbortSignal): void | Promise<void>
+  postWrite?(): ProposalPostWriteEvidence | Promise<ProposalPostWriteEvidence>
 }
 
 export type ProposalDecision =
-  | { status: 'confirmed' }
+  | { status: 'confirmed'; postWrite?: ProposalPostWriteEvidence }
   | { status: 'rejected' | 'cancelled' }
   | { status: 'failed'; error: string }
 
@@ -120,6 +131,33 @@ function deepFreeze<T>(value: T): T {
     for (const item of Object.values(value)) deepFreeze(item)
   }
   return value
+}
+
+async function boundedPostWrite(value: ProposalPostWriteEvidence): Promise<ProposalPostWriteEvidence> {
+  if (value?.status === 'unavailable') {
+    if (!/^[a-z_]{1,64}$/.test(value.reason)) throw new Error('invalid_evidence')
+    return { status: 'unavailable', reason: value.reason }
+  }
+  if (value?.status !== 'captured' || !Array.isArray(value.pages) ||
+      value.pages.length < 1 || value.pages.length > MAX_POST_WRITE_PAGES)
+    throw new Error('invalid_evidence')
+  const seen = new Set<string>()
+  let totalBytes = 0
+  const pages = []
+  for (const page of value.pages) {
+    if (!page || typeof page.slideId !== 'string' || !page.slideId ||
+        page.slideId.length > 256 || seen.has(page.slideId)) throw new Error('invalid_evidence')
+    seen.add(page.slideId)
+    validatePowerPointPageScreenshot(page.pngBase64)
+    const bytes = Uint8Array.from(atob(page.pngBase64), (char) => char.charCodeAt(0))
+    totalBytes += bytes.byteLength
+    if (totalBytes > MAX_POST_WRITE_BYTES) throw new Error('invalid_evidence')
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
+      .map((byte) => byte.toString(16).padStart(2, '0')).join('')
+    if (page.digest !== digest) throw new Error('invalid_evidence')
+    pages.push({ slideId: page.slideId, pngBase64: page.pngBase64, digest })
+  }
+  return { status: 'captured', pages }
 }
 
 export function createStructuredProposalController(
@@ -259,7 +297,15 @@ export function createStructuredProposalController(
         }
         // Keep the primary write error when both write and release fail.
         if (releaseFailed) throw releaseError
-        settle(proposal.decision, { status: 'confirmed' })
+        let postWrite: ProposalPostWriteEvidence | undefined
+        if (proposal.request.postWrite) {
+          try {
+            postWrite = await boundedPostWrite(await proposal.request.postWrite())
+          } catch {
+            postWrite = { status: 'unavailable', reason: 'capture_failed' }
+          }
+        }
+        settle(proposal.decision, postWrite ? { status: 'confirmed', postWrite } : { status: 'confirmed' })
       } catch (error) {
         const code = stableProposalError(error)
         diagnose(() =>

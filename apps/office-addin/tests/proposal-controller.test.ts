@@ -595,3 +595,74 @@ describe('structured proposal write hooks', () => {
     await expect(decision).resolves.toEqual({ status: 'failed', error: 'office_state_uncertain' })
   })
 })
+
+describe('post-write evidence', () => {
+  const pngBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII='
+  const digest = 'f4b555ad4009f54a1a37dc29e7ccf9f8f4cfe22410ba7769061c0328cdb6db67'
+  const request = () => ({
+    operation: 'edit',
+    title: 'Edit page',
+    preview: {},
+    impact: { host: 'powerpoint', targets: ['slide-1'], count: 1 },
+    fingerprint: 'v1',
+    validate: vi.fn(async () => true),
+    execute: vi.fn(async () => {}),
+    verify: vi.fn(async () => {}),
+    postWrite: vi.fn(async () => ({
+      status: 'captured' as const,
+      pages: [{ slideId: 'slide-1', pngBase64, digest }],
+    })),
+  })
+
+  it('runs capture after successful target verification and returns bounded evidence', async () => {
+    const order: string[] = []
+    const input = request()
+    input.execute.mockImplementation(async () => { order.push('execute') })
+    input.verify.mockImplementation(async () => { order.push('verify') })
+    input.postWrite.mockImplementation(async () => {
+      order.push('postWrite')
+      return { status: 'captured', pages: [{ slideId: 'slide-1', pngBase64, digest }] }
+    })
+    const controller = createStructuredProposalController()
+    const proposal = controller.propose(input)
+    const decision = controller.waitForDecision(proposal.id)
+    await controller.confirm(proposal.id)
+    expect(order).toEqual(['execute', 'verify', 'postWrite'])
+    await expect(decision).resolves.toEqual({
+      status: 'confirmed',
+      postWrite: { status: 'captured', pages: [{ slideId: 'slide-1', pngBase64, digest }] },
+    })
+  })
+
+  it.each(['reject', 'verify_failed'] as const)('never captures after %s', async (mode) => {
+    const input = request()
+    if (mode === 'verify_failed') input.verify.mockRejectedValue(new Error('office_verify_failed'))
+    const controller = createStructuredProposalController()
+    const proposal = controller.propose(input)
+    const decision = controller.waitForDecision(proposal.id)
+    if (mode === 'reject') controller.reject()
+    else await expect(controller.confirm(proposal.id)).rejects.toThrow('office_verify_failed')
+    await decision
+    expect(input.postWrite).not.toHaveBeenCalled()
+  })
+
+  it('keeps a successful write confirmed if capture fails or produces malformed evidence', async () => {
+    for (const result of [
+      new Error('capture error'),
+      { status: 'captured', pages: [{ slideId: 'slide-1', pngBase64: 'bad', digest }] },
+      { status: 'captured', pages: [{ slideId: 'slide-1', pngBase64: 'A'.repeat(3 * 1024 * 1024), digest }] },
+    ]) {
+      const input = request()
+      input.postWrite.mockImplementation(async () => {
+        if (result instanceof Error) throw result
+        return result as Awaited<ReturnType<typeof input.postWrite>>
+      })
+      const controller = createStructuredProposalController()
+      const proposal = controller.propose(input)
+      const decision = controller.waitForDecision(proposal.id)
+      await expect(controller.confirm(proposal.id)).resolves.toBeUndefined()
+      await expect(decision).resolves.toMatchObject({ status: 'confirmed', postWrite: { status: 'unavailable' } })
+    }
+  })
+})
