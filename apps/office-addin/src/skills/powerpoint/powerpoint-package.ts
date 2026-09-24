@@ -85,6 +85,31 @@ function canonicalXml(value: string): string | undefined {
   }
 }
 
+// Chart XML edits may change presentation styling, but cached values and their data links
+// require a separate workbook-aware operation with a savepoint and source readback.
+function chartDataIdentity(xml: string): string {
+  if (new TextEncoder().encode(xml).byteLength > MAX_PPTX_XML_BYTES ||
+    /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) || XMLValidator.validate(xml) !== true)
+    throw new Error('office_api_unsupported')
+  const protectedTags = new Set([
+    'ser', 'f', 'numCache', 'strCache', 'multiLvlStrCache',
+    'externalData', 'pivotSource', 'extLst',
+  ])
+  const found: unknown[] = []
+  const visit = (nodes: unknown): void => {
+    if (!Array.isArray(nodes)) return
+    for (const node of nodes) {
+      if (!node || typeof node !== 'object') continue
+      for (const [tag, value] of Object.entries(node)) {
+        if (protectedTags.has(tag.split(':').at(-1)!)) found.push([tag, stableValue(node)])
+        else visit(value)
+      }
+    }
+  }
+  visit(xmlParser.parse(xml))
+  return JSON.stringify(found)
+}
+
 function backgroundXml(value: string): string | undefined {
   return /<p:bg\b[^>]*\/>|<p:bg\b[^>]*>[\s\S]*?<\/p:bg\s*>/.exec(value)?.[0]
 }
@@ -210,6 +235,9 @@ export async function editPowerPointPackage(
       JSON.stringify(masterLayoutIdentity(before)) !==
         JSON.stringify(masterLayoutIdentity(replacement.xml))
     )
+      throw new Error('office_api_unsupported')
+    if (kind === 'chart' && /^ppt\/charts\/chart\d+\.xml$/.test(replacement.path) &&
+      chartDataIdentity(before) !== chartDataIdentity(replacement.xml))
       throw new Error('office_api_unsupported')
     beforeHashes[replacement.path] = hash(before)
     afterHashes[replacement.path] = hash(replacement.xml)

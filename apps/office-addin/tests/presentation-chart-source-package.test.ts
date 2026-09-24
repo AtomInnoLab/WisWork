@@ -32,6 +32,10 @@ describe('PowerPoint chart source inspection', () => {
   it('identifies source/cache mismatch', async () => {
     expect(await inspectPowerPointChartSourcePackage(await pptx({chart:chart(undefined,'9')}), '8')).toMatchObject({sourceKind:'embedded_xlsx', verification:'mismatch'})
   })
+  it('does not verify a cache whose declared point count differs from its points', async () => {
+    const malformed = chart().replace('<c:strCache>', '<c:strCache><c:ptCount val="3"/>')
+    expect(await inspectPowerPointChartSourcePackage(await pptx({ chart: malformed }), '8')).toMatchObject({ sourceKind:'embedded_xlsx', verification:'not_verified', reason:'unsupported_formula_or_cache' })
+  })
   it('classifies external links without fetching them', async () => {
     expect(await inspectPowerPointChartSourcePackage(await pptx({target:'https://example.com/Book.xlsx',mode:'TargetMode="External"',includeWorkbook:false}), '8')).toMatchObject({sourceKind:'external_link',verification:'not_verified',reason:'external_source_not_fetched'})
   })

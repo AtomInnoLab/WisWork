@@ -32,6 +32,8 @@ function points(nodes: Node[], container: string): string[] | undefined {
   const cache = children(group, 'c:strCache')[0] ?? children(group, 'c:numCache')[0]
   if (!cache || children(group, 'c:multiLvlStrCache').length) return undefined
   const all = tags(cache, 'c:pt')
+  const counts = tags(cache, 'c:ptCount')
+  if (counts.length > 1 || (counts.length === 1 && attr(counts[0]!, 'val') !== String(all.length))) return undefined
   if (all.length > 32 || all.some((node, index) => attr(node, 'idx') !== String(index))) return undefined
   return all.map((node) => firstText(node['c:pt'] as Node[], 'c:v') ?? '')
 }

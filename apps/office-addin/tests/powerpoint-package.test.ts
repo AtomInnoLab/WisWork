@@ -85,6 +85,24 @@ describe('bounded PowerPoint package editing', () => {
       ]),
     ).rejects.toThrow('office_api_unsupported')
   })
+  it('refuses chart XML data-series changes without a synchronized workbook update', async () => {
+    const input = await fixture()
+    const zip = await JSZip.loadAsync(input, { base64: true })
+    zip.file('ppt/charts/chart1.xml', '<c:chart xmlns:c="urn:c"><c:ser><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>12</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:title>Q1</c:title></c:chart>')
+    const populated = await zip.generateAsync({ type: 'base64' })
+    await expect(editPowerPointPackage(populated, 'chart', [{
+      path: 'ppt/charts/chart1.xml',
+      xml: '<c:chart xmlns:c="urn:c"><c:ser><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>13</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:title>Q1</c:title></c:chart>',
+    }])).rejects.toThrow('office_api_unsupported')
+    await expect(editPowerPointPackage(populated, 'chart', [{
+      path: 'ppt/charts/chart1.xml',
+      xml: '<c:chart xmlns:c="urn:c" xmlns:x="urn:c"><x:ser><x:val><x:numRef><x:numCache><x:pt idx="0"><x:v>13</x:v></x:pt></x:numCache></x:numRef></x:val></x:ser><c:title>Q1</c:title></c:chart>',
+    }])).rejects.toThrow('office_api_unsupported')
+    await expect(editPowerPointPackage(populated, 'chart', [{
+      path: 'ppt/charts/chart1.xml',
+      xml: '<c:chart xmlns:c="urn:c"><c:ser><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>12</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:title>Q2</c:title></c:chart>',
+    }])).resolves.toMatchObject({ changedPaths: ['ppt/charts/chart1.xml'] })
+  })
 
   it('semantically verifies a host-normalized background-only master import', async () => {
     const input = await fixture({

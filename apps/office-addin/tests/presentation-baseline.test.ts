@@ -91,6 +91,13 @@ async function complexPagePackage(cell = 'North') {
   zip.file('ppt/slides/slide1.xml', `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="7" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>${cell}</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`)
   return zip.generateAsync({ type: 'base64' })
 }
+async function chartPagePackage() {
+  const zip = new JSZip()
+  zip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p" xmlns:a="urn:a" xmlns:c="urn:c" xmlns:r="urn:r"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="7" name="Chart"/></p:nvGraphicFramePr><a:graphic><a:graphicData><c:chart r:id="rId5"/></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>')
+  zip.file('ppt/slides/_rels/slide1.xml.rels', '<Relationships><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>')
+  zip.file('ppt/charts/chart1.xml', '<c:chartSpace xmlns:c="urn:c"><c:chart><c:plotArea><c:barChart><c:ser><c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt></c:strCache></c:strRef></c:cat><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>12</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>')
+  return zip.generateAsync({ type: 'base64' })
+}
 it('captures arbitrary current/selected/deck scopes without a generation artifact or a host write', async () => {
   const f = fixture()
   const result = await f.read()
@@ -349,5 +356,43 @@ it('rejects complex page reads when the package or host baseline changes during 
   expect((await f.call('read_presentation_baseline_complex_page', {
     baseline_id: baseline.baselineId,
     slide_id: 's2',
+  })).output).toBe('presentation_baseline_changed')
+})
+it('reads one exact scoped chart source without treating cache as verified data', async () => {
+  const f = fixture()
+  f.pages.get('s2')!.shapes[0]!.type = 'Chart'
+  f.pages.get('s2')!.shapes[0]!.id = '7'
+  f.setContext({ ...f.getContext(), selectedShapeIds: ['7'] })
+  f.setPackage(await chartPagePackage())
+  const baseline = JSON.parse((await f.read()).output)
+  const result = await f.call('read_presentation_baseline_chart_source', {
+    baseline_id: baseline.baselineId, slide_id: 's2', shape_id: '7',
+  })
+  expect(result.isError, result.output).not.toBe(true)
+  expect(JSON.parse(result.output)).toMatchObject({
+    baselineId: baseline.baselineId, slideId: 's2', shapeId: '7',
+    sourceKind: 'cache_only', verification: 'not_verified', qaPassed: false, writeAuthorized: false,
+  })
+  expect(result.mutated).toBe(false)
+  expect(f.exportPagePackage).toHaveBeenCalledTimes(2)
+  expect((await f.call('read_presentation_baseline_chart_source', {
+    baseline_id: baseline.baselineId, slide_id: 's1', shape_id: '7',
+  })).output).toBe('presentation_baseline_scope_mismatch')
+})
+it('refuses chart source evidence if the chart package changes during the read', async () => {
+  const f = fixture()
+  f.pages.get('s2')!.shapes[0]!.type = 'Chart'
+  f.pages.get('s2')!.shapes[0]!.id = '7'
+  f.setContext({ ...f.getContext(), selectedShapeIds: ['7'] })
+  const before = await chartPagePackage()
+  const edited = await JSZip.loadAsync(before, { base64: true })
+  edited.file('ppt/charts/chart1.xml', (await edited.file('ppt/charts/chart1.xml')!.async('string')).replace('12', '13'))
+  const after = await edited.generateAsync({ type: 'base64' })
+  f.setPackage(before)
+  const baseline = JSON.parse((await f.read()).output)
+  f.exportPagePackage.mockImplementationOnce(async (slideId) => ({ slideId, slideIds: ['s1', 's2'], base64: before }))
+    .mockImplementationOnce(async (slideId) => ({ slideId, slideIds: ['s1', 's2'], base64: after }))
+  expect((await f.call('read_presentation_baseline_chart_source', {
+    baseline_id: baseline.baselineId, slide_id: 's2', shape_id: '7',
   })).output).toBe('presentation_baseline_changed')
 })
