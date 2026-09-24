@@ -44,6 +44,12 @@ export function PresentationWorkflowCard({ project, imported, qa, disabled = fal
       {actionLabels[workflow.nextTool]}
     </button>}
     <ol>{workflow.stages.map((stage) => <li key={stage.name}><strong>{stage.name}</strong>：{stage.detail}</li>)}</ol>
+    <details><summary>恢复记录 · {workflow.timeline.length} 项</summary>
+      <p>根据已保存记录重建；仅页任务事件带有操作时间，其他条目是当前检查点。</p>
+      <ol>{workflow.timeline.map((event) => <li key={event.id}>
+        {event.at ? <time dateTime={event.at}>{event.at}</time> : null} {event.text}
+      </li>)}</ol>
+    </details>
     <details><summary>逐页状态 · {workflow.pages.length} 页</summary>
       <ol>{workflow.pages.map((page) => <li key={page.id}>
         <strong>{page.title}</strong> · {page.id}：{page.production} / {page.imported} / {page.qa}；下一步：{page.nextAction}

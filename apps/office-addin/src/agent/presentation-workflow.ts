@@ -5,6 +5,7 @@ import type { PresentationDeliveryReport } from '@wiswork/pptx-engine/presentati
 
 export interface PresentationWorkflowSummary {
   stages: { name: string; detail: string }[]
+  timeline: { id: string; text: string; at?: string }[]
   pages: { id: string; title: string; production: string; imported: string; qa: string; nextAction: string }[]
   nextAction: string
   nextTool?: 'start_job' | 'resume_job' | 'run_pages' | 'prepare_import' | 'read_report'
@@ -84,6 +85,30 @@ export function presentationWorkflowSummary(
       : qa ? '现有 QA 记录无法与当前页任务匹配，需核对' : '尚无当前页任务的 QA 记录' },
     { name: '交付核验', detail: `${reportMatches ? `内容证据报告有 ${openIssues} 项待处理；` : '尚无当前任务的内容证据报告；'}来源真实性、保存重开及真实 PowerPoint 验收尚不能由上述记录证明` },
   ]
+  // Rebuild this view from durable records on every mount. Only the production job
+  // has a timestamped event history; the other entries describe saved checkpoints.
+  const timeline: PresentationWorkflowSummary['timeline'] = []
+  if (plan) timeline.push({ id: 'plan', text: `已保存计划第 ${project.plan!.revision} 版：${plan.slides.length} 页，${plan.sources.length} 份资料` })
+  if (production) {
+    timeline.push({ id: 'production', text: `当前页任务 ${production.requestId}：已编译 ${production.compiledCount}/${production.total} 页` })
+    if (project.productionJob?.requestId === production.requestId &&
+      project.productionJob.projectId === project.projectId) {
+      const labels: Record<string, string> = {
+        'run.started': '开始逐页制作', 'run.pause_requested': '请求暂停制作',
+        'run.paused': '已暂停制作', 'run.cancel_requested': '请求取消制作',
+        'run.cancelled': '已取消制作', 'run.interrupted': '制作中断',
+        'run.completed': '逐页编译完成', 'run.failed': '页任务失败',
+        'page.started': '开始编译', 'page.compiled': '编译完成', 'page.failed': '编译失败',
+      }
+      for (const event of project.productionJob.events.slice(-20)) {
+        const pageText = 'pageId' in event ? ` · ${event.pageId}（第 ${event.attempt} 次）` : ''
+        timeline.push({ id: `job-${event.sequence}`, text: `${labels[event.type]}${pageText}`, at: event.createdAt })
+      }
+    }
+  }
+  if (importMatches) timeline.push({ id: 'import', text: `导入检查点：${imported!.completed}/${imported!.total} 页${imported!.status === 'uncertain' ? '，有写入待核查' : ''}` })
+  if (qaMatches) timeline.push({ id: 'qa', text: `历史页面审查：${reviewed}/${qa!.pages.length} 页结构与视觉通过` })
+  if (reportMatches) timeline.push({ id: 'report', text: `内容证据报告：${openIssues} 项问题待处理` })
   const nextAction = !plan
     ? '保存 Brief、资料、故事线与样式规范'
       : !production
@@ -128,5 +153,5 @@ export function presentationWorkflowSummary(
       reviewed === qa!.pages.length && !reportMatches)
       nextTool = 'read_report'
   }
-  return { stages, pages, nextAction, ...(nextTool ? { nextTool } : {}) }
+  return { stages, timeline, pages, nextAction, ...(nextTool ? { nextTool } : {}) }
 }

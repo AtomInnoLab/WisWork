@@ -76,3 +76,19 @@ it('refuses stale import and QA records and requests recheck after a page edit',
     pages: imported.pages.map((page, index) => index === 0 ? { ...page, state: 'uncertain' as const } : { ...page, state: 'pending' as const }) }
   expect(presentationWorkflowSummary(selected, uncertain, qa)?.pages[0]?.nextAction).toContain('检查宿主页')
 })
+
+it('rebuilds recovery events from saved records and isolates the selected request', () => {
+  const event = { type: 'page.compiled' as const, pageId: production.pages[0]!.id,
+    attempt: 1, sequence: 4, createdAt: '2026-09-24T00:00:00.000Z' }
+  const job = { projectId: plan.projectId, requestId: production.requestId, events: [event] } as
+    NonNullable<PresentationProjectStatus['productionJob']>
+  const selected = { ...project, production, productionJob: job }
+  const first = presentationWorkflowSummary(selected, imported, qa)!
+  const replayed = presentationWorkflowSummary(selected, imported, qa)!
+  expect(replayed.timeline).toEqual(first.timeline)
+  expect(first.timeline.map((item) => item.id)).toEqual(['plan', 'production', 'job-4', 'import', 'qa'])
+  expect(first.timeline[2]).toMatchObject({ at: event.createdAt, text: expect.stringContaining(event.pageId) })
+  const stale = presentationWorkflowSummary({ ...selected, productionJob: { ...job, requestId: 'old' } },
+    { ...imported, requestId: 'old' }, { ...qa, requestId: 'old' })!
+  expect(stale.timeline.map((item) => item.id)).toEqual(['plan', 'production'])
+})

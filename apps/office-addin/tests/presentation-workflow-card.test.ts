@@ -42,6 +42,7 @@ it('replays the saved project stage and updates from the import record', async (
   await act(async () => root.render(React.createElement(PresentationWorkflowCard, { project, imported })))
   expect(node.textContent).toContain('启动逐页生产')
   expect(node.textContent).toContain('真实性仍需核验')
+  expect(node.textContent).toContain('恢复记录 · 1 项')
   projectSnapshot = { ...projectSnapshot, project: { ...projectSnapshot.project!, production: {
     projectId: plan.projectId, requestId: 'run1', planRevision: 1,
     status: 'partial', total: plan.slides.length, compiledCount: plan.slides.length - 1,
@@ -60,6 +61,7 @@ it('replays the saved project stage and updates from the import record', async (
   expect(node.querySelectorAll('ol')[0]?.querySelectorAll('li')).toHaveLength(6)
   expect(node.textContent).toContain('逐页状态')
   expect(node.textContent).toContain('确认逐页导入')
+  expect(node.textContent).toContain('恢复记录 · 2 项')
   await act(async () => (Array.from(node.querySelectorAll('button')).find((button) => button.textContent === '准备逐页导入')!).click())
   expect(project.prepareProduction).toHaveBeenCalledOnce()
   importRecord.current = { source: 'production', projectId: plan.projectId, requestId: 'run1',
@@ -68,5 +70,6 @@ it('replays the saved project stage and updates from the import record', async (
   importRevision++
   await act(async () => importListeners.forEach((listener) => listener()))
   expect(node.textContent).toContain('采集页面截图')
+  expect(node.textContent).toContain('恢复记录 · 3 项')
   expect(node.textContent).toContain('保存重开')
 })
