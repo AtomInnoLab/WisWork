@@ -176,6 +176,22 @@ export interface PowerPointAdapter {
     expectedText: string,
     signal?: AbortSignal,
   ): Promise<void>
+  readPresentationTableCell?(
+    slideId: string,
+    shapeId: string,
+    rowIndex: number,
+    columnIndex: number,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; shapeId: string; rowIndex: number; columnIndex: number; text: string; rowCount: number; columnCount: number }>
+  editPresentationTableCell?(
+    slideId: string,
+    shapeId: string,
+    rowIndex: number,
+    columnIndex: number,
+    text: string,
+    expectedText: string,
+    signal?: AbortSignal,
+  ): Promise<void>
   inspectPresentationPage?(slideId: string, signal?: AbortSignal): Promise<PowerPointPageInspection>
   inspectStyleDependencies?(signal?: AbortSignal): Promise<PowerPointStyleDependencies>
   inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState>
@@ -448,6 +464,44 @@ async function pageTextRange(
   await sync(context, signal)
   if (shape.id !== shapeId) throw new Error('office_read_failed')
   return range
+}
+async function pageTableCell(
+  context: RuntimeRecord,
+  slideId: string,
+  shapeId: string,
+  rowIndex: number,
+  columnIndex: number,
+  signal?: AbortSignal,
+): Promise<{ cell: RuntimeRecord; rowCount: number; columnCount: number }> {
+  if (!Number.isSafeInteger(rowIndex) || rowIndex < 0 || !Number.isSafeInteger(columnIndex) || columnIndex < 0)
+    throw new Error('invalid_tool_input')
+  const slide = await getPageById(context, slideId, signal)
+  const shapes = slide.shapes as RuntimeRecord
+  if (typeof shapes?.getItem !== 'function') throw new Error('office_api_unsupported')
+  const shape = (shapes.getItem as (id: string) => RuntimeRecord)(shapeId)
+  if (typeof shape?.load !== 'function') throw new Error('office_api_unsupported')
+  ;(shape.load as (properties: string) => void)('id,type')
+  await sync(context, signal)
+  if (shape.id !== shapeId) throw new Error('office_read_failed')
+  if (shape.type !== 'Table') throw new Error('office_api_unsupported')
+  if (typeof shape.getTable !== 'function') throw new Error('office_api_unsupported')
+  const table = (shape.getTable as () => RuntimeRecord)()
+  if (typeof table?.load !== 'function' || typeof table.getCellOrNullObject !== 'function')
+    throw new Error('office_api_unsupported')
+  ;(table.load as (properties: string) => void)('rowCount,columnCount')
+  await sync(context, signal)
+  const { rowCount, columnCount } = table
+  if (typeof rowCount !== 'number' || typeof columnCount !== 'number' || !Number.isSafeInteger(rowCount) || !Number.isSafeInteger(columnCount) || rowCount < 1 || columnCount < 1)
+    throw new Error('office_read_failed')
+  if (rowIndex >= rowCount || columnIndex >= columnCount) throw new Error('invalid_tool_input')
+  const cell = (table.getCellOrNullObject as (row: number, column: number) => RuntimeRecord)(rowIndex, columnIndex)
+  if (typeof cell?.load !== 'function') throw new Error('office_api_unsupported')
+  ;(cell.load as (properties: string) => void)('isNullObject,rowIndex,columnIndex,rowCount,columnCount,text')
+  await sync(context, signal)
+  if (cell.isNullObject || cell.rowCount !== 1 || cell.columnCount !== 1)
+    throw new Error('office_api_unsupported')
+  if (cell.rowIndex !== rowIndex || cell.columnIndex !== columnIndex) throw new Error('office_read_failed')
+  return { cell, rowCount, columnCount }
 }
 async function writeTextRange(
   context: RuntimeRecord,
@@ -891,6 +945,42 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const slide = await getPageById(context, slideId, signal)
       const range = await pageTextRange(context, slide, shapeId, signal)
       await writeTextRange(context, range, text, signal, expectedText)
+    })
+  }
+
+  async readPresentationTableCell(
+    slideId: string,
+    shapeId: string,
+    rowIndex: number,
+    columnIndex: number,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; shapeId: string; rowIndex: number; columnIndex: number; text: string; rowCount: number; columnCount: number }> {
+    cancelled(signal)
+    pageId(slideId)
+    pageId(shapeId)
+    return this.run('1.8', async (context) => {
+      const { cell, rowCount, columnCount } = await pageTableCell(context, slideId, shapeId, rowIndex, columnIndex, signal)
+      return { slideId, shapeId, rowIndex, columnIndex, text: boundedPageText(cell.text), rowCount, columnCount }
+    })
+  }
+
+  async editPresentationTableCell(
+    slideId: string,
+    shapeId: string,
+    rowIndex: number,
+    columnIndex: number,
+    text: string,
+    expectedText: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    cancelled(signal)
+    pageId(slideId)
+    pageId(shapeId)
+    if (typeof text !== 'string' || text.length > MAX_POWERPOINT_TEXT || typeof expectedText !== 'string' || expectedText.length > MAX_POWERPOINT_TEXT)
+      throw new Error('invalid_tool_input')
+    await this.run('1.8', async (context) => {
+      const { cell } = await pageTableCell(context, slideId, shapeId, rowIndex, columnIndex, signal)
+      await writeTextRange(context, cell, text, signal, expectedText)
     })
   }
 
