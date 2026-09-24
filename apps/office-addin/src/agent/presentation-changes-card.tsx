@@ -61,7 +61,12 @@ export function PresentationChangesCard({
               }
             </strong>
             <p>
-              {entry.source === 'existing' ? '现稿 · ' : ''}页面：{entry.pageId} · 状态：
+              {entry.source === 'existing_batch'
+                ? '现稿批量 · '
+                : entry.source === 'existing'
+                  ? '现稿 · '
+                  : ''}
+              页面：{entry.pageId} · 状态：
               {entry.state}
             </p>
             {entry.sequence !== undefined && (
@@ -87,6 +92,20 @@ export function PresentationChangesCard({
                 历史截图复核：{entry.review.status === 'pass' ? '通过' : '未通过'} ·{' '}
                 {entry.review.reviewedAt}。此结果不代表当前页面 QA 通过，需重新采集截图确认。
               </p>
+            )}
+            {entry.source === 'existing_batch' && (
+              <div>
+                <p>
+                  历史截图复核：{entry.reviews?.length ?? 0}/{entry.affectedPageCount ?? 0}{' '}
+                  个受影响页面。此结果不代表当前页面 QA 通过。
+                </p>
+                {entry.reviews?.map((review) => (
+                  <p key={review.hostSlideId}>
+                    {review.hostSlideId}：{review.status === 'pass' ? '通过' : '未通过'} ·{' '}
+                    {review.reviewedAt}
+                  </p>
+                ))}
+              </div>
             )}
             <details>
               <summary>展开修改前后内容（长内容已折叠）</summary>

@@ -291,6 +291,7 @@ export function createOfficeHostRuntime(
               }
             }
             existingEditing?.beginMutation()
+            existingBatchEditing?.beginMutation()
             qaSkill?.beginMutation(hostSlideIds)
             mutationStarted = Boolean(qaSkill)
             await localBinding?.invalidateQa?.(hostSlideIds)
@@ -298,6 +299,7 @@ export function createOfficeHostRuntime(
           },
           afterWrite: () => {
             existingEditing?.endMutation()
+            existingBatchEditing?.endMutation()
             if (mutationStarted) {
               mutationStarted = false
               qaSkill!.endMutation()

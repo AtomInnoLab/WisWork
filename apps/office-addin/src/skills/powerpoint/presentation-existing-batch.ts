@@ -24,6 +24,16 @@ export interface PresentationExistingBatch {
   state: 'applying' | 'applied' | 'undoing' | 'undone'
   /** Number of operations with durable host readback, in forward order. */
   cursor: number
+  /** New records reserve room for one historical review per affected page. */
+  reviewCapacity?: true
+  reviews?: {
+    hostSlideId: string
+    screenshotDigest: string
+    capturedAt: string
+    reviewedAt: string
+    status: 'pass' | 'fail'
+    notes: string
+  }[]
 }
 
 const bytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).byteLength
@@ -77,6 +87,8 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
           'operations',
           'state',
           'cursor',
+          'reviewCapacity',
+          'reviews',
         ].includes(k),
     ) ||
     r.version !== 1 ||
@@ -104,6 +116,7 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
     r.operations.length > 8 ||
     !['applying', 'applied', 'undoing', 'undone'].includes(r.state) ||
     !Number.isInteger(r.cursor) ||
+    (r.reviewCapacity !== undefined && r.reviewCapacity !== true) ||
     r.cursor < 0 ||
     r.cursor > r.operations.length ||
     (r.state === 'applied' && r.cursor !== r.operations.length) ||
@@ -142,13 +155,56 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
     if (keys.has(key)) return false
     keys.add(key)
   }
+  if (r.reviews !== undefined) {
+    const affected = new Set(r.operations.map((op) => op.hostSlideId))
+    if (
+      !['applied', 'undone'].includes(r.state) ||
+      !Array.isArray(r.reviews) ||
+      r.reviews.length > affected.size ||
+      new Set(r.reviews.map((v) => v?.hostSlideId)).size !== r.reviews.length ||
+      r.reviews.some(
+        (v) =>
+          !v ||
+          typeof v !== 'object' ||
+          Array.isArray(v) ||
+          Object.keys(v).length !== 6 ||
+          !affected.has(v.hostSlideId) ||
+          typeof v.screenshotDigest !== 'string' ||
+          !/^[a-f0-9]{64}$/.test(v.screenshotDigest) ||
+          !timestamp(v.capturedAt) ||
+          !timestamp(v.reviewedAt) ||
+          v.reviewedAt < v.capturedAt ||
+          !['pass', 'fail'].includes(v.status) ||
+          typeof v.notes !== 'string' ||
+          bytes(v) > 8192,
+      )
+    )
+      return false
+  }
   return bytes(r) + existingBatchReservedBytes(r) <= 192 * 1024
 }
 
-export const existingBatchReservedBytes = (r: PresentationExistingBatch) =>
-  Math.max('applying'.length, 'applied'.length, 'undoing'.length, 'undone'.length) -
-  r.state.length +
-  1
+const timestamp = (v: unknown): v is string =>
+  typeof v === 'string' &&
+  v.length <= 40 &&
+  Number.isFinite(Date.parse(v)) &&
+  new Date(v).toISOString() === v
+
+export const existingBatchReservedBytes = (r: PresentationExistingBatch) => {
+  const stateBytes =
+    Math.max('applying'.length, 'applied'.length, 'undoing'.length, 'undone'.length) -
+    r.state.length +
+    1
+  if (!r.reviewCapacity) return stateBytes
+  const pages = new Set(r.operations.map((op) => op.hostSlideId)).size
+  const reviews = r.reviews ?? []
+  return (
+    stateBytes +
+    (r.reviews === undefined ? ',"reviews":[]'.length : 0) +
+    pages * (8192 + 2) -
+    reviews.reduce((sum, review) => sum + bytes(review), 0)
+  )
+}
 
 export function validExistingBatchTransition(
   before: PresentationExistingBatch | undefined,
@@ -156,8 +212,17 @@ export function validExistingBatchTransition(
 ): boolean {
   if (!before) return after.state === 'applying' && after.cursor === 0
   const core = (r: PresentationExistingBatch) =>
-    JSON.stringify({ ...r, state: undefined, cursor: undefined })
+    JSON.stringify({ ...r, state: undefined, cursor: undefined, reviews: undefined })
   if (core(before) !== core(after)) return false
+  if (before.state !== after.state && after.reviews !== undefined) return false
+  if (
+    before.state === after.state &&
+    before.cursor === after.cursor &&
+    ['applied', 'undone'].includes(before.state)
+  )
+    return (before.reviews ?? []).every((review) =>
+      after.reviews?.some((next) => next.hostSlideId === review.hostSlideId),
+    )
   if (before.state === 'applying')
     return (
       (after.state === 'applying' &&
@@ -167,7 +232,10 @@ export function validExistingBatchTransition(
         after.cursor === after.operations.length &&
         before.cursor === after.cursor - 1)
     )
-  if (before.state === 'applied') return after.state === 'undoing' && after.cursor === before.cursor
+  if (before.state === 'applied')
+    return (
+      after.state === 'undoing' && after.cursor === before.cursor && after.reviews === undefined
+    )
   if (before.state === 'undoing')
     return (
       (after.state === 'undoing' && after.cursor === before.cursor - 1 && after.cursor > 0) ||

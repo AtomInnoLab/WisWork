@@ -251,7 +251,7 @@ export function createPresentationExistingEditingSkill(
                       operationCount: e.record.operations.length,
                       hostSlideIds: [...new Set(e.record.operations.map((op) => op.hostSlideId))],
                       sequence: e.sequence,
-                      historicalReview: null,
+                      historicalReviews: e.record.reviews ?? [],
                     }
                   : {
                       changeId: e.record.changeId,

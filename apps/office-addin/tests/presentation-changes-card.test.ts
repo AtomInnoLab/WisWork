@@ -126,3 +126,48 @@ it('offers actual undo/commit/discard buttons and reacts to controller updates',
     await act(async () => root.unmount())
   }
 })
+it('shows persisted batch page reviews as historical evidence', async () => {
+  const controller: PresentationChangesController = {
+    snapshot: () => ({
+      phase: 'idle',
+      entries: [
+        {
+          id: 'existing_batch:one',
+          source: 'existing_batch',
+          kind: 'text',
+          pageId: 'slide',
+          state: 'applied',
+          before: 'old',
+          after: 'new',
+          actions: ['inspect', 'undo'],
+          affectedPageCount: 2,
+          reviews: [
+            {
+              hostSlideId: 'slide',
+              screenshotDigest: 'a'.repeat(64),
+              capturedAt: '2026-09-24T00:00:00.000Z',
+              reviewedAt: '2026-09-24T00:01:00.000Z',
+              status: 'pass',
+              notes: '',
+            },
+          ],
+        },
+      ],
+    }),
+    subscribe: () => () => {},
+    run: vi.fn(),
+    refresh: vi.fn(),
+    clear: vi.fn(),
+  }
+  const container = document.createElement('div'),
+    root = createRoot(container)
+  try {
+    await act(async () => root.render(React.createElement(PresentationChangesCard, { controller })))
+    expect(container.textContent).toContain('现稿批量')
+    expect(container.textContent).toContain('历史截图复核：1/2 个受影响页面')
+    expect(container.textContent).toContain('slide：通过')
+    expect(container.textContent).toContain('不代表当前页面 QA 通过')
+  } finally {
+    await act(async () => root.unmount())
+  }
+})

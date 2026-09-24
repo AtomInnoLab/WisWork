@@ -104,6 +104,23 @@ const tools: AgentToolDef[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'record_existing_presentation_batch_page_review',
+    description:
+      'Persist a historical visual assessment of this session’s captured batch page only after fresh screenshot digest and target readback match. Does not certify current or whole-deck QA.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+        slide_id: { type: 'string', minLength: 1, maxLength: 256 },
+        screenshot_digest: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+        status: { type: 'string', enum: ['pass', 'fail'] },
+        notes: { type: 'string', maxLength: 2000 },
+      },
+      required: ['change_id', 'slide_id', 'screenshot_digest', 'status', 'notes'],
+      additionalProperties: false,
+    },
+  },
 ]
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const geometry = (g: PresentationPageGeometry) => ({
@@ -129,18 +146,40 @@ const output = (v: unknown) => {
     throw new Error('presentation_existing_batch_output_limit')
   return s
 }
+async function digest(value: string) {
+  return Array.from(
+    new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))),
+    (b) => b.toString(16).padStart(2, '0'),
+  ).join('')
+}
 
 export function createPresentationExistingBatchEditingSkill(
   options: Options,
-): AgentSkill & { clear(): void } {
-  let epoch = 0
+): AgentSkill & { clear(): void; beginMutation(): void; endMutation(): void } {
+  let epoch = 0,
+    qaEpoch = 0,
+    mutating = 0
+  const captures = new Map<
+    string,
+    { record: string; screenshotDigest: string; capturedAt: string; epoch: number }
+  >()
   return {
     id: 'presentation-existing-batch-editing',
     tools,
     systemPrompt:
-      'For two or more existing-deck text/geometry changes, read_presentation_baseline then edit_existing_presentation_batch. Use exact native IDs. A batch is ordered and recoverable, not atomic. After confirmed writes, capture_existing_presentation_batch_page for every affected page and visually review; declared validation is not proof of QA. If interrupted, inspect then resume or undo. Never replay ambiguous host values.',
+      'For two or more existing-deck text/geometry changes, read_presentation_baseline then edit_existing_presentation_batch. Use exact native IDs. A batch is ordered and recoverable, not atomic. After confirmed writes, capture_existing_presentation_batch_page for every affected page, visually review, then record_existing_presentation_batch_page_review using its screenshot_digest. Historical reviews do not certify current or whole-deck QA. If interrupted, inspect then resume or undo. Never replay ambiguous host values.',
     clear() {
       epoch++
+      qaEpoch++
+      captures.clear()
+    },
+    beginMutation() {
+      mutating++
+      qaEpoch++
+      captures.clear()
+    },
+    endMutation() {
+      mutating = Math.max(0, mutating - 1)
     },
     async executeTool(call, signal) {
       const token = epoch
@@ -263,6 +302,7 @@ export function createPresentationExistingBatchEditingSkill(
             operations,
             state: 'applying',
             cursor: 0,
+            reviewCapacity: true,
           } as PresentationExistingBatch
           if (!validatePresentationExistingBatch(record)) throw new Error('invalid_tool_input')
         } else {
@@ -317,7 +357,17 @@ export function createPresentationExistingBatchEditingSkill(
           return values
         }
         const values = await classify()
-        if (call.name === 'capture_existing_presentation_batch_page') {
+        if (
+          call.name === 'capture_existing_presentation_batch_page' ||
+          call.name === 'record_existing_presentation_batch_page_review'
+        ) {
+          const checkpoint = qaEpoch
+          const qaCheck = () => {
+            active()
+            if (mutating || checkpoint !== qaEpoch)
+              throw new Error('presentation_existing_batch_qa_stale')
+          }
+          qaCheck()
           if (
             typeof call.input.slide_id !== 'string' ||
             !record.operations.some((op) => op.hostSlideId === call.input.slide_id) ||
@@ -325,8 +375,22 @@ export function createPresentationExistingBatchEditingSkill(
             !values.every((v) => v === (record.state === 'applied' ? 'after' : 'before'))
           )
             throw new Error('presentation_existing_batch_conflict')
+          const key = JSON.stringify([record.changeId, call.input.slide_id])
+          const prior = captures.get(key)
+          if (
+            call.name === 'record_existing_presentation_batch_page_review' &&
+            (!prior ||
+              prior.record !== JSON.stringify(record) ||
+              prior.epoch !== qaEpoch ||
+              call.input.screenshot_digest !== prior.screenshotDigest ||
+              !['pass', 'fail'].includes(call.input.status as string) ||
+              typeof call.input.notes !== 'string' ||
+              call.input.notes.length > 2000)
+          )
+            throw new Error('presentation_existing_batch_qa_stale')
           if (!options.adapter.inspectPresentationPage) throw new Error('office_api_unsupported')
           const shot = await options.adapter.inspectPresentationPage(call.input.slide_id, signal)
+          qaCheck()
           await current()
           saved()
           if (
@@ -336,13 +400,53 @@ export function createPresentationExistingBatchEditingSkill(
           )
             throw new Error('office_read_failed')
           validatePowerPointPageScreenshot(shot.screenshot.base64)
+          const screenshotDigest = await digest(shot.screenshot.base64)
+          qaCheck()
           if (!same(values, await classify()))
             throw new Error('presentation_existing_batch_conflict')
+          qaCheck()
+          if (call.name === 'record_existing_presentation_batch_page_review') {
+            if (screenshotDigest !== prior!.screenshotDigest)
+              throw new Error('presentation_existing_batch_qa_stale')
+            const review = {
+              hostSlideId: shot.slideId,
+              screenshotDigest,
+              capturedAt: prior!.capturedAt,
+              reviewedAt: new Date().toISOString(),
+              status: call.input.status as 'pass' | 'fail',
+              notes: call.input.notes as string,
+            }
+            const reviews = [
+              ...(record.reviews ?? []).filter((v) => v.hostSlideId !== shot.slideId),
+              review,
+            ]
+            await store({ ...record, reviews })
+            qaCheck()
+            captures.delete(key)
+            return {
+              output: output({
+                changeId: record.changeId,
+                hostSlideId: shot.slideId,
+                historicalReview: review,
+                currentScreenshotMatched: true,
+                wholeDeckQaPassed: false,
+              }),
+              mutated: false,
+              summary: '已保存该批量变更页面的历史视觉复核结果',
+            }
+          }
+          captures.set(key, {
+            record: JSON.stringify(record),
+            screenshotDigest,
+            capturedAt: new Date().toISOString(),
+            epoch: qaEpoch,
+          })
           return {
             output: output({
               changeId: record.changeId,
               hostSlideId: shot.slideId,
               state: record.state,
+              screenshotDigest,
               structure: {
                 overflows: shot.overflows,
                 overlaps: shot.overlaps,
@@ -444,8 +548,10 @@ export function createPresentationExistingBatchEditingSkill(
             if (!(await freshBaseline())) throw new Error('proposal_stale')
             if (!same(values, await classify())) throw new Error('proposal_stale')
             if (creating) await store(record)
-            if (call.name === 'undo_existing_presentation_batch')
-              await store({ ...record, state: 'undoing' })
+            if (call.name === 'undo_existing_presentation_batch') {
+              const { reviews: _reviews, ...r } = record
+              await store({ ...r, state: 'undoing' })
+            }
             while (record.state === 'applying' || record.state === 'undoing') {
               const back = record.state === 'undoing'
               const index = back ? record.cursor - 1 : record.cursor

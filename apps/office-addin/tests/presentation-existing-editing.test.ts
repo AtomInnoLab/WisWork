@@ -230,6 +230,18 @@ it('applies and reverses an ordered text plus geometry batch through one durable
   })
   expect(captured.isError, captured.output).not.toBe(true)
   expect(JSON.parse(captured.output)).toMatchObject({ hostSlideId: 'slide', qaPassed: false })
+  const digest = JSON.parse(captured.output).screenshotDigest as string
+  const reviewed = await f.call('record_existing_presentation_batch_page_review', {
+    change_id: changeId,
+    slide_id: 'slide',
+    screenshot_digest: digest,
+    status: 'pass',
+    notes: 'Title and position checked',
+  })
+  expect(reviewed.isError, reviewed.output).not.toBe(true)
+  expect(f.binding().readExistingBatch(changeId)?.reviews).toMatchObject([
+    { hostSlideId: 'slide', status: 'pass' },
+  ])
   f.reopen()
   const workbench = f.getRuntime().changes!
   await workbench.refresh()
@@ -240,6 +252,7 @@ it('applies and reverses an ordered text plus geometry batch through one durable
     source: 'existing_batch',
     state: 'applied',
     actions: ['inspect', 'undo'],
+    reviews: [{ hostSlideId: 'slide', status: 'pass' }],
   })
   await workbench.run(row!.id, 'undo')
   expect(f.getRuntime().proposals.pending()).toBeDefined()
@@ -247,6 +260,7 @@ it('applies and reverses an ordered text plus geometry batch through one durable
   expect(f.text()).toBe('before')
   expect(f.geometry().left).toBe(1)
   expect(f.binding().listChangeHistory()[0].record).toMatchObject({ state: 'undone', cursor: 0 })
+  expect(f.binding().readExistingBatch(changeId)?.reviews).toBeUndefined()
 })
 it('edits two native objects on two pages and invalidates both QA page scopes', async () => {
   const f = await fixture()
@@ -276,13 +290,112 @@ it('edits two native objects on two pages and invalidates both QA page scopes', 
       slide_id,
     })
     expect(shot.isError, shot.output).not.toBe(true)
+    const reviewed = await f.call('record_existing_presentation_batch_page_review', {
+      change_id: changeId,
+      slide_id,
+      screenshot_digest: JSON.parse(shot.output).screenshotDigest,
+      status: 'pass',
+      notes: 'Checked',
+    })
+    expect(reviewed.isError, reviewed.output).not.toBe(true)
   }
+  expect(f.binding().readExistingBatch(changeId)?.reviews).toHaveLength(2)
   f.reopen()
   const undo = await f.call('undo_existing_presentation_batch', { change_id: changeId })
   expect(undo.isError, undo.output).not.toBe(true)
   await f.confirm()
   expect(f.text()).toBe('before')
   expect(f.otherText()).toBe('other-before')
+})
+it('rejects a changed or cross-session batch screenshot review', async () => {
+  const f = await fixture()
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_batch', {
+    baseline_id,
+    intent: 'Update title and position',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      {
+        slide_id: 'slide',
+        shape_id: 'shape',
+        kind: 'geometry',
+        geometry: { ...f.geometry(), left: 30 },
+      },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  const changeId = JSON.parse(proposed.output).changeId as string
+  await f.confirm()
+  const capture = async () =>
+    f.call('capture_existing_presentation_batch_page', { change_id: changeId, slide_id: 'slide' })
+  const first = await capture()
+  expect(first.isError, first.output).not.toBe(true)
+  const review = {
+    change_id: changeId,
+    slide_id: 'slide',
+    screenshot_digest: JSON.parse(first.output).screenshotDigest,
+    status: 'pass',
+    notes: 'Checked',
+  }
+  f.setScreenshot(otherPng)
+  const changed = await f.call('record_existing_presentation_batch_page_review', review)
+  expect(changed).toMatchObject({ isError: true, output: 'presentation_existing_batch_qa_stale' })
+  f.setScreenshot(png)
+  await capture()
+  f.reopen()
+  const reopened = await f.call('record_existing_presentation_batch_page_review', review)
+  expect(reopened).toMatchObject({ isError: true, output: 'presentation_existing_batch_qa_stale' })
+  expect(f.binding().readExistingBatch(changeId)?.reviews).toBeUndefined()
+})
+it('invalidates a captured batch review when another confirmed host edit begins', async () => {
+  const f = await fixture()
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_batch', {
+    baseline_id,
+    intent: 'Update title and position',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      {
+        slide_id: 'slide',
+        shape_id: 'shape',
+        kind: 'geometry',
+        geometry: { ...f.geometry(), left: 30 },
+      },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  const changeId = JSON.parse(proposed.output).changeId as string
+  await f.confirm()
+  const captured = await f.call('capture_existing_presentation_batch_page', {
+    change_id: changeId,
+    slide_id: 'slide',
+  })
+  expect(captured.isError, captured.output).not.toBe(true)
+  const nextBaseline = await f.call('read_presentation_baseline', { scope: 'deck' })
+  expect(nextBaseline.isError, nextBaseline.output).not.toBe(true)
+  const next = await f.call('edit_existing_presentation_text', {
+    baseline_id: JSON.parse(nextBaseline.output).baselineId,
+    slide_id: 'other',
+    shape_id: 'other-shape',
+    text: 'other-after',
+  })
+  expect(next.isError, next.output).not.toBe(true)
+  await f.confirm()
+  const stale = await f.call('record_existing_presentation_batch_page_review', {
+    change_id: changeId,
+    slide_id: 'slide',
+    screenshot_digest: JSON.parse(captured.output).screenshotDigest,
+    status: 'pass',
+    notes: 'Old capture',
+  })
+  expect(stale).toMatchObject({ isError: true, output: 'presentation_existing_batch_qa_stale' })
+  expect(f.binding().readExistingBatch(changeId)?.reviews).toBeUndefined()
 })
 it('resumes a batch after the first step was saved and the second host write failed', async () => {
   const f = await fixture()

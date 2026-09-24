@@ -33,6 +33,8 @@ export type PresentationChangeAction = 'inspect' | 'undo' | 'resume' | 'commit' 
 export interface PresentationChangeEntry {
   source?: 'existing' | 'existing_batch'
   review?: PresentationExistingChange['review']
+  reviews?: PresentationExistingBatch['reviews']
+  affectedPageCount?: number
   sequence?: number
   legacy?: boolean
   changeSet?: PresentationChangeSetSummary
@@ -237,6 +239,9 @@ export function createPresentationChangesController(
                     kind: saved.record.operations[0].kind,
                     pageId: saved.record.operations[0].hostSlideId,
                     state: saved.record.state,
+                    reviews: copy(saved.record.reviews),
+                    affectedPageCount: new Set(saved.record.operations.map((op) => op.hostSlideId))
+                      .size,
                     before: saved.record.operations
                       .map((op) => `${op.hostSlideId}/${op.shapeId}: ${JSON.stringify(op.before)}`)
                       .join('\n'),
