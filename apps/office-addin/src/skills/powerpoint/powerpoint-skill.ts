@@ -1,3 +1,8 @@
+import {
+  affectedStyleSlideIds,
+  parsePowerPointStyleDependencies,
+  type PowerPointStyleDependencies,
+} from './presentation-style-dependencies.js'
 import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
@@ -1506,7 +1511,24 @@ export function createPowerPointSkill(options: {
           const operationKeys = operations.map(masterOperationKey)
           if (new Set(operationKeys).size !== operationKeys.length)
             throw invalidToolInput('program.operations')
+          let dependencies: PowerPointStyleDependencies | undefined
+          if (options.adapter.inspectStyleDependencies) {
+            try {
+              dependencies = parsePowerPointStyleDependencies(
+                await options.adapter.inspectStyleDependencies(signal),
+              )
+            } catch (error) {
+              assertNotCancelled(signal)
+              if (
+                error instanceof Error &&
+                (error.message === 'cancelled' || error.name === 'AbortError')
+              )
+                throw error
+            }
+          }
+          assertNotCancelled(signal)
           const before = await options.adapter.inspectSlideMasters(signal)
+          assertNotCancelled(signal)
           const after = projectedMasterState(before, operations)
           for (const operation of operations) inverseMasterOperation(before, operation)
           const targets = [
@@ -1517,6 +1539,12 @@ export function createPowerPointSkill(options: {
             toolName: call.name,
             title: (input.explanation as string | undefined) || 'Edit PowerPoint slide master',
             preview: {
+              qaScope: dependencies
+                ? {
+                    basis: 'native_master_layout',
+                    hostSlideIds: affectedStyleSlideIds(dependencies, operations),
+                  }
+                : { basis: 'document' },
               operations: operations.map((operation) => ({
                 ...operation,
                 ...(operation.op === 'set_master_background' &&
@@ -1529,11 +1557,25 @@ export function createPowerPointSkill(options: {
             fingerprint: affectedMasterFingerprint(before, operations),
             before,
             after,
-            validate: async (s) =>
-              affectedMasterFingerprint(
-                await options.adapter.inspectSlideMasters(s),
-                operations,
-              ) === affectedMasterFingerprint(before, operations),
+            validate: async (s) => {
+              if (
+                dependencies &&
+                (!options.adapter.inspectStyleDependencies ||
+                  JSON.stringify(
+                    parsePowerPointStyleDependencies(
+                      await options.adapter.inspectStyleDependencies(s),
+                    ),
+                  ) !== JSON.stringify(dependencies))
+              )
+                return false
+              assertNotCancelled(s)
+              return (
+                affectedMasterFingerprint(
+                  await options.adapter.inspectSlideMasters(s),
+                  operations,
+                ) === affectedMasterFingerprint(before, operations)
+              )
+            },
             execute: async (s) => {
               let currentExpected = before
               const applied: Array<{

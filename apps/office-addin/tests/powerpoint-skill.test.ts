@@ -150,6 +150,111 @@ describe('PowerPoint compatibility skill', () => {
     expect(fake.executeMasterOperations).toHaveBeenCalledOnce()
   })
 
+  it('derives native QA scope and blocks dependency drift after persistence', async () => {
+    let slides = [{ slideId: 's1', masterId: 'master-1', layoutId: 'layout-1' }]
+    const fake = adapter({ inspectStyleDependencies: vi.fn(async () => ({ slides })) })
+    const proposals = createStructuredProposalController(undefined, {
+      beforeWrite: async () => {
+        slides = [...slides, { slideId: 's2', masterId: 'master-1', layoutId: 'layout-1' }]
+      },
+      afterWrite: vi.fn(),
+    })
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('edit_slide_master', {
+        program: {
+          version: 2,
+          operations: [
+            {
+              op: 'set_master_theme_color',
+              master_id: 'master-1',
+              theme_color: 'Dark1',
+              color: '#112233',
+            },
+          ],
+        },
+      }),
+    )
+    expect(proposals.pending()?.preview).toMatchObject({
+      qaScope: { basis: 'native_master_layout', hostSlideIds: ['s1'] },
+    })
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+    expect(fake.executeMasterOperations).not.toHaveBeenCalled()
+  })
+
+  it.each(['unsupported', 'invalid', 'empty', 'cancelled'])(
+    'handles %s initial dependencies conservatively',
+    async (mode) => {
+      const inspectStyleDependencies = vi.fn(async () => {
+        if (mode === 'unsupported') throw new Error('office_api_unsupported')
+        if (mode === 'cancelled') throw new Error('cancelled')
+        return mode === 'invalid' ? { slides: [{ slideId: 'x' }] } : { slides: [] }
+      })
+      const proposals = createStructuredProposalController()
+      const fake = adapter({
+        inspectStyleDependencies:
+          inspectStyleDependencies as unknown as PowerPointAdapter['inspectStyleDependencies'],
+      })
+      const result = await createPowerPointSkill({ adapter: fake, proposals }).executeTool(
+        call('edit_slide_master', {
+          program: {
+            version: 2,
+            operations: [
+              {
+                op: 'set_master_theme_color',
+                master_id: 'master-1',
+                theme_color: 'Dark1',
+                color: '#112233',
+              },
+            ],
+          },
+        }),
+      )
+      if (mode === 'cancelled') {
+        expect(result).toMatchObject({ isError: true, output: 'cancelled' })
+        expect(proposals.pending()).toBeUndefined()
+      } else
+        expect(proposals.pending()?.preview).toMatchObject({
+          qaScope:
+            mode === 'empty'
+              ? { basis: 'native_master_layout', hostSlideIds: [] }
+              : { basis: 'document' },
+        })
+    },
+  )
+
+  it.each(['drift', 'read failure'])('blocks %s at first confirmation validation', async (mode) => {
+    const inspectStyleDependencies = vi.fn().mockResolvedValueOnce({
+      slides: [{ slideId: 's1', masterId: 'master-1', layoutId: 'layout-1' }],
+    })
+    if (mode === 'drift') inspectStyleDependencies.mockResolvedValue({ slides: [] })
+    else inspectStyleDependencies.mockRejectedValue(new Error('office_read_failed'))
+    const fake = adapter({ inspectStyleDependencies })
+    const beforeWrite = vi.fn()
+    const proposals = createStructuredProposalController(undefined, {
+      beforeWrite,
+      afterWrite: vi.fn(),
+    })
+    await createPowerPointSkill({ adapter: fake, proposals }).executeTool(
+      call('edit_slide_master', {
+        program: {
+          version: 2,
+          operations: [
+            {
+              op: 'set_master_theme_color',
+              master_id: 'master-1',
+              theme_color: 'Dark1',
+              color: '#112233',
+            },
+          ],
+        },
+      }),
+    )
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow()
+    expect(beforeWrite).not.toHaveBeenCalled()
+    expect(fake.executeMasterOperations).not.toHaveBeenCalled()
+  })
+
   it('recovers an already verified native master operation when a later operation fails', async () => {
     const original = await adapter().inspectSlideMasters()
     const state = structuredClone(original)
@@ -957,6 +1062,47 @@ describe('PowerPoint compatibility skill', () => {
 })
 
 describe('browser PowerPoint adapter', () => {
+  it.each(['complete', 'empty', 'missing', 'duplicate', 'overflow', 'cancelled'])(
+    'reads %s complete native style dependencies',
+    async (mode) => {
+      const slide = { id: 's1', slideMaster: { id: 'm1' }, layout: { id: 'l1' } }
+      const items =
+        mode === 'empty'
+          ? []
+          : mode === 'missing'
+            ? [{ ...slide, layout: undefined }]
+            : mode === 'duplicate'
+              ? [slide, slide]
+              : mode === 'overflow'
+                ? Array.from({ length: 101 }, (_, index) => ({ ...slide, id: String(index) }))
+                : [slide]
+      const slides = { items, load: vi.fn() }
+      const controller = new AbortController()
+      const run = vi.fn(async (callback) =>
+        callback({
+          presentation: { slides },
+          sync: async () => {
+            if (mode === 'cancelled') controller.abort()
+          },
+        }),
+      )
+      Object.assign(globalThis, {
+        Office: { context: { host: 'PowerPoint', requirements: { isSetSupported: () => true } } },
+        PowerPoint: { run },
+      })
+      const result = new BrowserPowerPointAdapter().inspectStyleDependencies(controller.signal)
+      if (mode === 'complete' || mode === 'empty') {
+        await expect(result).resolves.toEqual({
+          slides: mode === 'empty' ? [] : [{ slideId: 's1', masterId: 'm1', layoutId: 'l1' }],
+        })
+        expect(slides.load).toHaveBeenCalledWith('items/id,items/slideMaster/id,items/layout/id')
+      } else
+        await expect(result).rejects.toThrow(
+          mode === 'cancelled' ? 'cancelled' : 'office_read_failed',
+        )
+    },
+  )
+
   it('rejects master package replacement on Mac before entering PowerPoint.run', async () => {
     const run = vi.fn()
     Object.assign(globalThis, {

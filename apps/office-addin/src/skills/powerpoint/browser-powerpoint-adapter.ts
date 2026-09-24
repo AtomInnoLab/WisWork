@@ -1,4 +1,8 @@
 import {
+  parsePowerPointStyleDependencies,
+  type PowerPointStyleDependencies,
+} from './presentation-style-dependencies.js'
+import {
   capturePowerPointPackage,
   verifyImportedPowerPointPackage,
   verifyPowerPointPackage,
@@ -173,6 +177,7 @@ export interface PowerPointAdapter {
     signal?: AbortSignal,
   ): Promise<void>
   inspectPresentationPage?(slideId: string, signal?: AbortSignal): Promise<PowerPointPageInspection>
+  inspectStyleDependencies?(signal?: AbortSignal): Promise<PowerPointStyleDependencies>
   inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState>
   executeMasterOperations(
     operations: PowerPointMasterOperation[],
@@ -545,6 +550,27 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     return (powerPoint.run as (callback: (context: RuntimeRecord) => Promise<T>) => Promise<T>)(
       callback,
     )
+  }
+
+  async inspectStyleDependencies(signal?: AbortSignal): Promise<PowerPointStyleDependencies> {
+    cancelled(signal)
+    return this.run('1.4', async (context) => {
+      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+      if (typeof slides?.load !== 'function') throw new Error('office_api_unsupported')
+      ;(slides.load as (properties: string) => void)(
+        'items/id,items/slideMaster/id,items/layout/id',
+      )
+      await sync(context, signal)
+      if (!Array.isArray(slides.items) || slides.items.length > 100)
+        throw new Error('office_read_failed')
+      return parsePowerPointStyleDependencies({
+        slides: (slides.items as RuntimeRecord[]).map((slide) => ({
+          slideId: slide.id,
+          masterId: (slide.slideMaster as RuntimeRecord | undefined)?.id,
+          layoutId: (slide.layout as RuntimeRecord | undefined)?.id,
+        })),
+      })
+    })
   }
 
   async inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState> {
