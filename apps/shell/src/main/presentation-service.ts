@@ -109,6 +109,7 @@ export function createPresentationService(options: {
           'attachment_list',
           'attachment_read',
           'attachment_asset',
+          'attachment_original',
           'attachment_list_assets',
         ].includes(request.operation as string)
       )

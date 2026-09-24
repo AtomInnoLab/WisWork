@@ -275,6 +275,7 @@ export function createPresentationAttachmentService(options: {
       attachment_list: [],
       attachment_list_assets: [],
       attachment_asset: ['attachmentId'],
+      attachment_original: ['attachmentId', 'offset', 'length'],
       attachment_read: ['attachmentId', 'offset', 'maxChars'],
     }
     const op = body.operation
@@ -313,8 +314,8 @@ export function createPresentationAttachmentService(options: {
     await previous
     try {
       checkAbort(signal)
-      await directory(root, op !== 'attachment_read')
-      await directory(doc, op !== 'attachment_read')
+      await directory(root, !['attachment_read', 'attachment_original'].includes(op))
+      await directory(doc, !['attachment_read', 'attachment_original'].includes(op))
       const entries = await readdir(doc)
       if (entries.length > 32 || entries.some((e) => !isId(e))) fail('invalid_state')
       const id = body.attachmentId as string
@@ -465,6 +466,27 @@ export function createPresentationAttachmentService(options: {
         if (m.kind === 'image') await cachedImage(dir, m)
         checkAbort(signal)
         return publicMetadata(m, received)
+      }
+      if (op === 'attachment_original') {
+        if (!integer(body.offset, 0, m.sizeBytes) || !integer(body.length, 1, CHUNK_LIMIT))
+          fail('invalid_request')
+        if (m.status !== 'ready' || m.kind !== 'image' || m.sizeBytes > 2 * 1024 * 1024)
+          fail('invalid_state')
+        const raw = await bytes(rawPath, 2 * 1024 * 1024)
+        if (raw.length !== m.sizeBytes || hash(raw) !== id) fail('digest_mismatch')
+        const info = inspectPresentationImage(raw)
+        const expected = extname(m.name).toLowerCase() === '.png' ? 'image/png' : 'image/jpeg'
+        if (info.mime !== expected || info.width !== m.width || info.height !== m.height)
+          fail('invalid_state')
+        checkAbort(signal)
+        return {
+          attachmentId: id,
+          offset: body.offset,
+          sizeBytes: raw.length,
+          sha256: id,
+          mime: info.mime,
+          base64: raw.subarray(body.offset, body.offset + body.length).toString('base64'),
+        }
       }
       if (op === 'attachment_asset') {
         const image = await cachedImage(dir, m)
