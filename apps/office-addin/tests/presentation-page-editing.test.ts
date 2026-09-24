@@ -1280,3 +1280,25 @@ it('requires exact after evidence, restores original after confirmation, and pre
   expect(f.records.get(key)).toMatchObject({ state: 'undone', restoredShapeId: 'restored' })
   expect((await createPresentationPageEditingSkill(options).executeTool(call)).isError).toBe(true)
 })
+it('advertises distinct read, undo and recovery semantics for saved text and geometry', () => {
+  const f = setup()
+  const skill = createPresentationPageEditingSkill({
+    ...f.options,
+    adapter: {
+      ...f.adapter,
+      readPresentationPageGeometry: vi.fn(),
+      editPresentationPageGeometry: vi.fn(),
+    },
+    readTextChange: () => undefined,
+    writeTextChange: async () => {},
+    readGeometryChange: () => undefined,
+    writeGeometryChange: async () => {},
+  })
+  for (const kind of ['text', 'geometry']) {
+    const description = (action: string) =>
+      skill.tools.find((tool) => tool.name === `${action}_presentation_${kind}_change`)?.description
+    expect(description('read')).toContain(`Read the last ${kind}-only saved change`)
+    expect(description('undo')).toContain(`Propose undoing the last ${kind}-only change`)
+    expect(description('resume')).toContain('Confirm recovery in the saved pending direction')
+  }
+})
