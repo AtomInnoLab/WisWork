@@ -3,6 +3,11 @@ import {
   type PresentationExistingChange,
 } from './presentation-existing-change.js'
 import {
+  validatePresentationExistingImageChange,
+  validExistingImageTransition,
+  type PresentationExistingImageChange,
+} from './presentation-existing-image.js'
+import {
   validatePresentationExistingBatch,
   validExistingBatchTransition,
   type PresentationExistingBatch,
@@ -47,6 +52,7 @@ const IMAGE_KEY = 'wiswork.presentation.image-replacements.v1'
 const PAGE_REPLACEMENT_KEY = 'wiswork.presentation.page-replacement.v1'
 const EXISTING_KEY = 'wiswork.presentation.existing-change.v1'
 const EXISTING_BATCH_KEY = 'wiswork.presentation.existing-batch.v1'
+const EXISTING_IMAGE_KEY = 'wiswork.presentation.existing-image.v1'
 const HISTORY_KEY = 'wiswork.presentation.change-history.v1'
 const TEXT_KEY = 'wiswork.presentation.text-change.v1'
 const GEOMETRY_KEY = 'wiswork.presentation.geometry-change.v1'
@@ -276,6 +282,7 @@ export function createPresentationDocumentBinding(
   }
   let existingWriteFailed = false
   let existingBatchWriteFailed = false
+  let existingImageWriteFailed = false
   const readRawExistingChange = (): PresentationExistingChange | undefined => {
     const invalid = () => new Error('presentation_existing_change_state_invalid')
     if (existingWriteFailed) throw invalid()
@@ -306,6 +313,22 @@ export function createPresentationDocumentBinding(
     }
     if (!validatePresentationExistingBatch(value))
       throw new Error('presentation_existing_batch_state_invalid')
+    return value
+  }
+  const readRawExistingImage = (): PresentationExistingImageChange | undefined => {
+    if (existingImageWriteFailed) throw new Error('presentation_existing_image_state_invalid')
+    const raw = settings.get(EXISTING_IMAGE_KEY)
+    if (raw === undefined || raw === null || raw === '') return undefined
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 192 * 1024)
+      throw new Error('presentation_existing_image_state_invalid')
+    let value: unknown
+    try {
+      value = JSON.parse(raw)
+    } catch {
+      throw new Error('presentation_existing_image_state_invalid')
+    }
+    if (!validatePresentationExistingImageChange(value))
+      throw new Error('presentation_existing_image_state_invalid')
     return value
   }
   let pageReplacementWriteFailed = false
@@ -410,6 +433,7 @@ export function createPresentationDocumentBinding(
   const rawHeads = () => ({
     existing: readRawExistingChange(),
     existing_batch: readRawExistingBatch(),
+    existing_image: readRawExistingImage(),
     text: readRawTextChange(),
     geometry: readRawGeometryChange(),
     page: readRawPageReplacement(),
@@ -421,7 +445,14 @@ export function createPresentationDocumentBinding(
       raw = settings.get(HISTORY_KEY)
     if (raw === undefined || raw === null || raw === '') {
       const history: PresentationHistoryEnvelope = { version: 1, entries: [], heads: {} }
-      for (const kind of ['text', 'geometry', 'page', 'existing', 'existing_batch'] as const) {
+      for (const kind of [
+        'text',
+        'geometry',
+        'page',
+        'existing',
+        'existing_batch',
+        'existing_image',
+      ] as const) {
         const record = heads[kind]
         if (!record) continue
         const id = historyEntryId(kind, record)
@@ -462,7 +493,8 @@ export function createPresentationDocumentBinding(
       typeof h.heads !== 'object' ||
       Array.isArray(h.heads) ||
       Object.keys(h.heads).some(
-        (k) => !['text', 'geometry', 'page', 'existing', 'existing_batch'].includes(k),
+        (k) =>
+          !['text', 'geometry', 'page', 'existing', 'existing_batch', 'existing_image'].includes(k),
       )
     )
       throw invalidHistory()
@@ -475,7 +507,14 @@ export function createPresentationDocumentBinding(
       sequence = e.sequence
     }
     if (presentationHistoryBytes(h) > 1024 * 1024) throw invalidHistory()
-    for (const kind of ['text', 'geometry', 'page', 'existing', 'existing_batch'] as const) {
+    for (const kind of [
+      'text',
+      'geometry',
+      'page',
+      'existing',
+      'existing_batch',
+      'existing_image',
+    ] as const) {
       const head = h.entries.find((e) => e.id === h.heads[kind])
       if ((head && head.kind !== kind) || (!head && h.entries.some((e) => e.kind === kind)))
         throw invalidHistory()
@@ -528,6 +567,11 @@ export function createPresentationDocumentBinding(
     readHistory().entries.find(
       (e): e is Extract<PresentationHistoryEntry, { kind: 'existing_batch' }> =>
         e.kind === 'existing_batch' && e.record.changeId === changeId,
+    )?.record
+  const readExistingImageChange = (changeId: string): PresentationExistingImageChange | undefined =>
+    readHistory().entries.find(
+      (e): e is Extract<PresentationHistoryEntry, { kind: 'existing_image' }> =>
+        e.kind === 'existing_image' && e.record.changeId === changeId,
     )?.record
   const readPageReplacement = () => {
     const raw = readRawPageReplacement()
@@ -621,6 +665,46 @@ export function createPresentationDocumentBinding(
     listChangeHistory: () => structuredClone(readHistory().entries),
     readExistingChange,
     readExistingBatch,
+    readExistingImageChange,
+    writeExistingImageChange(
+      record: PresentationExistingImageChange,
+      expectedChange: PresentationExistingImageChange | undefined,
+    ) {
+      const snapshot = structuredClone(record),
+        expected = structuredClone(expectedChange)
+      const write = async () => {
+        if (
+          !validatePresentationExistingImageChange(snapshot) ||
+          (expected !== undefined && !validatePresentationExistingImageChange(expected))
+        )
+          throw new Error('presentation_existing_image_state_invalid')
+        if ((await documentId()) !== snapshot.documentId)
+          throw new Error('presentation_document_changed')
+        const prior = readExistingImageChange(snapshot.changeId)
+        if (JSON.stringify(prior) !== JSON.stringify(expected))
+          throw new Error('presentation_existing_image_stale')
+        if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
+        if (!validExistingImageTransition(prior, snapshot))
+          throw new Error('presentation_existing_image_state_invalid')
+        await saveWithHistory(
+          EXISTING_IMAGE_KEY,
+          JSON.stringify(snapshot),
+          {
+            id: historyEntryId('existing_image', snapshot),
+            kind: 'existing_image',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            existingImageWriteFailed = true
+          },
+        )
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
     writeExistingBatch(
       record: PresentationExistingBatch,
       expectedBatch: PresentationExistingBatch | undefined,
