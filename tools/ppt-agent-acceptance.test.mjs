@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
-import { CASE_IDS, summarizePresentationAcceptance } from './ppt-agent-acceptance.mjs'
+import {
+  CASE_IDS,
+  readPresentationAcceptance,
+  summarizePresentationAcceptance,
+} from './ppt-agent-acceptance.mjs'
 
 const passed = (caseId, attemptNo = 1) => ({
   case_id: caseId,
@@ -89,4 +96,20 @@ test('refuses unsupported cases, duplicate attempts and unsupported success clai
       ]),
     /pass_evidence_missing/,
   )
+})
+
+test('reads JSON attempt arrays from a records directory', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ppt-acceptance-'))
+  try {
+    await writeFile(
+      join(directory, '01.json'),
+      JSON.stringify([{ case_id: CASE_IDS[0], attempt_id: 'a', attempt_no: 1, outcome: 'failed' }]),
+    )
+    const report = await readPresentationAcceptance(directory)
+    assert.equal(report.attempted, 1)
+    assert.equal(report.failed, 1)
+    assert.equal(report.completionRate, 'not_measured')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })

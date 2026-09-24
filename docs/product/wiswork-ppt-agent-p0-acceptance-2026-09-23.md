@@ -51,6 +51,31 @@
 
 验收统计可使用 `node tools/ppt-agent-acceptance.mjs <records-directory>`。目录中每个 `.json` 文件必须是尝试记录数组；同一任务的 `attempt_no` 递增，先前失败记录保留。程序固定 20 项分母，只按每项最新尝试汇总；不足 20 项时完成率输出 `not_measured`，绝不将未执行等同失败。`passed` 记录需包含真实材料状态与清单、版本、身份、审阅人、PPTX SHA256、PowerPoint 保存重开及可编辑证据标记，且不能重启任务或留有 P0 缺陷。`rateThresholdMet` 只表示 16/20 数量门槛，不表示 P0 所有质量与功能条件均通过。程序只检查记录完整性，不替代审阅人对材料、截图、重开或事实的核验；测试中的合成记录也不计入真实任务结果。
 
+统计输入示例：`records/01.json` 内容为数组，失败/阻塞记录也用相同的 `case_id`、`attempt_id`、`attempt_no`、`outcome` 字段，`outcome` 取 `passed`、`failed` 或 `blocked`。通过记录还须填写以下字段；示例值只说明格式，不是验收证据：
+
+```json
+[
+  {
+    "case_id": "PPT-P0-01",
+    "attempt_id": "2026-09-25-a",
+    "attempt_no": 1,
+    "outcome": "passed",
+    "material_status": "ready",
+    "material_manifest": "材料清单及授权、SHA256 记录位置",
+    "commit_and_versions": "代码、PC、插件、PowerPoint 版本记录位置",
+    "identity": "project/request/document/session 记录位置",
+    "reviewer_and_date": "审阅人及日期",
+    "restart_required": false,
+    "p0_defects": 0,
+    "artifacts": {
+      "pptx_sha256": "填写真实文件的 64 位小写 SHA256",
+      "powerpoint_reopened": true,
+      "editable_after_reopen": true
+    }
+  }
+]
+```
+
 每项任务单独创建记录，未执行字段填“待执行”，不能填推测值：
 
 ```yaml
