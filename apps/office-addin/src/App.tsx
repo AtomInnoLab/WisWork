@@ -905,6 +905,16 @@ export function AgentWorkspace(props: {
                   {durableFiles.map((file) => (
                     <li key={file.attachmentId}>
                       {file.name} · {file.status}
+                      {file.kind === 'image' && file.source && (
+                        <details>
+                          <summary>来源 {(file.sources ?? [file.source]).length} 条 · 许可未核验</summary>
+                          <ul>
+                            {(file.sources ?? [file.source]).map((source, index) => (
+                              <li key={`${index}:${source}`}>{source}</li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
                       <button
                         type="button"
                         disabled={uploadPending || state.busy}
