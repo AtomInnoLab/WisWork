@@ -1192,3 +1192,91 @@ it('describes geometry inspection as read-only and recovery as direction-aware r
   expect(resume.description).toContain('without another write')
   expect(inspect.description).not.toContain('Propose undoing')
 })
+
+it('blocks forward replacement before any host write when original backup save fails', async () => {
+  const f = imageSetup()
+  f.snapshot.mediaDigest = createHash('sha256').update('original').digest('hex')
+  const skill = createPresentationPageEditingSkill({
+    ...f.options,
+    imageAdapter: {
+      ...f.imageAdapter,
+      captureOriginal: async () => ({ snapshot: f.snapshot, base64: btoa('original') }),
+    },
+    imageBackup: {
+      available: () => true,
+      save: async () => {
+        throw new Error('backup_failed')
+      },
+      load: async () => '',
+    },
+  })
+  await skill.executeTool(f.replace)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('backup_failed')
+  expect(f.imageAdapter.replace).not.toHaveBeenCalled()
+  expect(f.records.size).toBe(0)
+})
+it('requires exact after evidence, restores original after confirmation, and prevents repeat undo', async () => {
+  const f = imageSetup()
+  const base64 = btoa('original bytes')
+  const digest = Array.from(
+    new Uint8Array(
+      await crypto.subtle.digest('SHA-256', new TextEncoder().encode('original bytes')),
+    ),
+    (b) => b.toString(16).padStart(2, '0'),
+  ).join('')
+  const before = { ...f.snapshot, mediaDigest: digest }
+  const after = {
+    ...f.snapshot,
+    shapeId: 'new-picture',
+    shapeIds: ['new-picture', 'title'],
+    mediaDigest: 'c'.repeat(64),
+  }
+  const { imageReplacementKey } =
+    await import('../src/skills/powerpoint/presentation-image-replacement-record')
+  const key = await imageReplacementKey('project', 'request', 'page1', 'shape1')
+  const record: ImageReplacementRecord = {
+    version: 1,
+    documentId: 'doc',
+    projectId: 'project',
+    requestId: 'request',
+    pageId: 'page1',
+    hostSlideId: 'host-42',
+    oldShapeId: 'shape1',
+    newShapeId: 'new-picture',
+    assetDigest: after.mediaDigest,
+    baseline: before,
+    after,
+    backup: { attachmentId: digest, sizeBytes: 14, mime: 'image/png' },
+    state: 'complete',
+  }
+  f.records.set(key, record)
+  f.imageAdapter.inspect.mockResolvedValue(after)
+  f.imageAdapter.replace.mockImplementation(async (_s, shape, bytes, expected, onInserted) => {
+    expect(shape).toBe('new-picture')
+    expect(bytes).toBe(base64)
+    expect(expected).toEqual(after)
+    expect(f.records.get(key)?.state).toBe('undo_pending')
+    await onInserted('restored')
+    return { shapeId: 'restored' }
+  })
+  const options = {
+    ...f.options,
+    imageBackup: {
+      available: () => true,
+      save: async () => record.backup!,
+      load: async () => base64,
+    },
+  }
+  const skill = createPresentationPageEditingSkill(options)
+  const call = {
+    id: 'undo',
+    name: 'undo_presentation_image_replacement',
+    input: { page_id: 'page1', shape_id: 'shape1' },
+  }
+  const result = await skill.executeTool(call)
+  expect(result.isError).not.toBe(true)
+  expect(f.imageAdapter.replace).not.toHaveBeenCalled()
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(f.records.get(key)).toMatchObject({ state: 'undone', restoredShapeId: 'restored' })
+  expect((await createPresentationPageEditingSkill(options).executeTool(call)).isError).toBe(true)
+})

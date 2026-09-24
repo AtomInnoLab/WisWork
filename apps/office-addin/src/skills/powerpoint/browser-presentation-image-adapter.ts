@@ -65,7 +65,23 @@ async function slide(context: Runtime, slideId: string, signal?: AbortSignal): P
   return item
 }
 export class BrowserPresentationImageAdapter {
-  async inspect(slideId: string, shapeId: string, signal?: AbortSignal): Promise<PictureSnapshot> {
+  async captureOriginal(
+    slideId: string,
+    shapeId: string,
+    signal?: AbortSignal,
+  ): Promise<{ snapshot: PictureSnapshot; base64: string }> {
+    let base64 = ''
+    const snapshot = await this.inspect(slideId, shapeId, signal, (value) => {
+      base64 = value
+    })
+    return { snapshot, base64 }
+  }
+  async inspect(
+    slideId: string,
+    shapeId: string,
+    signal?: AbortSignal,
+    original?: (base64: string) => void,
+  ): Promise<PictureSnapshot> {
     check(signal)
     id(slideId)
     id(shapeId)
@@ -131,7 +147,7 @@ export class BrowserPresentationImageAdapter {
         throw new Error('office_read_failed')
       let proof: Awaited<ReturnType<typeof inspectPowerPointPicturePackage>>
       try {
-        proof = await inspectPowerPointPicturePackage(exported.value, shapeId, signal)
+        proof = await inspectPowerPointPicturePackage(exported.value, shapeId, signal, original)
       } catch (error) {
         if (error instanceof Error && error.message === 'office_api_unsupported')
           throw Object.assign(error, { pictureUnsupported: true })

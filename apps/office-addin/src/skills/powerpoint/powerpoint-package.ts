@@ -378,6 +378,7 @@ export async function inspectPowerPointPicturePackage(
   base64: string,
   shapeId: string,
   signal?: AbortSignal,
+  original?: (base64: string) => void,
 ): Promise<PowerPointPicturePackageInspection> {
   const unsupported = (): never => {
     throw new Error('office_api_unsupported')
@@ -522,6 +523,7 @@ export async function inspectPowerPointPicturePackage(
     new TextEncoder().encode(JSON.stringify([stableValue(picture), mediaDigest])),
   )
   if (signal?.aborted) throw new Error('cancelled')
+  if (original) original(btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')))
   return { pictureFingerprint, mediaDigest, shapeIds: ids as string[] }
 }
 

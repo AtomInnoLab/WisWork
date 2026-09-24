@@ -189,3 +189,55 @@ it('rejects unbound, malformed, oversized or candidate-aliasing recovery evidenc
     expect(validateImageReplacementRecord({ ...f.record, baseline: invalid })).toBe(false)
   expect(validateImageReplacementRecord({ ...f.record, baseline, newShapeId: 'title' })).toBe(false)
 })
+it('persists immutable original backup and reverse candidate across reopening', async () => {
+  const f = await setup()
+  const baseline = {
+    slideId: 'host',
+    shapeId: 'old',
+    geometry: { left: 1, top: 2, width: 3, height: 4 },
+    rotation: 0,
+    name: 'Image',
+    altTextTitle: '',
+    altTextDescription: '',
+    zOrderPosition: 0,
+    shapeIds: ['old', 'title'],
+    pictureFingerprint: 'b'.repeat(64),
+    mediaDigest: 'c'.repeat(64),
+  }
+  const backup = { attachmentId: baseline.mediaDigest, sizeBytes: 100, mime: 'image/png' as const }
+  const pending = { ...f.record, baseline, backup }
+  await f.binding.writeImageReplacement(f.key, pending)
+  const candidate = { ...pending, newShapeId: 'new' }
+  await f.binding.writeImageReplacement(f.key, candidate)
+  const after = {
+    ...baseline,
+    shapeId: 'new',
+    shapeIds: ['new', 'title'],
+    mediaDigest: f.record.assetDigest,
+  }
+  const complete = { ...candidate, after, state: 'complete' as const }
+  await f.binding.writeImageReplacement(f.key, complete)
+  const undo = { ...complete, state: 'undo_pending' as const, undoBaseline: after }
+  await f.create().writeImageReplacement(f.key, undo)
+  expect(f.create().readImageReplacement(f.key)).toEqual(undo)
+  await expect(
+    f.binding.writeImageReplacement(f.key, { ...undo, backup: { ...backup, sizeBytes: 101 } }),
+  ).rejects.toThrow()
+  await expect(
+    f.binding.writeImageReplacement(f.key, {
+      ...undo,
+      after: { ...after, name: 'changed' },
+      undoBaseline: { ...after, name: 'changed' },
+    }),
+  ).rejects.toThrow()
+  const restored = { ...undo, restoredShapeId: 'restored' }
+  await f.binding.writeImageReplacement(f.key, restored)
+  f.save.mockRejectedValueOnce(new Error('save_failed'))
+  await expect(
+    f.binding.writeImageReplacement(f.key, { ...restored, state: 'undone' }),
+  ).rejects.toThrow('save_failed')
+  expect(f.create().readImageReplacement(f.key)).toEqual(restored)
+  await f.create().writeImageReplacement(f.key, { ...restored, state: 'undone' })
+  expect(f.create().readImageReplacement(f.key)?.state).toBe('undone')
+  await expect(f.binding.writeImageReplacement(f.key, undo)).rejects.toThrow()
+})

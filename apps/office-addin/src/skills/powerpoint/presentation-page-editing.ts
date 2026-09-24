@@ -17,6 +17,7 @@ import {
   imageReplacementKey,
   validateImageReplacementRecord,
   type ImageReplacementRecord,
+  type PresentationImageBackup,
 } from './presentation-image-replacement-record.js'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import {
@@ -79,8 +80,14 @@ export interface PresentationPageEditingOptions {
     record: PresentationGeometryChange,
     expected: PresentationGeometryChange | undefined,
   ): Promise<void>
+  imageBackup?: PresentationImageBackup
   vfs?: InMemoryVfs
   imageAdapter?: {
+    captureOriginal?(
+      slideId: string,
+      shapeId: string,
+      signal?: AbortSignal,
+    ): Promise<{ snapshot: PictureSnapshot; base64: string }>
     inspectRecovery?(
       record: ImageReplacementRecord,
       signal?: AbortSignal,
@@ -173,7 +180,7 @@ const tools: AgentToolDef[] = [
     name,
     description: name.startsWith('inspect')
       ? 'Read-only inspection classifies current geometry against pending forward or undo targets; ambiguous states require manual review. Does not establish historical causality.'
-      : name.startsWith('resume')
+      : !name.startsWith('inspect')
         ? 'Confirm recovery in the saved pending direction: apply the target only when still at the origin, or finalize the journal without another write when already at the target. Requires fresh confirmation and unchanged observations; does not establish historical causality.'
         : name.startsWith('read')
           ? 'Read the last geometry-only saved change for the bound page; historical state does not verify the current host.'
@@ -200,7 +207,7 @@ const tools: AgentToolDef[] = [
     name,
     description: name.startsWith('inspect')
       ? 'Read-only inspection classifies current text against pending forward or undo targets; ambiguous states require manual review. Does not establish historical causality.'
-      : name.startsWith('resume')
+      : !name.startsWith('inspect')
         ? 'Confirm recovery in the saved pending direction: apply the target only when still at the origin, or finalize the journal without another write when already at the target. Requires fresh confirmation and unchanged observations; does not establish historical causality.'
         : name.startsWith('read')
           ? 'Read the last text-only saved change for the bound page; historical state does not verify the current host.'
@@ -218,27 +225,31 @@ const tools: AgentToolDef[] = [
       additionalProperties: false,
     },
   })),
-  ...['inspect_presentation_image_replacement', 'resume_presentation_image_replacement'].map(
-    (name) => ({
-      name,
-      description: name.startsWith('inspect')
-        ? 'Inspect a pending image replacement against current host objects. No content is changed.'
-        : 'Propose finishing a verified interrupted image replacement. Requires fresh user confirmation; never inserts another image. Manual-review states cannot resume.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          project_id: idSchema,
-          page_id: idSchema,
-          shape_id: { type: 'string', minLength: 1, maxLength: 256 },
-          ...(name.startsWith('resume')
-            ? { explanation: { type: 'string', minLength: 1, maxLength: 500 } }
-            : {}),
-        },
-        required: ['page_id', 'shape_id'],
-        additionalProperties: false,
+  ...[
+    'inspect_presentation_image_replacement',
+    'resume_presentation_image_replacement',
+    'undo_presentation_image_replacement',
+  ].map((name) => ({
+    name,
+    description: name.startsWith('inspect')
+      ? 'Inspect a pending image replacement against current host objects. No content is changed.'
+      : name.startsWith('undo')
+        ? 'Propose restoring a durably backed-up original picture. Requires unchanged after snapshot and fresh confirmation; restored shape ID changes.'
+        : 'Propose finishing a verified interrupted image replacement or undo. Requires fresh user confirmation; never inserts another image. Manual-review states cannot resume.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: idSchema,
+        page_id: idSchema,
+        shape_id: { type: 'string', minLength: 1, maxLength: 256 },
+        ...(!name.startsWith('inspect')
+          ? { explanation: { type: 'string', minLength: 1, maxLength: 500 } }
+          : {}),
       },
-    }),
-  ),
+      required: ['page_id', 'shape_id'],
+      additionalProperties: false,
+    },
+  })),
   {
     name: 'read_presentation_page',
     description:
@@ -347,7 +358,9 @@ export function createPresentationPageEditingSkill(
       options.imageAdapter &&
       options.readImageReplacement &&
       options.writeImageReplacement &&
-      supportsBrowserMediaValidation(),
+      supportsBrowserMediaValidation() &&
+      (!options.imageBackup ||
+        (options.imageBackup.available() && options.imageAdapter?.captureOriginal)),
     )
   const textStorage = () => Boolean(options.readTextChange && options.writeTextChange)
   const geometryStorage = () => Boolean(options.readGeometryChange && options.writeGeometryChange)
@@ -372,11 +385,18 @@ export function createPresentationPageEditingSkill(
                         options.imageAdapter?.inspectRecovery &&
                         options.imageAdapter?.finishRecovery,
                       )
-                    : tool.name === 'replace_presentation_page_image'
-                      ? imageAvailable()
-                      : tool.name === 'read_presentation_image_replacement'
-                        ? Boolean(options.readImageReplacement)
-                        : !tool.name.endsWith('_geometry') || geometryAvailable(),
+                    : tool.name === 'undo_presentation_image_replacement'
+                      ? Boolean(
+                          options.readImageReplacement &&
+                          options.writeImageReplacement &&
+                          options.imageAdapter &&
+                          options.imageBackup?.available(),
+                        )
+                      : tool.name === 'replace_presentation_page_image'
+                        ? imageAvailable()
+                        : tool.name === 'read_presentation_image_replacement'
+                          ? Boolean(options.readImageReplacement)
+                          : !tool.name.endsWith('_geometry') || geometryAvailable(),
           )
         : []
     },
@@ -389,10 +409,11 @@ export function createPresentationPageEditingSkill(
       const captured = epoch
       const replaceImage = call.name === 'replace_presentation_page_image'
       const imageStatus = call.name === 'read_presentation_image_replacement'
+      const undoImage = call.name === 'undo_presentation_image_replacement'
       const resumeImage = call.name === 'resume_presentation_image_replacement'
       const inspectImage = call.name === 'inspect_presentation_image_replacement'
       const recovery = resumeImage || inspectImage
-      const imageOperation = replaceImage || imageStatus || recovery
+      const imageOperation = replaceImage || imageStatus || recovery || undoImage
       const textChange = ['read', 'undo', 'inspect', 'resume'].some(
         (action) => call.name === `${action}_presentation_text_change`,
       )
@@ -411,7 +432,15 @@ export function createPresentationPageEditingSkill(
           (geometry && !geometryAvailable()) ||
           (textChange && !textStorage()) ||
           (geometryChange && (!geometryAvailable() || !geometryStorage())) ||
-          (replaceImage && !imageAvailable()) ||
+          (replaceImage &&
+            (!imageAvailable() ||
+              (options.imageBackup &&
+                (!options.imageBackup.available() || !options.imageAdapter?.captureOriginal)))) ||
+          (undoImage &&
+            (!options.imageAdapter ||
+              !options.readImageReplacement ||
+              !options.writeImageReplacement ||
+              !options.imageBackup?.available())) ||
           (imageStatus && !options.readImageReplacement) ||
           (recovery && (!options.readImageReplacement || !options.imageAdapter?.inspectRecovery)) ||
           (resumeImage && (!options.writeImageReplacement || !options.imageAdapter?.finishRecovery))
@@ -424,7 +453,8 @@ export function createPresentationPageEditingSkill(
             call.name === 'edit_presentation_page_text' ||
             call.name === 'edit_presentation_page_geometry' ||
             replaceImage ||
-            resumeImage,
+            resumeImage ||
+            undoImage,
           input = call.input
         if (
           (!edit &&
@@ -453,7 +483,7 @@ export function createPresentationPageEditingSkill(
                         'project_id',
                         'page_id',
                         'shape_id',
-                        ...(resumeImage
+                        ...(resumeImage || undoImage
                           ? []
                           : [replaceImage ? 'path' : geometry ? 'geometry' : 'text']),
                         'explanation',
@@ -472,7 +502,7 @@ export function createPresentationPageEditingSkill(
           ((geometry || imageOperation) && !hostId(input.shape_id)) ||
           (edit &&
             (!hostId(input.shape_id) ||
-              (resumeImage
+              (resumeImage || undoImage
                 ? false
                 : replaceImage
                   ? typeof input.path !== 'string' || !input.path || input.path.length > 1024
@@ -893,6 +923,163 @@ export function createPresentationPageEditingSkill(
               mutated: false,
               summary: '图片替换历史记录；未重新核验宿主当前状态',
             }
+          const readAfter = async (record: ImageReplacementRecord, shapeId: string) => {
+            const picture = await options.imageAdapter!.inspect(hostSlideId, shapeId)
+            const before = record.baseline!
+            const near = (a: number, b: number) => Math.abs(a - b) <= 0.01
+            if (
+              picture.slideId !== hostSlideId ||
+              picture.shapeId !== shapeId ||
+              picture.mediaDigest !== record.assetDigest ||
+              picture.name !== before.name ||
+              picture.altTextTitle !== before.altTextTitle ||
+              picture.altTextDescription !== before.altTextDescription ||
+              !near(picture.rotation, before.rotation) ||
+              (['left', 'top', 'width', 'height'] as const).some(
+                (k) => !near(picture.geometry[k], before.geometry[k]),
+              ) ||
+              picture.zOrderPosition !== before.zOrderPosition ||
+              JSON.stringify(picture.shapeIds) !==
+                JSON.stringify(
+                  before.shapeIds.map((id) => (id === record.oldShapeId ? shapeId : id)),
+                )
+            )
+              throw new Error('office_state_uncertain')
+            return picture
+          }
+          const reverse = (record: ImageReplacementRecord): ImageReplacementRecord => ({
+            version: 1,
+            documentId: record.documentId,
+            projectId: record.projectId,
+            requestId: record.requestId,
+            pageId: record.pageId,
+            hostSlideId: record.hostSlideId,
+            ...(record.source ? { source: record.source } : {}),
+            oldShapeId: record.newShapeId!,
+            newShapeId: record.restoredShapeId,
+            assetDigest: record.baseline!.mediaDigest,
+            baseline: record.undoBaseline!,
+            state: 'pending',
+          })
+          const recoveryRecord = (record: ImageReplacementRecord) =>
+            record.state === 'undo_pending' ? reverse(record) : structuredClone(record)
+          if (undoImage) {
+            if (
+              !previous ||
+              previous.state !== 'complete' ||
+              !previous.backup ||
+              !previous.after ||
+              !previous.baseline ||
+              !previous.newShapeId
+            )
+              throw new Error('presentation_image_replacement_manual_review')
+            let latest = structuredClone(previous)
+            const unchanged = async (s?: AbortSignal) => {
+              await current(s)
+              if (
+                JSON.stringify(readRecord()) !== JSON.stringify(latest) ||
+                JSON.stringify(
+                  await options.imageAdapter!.inspect(hostSlideId, previous.newShapeId!, s),
+                ) !== JSON.stringify(previous.after)
+              )
+                throw new Error('proposal_stale')
+              await current(s)
+            }
+            const original = async (s?: AbortSignal) => {
+              const bytes = await options.imageBackup!.load(documentId, previous.backup!, s)
+              const digest = Array.from(
+                new Uint8Array(
+                  await crypto.subtle.digest(
+                    'SHA-256',
+                    Uint8Array.from(atob(bytes), (c) => c.charCodeAt(0)),
+                  ),
+                ),
+                (b) => b.toString(16).padStart(2, '0'),
+              ).join('')
+              if (digest !== previous.baseline!.mediaDigest)
+                throw new Error('presentation_image_backup_invalid')
+              await current(s)
+              return bytes
+            }
+            await unchanged(signal)
+            await original(signal)
+            const save = async (record: ImageReplacementRecord) => {
+              await current()
+              if (JSON.stringify(readRecord()) !== JSON.stringify(latest))
+                throw new Error('proposal_stale')
+              await options.writeImageReplacement!(replacementKey, record)
+              await current()
+              if (JSON.stringify(readRecord()) !== JSON.stringify(record))
+                throw new Error('office_state_uncertain')
+              latest = record
+            }
+            const proposal = options.proposals.propose({
+              operation: call.name,
+              toolName: call.name,
+              title: (input.explanation as string) || `撤销“${page.title}”的图片替换`,
+              preview: {
+                ...context,
+                oldShapeId,
+                newShapeId: previous.newShapeId,
+                restoresDigest: previous.baseline.mediaDigest,
+                newShapeIdWillChange: true,
+              },
+              impact: { host: 'powerpoint', targets: [hostSlideId], count: 1 },
+              fingerprint: selectionFingerprint(JSON.stringify(previous)),
+              validate: async (s) => {
+                try {
+                  await unchanged(s)
+                  await original(s)
+                  return true
+                } catch {
+                  return false
+                }
+              },
+              execute: async (s) => {
+                await unchanged(s)
+                const bytes = await original(s)
+                await unchanged(s)
+                await save({ ...latest, state: 'undo_pending', undoBaseline: previous.after })
+                const result = await options.imageAdapter!.replace(
+                  hostSlideId,
+                  previous.newShapeId!,
+                  bytes,
+                  previous.after!,
+                  async (restoredShapeId) => {
+                    if (
+                      !hostId(restoredShapeId) ||
+                      previous.after!.shapeIds.includes(restoredShapeId) ||
+                      latest.restoredShapeId
+                    )
+                      throw new Error('office_state_uncertain')
+                    await save({ ...latest, restoredShapeId })
+                  },
+                  s,
+                )
+                if (!latest.restoredShapeId || result.shapeId !== latest.restoredShapeId)
+                  throw new Error('office_state_uncertain')
+                await save({ ...latest, state: 'undone' })
+              },
+              verify: async () => {
+                await current()
+                if (
+                  latest.state !== 'undone' ||
+                  JSON.stringify(readRecord()) !== JSON.stringify(latest)
+                )
+                  throw new Error('office_state_uncertain')
+              },
+            })
+            return {
+              output: bounded({
+                proposalId: proposal.id,
+                status: 'awaiting_confirmation',
+                ...context,
+                oldShapeId,
+              }),
+              mutated: false,
+              summary: '图片替换撤销等待确认',
+            }
+          }
           if (recovery) {
             const originalJson = JSON.stringify(previous)
             const recordUnchanged = async (s?: AbortSignal) => {
@@ -903,13 +1090,31 @@ export function createPresentationPageEditingSkill(
               await recordUnchanged(s)
               if (
                 !previous ||
-                previous.state !== 'pending' ||
+                !['pending', 'undo_pending'].includes(previous.state) ||
                 !previous.baseline ||
-                !previous.newShapeId
+                !previous.newShapeId ||
+                (previous.state === 'undo_pending' && !previous.restoredShapeId)
               )
                 return { status: 'manual_review', reason: 'missing_pending_recovery_evidence' }
+              if (previous.state === 'undo_pending') {
+                if (!options.imageBackup?.available() || !previous.backup)
+                  return { status: 'manual_review', reason: 'missing_original_backup' }
+                const base64 = await options.imageBackup.load(documentId, previous.backup, s)
+                const digest = Array.from(
+                  new Uint8Array(
+                    await crypto.subtle.digest(
+                      'SHA-256',
+                      Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)),
+                    ),
+                  ),
+                  (b) => b.toString(16).padStart(2, '0'),
+                ).join('')
+                if (digest !== previous.baseline.mediaDigest)
+                  throw new Error('presentation_image_backup_invalid')
+                await recordUnchanged(s)
+              }
               const result = await options.imageAdapter!.inspectRecovery!(
-                structuredClone(previous),
+                recoveryRecord(previous),
                 s,
               )
               await recordUnchanged(s)
@@ -946,11 +1151,16 @@ export function createPresentationPageEditingSkill(
                 ...context,
                 oldShapeId,
                 newShapeId: previous.newShapeId,
+                ...(previous.restoredShapeId ? { restoredShapeId: previous.restoredShapeId } : {}),
                 status: expectedStatus,
                 action:
-                  expectedStatus === 'ready_to_finish'
-                    ? '删除已核验原图并保留候选图片'
-                    : '记录已核验的替换完成状态',
+                  previous.state === 'undo_pending'
+                    ? expectedStatus === 'ready_to_finish'
+                      ? '删除替换图并保留已核验恢复原图'
+                      : '记录已核验的撤销完成状态'
+                    : expectedStatus === 'ready_to_finish'
+                      ? '删除已核验原图并保留候选图片'
+                      : '记录已核验的替换完成状态',
               },
               impact: { host: 'powerpoint', targets: [hostSlideId], count: 1 },
               fingerprint: selectionFingerprint(
@@ -967,16 +1177,24 @@ export function createPresentationPageEditingSkill(
               execute: async (s) => {
                 await unchanged(s)
                 const result = await options.imageAdapter!.finishRecovery!(
-                  structuredClone(previous),
+                  recoveryRecord(previous),
                   expectedStatus,
                   s,
                 )
                 await recordUnchanged()
-                if (result?.shapeId !== previous.newShapeId)
+                if (
+                  result?.shapeId !==
+                  (previous.state === 'undo_pending'
+                    ? previous.restoredShapeId
+                    : previous.newShapeId)
+                )
                   throw new Error('office_state_uncertain')
                 const next: ImageReplacementRecord = {
                   ...structuredClone(previous),
-                  state: 'complete',
+                  state: previous.state === 'undo_pending' ? 'undone' : 'complete',
+                  ...(previous.state === 'pending' && previous.backup
+                    ? { after: await readAfter(previous, result.shapeId) }
+                    : {}),
                 }
                 await options.writeImageReplacement!(replacementKey, next)
                 await current()
@@ -1001,9 +1219,9 @@ export function createPresentationPageEditingSkill(
               summary: '图片替换恢复等待确认',
             }
           }
-          if (previous?.state === 'pending')
+          if (previous?.state === 'pending' || previous?.state === 'undo_pending')
             throw new Error('presentation_image_replacement_uncertain')
-          if (previous?.state === 'complete')
+          if (previous?.state === 'complete' || previous?.state === 'undone')
             return {
               output: bounded({ status: 'already_replaced', historical: true, record: previous }),
               mutated: false,
@@ -1107,7 +1325,27 @@ export function createPresentationPageEditingSkill(
             },
             execute: async (s) => {
               await unchanged(s)
+              let backup
+              if (options.imageBackup) {
+                const captured = await options.imageAdapter!.captureOriginal!(
+                  hostSlideId,
+                  oldShapeId,
+                  s,
+                )
+                if (JSON.stringify(captured.snapshot) !== beforeJson)
+                  throw new Error('proposal_stale')
+                if (
+                  (await sha256(Uint8Array.from(atob(captured.base64), (c) => c.charCodeAt(0)))) !==
+                  before.mediaDigest
+                )
+                  throw new Error('presentation_image_backup_invalid')
+                backup = await options.imageBackup.save(documentId, captured.base64, s)
+                if (backup.attachmentId !== before.mediaDigest)
+                  throw new Error('presentation_image_backup_invalid')
+                await unchanged(s)
+              }
               await save({
+                ...(backup ? { backup } : {}),
                 version: 1,
                 documentId,
                 projectId,
@@ -1141,7 +1379,11 @@ export function createPresentationPageEditingSkill(
               await current()
               if (!latest?.newShapeId || result?.shapeId !== latest.newShapeId)
                 throw new Error('office_state_uncertain')
-              await save({ ...latest, state: 'complete' })
+              await save({
+                ...latest,
+                state: 'complete',
+                ...(latest.backup ? { after: await readAfter(latest, result.shapeId) } : {}),
+              })
             },
             verify: async () => {
               await current()

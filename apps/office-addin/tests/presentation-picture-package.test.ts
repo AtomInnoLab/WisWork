@@ -71,3 +71,20 @@ describe('ordinary embedded picture package proof', () => {
     ).rejects.toThrow('office_api_unsupported')
   })
 })
+
+it('captures exact original media only after the ordinary-picture proof succeeds', async () => {
+  const f = await fixture()
+  let original: string | undefined
+  const proof = await inspectPowerPointPicturePackage(f.base64, f.id, undefined, (value) => {
+    original = value
+  })
+  expect(original).toBe(png)
+  expect(Object.keys(proof).sort()).toEqual(['mediaDigest', 'pictureFingerprint', 'shapeIds'])
+  original = undefined
+  await expect(
+    inspectPowerPointPicturePackage(f.base64, '999', undefined, (value) => {
+      original = value
+    }),
+  ).rejects.toThrow()
+  expect(original).toBeUndefined()
+})

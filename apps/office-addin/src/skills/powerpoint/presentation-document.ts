@@ -701,15 +701,28 @@ export function createPresentationDocumentBinding(
               r.oldShapeId,
               r.assetDigest,
               r.baseline,
+              r.backup,
             ])
           if (
             identity(prior) !== identity(snapshot) ||
             (prior.newShapeId !== undefined && prior.newShapeId !== snapshot.newShapeId) ||
             (snapshot.state === 'complete' && !prior.newShapeId) ||
-            (prior.state === 'complete' && snapshot.state !== 'complete')
+            (snapshot.state === 'undone' && !prior.restoredShapeId) ||
+            (prior.after !== undefined &&
+              JSON.stringify(prior.after) !== JSON.stringify(snapshot.after)) ||
+            (prior.undoBaseline !== undefined &&
+              JSON.stringify(prior.undoBaseline) !== JSON.stringify(snapshot.undoBaseline)) ||
+            (prior.restoredShapeId !== undefined &&
+              prior.restoredShapeId !== snapshot.restoredShapeId) ||
+            !{
+              pending: ['pending', 'complete'],
+              complete: ['complete', 'undo_pending'],
+              undo_pending: ['undo_pending', 'undone'],
+              undone: ['undone'],
+            }[prior.state].includes(snapshot.state)
           )
             throw invalid()
-          if (prior.state === 'complete') return
+          if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
         }
         records[key] = snapshot
         const serialized = JSON.stringify(records)
