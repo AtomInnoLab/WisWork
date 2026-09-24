@@ -1,4 +1,4 @@
-import { XMLParser, XMLValidator } from 'fast-xml-parser'
+import { XMLBuilder, XMLParser, XMLValidator } from 'fast-xml-parser'
 import JSZip from 'jszip'
 import { loadBoundedZip, MAX_PPTX_XML_BYTES } from './powerpoint-package.js'
 
@@ -43,6 +43,16 @@ function range(formulaText: string): { col: string; start: number; end: number }
   if (!match || match[1] !== match[3]) return undefined
   const start = Number(match[2]), end = Number(match[4])
   return end >= start && end - start < 32 && end <= 100000 ? { col: match[1]!, start, end } : undefined
+}
+function resolvePart(base: string[], target: string): string {
+  if (!/^[A-Za-z0-9_./-]+$/.test(target) || target.startsWith('/')) throw new Error('office_api_unsupported')
+  const parts = [...base]
+  for (const part of target.split('/')) {
+    if (part === '.' || part === '') continue
+    if (part === '..') { if (parts.length === 0) throw new Error('office_api_unsupported'); parts.pop() }
+    else parts.push(part)
+  }
+  return parts.join('/')
 }
 function cellValues(sheet: Node[], shared: string[]): Map<string, string> {
   const cells = tags(sheet, 'c')
@@ -137,4 +147,92 @@ export async function inspectPowerPointChartSourcePackage(base64: string, shapeI
   })
   if (signal?.aborted) throw new Error('cancelled')
   return { ...embedded, verification: compares.includes(undefined) ? 'not_verified' : compares.every(Boolean) ? 'matches' : 'mismatch', ...(compares.includes(undefined) ? {reason:'missing_source_cell'} : {}) }
+}
+
+/** Update numeric series only when the embedded workbook and chart cache already agree. */
+export async function updatePowerPointChartDataPackage(
+  base64: string,
+  shapeId: string,
+  values: string[][],
+  signal?: AbortSignal,
+): Promise<{ base64: string; changedPaths: string[]; report: ChartSourceReport }> {
+  if (!Array.isArray(values) || !values.length || values.length > 8 ||
+    values.some((series) => !Array.isArray(series) || !series.length || series.length > 32 ||
+      series.some((value) => typeof value !== 'string' || !/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value) || !Number.isFinite(Number(value)))))
+    throw new Error('invalid_tool_input')
+  const current = await inspectPowerPointChartSourcePackage(base64, shapeId, signal)
+  if (current.sourceKind !== 'embedded_xlsx' || current.verification !== 'matches') throw new Error('office_api_unsupported')
+  if (values.length !== current.series.length || values.some((series, index) => series.length !== current.series[index]!.values.length))
+    throw new Error('invalid_tool_input')
+  const zip = await loadBoundedZip(base64, signal)
+  const slidePath = Object.keys(zip.files).find((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))!
+  const slide = await read(zip, slidePath, signal)
+  const frame = children(slide, 'p:graphicFrame').find((item) => tags(item, 'p:cNvPr').some((node) => attr(node, 'id') === shapeId))!
+  const chartId = attr(tags(frame, 'c:chart')[0]!, 'r:id')!
+  const slideRels = await read(zip, slidePath.replace('/slides/', '/slides/_rels/') + '.rels', signal)
+  const chartRel = relation(slideRels, chartId, 'chart')
+  const chartTarget = resolvePart(['ppt', 'slides'], attr(chartRel, 'Target')!)
+  const aliases = new Set(tags(slideRels, 'Relationship').filter((item) => attr(item, 'Type')?.endsWith('/chart') && attr(item, 'TargetMode') === undefined && resolvePart(['ppt', 'slides'], attr(item, 'Target') ?? '') === chartTarget).map((item) => attr(item, 'Id')))
+  if (children(slide, 'p:graphicFrame').filter((item) => tags(item, 'c:chart').some((node) => aliases.has(attr(node, 'r:id')))).length !== 1)
+    throw new Error('office_api_unsupported')
+  const chartPath = `ppt/charts/${attr(chartRel, 'Target')!.slice('../charts/'.length)}`
+  const chartXml = await zip.file(chartPath)!.async('string')
+  const chartNodes = xml(chartXml)
+  const chartSeries = children(chartNodes, 'c:ser')
+  const sourceId = attr(tags(chartNodes, 'c:externalData')[0]!, 'r:id')!
+  const chartRels = await read(zip, chartPath.replace('/charts/', '/charts/_rels/') + '.rels', signal)
+  const sourceRel = relation(chartRels, sourceId, 'package')
+  const sourcePath = `ppt/embeddings/${attr(sourceRel, 'Target')!.slice('../embeddings/'.length)}`
+  for (const relPath of Object.keys(zip.files).filter((path) => /^ppt\/charts\/_rels\/chart\d+\.xml\.rels$/.test(path) && path !== chartPath.replace('/charts/', '/charts/_rels/') + '.rels')) {
+    const rels = await read(zip, relPath, signal)
+    for (const item of tags(rels, 'Relationship')) {
+      if (!attr(item, 'Type')?.endsWith('/package') || attr(item, 'TargetMode') === 'External') continue
+      if (attr(item, 'TargetMode') !== undefined || !attr(item, 'Target') || resolvePart(['ppt', 'charts'], attr(item, 'Target')!) === sourcePath)
+        throw new Error('office_api_unsupported')
+    }
+  }
+  const sourceBytes = await zip.file(sourcePath)!.async('uint8array')
+  const book = await loadBoundedZip(btoa(Array.from(sourceBytes, (byte) => String.fromCharCode(byte)).join('')), signal)
+  const workbook = await read(book, 'xl/workbook.xml', signal)
+  const sheetId = attr(tags(workbook, 'sheet')[0]!, 'r:id')!
+  const workbookRels = await read(book, 'xl/_rels/workbook.xml.rels', signal)
+  const sheetRel = relation(workbookRels, sheetId, 'worksheet')
+  const sheetPath = `xl/${attr(sheetRel, 'Target')}`
+  const sheetNodes = await read(book, sheetPath, signal)
+  const cellMap = new Map(tags(sheetNodes, 'c').map((node) => [attr(node, 'r'), node]))
+  const touched = new Set<string>()
+  for (const [index, item] of chartSeries.entries()) {
+    const valueFormula = formula(item, 'c:val')
+    const valueRange = valueFormula && range(valueFormula)
+    const group = children(item, 'c:val')[0]
+    const caches = group && children(group, 'c:numCache')
+    if (!caches || caches.length !== 1 || children(item, 'c:val').length !== 1) throw new Error('office_api_unsupported')
+    const cache = caches[0]
+    const chartPoints = cache && tags(cache, 'c:pt')
+    if (!valueRange || !chartPoints || chartPoints.length !== values[index]!.length) throw new Error('office_api_unsupported')
+    for (const [pointIndex, next] of values[index]!.entries()) {
+      const address = `${valueRange.col}${valueRange.start + pointIndex}`
+      if (touched.has(address)) throw new Error('office_api_unsupported')
+      touched.add(address)
+      const cell = cellMap.get(address)
+      if (!cell || ![undefined, 'n'].includes(attr(cell, 't'))) throw new Error('office_api_unsupported')
+      const cellValue = tags(cell['c'] as Node[], 'v')[0]
+      const cacheValue = tags(chartPoints[pointIndex]!['c:pt'] as Node[], 'c:v')[0]
+      if (!cellValue || !cacheValue) throw new Error('office_api_unsupported')
+      cellValue.v = [{ '#text': next }]
+      cacheValue['c:v'] = [{ '#text': next }]
+    }
+  }
+  if (signal?.aborted) throw new Error('cancelled')
+  const builder = new XMLBuilder({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: '@_', format: false })
+  book.file(sheetPath, builder.build(sheetNodes))
+  zip.file(chartPath, builder.build(chartNodes))
+  zip.file(sourcePath, await book.generateAsync({ type: 'uint8array' }))
+  const updated = await zip.generateAsync({ type: 'base64' })
+  const report = await inspectPowerPointChartSourcePackage(updated, shapeId, signal)
+  if (report.sourceKind !== 'embedded_xlsx' || report.verification !== 'matches' ||
+    JSON.stringify(report.series.map((item) => item.values)) !== JSON.stringify(values) ||
+    JSON.stringify(report.series.map((item) => item.categories)) !== JSON.stringify(current.series.map((item) => item.categories)))
+    throw new Error('office_api_unsupported')
+  return { base64: updated, changedPaths: [chartPath, sourcePath], report }
 }

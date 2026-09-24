@@ -1,9 +1,11 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import {
+  captureChartValuePackageEdit,
   editPowerPointPackage,
   verifyImportedPowerPointPackage,
   verifyPowerPointPackage,
+  verifyPowerPointPackageInputs,
 } from '../src/skills/powerpoint/powerpoint-package.js'
 
 async function fixture(extra: Record<string, string> = {}): Promise<string> {
@@ -21,6 +23,20 @@ async function fixture(extra: Record<string, string> = {}): Promise<string> {
 }
 
 describe('bounded PowerPoint package editing', () => {
+  it('verifies chart XML and embedded workbook bytes together', async () => {
+    const before = await fixture({ 'ppt/embeddings/Book1.xlsx': 'old-workbook' })
+    const zip = await JSZip.loadAsync(before, { base64: true })
+    zip.file('ppt/charts/chart1.xml', '<c:chart xmlns:c="urn:c"><c:title>new</c:title></c:chart>')
+    zip.file('ppt/embeddings/Book1.xlsx', 'new-workbook')
+    const after = await zip.generateAsync({ type: 'base64' })
+    const edit = await captureChartValuePackageEdit(before, after)
+    expect(edit.changedPaths).toEqual(['ppt/charts/chart1.xml', 'ppt/embeddings/Book1.xlsx'])
+    expect(await verifyPowerPointPackageInputs(before, edit.beforeHashes)).toBe(true)
+    expect(await verifyImportedPowerPointPackage(after, edit)).toBe(true)
+    expect(await verifyPowerPointPackage(after, edit)).toBe(true)
+    zip.file('ppt/embeddings/Book1.xlsx', 'stale-workbook')
+    expect(await verifyImportedPowerPointPackage(await zip.generateAsync({ type: 'base64' }), edit)).toBe(false)
+  })
   it('round-trips a slide XML replacement while preserving relationships and unrelated parts', async () => {
     const input = await fixture()
     const edit = await editPowerPointPackage(input, 'slide', [

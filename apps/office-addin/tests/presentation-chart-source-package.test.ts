@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import JSZip from 'jszip'
-import { inspectPowerPointChartSourcePackage } from '../src/skills/powerpoint/presentation-chart-source-package.js'
+import { inspectPowerPointChartSourcePackage, updatePowerPointChartDataPackage } from '../src/skills/powerpoint/presentation-chart-source-package.js'
 
 const slide = '<p:sld><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="8" name="Chart"/></p:nvGraphicFramePr><a:graphic><a:graphicData><c:chart r:id="rId5"/></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>'
 const slideRels = '<Relationships><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>'
@@ -46,5 +46,41 @@ describe('PowerPoint chart source inspection', () => {
   it('keeps unsupported formulas unverified and cache-only charts separate', async () => {
     expect(await inspectPowerPointChartSourcePackage(await pptx({chart:chart('Other!A2:A3')}),'8')).toMatchObject({sourceKind:'embedded_xlsx',verification:'not_verified',reason:'unsupported_formula_or_cache'})
     expect(await inspectPowerPointChartSourcePackage(await pptx({chart:chart(undefined,undefined,false)}),'8')).toMatchObject({sourceKind:'cache_only',verification:'not_verified'})
+  })
+})
+
+describe('PowerPoint chart embedded data update', () => {
+  it('updates the workbook and chart cache together', async () => {
+    const result = await updatePowerPointChartDataPackage(await pptx(), '8', [['3', '4']])
+    expect(result.changedPaths).toEqual(['ppt/charts/chart1.xml', 'ppt/embeddings/Book1.xlsx'])
+    expect(await inspectPowerPointChartSourcePackage(result.base64, '8')).toMatchObject({ verification:'matches', series:[{categories:['Q1','Q2'], values:['3','4']}] })
+  })
+  it('refuses stale cache, external sources, and unsupported formulas', async () => {
+    await expect(updatePowerPointChartDataPackage(await pptx({chart:chart(undefined,'9')}), '8', [['3','4']])).rejects.toThrow('office_api_unsupported')
+    await expect(updatePowerPointChartDataPackage(await pptx({target:'https://example.com/Book.xlsx',mode:'TargetMode="External"',includeWorkbook:false}), '8', [['3','4']])).rejects.toThrow('office_api_unsupported')
+    await expect(updatePowerPointChartDataPackage(await pptx({chart:chart('Other!A2:A3')}), '8', [['3','4']])).rejects.toThrow('office_api_unsupported')
+  })
+  it('refuses shape mismatches, count changes and nonnumeric values', async () => {
+    const source = await pptx()
+    await expect(updatePowerPointChartDataPackage(source, '9', [['3','4']])).rejects.toThrow('office_api_unsupported')
+    await expect(updatePowerPointChartDataPackage(source, '8', [['3']])).rejects.toThrow('invalid_tool_input')
+    await expect(updatePowerPointChartDataPackage(source, '8', [['3','NaN']])).rejects.toThrow('invalid_tool_input')
+  })
+  it('refuses an embedded workbook shared by another chart', async () => {
+    const zip = await JSZip.loadAsync(await pptx(), { base64: true })
+    zip.file('ppt/charts/_rels/chart2.xml.rels', chartRels('../embeddings/Book1.xlsx'))
+    await expect(updatePowerPointChartDataPackage(await zip.generateAsync({ type:'base64' }), '8', [['3','4']])).rejects.toThrow('office_api_unsupported')
+    zip.file('ppt/charts/_rels/chart2.xml.rels', chartRels('../embeddings/./Book1.xlsx'))
+    await expect(updatePowerPointChartDataPackage(await zip.generateAsync({ type:'base64' }), '8', [['3','4']])).rejects.toThrow('office_api_unsupported')
+  })
+  it('refuses a chart part shared by two shapes on the same slide', async () => {
+    const zip = await JSZip.loadAsync(await pptx(), { base64: true })
+    zip.file('ppt/slides/slide1.xml', slide.replace('</p:spTree>', '<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="9" name="Alias"/></p:nvGraphicFramePr><a:graphic><a:graphicData><c:chart r:id="rId5"/></a:graphicData></a:graphic></p:graphicFrame></p:spTree>'))
+    await expect(updatePowerPointChartDataPackage(await zip.generateAsync({ type:'base64' }), '8', [['3','4']])).rejects.toThrow('office_api_unsupported')
+    zip.file('ppt/slides/slide1.xml', slide.replace('</p:spTree>', '<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="9" name="Alias"/></p:nvGraphicFramePr><a:graphic><a:graphicData><c:chart r:id="rId6"/></a:graphicData></a:graphic></p:graphicFrame></p:spTree>'))
+    zip.file('ppt/slides/_rels/slide1.xml.rels', slideRels.replace('</Relationships>', '<Relationship Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>'))
+    await expect(updatePowerPointChartDataPackage(await zip.generateAsync({ type:'base64' }), '8', [['3','4']])).rejects.toThrow('office_api_unsupported')
+    zip.file('ppt/slides/_rels/slide1.xml.rels', slideRels.replace('</Relationships>', '<Relationship Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/./chart1.xml"/></Relationships>'))
+    await expect(updatePowerPointChartDataPackage(await zip.generateAsync({ type:'base64' }), '8', [['3','4']])).rejects.toThrow('office_api_unsupported')
   })
 })

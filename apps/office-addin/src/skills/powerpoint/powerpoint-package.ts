@@ -21,6 +21,8 @@ export interface PackageEditResult {
   preservedHashes: Record<string, string>
 }
 
+const embeddedWorkbookPath = /^ppt\/embeddings\/[A-Za-z0-9_.-]+\.xlsx$/
+
 function hash(value: string | Uint8Array): string {
   const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value
   let result = 0x811c9dc5
@@ -270,6 +272,30 @@ export async function editPowerPointPackage(
   }
 }
 
+/** Build exact import/readback evidence for a synchronized chart XML and embedded XLSX edit. */
+export async function captureChartValuePackageEdit(beforeBase64: string, afterBase64: string, signal?: AbortSignal): Promise<PackageEditResult> {
+  const [before, after] = await Promise.all([loadBoundedZip(beforeBase64, signal), loadBoundedZip(afterBase64, signal)])
+  const beforePaths = Object.keys(before.files).filter((path) => !before.files[path]!.dir).sort()
+  const afterPaths = Object.keys(after.files).filter((path) => !after.files[path]!.dir).sort()
+  if (JSON.stringify(beforePaths) !== JSON.stringify(afterPaths)) throw new Error('office_api_unsupported')
+  const result: PackageEditResult = { base64: afterBase64, changedPaths: [], beforeHashes: {}, afterHashes: {}, beforeXml: {}, afterXml: {}, preservedHashes: {} }
+  for (const path of beforePaths) {
+    if (signal?.aborted) throw new Error('cancelled')
+    const oldBytes = await before.file(path)!.async('uint8array')
+    const newBytes = await after.file(path)!.async('uint8array')
+    const oldHash = hash(oldBytes), newHash = hash(newBytes)
+    if (oldHash === newHash) { result.preservedHashes[path] = oldHash; continue }
+    if (!/^ppt\/charts\/chart\d+\.xml$/.test(path) && !embeddedWorkbookPath.test(path)) throw new Error('office_api_unsupported')
+    result.changedPaths.push(path)
+    result.beforeHashes[path] = oldHash
+    result.afterHashes[path] = newHash
+    result.beforeXml[path] = embeddedWorkbookPath.test(path) ? '' : new TextDecoder().decode(oldBytes)
+    result.afterXml[path] = embeddedWorkbookPath.test(path) ? '' : new TextDecoder().decode(newBytes)
+  }
+  if (result.changedPaths.length !== 2 || result.changedPaths.filter((path) => embeddedWorkbookPath.test(path)).length !== 1) throw new Error('office_api_unsupported')
+  return result
+}
+
 export async function verifyImportedPowerPointPackage(
   base64: string,
   expected: Pick<
@@ -299,6 +325,10 @@ export async function verifyImportedPowerPointPackage(
       const before = expected.beforeXml[path]
       const after = expected.afterXml[path]
       if (!file || before === undefined || after === undefined) return false
+      if (embeddedWorkbookPath.test(path)) {
+        if (hash(await file.async('uint8array')) !== expected.afterHashes[path]) return false
+        continue
+      }
       const actual = await file.async('string')
       if (backgroundOnly(before, after)) {
         const actualBackground = backgroundXml(actual)
@@ -349,7 +379,7 @@ export async function verifyPowerPointPackage(
     for (const path of expected.changedPaths) {
       if (signal?.aborted) throw new Error('cancelled')
       const file = zip.file(path)
-      if (!file || hash(await file.async('string')) !== expected.afterHashes[path]) return false
+      if (!file || hash(await file.async('uint8array')) !== expected.afterHashes[path]) return false
     }
     for (const [path, expectedHash] of Object.entries(expected.preservedHashes)) {
       if (signal?.aborted) throw new Error('cancelled')
@@ -374,7 +404,7 @@ export async function verifyPowerPointPackageInputs(
     for (const [path, expectedHash] of Object.entries(expectedHashes)) {
       if (signal?.aborted) throw new Error('cancelled')
       const file = zip.file(path)
-      if (!file || hash(await file.async('string')) !== expectedHash) return false
+      if (!file || hash(await file.async('uint8array')) !== expectedHash) return false
     }
     return true
   } catch (error) {
