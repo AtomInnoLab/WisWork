@@ -14,6 +14,9 @@ export const presentationJobOperations = [
   'production_job_resume',
   'production_job_cancel',
 ]
+export function activePresentationRequest(key: string): string | undefined {
+  return workers.get(key)?.requestId
+}
 export function hasPresentationWorker(key: string): boolean {
   return workers.has(key)
 }

@@ -289,3 +289,72 @@ it('keeps the real saved page authoritative when its event cannot be appended', 
     append.mockRestore()
   }
 })
+it.each([false, true])(
+  'exposes an older active production and selectable history when compiled history exists: %s',
+  async (compiledHistory) => {
+    const gate = deferred(),
+      entered = deferred()
+    let block = false
+    const compile = vi.fn(async (input: unknown) => {
+      if (block) {
+        entered.resolve()
+        await gate.promise
+      }
+      return compilePresentationDeck(input)
+    })
+    const f = await setup(compile)
+    if (compiledHistory)
+      expect(
+        await f.call('compile', { requestId: 'full', deck: f.deck, planRevision: 1 }),
+      ).toMatchObject({ status: 'compiled' })
+    expect(
+      await f.call('production_begin', { requestId: 'newer', deck: f.deck, planRevision: 1 }),
+    ).toMatchObject({ requestId: 'newer' })
+    block = true
+    await f.call('production_job_start')
+    await entered.promise
+    try {
+      const status = await f.call('status')
+      expect(status.production.requestId).toBe('run')
+      expect(status.productionTasks).toEqual([
+        {
+          requestId: 'newer',
+          sequence: 2,
+          planRevision: 1,
+          status: 'pending',
+          compiledCount: 0,
+          total: 2,
+        },
+        {
+          requestId: 'run',
+          sequence: 1,
+          planRevision: 1,
+          status: 'building',
+          compiledCount: 0,
+          total: 2,
+          jobState: 'running',
+        },
+      ])
+      await f.call('production_begin', { requestId: 'newest', deck: f.deck, planRevision: 1 })
+      expect(await f.call('status')).toMatchObject({
+        production: { requestId: 'run' },
+        productionTasks: [
+          { requestId: 'newest' },
+          { requestId: 'newer' },
+          { requestId: 'run', jobState: 'running' },
+        ],
+      })
+    } finally {
+      await f.call('production_job_cancel')
+      gate.resolve()
+      await settled(f, 'cancelled')
+    }
+    const stopped = await f.call('status')
+    expect(stopped.production.requestId).toBe('newest')
+    expect(stopped.productionTasks.at(-1)).toMatchObject({
+      requestId: 'run',
+      compiledCount: 1,
+      jobState: 'cancelled',
+    })
+  },
+)

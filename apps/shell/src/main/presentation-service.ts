@@ -1,4 +1,5 @@
 import {
+  activePresentationRequest,
   handlePresentationJob,
   hasPresentationWorker,
   presentationJobOperations,
@@ -356,7 +357,27 @@ export function createPresentationService(options: {
           })
         }
         if (request.operation === 'status') {
-          const productionRecord = store.production(projectId, documentId)
+          const productionRecord = store.production(
+            projectId,
+            documentId,
+            activePresentationRequest(key),
+          )
+          const productionTasks = store
+            .productionHistory(projectId, documentId)
+            .slice(0, 32)
+            .map((record) => {
+              const summary = presentationProductionSummary(record)
+              const job = store.productionJob(projectId, documentId, record.requestId)
+              return {
+                requestId: record.requestId,
+                sequence: record.sequence,
+                planRevision: record.plan.revision,
+                status: summary.status,
+                compiledCount: summary.compiledCount,
+                total: summary.total,
+                ...(job ? { jobState: job.state } : {}),
+              }
+            })
           const production = productionRecord
             ? presentationProductionSummary(productionRecord)
             : undefined
@@ -372,7 +393,7 @@ export function createPresentationService(options: {
               projectId,
               title: plan.value.title,
               status: 'planned',
-              ...(production ? { production } : {}),
+              ...(production ? { production, productionTasks } : {}),
               slideCount: plan.value.slides.length,
               slides: plan.value.slides.map(({ id, title }) => ({ id, title })),
               history: [],
@@ -389,7 +410,7 @@ export function createPresentationService(options: {
             projectId,
             title: latestDeck.title,
             status: latest.status,
-            ...(production ? { production } : {}),
+            ...(production ? { production, productionTasks } : {}),
             latestRequestId: latest.requestId,
             ...(plan ? { plan } : {}),
             ...(latest.plan ? { requestPlanRevision: latest.plan.revision } : {}),
