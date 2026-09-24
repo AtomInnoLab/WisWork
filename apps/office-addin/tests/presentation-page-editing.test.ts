@@ -1302,3 +1302,31 @@ it('advertises distinct read, undo and recovery semantics for saved text and geo
     expect(description('resume')).toContain('Confirm recovery in the saved pending direction')
   }
 })
+it.each(['missing', 'corrupt', 'unavailable'] as const)(
+  'blocks forward recovery with an unusable %s original backup before proposing deletion',
+  async (failure) => {
+    const f = await recoverySetup()
+    const [key, record] = [...f.records.entries()][0]!
+    const backup = {
+      attachmentId: record.baseline!.mediaDigest,
+      sizeBytes: 100,
+      mime: 'image/png' as const,
+    }
+    f.records.set(key, { ...record, backup })
+    const skill = createPresentationPageEditingSkill({
+      ...f.options,
+      imageBackup: {
+        available: () => failure !== 'unavailable',
+        save: async () => backup,
+        load: async () => {
+          if (failure === 'missing') throw new Error('attachment_missing')
+          return btoa('corrupt')
+        },
+      },
+    })
+    expect(await skill.executeTool(f.resume)).toMatchObject({ isError: true })
+    expect(f.proposals.pending()).toBeUndefined()
+    expect(f.imageAdapter.inspectRecovery).not.toHaveBeenCalled()
+    expect(f.imageAdapter.finishRecovery).not.toHaveBeenCalled()
+  },
+)

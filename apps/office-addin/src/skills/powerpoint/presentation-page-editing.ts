@@ -1096,7 +1096,7 @@ export function createPresentationPageEditingSkill(
                 (previous.state === 'undo_pending' && !previous.restoredShapeId)
               )
                 return { status: 'manual_review', reason: 'missing_pending_recovery_evidence' }
-              if (previous.state === 'undo_pending') {
+              if (previous.backup || previous.state === 'undo_pending') {
                 if (!options.imageBackup?.available() || !previous.backup)
                   return { status: 'manual_review', reason: 'missing_original_backup' }
                 const base64 = await options.imageBackup.load(documentId, previous.backup, s)
