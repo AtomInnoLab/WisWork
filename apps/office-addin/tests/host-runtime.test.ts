@@ -455,7 +455,7 @@ it('routes evidence delivery and issue actions through their dedicated PC operat
   }
 })
 
-it('exposes durable text recovery and a changes workbench through the runtime', async () => {
+it('exposes durable text and image undo with a changes workbench through the runtime', async () => {
   vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => true } } })
   const runtime = createOfficeHostRuntime('powerpoint', {
     presentation: {
@@ -465,6 +465,10 @@ it('exposes durable text recovery and a changes workbench through the runtime', 
       lastProject: () => undefined,
       rememberProject: async () => {},
       readReceipt: () => undefined,
+      attachmentsAvailable: () => true,
+      assetsAvailable: () => true,
+      readImageReplacement: () => undefined,
+      writeImageReplacement: async () => {},
       readTextChange: () => undefined,
       writeTextChange: async () => {},
       listImageReplacements: () => [],
@@ -472,6 +476,7 @@ it('exposes durable text recovery and a changes workbench through the runtime', 
   })
   try {
     for (const name of [
+      'undo_presentation_image_replacement',
       'read_presentation_text_change',
       'inspect_presentation_text_change',
       'undo_presentation_text_change',
@@ -482,7 +487,16 @@ it('exposes durable text recovery and a changes workbench through the runtime', 
         name,
       ).toBe(true)
       expect(
-        (await runtime.skill.executeTool({ id: name, name, input: { page_id: 'p1' } })).output,
+        (
+          await runtime.skill.executeTool({
+            id: name,
+            name,
+            input: {
+              page_id: 'p1',
+              ...(name === 'undo_presentation_image_replacement' ? { shape_id: 'old' } : {}),
+            },
+          })
+        ).output,
       ).toBe('presentation_restore_required')
     }
     expect(runtime.changes).toBeDefined()

@@ -1,3 +1,4 @@
+import { createPresentationImageBackup } from '../skills/powerpoint/presentation-image-backup.js'
 import {
   createPresentationChangesController,
   type PresentationChangesController,
@@ -193,6 +194,7 @@ export function createOfficeHostRuntime(
                 'edit_presentation_page_geometry',
                 'undo_presentation_geometry_change',
                 'resume_presentation_geometry_change',
+                'undo_presentation_image_replacement',
                 'replace_presentation_page_image',
                 'resume_presentation_image_replacement',
               ].includes(proposal.operation) &&
@@ -561,6 +563,14 @@ export function createOfficeHostRuntime(
           adapter: powerPointAdapter,
           vfs,
           imageAdapter: new BrowserPresentationImageAdapter(),
+          imageBackup: createPresentationImageBackup({
+            available: () =>
+              Boolean(
+                options.presentation?.attachmentsAvailable?.() &&
+                options.presentation?.assetsAvailable?.(),
+              ),
+            request: options.presentation.attachmentsRequest ?? options.presentation.request,
+          }),
           readTextChange: options.presentation.readTextChange,
           writeTextChange: options.presentation.writeTextChange
             ? async (record, expected) => {
@@ -780,6 +790,7 @@ export function createOfficeHostRuntime(
                           'resume_presentation_geometry_change',
                           'undo_presentation_geometry_change',
                           'edit_presentation_page_geometry',
+                          'undo_presentation_image_replacement',
                           'replace_presentation_page_image',
                           'read_presentation_image_replacement',
                           'inspect_presentation_image_replacement',

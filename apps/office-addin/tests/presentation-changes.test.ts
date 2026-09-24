@@ -415,3 +415,72 @@ it.each([
   await controller.refresh()
   expect(controller.snapshot().entries).toEqual([])
 })
+
+it.each(['complete', 'undo_pending', 'undone'] as const)(
+  'routes backed-up image %s actions and labels restored bytes accurately',
+  async (state) => {
+    const baseline = {
+      slideId: 'host',
+      shapeId: 'old',
+      geometry: { left: 0, top: 0, width: 10, height: 10 },
+      rotation: 0,
+      name: 'Picture',
+      altTextTitle: '',
+      altTextDescription: '',
+      zOrderPosition: 0,
+      shapeIds: ['old'],
+      pictureFingerprint: 'a'.repeat(64),
+      mediaDigest: 'b'.repeat(64),
+    }
+    const after = {
+      ...baseline,
+      shapeId: 'new',
+      shapeIds: ['new'],
+      pictureFingerprint: 'c'.repeat(64),
+      mediaDigest: 'd'.repeat(64),
+    }
+    const record = {
+      version: 1 as const,
+      documentId: 'doc',
+      projectId: 'project',
+      requestId: 'request',
+      pageId: 'page',
+      hostSlideId: 'host',
+      oldShapeId: 'old',
+      newShapeId: 'new',
+      assetDigest: after.mediaDigest,
+      state,
+      baseline,
+      after,
+      backup: { attachmentId: baseline.mediaDigest, sizeBytes: 100, mime: 'image/png' as const },
+      ...(state !== 'complete' ? { undoBaseline: after, restoredShapeId: 'restored' } : {}),
+    }
+    const executeTool = vi.fn(async () => ({ output: 'ok', summary: 'Done' }))
+    const controller = createPresentationChangesController({
+      available: () => true,
+      artifact: () => artifact,
+      documentId: async () => 'doc',
+      listImageReplacements: () => [record],
+      executeTool,
+    })
+    await controller.refresh()
+    expect(controller.snapshot().error).toBeUndefined()
+    const item = controller.snapshot().entries[0]
+    expect(item.actions).toEqual(
+      state === 'complete' ? ['undo'] : state === 'undo_pending' ? ['inspect', 'resume'] : [],
+    )
+    expect(item.before).toContain(baseline.mediaDigest)
+    if (state === 'undone')
+      expect(item.after).toContain(`恢复图片：restored\n恢复资源摘要：${baseline.mediaDigest}`)
+    for (const action of item.actions) {
+      await controller.run(item.id, action)
+      expect(executeTool).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          name: `${action}_presentation_image_replacement`,
+          input: { project_id: 'project', page_id: 'page', shape_id: 'old' },
+        }),
+        expect.any(AbortSignal),
+      )
+    }
+  },
+)

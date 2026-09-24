@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createPresentationAttachmentService } from '../../shell/src/main/presentation-attachments'
 import { PNG } from 'pngjs'
 import { BrowserPresentationImageAdapter } from '../src/skills/powerpoint/browser-presentation-image-adapter'
 import { imageReplacementKey } from '../src/skills/powerpoint/presentation-image-replacement-record'
@@ -16,11 +20,13 @@ const beforePng =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII='
 const afterPng =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII='
+const imageRoots: string[] = []
 afterEach(() => {
+  for (const path of imageRoots.splice(0)) rmSync(path, { recursive: true, force: true })
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
-async function fixture(withSecondPage = false) {
+async function fixture(withSecondPage = false, withImageBackup = false) {
   vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => true } } })
   const values = new Map<string, string>()
   const save = vi.fn(async () => {})
@@ -83,11 +89,33 @@ async function fixture(withSecondPage = false) {
       },
     }),
   )
+  const imageRoot = withImageBackup ? mkdtempSync(join(tmpdir(), 'wiswork-image-undo-')) : undefined
+  if (imageRoot) imageRoots.push(imageRoot)
+  const createImageService = () =>
+    createPresentationAttachmentService({
+      userDataPath: imageRoot!,
+      normalizeImage: async (bytes) => {
+        const image = PNG.sync.read(Buffer.from(bytes))
+        return { bytes, width: image.width, height: image.height }
+      },
+    })
+  let imageService = imageRoot ? createImageService() : undefined
   const createRuntime = () =>
     createOfficeHostRuntime('powerpoint', {
       presentation: {
         ...createPresentationDocumentBinding(settings, () => 'doc'),
         available: () => true,
+        attachmentsAvailable: () => withImageBackup,
+        assetsAvailable: () => withImageBackup,
+        attachmentsRequest: async (body, signal) =>
+          new Response(
+            JSON.stringify(
+              await imageService!(
+                body as Record<string, unknown>,
+                signal ?? new AbortController().signal,
+              ),
+            ),
+          ),
         request: async () =>
           new Response(
             JSON.stringify({
@@ -156,6 +184,12 @@ async function fixture(withSecondPage = false) {
   }
   return {
     createRuntime,
+    restartImageService: () => {
+      imageService = createImageService()
+    },
+    removeImageBackups: () => {
+      rmSync(imageRoot!, { recursive: true, force: true })
+    },
     binding,
     setText: (value: string) => {
       text = value
@@ -424,14 +458,17 @@ it('preserves a manual geometry change made after proposing layout adjustments',
 it.each([false, true])(
   'persists image replacement through runtime and blocks replay (interrupted=%s)',
   async (interrupted) => {
-    const f = await fixture(true)
+    const f = await fixture(true, true)
     vi.stubGlobal(
       'createImageBitmap',
       vi.fn(async () => ({ width: 1, height: 1, close() {} })),
     )
     const png = new PNG({ width: 1, height: 1 })
     png.data.fill(120)
-    f.runtime.vfs.writeFile('/home/user/replacement.png', PNG.sync.write(png))
+    const original = PNG.sync.write(png)
+    png.data.fill(200)
+    const replacement = PNG.sync.write(png)
+    f.runtime.vfs.writeFile('/home/user/replacement.png', replacement)
     const snapshot = {
       slideId: 'host',
       shapeId: 'old',
@@ -443,9 +480,16 @@ it.each([false, true])(
       zOrderPosition: 0,
       shapeIds: ['old'],
       pictureFingerprint: 'a'.repeat(64),
-      mediaDigest: 'b'.repeat(64),
+      mediaDigest: createHash('sha256').update(original).digest('hex'),
     }
-    vi.spyOn(BrowserPresentationImageAdapter.prototype, 'inspect').mockResolvedValue(snapshot)
+    let currentSnapshot = snapshot
+    vi.spyOn(BrowserPresentationImageAdapter.prototype, 'inspect').mockImplementation(async () =>
+      structuredClone(currentSnapshot),
+    )
+    vi.spyOn(BrowserPresentationImageAdapter.prototype, 'captureOriginal').mockResolvedValue({
+      snapshot,
+      base64: original.toString('base64'),
+    })
     const key = await imageReplacementKey('project', 'request', 'page1', 'old')
     const native = vi
       .spyOn(BrowserPresentationImageAdapter.prototype, 'replace')
@@ -455,6 +499,13 @@ it.each([false, true])(
         await onInserted('new')
         expect(f.binding.readImageReplacement(key)?.newShapeId).toBe('new')
         if (interrupted) throw new Error('office_write_uncertain')
+        currentSnapshot = {
+          ...snapshot,
+          shapeId: 'new',
+          shapeIds: ['new'],
+          pictureFingerprint: 'c'.repeat(64),
+          mediaDigest: createHash('sha256').update(replacement).digest('hex'),
+        }
         return { shapeId: 'new' }
       })
     const call = {
@@ -923,5 +974,171 @@ it('keeps manual text changes intact when undo is requested from a historical wo
     expect(f.binding.readTextChange()!.state).toBe('applied')
   } finally {
     f.runtime.dispose()
+  }
+})
+
+it.each([
+  'complete',
+  'receipt_failed',
+  'undo_interrupted',
+  'manual_change',
+  'backup_missing',
+] as const)('undoes a durable image via reopened runtime and workbench (%s)', async (scenario) => {
+  const f = await fixture(true, true)
+  vi.stubGlobal(
+    'createImageBitmap',
+    vi.fn(async () => ({ width: 1, height: 1, close() {} })),
+  )
+  const png = new PNG({ width: 1, height: 1 })
+  png.data.fill(80)
+  const original = PNG.sync.write(png)
+  png.data.fill(180)
+  const replacement = PNG.sync.write(png)
+  const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
+  const baseline = {
+    slideId: 'host',
+    shapeId: 'old',
+    geometry: { left: 1, top: 2, width: 100, height: 50 },
+    rotation: 0,
+    name: 'Picture',
+    altTextTitle: 'Title',
+    altTextDescription: 'Description',
+    zOrderPosition: 0,
+    shapeIds: ['old'],
+    pictureFingerprint: 'a'.repeat(64),
+    mediaDigest: hash(original),
+  }
+  let current = structuredClone(baseline)
+  vi.spyOn(BrowserPresentationImageAdapter.prototype, 'inspect').mockImplementation(
+    async (_slide, shapeId) => {
+      expect(shapeId).toBe(current.shapeId)
+      return structuredClone(current)
+    },
+  )
+  vi.spyOn(BrowserPresentationImageAdapter.prototype, 'captureOriginal').mockImplementation(
+    async () => ({
+      snapshot: structuredClone(current),
+      base64: original.toString('base64'),
+    }),
+  )
+  const key = await imageReplacementKey('project', 'request', 'page1', 'old')
+  const native = vi
+    .spyOn(BrowserPresentationImageAdapter.prototype, 'replace')
+    .mockImplementation(async (slide, shapeId, base64, expected, inserted) => {
+      expect(slide).toBe('host')
+      expect(expected).toEqual(current)
+      expect(shapeId).toBe(current.shapeId)
+      expect(f.page().recheckRequired).toBe(true)
+      const undo = shapeId === 'new'
+      expect(Buffer.from(base64, 'base64')).toEqual(undo ? original : replacement)
+      const record = f.binding.readImageReplacement(key)!
+      expect(record.state).toBe(undo ? 'undo_pending' : 'pending')
+      expect(record.backup?.attachmentId).toBe(hash(original))
+      const nextId = undo ? 'restored' : 'new'
+      await inserted(nextId)
+      expect(f.binding.readImageReplacement(key)).toMatchObject(
+        undo ? { restoredShapeId: nextId } : { newShapeId: nextId },
+      )
+      current = {
+        ...baseline,
+        shapeId: nextId,
+        shapeIds: [nextId],
+        mediaDigest: hash(undo ? original : replacement),
+        pictureFingerprint: (undo ? 'e' : 'c').repeat(64),
+      }
+      if (undo && scenario === 'undo_interrupted') {
+        current.shapeIds = ['new', 'restored']
+        current.zOrderPosition = 1
+        throw new Error('office_state_uncertain')
+      }
+      return { shapeId: nextId }
+    })
+  const inspectRecovery = vi
+    .spyOn(BrowserPresentationImageAdapter.prototype, 'inspectRecovery')
+    .mockImplementation(async (record) => {
+      expect(record.oldShapeId).toBe('new')
+      expect(record.newShapeId).toBe('restored')
+      expect(record.assetDigest).toBe(hash(original))
+      return { status: current.shapeIds.includes('new') ? 'ready_to_finish' : 'already_applied' }
+    })
+  const finishRecovery = vi
+    .spyOn(BrowserPresentationImageAdapter.prototype, 'finishRecovery')
+    .mockImplementation(async (record, expected) => {
+      expect(expected).toBe(scenario === 'undo_interrupted' ? 'ready_to_finish' : 'already_applied')
+      current.shapeIds = ['restored']
+      current.zOrderPosition = 0
+      return { shapeId: record.newShapeId! }
+    })
+  f.runtime.vfs.writeFile('/home/user/replacement.png', replacement)
+  const proposed = await f.runtime.skill.executeTool({
+    id: 'replace',
+    name: 'replace_presentation_page_image',
+    input: { page_id: 'page1', shape_id: 'old', path: '/home/user/replacement.png' },
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  expect(native).not.toHaveBeenCalled()
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(f.binding.readImageReplacement(key)?.state).toBe('complete')
+  // A fresh QA capture clears the target's stale flag before testing undo invalidation.
+  const capture = await f.capture()
+  expect(capture.isError, capture.output).not.toBe(true)
+  expect((await f.review(JSON.parse(capture.output).page.screenshotDigest)).isError).not.toBe(true)
+  const unrelated = structuredClone(f.secondPage())
+  f.runtime.dispose()
+  f.restartImageService()
+  const runtime = f.createRuntime()
+  try {
+    const restored = await runtime.skill.executeTool({
+      id: 'restore',
+      name: 'restore_presentation_project',
+      input: { project_id: 'project' },
+    })
+    expect(restored.isError, restored.output).not.toBe(true)
+    expect(() => runtime.vfs.readBytes('/home/user/replacement.png')).toThrow()
+    await runtime.changes!.refresh()
+    const entry = runtime.changes!.snapshot().entries.find((e) => e.kind === 'image')!
+    expect(entry.actions).toEqual(['undo'])
+    if (scenario === 'manual_change') current.geometry.left = 999
+    if (scenario === 'backup_missing') f.removeImageBackups()
+    await runtime.changes!.run(entry.id, 'undo')
+    expect(native).toHaveBeenCalledTimes(1)
+    if (scenario === 'manual_change' || scenario === 'backup_missing') {
+      expect(runtime.proposals.pending()).toBeUndefined()
+      expect(f.binding.readImageReplacement(key)?.state).toBe('complete')
+      return
+    }
+    let fail = scenario === 'receipt_failed'
+    f.save.mockImplementation(async () => {
+      if (fail && f.binding.readImageReplacement(key)?.state === 'undone') {
+        fail = false
+        throw new Error('save_failed')
+      }
+    })
+    const confirmation = runtime.proposals.confirm(runtime.proposals.pending()!.id)
+    if (scenario === 'receipt_failed' || scenario === 'undo_interrupted') {
+      await expect(confirmation).rejects.toThrow(
+        scenario === 'receipt_failed' ? 'save_failed' : 'office_state_uncertain',
+      )
+      expect(f.binding.readImageReplacement(key)?.state).toBe('undo_pending')
+      await runtime.changes!.refresh()
+      const pending = runtime.changes!.snapshot().entries.find((e) => e.kind === 'image')!
+      await runtime.changes!.run(pending.id, 'inspect')
+      expect(inspectRecovery).toHaveBeenCalled()
+      await runtime.changes!.run(pending.id, 'resume')
+      await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+      expect(finishRecovery).toHaveBeenCalledOnce()
+    } else await confirmation
+    expect(native).toHaveBeenCalledTimes(2)
+    expect(current.mediaDigest).toBe(hash(original))
+    expect(f.binding.readImageReplacement(key)).toMatchObject({
+      state: 'undone',
+      restoredShapeId: 'restored',
+    })
+    expect(f.page().recheckRequired).toBe(true)
+    expect(f.secondPage()).toEqual(unrelated)
+    await runtime.changes!.refresh()
+    expect(runtime.changes!.snapshot().entries.find((e) => e.kind === 'image')?.actions).toEqual([])
+  } finally {
+    runtime.dispose()
   }
 })

@@ -30,7 +30,7 @@ export function PresentationChangesCard({
       <strong>修改差异与撤销</strong>
       <p>
         最近保存点 / 不完整历史：文字、几何和整页各保留最近一条，图片最多 32
-        条；不支持跨类型多级撤销，图片暂无撤销。
+        条；不支持跨类型多级撤销。图片仅在原图已备份且记录完整时支持撤销，恢复后对象 ID 会改变。
       </p>
       {snapshot.projectId && (
         <p>

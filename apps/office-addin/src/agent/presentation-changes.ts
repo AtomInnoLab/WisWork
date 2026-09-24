@@ -82,12 +82,16 @@ function entry(kind: PresentationChangeEntry['kind'], record: RecordValue): Save
   let before: string, after: string, actions: PresentationChangeAction[]
   if (kind === 'image') {
     const r = record as ImageReplacementRecord
-    before = `图片对象：${r.oldShapeId}`
-    after = `图片对象：${r.newShapeId ?? '尚未记录'}\n资源摘要：${r.assetDigest}`
+    before = `图片对象：${r.oldShapeId}${r.baseline ? `\n资源摘要：${r.baseline.mediaDigest}` : ''}${r.backup ? '\n原图已持久备份' : '\n无可撤销原图备份'}`
+    after = `图片对象：${r.newShapeId ?? '尚未记录'}\n资源摘要：${r.assetDigest}${r.restoredShapeId ? `\n恢复图片：${r.restoredShapeId}\n恢复资源摘要：${r.baseline!.mediaDigest}` : ''}`
     actions =
       r.state === 'pending'
         ? ['inspect', ...(r.baseline && r.newShapeId ? ['resume' as const] : [])]
-        : []
+        : r.state === 'complete' && r.backup && r.after
+          ? ['undo']
+          : r.state === 'undo_pending'
+            ? ['inspect', ...(r.restoredShapeId ? ['resume' as const] : [])]
+            : []
   } else if (kind === 'page') {
     const r = record as PresentationPageReplacement
     before = `页面：${r.oldSlideId}\n包摘要：${r.originalPackageDigest}`
