@@ -172,7 +172,7 @@ export function createPresentationExistingImageEditingSkill(
       )
     },
     systemPrompt:
-      'For existing native pictures, read_presentation_baseline, then replace_existing_presentation_image with an exact native slide/shape ID and validated VFS PNG/JPEG. A confirmed proposal backs up original bytes before the host write. New native picture IDs differ. For interrupted writes inspect then resume only an identified candidate; never retry insertion automatically. Undo requires the original backup and exact after snapshot. After a confirmed write, capture_existing_presentation_image_review, inspect the displayed image, then record_existing_presentation_image_review with its screenshot_digest and pass/fail notes. A historical review never certifies current or whole-deck QA.',
+      'For existing native pictures, read_presentation_baseline, then replace_existing_presentation_image with an exact native slide/shape ID and validated VFS PNG/JPEG. A confirmed proposal backs up original bytes before the host write. New native picture IDs differ. For interrupted writes inspect then resume only an identified candidate; never retry insertion automatically. Undo requires the original backup and exact after snapshot. After a confirmed write, capture_existing_presentation_image_review, inspect the displayed image, then record_existing_presentation_image_review with its screenshot_digest and pass/fail notes. Inspect compares a current screenshot with the historical capture when possible; a match never certifies current or whole-deck QA.',
     clear() {
       epoch++
       reviewCapture = undefined
@@ -388,11 +388,29 @@ export function createPresentationExistingImageEditingSkill(
           } catch {
             status = 'manual_review'
           }
+          let visualReceipt: 'not_captured' | 'matched' | 'different' | 'unavailable' = record.capture ? 'unavailable' : 'not_captured'
+          if (record.capture && status === 'not_pending') {
+            try {
+              const shot = await options.inspectPage(record.hostSlideId, signal)
+              await current(); saved()
+              if (shot.slideId !== record.hostSlideId || shot.shapesTruncated || shot.screenshot.mime !== 'image/png') throw new Error('office_read_failed')
+              const png = validatePowerPointPageScreenshot(shot.screenshot.base64)
+              const currentDigest = await hash(decode(png))
+              const again = await options.imageAdapter.inspect(record.hostSlideId, shapeId, signal)
+              await current(); saved()
+              if (!same(again, picture)) throw new Error('office_state_uncertain')
+              visualReceipt = currentDigest === record.capture.screenshotDigest ? 'matched' : 'different'
+            } catch (error) {
+              await current(); saved()
+              visualReceipt = 'unavailable'
+            }
+          }
           return {
             output: result({
               changeId: record.changeId,
               state: record.state,
               status,
+              visualReceipt,
               currentHostVerified: true,
               qaPassed: false,
             }),

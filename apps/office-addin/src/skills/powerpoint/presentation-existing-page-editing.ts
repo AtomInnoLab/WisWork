@@ -79,7 +79,7 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
   return {
     id: 'presentation-existing-page-editing',
     get tools() { return options.available() ? tools : tools.filter((t) => ['inspect_', 'capture_', 'record_'].some((prefix) => t.name.startsWith(prefix))) },
-    systemPrompt: 'Existing page rebuild uses a validated one-slide VFS PPTX. Stage retains the original. Inspect and resume interrupted insertion before further action; never replay unknown insertion. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. A saved historical review is not current or whole-deck QA.',
+    systemPrompt: 'Existing page rebuild uses a validated one-slide VFS PPTX. Stage retains the original. Inspect and resume interrupted insertion before further action; never replay unknown insertion. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
     clear() { epoch++; reviewCapture = undefined },
     async executeTool(call, signal) {
       const token = epoch
@@ -160,7 +160,27 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
             undone: ['undone'],
           }
           const verified = expectedStatuses[record.state].includes(observed.status)
-          return { output: output({ changeId: record.changeId, state: record.state, inspection: observed, currentHostVerified: verified, manualReview: !verified, qaPassed: false }), mutated: false, summary: '已检查现稿单页变更' }
+          const visualReceipts = [] as { hostSlideId: string; status: 'not_captured' | 'matched' | 'different' | 'unavailable' }[]
+          if (verified && record.captures?.length) {
+            const before = observed.slideIds
+            for (const capture of record.captures) {
+              let status: 'matched' | 'different' | 'unavailable' = 'unavailable'
+              try {
+                const shot = await options.inspectPage(capture.hostSlideId, signal)
+                await current(); saved()
+                if (shot.slideId !== capture.hostSlideId || shot.shapesTruncated || shot.screenshot.mime !== 'image/png') throw new Error('office_read_failed')
+                const png = validatePowerPointPageScreenshot(shot.screenshot.base64)
+                const currentDigest = await sha(bytes(png))
+                const after = await inspect()
+                if (after.status !== observed.status || !same(after.slideIds, before)) throw new Error('office_state_uncertain')
+                status = currentDigest === capture.screenshotDigest ? 'matched' : 'different'
+              } catch {
+                await current(); saved()
+              }
+              visualReceipts.push({ hostSlideId: capture.hostSlideId, status })
+            }
+          }
+          return { output: output({ changeId: record.changeId, state: record.state, inspection: observed, currentHostVerified: verified, manualReview: !verified, visualReceipts, qaPassed: false }), mutated: false, summary: '已检查现稿单页变更' }
         }
         if (action === 'capture' || action === 'record') {
           const targets = record.state === 'staged' ? [record.oldSlideId, record.newSlideId!] :

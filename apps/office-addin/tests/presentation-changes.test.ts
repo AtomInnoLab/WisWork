@@ -113,6 +113,11 @@ it('shows existing-page identity diff offline and routes commit by exact change 
     }),
     expect.any(AbortSignal),
   )
+  executeTool.mockResolvedValueOnce({ output: JSON.stringify({ inspection: { status: 'staged' }, visualReceipts: [
+    { hostSlideId: 'old', status: 'matched' }, { hostSlideId: 'new', status: 'different' },
+  ] }), summary: 'checked' })
+  await controller.run(row.id, 'inspect')
+  expect(controller.snapshot().notice).toContain('当前截图与历史回执不同')
 })
 it('rejects changed fingerprints and invalid actions', async () => {
   const { controller, executeTool, change } = await setup()

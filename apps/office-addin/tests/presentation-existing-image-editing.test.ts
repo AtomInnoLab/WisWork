@@ -209,6 +209,18 @@ it('records a reviewed screenshot and rejects reuse after undo', async () => {
   expect(stale.isError).toBe(true)
 })
 
+it('compares the current page with the persisted image capture during inspect', async () => {
+  const f = await fixture()
+  const proposed = await f.call('replace_existing_presentation_image', { baseline_id: 'baseline', slide_id: 'slide', shape_id: 'old', path: '/image.png' })
+  await f.confirm()
+  const changeId = JSON.parse(proposed.output).changeId as string
+  const matched = await f.call('inspect_existing_presentation_image_change', { change_id: changeId })
+  expect(JSON.parse(matched.output)).toMatchObject({ visualReceipt: 'matched', qaPassed: false })
+  f.inspectPage.mockResolvedValue({ slideId: 'slide', shapesTruncated: false, screenshot: { mime: 'image/png', base64: replacementPng } })
+  const different = await f.call('inspect_existing_presentation_image_change', { change_id: changeId })
+  expect(JSON.parse(different.output)).toMatchObject({ visualReceipt: 'different', qaPassed: false })
+})
+
 it('keeps a confirmed image write while reporting unavailable evidence if the host changes during capture', async () => {
   const f = await fixture()
   const proposed = await f.call('replace_existing_presentation_image', { baseline_id: 'baseline', slide_id: 'slide', shape_id: 'old', path: '/image.png' })

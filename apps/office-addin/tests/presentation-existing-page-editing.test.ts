@@ -127,6 +127,26 @@ it('records staged visual judgments for both pages and clears them before commit
   expect(f.records.get(changeId)?.reviews).toBeUndefined()
 })
 
+it('compares both staged pages with persisted screenshot receipts', async () => {
+  const f = await fixture()
+  const proposed = await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/home/user/rebuilt.pptx' })
+  await f.confirm()
+  const changeId = JSON.parse(proposed.output).changeId as string
+  const matched = await f.call('inspect', { change_id: changeId })
+  expect(JSON.parse(matched.output).visualReceipts).toEqual([
+    { hostSlideId: 'old', status: 'matched' }, { hostSlideId: 'new', status: 'matched' },
+  ])
+  f.inspectPage.mockImplementation(async (slideId) => ({ slideId, shapesTruncated: false, screenshot: {
+    mime: 'image/png', base64: slideId === 'new'
+      ? 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+      : 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII=',
+  } }))
+  const different = await f.call('inspect', { change_id: changeId })
+  expect(JSON.parse(different.output).visualReceipts).toEqual([
+    { hostSlideId: 'old', status: 'matched' }, { hostSlideId: 'new', status: 'different' },
+  ])
+})
+
 it('does not claim page evidence if the staged page disappears during capture', async () => {
   const f = await fixture()
   const proposed = await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/home/user/rebuilt.pptx' })

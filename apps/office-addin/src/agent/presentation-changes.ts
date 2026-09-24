@@ -169,8 +169,21 @@ function inspectionNotice(output: string): string {
     if (output.length <= 256 * 1024) {
       const value = JSON.parse(output)
       const status = value?.inspection?.status ?? value?.status
-      if (typeof status === 'string' && Object.hasOwn(messages, status))
-        return messages[status] + ' 此检查不代表页面 QA 通过。'
+      if (typeof status === 'string' && Object.hasOwn(messages, status)) {
+        const receipts = typeof value?.visualReceipt === 'string'
+          ? [value.visualReceipt]
+          : Array.isArray(value?.visualReceipts) && value.visualReceipts.length <= 2
+            ? value.visualReceipts.map((item: { status?: unknown }) => item?.status)
+            : []
+        const visual = receipts.includes('different')
+          ? '当前截图与历史回执不同，需重新复核。'
+          : receipts.includes('unavailable')
+            ? '当前截图暂无法与历史回执核对。'
+            : receipts.length && receipts.every((item: unknown) => item === 'matched')
+              ? '当前截图与历史回执一致。'
+              : ''
+        return messages[status] + (visual ? ` ${visual}` : '') + ' 此检查不代表页面 QA 通过。'
+      }
     }
   } catch {
     /* Tool output is untrusted; keep unknown results out of the UI. */
