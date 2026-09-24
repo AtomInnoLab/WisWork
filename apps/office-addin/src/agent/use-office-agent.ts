@@ -183,6 +183,11 @@ export function createOfficeAgentSession(dependencies: {
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
+  runCheckpoint?: {
+    interrupted: boolean
+    begin(runId: string): Promise<void>
+    finish(runId: string): Promise<void>
+  }
 }): OfficeAgentSession {
   const { proposals } = dependencies
   const diagnose = (
@@ -204,7 +209,13 @@ export function createOfficeAgentSession(dependencies: {
     applying: false,
     status: 'idle',
     retryable: false,
-    timeline: emptyPresentationTimeline(),
+    timeline: dependencies.runCheckpoint?.interrupted
+      ? appendPresentationEvent(emptyPresentationTimeline(), {
+          id: 'event-1',
+          kind: 'system',
+          text: '上次前台 Agent 运行在面板关闭时中断。请先核对下方项目、页面和写入记录，再决定是否继续；未自动重放写入。',
+        })
+      : emptyPresentationTimeline(),
   }
   let cached: OfficeAgentSnapshot = { ...state, proposal: proposals.pending() }
 
@@ -215,8 +226,15 @@ export function createOfficeAgentSession(dependencies: {
     listeners.forEach((listener) => listener())
   }
 
-  let nextEventId = 0
+  let nextEventId = dependencies.runCheckpoint?.interrupted ? 1 : 0
   let sessionEpoch = 0
+  let pendingStart = false
+  let activeRunId: string | undefined
+  const finishCheckpoint = () => {
+    const id = activeRunId
+    activeRunId = undefined
+    if (id) void dependencies.runCheckpoint?.finish(id).catch(() => undefined)
+  }
   let activeAssistantId: string | undefined
   let lastInstruction = ''
   let runStartedAt = 0
@@ -264,17 +282,27 @@ export function createOfficeAgentSession(dependencies: {
             status: 'applied',
             qaPassed: false,
             visualReview: 'pending',
-            instruction: 'Capture and inspect each affected page with a one-page review tool before recording a visual judgment.',
-            postWrite: postWrite.status === 'captured'
-              ? { status: 'captured', pages: pages.map(({ slideId, digest }) => ({ slideId, digest })) }
-              : postWrite,
+            instruction:
+              'Capture and inspect each affected page with a one-page review tool before recording a visual judgment.',
+            postWrite:
+              postWrite.status === 'captured'
+                ? {
+                    status: 'captured',
+                    pages: pages.map(({ slideId, digest }) => ({ slideId, digest })),
+                  }
+                : postWrite,
           }),
           mutated: true,
           summary: 'Applied approved change; visual review pending',
-          display: pages.length ? {
-            kind: 'images',
-            items: pages.map((page) => ({ url: `data:image/png;base64,${page.pngBase64}`, title: page.slideId })),
-          } : undefined,
+          display: pages.length
+            ? {
+                kind: 'images',
+                items: pages.map((page) => ({
+                  url: `data:image/png;base64,${page.pngBase64}`,
+                  title: page.slideId,
+                })),
+              }
+            : undefined,
         }
       }
       return {
@@ -390,6 +418,7 @@ export function createOfficeAgentSession(dependencies: {
         publish({ activity: 'Thinking…' })
       },
       onDone: (result) => {
+        finishCheckpoint()
         toolStartedAt.clear()
         if (activeAssistantId) {
           replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
@@ -402,6 +431,7 @@ export function createOfficeAgentSession(dependencies: {
         })
       },
       onError: (error) => {
+        finishCheckpoint()
         const safeError = safeRunError(error)
         diagnose((diagnostics) =>
           diagnostics.record({
@@ -506,7 +536,7 @@ export function createOfficeAgentSession(dependencies: {
 
   const startRun = (instruction: string) => {
     const value = instruction.trim()
-    if (!value || harness.snapshot.busy || state.applying || disposed) return
+    if (!value || harness.snapshot.busy || pendingStart || state.applying || disposed) return
     diagnose((diagnostics) => diagnostics.startTrace())
     staleTools.clear()
     runStartedAt = Date.now()
@@ -523,7 +553,42 @@ export function createOfficeAgentSession(dependencies: {
       errorMessage: undefined,
       retryable: false,
     })
-    harness.run(value)
+    if (!dependencies.runCheckpoint) {
+      harness.run(value)
+      return
+    }
+    pendingStart = true
+    const epoch = sessionEpoch
+    const runId = crypto.randomUUID()
+    void dependencies.runCheckpoint
+      .begin(runId)
+      .then(() => {
+        pendingStart = false
+        if (disposed || epoch !== sessionEpoch) {
+          void dependencies.runCheckpoint?.finish(runId).catch(() => undefined)
+          return
+        }
+        activeRunId = runId
+        harness.run(value)
+      })
+      .catch(() => {
+        pendingStart = false
+        if (disposed || epoch !== sessionEpoch) return
+        append({
+          id: eventId(),
+          kind: 'error',
+          text: '无法保存运行检查点，请确认文档可保存后重试。',
+          code: 'presentation_run_checkpoint_unavailable',
+        })
+        publish({
+          busy: false,
+          activity: '',
+          status: 'error',
+          error: 'presentation_run_checkpoint_unavailable',
+          errorMessage: '无法保存运行检查点，请确认文档可保存后重试。',
+          retryable: true,
+        })
+      })
   }
 
   return {
@@ -538,6 +603,11 @@ export function createOfficeAgentSession(dependencies: {
     },
     stop() {
       if (disposed) return
+      if (pendingStart) {
+        sessionEpoch += 1
+        publish({ busy: false, activity: '', status: 'cancelled' })
+        return
+      }
       const event = pendingProposalEvent()
       if (state.applying) {
         sessionEpoch += 1
@@ -623,6 +693,7 @@ export function createOfficeAgentSession(dependencies: {
     newTask() {
       if (disposed) return
       sessionEpoch += 1
+      finishCheckpoint()
       harness.reset()
       proposals.logout()
       lastInstruction = ''
@@ -644,6 +715,7 @@ export function createOfficeAgentSession(dependencies: {
     logout() {
       if (disposed) return
       sessionEpoch += 1
+      finishCheckpoint()
       diagnose((diagnostics) => diagnostics.clear())
       harness.reset()
       proposals.logout()

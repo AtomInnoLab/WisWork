@@ -76,6 +76,68 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it('saves a checkpoint before starting and clears it after completion', async () => {
+    const harness = transportHarness()
+    const begin = vi.fn(async (_runId: string) => undefined)
+    const finish = vi.fn(async (_runId: string) => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: { interrupted: true, begin, finish },
+    })
+    expect(session.snapshot().timeline[0]).toMatchObject({ kind: 'system' })
+    session.send('continue')
+    expect(harness.stream).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    expect(begin).toHaveBeenCalledOnce()
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce())
+    expect(finish.mock.calls[0]?.[0]).toBe(begin.mock.calls[0]?.[0])
+  })
+
+  it('does not start a run when its checkpoint cannot be saved', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: async () => {
+          throw new Error('save failed')
+        },
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    session.send('continue')
+    await vi.waitFor(() => expect(session.snapshot().status).toBe('error'))
+    expect(session.snapshot().error).toBe('presentation_run_checkpoint_unavailable')
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+  it('does not start a cancelled run after a delayed checkpoint save', async () => {
+    const harness = transportHarness()
+    let release!: () => void
+    const begin = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        }),
+    )
+    const finish = vi.fn(async (_runId: string) => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: { interrupted: false, begin, finish },
+    })
+    session.send('do work')
+    session.stop()
+    release()
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce())
+    expect(harness.stream).not.toHaveBeenCalled()
+    expect(session.snapshot().status).toBe('cancelled')
+  })
   it('preserves bounded local diagnostics when Relay authentication is lost', () => {
     const diagnostics = {
       startTrace: vi.fn(() => 'trace'),
@@ -333,23 +395,50 @@ describe('Office agent session', () => {
     let finish!: () => void
     const session = createOfficeAgentSession({
       transport: harness.transport,
-      skill: { id: 'test', systemPrompt: 'test', tools: [{ name: 'run_presentation_production', description: 'run', inputSchema: { type: 'object' } }],
-        executeTool: vi.fn(() => new Promise<ToolExecution>((resolve) => {
-          finish = () => resolve({ output: '{}', summary: 'internal', mutated: false })
-        })) },
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [
+          {
+            name: 'run_presentation_production',
+            description: 'run',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        executeTool: vi.fn(
+          () =>
+            new Promise<ToolExecution>((resolve) => {
+              finish = () => resolve({ output: '{}', summary: 'internal', mutated: false })
+            }),
+        ),
+      },
       proposals: proposalsHarness().controller,
     })
     session.send('继续制作')
     await Promise.resolve()
-    harness.callbacks().onToolCall({ id: 'production-1', name: 'run_presentation_production', input: {} })
+    harness
+      .callbacks()
+      .onToolCall({ id: 'production-1', name: 'run_presentation_production', input: {} })
     harness.callbacks().onDone()
-    await vi.waitFor(() => expect(session.snapshot().timeline).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'tool', summary: '正在处理逐页制作…', state: 'running' }),
-    ])))
+    await vi.waitFor(() =>
+      expect(session.snapshot().timeline).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'tool', summary: '正在处理逐页制作…', state: 'running' }),
+        ]),
+      ),
+    )
     finish()
-    await vi.waitFor(() => expect(session.snapshot().timeline).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'tool', summary: '逐页制作操作已结束', state: 'complete' }),
-    ])))
+    await vi.waitFor(() =>
+      expect(session.snapshot().timeline).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'tool',
+            summary: '逐页制作操作已结束',
+            state: 'complete',
+          }),
+        ]),
+      ),
+    )
   })
 
   it('retries the last bounded instruction after a stable run error', async () => {
@@ -434,15 +523,29 @@ describe('Office agent session', () => {
         tools: [{ name: 'edit_slide_text', description: 'write', inputSchema: { type: 'object' } }],
         executeTool: () => {
           const proposal = proposals.propose({
-            operation: 'edit_slide_text', title: 'Edit', preview: {},
+            operation: 'edit_slide_text',
+            title: 'Edit',
+            preview: {},
             impact: { host: 'powerpoint', targets: ['slide-1'], count: 1 },
-            fingerprint: 'v1', validate: () => true, execute: () => {},
+            fingerprint: 'v1',
+            validate: () => true,
+            execute: () => {},
             postWrite: () => ({
-              status: 'captured', pages: [{ slideId: 'slide-1', pngBase64,
-                digest: 'f4b555ad4009f54a1a37dc29e7ccf9f8f4cfe22410ba7769061c0328cdb6db67' }],
+              status: 'captured',
+              pages: [
+                {
+                  slideId: 'slide-1',
+                  pngBase64,
+                  digest: 'f4b555ad4009f54a1a37dc29e7ccf9f8f4cfe22410ba7769061c0328cdb6db67',
+                },
+              ],
             }),
           })
-          return { output: JSON.stringify({ proposalId: proposal.id }), mutated: false, summary: 'Awaiting confirmation' }
+          return {
+            output: JSON.stringify({ proposalId: proposal.id }),
+            mutated: false,
+            summary: 'Awaiting confirmation',
+          }
         },
       },
       proposals,
@@ -458,9 +561,12 @@ describe('Office agent session', () => {
       messages: Array<{ results?: Array<{ output: string; content?: unknown }> }>
     }
     const result = resumed.messages.at(-1)?.results?.[0]
-    expect(JSON.parse(result!.output)).toMatchObject({ status: 'applied', qaPassed: false,
+    expect(JSON.parse(result!.output)).toMatchObject({
+      status: 'applied',
+      qaPassed: false,
       visualReview: 'pending',
-      postWrite: { status: 'captured', pages: [{ slideId: 'slide-1' }] } })
+      postWrite: { status: 'captured', pages: [{ slideId: 'slide-1' }] },
+    })
     expect(result!.content).toBeUndefined()
   })
 

@@ -907,7 +907,9 @@ export function AgentWorkspace(props: {
                       {file.name} · {file.status}
                       {file.kind === 'image' && file.source && (
                         <details>
-                          <summary>来源 {(file.sources ?? [file.source]).length} 条 · 许可未核验</summary>
+                          <summary>
+                            来源 {(file.sources ?? [file.source]).length} 条 · 许可未核验
+                          </summary>
                           <ul>
                             {(file.sources ?? [file.source]).map((source, index) => (
                               <li key={`${index}:${source}`}>{source}</li>
@@ -1238,6 +1240,11 @@ function ConfiguredApp() {
           setHost(activeHost)
           setHostSupported(activeHost !== 'unknown')
           if (activeHost !== 'unknown') {
+            const presentationBinding =
+              activeHost === 'powerpoint' ? createBrowserPresentationDocumentBinding() : undefined
+            const boundPresentationDocumentId = presentationBinding
+              ? await presentationBinding.documentId()
+              : undefined
             const environment = officeDiagnosticEnvironment(activeHost)
             const diagnostics = createOfficeDiagnostics({
               host: activeHost,
@@ -1260,7 +1267,7 @@ function ConfiguredApp() {
               ...(activeHost === 'powerpoint' && 'capabilityFetch' in bridge
                 ? {
                     presentation: {
-                      ...createBrowserPresentationDocumentBinding(),
+                      ...presentationBinding!,
                       available: () => {
                         const snapshot = bridge.snapshot()
                         return (
@@ -1311,6 +1318,19 @@ function ConfiguredApp() {
               skill: runtime.skill,
               proposals: runtime.proposals,
               diagnostics,
+              ...(presentationBinding && boundPresentationDocumentId
+                ? {
+                    runCheckpoint: {
+                      interrupted: presentationBinding.interruptedAgentRun(
+                        boundPresentationDocumentId,
+                      ),
+                      begin: (runId: string) =>
+                        presentationBinding.rememberAgentRun(boundPresentationDocumentId, runId),
+                      finish: (runId: string) =>
+                        presentationBinding.finishAgentRun(boundPresentationDocumentId, runId),
+                    },
+                  }
+                : {}),
             })
             created = { runtime, session, ui: createOfficeWorkspaceUi(runtime, diagnostics) }
             setWorkspace(created)

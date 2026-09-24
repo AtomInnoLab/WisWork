@@ -71,6 +71,7 @@ const GEOMETRY_KEY = 'wiswork.presentation.geometry-change.v1'
 const QA_KEY = 'wiswork.presentation.qa.v1'
 const PROJECT_KEY = 'wiswork.presentation.project.v1'
 const SELECTED_PRODUCTION_KEY = 'wiswork.presentation.selected-production.v1'
+const AGENT_RUN_KEY = 'wiswork.presentation.agent-run.v1'
 const validId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 
@@ -129,6 +130,12 @@ export function createPresentationDocumentBinding(
   }
   let receiptWriteFailed = false
   let receiptQueue: Promise<void> = Promise.resolve()
+  let runCheckpointQueue: Promise<void> = Promise.resolve()
+  const queueRunCheckpoint = (write: () => Promise<void>) => {
+    const result = runCheckpointQueue.then(write)
+    runCheckpointQueue = result.catch(() => undefined)
+    return result
+  }
   const readImports = (): Record<string, PresentationImportRecord> => {
     if (receiptWriteFailed) throw new Error('presentation_import_state_invalid')
     const raw = settings.get(IMPORT_KEY)
@@ -369,7 +376,11 @@ export function createPresentationDocumentBinding(
     if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 32 * 1024)
       throw new Error('presentation_existing_chart_state_invalid')
     let value: unknown
-    try { value = JSON.parse(raw) } catch { throw new Error('presentation_existing_chart_state_invalid') }
+    try {
+      value = JSON.parse(raw)
+    } catch {
+      throw new Error('presentation_existing_chart_state_invalid')
+    }
     if (!validatePresentationExistingChartChange(value))
       throw new Error('presentation_existing_chart_state_invalid')
     return value
@@ -541,7 +552,16 @@ export function createPresentationDocumentBinding(
       Array.isArray(h.heads) ||
       Object.keys(h.heads).some(
         (k) =>
-          !['text', 'geometry', 'page', 'existing', 'existing_batch', 'existing_image', 'existing_page', 'existing_chart'].includes(k),
+          ![
+            'text',
+            'geometry',
+            'page',
+            'existing',
+            'existing_batch',
+            'existing_image',
+            'existing_page',
+            'existing_chart',
+          ].includes(k),
       )
     )
       throw invalidHistory()
@@ -731,10 +751,13 @@ export function createPresentationDocumentBinding(
       record: PresentationExistingChartChange,
       expectedChange: PresentationExistingChartChange | undefined,
     ) {
-      const snapshot = structuredClone(record), expected = structuredClone(expectedChange)
+      const snapshot = structuredClone(record),
+        expected = structuredClone(expectedChange)
       const write = async () => {
-        if (!validatePresentationExistingChartChange(snapshot) ||
-          (expected !== undefined && !validatePresentationExistingChartChange(expected)))
+        if (
+          !validatePresentationExistingChartChange(snapshot) ||
+          (expected !== undefined && !validatePresentationExistingChartChange(expected))
+        )
           throw new Error('presentation_existing_chart_state_invalid')
         if ((await documentId()) !== snapshot.documentId)
           throw new Error('presentation_document_changed')
@@ -747,8 +770,16 @@ export function createPresentationDocumentBinding(
         await saveWithHistory(
           EXISTING_CHART_KEY,
           JSON.stringify(snapshot),
-          { id: historyEntryId('existing_chart', snapshot), kind: 'existing_chart', record: snapshot, legacy: false, sequence: 1 },
-          () => { existingChartWriteFailed = true },
+          {
+            id: historyEntryId('existing_chart', snapshot),
+            kind: 'existing_chart',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            existingChartWriteFailed = true
+          },
         )
       }
       const result = receiptQueue.then(write)
@@ -759,10 +790,13 @@ export function createPresentationDocumentBinding(
       record: PresentationExistingPageChange,
       expectedChange: PresentationExistingPageChange | undefined,
     ) {
-      const snapshot = structuredClone(record), expected = structuredClone(expectedChange)
+      const snapshot = structuredClone(record),
+        expected = structuredClone(expectedChange)
       const write = async () => {
-        if (!validatePresentationExistingPageChange(snapshot) ||
-          (expected !== undefined && !validatePresentationExistingPageChange(expected)))
+        if (
+          !validatePresentationExistingPageChange(snapshot) ||
+          (expected !== undefined && !validatePresentationExistingPageChange(expected))
+        )
           throw new Error('presentation_existing_page_state_invalid')
         if ((await documentId()) !== snapshot.documentId)
           throw new Error('presentation_document_changed')
@@ -775,8 +809,16 @@ export function createPresentationDocumentBinding(
         await saveWithHistory(
           EXISTING_PAGE_KEY,
           JSON.stringify(snapshot),
-          { id: historyEntryId('existing_page', snapshot), kind: 'existing_page', record: snapshot, legacy: false, sequence: 1 },
-          () => { existingPageWriteFailed = true },
+          {
+            id: historyEntryId('existing_page', snapshot),
+            kind: 'existing_page',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            existingPageWriteFailed = true
+          },
         )
       }
       const result = receiptQueue.then(write)
@@ -1335,29 +1377,104 @@ export function createPresentationDocumentBinding(
       const id = settings.get(PROJECT_KEY)
       return validId(id) ? id : undefined
     },
+    interruptedAgentRun(boundDocumentId: string): boolean {
+      const raw = settings.get(AGENT_RUN_KEY)
+      if (typeof raw !== 'string' || raw.length > 4096) return false
+      try {
+        const value = JSON.parse(raw) as Record<string, unknown>
+        return (
+          value &&
+          !Array.isArray(value) &&
+          Object.keys(value).sort().join(',') === 'documentId,runId,startedAt' &&
+          value.documentId === boundDocumentId &&
+          validId(value.runId) &&
+          typeof value.startedAt === 'number' &&
+          Number.isSafeInteger(value.startedAt) &&
+          value.startedAt > 0 &&
+          value.startedAt <= Date.now()
+        )
+      } catch {
+        return false
+      }
+    },
+    async rememberAgentRun(boundDocumentId: string, runId: string) {
+      return queueRunCheckpoint(async () => {
+        if (!validId(runId) || (await documentId()) !== boundDocumentId)
+          throw new Error('presentation_document_changed')
+        const previous = settings.get(AGENT_RUN_KEY)
+        const raw = JSON.stringify({ documentId: boundDocumentId, runId, startedAt: Date.now() })
+        settings.set(AGENT_RUN_KEY, raw)
+        try {
+          await settings.save()
+        } catch (error) {
+          settings.set(AGENT_RUN_KEY, typeof previous === 'string' ? previous : '')
+          throw error
+        }
+        if ((await documentId()) !== boundDocumentId || settings.get(AGENT_RUN_KEY) !== raw)
+          throw new Error('presentation_document_changed')
+      })
+    },
+    async finishAgentRun(boundDocumentId: string, runId: string) {
+      return queueRunCheckpoint(async () => {
+        if ((await documentId()) !== boundDocumentId)
+          throw new Error('presentation_document_changed')
+        const raw = settings.get(AGENT_RUN_KEY)
+        if (typeof raw !== 'string') return
+        let current: { documentId?: unknown; runId?: unknown }
+        try {
+          current = JSON.parse(raw)
+        } catch {
+          return
+        }
+        if (current.documentId !== boundDocumentId || current.runId !== runId) return
+        settings.set(AGENT_RUN_KEY, '')
+        try {
+          await settings.save()
+        } catch (error) {
+          settings.set(AGENT_RUN_KEY, raw)
+          throw error
+        }
+        if ((await documentId()) !== boundDocumentId)
+          throw new Error('presentation_document_changed')
+      })
+    },
     selectedProduction(projectId: string, boundDocumentId: string): string | undefined {
       const raw = settings.get(SELECTED_PRODUCTION_KEY)
       if (typeof raw !== 'string' || raw.length > 4600) return undefined
       try {
         const value = JSON.parse(raw) as Record<string, unknown>
-        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        if (
+          !value ||
+          typeof value !== 'object' ||
+          Array.isArray(value) ||
           Object.keys(value).sort().join(',') !== 'documentId,projectId,requestId' ||
-          value.documentId !== boundDocumentId || value.projectId !== projectId ||
-          !validId(value.requestId)) return undefined
+          value.documentId !== boundDocumentId ||
+          value.projectId !== projectId ||
+          !validId(value.requestId)
+        )
+          return undefined
         return value.requestId
-      } catch { return undefined }
+      } catch {
+        return undefined
+      }
     },
-    async rememberSelectedProduction(projectId: string, boundDocumentId: string, requestId: string) {
+    async rememberSelectedProduction(
+      projectId: string,
+      boundDocumentId: string,
+      requestId: string,
+    ) {
       if (!validId(projectId) || !validId(requestId)) throw new Error('invalid_tool_input')
-      if (await documentId() !== boundDocumentId) throw new Error('presentation_document_changed')
+      if ((await documentId()) !== boundDocumentId) throw new Error('presentation_document_changed')
       const previous = settings.get(SELECTED_PRODUCTION_KEY)
       const raw = JSON.stringify({ documentId: boundDocumentId, projectId, requestId })
       settings.set(SELECTED_PRODUCTION_KEY, raw)
-      try { await settings.save() } catch (error) {
+      try {
+        await settings.save()
+      } catch (error) {
         settings.set(SELECTED_PRODUCTION_KEY, typeof previous === 'string' ? previous : '')
         throw error
       }
-      if (await documentId() !== boundDocumentId || settings.get(SELECTED_PRODUCTION_KEY) !== raw)
+      if ((await documentId()) !== boundDocumentId || settings.get(SELECTED_PRODUCTION_KEY) !== raw)
         throw new Error('presentation_document_changed')
     },
     async rememberProject(projectId: string) {
