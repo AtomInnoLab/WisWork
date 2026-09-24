@@ -31,6 +31,7 @@ const inventories = {
   ],
   powerpoint: [
     'edit_existing_presentation_batch',
+    'edit_existing_presentation_table_batch',
     'inspect_existing_presentation_batch',
     'resume_existing_presentation_batch',
     'undo_existing_presentation_batch',

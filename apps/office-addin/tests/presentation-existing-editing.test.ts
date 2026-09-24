@@ -38,6 +38,108 @@ it('confirms a simple native table cell edit with a durable savepoint and reopen
   expect(f.records()[0]!.record.state).toBe('undone')
   expect(f.editTableCell).toHaveBeenCalledTimes(2)
 })
+it('applies and reverses two ordered native table cells with one durable batch', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_table_batch', {
+    baseline_id, intent: 'Update two figures', preserved: ['Other cells'], validation: ['Readback'], risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  expect(f.tableText()).toBe('before')
+  expect(f.tableText2()).toBe('before-2')
+  await f.confirm()
+  expect([f.tableText(), f.tableText2()]).toEqual(['after', 'after-2'])
+  const history = f.binding().listChangeHistory()
+  const batch = history.find((entry) => entry.kind === 'existing_batch')
+  expect(batch?.record).toMatchObject({ state: 'applied', cursor: 2, operations: [{ kind: 'table_cell' }, { kind: 'table_cell' }] })
+  f.reopen()
+  await f.getRuntime().changes!.refresh()
+  const workbench = f.getRuntime().changes!.snapshot().entries.find((entry) => entry.id === `existing_batch:${batch!.record.changeId}`)
+  expect(workbench?.before).toContain('shape[0,0]')
+  expect(workbench?.before).toContain('shape[0,1]')
+  const undo = await f.call('undo_existing_presentation_batch', { change_id: batch!.record.changeId })
+  expect(undo.isError, undo.output).not.toBe(true)
+  await f.confirm()
+  expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
+  expect(f.binding().readExistingBatch(batch!.record.changeId)?.state).toBe('undone')
+})
+it('resumes a table batch after one cell was durably written and the next write failed', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_table_batch', {
+    baseline_id, intent: 'Update two figures', preserved: [], validation: [], risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  const change_id = JSON.parse(proposed.output).changeId as string
+  const write = f.editTableCell.getMockImplementation()!
+  f.editTableCell.mockImplementationOnce(write).mockRejectedValueOnce(new Error('office_write_failed'))
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applying', cursor: 1 })
+  expect([f.tableText(), f.tableText2()]).toEqual(['after', 'before-2'])
+  f.reopen()
+  const inspected = await f.call('inspect_existing_presentation_batch', { change_id })
+  expect(JSON.parse(inspected.output).values).toEqual(['after', 'before'])
+  const resumed = await f.call('resume_existing_presentation_batch', { change_id })
+  expect(resumed.isError, resumed.output).not.toBe(true)
+  await f.confirm()
+  expect([f.tableText(), f.tableText2()]).toEqual(['after', 'after-2'])
+  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applied', cursor: 2 })
+})
+it('finalizes an already written table cell after a lost receipt without replaying it', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_table_batch', {
+    baseline_id, intent: 'Update two figures', preserved: [], validation: [], risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  const change_id = JSON.parse(proposed.output).changeId as string
+  const write = f.editTableCell.getMockImplementation()!
+  f.editTableCell.mockImplementationOnce(write).mockImplementationOnce(async (...args) => {
+    await write(...args)
+    throw new Error('receipt_lost')
+  })
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applying', cursor: 1 })
+  expect([f.tableText(), f.tableText2()]).toEqual(['after', 'after-2'])
+  f.reopen()
+  const resumed = await f.call('resume_existing_presentation_batch', { change_id })
+  expect(resumed.isError, resumed.output).not.toBe(true)
+  await f.confirm()
+  expect(f.editTableCell).toHaveBeenCalledTimes(2)
+  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applied', cursor: 2 })
+})
+it('rejects a table batch if a target cell changes to a third value before confirmation', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_table_batch', {
+    baseline_id, intent: 'Update two figures', preserved: [], validation: [], risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  f.setTableText2('manual')
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.editTableCell).not.toHaveBeenCalled()
+  expect(f.binding().listChangeHistory()).toHaveLength(0)
+})
 it('rejects a table cell target changed after its baseline package read', async () => {
   const f = await fixture()
   f.setShapeType('Table')
@@ -132,6 +234,7 @@ async function fixture() {
   let location = 'file://existing.pptx',
     text = 'before',
     tableText = 'before',
+    tableText2 = 'before-2',
     otherText = 'other-before',
     geometry = { left: 1, top: 2, width: 100, height: 40 },
     shapeType = 'TextBox',
@@ -204,17 +307,19 @@ async function fixture() {
     })
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'readPresentationTableCell').mockImplementation(
     async (slideId, shapeId, rowIndex, columnIndex) => ({
-      slideId, shapeId, rowIndex, columnIndex, text: tableText, rowCount: 1, columnCount: 1,
+      slideId, shapeId, rowIndex, columnIndex, text: columnIndex === 0 ? tableText : tableText2, rowCount: 1, columnCount: 2,
     }),
   )
   const editTableCell = vi.spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationTableCell').mockImplementation(
     async (_slideId, _shapeId, _rowIndex, _columnIndex, next, expected) => {
-      if (tableText !== expected) throw new Error('office_concurrent_change')
-      tableText = next
+      const actual = _columnIndex === 0 ? tableText : tableText2
+      if (actual !== expected) throw new Error('office_concurrent_change')
+      if (_columnIndex === 0) tableText = next
+      else tableText2 = next
     },
   )
   const zip = new JSZip()
-  const tableXml = () => `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="shape" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>${tableText}</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`
+  const tableXml = () => `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="shape" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>${tableText}</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>${tableText2}</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'exportPresentationPagePackage').mockImplementation(
     async (slideId) => {
       zip.file('ppt/slides/slide1.xml', tableXml())
@@ -285,6 +390,8 @@ async function fixture() {
     editGeometry,
     editTableCell,
     tableText: () => tableText,
+    tableText2: () => tableText2,
+    setTableText2: (value: string) => { tableText2 = value },
     invalidateQa,
     binding: bind,
     getRuntime: () => runtime,

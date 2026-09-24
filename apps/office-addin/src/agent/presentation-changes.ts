@@ -317,11 +317,11 @@ export function createPresentationChangesController(
                       ).size,
                       before: saved.record.operations
                         .map(
-                          (op) => `${op.hostSlideId}/${op.shapeId}: ${JSON.stringify(op.before)}`,
+                          (op) => `${op.hostSlideId}/${op.shapeId}${op.kind === 'table_cell' ? `[${op.rowIndex},${op.columnIndex}]` : ''}: ${JSON.stringify(op.before)}`,
                         )
                         .join('\n'),
                       after: saved.record.operations
-                        .map((op) => `${op.hostSlideId}/${op.shapeId}: ${JSON.stringify(op.after)}`)
+                        .map((op) => `${op.hostSlideId}/${op.shapeId}${op.kind === 'table_cell' ? `[${op.rowIndex},${op.columnIndex}]` : ''}: ${JSON.stringify(op.after)}`)
                         .join('\n'),
                       actions:
                         saved.record.state === 'applied'

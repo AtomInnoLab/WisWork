@@ -6,6 +6,7 @@ export type ExistingBatchOperation = {
   shapeType: string
 } & (
   | { kind: 'text'; before: string; after: string }
+  | { kind: 'table_cell'; rowIndex: number; columnIndex: number; tableStructureDigest: string; before: string; after: string }
   | { kind: 'geometry'; before: PresentationPageGeometry; after: PresentationPageGeometry }
 )
 
@@ -132,18 +133,18 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
       typeof op !== 'object' ||
       Array.isArray(op) ||
       Object.keys(op).some(
-        (k) => !['hostSlideId', 'shapeId', 'shapeType', 'kind', 'before', 'after'].includes(k),
+        (k) => !['hostSlideId', 'shapeId', 'shapeType', 'kind', 'rowIndex', 'columnIndex', 'tableStructureDigest', 'before', 'after'].includes(k),
       ) ||
       !hostId(op.hostSlideId) ||
       !hostId(op.shapeId) ||
       !hostId(op.shapeType) ||
       !r.scope.slideIds.includes(op.hostSlideId) ||
       (r.scope.shapeIds !== undefined && !r.scope.shapeIds.includes(op.shapeId)) ||
-      (op.kind === 'text'
+      (op.kind === 'text' || op.kind === 'table_cell'
         ? typeof op.before !== 'string' ||
-          op.before.length > 12000 ||
+          op.before.length > (op.kind === 'table_cell' ? 128 : 12000) ||
           typeof op.after !== 'string' ||
-          op.after.length > 12000 ||
+          op.after.length > (op.kind === 'table_cell' ? 128 : 12000) ||
           op.before === op.after
         : op.kind !== 'geometry' ||
           !geometry(op.before) ||
@@ -151,10 +152,19 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
           JSON.stringify(op.before) === JSON.stringify(op.after))
     )
       return false
-    const key = JSON.stringify([op.hostSlideId, op.shapeId, op.kind])
+    if (op.kind === 'table_cell') {
+      if (op.shapeType !== 'Table' || !Number.isSafeInteger(op.rowIndex) || !Number.isSafeInteger(op.columnIndex) ||
+        op.rowIndex < 0 || op.rowIndex > 19 || op.columnIndex < 0 || op.columnIndex > 11 ||
+        !/^[a-f0-9]{64}$/.test(op.tableStructureDigest)) return false
+    } else if ('rowIndex' in op || 'columnIndex' in op || 'tableStructureDigest' in op) return false
+    const key = JSON.stringify([op.hostSlideId, op.shapeId, op.kind, ...(op.kind === 'table_cell' ? [op.rowIndex, op.columnIndex] : [])])
     if (keys.has(key)) return false
     keys.add(key)
   }
+  const tableOps = r.operations.filter((op): op is Extract<ExistingBatchOperation, { kind: 'table_cell' }> => op.kind === 'table_cell')
+  if (tableOps.length && (tableOps.length !== r.operations.length || tableOps.some((op) =>
+    op.hostSlideId !== tableOps[0]!.hostSlideId || op.shapeId !== tableOps[0]!.shapeId ||
+    op.tableStructureDigest !== tableOps[0]!.tableStructureDigest))) return false
   if (r.reviews !== undefined) {
     const affected = new Set(r.operations.map((op) => op.hostSlideId))
     if (

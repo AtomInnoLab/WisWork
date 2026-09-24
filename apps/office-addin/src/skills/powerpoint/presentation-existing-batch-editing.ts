@@ -17,6 +17,8 @@ import {
   type ExistingBatchOperation,
   type PresentationExistingBatch,
 } from './presentation-existing-batch.js'
+import { inspectPowerPointTableCellsPackage } from './presentation-complex-page-package.js'
+import { presentationPackageDigest } from './powerpoint-package.js'
 
 interface Options {
   baseline: PresentationBaselineSkill
@@ -73,6 +75,37 @@ const tools: AgentToolDef[] = [
               },
             },
             required: ['slide_id', 'shape_id', 'kind'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['baseline_id', 'intent', 'preserved', 'validation', 'risk', 'operations'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'edit_existing_presentation_table_batch',
+    description: 'Propose 2–8 ordered native text cell edits in one existing table. Requires a fresh scoped baseline and confirmation; saves each verified step for recovery and undo.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        baseline_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+        intent: { type: 'string', minLength: 1, maxLength: 300 },
+        preserved: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 300 } },
+        validation: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 300 } },
+        risk: { type: 'string', enum: ['medium', 'high'] },
+        operations: {
+          type: 'array', minItems: 2, maxItems: 8,
+          items: {
+            type: 'object',
+            properties: {
+              slide_id: { type: 'string', minLength: 1, maxLength: 256 },
+              shape_id: { type: 'string', minLength: 1, maxLength: 256 },
+              row_index: { type: 'integer', minimum: 0, maximum: 19 },
+              column_index: { type: 'integer', minimum: 0, maximum: 11 },
+              text: { type: 'string', maxLength: 128 },
+            },
+            required: ['slide_id', 'shape_id', 'row_index', 'column_index', 'text'],
             additionalProperties: false,
           },
         },
@@ -177,7 +210,7 @@ export function createPresentationExistingBatchEditingSkill(
     id: 'presentation-existing-batch-editing',
     tools,
     systemPrompt:
-      'For two or more existing-deck text/geometry changes, read_presentation_baseline then edit_existing_presentation_batch. Use exact native IDs. Geometry proposals support TextBox, GeometricShape, Image and Line only; use a page rebuild or dedicated validated operation for Chart, Table, Group, SmartArt and placeholders. Whole-range text edits require TextBox or GeometricShape and determinate aggregate font fields; mixed or unknown formatting requires a dedicated validated operation. A batch is ordered and recoverable, not atomic. After confirmed writes, capture_existing_presentation_batch_page for every affected page, visually review, then record_existing_presentation_batch_page_review using its screenshot_digest. Historical reviews do not certify current or whole-deck QA. If interrupted, inspect then resume or undo. Never replay ambiguous host values.',
+      'For two or more existing-deck text/geometry changes, read_presentation_baseline then edit_existing_presentation_batch. For 2–8 cells in one native existing table use edit_existing_presentation_table_batch. Use exact native IDs. Geometry proposals support TextBox, GeometricShape, Image and Line only; use a page rebuild or dedicated validated operation for Chart, Group, SmartArt and placeholders. Whole-range text edits require TextBox or GeometricShape and determinate aggregate font fields; mixed or unknown formatting requires a dedicated validated operation. A batch is ordered and recoverable, not atomic. After confirmed writes, capture_existing_presentation_batch_page for every affected page, visually review, then record_existing_presentation_batch_page_review using its screenshot_digest. Historical reviews do not certify current or whole-deck QA. If interrupted, inspect then resume or undo. Never replay ambiguous host values.',
     clear() {
       epoch++
       qaEpoch++
@@ -209,7 +242,8 @@ export function createPresentationExistingBatchEditingSkill(
           props.required.some((k) => !Object.hasOwn(call.input, k))
         )
           throw new Error('invalid_tool_input')
-        const creating = call.name === 'edit_existing_presentation_batch'
+        const tableBatch = call.name === 'edit_existing_presentation_table_batch'
+        const creating = call.name === 'edit_existing_presentation_batch' || tableBatch
         const documentId = await options.documentId()
         active()
         const current = async () => {
@@ -255,7 +289,52 @@ export function createPresentationExistingBatchEditingSkill(
             !same(baseline, options.baseline.snapshot(baseline.baselineId))
           )
             throw new Error('presentation_baseline_changed')
-          const operations: ExistingBatchOperation[] = i.operations.map((raw: unknown) => {
+          const tableOperations = async (): Promise<ExistingBatchOperation[]> => {
+            const raw = i.operations as unknown[]
+            const first = raw[0] as Record<string, unknown>
+            if (!first || typeof first.slide_id !== 'string' || typeof first.shape_id !== 'string' ||
+              !baseline.scope.slideIds.includes(first.slide_id) ||
+              (baseline.scope.shapeIds && !baseline.scope.shapeIds.includes(first.shape_id)))
+              throw new Error('presentation_existing_scope_mismatch')
+            const shape = baseline.pages.find((page) => page.slideId === first.slide_id)?.shapes.find((item) => item.id === first.shape_id)
+            if (!shape || shape.type !== 'Table') throw new Error('presentation_existing_target_unsupported')
+            const targets = raw.map((item) => {
+              if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('invalid_tool_input')
+              const op = item as Record<string, unknown>
+              if (Object.keys(op).some((key) => !['slide_id', 'shape_id', 'row_index', 'column_index', 'text'].includes(key)) ||
+                op.slide_id !== first.slide_id || op.shape_id !== first.shape_id ||
+                !Number.isSafeInteger(op.row_index) || !Number.isSafeInteger(op.column_index) ||
+                (op.row_index as number) < 0 || (op.row_index as number) > 19 ||
+                (op.column_index as number) < 0 || (op.column_index as number) > 11 ||
+                typeof op.text !== 'string' || op.text.length > 128)
+                throw new Error('invalid_tool_input')
+              return { rowIndex: op.row_index as number, columnIndex: op.column_index as number, after: op.text }
+            })
+            if (!options.adapter.exportPresentationPagePackage || !options.adapter.readPresentationTableCell || !options.adapter.editPresentationTableCell)
+              throw new Error('office_api_unsupported')
+            const exported = await options.adapter.exportPresentationPagePackage(first.slide_id, signal)
+            if (exported.slideId !== first.slide_id || !same(exported.slideIds, baseline.context.slideIds))
+              throw new Error('presentation_baseline_changed')
+            const evidence = await inspectPowerPointTableCellsPackage(exported.base64, first.shape_id, targets, signal)
+            const digest = await presentationPackageDigest(exported.base64, signal)
+            const repeated = await options.adapter.exportPresentationPagePackage(first.slide_id, signal)
+            if (repeated.slideId !== first.slide_id || !same(repeated.slideIds, exported.slideIds) ||
+              await presentationPackageDigest(repeated.base64, signal) !== digest)
+              throw new Error('presentation_baseline_changed')
+            const operations: ExistingBatchOperation[] = []
+            for (const [index, target] of targets.entries()) {
+              const host = await options.adapter.readPresentationTableCell(first.slide_id, first.shape_id, target.rowIndex, target.columnIndex, signal)
+              if (host.slideId !== first.slide_id || host.shapeId !== first.shape_id ||
+                host.rowIndex !== target.rowIndex || host.columnIndex !== target.columnIndex ||
+                host.text !== evidence.cells[index]?.text)
+                throw new Error('presentation_baseline_changed')
+              operations.push({ hostSlideId: first.slide_id, shapeId: first.shape_id, shapeType: 'Table', kind: 'table_cell',
+                rowIndex: target.rowIndex, columnIndex: target.columnIndex, tableStructureDigest: evidence.structureDigest,
+                before: host.text, after: target.after })
+            }
+            return operations
+          }
+          const operations: ExistingBatchOperation[] = tableBatch ? await tableOperations() : i.operations.map((raw: unknown) => {
             if (!raw || typeof raw !== 'object' || Array.isArray(raw))
               throw new Error('invalid_tool_input')
             const op = raw as Record<string, unknown>
@@ -349,6 +428,30 @@ export function createPresentationExistingBatchEditingSkill(
           const shape = page.shapes.find((s) => s.id === op.shapeId)
           if (page.slideId !== op.hostSlideId || !shape || shape.type !== op.shapeType)
             throw new Error('presentation_existing_target_changed')
+          if (op.kind === 'table_cell') {
+            if (!options.adapter.readPresentationTableCell || !options.adapter.exportPresentationPagePackage)
+              throw new Error('office_api_unsupported')
+            const positions = record.operations.filter((item): item is Extract<ExistingBatchOperation, { kind: 'table_cell' }> => item.kind === 'table_cell')
+              .map((item) => ({ rowIndex: item.rowIndex, columnIndex: item.columnIndex }))
+            const native = await options.adapter.readPresentationTableCell(op.hostSlideId, op.shapeId, op.rowIndex, op.columnIndex, signal)
+            const first = await options.adapter.exportPresentationPagePackage(op.hostSlideId, signal)
+            if (first.slideId !== op.hostSlideId) throw new Error('presentation_existing_target_changed')
+            const evidence = await inspectPowerPointTableCellsPackage(first.base64, op.shapeId, positions, signal)
+            if (evidence.structureDigest !== op.tableStructureDigest)
+              throw new Error('presentation_existing_target_changed')
+            const currentCell = evidence.cells.find((cell) => cell.rowIndex === op.rowIndex && cell.columnIndex === op.columnIndex)
+            const packageDigest = await presentationPackageDigest(first.base64, signal)
+            const repeated = await options.adapter.exportPresentationPagePackage(op.hostSlideId, signal)
+            await current()
+            saved()
+            if (repeated.slideId !== op.hostSlideId || !same(repeated.slideIds, first.slideIds) ||
+              await presentationPackageDigest(repeated.base64, signal) !== packageDigest ||
+              native.slideId !== op.hostSlideId || native.shapeId !== op.shapeId ||
+              native.rowIndex !== op.rowIndex || native.columnIndex !== op.columnIndex ||
+              native.text !== currentCell?.text)
+              throw new Error('presentation_existing_target_changed')
+            return native.text
+          }
           return op.kind === 'text' ? shape.text : geometry(shape)
         }
         const store = async (next: PresentationExistingBatch) => {
@@ -536,13 +639,14 @@ export function createPresentationExistingBatchEditingSkill(
               slideId: op.hostSlideId,
               shapeId: op.shapeId,
               kind: op.kind,
+              ...(op.kind === 'table_cell' ? { rowIndex: op.rowIndex, columnIndex: op.columnIndex } : {}),
             })),
             cursor: record.cursor,
             risk: record.risk,
             preserved: record.preserved,
             validation: record.validation,
             atomic: false,
-            textFormatting: '文字撤销仅恢复内容，不恢复全部富文本格式',
+            textFormatting: '文字与表格单元格撤销仅恢复内容，不恢复全部富文本格式',
           },
           impact: {
             host: 'powerpoint',
@@ -576,7 +680,12 @@ export function createPresentationExistingBatchEditingSkill(
               const v = await value(op)
               if (!matches(v, target)) {
                 if (!matches(v, source)) throw new Error('presentation_existing_batch_conflict')
-                if (op.kind === 'text')
+                if (op.kind === 'table_cell')
+                  await options.adapter.editPresentationTableCell!(
+                    op.hostSlideId, op.shapeId, op.rowIndex, op.columnIndex,
+                    target as string, source as string, signal,
+                  )
+                else if (op.kind === 'text')
                   await options.adapter.editPresentationPageText!(
                     op.hostSlideId,
                     op.shapeId,
