@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -112,4 +112,39 @@ it('resumes a partial upload after service restart and rejects a non-PPTX packag
     base64: invalid.subarray(3).toString('base64'),
   })
   expect(await f.call('existing_page_backup_finish', { backupId: begin.backupId })).toEqual({ error: 'unsupported_file' })
+})
+it('releases only exact ready backup and reuses quota with durable retry', async () => {
+  const f = await fixture()
+  for (let i = 0; i < 8; i++) {
+    const begin = { ...f.begin, backupId: `backup-${i}` }
+    await f.call('existing_page_backup_begin', begin)
+    await f.call('existing_page_backup_chunk', { backupId: begin.backupId, offset: 0, base64: f.raw.toString('base64') })
+    await f.call('existing_page_backup_finish', { backupId: begin.backupId })
+  }
+  expect(await f.call('existing_page_backup_begin', { ...f.begin, backupId: 'ninth' })).toEqual({ error: 'quota_exceeded' })
+  const scope = { ...f.begin, backupId: 'backup-0' }
+  expect(await f.call('existing_page_backup_release', { ...scope, sha256: sha('wrong') })).toEqual({ error: 'request_conflict' })
+  expect(await f.call('existing_page_backup_release', { ...scope, slideIds: ['host-2', 'host-1'] })).toEqual({ error: 'request_conflict' })
+  expect(await f.call('existing_page_backup_release', scope)).toMatchObject({ backupId: 'backup-0', status: 'released' })
+  const residual = join(f.userDataPath, 'presentation-existing-page-backups', sha('document-1'), sha('backup-0'))
+  mkdirSync(residual)
+  expect(await f.call('existing_page_backup_release', scope)).toMatchObject({ backupId: 'backup-0', status: 'released' })
+  expect(existsSync(residual)).toBe(false)
+  expect(await f.call('existing_page_backup_release', scope)).toMatchObject({ backupId: 'backup-0', status: 'released' })
+  expect(await f.call('existing_page_backup_release', { ...scope, sizeBytes: scope.sizeBytes - 1 })).toEqual({ error: 'request_conflict' })
+  expect(await f.call('existing_page_backup_status', { backupId: 'backup-0' })).toEqual({ error: 'not_found' })
+  expect(await f.call('existing_page_backup_begin', scope)).toEqual({ error: 'request_conflict' })
+  expect(await f.call('existing_page_backup_begin', { ...f.begin, backupId: 'ninth' })).toMatchObject({ status: 'uploading' })
+})
+it('refuses unready, missing, foreign and damaged backup release', async () => {
+  const f = await fixture()
+  expect(await f.call('existing_page_backup_release', f.begin)).toEqual({ error: 'not_found' })
+  await f.call('existing_page_backup_begin', f.begin)
+  expect(await f.call('existing_page_backup_release', f.begin)).toEqual({ error: 'page_not_ready' })
+  await f.call('existing_page_backup_chunk', { backupId: f.begin.backupId, offset: 0, base64: f.raw.toString('base64') })
+  await f.call('existing_page_backup_finish', { backupId: f.begin.backupId })
+  expect(await f.call('existing_page_backup_release', f.begin, 'foreign')).toEqual({ error: 'not_found' })
+  const path = join(f.userDataPath, 'presentation-existing-page-backups', sha('document-1'), sha(f.begin.backupId), 'raw.pptx')
+  writeFileSync(path, Buffer.alloc(f.raw.length))
+  expect(await f.call('existing_page_backup_release', f.begin)).toEqual({ error: 'digest_mismatch' })
 })

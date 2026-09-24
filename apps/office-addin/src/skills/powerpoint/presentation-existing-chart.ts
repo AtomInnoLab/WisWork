@@ -12,6 +12,7 @@ export interface PresentationExistingChartChange {
   state: 'pending' | 'write_pending' | 'applied' | 'undo_pending' | 'undone' | 'cancelled'
   newSlideId?: string
   restoredSlideId?: string
+  backupReleasedAt?: string
 }
 
 const id = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v)
@@ -21,14 +22,14 @@ const hostId = (v: unknown): v is string => typeof v === 'string' && v.length > 
 const bytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).byteLength
 
 export const existingChartReservedBytes = (r: PresentationExistingChartChange) =>
-  Math.max(0, bytes({ ...r, state: 'write_pending', newSlideId: '\uffff'.repeat(256), restoredSlideId: '\uffff'.repeat(256) }) - bytes(r))
+  Math.max(0, bytes({ ...r, state: 'write_pending', newSlideId: '\uffff'.repeat(256), restoredSlideId: '\uffff'.repeat(256), backupReleasedAt: '2026-09-24T00:00:00.000Z' }) - bytes(r))
 
 export function validatePresentationExistingChartChange(value: unknown): value is PresentationExistingChartChange {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const r = value as PresentationExistingChartChange
   if (Object.keys(r).some((k) => ![
     'version', 'changeId', 'documentId', 'oldSlideId', 'shapeId', 'slideIndex', 'beforeSlideIds',
-    'beforePackageDigest', 'afterPackageDigest', 'backup', 'state', 'newSlideId', 'restoredSlideId',
+    'beforePackageDigest', 'afterPackageDigest', 'backup', 'state', 'newSlideId', 'restoredSlideId', 'backupReleasedAt',
   ].includes(k))) return false
   if (r.version !== 1 || !id(r.changeId) || typeof r.documentId !== 'string' ||
     r.documentId.length < 1 || r.documentId.length > 4096 || !hostId(r.oldSlideId) ||
@@ -44,6 +45,12 @@ export function validatePresentationExistingChartChange(value: unknown): value i
     !Number.isSafeInteger(r.backup.sizeBytes) || r.backup.sizeBytes < 1 ||
     r.backup.sizeBytes > 100 * 1024 * 1024 ||
     !['pending', 'write_pending', 'applied', 'undo_pending', 'undone', 'cancelled'].includes(r.state)) return false
+  if (r.backupReleasedAt !== undefined &&
+    (!(r.state === 'undone' || r.state === 'cancelled') ||
+      typeof r.backupReleasedAt !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(r.backupReleasedAt) ||
+      !Number.isFinite(Date.parse(r.backupReleasedAt)) ||
+      new Date(r.backupReleasedAt).toISOString() !== r.backupReleasedAt)) return false
   if (r.state === 'pending' || r.state === 'write_pending' || r.state === 'cancelled') {
     if (r.newSlideId !== undefined || r.restoredSlideId !== undefined) return false
   } else {
@@ -64,12 +71,15 @@ export function validExistingChartTransition(
   if (!before) return after.state === 'pending'
   if (!validatePresentationExistingChartChange(before)) return false
   const core = (r: PresentationExistingChartChange) => JSON.stringify({
-    ...r, state: undefined, newSlideId: undefined, restoredSlideId: undefined,
+    ...r, state: undefined, newSlideId: undefined, restoredSlideId: undefined, backupReleasedAt: undefined,
   })
   const next: Record<PresentationExistingChartChange['state'], PresentationExistingChartChange['state'][]> = {
     pending: ['write_pending', 'cancelled'], write_pending: ['applied', 'cancelled'], applied: ['undo_pending'],
     undo_pending: ['undone'], undone: [], cancelled: [],
   }
-  return core(before) === core(after) && next[before.state].includes(after.state) &&
+  const release = before.state === after.state && (after.state === 'undone' || after.state === 'cancelled') &&
+    before.backupReleasedAt === undefined && after.backupReleasedAt !== undefined &&
+    before.newSlideId === after.newSlideId && before.restoredSlideId === after.restoredSlideId
+  return core(before) === core(after) && (release || (after.backupReleasedAt === undefined && next[before.state].includes(after.state))) &&
     (before.newSlideId === undefined || before.newSlideId === after.newSlideId)
 }

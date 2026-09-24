@@ -9,6 +9,7 @@ const labels: Record<PresentationChangeAction, string> = {
   resume: '继续',
   commit: '提交替换',
   discard: '丢弃替换',
+  release: '释放备份',
 }
 export function PresentationChangesCard({
   controller,

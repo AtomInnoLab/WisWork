@@ -3,6 +3,7 @@ import { createPresentationChangesController } from '../src/agent/presentation-c
 import type { CompiledPresentationArtifact } from '../src/skills/powerpoint/presentation-delivery.js'
 import type { PresentationGeometryChange } from '../src/skills/powerpoint/presentation-geometry-change.js'
 import type { PresentationExistingPageChange } from '../src/skills/powerpoint/presentation-existing-page.js'
+import type { PresentationExistingChartChange } from '../src/skills/powerpoint/presentation-existing-chart.js'
 const artifact: CompiledPresentationArtifact = {
   documentId: 'doc',
   projectId: 'project',
@@ -118,6 +119,34 @@ it('shows existing-page identity diff offline and routes commit by exact change 
   ] }), summary: 'checked' })
   await controller.run(row.id, 'inspect')
   expect(controller.snapshot().notice).toContain('当前截图与历史回执不同')
+})
+it('offers one chart backup release after cancellation and accepts the receipt update', async () => {
+  let record: PresentationExistingChartChange = {
+    version: 1, changeId: 'chart-release', documentId: 'doc', oldSlideId: 'old', shapeId: '7',
+    slideIndex: 0, beforeSlideIds: ['old'], beforePackageDigest: 'a'.repeat(64),
+    afterPackageDigest: 'b'.repeat(64), backup: { backupId: 'backup', sha256: 'c'.repeat(64), sizeBytes: 120 },
+    state: 'cancelled',
+  }
+  const executeTool = vi.fn(async () => ({ output: '{}', mutated: false, summary: 'proposed' }))
+  const controller = createPresentationChangesController({
+    available: () => false, existingAvailable: () => true, artifact: () => undefined,
+    documentId: async () => 'doc',
+    listChangeHistory: () => [{ id: 'existing_chart:chart-release', kind: 'existing_chart', sequence: 1, legacy: false, record }],
+    executeTool,
+  })
+  await controller.refresh()
+  const row = controller.snapshot().entries[0]!
+  expect(row.actions).toEqual(['inspect', 'release'])
+  await controller.run(row.id, 'release')
+  expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({
+    name: 'release_slide_chart_values_change', input: { change_id: 'chart-release' },
+  }), expect.any(AbortSignal))
+  expect(controller.snapshot().notice).toContain('确认后执行')
+  expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect', 'release'])
+  record = { ...record, backupReleasedAt: '2026-09-24T09:00:00.000Z' }
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect'])
+  expect(controller.snapshot().error).toBeUndefined()
 })
 it('rejects changed fingerprints and invalid actions', async () => {
   const { controller, executeTool, change } = await setup()

@@ -686,6 +686,10 @@ describe('PowerPoint compatibility skill', () => {
           meta.receivedBytes = savedBytes.length
         }
         if (input.operation === 'existing_page_backup_finish') meta.status = 'ready'
+        if (input.operation === 'existing_page_backup_release') {
+          savedBytes = new Uint8Array(0)
+          return new Response(JSON.stringify({ ...input, status: 'released' }))
+        }
         if (input.operation === 'existing_page_backup_read') {
           const part = savedBytes.subarray(input.offset as number, (input.offset as number) + (input.length as number))
           return new Response(JSON.stringify({ backupId: meta.backupId, offset: input.offset, sizeBytes: meta.sizeBytes, sha256: meta.sha256, base64: btoa(String.fromCharCode(...part)) }))
@@ -710,11 +714,16 @@ describe('PowerPoint compatibility skill', () => {
     const changeId = [...records.keys()][0]!
     expect(records.get(changeId)?.state).toBe('applied')
     const appliedRecord = structuredClone(records.get(changeId)!)
+    await expect(skill.executeTool(call('release_slide_chart_values_change', { change_id: changeId }))).resolves.toMatchObject({ isError: true })
     const reopened = createPowerPointSkill({ adapter: fake, proposals, chartSavepoint })
     await expect(reopened.executeTool(call('inspect_slide_chart_values_change', { change_id: changeId }))).resolves.toMatchObject({ mutated: false })
     await expect(reopened.executeTool(call('undo_slide_chart_values_change', { change_id: changeId }))).resolves.toMatchObject({ mutated: false })
     await proposals.confirm(proposals.pending()!.id)
     expect(records.get(changeId)?.state).toBe('undone')
+    await reopened.executeTool(call('release_slide_chart_values_change', { change_id: changeId }))
+    await proposals.confirm(proposals.pending()!.id)
+    expect(records.get(changeId)?.backupReleasedAt).toMatch(/^\d{4}-/)
+    expect(savedBytes.length).toBe(0)
     expect(current).not.toBe('')
     const interruptedId = 'interrupted_chart'
     records.set(interruptedId, { ...appliedRecord, changeId: interruptedId, state: 'write_pending', newSlideId: undefined })

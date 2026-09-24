@@ -557,6 +557,7 @@ it('exposes existing-page rebuild and routes saved-page inspection through the r
     expect(runtime.skill.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
       'update_slide_chart_values', 'inspect_slide_chart_values_change',
       'resume_slide_chart_values_change', 'undo_slide_chart_values_change',
+      'release_slide_chart_values_change',
     ]))
     const inspected = await runtime.skill.executeTool({
       id: 'inspect',

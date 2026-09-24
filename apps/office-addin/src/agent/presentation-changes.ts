@@ -32,7 +32,7 @@ import {
   type ImageReplacementRecord,
 } from '../skills/powerpoint/presentation-image-replacement-record.js'
 
-export type PresentationChangeAction = 'inspect' | 'undo' | 'resume' | 'commit' | 'discard'
+export type PresentationChangeAction = 'inspect' | 'undo' | 'resume' | 'commit' | 'discard' | 'release'
 export interface PresentationChangeEntry {
   source?: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart'
   review?: PresentationExistingChange['review']
@@ -269,10 +269,12 @@ export function createPresentationChangesController(
                     pageId: saved.record.newSlideId ?? saved.record.oldSlideId,
                     state: saved.record.state,
                     affectedPageCount: 1,
-                    before: `原页：${saved.record.oldSlideId}\n图表：${saved.record.shapeId}\n包摘要：${saved.record.beforePackageDigest}\n原页已持久备份`,
+                    before: `原页：${saved.record.oldSlideId}\n图表：${saved.record.shapeId}\n包摘要：${saved.record.beforePackageDigest}\n${saved.record.backupReleasedAt ? `备份已释放：${saved.record.backupReleasedAt}` : '原页已持久备份'}`,
                     after: `新页：${saved.record.newSlideId ?? '尚未记录'}\n包摘要：${saved.record.afterPackageDigest}${saved.record.restoredSlideId ? `\n恢复页：${saved.record.restoredSlideId}` : ''}`,
                     actions: saved.record.state === 'applied' ? ['inspect', 'undo'] :
-                      ['undone', 'cancelled'].includes(saved.record.state) ? ['inspect'] : ['inspect', 'resume'],
+                      ['undone', 'cancelled'].includes(saved.record.state)
+                        ? ['inspect', ...(saved.record.backupReleasedAt ? [] : ['release' as const])]
+                        : ['inspect', 'resume'],
                   },
                   record: copy(saved.record),
                   fingerprint: JSON.stringify(saved),
@@ -645,8 +647,9 @@ export function createPresentationChangesController(
               cursor: _cursor,
               newSlideId: _newSlideId,
               restoredSlideId: _restoredSlideId,
+              backupReleasedAt: _backupReleasedAt,
               ...rest
-            } = record as PresentationExistingChange & { cursor?: number; newSlideId?: string; restoredSlideId?: string }
+            } = record as PresentationExistingChange & { cursor?: number; newSlideId?: string; restoredSlideId?: string; backupReleasedAt?: string }
             return JSON.stringify(rest)
           }
           if (
@@ -659,6 +662,8 @@ export function createPresentationChangesController(
         notice =
           action === 'inspect'
             ? inspectionNotice(result.output)
+            : action === 'release'
+              ? '图表备份释放提案已创建，确认后执行。'
             : '操作请求已处理；如有待确认提案，请确认后执行。变更后需重新采集页面 QA。'
       } catch {
         error = '操作未完成或保存点已变化，请刷新并检查；未自动重试。'

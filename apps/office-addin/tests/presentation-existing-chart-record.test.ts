@@ -56,3 +56,18 @@ it('rejects malformed chart identity, invented transitions and allows cancellati
   await binding.writeExistingChartChange(cancelled, record)
   expect(binding.readExistingChartChange(record.changeId)?.state).toBe('cancelled')
 })
+
+it('records one backup release receipt only after a terminal chart change', async () => {
+  const { binding, record } = await fixture()
+  const releasedAt = '2026-09-24T09:00:00.000Z'
+  await binding.writeExistingChartChange(record, undefined)
+  const cancelled = { ...record, state: 'cancelled' as const }
+  await binding.writeExistingChartChange(cancelled, record)
+  const released = { ...cancelled, backupReleasedAt: releasedAt }
+  expect(validExistingChartTransition(record, { ...record, backupReleasedAt: releasedAt })).toBe(false)
+  expect(validExistingChartTransition(cancelled, released)).toBe(true)
+  await binding.writeExistingChartChange(released, cancelled)
+  expect(binding.readExistingChartChange(record.changeId)).toEqual(released)
+  expect(validExistingChartTransition(released, { ...released, backupReleasedAt: '2026-09-24T10:00:00.000Z' })).toBe(false)
+  expect(validatePresentationExistingChartChange({ ...released, backupReleasedAt: 'yesterday' })).toBe(false)
+})

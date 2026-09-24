@@ -435,9 +435,9 @@ const tools = [
       additionalProperties: false,
     },
   },
-  ...(['inspect', 'resume', 'undo'] as const).map((action) => ({
+  ...(['inspect', 'resume', 'undo', 'release'] as const).map((action) => ({
     name: `${action}_slide_chart_values_change`,
-    description: action === 'inspect' ? 'Inspect a durable chart value change against the current host package without writing.' : action === 'resume' ? 'Finalize a known interrupted chart value write after classifying the host package; never replay an unknown host write.' : 'Propose confirmed restoration of the original backed-up chart package when the exact applied package is still current.',
+    description: action === 'inspect' ? 'Inspect a durable chart value change against the current host package without writing.' : action === 'resume' ? 'Finalize a known interrupted chart value write after classifying the host package; never replay an unknown host write.' : action === 'release' ? 'Propose release of the PC backup only for a cancelled or undone chart change.' : 'Propose confirmed restoration of the original backed-up chart package when the exact applied package is still current.',
     inputSchema: { type: 'object', properties: { change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' } }, required: ['change_id'], additionalProperties: false },
   })),
   {
@@ -1256,6 +1256,37 @@ export function createPowerPointSkill(options: {
       if (JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(next)) throw new Error('office_state_uncertain')
       record = structuredClone(next)
     }
+    if (name === 'release_slide_chart_values_change') {
+      if (!['cancelled', 'undone'].includes(record.state) || record.backupReleasedAt)
+        throw new Error('presentation_existing_chart_state_invalid')
+      const initial = JSON.stringify(record)
+      const currentRecord = async () => await durable.documentId() === record.documentId &&
+        JSON.stringify(durable.readExistingChartChange(changeId)) === initial
+      const proposal = options.proposals.propose({
+        operation: name, toolName: name, title: 'Release completed chart backup',
+        preview: { changeId, state: record.state, backupId: record.backup.backupId, sizeBytes: record.backup.sizeBytes },
+        impact: { host: 'powerpoint', targets: [`backup:${record.backup.backupId}`], count: 1 },
+        fingerprint: `${record.changeId}:${record.state}:${record.backup.sha256}`,
+        before: { backupId: record.backup.backupId }, after: { released: true }, code: JSON.stringify({ changeId, operation: 'release_chart_backup' }),
+        validate: async () => currentRecord(),
+        execute: async (s) => {
+          if (!(await currentRecord())) throw new Error('proposal_stale')
+          const backup = record.backup
+          const response = await durable.request({ operation: 'existing_page_backup_release', documentId: record.documentId,
+            backupId: backup.backupId, hostSlideId: record.oldSlideId, slideIds: record.beforeSlideIds,
+            sha256: backup.sha256, sizeBytes: backup.sizeBytes }, s)
+          const receipt = await response.json() as Record<string, unknown>
+          if (!response.ok || receipt.status !== 'released' || receipt.documentId !== record.documentId ||
+            receipt.backupId !== backup.backupId || receipt.hostSlideId !== record.oldSlideId ||
+            JSON.stringify(receipt.slideIds) !== JSON.stringify(record.beforeSlideIds) ||
+            receipt.sha256 !== backup.sha256 || receipt.sizeBytes !== backup.sizeBytes)
+            throw new Error('presentation_chart_backup_release_failed')
+          await store({ ...record, backupReleasedAt: new Date().toISOString() })
+        },
+        verify: async () => { if (!record.backupReleasedAt || !(await durable.documentId() === record.documentId)) throw new Error('office_verify_failed') },
+      })
+      return { output: boundedJson(proposal), mutated: false, summary: 'Proposed completed chart backup release' }
+    }
     const observed = await observe(signal)
     if (name === 'inspect_slide_chart_values_change') {
       const verified = record.state === 'applied' ? observed.status === 'after' :
@@ -1316,7 +1347,7 @@ export function createPowerPointSkill(options: {
       ' Prefer inspect_slide_masters and native edit_slide_master for backgrounds, theme colors, and layout inheritance. PowerPoint for Mac must never use edit_slide_master_xml.',
     tools: tools.filter(
       (tool) =>
-        (Boolean(options.chartSavepoint) || !['update_slide_chart_values', 'inspect_slide_chart_values_change', 'resume_slide_chart_values_change', 'undo_slide_chart_values_change'].includes(tool.name)) &&
+        (Boolean(options.chartSavepoint) || !['update_slide_chart_values', 'inspect_slide_chart_values_change', 'resume_slide_chart_values_change', 'undo_slide_chart_values_change', 'release_slide_chart_values_change'].includes(tool.name)) &&
         (masterXmlEditingSupported || tool.name !== 'edit_slide_master_xml') &&
         (nativeMasterEditingSupported ||
           !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
@@ -1857,7 +1888,7 @@ export function createPowerPointSkill(options: {
             (input.explanation !== undefined && (typeof input.explanation !== 'string' || input.explanation.length > 100))) throw new Error('invalid_tool_input')
           return await proposeChartValues(input.slide_index as number, input.shape_id, input.values as string[][], input.explanation as string | undefined, signal)
         }
-        if (['inspect_slide_chart_values_change', 'resume_slide_chart_values_change', 'undo_slide_chart_values_change'].includes(call.name)) {
+        if (['inspect_slide_chart_values_change', 'resume_slide_chart_values_change', 'undo_slide_chart_values_change', 'release_slide_chart_values_change'].includes(call.name)) {
           const input = exactRecord(call.input, ['change_id'])
           if (typeof input.change_id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.change_id)) throw new Error('invalid_tool_input')
           return await chartChangeTool(call.name, input.change_id, signal)

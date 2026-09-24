@@ -47,6 +47,8 @@ const metadataKeys = [
   'documentId',
   'status',
 ]
+const sameScope = (request: Record<string, unknown>, stored: Metadata) =>
+  beginFields.every((key) => JSON.stringify(request[key]) === JSON.stringify(stored[key as keyof Metadata]))
 function validBegin(value: Record<string, unknown>) {
   assertPresentationId(value.backupId)
   if (
@@ -147,6 +149,7 @@ export function createPresentationExistingPageBackupService(options: { userDataP
       existing_page_backup_finish: ['backupId'],
       existing_page_backup_status: ['backupId'],
       existing_page_backup_read: ['backupId', 'offset', 'length'],
+      existing_page_backup_release: beginFields,
     }
     const op = request.operation
     if (typeof op !== 'string' || !Object.hasOwn(fields, op)) fail('invalid_request')
@@ -161,13 +164,15 @@ export function createPresentationExistingPageBackupService(options: { userDataP
     )
       fail('invalid_request')
     assertPresentationId(request.backupId)
-    if (op === 'existing_page_backup_begin') validBegin(request)
+    if (op === 'existing_page_backup_begin' || op === 'existing_page_backup_release') validBegin(request)
     // Snapshot caller-owned arrays before awaiting the document lock.
     const body = structuredClone(request),
       documentId = body.documentId as string,
       backupId = body.backupId as string
     const document = join(root, hash(documentId)),
       dir = join(document, hash(backupId)),
+      receiptDocument = join(root, '.released', hash(documentId)),
+      receiptPath = join(receiptDocument, `${hash(backupId)}.json`),
       previous = locks.get(document) ?? Promise.resolve()
     let release!: () => void
     const tail = new Promise<void>((resolve) => {
@@ -179,9 +184,40 @@ export function createPresentationExistingPageBackupService(options: { userDataP
       check(signal)
       await directory(root)
       await directory(document)
+      await directory(join(root, '.released'))
+      await directory(receiptDocument)
       const entries = await readdir(document)
       if (entries.length > 8 || entries.some((entry) => !digest(entry))) fail('invalid_state')
       const exists = entries.includes(hash(backupId))
+      let hasReceipt = false
+      try {
+        const receiptInfo = await lstat(receiptPath)
+        if (!receiptInfo.isFile() || receiptInfo.isSymbolicLink()) fail('invalid_state')
+        hasReceipt = true
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      if (hasReceipt) {
+        let stored: Metadata
+        try {
+          stored = JSON.parse((await bytes(receiptPath, 4096)).toString()) as Metadata
+        } catch {
+          fail('invalid_state')
+        }
+        if (stored.backupId !== backupId || stored.documentId !== documentId || stored.status !== 'ready') fail('invalid_state')
+        if (op === 'existing_page_backup_begin') fail('request_conflict')
+        if (op === 'existing_page_backup_release') {
+          if (!sameScope(body, stored)) fail('request_conflict')
+          if (exists) {
+            // The durable receipt was written only after verifying the ready backup.
+            // Retry must finish a deletion interrupted after only some files were removed.
+            check(signal)
+            await rm(dir, { recursive: true })
+            await syncDirectory(document)
+          }
+          return { ...stored, status: 'released' }
+        }
+      }
       if (!exists && op !== 'existing_page_backup_begin') fail('not_found')
       if (!exists) {
         if (entries.length >= 8) fail('quota_exceeded')
@@ -216,12 +252,17 @@ export function createPresentationExistingPageBackupService(options: { userDataP
       if (received > m.sizeBytes || (m.status === 'ready' && received !== m.sizeBytes))
         fail('invalid_state')
       if (m.status === 'ready' && hash(raw) !== m.sha256) fail('digest_mismatch')
+      if (op === 'existing_page_backup_release') {
+        if (!sameScope(body, m)) fail('request_conflict')
+        if (m.status !== 'ready') fail('page_not_ready')
+        check(signal)
+        await atomic(receiptPath, JSON.stringify(m))
+        await rm(dir, { recursive: true })
+        await syncDirectory(document)
+        return { ...m, status: 'released' }
+      }
       if (op === 'existing_page_backup_begin') {
-        if (
-          beginFields.some(
-            (key) => JSON.stringify(body[key]) !== JSON.stringify(m[key as keyof Metadata]),
-          )
-        )
+        if (!sameScope(body, m))
           fail('request_conflict')
         return { ...m, receivedBytes: received }
       }
