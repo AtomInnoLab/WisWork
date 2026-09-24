@@ -21,8 +21,23 @@ describe('presentation contract and compiler', () => {
     expect(Object.keys(zip.files).some((name) => name.startsWith('ppt/media/image'))).toBe(true)
     expect(report.geometry).toEqual([])
     expect(opened.deck.slides[2]!.elements.some((el) => el.type === 'picture')).toBe(true)
+    expect(report.assetWarnings).toEqual({ missingSource: 0, unknownLicense: 1, missingAltText: 1 })
+    expect(await zip.file('ppt/slides/slide3.xml')!.async('string')).toContain('Image description missing')
     expect(opened.deck.slides[5]!.elements.some((el) => el.type === 'table')).toBe(true)
     expect(opened.deck.slides[6]!.elements.some((el) => el.type === 'chart')).toBe(true)
+  })
+
+  it('writes supplied alt text and license provenance to the PPTX', async () => {
+    const deck = benchmarkDeck()
+    deck.assets[0]!.license = 'licensed'
+    const image = deck.slides[2]!.elements[1]!
+    if (image.kind !== 'image') throw new Error('invalid fixture')
+    image.altText = '显微镜下的细胞图像'
+    const { bytes, report } = await compilePresentationDeck(deck)
+    expect(report.assetWarnings).toEqual({ missingSource: 0, unknownLicense: 0, missingAltText: 0 })
+    const zip = await JSZip.loadAsync(bytes)
+    expect(await zip.file('ppt/slides/slide3.xml')!.async('string')).toContain('显微镜下的细胞图像')
+    expect(await zip.file('ppt/notesSlides/notesSlide3.xml')!.async('string')).toContain('license: licensed')
   })
 
   it('rejects malformed or unsafe input before compilation', () => {
@@ -50,6 +65,12 @@ describe('presentation contract and compiler', () => {
       },
       (d) => {
         d.assets[0].base64 = 'https://example.com/picture.png'
+      },
+      (d) => {
+        d.assets[0].license = 'verified by AI'
+      },
+      (d) => {
+        d.slides[2].elements[1].altText = ''
       },
       (d) => {
         d.slides[2].elements[1].assetId = 'missing'

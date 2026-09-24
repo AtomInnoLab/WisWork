@@ -70,6 +70,7 @@ export async function compilePresentationDeck(
       return [asset.id, { ...asset, data: imageData(asset) }] as const
     }),
   )
+  const assetWarnings = { missingSource: 0, unknownLicense: 0, missingAltText: 0 }
   const pptx = new PptxGenJS()
   pptx.defineLayout({
     name: 'WISWORK_16_9',
@@ -106,6 +107,9 @@ export async function compilePresentationDeck(
         })
       else if (el.kind === 'image') {
         const asset = assets.get(el.assetId)!
+        if (!asset.source) assetWarnings.missingSource++
+        if (!asset.license || asset.license === 'unknown') assetWarnings.unknownLicense++
+        if (!el.altText) assetWarnings.missingAltText++
         // Contain uses verified dimensions. Cover uses native image crop, never rasterizes text.
         if (el.fit === 'cover') {
           // PptxGenJS derives cover's source aspect ratio from w/h, not encoded data.
@@ -113,6 +117,7 @@ export async function compilePresentationDeck(
           slide.addImage({
             ...box,
             data: asset.data,
+            altText: el.altText ?? 'Image description missing',
             w: asset.width / 96,
             h: asset.height / 96,
             sizing: { type: 'cover', w: el.w, h: el.h },
@@ -124,6 +129,7 @@ export async function compilePresentationDeck(
           slide.addImage({
             ...box,
             data: asset.data,
+            altText: el.altText ?? 'Image description missing',
             x: el.x + (el.w - w) / 2,
             y: el.y + (el.h - h) / 2,
             w,
@@ -185,9 +191,7 @@ export async function compilePresentationDeck(
       .filter((el) => el.kind === 'image')
       .map((el) => {
         const asset = assets.get(el.assetId)!
-        return asset.source
-          ? `Image [${asset.id}]: ${asset.source}`
-          : `Image [${asset.id}]: source not supplied`
+        return `Image [${asset.id}]: ${asset.source ?? 'source not supplied'}; license: ${asset.license ?? 'unknown'}; alt text: ${el.altText ?? 'missing'}`
       })
     slide.addNotes(
       [
@@ -239,6 +243,7 @@ export async function compilePresentationDeck(
       slideCount: deck.slides.length,
       elementCount: deck.slides.reduce((n, slide) => n + slide.elements.length, 0),
       geometry,
+      assetWarnings,
       checks: {
         structure: 'passed',
         geometry: geometry.length ? 'warning' : 'passed',

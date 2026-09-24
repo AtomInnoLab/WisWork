@@ -28,6 +28,7 @@ export interface PresentationInlineAsset {
   width: number
   height: number
   source?: string
+  license?: 'owned' | 'licensed' | 'public_domain' | 'unknown'
 }
 export interface PresentationClaim {
   id: string
@@ -55,7 +56,7 @@ export type SlideIRElement = ElementGeometry &
         align?: 'left' | 'center' | 'right'
       }
     | { kind: 'shape'; shape: 'rect' | 'ellipse' | 'roundRect'; fill?: string; lineColor?: string }
-    | { kind: 'image'; assetId: string; fit?: 'contain' | 'cover' }
+    | { kind: 'image'; assetId: string; fit?: 'contain' | 'cover'; altText?: string }
     | { kind: 'table'; rows: string[][]; fontSize?: number }
     | {
         kind: 'chart'
@@ -90,6 +91,7 @@ export interface PresentationCompileReport {
   slideCount: number
   elementCount: number
   geometry: GeometryIssue[]
+  assetWarnings?: { missingSource: number; unknownLicense: number; missingAltText: number }
   checks: {
     structure: 'passed'
     geometry: 'passed' | 'warning'
@@ -133,6 +135,7 @@ export const PRESENTATION_DECK_SCHEMA: Schema = object({
             width: number(1, 16384),
             height: number(1, 16384),
             source: text(2000, 1),
+            license: choice('owned', 'licensed', 'public_domain', 'unknown'),
           },
           ['id', 'mime', 'base64', 'width', 'height'],
         ),
@@ -178,7 +181,7 @@ export const PRESENTATION_DECK_SCHEMA: Schema = object({
                 },
                 ['kind', 'shape'],
               ),
-              element({ kind: choice('image'), assetId: id, fit: choice('contain', 'cover') }, [
+              element({ kind: choice('image'), assetId: id, fit: choice('contain', 'cover'), altText: text(500, 1) }, [
                 'kind',
                 'assetId',
               ]),
