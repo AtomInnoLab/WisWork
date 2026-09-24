@@ -1,3 +1,5 @@
+import { createPresentationExistingEditingSkill } from '../skills/powerpoint/presentation-existing-editing.js'
+import type { PresentationExistingChange } from '../skills/powerpoint/presentation-existing-change.js'
 import { createPresentationBaselineSkill } from '../skills/powerpoint/presentation-baseline.js'
 import { BrowserPresentationBaselineAdapter } from '../skills/powerpoint/browser-presentation-baseline-adapter.js'
 import { createBrowserPresentationDocumentBinding } from '../skills/powerpoint/presentation-document.js'
@@ -128,6 +130,11 @@ export function createOfficeHostRuntime(
   host: OfficeHost,
   options: {
     presentation?: Omit<PresentationGenerationOptions, 'vfs'> & {
+      readExistingChange?(changeId: string): PresentationExistingChange | undefined
+      writeExistingChange?(
+        record: PresentationExistingChange,
+        expected: PresentationExistingChange | undefined,
+      ): Promise<void>
       readPageReplacement?(): PresentationPageReplacement | undefined
       writePageReplacement?(
         record: PresentationPageReplacement,
@@ -178,10 +185,15 @@ export function createOfficeHostRuntime(
       options.packageRuntime,
     )
   }
+  const localBinding =
+    host === 'powerpoint'
+      ? (options.presentation ?? createBrowserPresentationDocumentBinding())
+      : undefined
+  let existingEditing: ReturnType<typeof createPresentationExistingEditingSkill> | undefined
   let mutationStarted = false
   const proposals = createStructuredProposalController(
     options.diagnostics,
-    host === 'powerpoint' && options.presentation?.invalidateQa
+    host === 'powerpoint'
       ? {
           beforeWrite: async (proposal) => {
             // Only these internally constructed operations resolve a stable host page before
@@ -189,6 +201,10 @@ export function createOfficeHostRuntime(
             const target = proposal.impact.targets[0]
             let hostSlideIds =
               [
+                'edit_existing_presentation_text',
+                'edit_existing_presentation_geometry',
+                'undo_existing_presentation_change',
+                'resume_existing_presentation_change',
                 'stage_presentation_page_replacement',
                 'resume_presentation_page_replacement',
                 'discard_presentation_page_replacement',
@@ -246,12 +262,14 @@ export function createOfficeHostRuntime(
                 }
               }
             }
+            existingEditing?.beginMutation()
             qaSkill?.beginMutation(hostSlideIds)
             mutationStarted = Boolean(qaSkill)
-            await options.presentation!.invalidateQa!(hostSlideIds)
+            await localBinding?.invalidateQa?.(hostSlideIds)
             notifyQa()
           },
           afterWrite: () => {
+            existingEditing?.endMutation()
             if (mutationStarted) {
               mutationStarted = false
               qaSkill!.endMutation()
@@ -306,16 +324,39 @@ export function createOfficeHostRuntime(
   const baselineSkill = powerPointAdapter
     ? createPresentationBaselineSkill({
         adapter: new BrowserPresentationBaselineAdapter(),
-        documentId:
-          options.presentation?.documentId ?? createBrowserPresentationDocumentBinding().documentId,
+        documentId: localBinding!.documentId,
         inspectPage: (slideId, signal) =>
           powerPointAdapter.inspectPresentationPage(slideId, signal),
         readMasters: (signal) => powerPointAdapter.inspectSlideMasters(signal),
       })
     : undefined
+  if (
+    baselineSkill &&
+    powerPointAdapter &&
+    localBinding?.readExistingChange &&
+    localBinding.writeExistingChange &&
+    localBinding.listChangeHistory
+  )
+    existingEditing = createPresentationExistingEditingSkill({
+      baseline: baselineSkill,
+      baselineAdapter: new BrowserPresentationBaselineAdapter(),
+      adapter: powerPointAdapter,
+      proposals,
+      documentId: localBinding.documentId,
+      readExistingChange: localBinding.readExistingChange,
+      listChangeHistory: localBinding.listChangeHistory,
+      writeExistingChange: async (record, expected) => {
+        try {
+          await localBinding.writeExistingChange!(record, expected)
+        } finally {
+          void changes?.refresh()
+        }
+      },
+    })
   const base = composeOfficeSkills(hostSkill, shared, [
     ...extensions,
     ...(baselineSkill ? [baselineSkill] : []),
+    ...(existingEditing ? [existingEditing] : []),
   ])
   const generation =
     host === 'powerpoint' && options.presentation
@@ -624,11 +665,13 @@ export function createOfficeHostRuntime(
         })
       : undefined
   const dispatchChangeTool: AgentSkill['executeTool'] = (call, signal) => {
-    const owner = pageEditing?.tools.some((tool) => tool.name === call.name)
-      ? pageEditing
-      : pageReplacement?.tools.some((tool) => tool.name === call.name)
-        ? pageReplacement
-        : undefined
+    const owner = existingEditing?.tools.some((tool) => tool.name === call.name)
+      ? existingEditing
+      : pageEditing?.tools.some((tool) => tool.name === call.name)
+        ? pageEditing
+        : pageReplacement?.tools.some((tool) => tool.name === call.name)
+          ? pageReplacement
+          : undefined
     return owner
       ? owner.executeTool(call, signal)
       : Promise.resolve({
@@ -646,23 +689,25 @@ export function createOfficeHostRuntime(
     }
   }
   if (
-    generation &&
-    options.presentation &&
-    (options.presentation.listChangeHistory ||
-      options.presentation.readTextChange ||
-      options.presentation.readGeometryChange ||
-      options.presentation.readPageReplacement ||
-      options.presentation.listImageReplacements)
+    existingEditing ||
+    (generation &&
+      options.presentation &&
+      (options.presentation.listChangeHistory ||
+        options.presentation.readTextChange ||
+        options.presentation.readGeometryChange ||
+        options.presentation.readPageReplacement ||
+        options.presentation.listImageReplacements))
   )
     changes = createPresentationChangesController({
-      available: options.presentation.available,
+      available: options.presentation?.available ?? (() => false),
+      existingAvailable: () => Boolean(existingEditing),
       artifact: activeArtifact,
-      documentId: options.presentation.documentId,
-      listChangeHistory: options.presentation.listChangeHistory,
-      readTextChange: options.presentation.readTextChange,
-      readGeometryChange: options.presentation.readGeometryChange,
-      readPageReplacement: options.presentation.readPageReplacement,
-      listImageReplacements: options.presentation.listImageReplacements,
+      documentId: localBinding!.documentId,
+      listChangeHistory: localBinding!.listChangeHistory,
+      readTextChange: options.presentation?.readTextChange,
+      readGeometryChange: options.presentation?.readGeometryChange,
+      readPageReplacement: options.presentation?.readPageReplacement,
+      listImageReplacements: options.presentation?.listImageReplacements,
       executeTool: dispatchChangeTool,
     })
   const historySkill =
@@ -883,6 +928,7 @@ export function createOfficeHostRuntime(
         pageReplacement?.clear()
         historySkill?.clear()
         baselineSkill?.clear()
+        existingEditing?.clear()
         pageEditing?.clear()
         changes?.clear()
         qaSkill?.clear()

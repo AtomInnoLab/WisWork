@@ -30,6 +30,14 @@ const inventories = {
     'set_cell_range',
   ],
   powerpoint: [
+    'edit_existing_presentation_text',
+    'edit_existing_presentation_geometry',
+    'list_existing_presentation_changes',
+    'inspect_existing_presentation_change',
+    'undo_existing_presentation_change',
+    'resume_existing_presentation_change',
+    'capture_existing_presentation_change',
+    'record_existing_presentation_change_review',
     'bash',
     'check_presentation_baseline',
     'duplicate_slide',
@@ -53,7 +61,7 @@ describe('host runtime composition', () => {
     'composes shared tools with only the %s host skill',
     (host, expected) => {
       const runtime = createOfficeHostRuntime(host as keyof typeof inventories)
-      expect(runtime.skill.tools.map((tool) => tool.name).sort()).toEqual(expected)
+      expect(runtime.skill.tools.map((tool) => tool.name).sort()).toEqual([...expected].sort())
       expect(runtime.vfs).toBeDefined()
       expect(runtime.skills.list()).toEqual([])
     },
