@@ -50,6 +50,7 @@ const inventories = {
     'check_presentation_baseline',
     'duplicate_slide',
     'edit_slide_chart',
+    'update_slide_chart_values',
     'edit_slide_master_xml',
     'edit_slide_text',
     'edit_slide_xml',

@@ -79,6 +79,7 @@ describe('PowerPoint compatibility skill', () => {
       'edit_slide_text',
       'edit_slide_xml',
       'edit_slide_chart',
+      'update_slide_chart_values',
       'edit_slide_master',
       'edit_slide_master_xml',
       'duplicate_slide',
@@ -653,6 +654,41 @@ describe('PowerPoint compatibility skill', () => {
       await proposals.confirm(proposals.pending()!.id)
     }
     expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(3)
+  })
+
+  it('confirms one synchronized chart value edit and rejects package drift', async () => {
+    const book = new JSZip()
+    book.file('xl/workbook.xml', '<workbook><sheets><sheet name="Sheet1" r:id="rId1"/></sheets></workbook>')
+    book.file('xl/_rels/workbook.xml.rels', '<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+    book.file('xl/worksheets/sheet1.xml', '<worksheet><sheetData><row r="2"><c r="A2" t="inlineStr"><is><t>Q1</t></is></c><c r="B2"><v>1</v></c></row></sheetData></worksheet>')
+    const zip = new JSZip()
+    zip.file('ppt/slides/slide1.xml', '<p:sld><p:graphicFrame><p:cNvPr id="8"/><c:chart r:id="rId5"/></p:graphicFrame></p:sld>')
+    zip.file('ppt/slides/_rels/slide1.xml.rels', '<Relationships><Relationship Id="rId5" Type="x/chart" Target="../charts/chart1.xml"/></Relationships>')
+    zip.file('ppt/charts/chart1.xml', '<c:chartSpace><c:chart><c:plotArea><c:barChart><c:ser><c:cat><c:strRef><c:f>Sheet1!$A$2:$A$2</c:f><c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt></c:strCache></c:strRef></c:cat><c:val><c:numRef><c:f>Sheet1!$B$2:$B$2</c:f><c:numCache><c:pt idx="0"><c:v>1</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser></c:barChart></c:plotArea></c:chart><c:externalData r:id="rId9"/></c:chartSpace>')
+    zip.file('ppt/charts/_rels/chart1.xml.rels', '<Relationships><Relationship Id="rId9" Type="x/package" Target="../embeddings/Book1.xlsx"/></Relationships>')
+    zip.file('ppt/embeddings/Book1.xlsx', await book.generateAsync({ type: 'uint8array' }))
+    const original = await zip.generateAsync({ type: 'base64' })
+    let current = original
+    const fake = adapter({
+      exportSlidePackage: vi.fn().mockImplementation(() => Promise.resolve({ slideId: 's1', base64: current, fingerprint: 's1' })),
+      replaceSlidePackage: vi.fn().mockImplementation((_index, base64) => { current = base64; return Promise.resolve({ slideId: 's1' }) }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await expect(skill.executeTool(call('update_slide_chart_values', { slide_index: 0, shape_id: '8', values: [['5']] }))).resolves.toMatchObject({ mutated: false })
+    await proposals.confirm(proposals.pending()!.id)
+    expect(fake.replaceSlidePackage).toHaveBeenCalledOnce()
+    const updated = await JSZip.loadAsync(current, { base64: true })
+    expect(await updated.file('ppt/charts/chart1.xml')!.async('string')).toContain('<c:v>5</c:v>')
+    const updatedBook = await JSZip.loadAsync(await updated.file('ppt/embeddings/Book1.xlsx')!.async('uint8array'))
+    expect(await updatedBook.file('xl/worksheets/sheet1.xml')!.async('string')).toContain('<v>5</v>')
+    current = original
+    await skill.executeTool(call('update_slide_chart_values', { slide_index: 0, shape_id: '8', values: [['6']] }))
+    const drifted = await JSZip.loadAsync(current, { base64: true })
+    drifted.file('ppt/slides/slide1.xml', '<p:sld><p:graphicFrame><p:cNvPr id="8"/><c:chart r:id="rId5"/></p:graphicFrame><p:sp name="manual"/></p:sld>')
+    current = await drifted.generateAsync({ type: 'base64' })
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+    expect(fake.replaceSlidePackage).toHaveBeenCalledOnce()
   })
 
   it('validates master edits from the targeted XML instead of volatile package bytes', async () => {

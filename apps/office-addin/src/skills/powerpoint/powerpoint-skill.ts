@@ -18,12 +18,15 @@ import {
   type PowerPointMasterState,
 } from './browser-powerpoint-adapter.js'
 import {
+  captureChartValuePackageEdit,
   editPowerPointPackage,
+  presentationPackageDigest,
   verifyImportedPowerPointPackage,
   verifyPowerPointPackageInputs,
   type PackageEditKind,
   type XmlReplacement,
 } from './powerpoint-package.js'
+import { updatePowerPointChartDataPackage } from './presentation-chart-source-package.js'
 
 const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
@@ -412,6 +415,21 @@ const tools = [
         program: xmlProgramSchema,
       },
       required: ['slide_index', 'program'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'update_slide_chart_values',
+    description: 'Propose a confirmed update of numeric values for one native chart whose embedded Sheet1 XLSX and cache already match. Preserves categories and chart structure; rechecks and reads back both package parts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...slideProperties,
+        shape_id: { type: 'string', pattern: '^[1-9][0-9]{0,9}$' },
+        values: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string', maxLength: 32 } } },
+        explanation: { type: 'string', maxLength: 100 },
+      },
+      required: ['slide_index', 'shape_id', 'values'],
       additionalProperties: false,
     },
   },
@@ -1131,6 +1149,47 @@ export function createPowerPointSkill(options: {
     }
   }
 
+  async function proposeChartValues(slideIndex: number, shapeId: string, values: string[][], explanation: string | undefined, signal?: AbortSignal): Promise<ToolExecution> {
+    const deck = await options.adapter.verifySlides(signal)
+    const before = await options.adapter.exportSlidePackage(slideIndex, signal)
+    const beforeDigest = await presentationPackageDigest(before.base64, signal)
+    const prepared = await updatePowerPointChartDataPackage(before.base64, shapeId, values, signal)
+    const edit = await captureChartValuePackageEdit(before.base64, prepared.base64, signal)
+    let applied: typeof edit | undefined
+    const proposal = options.proposals.propose({
+      operation: 'update_slide_chart_values',
+      toolName: 'update_slide_chart_values',
+      title: explanation || 'Update native chart values',
+      preview: { slideIndex, shapeId, values, changedPaths: edit.changedPaths, beforeHashes: edit.beforeHashes, afterHashes: edit.afterHashes },
+      impact: { host: 'powerpoint', targets: [`slide:${deck.slides[slideIndex]?.slideId ?? before.slideId}`, `shape:${shapeId}`], count: 1 },
+      fingerprint: before.fingerprint,
+      before: { slideId: before.slideId, hashes: edit.beforeHashes },
+      after: { hashes: edit.afterHashes },
+      code: JSON.stringify({ version: 1, operation: 'update_chart_values', shapeId, values }),
+      validate: async (confirmSignal) => {
+        const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
+        return current.slideId === before.slideId &&
+          await presentationPackageDigest(current.base64, confirmSignal) === beforeDigest &&
+          await verifyPowerPointPackageInputs(current.base64, edit.beforeHashes, confirmSignal)
+      },
+      execute: async (confirmSignal) => {
+        const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
+        if (current.slideId !== before.slideId ||
+          await presentationPackageDigest(current.base64, confirmSignal) !== beforeDigest ||
+          !(await verifyPowerPointPackageInputs(current.base64, edit.beforeHashes, confirmSignal))) throw new Error('proposal_stale')
+        const updated = await updatePowerPointChartDataPackage(current.base64, shapeId, values, confirmSignal)
+        applied = await captureChartValuePackageEdit(current.base64, updated.base64, confirmSignal)
+        await options.adapter.replaceSlidePackage(slideIndex, applied.base64, false, applied, confirmSignal)
+      },
+      verify: async (confirmSignal) => {
+        if (!applied) throw new Error('office_verify_failed')
+        const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
+        if (!(await verifyImportedPowerPointPackage(current.base64, applied, confirmSignal))) throw new Error('office_verify_failed')
+      },
+    })
+    return { output: boundedJson(proposal), mutated: false, summary: 'Proposed native chart values update' }
+  }
+
   return {
     id: 'office-powerpoint',
     systemPrompt:
@@ -1668,6 +1727,15 @@ export function createPowerPointSkill(options: {
             input.explanation,
             signal,
           )
+        }
+        if (call.name === 'update_slide_chart_values') {
+          const input = exactRecord(call.input, ['slide_index', 'shape_id', 'values', 'explanation'])
+          if (!Number.isInteger(input.slide_index) || (input.slide_index as number) < 0 || (input.slide_index as number) > MAX_SLIDE_INDEX ||
+            typeof input.shape_id !== 'string' || !/^[1-9]\d{0,9}$/.test(input.shape_id) ||
+            !Array.isArray(input.values) || input.values.length < 1 || input.values.length > 8 ||
+            input.values.some((series) => !Array.isArray(series) || series.length < 1 || series.length > 32 || series.some((value) => typeof value !== 'string' || value.length > 32 || !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value))) ||
+            (input.explanation !== undefined && (typeof input.explanation !== 'string' || input.explanation.length > 100))) throw new Error('invalid_tool_input')
+          return await proposeChartValues(input.slide_index as number, input.shape_id, input.values as string[][], input.explanation as string | undefined, signal)
         }
         if (call.name === 'edit_slide_xml' || call.name === 'edit_slide_chart') {
           const input = declarativeInput(call.input, { slide: true, explanationMax: 50 })
