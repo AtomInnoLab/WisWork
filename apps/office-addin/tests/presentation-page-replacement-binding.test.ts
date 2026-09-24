@@ -285,6 +285,11 @@ it('keeps mappings unchanged if terminal save fails and rejects corrupt overlays
     'presentation_page_replacement_state_invalid',
   )
   f.values.set(key, JSON.stringify(f.record))
+  expect(() => f.create().readPageReplacement()).toThrow(
+    'presentation_change_history_state_invalid',
+  )
+  // An actually legacy document has no unified history to conflict with its slot.
+  f.values.delete('wiswork.presentation.change-history.v1')
   expect(f.create().readPageReplacement()).toEqual(f.record)
   f.move()
   expect(() => f.create().readPageReplacement()).toThrow('presentation_document_changed')

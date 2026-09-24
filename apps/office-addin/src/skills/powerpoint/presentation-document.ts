@@ -1,4 +1,11 @@
 import {
+  historyEntryId,
+  validatePresentationHistoryEntry,
+  presentationHistoryBytes,
+  type PresentationHistoryEntry,
+  type PresentationHistoryEnvelope,
+} from './presentation-change-history.js'
+import {
   validatePresentationTextChange,
   type PresentationTextChange,
 } from './presentation-text-change.js'
@@ -29,6 +36,7 @@ const ID_KEY = 'wiswork.presentation.document.v1'
 const IMPORT_KEY = 'wiswork.presentation.imports.v1'
 const IMAGE_KEY = 'wiswork.presentation.image-replacements.v1'
 const PAGE_REPLACEMENT_KEY = 'wiswork.presentation.page-replacement.v1'
+const HISTORY_KEY = 'wiswork.presentation.change-history.v1'
 const TEXT_KEY = 'wiswork.presentation.text-change.v1'
 const GEOMETRY_KEY = 'wiswork.presentation.geometry-change.v1'
 const QA_KEY = 'wiswork.presentation.qa.v1'
@@ -220,7 +228,7 @@ export function createPresentationDocumentBinding(
     }
   }
   let geometryWriteFailed = false
-  const readGeometryChange = (): PresentationGeometryChange | undefined => {
+  const readRawGeometryChange = (): PresentationGeometryChange | undefined => {
     const invalid = () => new Error('presentation_geometry_change_state_invalid')
     if (geometryWriteFailed) throw invalid()
     const raw = settings.get(GEOMETRY_KEY)
@@ -238,7 +246,7 @@ export function createPresentationDocumentBinding(
     return value
   }
   let textWriteFailed = false
-  const readTextChange = (): PresentationTextChange | undefined => {
+  const readRawTextChange = (): PresentationTextChange | undefined => {
     const invalid = () => new Error('presentation_text_change_state_invalid')
     if (textWriteFailed) throw invalid()
     const raw = settings.get(TEXT_KEY)
@@ -351,7 +359,196 @@ export function createPresentationDocumentBinding(
       throw invalid()
     return { change, receipts }
   }
-  const readPageReplacement = () => readReplacementEnvelope().change
+  const readRawPageReplacement = () => readReplacementEnvelope().change
+  let historyWriteFailed = false
+  const invalidHistory = () => new Error('presentation_change_history_state_invalid')
+  const rawHeads = () => ({
+    text: readRawTextChange(),
+    geometry: readRawGeometryChange(),
+    page: readRawPageReplacement(),
+  })
+  const readHistory = (): PresentationHistoryEnvelope => {
+    if (historyWriteFailed) throw invalidHistory()
+    const heads = rawHeads(),
+      images = Object.values(readImageRecords()),
+      raw = settings.get(HISTORY_KEY)
+    if (raw === undefined || raw === null || raw === '') {
+      const history: PresentationHistoryEnvelope = { version: 1, entries: [], heads: {} }
+      for (const kind of ['text', 'geometry', 'page'] as const) {
+        const record = heads[kind]
+        if (!record) continue
+        const id = historyEntryId(kind, record)
+        history.entries.push({
+          id,
+          kind,
+          record,
+          legacy: true,
+          sequence: history.entries.length + 1,
+        } as PresentationHistoryEntry)
+        history.heads[kind] = id
+      }
+      for (const record of images)
+        history.entries.push({
+          id: historyEntryId('image', record),
+          kind: 'image',
+          record,
+          legacy: true,
+          sequence: history.entries.length + 1,
+        })
+      return history
+    }
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 1024 * 1024)
+      throw invalidHistory()
+    let h: PresentationHistoryEnvelope
+    try {
+      h = JSON.parse(raw)
+    } catch {
+      throw invalidHistory()
+    }
+    if (
+      !h ||
+      h.version !== 1 ||
+      Object.keys(h).length !== 3 ||
+      !Array.isArray(h.entries) ||
+      h.entries.length > 64 ||
+      !h.heads ||
+      typeof h.heads !== 'object' ||
+      Array.isArray(h.heads) ||
+      Object.keys(h.heads).some((k) => !['text', 'geometry', 'page'].includes(k))
+    )
+      throw invalidHistory()
+    const ids = new Set<string>()
+    let sequence = 0
+    for (const e of h.entries) {
+      if (!validatePresentationHistoryEntry(e) || ids.has(e.id) || e.sequence <= sequence)
+        throw invalidHistory()
+      ids.add(e.id)
+      sequence = e.sequence
+    }
+    if (presentationHistoryBytes(h) > 1024 * 1024) throw invalidHistory()
+    for (const kind of ['text', 'geometry', 'page'] as const) {
+      const head = h.entries.find((e) => e.id === h.heads[kind])
+      if ((head && head.kind !== kind) || (!head && h.entries.some((e) => e.kind === kind)))
+        throw invalidHistory()
+      if (
+        (h.heads[kind] !== undefined && !head) ||
+        JSON.stringify(head?.record) !== JSON.stringify(heads[kind])
+      )
+        throw invalidHistory()
+    }
+    const historicalImages = h.entries.filter((e) => e.kind === 'image')
+    if (
+      historicalImages.length !== images.length ||
+      images.some(
+        (r) =>
+          !historicalImages.some(
+            (e) =>
+              e.id === historyEntryId('image', r) && JSON.stringify(e.record) === JSON.stringify(r),
+          ),
+      )
+    )
+      throw invalidHistory()
+    return h
+  }
+  const readTextChange = (changeId?: string): PresentationTextChange | undefined => {
+    const raw = readRawTextChange()
+    const history = readHistory()
+    return changeId === undefined
+      ? raw
+      : history.entries.find(
+          (e): e is Extract<PresentationHistoryEntry, { kind: 'text' }> =>
+            e.kind === 'text' && e.record.changeId === changeId,
+        )?.record
+  }
+  const readGeometryChange = (changeId?: string): PresentationGeometryChange | undefined => {
+    const raw = readRawGeometryChange()
+    const history = readHistory()
+    return changeId === undefined
+      ? raw
+      : history.entries.find(
+          (e): e is Extract<PresentationHistoryEntry, { kind: 'geometry' }> =>
+            e.kind === 'geometry' && e.record.changeId === changeId,
+        )?.record
+  }
+  const readPageReplacement = () => {
+    const raw = readRawPageReplacement()
+    readHistory()
+    return raw
+  }
+  const saveWithHistory = async (
+    key: string,
+    serialized: string,
+    entry: PresentationHistoryEntry,
+    fail: () => void,
+  ) => {
+    const history = readHistory(),
+      index = history.entries.findIndex((e) => e.id === entry.id)
+    const unresolved = (e: PresentationHistoryEntry) =>
+      !['applied', 'undone', 'discarded', 'complete'].includes(e.record.state)
+    if (
+      (index < 0 || !unresolved(history.entries[index])) &&
+      history.entries.some((e) => e.id !== entry.id && unresolved(e))
+    )
+      throw new Error('presentation_change_history_pending')
+    if (index < 0)
+      history.entries.push({ ...entry, sequence: (history.entries.at(-1)?.sequence ?? 0) + 1 })
+    else
+      history.entries[index] = {
+        ...entry,
+        sequence: history.entries[index].sequence,
+        legacy: history.entries[index].legacy,
+      } as PresentationHistoryEntry
+    if (entry.kind !== 'image') history.heads[entry.kind] = entry.id
+    if (
+      history.entries.length > 64 ||
+      !Number.isSafeInteger(history.entries.at(-1)?.sequence) ||
+      presentationHistoryBytes(history) > 1024 * 1024
+    )
+      throw new Error('presentation_change_history_full')
+    const historySerialized = JSON.stringify(history),
+      previous = settings.get(key),
+      previousHistory = settings.get(HISTORY_KEY),
+      location = settings.location(),
+      identity = settings.get(ID_KEY)
+    try {
+      settings.set(key, serialized)
+      settings.set(HISTORY_KEY, historySerialized)
+      await settings.save()
+      if (
+        settings.location() !== location ||
+        settings.get(ID_KEY) !== identity ||
+        settings.get(key) !== serialized ||
+        settings.get(HISTORY_KEY) !== historySerialized
+      )
+        throw new Error('presentation_document_changed')
+    } catch (error) {
+      if (
+        settings.location() === location &&
+        settings.get(ID_KEY) === identity &&
+        [previous, serialized].includes(settings.get(key)) &&
+        [previousHistory, historySerialized].includes(settings.get(HISTORY_KEY))
+      ) {
+        try {
+          settings.set(key, typeof previous === 'string' ? previous : key === IMAGE_KEY ? '{}' : '')
+          settings.set(HISTORY_KEY, typeof previousHistory === 'string' ? previousHistory : '')
+          if (
+            settings.get(key) !==
+              (typeof previous === 'string' ? previous : key === IMAGE_KEY ? '{}' : '') ||
+            settings.get(HISTORY_KEY) !==
+              (typeof previousHistory === 'string' ? previousHistory : '')
+          )
+            throw invalidHistory()
+        } catch {
+          historyWriteFailed = true
+          fail()
+        }
+      } else {
+        historyWriteFailed = true
+        fail()
+      }
+      throw error
+    }
+  }
   const readReceipt = (key: string): PresentationImportRecord | undefined => {
     const { receipts } = readReplacementEnvelope()
     if (Object.hasOwn(receipts, key)) {
@@ -362,6 +559,7 @@ export function createPresentationDocumentBinding(
   }
   return {
     documentId,
+    listChangeHistory: () => structuredClone(readHistory().entries),
     readPageReplacement,
     writePageReplacement(
       record: PresentationPageReplacement,
@@ -379,6 +577,11 @@ export function createPresentationDocumentBinding(
         if ((await documentId()) !== snapshot.documentId)
           throw new Error('presentation_document_changed')
         const prior = readPageReplacement()
+        if (
+          prior?.changeId !== snapshot.changeId &&
+          readHistory().entries.some((e) => e.id === historyEntryId('page', snapshot))
+        )
+          throw invalid()
         if (JSON.stringify(prior) !== JSON.stringify(expected))
           throw new Error('presentation_page_replacement_stale')
         if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
@@ -444,33 +647,20 @@ export function createPresentationDocumentBinding(
           receipts = replacementMappings(snapshot, receipts, snapshot.state === 'undone')
         if (!validOverrides(receipts, snapshot.documentId))
           throw new Error('presentation_import_history_full')
-        const previous = settings.get(PAGE_REPLACEMENT_KEY),
-          location = settings.location(),
-          identity = settings.get(ID_KEY),
-          serialized = JSON.stringify({ version: 2, change: snapshot, receipts })
-        try {
-          settings.set(PAGE_REPLACEMENT_KEY, serialized)
-          await settings.save()
-          if (
-            settings.location() !== location ||
-            settings.get(ID_KEY) !== identity ||
-            settings.get(PAGE_REPLACEMENT_KEY) !== serialized
-          )
-            throw new Error('presentation_document_changed')
-        } catch (error) {
-          if (
-            settings.location() === location &&
-            settings.get(ID_KEY) === identity &&
-            settings.get(PAGE_REPLACEMENT_KEY) === serialized
-          ) {
-            try {
-              settings.set(PAGE_REPLACEMENT_KEY, typeof previous === 'string' ? previous : '')
-            } catch {
-              pageReplacementWriteFailed = true
-            }
-          } else pageReplacementWriteFailed = true
-          throw error
-        }
+        await saveWithHistory(
+          PAGE_REPLACEMENT_KEY,
+          JSON.stringify({ version: 2, change: snapshot, receipts }),
+          {
+            id: historyEntryId('page', snapshot),
+            kind: 'page',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            pageReplacementWriteFailed = true
+          },
+        )
       }
       const result = receiptQueue.then(write)
       receiptQueue = result.catch(() => {})
@@ -492,7 +682,12 @@ export function createPresentationDocumentBinding(
           throw invalid()
         if ((await documentId()) !== snapshot.documentId)
           throw new Error('presentation_document_changed')
-        const prior = readGeometryChange()
+        const prior = readGeometryChange(
+          expected?.changeId === snapshot.changeId ||
+            readHistory().entries.some((e) => e.id === historyEntryId('geometry', snapshot))
+            ? snapshot.changeId
+            : undefined,
+        )
         if (JSON.stringify(prior) !== JSON.stringify(expected))
           throw new Error('presentation_geometry_change_stale')
         if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
@@ -512,33 +707,20 @@ export function createPresentationDocumentBinding(
           (prior && !['applied', 'undone'].includes(prior.state))
         )
           throw invalid()
-        const previous = settings.get(GEOMETRY_KEY),
-          location = settings.location(),
-          identity = settings.get(ID_KEY),
-          serialized = JSON.stringify(snapshot)
-        try {
-          settings.set(GEOMETRY_KEY, serialized)
-          await settings.save()
-          if (
-            settings.location() !== location ||
-            settings.get(ID_KEY) !== identity ||
-            settings.get(GEOMETRY_KEY) !== serialized
-          )
-            throw new Error('presentation_document_changed')
-        } catch (error) {
-          if (
-            settings.location() === location &&
-            settings.get(ID_KEY) === identity &&
-            settings.get(GEOMETRY_KEY) === serialized
-          ) {
-            try {
-              settings.set(GEOMETRY_KEY, typeof previous === 'string' ? previous : '')
-            } catch {
-              geometryWriteFailed = true
-            }
-          } else geometryWriteFailed = true
-          throw error
-        }
+        await saveWithHistory(
+          GEOMETRY_KEY,
+          JSON.stringify(snapshot),
+          {
+            id: historyEntryId('geometry', snapshot),
+            kind: 'geometry',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            geometryWriteFailed = true
+          },
+        )
       }
       const result = receiptQueue.then(write)
       receiptQueue = result.catch(() => {})
@@ -560,7 +742,12 @@ export function createPresentationDocumentBinding(
           throw invalid()
         if ((await documentId()) !== snapshot.documentId)
           throw new Error('presentation_document_changed')
-        const prior = readTextChange()
+        const prior = readTextChange(
+          expected?.changeId === snapshot.changeId ||
+            readHistory().entries.some((e) => e.id === historyEntryId('text', snapshot))
+            ? snapshot.changeId
+            : undefined,
+        )
         if (JSON.stringify(prior) !== JSON.stringify(expected))
           throw new Error('presentation_text_change_stale')
         if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
@@ -579,33 +766,20 @@ export function createPresentationDocumentBinding(
           (prior && !['applied', 'undone'].includes(prior.state))
         )
           throw invalid()
-        const previous = settings.get(TEXT_KEY),
-          location = settings.location(),
-          identity = settings.get(ID_KEY),
-          serialized = JSON.stringify(snapshot)
-        try {
-          settings.set(TEXT_KEY, serialized)
-          await settings.save()
-          if (
-            settings.location() !== location ||
-            settings.get(ID_KEY) !== identity ||
-            settings.get(TEXT_KEY) !== serialized
-          )
-            throw new Error('presentation_document_changed')
-        } catch (error) {
-          if (
-            settings.location() === location &&
-            settings.get(ID_KEY) === identity &&
-            settings.get(TEXT_KEY) === serialized
-          ) {
-            try {
-              settings.set(TEXT_KEY, typeof previous === 'string' ? previous : '')
-            } catch {
-              textWriteFailed = true
-            }
-          } else textWriteFailed = true
-          throw error
-        }
+        await saveWithHistory(
+          TEXT_KEY,
+          JSON.stringify(snapshot),
+          {
+            id: historyEntryId('text', snapshot),
+            kind: 'text',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            textWriteFailed = true
+          },
+        )
       }
       const result = receiptQueue.then(write)
       receiptQueue = result.catch(() => {})
@@ -663,9 +837,16 @@ export function createPresentationDocumentBinding(
       receiptQueue = result.catch(() => {})
       return result
     },
-    listImageReplacements: () =>
-      Object.values(readImageRecords()).map((record) => structuredClone(record)),
-    readImageReplacement: (key: string) => readImageRecords()[key],
+    listImageReplacements: () => {
+      const records = readImageRecords()
+      readHistory()
+      return Object.values(records).map((record) => structuredClone(record))
+    },
+    readImageReplacement: (key: string) => {
+      const records = readImageRecords()
+      readHistory()
+      return records[key]
+    },
     writeImageReplacement(key: string, record: ImageReplacementRecord) {
       // Copy before queueing so callers cannot change the reservation during another save.
       const snapshot = structuredClone(record)
@@ -728,23 +909,20 @@ export function createPresentationDocumentBinding(
         const serialized = JSON.stringify(records)
         if (Object.keys(records).length > 32 || imageBytes(serialized, records) > 128 * 1024)
           throw new Error('presentation_image_replacement_history_full')
-        const previous = settings.get(IMAGE_KEY),
-          location = settings.location()
-        try {
-          settings.set(IMAGE_KEY, serialized)
-          await settings.save()
-          if (settings.location() !== location || settings.get(IMAGE_KEY) !== serialized)
-            throw new Error('presentation_document_changed')
-        } catch (error) {
-          if (settings.location() === location && settings.get(IMAGE_KEY) === serialized) {
-            try {
-              settings.set(IMAGE_KEY, typeof previous === 'string' ? previous : '{}')
-            } catch {
-              imageWriteFailed = true
-            }
-          } else imageWriteFailed = true
-          throw error
-        }
+        await saveWithHistory(
+          IMAGE_KEY,
+          serialized,
+          {
+            id: historyEntryId('image', snapshot),
+            kind: 'image',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            imageWriteFailed = true
+          },
+        )
       }
       const result = receiptQueue.then(write)
       receiptQueue = result.catch(() => {})

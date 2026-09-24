@@ -89,18 +89,21 @@ it('requires a saved candidate before completion and bounds history before inser
   await expect(
     f.binding.writeImageReplacement(f.key, { ...f.record, state: 'complete', newShapeId: 'new' }),
   ).rejects.toThrow()
+  // Legacy documents can contain multiple interrupted image reservations. Import all without
+  // dropping them; each existing reservation must remain independently recoverable.
+  const records: Record<string, ImageReplacementRecord> = {}
   for (let i = 0; i < 32; i++) {
     const record = { ...f.record, oldShapeId: `old-${i}` }
-    await f.binding.writeImageReplacement(
+    records[
       await imageReplacementKey(
         record.projectId,
         record.requestId,
         record.pageId,
         record.oldShapeId,
-      ),
-      record,
-    )
+      )
+    ] = record
   }
+  f.values.set('wiswork.presentation.image-replacements.v1', JSON.stringify(records))
   await expect(f.binding.writeImageReplacement(f.key, f.record)).rejects.toThrow(
     'presentation_image_replacement_history_full',
   )
