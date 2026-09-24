@@ -45,7 +45,7 @@ export function PresentationChangesCard({
       {snapshot.notice && <p role="status">{snapshot.notice}</p>}
       {snapshot.error && <p role="alert">{snapshot.error}</p>}
       {snapshot.phase === 'idle' && !snapshot.entries.length && (
-        <p>{snapshot.projectId ? '当前任务暂无保存点。' : '恢复当前任务后可查看保存点。'}</p>
+        <p>当前文档或任务暂无可用保存点。</p>
       )}
       <ol>
         {snapshot.entries.map((entry) => (
@@ -61,7 +61,8 @@ export function PresentationChangesCard({
               }
             </strong>
             <p>
-              页面：{entry.pageId} · 状态：{entry.state}
+              {entry.source === 'existing' ? '现稿 · ' : ''}页面：{entry.pageId} · 状态：
+              {entry.state}
             </p>
             {entry.sequence !== undefined && (
               <p>{entry.legacy ? '旧保存点 · 顺序未知' : `记录 #${entry.sequence}`}</p>
@@ -80,6 +81,12 @@ export function PresentationChangesCard({
                 </p>
                 <p>验收要求（不代表已通过）：{entry.changeSet.validation.join('、')}</p>
               </div>
+            )}
+            {entry.review && (
+              <p>
+                历史截图复核：{entry.review.status === 'pass' ? '通过' : '未通过'} ·{' '}
+                {entry.review.reviewedAt}。此结果不代表当前页面 QA 通过，需重新采集截图确认。
+              </p>
             )}
             <details>
               <summary>展开修改前后内容（长内容已折叠）</summary>

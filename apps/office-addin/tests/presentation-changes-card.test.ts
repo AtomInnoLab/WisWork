@@ -15,6 +15,14 @@ it('dispatches actual actions, escapes text and disables busy controls', async (
       entries: [
         {
           id: 'id',
+          source: 'existing',
+          review: {
+            screenshotDigest: 'a'.repeat(64),
+            capturedAt: '2026-09-24T00:00:00Z',
+            reviewedAt: '2026-09-24T00:01:00Z',
+            status: 'pass',
+            notes: '',
+          },
           kind: 'text',
           pageId: 'page',
           state: 'pending',
@@ -36,6 +44,9 @@ it('dispatches actual actions, escapes text and disables busy controls', async (
     expect(container.querySelector('script')).toBeNull()
     expect(container.textContent).toContain('<script>unsafe</script>')
     expect(container.textContent).toContain('不完整历史')
+    expect(container.textContent).toContain('现稿 · 页面')
+    expect(container.textContent).toContain('历史截图复核：通过')
+    expect(container.textContent).toContain('此结果不代表当前页面 QA 通过')
     await act(async () =>
       Array.from(container.querySelectorAll('button'))
         .find((b) => b.textContent === '检查')!

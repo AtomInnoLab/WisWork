@@ -1,9 +1,13 @@
+import type { PresentationExistingChange } from '../skills/powerpoint/presentation-existing-change.js'
 import {
   presentationChangeSetSummary,
   selectPresentationHistory,
   type PresentationChangeSetSummary,
 } from '../skills/powerpoint/presentation-history.js'
-import type { PresentationHistoryEntry } from '../skills/powerpoint/presentation-change-history.js'
+import {
+  validatePresentationHistoryEntry,
+  type PresentationHistoryEntry,
+} from '../skills/powerpoint/presentation-change-history.js'
 import type { AgentSkill } from '@wiswork/agent-core'
 import type { CompiledPresentationArtifact } from '../skills/powerpoint/presentation-delivery.js'
 import { presentationArtifactContent } from '../skills/powerpoint/presentation-page-delivery.js'
@@ -26,6 +30,8 @@ import {
 
 export type PresentationChangeAction = 'inspect' | 'undo' | 'resume' | 'commit' | 'discard'
 export interface PresentationChangeEntry {
+  source?: 'existing'
+  review?: PresentationExistingChange['review']
   sequence?: number
   legacy?: boolean
   changeSet?: PresentationChangeSetSummary
@@ -55,6 +61,7 @@ export interface PresentationChangesController {
 type Read<T> = () => T | undefined | Promise<T | undefined>
 export interface PresentationChangesOptions {
   listChangeHistory?: () => PresentationHistoryEntry[]
+  existingAvailable?: () => boolean
   available(): boolean
   artifact(): CompiledPresentationArtifact | undefined
   documentId(): Promise<string>
@@ -71,12 +78,11 @@ type RecordValue =
   | ImageReplacementRecord
 interface SavedEntry {
   entry: PresentationChangeEntry
-  record: RecordValue
+  record: RecordValue | PresentationExistingChange
   fingerprint: string
   historical?: boolean
 }
 const copy = <T>(value: T): T => structuredClone(value)
-const identity = (artifact: CompiledPresentationArtifact | undefined) => JSON.stringify(artifact)
 const pageActions: Record<PresentationPageReplacement['state'], PresentationChangeAction[]> = {
   pending: ['inspect'],
   inserted: ['inspect', 'resume'],
@@ -164,38 +170,101 @@ export function createPresentationChangesController(
   let state: PresentationChangesSnapshot = { phase: 'idle', entries: [] }
   let saved: SavedEntry[] = [],
     bound: string | undefined,
+    boundDocument: string | undefined,
     generation = 0
   let abort: AbortController | undefined
   const listeners = new Set<() => void>()
   const publish = () => {
     for (const listener of listeners) listener()
   }
+  const scopeIdentity = () =>
+    JSON.stringify({
+      artifact: options.artifact(),
+      generated: options.available(),
+      existing: options.existingAvailable?.() ?? false,
+    })
   const current = (scope: string | undefined, documentId: string) =>
-    options.available() &&
-    identity(options.artifact()) === scope &&
-    options.artifact()?.documentId === documentId
-  async function read(artifact: CompiledPresentationArtifact, scope: string, ticket: number) {
+    scopeIdentity() === scope && (!boundDocument || boundDocument === documentId)
+  async function read(
+    artifact: CompiledPresentationArtifact | undefined,
+    scope: string,
+    ticket: number,
+  ) {
     const documentId = await options.documentId()
     if (ticket !== generation || !current(scope, documentId)) throw new Error('stale')
     if (options.listChangeHistory) {
       const history = copy(options.listChangeHistory())
-      const selected = await selectPresentationHistory(history, artifact, documentId)
-      if (ticket !== generation || !current(scope, await options.documentId()))
+      if (
+        !Array.isArray(history) ||
+        history.length > 64 ||
+        history.some((e) => !validatePresentationHistoryEntry(e)) ||
+        new Set(history.map((e) => e.id)).size !== history.length ||
+        new Set(history.map((e) => e.sequence)).size !== history.length ||
+        new TextEncoder().encode(JSON.stringify(history)).byteLength > 1024 * 1024
+      )
+        throw new Error('invalid')
+      const selected: PresentationHistoryEntry[] =
+        artifact && options.available()
+          ? await selectPresentationHistory(history, artifact, documentId)
+          : []
+      if (options.existingAvailable?.())
+        selected.push(
+          ...history.filter((e) => e.kind === 'existing' && e.record.documentId === documentId),
+        )
+      const latestDocumentId = await options.documentId()
+      if (
+        ticket !== generation ||
+        !current(scope, latestDocumentId) ||
+        documentId !== latestDocumentId ||
+        JSON.stringify(history) !== JSON.stringify(options.listChangeHistory())
+      )
         throw new Error('stale')
-      return selected.map((saved) => {
-        const row = entry(saved.kind, saved.record)
-        row.entry = {
-          ...row.entry,
-          id: saved.id,
-          sequence: saved.sequence,
-          legacy: saved.legacy,
-          changeSet: presentationChangeSetSummary(saved),
-        }
-        row.historical = true
-        row.fingerprint = JSON.stringify(saved)
-        return row
-      })
+      boundDocument = documentId
+      return selected
+        .sort((a, b) => Number(a.legacy) - Number(b.legacy) || b.sequence - a.sequence)
+        .map((saved) => {
+          const row: SavedEntry =
+            saved.kind === 'existing'
+              ? {
+                  entry: {
+                    id: saved.id,
+                    source: 'existing',
+                    kind: saved.record.kind,
+                    pageId: saved.record.hostSlideId,
+                    state: saved.record.state,
+                    before:
+                      typeof saved.record.before === 'string'
+                        ? saved.record.before
+                        : JSON.stringify(saved.record.before, null, 2),
+                    after:
+                      typeof saved.record.after === 'string'
+                        ? saved.record.after
+                        : JSON.stringify(saved.record.after, null, 2),
+                    review: copy(saved.record.review),
+                    actions:
+                      saved.record.state === 'applied'
+                        ? ['inspect', 'undo']
+                        : saved.record.state === 'undone'
+                          ? ['inspect']
+                          : ['inspect', 'resume'],
+                  },
+                  record: copy(saved.record),
+                  fingerprint: JSON.stringify(saved),
+                }
+              : entry(saved.kind, saved.record)
+          row.entry = {
+            ...row.entry,
+            id: saved.id,
+            sequence: saved.sequence,
+            legacy: saved.legacy,
+            changeSet: presentationChangeSetSummary(saved),
+          }
+          row.historical = true
+          row.fingerprint = JSON.stringify(saved)
+          return row
+        })
     }
+    if (!artifact || !options.available() || artifact.documentId !== documentId) return []
     const [text, geometry, page, images] = await Promise.all([
       options.readTextChange?.(),
       options.readGeometryChange?.(),
@@ -251,33 +320,37 @@ export function createPresentationChangesController(
     if (new Set(rows.map((r) => r.entry.id)).size !== rows.length) throw new Error('invalid')
     if (ticket !== generation || !current(scope, await options.documentId()))
       throw new Error('stale')
+    boundDocument = documentId
     return rows
   }
   async function refresh() {
     // Storage notifications during a tool action are collected by the final refresh.
     if (state.phase === 'acting') {
-      if (identity(options.artifact()) === bound && options.available()) return
+      if (scopeIdentity() === bound) return
       ++generation
       abort?.abort()
       abort = undefined
       state = { phase: 'idle', entries: [] }
       saved = []
       bound = undefined
+      boundDocument = undefined
     }
     const ticket = ++generation
     const artifact = options.artifact(),
-      scope = identity(artifact)
-    if (!options.available() || !artifact) {
+      scope = scopeIdentity()
+    if ((!options.available() || !artifact) && !options.existingAvailable?.()) {
       saved = []
       bound = undefined
+      boundDocument = undefined
       state = { phase: 'idle', entries: [], notice: '恢复当前任务后可查看最近保存点。' }
       publish()
       return
     }
+    boundDocument = undefined
     state = {
       phase: 'loading',
-      projectId: artifact.projectId,
-      requestId: artifact.requestId,
+      projectId: artifact?.projectId,
+      requestId: artifact?.requestId,
       entries: [],
     }
     publish()
@@ -288,14 +361,15 @@ export function createPresentationChangesController(
       bound = scope
       state = {
         phase: 'idle',
-        projectId: artifact.projectId,
-        requestId: artifact.requestId,
+        projectId: artifact?.projectId,
+        requestId: artifact?.requestId,
         entries: rows.map((r) => copy(r.entry)),
       }
     } catch {
       if (ticket !== generation) return
       saved = []
       bound = undefined
+      boundDocument = undefined
       state = {
         phase: 'idle',
         entries: [],
@@ -319,6 +393,7 @@ export function createPresentationChangesController(
       abort = undefined
       saved = []
       bound = undefined
+      boundDocument = undefined
       state = { phase: 'idle', entries: [] }
       publish()
     },
@@ -330,9 +405,8 @@ export function createPresentationChangesController(
       if (
         !selected ||
         !selected.entry.actions.includes(action) ||
-        !artifact ||
         !scope ||
-        identity(artifact) !== scope
+        scopeIdentity() !== scope
       ) {
         state = { ...state, error: '操作已过期或不可用，请刷新保存点。' }
         publish()
@@ -359,24 +433,53 @@ export function createPresentationChangesController(
               : kind === 'image'
                 ? 'image_replacement'
                 : 'page_replacement'
-        const input: Record<string, unknown> = {
-          project_id: r.projectId,
-          ...(kind === 'page'
-            ? { change_id: (r as PresentationPageReplacement).changeId }
-            : { page_id: r.pageId }),
-          ...(kind === 'image' ? { shape_id: (r as ImageReplacementRecord).oldShapeId } : {}),
-          ...(selected.historical && (kind === 'text' || kind === 'geometry')
-            ? { change_id: (r as PresentationTextChange | PresentationGeometryChange).changeId }
-            : {}),
-        }
+        const generated = r as RecordValue
+        const input: Record<string, unknown> =
+          selected.entry.source === 'existing'
+            ? { change_id: (r as PresentationExistingChange).changeId }
+            : {
+                project_id: generated.projectId,
+                ...(kind === 'page'
+                  ? { change_id: (r as PresentationPageReplacement).changeId }
+                  : { page_id: generated.pageId }),
+                ...(kind === 'image' ? { shape_id: (r as ImageReplacementRecord).oldShapeId } : {}),
+                ...(selected.historical && (kind === 'text' || kind === 'geometry')
+                  ? {
+                      change_id: (r as PresentationTextChange | PresentationGeometryChange)
+                        .changeId,
+                    }
+                  : {}),
+              }
         let result = await options.executeTool(
-          { id: `change-${ticket}`, name: `${action}_presentation_${suffix}`, input },
+          {
+            id: `change-${ticket}`,
+            name:
+              selected.entry.source === 'existing'
+                ? `${action}_existing_presentation_change`
+                : `${action}_presentation_${suffix}`,
+            input,
+          },
           cancellation.signal,
         )
         if ('kind' in result && result.kind === 'tool-execution-suspension')
           result = await result.result
         if (ticket !== generation) return
         if (!current(scope, await options.documentId())) throw new Error('stale')
+        if (selected.entry.source === 'existing') {
+          const latest = (await read(copy(artifact), scope, ticket)).find(
+            (row) => row.entry.id === id,
+          )
+          if (!latest || ticket !== generation) throw new Error('stale')
+          const core = (record: RecordValue | PresentationExistingChange) => {
+            const { state: _state, review: _review, ...rest } = record as PresentationExistingChange
+            return JSON.stringify(rest)
+          }
+          if (
+            core(latest.record) !== core(selected.record) ||
+            (action === 'inspect' && latest.fingerprint !== selected.fingerprint)
+          )
+            throw new Error('stale')
+        }
         if (result.isError) throw new Error('tool')
         notice =
           action === 'inspect'
