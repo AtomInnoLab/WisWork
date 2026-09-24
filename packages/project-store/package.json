@@ -7,6 +7,7 @@
   "description": "Local project-based document storage and chat history persistence (no Electron dependency)",
   "exports": {
     ".": "./src/index.ts",
+    "./presentation-issue": "./src/presentation-issue.ts",
     "./presentation-job": "./src/presentation-job.ts"
   },
   "scripts": {

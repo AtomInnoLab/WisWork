@@ -1,3 +1,5 @@
+import { handlePresentationDeliveryReport } from './presentation-delivery-report'
+import { parsePresentationIssueActionInput } from '@wiswork/project-store/presentation-issue'
 import {
   activePresentationRequest,
   handlePresentationJob,
@@ -28,6 +30,7 @@ const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
 const errorCodes = new Set([
   'busy',
+  'issue_changed',
   'invalid_request',
   'invalid_plan',
   'plan_mismatch',
@@ -129,66 +132,80 @@ export function createPresentationService(options: {
           'production_claim_evidence',
           'production_record_claim_review',
           'production_read_claim_review',
+          'production_delivery_report',
+          'production_record_issue_action',
         ].includes(request.operation as string)
       )
         throw new Error('invalid_request')
       const allowedKeys = presentationJobOperations.includes(request.operation as string)
         ? ['operation', 'documentId', 'projectId', 'requestId']
-        : request.operation === 'production_read_claim_review'
-          ? ['operation', 'documentId', 'projectId', 'requestId', 'reviewId']
-          : ['production_claim_evidence', 'production_record_claim_review'].includes(
-                request.operation as string,
-              )
-            ? [
-                'operation',
-                'documentId',
-                'projectId',
-                'requestId',
-                'pageId',
-                'claimId',
-                'sourceId',
-                'offset',
-                'maxChars',
-                ...(request.operation === 'production_record_claim_review'
-                  ? ['reviewId', 'evidenceDigest', 'outcome', 'notes']
-                  : []),
-              ]
-            : request.operation === 'production_rebuild_page'
+        : ['production_delivery_report', 'production_record_issue_action'].includes(
+              request.operation as string,
+            )
+          ? [
+              'operation',
+              'documentId',
+              'projectId',
+              'requestId',
+              ...(request.operation === 'production_record_issue_action'
+                ? ['expectedRevision', 'action']
+                : []),
+            ]
+          : request.operation === 'production_read_claim_review'
+            ? ['operation', 'documentId', 'projectId', 'requestId', 'reviewId']
+            : ['production_claim_evidence', 'production_record_claim_review'].includes(
+                  request.operation as string,
+                )
               ? [
                   'operation',
                   'documentId',
                   'projectId',
-                  'parentRequestId',
                   'requestId',
                   'pageId',
-                  'slide',
+                  'claimId',
+                  'sourceId',
+                  'offset',
+                  'maxChars',
+                  ...(request.operation === 'production_record_claim_review'
+                    ? ['reviewId', 'evidenceDigest', 'outcome', 'notes']
+                    : []),
                 ]
-              : request.operation === 'production_begin'
-                ? ['operation', 'documentId', 'projectId', 'requestId', 'planRevision', 'deck']
-                : request.operation === 'production_status'
-                  ? ['operation', 'documentId', 'projectId', 'requestId']
-                  : request.operation === 'production_run'
+              : request.operation === 'production_rebuild_page'
+                ? [
+                    'operation',
+                    'documentId',
+                    'projectId',
+                    'parentRequestId',
+                    'requestId',
+                    'pageId',
+                    'slide',
+                  ]
+                : request.operation === 'production_begin'
+                  ? ['operation', 'documentId', 'projectId', 'requestId', 'planRevision', 'deck']
+                  : request.operation === 'production_status'
                     ? ['operation', 'documentId', 'projectId', 'requestId']
-                    : [
-                          'production_page',
-                          'production_content_check',
-                          'production_page_reviews',
-                        ].includes(request.operation as string)
-                      ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
-                      : request.operation === 'compile'
-                        ? [
-                            'operation',
-                            'documentId',
-                            'projectId',
-                            'requestId',
-                            'deck',
-                            'planRevision',
-                          ]
-                        : request.operation === 'resume'
-                          ? ['operation', 'documentId', 'projectId', 'requestId']
-                          : request.operation === 'save_plan'
-                            ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'plan']
-                            : ['operation', 'documentId', 'projectId']
+                    : request.operation === 'production_run'
+                      ? ['operation', 'documentId', 'projectId', 'requestId']
+                      : [
+                            'production_page',
+                            'production_content_check',
+                            'production_page_reviews',
+                          ].includes(request.operation as string)
+                        ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
+                        : request.operation === 'compile'
+                          ? [
+                              'operation',
+                              'documentId',
+                              'projectId',
+                              'requestId',
+                              'deck',
+                              'planRevision',
+                            ]
+                          : request.operation === 'resume'
+                            ? ['operation', 'documentId', 'projectId', 'requestId']
+                            : request.operation === 'save_plan'
+                              ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'plan']
+                              : ['operation', 'documentId', 'projectId']
       const requiredKeys = allowedKeys.filter(
         (key) =>
           !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)) &&
@@ -227,6 +244,8 @@ export function createPresentationService(options: {
           'production_claim_evidence',
           'production_record_claim_review',
           'production_read_claim_review',
+          'production_delivery_report',
+          'production_record_issue_action',
         ].includes(request.operation as string) ||
         (request.operation === 'production_status' && request.requestId !== undefined)
       )
@@ -265,6 +284,11 @@ export function createPresentationService(options: {
         )
       )
         assertPresentationId(request.reviewId)
+      if (request.operation === 'production_record_issue_action') {
+        parsePresentationIssueActionInput(request.action)
+        if (!Number.isSafeInteger(request.expectedRevision) || Number(request.expectedRevision) < 0)
+          throw new Error('invalid_request')
+      }
       if (request.operation === 'production_record_claim_review') {
         try {
           parsePresentationClaimReview({
@@ -340,6 +364,12 @@ export function createPresentationService(options: {
         }
         if (request.operation === 'production_run' && hasPresentationWorker(key))
           throw new Error('busy')
+        if (
+          ['production_delivery_report', 'production_record_issue_action'].includes(
+            request.operation as string,
+          )
+        )
+          return boundedResponse(await handlePresentationDeliveryReport(request, store, signal))
         if ((request.operation as string).startsWith('production_'))
           return boundedResponse(
             await handlePresentationProduction(request, { store, compile, attachments }, signal),

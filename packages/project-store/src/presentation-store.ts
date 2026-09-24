@@ -1,4 +1,10 @@
 import {
+  parsePresentationIssueLedger,
+  parsePresentationIssueActionInput,
+  type PresentationIssueLedger,
+  type PresentationIssueActionInput,
+} from './presentation-issue.js'
+import {
   parsePresentationProductionJob,
   presentationProductionJobStateAfter,
   type PresentationProductionJob,
@@ -471,6 +477,80 @@ export class PresentationStore {
     if (new Set(records.map((record) => record.sequence)).size !== records.length)
       throw new Error('invalid_state')
     return records
+  }
+  issueActions(projectId: string, documentId: string, requestId: string): PresentationIssueLedger {
+    assertPresentationId(requestId)
+    const production = this.production(projectId, documentId, requestId)
+    if (!production) throw new Error('not_found')
+    const path = join(this.directory(projectId), `issue-actions-${digest(requestId)}.json`)
+    if (!present(path))
+      return {
+        version: 1,
+        projectId,
+        documentId,
+        requestId,
+        inputDigest: production.inputDigest,
+        planDigest: production.planDigest,
+        revision: 0,
+        actions: [],
+      }
+    try {
+      if (lstatSync(path).size > 2 * 1024 * 1024) throw new Error('invalid_state')
+      const record = this.read(path) as { ledger: unknown; checksum: unknown }
+      if (
+        !record ||
+        Object.keys(record).length !== 2 ||
+        !Object.hasOwn(record, 'ledger') ||
+        record.checksum !== jsonDigest(record.ledger, 2 * 1024 * 1024, 'invalid_state')
+      )
+        throw new Error('invalid_state')
+      const ledger = parsePresentationIssueLedger(record.ledger)
+      if (
+        ledger.projectId !== projectId ||
+        ledger.documentId !== documentId ||
+        ledger.requestId !== requestId ||
+        ledger.inputDigest !== production.inputDigest ||
+        ledger.planDigest !== production.planDigest
+      )
+        throw new Error('invalid_state')
+      return ledger
+    } catch {
+      throw new Error('invalid_state')
+    }
+  }
+  appendIssueAction(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+    expectedRevision: number,
+    input: PresentationIssueActionInput,
+  ): PresentationIssueLedger {
+    const action = parsePresentationIssueActionInput(input)
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+      throw new Error('invalid_request')
+    const ledger = this.issueActions(projectId, documentId, requestId)
+    const previous = ledger.actions.find((item) => item.actionId === action.actionId)
+    if (previous) {
+      const { sequence: _sequence, createdAt: _createdAt, ...content } = previous
+      if (canonical(content) !== canonical(action)) throw new Error('request_conflict')
+      return ledger
+    }
+    if (ledger.revision !== expectedRevision) throw new Error('revision_conflict')
+    if (ledger.actions.length >= 128) throw new Error('quota_exceeded')
+    const next = {
+      ...ledger,
+      revision: ledger.revision + 1,
+      actions: [
+        ...ledger.actions,
+        { ...action, sequence: ledger.revision + 1, createdAt: new Date().toISOString() },
+      ],
+    }
+    const path = join(this.directory(projectId), `issue-actions-${digest(requestId)}.json`)
+    this.write(path, {
+      ledger: next,
+      checksum: jsonDigest(next, 2 * 1024 * 1024, 'invalid_request'),
+    })
+    return next
   }
   private claimReviews(
     path: string,

@@ -33,3 +33,13 @@ export type {
   PresentationProductionJobEventInput,
   PresentationProductionJobState,
 } from './presentation-job.js'
+
+export {
+  parsePresentationIssueLedger,
+  parsePresentationIssueActionInput,
+} from './presentation-issue.js'
+export type {
+  PresentationIssueActionInput,
+  PresentationIssueAction,
+  PresentationIssueLedger,
+} from './presentation-issue.js'
