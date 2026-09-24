@@ -128,6 +128,7 @@ it('imports a URL image through the PC asset endpoint without exposing an Agent 
         height: 1,
         assetSha256: f.attachmentId,
         source: 'https://example.com/image.png',
+        sources: ['https://example.com/image.png', 'https://example.org/same.png'],
       }),
     ),
   )
@@ -142,6 +143,7 @@ it('imports a URL image through the PC asset endpoint without exposing an Agent 
   expect(await skill.importUrl('https://example.com/image.png')).toMatchObject({
     kind: 'image',
     source: 'https://example.com/image.png',
+    sources: ['https://example.com/image.png', 'https://example.org/same.png'],
   })
   expect(f.request).toHaveBeenCalledWith(
     expect.objectContaining({ operation: 'attachment_import_url', documentId: 'doc1' }),
@@ -388,6 +390,7 @@ it.each([
   { totalChars: 5 },
   { kind: 'text' },
   { source: 'file:///secret' },
+  { sources: ['https://example.com/image.png', 'file:///secret'] },
 ])('rejects forged image metadata %j', async (overrides) => {
   const f = imageFixture(overrides)
   expect(

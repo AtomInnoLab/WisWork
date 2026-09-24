@@ -52,6 +52,7 @@ export interface PresentationAttachmentMetadata {
   height?: number
   assetSha256?: string
   source?: string
+  sources?: string[]
   error?: string
   totalChars?: number
 }
@@ -76,6 +77,7 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
           'height',
           'assetSha256',
           'source',
+          'sources',
         ].includes(k),
     ) ||
     !idValid(v.attachmentId) ||
@@ -93,6 +95,12 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
     (v.kind !== undefined && v.kind !== 'text' && v.kind !== 'image') ||
     (v.error !== undefined && (typeof v.error !== 'string' || v.error.length > 200)) ||
     (v.source !== undefined && !sourceValid(v.source)) ||
+    (v.sources !== undefined &&
+      (!Array.isArray(v.sources) ||
+        v.sources.length < 2 ||
+        v.sources.length > 32 ||
+        v.source !== v.sources[0] ||
+        v.sources.some((source) => !sourceValid(source)))) ||
     (v.totalChars !== undefined && !integer(v.totalChars, 0, 1_000_000)) ||
     (v.status === 'ready' && (v.receivedBytes !== v.sizeBytes || !v.kind))
   )
