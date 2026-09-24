@@ -31,6 +31,7 @@ const inventories = {
   ],
   powerpoint: [
     'bash',
+    'check_presentation_baseline',
     'duplicate_slide',
     'edit_slide_chart',
     'edit_slide_master_xml',
@@ -39,6 +40,8 @@ const inventories = {
     'execute_office_js',
     'list_slide_shapes',
     'read',
+    'read_presentation_baseline',
+    'read_presentation_baseline_page',
     'read_slide_text',
     'screenshot_slide',
     'verify_slides',

@@ -1,3 +1,6 @@
+import { createPresentationBaselineSkill } from '../skills/powerpoint/presentation-baseline.js'
+import { BrowserPresentationBaselineAdapter } from '../skills/powerpoint/browser-presentation-baseline-adapter.js'
+import { createBrowserPresentationDocumentBinding } from '../skills/powerpoint/presentation-document.js'
 import { createPresentationHistorySkill } from '../skills/powerpoint/presentation-history.js'
 import type { PresentationHistoryEntry } from '../skills/powerpoint/presentation-change-history.js'
 import { createPresentationImageBackup } from '../skills/powerpoint/presentation-image-backup.js'
@@ -300,7 +303,20 @@ export function createOfficeHostRuntime(
               }),
             ]
           : []
-  const base = composeOfficeSkills(hostSkill, shared, extensions)
+  const baselineSkill = powerPointAdapter
+    ? createPresentationBaselineSkill({
+        adapter: new BrowserPresentationBaselineAdapter(),
+        documentId:
+          options.presentation?.documentId ?? createBrowserPresentationDocumentBinding().documentId,
+        inspectPage: (slideId, signal) =>
+          powerPointAdapter.inspectPresentationPage(slideId, signal),
+        readMasters: (signal) => powerPointAdapter.inspectSlideMasters(signal),
+      })
+    : undefined
+  const base = composeOfficeSkills(hostSkill, shared, [
+    ...extensions,
+    ...(baselineSkill ? [baselineSkill] : []),
+  ])
   const generation =
     host === 'powerpoint' && options.presentation
       ? createPresentationGenerationSkill({ ...options.presentation, vfs })
@@ -866,6 +882,7 @@ export function createOfficeHostRuntime(
         pageBackup?.clear()
         pageReplacement?.clear()
         historySkill?.clear()
+        baselineSkill?.clear()
         pageEditing?.clear()
         changes?.clear()
         qaSkill?.clear()

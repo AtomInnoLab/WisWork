@@ -365,7 +365,7 @@ function slideSemanticFingerprint(value: string): string {
 }
 
 /** Validate the Office-produced screenshot envelope without claiming a visual QA pass. */
-function pageScreenshot(value: unknown): string {
+export function validatePowerPointPageScreenshot(value: unknown): string {
   const limit = 2 * 1024 * 1024
   if (
     typeof value !== 'string' ||
@@ -1045,7 +1045,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             overlaps.push({ shapeAId: a.id, shapeBId: b.id, overlapX, overlapY })
           }
         }
-      let base64 = pageScreenshot(image.value)
+      let base64 = validatePowerPointPageScreenshot(image.value)
       // Keep a single PNG well below the Office transport's 256 KiB total request limit.
       // Use the same deterministic widths when recapturing for a review.
       const fitsModelBudget = () => atob(base64).length <= 64 * 1024
@@ -1055,7 +1055,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           width,
         })
         await sync(context, signal)
-        base64 = pageScreenshot(smaller.value)
+        base64 = validatePowerPointPageScreenshot(smaller.value)
       }
       if (!fitsModelBudget()) throw new Error('office_image_too_large')
       cancelled(signal)
