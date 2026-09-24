@@ -82,6 +82,6 @@ export const presentationHistoryBytes = (history: PresentationHistoryEnvelope) =
         ? Math.max(0, 192 * 1024 - new TextEncoder().encode(JSON.stringify(e.record)).byteLength)
         : e.kind === 'image'
           ? imageReplacementReservedBytes(e.record)
-          : 32),
+          : 'undo_pending'.length - e.record.state.length),
     0,
   )

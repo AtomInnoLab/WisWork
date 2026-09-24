@@ -338,3 +338,62 @@ it('blocks public image recovery readers when a downlevel image writer diverged'
     'presentation_change_history_state_invalid',
   )
 })
+it.each(['text', 'geometry'] as const)(
+  'can undo %s at the exact accepted history byte boundary',
+  async (kind) => {
+    const f = await fixture()
+    const { presentationHistoryBytes } =
+      await import('../src/skills/powerpoint/presentation-change-history')
+    const geometry = {
+      ...f.record,
+      before: { left: 0, top: 0, width: 1, height: 1 },
+      after: { left: 1, top: 0, width: 1, height: 1 },
+    }
+    if (kind === 'text') {
+      await f.binding.writeTextChange(f.record, undefined)
+      await f.binding.writeTextChange({ ...f.record, state: 'applied' }, f.record)
+    } else {
+      await f.binding.writeGeometryChange(geometry, undefined)
+      await f.binding.writeGeometryChange({ ...geometry, state: 'applied' }, geometry)
+    }
+    let previous = f.binding.readTextChange()
+    for (let i = 0; i < 7; i++) {
+      const pending = {
+        ...f.record,
+        changeId: `filler-${i}`,
+        before: '\u0000'.repeat(12000),
+        after: '\u0001'.repeat(12000),
+      }
+      await f.binding.writeTextChange(pending, previous)
+      previous = { ...pending, state: 'applied' }
+      await f.binding.writeTextChange(previous, pending)
+    }
+    const pending = { ...f.record, changeId: 'boundary', before: '', after: '' }
+    const h: PresentationHistoryEnvelope = JSON.parse(f.values.get(historyKey)!)
+    h.entries.push({
+      id: 'text:boundary',
+      sequence: h.entries.length + 1,
+      legacy: false,
+      kind: 'text',
+      record: pending,
+    })
+    h.heads.text = 'text:boundary'
+    const padding = 1024 * 1024 - presentationHistoryBytes(h)
+    expect(padding).toBeGreaterThan(0)
+    pending.after = '\u0000'.repeat(Math.floor(padding / 6)) + 'x'.repeat(padding % 6)
+    expect(pending.after.length).toBeLessThanOrEqual(12000)
+    await f.binding.writeTextChange(pending, previous)
+    await f.binding.writeTextChange({ ...pending, state: 'applied' }, pending)
+    expect(presentationHistoryBytes(JSON.parse(f.values.get(historyKey)!))).toBe(1024 * 1024)
+    if (kind === 'text')
+      await f.binding.writeTextChange(
+        { ...f.record, state: 'undo_pending' },
+        { ...f.record, state: 'applied' },
+      )
+    else
+      await f.binding.writeGeometryChange(
+        { ...geometry, state: 'undo_pending' },
+        { ...geometry, state: 'applied' },
+      )
+  },
+)
