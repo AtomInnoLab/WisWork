@@ -330,7 +330,10 @@ describe('durable presentation planning', () => {
       slideCount: 1,
       history: [],
       plan: { revision: 1, value: plan(), revisions: [
-        { revision: 1, createdAt: expect.any(String), inputDigest: expect.any(String) },
+        { revision: 1, createdAt: expect.any(String), inputDigest: expect.any(String),
+          snapshot: { sourceCount: 0, claimCount: 0, slideCount: 1,
+            sourcesDigest: expect.any(String), claimsDigest: expect.any(String),
+            slidesDigest: expect.any(String), styleDigest: expect.any(String) } },
       ] },
     })
     expect(decode(await service(planRequest({ ...plan(), title: 'Changed' }), signal()))).toEqual({

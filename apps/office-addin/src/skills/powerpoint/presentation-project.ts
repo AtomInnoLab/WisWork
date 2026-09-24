@@ -4,6 +4,7 @@ import {
 } from '@wiswork/pptx-engine/presentation-delivery-report'
 import type { PresentationIssueActionInput } from '@wiswork/project-store/presentation-issue'
 import type { PresentationProductionJob } from '@wiswork/project-store/presentation-job'
+import type { PresentationPlanRevisionSnapshot } from '@wiswork/project-store'
 import { parsePresentationJobResponse } from './presentation-jobs.js'
 import {
   parsePresentationProductionStatus,
@@ -34,7 +35,8 @@ export interface PresentationProjectStatus {
   title: string
   status: 'planned' | 'pending' | 'compiled'
   plan?: { revision: number; value: PresentationPlan;
-    revisions?: { revision: number; inputDigest: string; createdAt: string }[] }
+    revisions?: { revision: number; inputDigest: string; createdAt: string;
+      snapshot?: PresentationPlanRevisionSnapshot }[] }
   requestPlanRevision?: number
   latestRequestId?: string
   latestCompiledRequestId?: string
@@ -85,6 +87,17 @@ const validId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 const pageCount = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 100
+function validRevisionSnapshot(value: unknown): value is PresentationPlanRevisionSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const snapshot = value as PresentationPlanRevisionSnapshot
+  return Object.keys(snapshot).sort().join(',') ===
+    'claimCount,claimsDigest,slideCount,slidesDigest,sourceCount,sourcesDigest,styleDigest' &&
+    [snapshot.sourceCount, snapshot.claimCount, snapshot.slideCount].every((count) =>
+      Number.isSafeInteger(count) && count >= 0) &&
+    snapshot.sourceCount <= 256 && snapshot.claimCount <= 256 && snapshot.slideCount <= 32 &&
+    [snapshot.sourcesDigest, snapshot.claimsDigest, snapshot.slidesDigest, snapshot.styleDigest]
+      .every((hash) => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))
+}
 function parseStatus(value: unknown, projectId: string): PresentationProjectStatus {
   const p = value as PresentationProjectStatus | undefined
   let plan: PresentationProjectStatus['plan']
@@ -98,17 +111,20 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
       revisions = []
       for (const [index, event] of p.plan.revisions.entries()) {
         if (!event || typeof event !== 'object' || Array.isArray(event) ||
-          Object.keys(event).sort().join(',') !== 'createdAt,inputDigest,revision' ||
+          Object.keys(event).sort().join(',') !==
+            (event.snapshot === undefined ? 'createdAt,inputDigest,revision' : 'createdAt,inputDigest,revision,snapshot') ||
           !Number.isSafeInteger(event.revision) || event.revision < 1 ||
           (index > 0 && event.revision !== revisions[index - 1]!.revision + 1) ||
           typeof event.inputDigest !== 'string' || !/^[a-f0-9]{64}$/.test(event.inputDigest) ||
+          (event.snapshot !== undefined && !validRevisionSnapshot(event.snapshot)) ||
           typeof event.createdAt !== 'string' ||
           !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(event.createdAt) ||
           !Number.isFinite(Date.parse(event.createdAt)) ||
           new Date(event.createdAt).toISOString() !== event.createdAt ||
           (index > 0 && event.createdAt < revisions[index - 1]!.createdAt))
           throw new Error('presentation_response_invalid')
-        revisions.push({ revision: event.revision, inputDigest: event.inputDigest, createdAt: event.createdAt })
+        revisions.push({ revision: event.revision, inputDigest: event.inputDigest, createdAt: event.createdAt,
+          ...(event.snapshot ? { snapshot: event.snapshot } : {}) })
       }
       if (revisions.at(-1)!.revision !== p.plan.revision)
         throw new Error('presentation_response_invalid')
@@ -116,6 +132,11 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
     plan = { revision: p.plan.revision, value: parsePresentationPlan(p.plan.value),
       ...(revisions ? { revisions } : {}) }
     if (plan.value.projectId !== projectId) throw new Error('presentation_response_invalid')
+    const latestSnapshot = revisions?.at(-1)?.snapshot
+    if (latestSnapshot && (latestSnapshot.sourceCount !== plan.value.sources.length ||
+      latestSnapshot.claimCount !== plan.value.claims.length ||
+      latestSnapshot.slideCount !== plan.value.slides.length))
+      throw new Error('presentation_response_invalid')
   }
   const production =
     p?.production === undefined ? undefined : parsePresentationProductionStatus(p.production)

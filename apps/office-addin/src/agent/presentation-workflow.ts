@@ -39,9 +39,13 @@ export function presentationWorkflowSummary(
   const openIssues = reportMatches ? report!.pages.reduce((sum, page) =>
     sum + page.issues.filter((issue) => issue.disposition.state === 'open' || issue.disposition.stale).length, 0) : 0
   const failed = production?.pages.filter((page) => page.state === 'failed').length ?? 0
+  const planChangedSinceProduction = Boolean(plan && production &&
+    production.planRevision !== project.plan!.revision)
   const uncertain = importMatches ? imported!.pages.filter((page) => page.state === 'uncertain').length : 0
   const recheck = qaMatches ? qa!.pages.filter((page) => page.recheckRequired).length : 0
   const attention: PresentationWorkflowSummary['attention'] = []
+  if (planChangedSinceProduction) attention.push({ id: 'plan-revision',
+    text: `当前选中页任务依据计划第 ${production!.planRevision} 版，现已保存第 ${project.plan!.revision} 版；请确认继续旧任务或选择新任务。` })
   if (failed) attention.push({ id: 'failed-pages', text: `${failed} 页编译失败；已成功页面保留，请修复失败页后继续生产。` })
   if (uncertain) attention.push({ id: 'uncertain-import', text: `${uncertain} 页写入结果不确定；请先检查 PowerPoint 文档，再继续导入。` })
   if (recheck) attention.push({ id: 'qa-recheck', text: `${recheck} 页历史审查已失效；请重新采集并审查受影响页面。` })
@@ -93,14 +97,26 @@ export function presentationWorkflowSummary(
       : qa ? '现有 QA 记录无法与当前页任务匹配，需核对' : '尚无当前页任务的 QA 记录' },
     { name: '交付核验', detail: `${reportMatches ? `内容证据报告有 ${openIssues} 项待处理；` : '尚无当前任务的内容证据报告；'}来源真实性、保存重开及真实 PowerPoint 验收尚不能由上述记录证明` },
   ]
-  // Rebuild this view from durable records on every mount. Only the production job
-  // has a timestamped event history; the other entries describe saved checkpoints.
+  // Rebuild from durable records. Undated entries are current checkpoints, not events.
   const timeline: PresentationWorkflowSummary['timeline'] = []
   if (plan) {
     const revisions = project.plan!.revisions
     if (revisions?.length) {
-      for (const event of revisions) timeline.push({ id: `plan-${event.revision}`,
-        text: `已保存计划第 ${event.revision} 版`, at: event.createdAt })
+      for (const [index, event] of revisions.entries()) {
+        const current = event.snapshot
+        const previous = revisions[index - 1]?.snapshot
+        const changed = current && previous ? [
+          current.sourcesDigest !== previous.sourcesDigest ? '已登记资料' : undefined,
+          current.claimsDigest !== previous.claimsDigest ? '主张' : undefined,
+          current.slidesDigest !== previous.slidesDigest ? '逐页计划' : undefined,
+          current.styleDigest !== previous.styleDigest ? '样式规范' : undefined,
+        ].filter(Boolean) : []
+        const detail = current && previous
+          ? `；${changed.length ? changed.join('、') : 'Brief 或其他计划字段'}有变化`
+          : current ? `；登记 ${current.sourceCount} 份资料、${current.claimCount} 条主张、${current.slideCount} 页计划` : ''
+        timeline.push({ id: `plan-${event.revision}`,
+          text: `已保存计划第 ${event.revision} 版${detail}；来源真实性仍需核验`, at: event.createdAt })
+      }
     } else timeline.push({ id: 'plan', text: `已保存计划第 ${project.plan!.revision} 版：${plan.slides.length} 页，${plan.sources.length} 份资料` })
   }
   if (production) {

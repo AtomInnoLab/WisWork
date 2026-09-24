@@ -174,6 +174,25 @@ describe('durable plans', () => {
     expect(store.plan('p', 'd')?.revisions).toBeUndefined()
     expect(store.savePlan('p', 'd', 1, { title: 'B' }).revisions?.map((entry) => entry.revision)).toEqual([2])
   })
+  it('records bounded plan section snapshots without copying source text into events', () => {
+    const { store, directory } = planFixture()
+    const firstPlan = { sources: [{ id: 'source', excerpt: 'private source text' }],
+      claims: [{ id: 'claim' }], slides: [{ id: 'page' }], style: { accent: 'blue' } }
+    const first = store.savePlan('p', 'd', 0, firstPlan)
+    expect(first.revisions?.[0]?.snapshot).toMatchObject({ sourceCount: 1, claimCount: 1, slideCount: 1 })
+    expect(JSON.stringify(first.revisions)).not.toContain('private source text')
+    const second = store.savePlan('p', 'd', 1, { ...firstPlan,
+      sources: [{ id: 'source', excerpt: 'updated source text' }] })
+    expect(second.revisions?.[1]?.snapshot?.sourcesDigest).not.toBe(first.revisions?.[0]?.snapshot?.sourcesDigest)
+    expect(second.revisions?.[1]?.snapshot?.sourceCount).toBe(1)
+    expect(store.savePlan('p', 'd', 1, { ...firstPlan,
+      sources: [{ id: 'source', excerpt: 'updated source text' }] }).revisions).toEqual(second.revisions)
+    const path = join(directory(), 'plan.json')
+    const corrupt = structuredClone(second)
+    corrupt.revisions![1]!.snapshot!.sourceCount = 2
+    writeFileSync(path, JSON.stringify(corrupt))
+    expect(() => store.plan('p', 'd')).toThrow('invalid_state')
+  })
   it('bounds and validates persisted JSON input', () => {
     const { store } = planFixture()
     for (const plan of [

@@ -71,7 +71,41 @@ export interface PresentationPlanRecord extends PresentationPlanBinding {
   projectId: string
   documentId: string
   inputDigest: string
-  revisions?: { revision: number; inputDigest: string; createdAt: string }[]
+  revisions?: { revision: number; inputDigest: string; createdAt: string;
+    snapshot?: PresentationPlanRevisionSnapshot }[]
+}
+export interface PresentationPlanRevisionSnapshot {
+  sourceCount: number
+  claimCount: number
+  slideCount: number
+  sourcesDigest: string
+  claimsDigest: string
+  slidesDigest: string
+  styleDigest: string
+}
+function planRevisionSnapshot(plan: unknown): PresentationPlanRevisionSnapshot | undefined {
+  const value = plan as Record<string, unknown>
+  if (!Array.isArray(value.sources) || value.sources.length > 256 ||
+    !Array.isArray(value.claims) || value.claims.length > 256 ||
+    !Array.isArray(value.slides) || value.slides.length > 32 ||
+    !value.style || typeof value.style !== 'object' || Array.isArray(value.style)) return undefined
+  return {
+    sourceCount: value.sources.length, claimCount: value.claims.length,
+    slideCount: value.slides.length,
+    sourcesDigest: digest(canonical(value.sources)), claimsDigest: digest(canonical(value.claims)),
+    slidesDigest: digest(canonical(value.slides)), styleDigest: digest(canonical(value.style)),
+  }
+}
+function validPlanRevisionSnapshot(value: unknown): value is PresentationPlanRevisionSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const snapshot = value as PresentationPlanRevisionSnapshot
+  return Object.keys(snapshot).sort().join(',') ===
+    'claimCount,claimsDigest,slideCount,slidesDigest,sourceCount,sourcesDigest,styleDigest' &&
+    [snapshot.sourceCount, snapshot.claimCount, snapshot.slideCount].every((count) =>
+      Number.isSafeInteger(count) && count >= 0) &&
+    snapshot.sourceCount <= 256 && snapshot.claimCount <= 256 && snapshot.slideCount <= 32 &&
+    [snapshot.sourcesDigest, snapshot.claimsDigest, snapshot.slidesDigest, snapshot.styleDigest]
+      .every((hash) => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))
 }
 function bindingDigest(binding: PresentationPlanBinding, error = 'invalid_plan'): string {
   if (!binding || !Number.isSafeInteger(binding.revision) || binding.revision < 1)
@@ -994,10 +1028,12 @@ export class PresentationStore {
       let previousTime = ''
       for (const event of record.revisions) {
         if (!event || typeof event !== 'object' || Array.isArray(event) ||
-          Object.keys(event).sort().join(',') !== 'createdAt,inputDigest,revision' ||
+          Object.keys(event).sort().join(',') !==
+            (event.snapshot === undefined ? 'createdAt,inputDigest,revision' : 'createdAt,inputDigest,revision,snapshot') ||
           !Number.isSafeInteger(event.revision) || event.revision < 1 ||
           (previous > 0 && event.revision !== previous + 1) ||
           typeof event.inputDigest !== 'string' || !/^[a-f0-9]{64}$/.test(event.inputDigest) ||
+          (event.snapshot !== undefined && !validPlanRevisionSnapshot(event.snapshot)) ||
           typeof event.createdAt !== 'string' ||
           !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(event.createdAt) ||
           !Number.isFinite(Date.parse(event.createdAt)) ||
@@ -1007,6 +1043,9 @@ export class PresentationStore {
         previousTime = event.createdAt
       }
       if (previous !== record.revision || record.revisions.at(-1)!.inputDigest !== record.inputDigest)
+        throw new Error('invalid_state')
+      const latestSnapshot = record.revisions.at(-1)!.snapshot
+      if (latestSnapshot && canonical(latestSnapshot) !== canonical(planRevisionSnapshot(record.plan)))
         throw new Error('invalid_state')
     }
     return record
@@ -1032,6 +1071,7 @@ export class PresentationStore {
       throw new Error('revision_conflict')
     const directory = this.bind(projectId, documentId, true)!
     const previousTime = previous?.revisions?.at(-1)?.createdAt
+    const snapshot = planRevisionSnapshot(plan)
     const record: PresentationPlanRecord = {
       version: 1,
       projectId,
@@ -1042,7 +1082,8 @@ export class PresentationStore {
       revisions: [
         ...(previous?.revisions ?? []),
         { revision: revision + 1, inputDigest,
-          createdAt: new Date(Math.max(Date.now(), previousTime ? Date.parse(previousTime) : 0)).toISOString() },
+          createdAt: new Date(Math.max(Date.now(), previousTime ? Date.parse(previousTime) : 0)).toISOString(),
+          ...(snapshot ? { snapshot } : {}) },
       ].slice(-32),
     }
     this.write(join(directory, 'plan.json'), record)

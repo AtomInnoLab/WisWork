@@ -130,6 +130,32 @@ it('replays durable plan revisions without inventing research approval', () => {
   const summary = presentationWorkflowSummary({ ...project,
     plan: { ...project.plan!, revision: 2, revisions } }, undefined, undefined)!
   expect(summary.timeline.map((event) => event.id)).toEqual(['plan-1', 'plan-2'])
-  expect(summary.timeline[1]).toMatchObject({ at: revisions[1]!.createdAt, text: '已保存计划第 2 版' })
+  expect(summary.timeline[1]).toMatchObject({ at: revisions[1]!.createdAt, text: expect.stringContaining('已保存计划第 2 版') })
   expect(JSON.stringify(summary.timeline)).not.toContain('批准')
+})
+
+it('describes changed saved plan sections even when source counts stay the same', () => {
+  const snapshot = { sourceCount: 1, claimCount: 2, slideCount: 3,
+    sourcesDigest: 'a'.repeat(64), claimsDigest: 'b'.repeat(64),
+    slidesDigest: 'c'.repeat(64), styleDigest: 'd'.repeat(64) }
+  const revisions = [
+    { revision: 1, inputDigest: '1'.repeat(64), createdAt: '2026-09-24T00:01:00.000Z', snapshot },
+    { revision: 2, inputDigest: '2'.repeat(64), createdAt: '2026-09-24T00:02:00.000Z',
+      snapshot: { ...snapshot, sourcesDigest: 'e'.repeat(64), styleDigest: 'f'.repeat(64) } },
+  ]
+  const summary = presentationWorkflowSummary({ ...project,
+    plan: { ...project.plan!, revision: 2, revisions } }, undefined, undefined)!
+  expect(summary.timeline.find((event) => event.id === 'plan-1')?.text).toContain('登记 1 份资料')
+  expect(summary.timeline.find((event) => event.id === 'plan-2')?.text).toContain('已登记资料、样式规范有变化')
+  expect(summary.timeline.find((event) => event.id === 'plan-2')?.text).toContain('来源真实性仍需核验')
+})
+
+it('warns when the selected production task still uses an older saved plan', () => {
+  const selected = { ...project, plan: { ...project.plan!, revision: 2 }, production }
+  const summary = presentationWorkflowSummary(selected, undefined, undefined)!
+  expect(summary.attention).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: 'plan-revision', text: expect.stringContaining('计划第 1 版') }),
+  ]))
+  expect(summary.attention.find((item) => item.id === 'plan-revision')?.text).toContain('第 2 版')
+  expect(summary.nextTool).toBe('prepare_import')
 })

@@ -170,7 +170,10 @@ describe('plan-only project status', () => {
   it('accepts bounded saved plan revisions and rejects malformed replay history', async () => {
     const { benchmarkPlan } = await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
     const plan = benchmarkPlan()
-    const event = { revision: 1, inputDigest: 'a'.repeat(64), createdAt: '2026-09-24T00:00:00.000Z' }
+    const snapshot = { sourceCount: plan.sources.length, claimCount: plan.claims.length,
+      slideCount: plan.slides.length, sourcesDigest: 'a'.repeat(64), claimsDigest: 'b'.repeat(64),
+      slidesDigest: 'c'.repeat(64), styleDigest: 'd'.repeat(64) }
+    const event = { revision: 1, inputDigest: 'a'.repeat(64), createdAt: '2026-09-24T00:00:00.000Z', snapshot }
     const value = { projectId: plan.projectId, title: plan.title, status: 'planned',
       slideCount: plan.slides.length, slides: plan.slides.map(({ id, title }) => ({ id, title })),
       history: [], plan: { revision: 1, value: plan, revisions: [event] } }
@@ -181,6 +184,10 @@ describe('plan-only project status', () => {
     expect(f.controller.snapshot().project?.plan?.revisions).toEqual([event])
     f.request.mockResolvedValueOnce(new Response(JSON.stringify({ ...value,
       plan: { ...value.plan, revisions: [{ ...event, revision: 2 }] } })))
+    await f.controller.refresh()
+    expect(f.controller.snapshot().error).toBeTruthy()
+    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ ...value,
+      plan: { ...value.plan, revisions: [{ ...event, snapshot: { ...snapshot, sourceCount: 999 } }] } })))
     await f.controller.refresh()
     expect(f.controller.snapshot().error).toBeTruthy()
   })
