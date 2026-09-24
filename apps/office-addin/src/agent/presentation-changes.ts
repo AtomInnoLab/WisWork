@@ -1,5 +1,6 @@
 import type { PresentationExistingChange } from '../skills/powerpoint/presentation-existing-change.js'
 import type { PresentationExistingBatch } from '../skills/powerpoint/presentation-existing-batch.js'
+import type { PresentationExistingImageChange } from '../skills/powerpoint/presentation-existing-image.js'
 import {
   presentationChangeSetSummary,
   selectPresentationHistory,
@@ -31,7 +32,7 @@ import {
 
 export type PresentationChangeAction = 'inspect' | 'undo' | 'resume' | 'commit' | 'discard'
 export interface PresentationChangeEntry {
-  source?: 'existing' | 'existing_batch'
+  source?: 'existing' | 'existing_batch' | 'existing_image'
   review?: PresentationExistingChange['review']
   reviews?: PresentationExistingBatch['reviews']
   affectedPageCount?: number
@@ -81,7 +82,11 @@ type RecordValue =
   | ImageReplacementRecord
 interface SavedEntry {
   entry: PresentationChangeEntry
-  record: RecordValue | PresentationExistingChange | PresentationExistingBatch
+  record:
+    | RecordValue
+    | PresentationExistingChange
+    | PresentationExistingBatch
+    | PresentationExistingImageChange
   fingerprint: string
   historical?: boolean
 }
@@ -214,7 +219,9 @@ export function createPresentationChangesController(
         selected.push(
           ...history.filter(
             (e) =>
-              (e.kind === 'existing' || e.kind === 'existing_batch') &&
+              (e.kind === 'existing' ||
+                e.kind === 'existing_batch' ||
+                e.kind === 'existing_image') &&
               e.record.documentId === documentId,
           ),
         )
@@ -231,25 +238,18 @@ export function createPresentationChangesController(
         .sort((a, b) => Number(a.legacy) - Number(b.legacy) || b.sequence - a.sequence)
         .map((saved) => {
           const row: SavedEntry =
-            saved.kind === 'existing_batch'
+            saved.kind === 'existing_image'
               ? {
                   entry: {
                     id: saved.id,
-                    source: 'existing_batch',
-                    kind: saved.record.operations[0].kind,
-                    pageId: saved.record.operations[0].hostSlideId,
+                    source: 'existing_image',
+                    kind: 'image',
+                    pageId: saved.record.hostSlideId,
                     state: saved.record.state,
-                    reviews: copy(saved.record.reviews),
-                    affectedPageCount: new Set(saved.record.operations.map((op) => op.hostSlideId))
-                      .size,
-                    before: saved.record.operations
-                      .map((op) => `${op.hostSlideId}/${op.shapeId}: ${JSON.stringify(op.before)}`)
-                      .join('\n'),
-                    after: saved.record.operations
-                      .map((op) => `${op.hostSlideId}/${op.shapeId}: ${JSON.stringify(op.after)}`)
-                      .join('\n'),
+                    before: `原图：${saved.record.oldShapeId}\n媒体摘要：${saved.record.original.mediaDigest}\n原图已持久备份`,
+                    after: `新图：${saved.record.insertedShapeId ?? '尚未记录'}\n媒体摘要：${saved.record.assetDigest}${saved.record.restoredShapeId ? `\n恢复图片：${saved.record.restoredShapeId}` : ''}`,
                     actions:
-                      saved.record.state === 'applied'
+                      saved.record.state === 'complete'
                         ? ['inspect', 'undo']
                         : saved.record.state === 'undone'
                           ? ['inspect']
@@ -258,23 +258,26 @@ export function createPresentationChangesController(
                   record: copy(saved.record),
                   fingerprint: JSON.stringify(saved),
                 }
-              : saved.kind === 'existing'
+              : saved.kind === 'existing_batch'
                 ? {
                     entry: {
                       id: saved.id,
-                      source: 'existing',
-                      kind: saved.record.kind,
-                      pageId: saved.record.hostSlideId,
+                      source: 'existing_batch',
+                      kind: saved.record.operations[0].kind,
+                      pageId: saved.record.operations[0].hostSlideId,
                       state: saved.record.state,
-                      before:
-                        typeof saved.record.before === 'string'
-                          ? saved.record.before
-                          : JSON.stringify(saved.record.before, null, 2),
-                      after:
-                        typeof saved.record.after === 'string'
-                          ? saved.record.after
-                          : JSON.stringify(saved.record.after, null, 2),
-                      review: copy(saved.record.review),
+                      reviews: copy(saved.record.reviews),
+                      affectedPageCount: new Set(
+                        saved.record.operations.map((op) => op.hostSlideId),
+                      ).size,
+                      before: saved.record.operations
+                        .map(
+                          (op) => `${op.hostSlideId}/${op.shapeId}: ${JSON.stringify(op.before)}`,
+                        )
+                        .join('\n'),
+                      after: saved.record.operations
+                        .map((op) => `${op.hostSlideId}/${op.shapeId}: ${JSON.stringify(op.after)}`)
+                        .join('\n'),
                       actions:
                         saved.record.state === 'applied'
                           ? ['inspect', 'undo']
@@ -285,7 +288,34 @@ export function createPresentationChangesController(
                     record: copy(saved.record),
                     fingerprint: JSON.stringify(saved),
                   }
-                : entry(saved.kind, saved.record)
+                : saved.kind === 'existing'
+                  ? {
+                      entry: {
+                        id: saved.id,
+                        source: 'existing',
+                        kind: saved.record.kind,
+                        pageId: saved.record.hostSlideId,
+                        state: saved.record.state,
+                        before:
+                          typeof saved.record.before === 'string'
+                            ? saved.record.before
+                            : JSON.stringify(saved.record.before, null, 2),
+                        after:
+                          typeof saved.record.after === 'string'
+                            ? saved.record.after
+                            : JSON.stringify(saved.record.after, null, 2),
+                        review: copy(saved.record.review),
+                        actions:
+                          saved.record.state === 'applied'
+                            ? ['inspect', 'undo']
+                            : saved.record.state === 'undone'
+                              ? ['inspect']
+                              : ['inspect', 'resume'],
+                      },
+                      record: copy(saved.record),
+                      fingerprint: JSON.stringify(saved),
+                    }
+                  : entry(saved.kind, saved.record)
           row.entry = {
             ...row.entry,
             id: saved.id,
@@ -469,8 +499,17 @@ export function createPresentationChangesController(
                 : 'page_replacement'
         const generated = r as RecordValue
         const input: Record<string, unknown> =
-          selected.entry.source === 'existing' || selected.entry.source === 'existing_batch'
-            ? { change_id: (r as PresentationExistingChange | PresentationExistingBatch).changeId }
+          selected.entry.source === 'existing' ||
+          selected.entry.source === 'existing_batch' ||
+          selected.entry.source === 'existing_image'
+            ? {
+                change_id: (
+                  r as
+                    | PresentationExistingChange
+                    | PresentationExistingBatch
+                    | PresentationExistingImageChange
+                ).changeId,
+              }
             : {
                 project_id: generated.projectId,
                 ...(kind === 'page'
@@ -488,11 +527,13 @@ export function createPresentationChangesController(
           {
             id: `change-${ticket}`,
             name:
-              selected.entry.source === 'existing_batch'
-                ? `${action}_existing_presentation_batch`
-                : selected.entry.source === 'existing'
-                  ? `${action}_existing_presentation_change`
-                  : `${action}_presentation_${suffix}`,
+              selected.entry.source === 'existing_image'
+                ? `${action}_existing_presentation_image_change`
+                : selected.entry.source === 'existing_batch'
+                  ? `${action}_existing_presentation_batch`
+                  : selected.entry.source === 'existing'
+                    ? `${action}_existing_presentation_change`
+                    : `${action}_presentation_${suffix}`,
             input,
           },
           cancellation.signal,
@@ -501,13 +542,21 @@ export function createPresentationChangesController(
           result = await result.result
         if (ticket !== generation) return
         if (!current(scope, await options.documentId())) throw new Error('stale')
-        if (selected.entry.source === 'existing' || selected.entry.source === 'existing_batch') {
+        if (
+          selected.entry.source === 'existing' ||
+          selected.entry.source === 'existing_batch' ||
+          selected.entry.source === 'existing_image'
+        ) {
           const latest = (await read(copy(artifact), scope, ticket)).find(
             (row) => row.entry.id === id,
           )
           if (!latest || ticket !== generation) throw new Error('stale')
           const core = (
-            record: RecordValue | PresentationExistingChange | PresentationExistingBatch,
+            record:
+              | RecordValue
+              | PresentationExistingChange
+              | PresentationExistingBatch
+              | PresentationExistingImageChange,
           ) => {
             const {
               state: _state,

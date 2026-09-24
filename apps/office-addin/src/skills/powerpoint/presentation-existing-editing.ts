@@ -13,6 +13,7 @@ import {
   type PresentationExistingChange,
 } from './presentation-existing-change.js'
 import { validatePresentationExistingBatch } from './presentation-existing-batch.js'
+import { validatePresentationExistingImageChange } from './presentation-existing-image.js'
 import type { PresentationHistoryEntry } from './presentation-change-history.js'
 interface Options {
   baseline: PresentationBaselineSkill
@@ -82,7 +83,7 @@ const tools: AgentToolDef[] = names.map((name) => {
       : review
         ? 'Record a historical visual assessment only for this session’s captured screenshot, after freshly recapturing and matching it. Not a current or whole-deck acceptance claim.'
         : list
-          ? 'List single-object and ordered batch existing-deck savepoints for this document, independently of generated projects. History is not proof of current host state.'
+          ? 'List native text/geometry, ordered batch and picture savepoints for this existing document, independently of generated projects. History is not proof of current host state.'
           : name.startsWith('capture_')
             ? 'Capture the saved change target page for local visual review after matching the current target state. This does not pass visual QA.'
             : name.startsWith('inspect_')
@@ -222,15 +223,24 @@ export function createPresentationExistingEditingSkill(
         if (call.name.startsWith('list_')) {
           const history = structuredClone(options.listChangeHistory())
           const entries = history.filter(
-            (e): e is Extract<PresentationHistoryEntry, { kind: 'existing' | 'existing_batch' }> =>
-              (e.kind === 'existing' || e.kind === 'existing_batch') &&
+            (
+              e,
+            ): e is Extract<
+              PresentationHistoryEntry,
+              { kind: 'existing' | 'existing_batch' | 'existing_image' }
+            > =>
+              (e.kind === 'existing' ||
+                e.kind === 'existing_batch' ||
+                e.kind === 'existing_image') &&
               e.record.documentId === documentId,
           )
           if (
             entries.some((e) =>
               e.kind === 'existing'
                 ? !validatePresentationExistingChange(e.record)
-                : e.kind === 'existing_batch' && !validatePresentationExistingBatch(e.record),
+                : e.kind === 'existing_batch'
+                  ? !validatePresentationExistingBatch(e.record)
+                  : !validatePresentationExistingImageChange(e.record),
             )
           )
             throw new Error('presentation_existing_change_invalid')
@@ -242,26 +252,38 @@ export function createPresentationExistingEditingSkill(
               documentId,
               currentHostVerified: false,
               changes: entries.map((e) =>
-                e.kind === 'existing_batch'
+                e.kind === 'existing_image'
                   ? {
                       changeId: e.record.changeId,
-                      kind: 'batch',
-                      state: e.record.state,
-                      cursor: e.record.cursor,
-                      operationCount: e.record.operations.length,
-                      hostSlideIds: [...new Set(e.record.operations.map((op) => op.hostSlideId))],
-                      sequence: e.sequence,
-                      historicalReviews: e.record.reviews ?? [],
-                    }
-                  : {
-                      changeId: e.record.changeId,
-                      kind: e.record.kind,
+                      kind: 'image',
                       hostSlideId: e.record.hostSlideId,
-                      shapeId: e.record.shapeId,
+                      oldShapeId: e.record.oldShapeId,
+                      insertedShapeId: e.record.insertedShapeId ?? null,
+                      restoredShapeId: e.record.restoredShapeId ?? null,
                       state: e.record.state,
                       sequence: e.sequence,
-                      historicalReview: e.record.review ?? null,
-                    },
+                      currentHostVerified: false,
+                    }
+                  : e.kind === 'existing_batch'
+                    ? {
+                        changeId: e.record.changeId,
+                        kind: 'batch',
+                        state: e.record.state,
+                        cursor: e.record.cursor,
+                        operationCount: e.record.operations.length,
+                        hostSlideIds: [...new Set(e.record.operations.map((op) => op.hostSlideId))],
+                        sequence: e.sequence,
+                        historicalReviews: e.record.reviews ?? [],
+                      }
+                    : {
+                        changeId: e.record.changeId,
+                        kind: e.record.kind,
+                        hostSlideId: e.record.hostSlideId,
+                        shapeId: e.record.shapeId,
+                        state: e.record.state,
+                        sequence: e.sequence,
+                        historicalReview: e.record.review ?? null,
+                      },
               ),
             }),
             mutated: false,

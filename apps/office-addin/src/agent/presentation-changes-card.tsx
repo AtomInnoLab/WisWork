@@ -63,9 +63,11 @@ export function PresentationChangesCard({
             <p>
               {entry.source === 'existing_batch'
                 ? '现稿批量 · '
-                : entry.source === 'existing'
-                  ? '现稿 · '
-                  : ''}
+                : entry.source === 'existing_image'
+                  ? '现稿图片 · '
+                  : entry.source === 'existing'
+                    ? '现稿 · '
+                    : ''}
               页面：{entry.pageId} · 状态：
               {entry.state}
             </p>
