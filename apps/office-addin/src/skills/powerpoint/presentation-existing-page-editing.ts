@@ -64,22 +64,23 @@ async function oneSlide(bytesValue: Uint8Array, signal?: AbortSignal) {
     throw new Error('presentation_page_source_invalid')
   return { base64, digest, sourceSlideId: `${ids[0]![1]}#`, sha256: await sha(bytesValue), sizeBytes: bytesValue.length }
 }
-const names = ['stage', 'inspect', 'resume', 'commit', 'discard', 'undo'] as const
+const names = ['stage', 'inspect', 'resume', 'commit', 'discard', 'undo', 'capture', 'record'] as const
 const tools: AgentToolDef[] = names.map((action) => ({
   name: `${action}_existing_presentation_page_change`,
-  description: action === 'stage' ? 'Confirm backup and stage a one-slide PPTX after an existing native page; original remains.' : action === 'inspect' ? 'Inspect current native page order and content against a saved change.' : action === 'resume' ? 'Finish journal for a known inserted page without replaying insertion.' : action === 'commit' ? 'Confirm replacing the original with the verified staged page.' : action === 'discard' ? 'Confirm deleting the verified staged page while keeping the original.' : 'Confirm restoring the backed-up original page and removing the replacement.',
+  description: action === 'stage' ? 'Confirm backup and stage a one-slide PPTX after an existing native page; original remains.' : action === 'inspect' ? 'Inspect current native page order and content against a saved change.' : action === 'resume' ? 'Finish journal for a known inserted page without replaying insertion.' : action === 'commit' ? 'Confirm replacing the original with the verified staged page.' : action === 'discard' ? 'Confirm deleting the verified staged page while keeping the original.' : action === 'undo' ? 'Confirm restoring the backed-up original page and removing the replacement.' : action === 'capture' ? 'Capture one affected page for visual judgment; does not pass QA.' : 'Persist a visual judgment for one unchanged captured page.',
   inputSchema: { type: 'object', properties: action === 'stage'
     ? { baseline_id: { type: 'string' }, slide_id: { type: 'string' }, path: { type: 'string' }, explanation: { type: 'string' } }
-    : { change_id: { type: 'string' } }, required: action === 'stage' ? ['baseline_id', 'slide_id', 'path'] : ['change_id'], additionalProperties: false },
+    : { change_id: { type: 'string' }, ...(action === 'capture' || action === 'record' ? { slide_id: { type: 'string' } } : {}), ...(action === 'record' ? { screenshot_digest: { type: 'string' }, status: { type: 'string', enum: ['pass', 'fail'] }, notes: { type: 'string', maxLength: 2000 } } : {}) }, required: action === 'stage' ? ['baseline_id', 'slide_id', 'path'] : action === 'capture' ? ['change_id', 'slide_id'] : action === 'record' ? ['change_id', 'slide_id', 'screenshot_digest', 'status', 'notes'] : ['change_id'], additionalProperties: false },
 }))
 
 export function createPresentationExistingPageEditingSkill(options: Options): AgentSkill & { clear(): void } {
   let epoch = 0
+  let reviewCapture: { changeId: string; slideId: string; record: string; digest: string; capturedAt: string; epoch: number } | undefined
   return {
     id: 'presentation-existing-page-editing',
-    get tools() { return options.available() ? tools : tools.filter((t) => t.name.startsWith('inspect_')) },
-    systemPrompt: 'Existing page rebuild uses a validated one-slide VFS PPTX. Stage retains the original. Inspect and resume interrupted insertion before further action; never replay unknown insertion. Commit and undo require separate confirmation. A saved record is not visual QA.',
-    clear() { epoch++ },
+    get tools() { return options.available() ? tools : tools.filter((t) => ['inspect_', 'capture_', 'record_'].some((prefix) => t.name.startsWith(prefix))) },
+    systemPrompt: 'Existing page rebuild uses a validated one-slide VFS PPTX. Stage retains the original. Inspect and resume interrupted insertion before further action; never replay unknown insertion. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. A saved historical review is not current or whole-deck QA.',
+    clear() { epoch++; reviewCapture = undefined },
     async executeTool(call, signal) {
       const token = epoch
       const active = () => { if (epoch !== token || signal?.aborted) throw new Error('cancelled') }
@@ -89,7 +90,7 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
         const schema = tool.inputSchema as { properties: Record<string, unknown>; required: string[] }
         if (Object.keys(call.input).some((k) => !(k in schema.properties)) || schema.required.some((k) => !(k in call.input))) throw new Error('invalid_tool_input')
         const action = call.name.split('_')[0]
-        if (action !== 'inspect' && !options.available()) throw new Error('presentation_page_backup_unavailable')
+        if (!['inspect', 'capture', 'record'].includes(action) && !options.available()) throw new Error('presentation_page_backup_unavailable')
         const documentId = await options.documentId()
         const current = async () => { active(); if (await options.documentId() !== documentId) throw new Error('presentation_document_changed'); active() }
         const request = async (operation: string, data: Record<string, unknown>) => {
@@ -129,6 +130,7 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
           await current(); saved(); await options.writeExistingPageChange(next, expected); await current()
           if (!same(options.readExistingPageChange(next.changeId), next)) throw new Error('office_state_uncertain')
           record = structuredClone(next); expected = structuredClone(next)
+          reviewCapture = undefined
         }
         const baselineFresh = async () => {
           if (!baseline || !same(options.baseline.snapshot(baseline.baselineId), baseline)) return false
@@ -159,6 +161,32 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
           }
           const verified = expectedStatuses[record.state].includes(observed.status)
           return { output: output({ changeId: record.changeId, state: record.state, inspection: observed, currentHostVerified: verified, manualReview: !verified, qaPassed: false }), mutated: false, summary: '已检查现稿单页变更' }
+        }
+        if (action === 'capture' || action === 'record') {
+          const targets = record.state === 'staged' ? [record.oldSlideId, record.newSlideId!] :
+            record.state === 'applied' ? [record.newSlideId!] :
+            record.state === 'discarded' ? [record.oldSlideId] :
+            record.state === 'undone' ? [record.restoredSlideId!] : []
+          const slideId = call.input.slide_id
+          if (!host(slideId) || !targets.includes(slideId) || record.reviews?.some((review) => review.hostSlideId === slideId)) throw new Error('presentation_existing_page_state_invalid')
+          const status = record.state === 'staged' ? 'staged' : record.state === 'applied' ? 'applied' : record.state === 'discarded' ? 'baseline' : 'undone'
+          const before = await inspect()
+          if (before.status !== status || !targets.every((id) => before.slideIds.includes(id))) throw new Error('presentation_existing_page_conflict')
+          const shot = await options.inspectPage(slideId, signal)
+          await current(); saved()
+          if (shot.slideId !== slideId || shot.shapesTruncated || shot.screenshot.mime !== 'image/png') throw new Error('office_read_failed')
+          const png = validatePowerPointPageScreenshot(shot.screenshot.base64)
+          const screenshotDigest = await sha(bytes(png))
+          const after = await inspect()
+          if (after.status !== status || !same(after.slideIds, before.slideIds)) throw new Error('presentation_existing_page_conflict')
+          if (action === 'capture') {
+            reviewCapture = { changeId: record.changeId, slideId, record: JSON.stringify(record), digest: screenshotDigest, capturedAt: new Date().toISOString(), epoch }
+            return { output: output({ changeId: record.changeId, hostSlideId: slideId, screenshotDigest, qaPassed: false }), display: { kind: 'images', items: [{ url: `data:image/png;base64,${png}` }] }, mutated: false, summary: '已采集整页变更截图，等待视觉判断' }
+          }
+          if (!reviewCapture || reviewCapture.epoch !== epoch || reviewCapture.changeId !== record.changeId || reviewCapture.slideId !== slideId || reviewCapture.record !== JSON.stringify(record) || reviewCapture.digest !== screenshotDigest || call.input.screenshot_digest !== screenshotDigest || !['pass', 'fail'].includes(call.input.status as string) || typeof call.input.notes !== 'string' || call.input.notes.length > 2000) throw new Error('presentation_existing_page_review_stale')
+          const review = { hostSlideId: slideId, screenshotDigest, capturedAt: reviewCapture.capturedAt, reviewedAt: new Date().toISOString(), status: call.input.status as 'pass' | 'fail', notes: call.input.notes }
+          await store({ ...record, reviews: [...(record.reviews ?? []), review] })
+          return { output: output({ changeId: record.changeId, historicalReview: review, qaPassed: false }), mutated: false, summary: '已保存整页变更历史视觉判断' }
         }
         const observed = action === 'stage' ? undefined : await inspect()
         if (action === 'stage') {
@@ -245,17 +273,17 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
             } else if (action === 'commit') {
               await loadBackup()
               if ((await inspect()).status !== initial) throw new Error('proposal_stale')
-              if (record.state === 'staged') await store({ ...record, state: 'commit_pending' })
+              if (record.state === 'staged') await store({ ...record, state: 'commit_pending', reviews: undefined })
               await options.adapter.commit(projected(record), assertCurrent, signal)
               await store({ ...record, state: 'applied' })
             } else if (action === 'discard') {
-              if (record.state === 'staged') await store({ ...record, state: 'discard_pending' })
+              if (record.state === 'staged') await store({ ...record, state: 'discard_pending', reviews: undefined })
               await options.adapter.discard(projected(record), assertCurrent, signal)
               await store({ ...record, state: 'discarded' })
             } else {
               const backup = await loadBackup()
               if ((await inspect()).status !== initial) throw new Error('proposal_stale')
-              if (record.state === 'applied') await store({ ...record, state: 'undo_pending' })
+              if (record.state === 'applied') await store({ ...record, state: 'undo_pending', reviews: undefined })
               await options.adapter.undo(projected(record), backup, async (restoredSlideId) => { await store({ ...record, state: 'restore_inserted', restoredSlideId }) }, assertCurrent, signal)
               await store({ ...record, state: 'undone' })
             }

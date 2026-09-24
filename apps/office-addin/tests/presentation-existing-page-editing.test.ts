@@ -106,6 +106,24 @@ it('captures exact durable page IDs after stage, commit and undo', async () => {
   expect(f.inspectPage.mock.calls.map(([id]) => id)).toEqual(['old', 'new', 'new', 'restored'])
 })
 
+it('records staged visual judgments for both pages and clears them before commit', async () => {
+  const f = await fixture()
+  const proposed = await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/home/user/rebuilt.pptx' })
+  await f.confirm()
+  const changeId = JSON.parse(proposed.output).changeId as string
+  for (const slideId of ['old', 'new']) {
+    const captured = await f.call('capture', { change_id: changeId, slide_id: slideId })
+    expect(captured.isError).toBeUndefined()
+    const screenshotDigest = JSON.parse(captured.output).screenshotDigest as string
+    const reviewed = await f.call('record', { change_id: changeId, slide_id: slideId, screenshot_digest: screenshotDigest, status: 'pass', notes: 'checked' })
+    expect(reviewed.isError).toBeUndefined()
+  }
+  expect(f.records.get(changeId)?.reviews?.map((review) => review.hostSlideId)).toEqual(['old', 'new'])
+  await f.call('commit', { change_id: changeId })
+  await f.confirm()
+  expect(f.records.get(changeId)?.reviews).toBeUndefined()
+})
+
 it('does not claim page evidence if the staged page disappears during capture', async () => {
   const f = await fixture()
   const proposed = await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/home/user/rebuilt.pptx' })

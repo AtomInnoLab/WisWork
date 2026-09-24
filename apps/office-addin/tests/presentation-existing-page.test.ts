@@ -92,3 +92,21 @@ it('blocks concurrent changes and rolls back a failed save', async () => {
   expect([...f.values]).toEqual([...before])
   expect(f.reopen().readExistingPageChange('page1')).toEqual(f.record)
 })
+
+it('stores each staged page review and invalidates both at commit', async () => {
+  const f = await fixture()
+  const inserted = { ...f.record, state: 'inserted' as const, newSlideId: 's3' }
+  const staged = { ...inserted, state: 'staged' as const }
+  const base = { screenshotDigest: 'e'.repeat(64), capturedAt: '2026-09-24T00:00:00.000Z', reviewedAt: '2026-09-24T00:01:00.000Z', status: 'pass' as const, notes: 'checked' }
+  await f.binding.writeExistingPageChange(f.record, undefined)
+  await f.binding.writeExistingPageChange(inserted, f.record)
+  await f.binding.writeExistingPageChange(staged, inserted)
+  const first = { ...staged, reviews: [{ ...base, hostSlideId: 's1' }] }
+  const both = { ...staged, reviews: [...first.reviews, { ...base, hostSlideId: 's3' }] }
+  await f.binding.writeExistingPageChange(first, staged)
+  await f.reopen().writeExistingPageChange(both, first)
+  await expect(f.binding.writeExistingPageChange({ ...both, state: 'commit_pending' }, both)).rejects.toThrow('state_invalid')
+  const pending = { ...staged, state: 'commit_pending' as const }
+  await f.binding.writeExistingPageChange(pending, both)
+  expect(f.reopen().readExistingPageChange('page1')?.reviews).toBeUndefined()
+})

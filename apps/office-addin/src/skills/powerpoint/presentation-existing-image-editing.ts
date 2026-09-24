@@ -75,6 +75,14 @@ const tools: AgentToolDef[] = [
       additionalProperties: false,
     },
   })),
+  ...(['capture', 'record'] as const).map((action): AgentToolDef => ({
+    name: `${action}_existing_presentation_image_review`,
+    description: action === 'capture' ? 'Capture the saved image replacement page for visual judgment; does not pass QA.' : 'Persist a visual judgment for an unchanged captured screenshot.',
+    inputSchema: { type: 'object', properties: {
+      change_id: id,
+      ...(action === 'record' ? { screenshot_digest: { type: 'string' }, status: { type: 'string', enum: ['pass', 'fail'] }, notes: { type: 'string', maxLength: 2000 } } : {}),
+    }, required: action === 'record' ? ['change_id', 'screenshot_digest', 'status', 'notes'] : ['change_id'], additionalProperties: false },
+  })),
 ]
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const result = (v: unknown) => {
@@ -152,19 +160,22 @@ export function createPresentationExistingImageEditingSkill(
   options: Options,
 ): AgentSkill & { clear(): void } {
   let epoch = 0
+  let reviewCapture: { changeId: string; record: string; digest: string; capturedAt: string; epoch: number } | undefined
   return {
     id: 'presentation-existing-image-editing',
     get tools() {
       return tools.filter(
         (tool) =>
           tool.name === 'inspect_existing_presentation_image_change' ||
+          tool.name.endsWith('_existing_presentation_image_review') ||
           (options.imageBackup.available() && supportsBrowserMediaValidation()),
       )
     },
     systemPrompt:
-      'For existing native pictures, read_presentation_baseline, then replace_existing_presentation_image with an exact native slide/shape ID and validated VFS PNG/JPEG. A confirmed proposal backs up original bytes before the host write. New native picture IDs differ. For interrupted writes inspect then resume only an identified candidate; never retry insertion automatically. Undo requires the original backup and exact after snapshot. Recapture affected page screenshots after writes; current QA is not implied.',
+      'For existing native pictures, read_presentation_baseline, then replace_existing_presentation_image with an exact native slide/shape ID and validated VFS PNG/JPEG. A confirmed proposal backs up original bytes before the host write. New native picture IDs differ. For interrupted writes inspect then resume only an identified candidate; never retry insertion automatically. Undo requires the original backup and exact after snapshot. After a confirmed write, capture_existing_presentation_image_review, inspect the displayed image, then record_existing_presentation_image_review with its screenshot_digest and pass/fail notes. A historical review never certifies current or whole-deck QA.',
     clear() {
       epoch++
+      reviewCapture = undefined
     },
     async executeTool(call, signal) {
       const token = epoch
@@ -186,6 +197,7 @@ export function createPresentationExistingImageEditingSkill(
           throw new Error('invalid_tool_input')
         if (
           call.name !== 'inspect_existing_presentation_image_change' &&
+          !call.name.endsWith('_existing_presentation_image_review') &&
           (!options.imageBackup.available() || !supportsBrowserMediaValidation())
         )
           throw new Error('presentation_image_backup_unavailable')
@@ -291,6 +303,7 @@ export function createPresentationExistingImageEditingSkill(
             throw new Error('office_state_uncertain')
           record = structuredClone(next)
           expected = structuredClone(next)
+          reviewCapture = undefined
         }
         const freshBaseline = async () => {
           if (!creating || !originalBaseline) return true
@@ -386,6 +399,33 @@ export function createPresentationExistingImageEditingSkill(
             mutated: false,
             summary: '已检查现稿图片保存点',
           }
+        }
+        if (call.name.endsWith('_existing_presentation_image_review')) {
+          if (!['complete', 'undone'].includes(record.state) || record.review)
+            throw new Error('presentation_existing_image_state_invalid')
+          const shapeId = record.state === 'complete' ? record.insertedShapeId! : record.restoredShapeId!
+          const picture = await options.imageAdapter.inspect(record.hostSlideId, shapeId, signal)
+          await current(); saved()
+          if (record.state === 'complete') {
+            if (!same(picture, record.after)) throw new Error('presentation_existing_image_conflict')
+          } else afterPicture(record, picture, true)
+          const shot = await options.inspectPage(record.hostSlideId, signal)
+          await current(); saved()
+          if (shot.slideId !== record.hostSlideId || shot.shapesTruncated || shot.screenshot.mime !== 'image/png') throw new Error('office_read_failed')
+          const png = validatePowerPointPageScreenshot(shot.screenshot.base64)
+          const screenshotDigest = await hash(decode(png))
+          const again = await options.imageAdapter.inspect(record.hostSlideId, shapeId, signal)
+          await current(); saved()
+          if (!same(again, picture)) throw new Error('presentation_existing_image_conflict')
+          if (call.name.startsWith('capture_')) {
+            reviewCapture = { changeId: record.changeId, record: JSON.stringify(record), digest: screenshotDigest, capturedAt: new Date().toISOString(), epoch }
+            return { output: result({ changeId: record.changeId, hostSlideId: record.hostSlideId, screenshotDigest, qaPassed: false }), display: { kind: 'images', items: [{ url: `data:image/png;base64,${png}` }] }, mutated: false, summary: '已采集图片变更页，等待视觉判断' }
+          }
+          if (!reviewCapture || reviewCapture.epoch !== epoch || reviewCapture.changeId !== record.changeId || reviewCapture.record !== JSON.stringify(record) || reviewCapture.digest !== screenshotDigest || call.input.screenshot_digest !== screenshotDigest || !['pass', 'fail'].includes(call.input.status as string) || typeof call.input.notes !== 'string' || call.input.notes.length > 2000)
+            throw new Error('presentation_existing_image_review_stale')
+          const review = { hostSlideId: record.hostSlideId, screenshotDigest, capturedAt: reviewCapture.capturedAt, reviewedAt: new Date().toISOString(), status: call.input.status as 'pass' | 'fail', notes: call.input.notes }
+          await store({ ...record, review })
+          return { output: result({ changeId: record.changeId, historicalReview: review, qaPassed: false }), mutated: false, summary: '已保存图片变更页历史视觉判断' }
         }
         if (call.name === 'undo_existing_presentation_image_change' && record.state !== 'complete')
           throw new Error('presentation_existing_image_state_invalid')
@@ -530,7 +570,7 @@ export function createPresentationExistingImageEditingSkill(
               )
                 throw new Error('proposal_stale')
               const bytes = await backupBytes()
-              await store({ ...record, state: 'undo_pending', undoBaseline: record.after })
+              await store({ ...record, state: 'undo_pending', undoBaseline: record.after, review: undefined })
               const restored = await options.imageAdapter.replace(
                 record.hostSlideId,
                 record.insertedShapeId!,

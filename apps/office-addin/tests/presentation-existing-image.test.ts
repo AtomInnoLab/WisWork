@@ -123,3 +123,21 @@ it('blocks other changes while image write is unresolved and restores both setti
   for (const [key, value] of before) expect(f.values.get(key)).toBe(value)
   expect(f.reopen().readExistingImageChange('img1')).toEqual(f.record)
 })
+
+it('stores an image review only at a terminal savepoint and clears it before undo', async () => {
+  const f = await fixture()
+  const inserted = { ...f.record, insertedShapeId: 'p2' }
+  const after = { ...f.record.original, shapeId: 'p2', shapeIds: ['p2'], mediaDigest: f.record.assetDigest }
+  const complete = { ...inserted, state: 'complete' as const, after }
+  const review = { hostSlideId: 's1', screenshotDigest: 'e'.repeat(64), capturedAt: '2026-09-24T00:00:00.000Z', reviewedAt: '2026-09-24T00:01:00.000Z', status: 'pass' as const, notes: 'visual check' }
+  await f.binding.writeExistingImageChange(f.record, undefined)
+  await f.binding.writeExistingImageChange(inserted, f.record)
+  await f.binding.writeExistingImageChange(complete, inserted)
+  const reviewed = { ...complete, review }
+  await f.reopen().writeExistingImageChange(reviewed, complete)
+  expect(f.reopen().readExistingImageChange('img1')?.review).toEqual(review)
+  await expect(f.binding.writeExistingImageChange({ ...reviewed, state: 'undo_pending', undoBaseline: after }, reviewed)).rejects.toThrow('state_invalid')
+  const undo = { ...complete, state: 'undo_pending' as const, undoBaseline: after }
+  await f.binding.writeExistingImageChange(undo, reviewed)
+  expect(f.reopen().readExistingImageChange('img1')?.review).toBeUndefined()
+})

@@ -189,6 +189,24 @@ it('captures the exact native page after confirmed image replacement and undo', 
   expect(second.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'slide' }] })
 })
 
+it('records a reviewed screenshot and rejects reuse after undo', async () => {
+  const f = await fixture()
+  const proposed = await f.call('replace_existing_presentation_image', { baseline_id: 'baseline', slide_id: 'slide', shape_id: 'old', path: '/image.png' })
+  await f.confirm()
+  const changeId = JSON.parse(proposed.output).changeId as string
+  const captured = await f.call('capture_existing_presentation_image_review', { change_id: changeId })
+  expect(captured.isError).toBeUndefined()
+  const screenshotDigest = JSON.parse(captured.output).screenshotDigest as string
+  const reviewed = await f.call('record_existing_presentation_image_review', { change_id: changeId, screenshot_digest: screenshotDigest, status: 'pass', notes: 'checked' })
+  expect(reviewed.isError).toBeUndefined()
+  expect(f.binding.readExistingImageChange(changeId)?.review?.status).toBe('pass')
+  await f.call('undo_existing_presentation_image_change', { change_id: changeId })
+  await f.confirm()
+  expect(f.binding.readExistingImageChange(changeId)?.review).toBeUndefined()
+  const stale = await f.call('record_existing_presentation_image_review', { change_id: changeId, screenshot_digest: screenshotDigest, status: 'pass', notes: 'old shot' })
+  expect(stale.isError).toBe(true)
+})
+
 it('keeps a confirmed image write while reporting unavailable evidence if the host changes during capture', async () => {
   const f = await fixture()
   const proposed = await f.call('replace_existing_presentation_image', { baseline_id: 'baseline', slide_id: 'slide', shape_id: 'old', path: '/image.png' })

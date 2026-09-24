@@ -1,5 +1,6 @@
 import type { PictureSnapshot } from './browser-presentation-image-adapter.js'
 import type { PresentationImageBackupMetadata } from './presentation-image-backup.js'
+import { validExistingVisualReview, type ExistingVisualReview } from './presentation-existing-visual-review.js'
 
 export interface PresentationExistingImageChange {
   version: 1
@@ -18,6 +19,7 @@ export interface PresentationExistingImageChange {
   after?: PictureSnapshot
   undoBaseline?: PictureSnapshot
   restoredShapeId?: string
+  review?: ExistingVisualReview
 }
 
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength
@@ -93,6 +95,7 @@ export const existingImageReservedBytes = (r: PresentationExistingImageChange) =
   (r.undoBaseline ? 0 : bytes(r.original) + 3300) +
   (r.insertedShapeId ? 0 : 1700) +
   (r.restoredShapeId ? 0 : 1700) +
+  (r.review ? 0 : 8202) +
   32
 
 export function validatePresentationExistingImageChange(
@@ -117,6 +120,7 @@ export function validatePresentationExistingImageChange(
     'after',
     'undoBaseline',
     'restoredShapeId',
+    'review',
   ]
   if (
     Object.keys(r).some((key) => !allowed.includes(key)) ||
@@ -190,6 +194,8 @@ export function validatePresentationExistingImageChange(
     return false
   if (r.state === 'undo_pending' && (!r.after || !r.undoBaseline)) return false
   if (r.state === 'undone' && (!r.after || !r.undoBaseline || !r.restoredShapeId)) return false
+  if (r.review !== undefined &&
+    (!['complete', 'undone'].includes(r.state) || !validExistingVisualReview(r.review) || r.review.hostSlideId !== r.hostSlideId)) return false
   return bytes(r) + existingImageReservedBytes(r) <= 192 * 1024
 }
 
@@ -208,6 +214,7 @@ export function validExistingImageTransition(
       after: undefined,
       undoBaseline: undefined,
       restoredShapeId: undefined,
+      review: undefined,
     })
   if (core(before) !== core(after)) return false
   if (before.state === 'pending')
@@ -219,10 +226,12 @@ export function validExistingImageTransition(
     )
   if (before.state === 'complete')
     return (
-      after.state === 'undo_pending' &&
+      ((after.state === 'complete' && before.review === undefined && !!after.review &&
+        before.insertedShapeId === after.insertedShapeId && JSON.stringify(before.after) === JSON.stringify(after.after)) ||
+      (after.state === 'undo_pending' && after.review === undefined &&
       before.insertedShapeId === after.insertedShapeId &&
       JSON.stringify(before.after) === JSON.stringify(after.after) &&
-      after.restoredShapeId === undefined
+      after.restoredShapeId === undefined))
     )
   if (before.state === 'undo_pending')
     return (
@@ -234,5 +243,8 @@ export function validExistingImageTransition(
           !!after.restoredShapeId &&
           (!before.restoredShapeId || before.restoredShapeId === after.restoredShapeId)))
     )
+  if (before.state === 'undone')
+    return after.state === 'undone' && before.review === undefined && !!after.review &&
+      before.restoredShapeId === after.restoredShapeId
   return false
 }

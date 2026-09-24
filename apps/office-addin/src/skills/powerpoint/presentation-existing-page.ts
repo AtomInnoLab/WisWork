@@ -1,4 +1,5 @@
 import { validSourceSlideId } from './presentation-page-delivery.js'
+import { validExistingVisualReview, type ExistingVisualReview } from './presentation-existing-visual-review.js'
 
 export interface PresentationExistingPageChange {
   version: 1
@@ -26,6 +27,7 @@ export interface PresentationExistingPageChange {
     | 'undone'
   newSlideId?: string
   restoredSlideId?: string
+  reviews?: ExistingVisualReview[]
 }
 
 const id = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
@@ -44,7 +46,7 @@ export const existingPageReservedBytes = (r: PresentationExistingPageChange) =>
     state: 'restore_inserted',
     newSlideId: '\uffff'.repeat(256),
     restoredSlideId: '\uffff'.repeat(256),
-  }) - bytes(r)
+  }) - bytes(r) + Math.max(0, 2 * 8202 + 12 - (r.reviews ? bytes(r.reviews) + ',"reviews":'.length : 0))
 
 export function validatePresentationExistingPageChange(value: unknown): value is PresentationExistingPageChange {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
@@ -52,7 +54,7 @@ export function validatePresentationExistingPageChange(value: unknown): value is
   const keys = [
     'version', 'changeId', 'documentId', 'baselineId', 'baselineDigest', 'scope',
     'oldSlideId', 'beforeSlideIds', 'originalPackageDigest', 'replacementPackageDigest',
-    'sourceSlideId', 'backup', 'state', 'newSlideId', 'restoredSlideId',
+    'sourceSlideId', 'backup', 'state', 'newSlideId', 'restoredSlideId', 'reviews',
   ]
   if (
     Object.keys(r).some((key) => !keys.includes(key)) ||
@@ -77,6 +79,16 @@ export function validatePresentationExistingPageChange(value: unknown): value is
   if (['restore_inserted', 'undone'].includes(r.state)) {
     if (!hostId(r.restoredSlideId) || r.restoredSlideId === r.newSlideId || r.beforeSlideIds.includes(r.restoredSlideId)) return false
   } else if (r.restoredSlideId !== undefined) return false
+  if (r.reviews !== undefined) {
+    const targets = r.state === 'staged' ? [r.oldSlideId, r.newSlideId] :
+      r.state === 'applied' ? [r.newSlideId] :
+      r.state === 'discarded' ? [r.oldSlideId] :
+      r.state === 'undone' ? [r.restoredSlideId] : []
+    if (!Array.isArray(r.reviews) || r.reviews.length > targets.length ||
+      !r.reviews.every(validExistingVisualReview) ||
+      r.reviews.some((review) => !targets.includes(review.hostSlideId)) ||
+      new Set(r.reviews.map((review) => review.hostSlideId)).size !== r.reviews.length) return false
+  }
   return bytes(r) + existingPageReservedBytes(r) <= 192 * 1024
 }
 
@@ -88,7 +100,7 @@ export function validExistingPageTransition(
   if (!before) return after.state === 'pending'
   if (!validatePresentationExistingPageChange(before)) return false
   const identity = (r: PresentationExistingPageChange) => JSON.stringify({
-    ...r, state: undefined, newSlideId: undefined, restoredSlideId: undefined,
+    ...r, state: undefined, newSlideId: undefined, restoredSlideId: undefined, reviews: undefined,
   })
   const next: Record<PresentationExistingPageChange['state'], PresentationExistingPageChange['state'][]> = {
     pending: ['inserted'], inserted: ['staged'], staged: ['discard_pending', 'commit_pending'],
@@ -96,7 +108,11 @@ export function validExistingPageTransition(
     commit_pending: ['applied'], applied: ['undo_pending'], undo_pending: ['restore_inserted'],
     restore_inserted: ['undone'], undone: [],
   }
-  return identity(before) === identity(after) && next[before.state].includes(after.state) &&
+  const reviewOnly = before.state === after.state && ['staged', 'applied', 'discarded', 'undone'].includes(after.state) &&
+    (after.reviews?.length ?? 0) === (before.reviews?.length ?? 0) + 1 &&
+    (before.reviews ?? []).every((review) => after.reviews?.some((nextReview) => JSON.stringify(nextReview) === JSON.stringify(review)))
+  return identity(before) === identity(after) && (reviewOnly ||
+    (next[before.state].includes(after.state) && after.reviews === undefined)) &&
     (before.newSlideId === undefined || before.newSlideId === after.newSlideId) &&
     (before.restoredSlideId === undefined || before.restoredSlideId === after.restoredSlideId)
 }

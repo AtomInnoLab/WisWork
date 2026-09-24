@@ -36,6 +36,7 @@ export interface PresentationChangeEntry {
   source?: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page'
   review?: PresentationExistingChange['review']
   reviews?: PresentationExistingBatch['reviews']
+  visualReviews?: PresentationExistingPageChange['reviews']
   affectedPageCount?: number
   sequence?: number
   legacy?: boolean
@@ -249,6 +250,8 @@ export function createPresentationChangesController(
                     kind: 'page',
                     pageId: saved.record.oldSlideId,
                     state: saved.record.state,
+                    visualReviews: copy(saved.record.reviews),
+                    affectedPageCount: saved.record.state === 'staged' ? 2 : 1,
                     before: `原页：${saved.record.oldSlideId}\n包摘要：${saved.record.originalPackageDigest}\n原页已持久备份`,
                     after: `新页：${saved.record.newSlideId ?? '尚未记录'}\n包摘要：${saved.record.replacementPackageDigest}${saved.record.restoredSlideId ? `\n恢复页面：${saved.record.restoredSlideId}` : ''}`,
                     actions: pageActions[saved.record.state],
@@ -264,6 +267,8 @@ export function createPresentationChangesController(
                     kind: 'image',
                     pageId: saved.record.hostSlideId,
                     state: saved.record.state,
+                    visualReviews: saved.record.review ? [copy(saved.record.review)] : [],
+                    affectedPageCount: 1,
                     before: `原图：${saved.record.oldShapeId}\n媒体摘要：${saved.record.original.mediaDigest}\n原图已持久备份`,
                     after: `新图：${saved.record.insertedShapeId ?? '尚未记录'}\n媒体摘要：${saved.record.assetDigest}${saved.record.restoredShapeId ? `\n恢复图片：${saved.record.restoredShapeId}` : ''}`,
                     actions:
