@@ -136,7 +136,7 @@ function compressedMetadata(file: unknown): { compressed?: number; uncompressed?
   }
 }
 
-async function loadBoundedZip(
+export async function loadBoundedZip(
   base64: string,
   signal?: AbortSignal,
   checkCRC32 = true,
