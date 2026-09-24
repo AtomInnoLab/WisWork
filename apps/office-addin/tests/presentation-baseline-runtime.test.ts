@@ -63,7 +63,7 @@ it('detects manual title-placeholder edits through the real adapter and runtime'
   const range = {
     text: 'Original title',
     load,
-    font: { name: 'Arial', size: 24, color: '#000000', load },
+    font: { name: 'Arial', size: 24, color: '#000000', bold: false, italic: false, underline: 'None', load },
   }
   const frame = { isNullObject: false, load, textRange: range }
   const shape = {

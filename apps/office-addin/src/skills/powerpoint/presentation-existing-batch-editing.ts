@@ -5,7 +5,7 @@ import type {
 } from '../../agent/proposal-controller.js'
 import { selectionFingerprint } from '../../agent/proposal-controller.js'
 import type { PresentationBaselineSkill } from './presentation-baseline.js'
-import type { PresentationBaselineAdapter } from './browser-presentation-baseline-adapter.js'
+import { nativePlainTextEditable, type PresentationBaselineAdapter } from './browser-presentation-baseline-adapter.js'
 import {
   nativeGeometryEditable,
   validatePowerPointPageScreenshot,
@@ -177,7 +177,7 @@ export function createPresentationExistingBatchEditingSkill(
     id: 'presentation-existing-batch-editing',
     tools,
     systemPrompt:
-      'For two or more existing-deck text/geometry changes, read_presentation_baseline then edit_existing_presentation_batch. Use exact native IDs. Geometry proposals support TextBox, GeometricShape, Image and Line only; use a page rebuild or dedicated validated operation for Chart, Table, Group, SmartArt and placeholders. A batch is ordered and recoverable, not atomic. After confirmed writes, capture_existing_presentation_batch_page for every affected page, visually review, then record_existing_presentation_batch_page_review using its screenshot_digest. Historical reviews do not certify current or whole-deck QA. If interrupted, inspect then resume or undo. Never replay ambiguous host values.',
+      'For two or more existing-deck text/geometry changes, read_presentation_baseline then edit_existing_presentation_batch. Use exact native IDs. Geometry proposals support TextBox, GeometricShape, Image and Line only; use a page rebuild or dedicated validated operation for Chart, Table, Group, SmartArt and placeholders. Whole-range text edits require TextBox or GeometricShape and determinate aggregate font fields; mixed or unknown formatting requires a dedicated validated operation. A batch is ordered and recoverable, not atomic. After confirmed writes, capture_existing_presentation_batch_page for every affected page, visually review, then record_existing_presentation_batch_page_review using its screenshot_digest. Historical reviews do not certify current or whole-deck QA. If interrupted, inspect then resume or undo. Never replay ambiguous host values.',
     clear() {
       epoch++
       qaEpoch++
@@ -275,10 +275,13 @@ export function createPresentationExistingBatchEditingSkill(
             if (!shape) throw new Error('presentation_existing_target_unsupported')
             if (op.kind === 'geometry' && !nativeGeometryEditable(shape.type))
               throw new Error('presentation_existing_target_unsupported')
+            if (op.kind === 'text' && !nativePlainTextEditable(shape))
+              throw new Error('presentation_existing_target_unsupported')
             const base = { hostSlideId: op.slide_id, shapeId: op.shape_id, shapeType: shape.type }
             if (
               op.kind === 'text' &&
               typeof op.text === 'string' &&
+              nativePlainTextEditable(shape) &&
               shape.text !== undefined &&
               op.geometry === undefined
             )

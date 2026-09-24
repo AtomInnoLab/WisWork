@@ -16,7 +16,7 @@ function host() {
       textRange: {
         text: 'Existing document',
         load,
-        font: { name: null, size: 18, color: null, load },
+        font: { name: null, size: 18, color: null, bold: null, italic: false, underline: 'None', load },
       },
     },
   }
@@ -74,7 +74,7 @@ describe('existing presentation baseline adapter', () => {
           width: 30,
           height: 40,
           text: 'Existing document',
-          font: { name: null, size: 18, color: null },
+          font: { name: null, size: 18, color: null, bold: null, italic: false, underline: 'None' },
         },
       ],
     })
@@ -192,7 +192,7 @@ describe('existing presentation baseline adapter', () => {
     const adapter = new BrowserPresentationBaselineAdapter()
     expect((await adapter.readPage('native-slide')).shapes[0]).toMatchObject({
       text: 'Existing document',
-      font: { name: null, size: 18, color: null },
+      font: { name: null, size: 18, color: null, bold: null, italic: false, underline: 'None' },
     })
     h.shape.textFrame.textRange.text = 'Changed body'
     expect((await adapter.readPage('native-slide')).shapes[0]?.text).toBe('Changed body')

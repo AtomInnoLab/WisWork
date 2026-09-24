@@ -73,6 +73,7 @@ async function fixture() {
     otherText = 'other-before',
     geometry = { left: 1, top: 2, width: 100, height: 40 },
     shapeType = 'TextBox',
+    font = { name: 'Arial' as string | null, size: 20 as number | null, color: '#000000' as string | null, bold: false as boolean | null, italic: false as boolean | null, underline: 'None' as string | null },
     selection = ['shape'],
     screenshot = png
   const values = new Map<string, string>()
@@ -94,7 +95,7 @@ async function fixture() {
     type: shapeType,
     ...geometry,
     text,
-    font: { name: 'Arial', size: 20, color: '#000000' },
+    font: { ...font },
   })
   const otherShape = () => ({ ...shape(), id: 'other-shape', text: otherText })
   vi.spyOn(BrowserPresentationBaselineAdapter.prototype, 'readContext').mockImplementation(
@@ -222,6 +223,9 @@ async function fixture() {
     setShapeType: (v: string) => {
       shapeType = v
     },
+    setFont: (v: typeof font) => {
+      font = v
+    },
     setScreenshot: (v: string) => {
       screenshot = v
     },
@@ -248,6 +252,37 @@ it.each(['Chart', 'Table', 'Group', 'SmartArt', 'Placeholder'])('does not offer 
   expect(batch.output).toContain('presentation_existing_target_unsupported')
   expect(f.editGeometry).not.toHaveBeenCalled()
   expect(f.getRuntime().proposals.pending()).toBeUndefined()
+})
+it.each(['name', 'size', 'color', 'bold', 'italic', 'underline'] as const)('rejects whole-range text edits when %s formatting is indeterminate', async (field) => {
+  const f = await fixture()
+  f.setFont({ name: 'Arial', size: 20, color: '#000000', bold: false, italic: false, underline: 'None', [field]: null })
+  const baseline_id = await f.baseline()
+  const single = await f.call('edit_existing_presentation_text', {
+    baseline_id, slide_id: 'slide', shape_id: 'shape', text: 'after',
+  })
+  expect(single.output).toContain('presentation_existing_target_unsupported')
+  const batch = await f.call('edit_existing_presentation_batch', {
+    baseline_id, intent: 'Update two labels', preserved: [], validation: [], risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      { slide_id: 'other', shape_id: 'other-shape', kind: 'text', text: 'other-after' },
+    ],
+  })
+  expect(batch.isError).toBe(true)
+  expect(f.editText).not.toHaveBeenCalled()
+  expect(f.getRuntime().proposals.pending()).toBeUndefined()
+})
+it('rejects text edits when aggregate font data is unavailable', async () => {
+  const f = await fixture()
+  vi.spyOn(BrowserPresentationBaselineAdapter.prototype, 'readPage').mockImplementation(async (slideId) => ({
+    slideId, shapes: [{ id: 'shape', name: 'Title', type: 'TextBox', ...f.geometry(), text: 'before' }],
+  }))
+  const baseline_id = await f.baseline()
+  const result = await f.call('edit_existing_presentation_text', {
+    baseline_id, slide_id: 'slide', shape_id: 'shape', text: 'after',
+  })
+  expect(result.output).toContain('presentation_existing_target_unsupported')
+  expect(f.editText).not.toHaveBeenCalled()
 })
 it.each(['text', 'geometry'] as const)(
   'persists a confirmed existing %s change and undoes it after reopening while offline',
