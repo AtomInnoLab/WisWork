@@ -62,7 +62,10 @@ async function oneSlide(bytesValue: Uint8Array, signal?: AbortSignal) {
     !relations?.includes(`Target="slides/${slidePaths[0]!.split('/').at(-1)}"`)
   )
     throw new Error('presentation_page_source_invalid')
-  return { base64, digest, sourceSlideId: `${ids[0]![1]}#`, sha256: await sha(bytesValue), sizeBytes: bytesValue.length }
+  const slideXml = await zip.file(slidePaths[0]!)!.async('string')
+  const imageOnly = /<(?:[A-Za-z][\w.-]*:)?pic\b/.test(slideXml) &&
+    !/<(?:[A-Za-z][\w.-]*:)?(?:sp|graphicFrame|grpSp|cxnSp)\b/.test(slideXml)
+  return { base64, digest, sourceSlideId: `${ids[0]![1]}#`, sha256: await sha(bytesValue), sizeBytes: bytesValue.length, imageOnly }
 }
 const names = ['stage', 'inspect', 'resume', 'commit', 'discard', 'undo', 'capture', 'record'] as const
 const tools: AgentToolDef[] = names.map((action) => ({
@@ -79,7 +82,7 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
   return {
     id: 'presentation-existing-page-editing',
     get tools() { return options.available() ? tools : tools.filter((t) => ['inspect_', 'capture_', 'record_'].some((prefix) => t.name.startsWith(prefix))) },
-    systemPrompt: 'Existing page rebuild uses a validated one-slide VFS PPTX. Stage retains the original. Inspect and resume interrupted insertion before further action; never replay unknown insertion. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
+    systemPrompt: 'Existing page rebuild uses a validated one-slide VFS PPTX. An image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. Inspect and resume interrupted insertion before further action; never replay unknown insertion. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
     clear() { epoch++; reviewCapture = undefined },
     async executeTool(call, signal) {
       const token = epoch
@@ -112,6 +115,8 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
           if (!baseline || baseline.documentId !== documentId || !baseline.scope.slideIds.includes(input.slide_id) || baseline.scope.shapeIds?.length) throw new Error('presentation_existing_scope_mismatch')
           sourcePath = input.path
           source = await oneSlide(options.vfs.readBytes(sourcePath, { maxBytes: MAX_PPTX_PACKAGE_BYTES + 1 }), signal)
+          if (source.imageOnly && baseline.pages?.find((page) => page.slideId === input.slide_id)?.shapes.some((shape) => shape.type !== 'Image'))
+            throw new Error('presentation_page_source_rasterized')
           const original = await options.exportAdapter.exportPresentationPagePackage(input.slide_id, signal)
           await current()
           if (original.slideId !== input.slide_id || !same(original.slideIds, baseline.context.slideIds)) throw new Error('presentation_baseline_changed')

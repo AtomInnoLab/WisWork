@@ -29,6 +29,7 @@ async function fixture() {
     baselineId: 'baseline', documentId: 'doc', contentDigest: 'a'.repeat(64),
     scope: { kind: 'current', slideIds: ['old'] },
     context: { slideIds: ['old'], selectedSlideIds: ['old'], selectedShapeIds: [] },
+    pages: [{ slideId: 'old', shapes: [{ id: 'title', type: 'TextBox' }] }],
   }
   const baseline = {
     snapshot: () => structuredClone(baselineSnapshot),
@@ -157,6 +158,18 @@ it('does not claim page evidence if the staged page disappears during capture', 
   expect(await f.confirm()).toMatchObject({ status: 'confirmed', postWrite: { status: 'unavailable' } })
   expect(f.records.get(JSON.parse(proposed.output).changeId)?.state).toBe('staged')
   expect(f.records.get(JSON.parse(proposed.output).changeId)?.captures).toBeUndefined()
+})
+
+it('rejects an image-only replacement when the original page has native content', async () => {
+  const f = await fixture()
+  const zip = await JSZip.loadAsync(f.source())
+  zip.file('ppt/slides/slide1.xml', '<p:sld><p:cSld><p:spTree><p:pic/></p:spTree></p:cSld></p:sld>')
+  f.changeSource(await zip.generateAsync({ type: 'uint8array' }))
+  const result = await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/home/user/flattened.pptx' })
+  expect(result.isError).toBe(true)
+  expect(result.output).toContain('presentation_page_source_rasterized')
+  expect(f.adapter.stage).not.toHaveBeenCalled()
+  expect(f.request).not.toHaveBeenCalled()
 })
 
 it('stages with durable backup, then separately commits and restores after reopen', async () => {

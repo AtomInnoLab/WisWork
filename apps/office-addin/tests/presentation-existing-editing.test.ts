@@ -72,6 +72,7 @@ async function fixture() {
     text = 'before',
     otherText = 'other-before',
     geometry = { left: 1, top: 2, width: 100, height: 40 },
+    shapeType = 'TextBox',
     selection = ['shape'],
     screenshot = png
   const values = new Map<string, string>()
@@ -90,7 +91,7 @@ async function fixture() {
   const shape = () => ({
     id: 'shape',
     name: 'Title',
-    type: 'TextBox',
+    type: shapeType,
     ...geometry,
     text,
     font: { name: 'Arial', size: 20, color: '#000000' },
@@ -218,12 +219,36 @@ async function fixture() {
     setSelection: (v: string[]) => {
       selection = v
     },
+    setShapeType: (v: string) => {
+      shapeType = v
+    },
     setScreenshot: (v: string) => {
       screenshot = v
     },
     geometry: () => geometry,
   }
 }
+it.each(['Chart', 'Table', 'Group', 'SmartArt', 'Placeholder'])('does not offer native geometry for complex %s shapes', async (type) => {
+  const f = await fixture()
+  f.setShapeType(type)
+  const baseline_id = await f.baseline()
+  const single = await f.call('edit_existing_presentation_geometry', {
+    baseline_id, slide_id: 'slide', shape_id: 'shape', geometry: { ...f.geometry(), left: 30 },
+  })
+  expect(single.isError).toBe(true)
+  expect(single.output).toContain('presentation_existing_target_unsupported')
+  const batch = await f.call('edit_existing_presentation_batch', {
+    baseline_id, intent: 'Move chart and update caption', preserved: [], validation: [], risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'geometry', geometry: { ...f.geometry(), left: 30 } },
+      { slide_id: 'other', shape_id: 'other-shape', kind: 'text', text: 'other-after' },
+    ],
+  })
+  expect(batch.isError).toBe(true)
+  expect(batch.output).toContain('presentation_existing_target_unsupported')
+  expect(f.editGeometry).not.toHaveBeenCalled()
+  expect(f.getRuntime().proposals.pending()).toBeUndefined()
+})
 it.each(['text', 'geometry'] as const)(
   'persists a confirmed existing %s change and undoes it after reopening while offline',
   async (kind) => {

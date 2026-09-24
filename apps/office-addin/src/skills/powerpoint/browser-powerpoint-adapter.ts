@@ -518,6 +518,8 @@ function shapeGeometry(shape: RuntimeRecord): PresentationPageGeometry {
   if (!validPageGeometry(result)) throw new Error('office_read_failed')
   return result
 }
+export const nativeGeometryEditable = (type: unknown): boolean =>
+  type === 'TextBox' || type === 'GeometricShape' || type === 'Image' || type === 'Line'
 async function geometryShape(
   context: RuntimeRecord,
   slideId: string,
