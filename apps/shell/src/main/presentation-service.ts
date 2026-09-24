@@ -52,6 +52,7 @@ const errorCodes = new Set([
   'parse_failed',
   'remote_image_unavailable',
   'remote_image_source_conflict',
+  'attachment_in_use',
   'page_not_ready',
 ])
 const encode = (value: unknown): Uint8Array => Buffer.from(JSON.stringify(value), 'utf8')
@@ -123,6 +124,8 @@ export function createPresentationService(options: {
           'attachment_chunk',
           'attachment_finish',
           'attachment_delete',
+          'attachment_attest_license',
+          'attachment_revoke_license',
           'attachment_import_url',
           'attachment_list',
           'attachment_read',

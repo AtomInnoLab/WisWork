@@ -391,6 +391,7 @@ it.each([
   { kind: 'text' },
   { source: 'file:///secret' },
   { sources: ['https://example.com/image.png', 'file:///secret'] },
+  { licenseDeclaration: { kind: 'verified', evidenceAttachmentId: 'b'.repeat(64), assertedAt: 1 } },
 ])('rejects forged image metadata %j', async (overrides) => {
   const f = imageFixture(overrides)
   expect(
@@ -400,6 +401,51 @@ it.each([
     'presentation_response_invalid',
   )
   expect(f.vfs.list('/home/user')).toEqual([])
+})
+it('saves and revokes a user image license assertion through the negotiated rights channel', async () => {
+  const f = imageFixture()
+  const evidenceId = 'c'.repeat(64)
+  await expect(f.skill.attestLicense(f.value.attachmentId, 'licensed', evidenceId)).rejects.toThrow(
+    'presentation_assets_unavailable',
+  )
+  const request = vi.fn(
+    async (body: { operation: string }) =>
+      new Response(
+        JSON.stringify({
+          ...f.value,
+          ...(body.operation === 'attachment_attest_license'
+            ? {
+                licenseDeclaration: {
+                  kind: 'licensed',
+                  evidenceAttachmentId: evidenceId,
+                  assertedAt: 1,
+                },
+              }
+            : {}),
+        }),
+      ),
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    imagesAvailable: () => true,
+    rightsAvailable: () => true,
+    request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  expect(await skill.attestLicense(f.value.attachmentId, 'licensed', evidenceId)).toMatchObject({
+    licenseDeclaration: { kind: 'licensed', evidenceAttachmentId: evidenceId },
+  })
+  expect(request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      operation: 'attachment_attest_license',
+      documentId: 'doc',
+      attachmentId: f.value.attachmentId,
+      evidenceAttachmentId: evidenceId,
+    }),
+    expect.any(AbortSignal),
+  )
+  expect(await skill.revokeLicense(f.value.attachmentId)).not.toHaveProperty('licenseDeclaration')
 })
 it('does not publish image upload results after image capability loss', async () => {
   const f = imageFixture(),

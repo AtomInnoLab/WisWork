@@ -194,7 +194,7 @@ export async function compilePresentationDeck(
         const sources = asset.sources?.length
           ? asset.sources.join('; ')
           : (asset.source ?? 'source not supplied')
-        return `Image [${asset.id}]: ${sources}; license: ${asset.license ?? 'unknown'}; alt text: ${el.altText ?? 'missing'}`
+        return `Image [${asset.id}]: ${sources}; license: ${asset.license ?? 'unknown'}${asset.licenseEvidence ? ` (asserted, not verified; evidence: ${asset.licenseEvidence})` : ''}; alt text: ${el.altText ?? 'missing'}`
       })
     slide.addNotes(
       [
@@ -202,7 +202,7 @@ export async function compilePresentationDeck(
         ir.notes ?? '',
         ...claims.map((claim, i) => `${sources[i]}\n${claim.text}`),
         ...assetSources,
-        'Attribution supplied by the input; source accuracy has not been verified.',
+        'Attribution supplied by the input; source accuracy and license rights have not been independently verified.',
       ]
         .filter(Boolean)
         .join('\n\n'),

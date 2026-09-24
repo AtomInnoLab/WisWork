@@ -726,6 +726,7 @@ describe('Office relay PC client', () => {
     'presentation-attachments.v1',
     'presentation-assets.v1',
     'presentation-remote-images.v1',
+    'presentation-asset-rights.v1',
   ])(
     'negotiates presentation only when provided and streams recoverable generation requests',
     async (capabilityName) => {
@@ -755,6 +756,7 @@ describe('Office relay PC client', () => {
         'presentation-attachments.v1',
         'presentation-assets.v1',
         'presentation-remote-images.v1',
+        'presentation-asset-rights.v1',
       ]
       expect(JSON.parse(socket.sent[0]!)).toEqual({
         version: 2,
@@ -821,6 +823,22 @@ describe('Office relay PC client', () => {
           request_id: 'wrong_remote_capability',
           capability_name: capabilityName,
           body: { operation: 'attachment_import_url', url: 'https://example.com/image.png' },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      if (capabilityName === 'presentation-assets.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_rights_capability',
+          capability_name: capabilityName,
+          body: {
+            operation: 'attachment_attest_license',
+            attachmentId: 'a'.repeat(64),
+            license: 'owned',
+            evidenceAttachmentId: 'b'.repeat(64),
+          },
         })
         await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
       }

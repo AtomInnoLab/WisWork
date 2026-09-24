@@ -43,6 +43,8 @@ const SUPPORTED_CAPABILITIES: &[&str] = &[
     "presentation.v1",
     "presentation-attachments.v1",
     "presentation-assets.v1",
+    "presentation-remote-images.v1",
+    "presentation-asset-rights.v1",
 ];
 
 #[derive(Clone)]

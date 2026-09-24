@@ -53,6 +53,11 @@ export interface PresentationAttachmentMetadata {
   assetSha256?: string
   source?: string
   sources?: string[]
+  licenseDeclaration?: {
+    kind: 'owned' | 'licensed' | 'public_domain'
+    evidenceAttachmentId: string
+    assertedAt: number
+  }
   error?: string
   totalChars?: number
 }
@@ -78,6 +83,7 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
           'assetSha256',
           'source',
           'sources',
+          'licenseDeclaration',
         ].includes(k),
     ) ||
     !idValid(v.attachmentId) ||
@@ -95,6 +101,16 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
     (v.kind !== undefined && v.kind !== 'text' && v.kind !== 'image') ||
     (v.error !== undefined && (typeof v.error !== 'string' || v.error.length > 200)) ||
     (v.source !== undefined && !sourceValid(v.source)) ||
+    (v.licenseDeclaration !== undefined &&
+      (!v.licenseDeclaration ||
+        typeof v.licenseDeclaration !== 'object' ||
+        Array.isArray(v.licenseDeclaration) ||
+        Object.keys(v.licenseDeclaration).sort().join(',') !==
+          'assertedAt,evidenceAttachmentId,kind' ||
+        !['owned', 'licensed', 'public_domain'].includes(v.licenseDeclaration.kind) ||
+        !idValid(v.licenseDeclaration.evidenceAttachmentId) ||
+        v.licenseDeclaration.evidenceAttachmentId === v.attachmentId ||
+        !integer(v.licenseDeclaration.assertedAt, 1, Number.MAX_SAFE_INTEGER))) ||
     (v.sources !== undefined &&
       (!Array.isArray(v.sources) ||
         v.sources.length < 2 ||
@@ -125,6 +141,7 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
       v.width !== undefined ||
       v.height !== undefined ||
       v.assetSha256 !== undefined ||
+      v.licenseDeclaration !== undefined ||
       (v.kind === 'text' && image) ||
       (v.status === 'ready' && v.totalChars === undefined)
     )
@@ -163,11 +180,18 @@ export function createPresentationAttachmentSkill(
   options: Pick<PresentationGenerationOptions, 'available' | 'request' | 'documentId' | 'vfs'> & {
     imagesAvailable?(): boolean
     remoteImagesAvailable?(): boolean
+    rightsAvailable?(): boolean
   },
 ): AgentSkill & {
   upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
   list(): Promise<PresentationAttachmentMetadata[]>
   importUrl(url: string): Promise<PresentationAttachmentMetadata>
+  attestLicense(
+    imageId: string,
+    license: 'owned' | 'licensed' | 'public_domain',
+    evidenceId: string,
+  ): Promise<PresentationAttachmentMetadata>
+  revokeLicense(imageId: string): Promise<PresentationAttachmentMetadata>
   remove(attachmentId: string): Promise<void>
   clear(): void
 } {
@@ -294,6 +318,46 @@ export function createPresentationAttachmentSkill(
         if (!options.remoteImagesAvailable?.()) throw new Error('presentation_assets_unavailable')
         const result = metadata(await request({ operation: 'attachment_import_url', url }))
         if (result.status !== 'ready' || result.kind !== 'image' || !result.source) return invalid()
+        return result
+      })
+    },
+    async attestLicense(imageId, license, evidenceId) {
+      if (
+        !idValid(imageId) ||
+        !idValid(evidenceId) ||
+        imageId === evidenceId ||
+        !['owned', 'licensed', 'public_domain'].includes(license)
+      )
+        throw new Error('invalid_tool_input')
+      return scope(undefined, async (request) => {
+        if (!options.rightsAvailable?.()) throw new Error('presentation_assets_unavailable')
+        const result = metadata(
+          await request({
+            operation: 'attachment_attest_license',
+            attachmentId: imageId,
+            license,
+            evidenceAttachmentId: evidenceId,
+          }),
+        )
+        if (
+          result.attachmentId !== imageId ||
+          result.kind !== 'image' ||
+          result.licenseDeclaration?.kind !== license ||
+          result.licenseDeclaration.evidenceAttachmentId !== evidenceId
+        )
+          return invalid()
+        return result
+      })
+    },
+    async revokeLicense(imageId) {
+      if (!idValid(imageId)) throw new Error('invalid_tool_input')
+      return scope(undefined, async (request) => {
+        if (!options.rightsAvailable?.()) throw new Error('presentation_assets_unavailable')
+        const result = metadata(
+          await request({ operation: 'attachment_revoke_license', attachmentId: imageId }),
+        )
+        if (result.attachmentId !== imageId || result.kind !== 'image' || result.licenseDeclaration)
+          return invalid()
         return result
       })
     },

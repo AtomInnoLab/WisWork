@@ -30,6 +30,7 @@ export interface PresentationInlineAsset {
   source?: string
   sources?: string[]
   license?: 'owned' | 'licensed' | 'public_domain' | 'unknown'
+  licenseEvidence?: string
 }
 export interface PresentationClaim {
   id: string
@@ -138,6 +139,7 @@ export const PRESENTATION_DECK_SCHEMA: Schema = object({
             source: text(2000, 1),
             sources: array(text(2000, 1), 32, 1),
             license: choice('owned', 'licensed', 'public_domain', 'unknown'),
+            licenseEvidence: { ...text(75, 75), pattern: '^attachment:[a-f0-9]{64}$' },
           },
           ['id', 'mime', 'base64', 'width', 'height'],
         ),
@@ -249,6 +251,8 @@ export function parsePresentationDeck(input: unknown): PresentationDeck {
     if ('attachmentId' in asset) continue
     if (asset.sources?.length && asset.source && asset.source !== asset.sources[0])
       reject('asset_source_conflict')
+    if (asset.licenseEvidence && (!asset.license || asset.license === 'unknown'))
+      reject('asset_license_evidence_conflict')
     if (asset.base64.length % 4 !== 0) reject('image_encoding')
     if (
       !Number.isInteger(asset.width) ||

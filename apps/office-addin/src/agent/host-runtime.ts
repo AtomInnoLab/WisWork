@@ -106,9 +106,16 @@ export interface OfficeHostRuntime {
   durableAttachmentsAvailable?(): boolean
   durableImagesAvailable?(): boolean
   remoteImagesAvailable?(): boolean
+  rightsAvailable?(): boolean
   listDurableAttachments?(): Promise<PresentationAttachmentMetadata[]>
   deleteDurableAttachment?(attachmentId: string): Promise<void>
   importPresentationImageUrl?(url: string): Promise<void>
+  attestPresentationImageLicense?(
+    imageId: string,
+    license: 'owned' | 'licensed' | 'public_domain',
+    evidenceId: string,
+  ): Promise<void>
+  revokePresentationImageLicense?(imageId: string): Promise<void>
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   vfs: InMemoryVfs
@@ -538,6 +545,7 @@ export function createOfficeHostRuntime(
               options.presentation?.assetsAvailable?.(),
             ),
           remoteImagesAvailable: () => Boolean(options.presentation?.remoteImagesAvailable?.()),
+          rightsAvailable: () => Boolean(options.presentation?.rightsAvailable?.()),
         })
       : undefined
   const planning =
@@ -1138,12 +1146,15 @@ export function createOfficeHostRuntime(
             list: attachments.list,
             remove: attachments.remove,
             importUrl: attachments.importUrl,
+            attestLicense: attachments.attestLicense,
+            revokeLicense: attachments.revokeLicense,
             imagesAvailable: () =>
               Boolean(
                 options.presentation?.attachmentsAvailable?.() &&
                 options.presentation?.assetsAvailable?.(),
               ),
             remoteImagesAvailable: () => Boolean(options.presentation?.remoteImagesAvailable?.()),
+            rightsAvailable: () => Boolean(options.presentation?.rightsAvailable?.()),
           }
         : undefined,
     ),
@@ -1166,10 +1177,17 @@ function lifecycle(
     available(): boolean
     imagesAvailable(): boolean
     remoteImagesAvailable(): boolean
+    rightsAvailable(): boolean
     upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
     list(): Promise<PresentationAttachmentMetadata[]>
     remove(attachmentId: string): Promise<void>
     importUrl(url: string): Promise<unknown>
+    attestLicense(
+      imageId: string,
+      license: 'owned' | 'licensed' | 'public_domain',
+      evidenceId: string,
+    ): Promise<unknown>
+    revokeLicense(imageId: string): Promise<unknown>
   },
 ): OfficeHostRuntime {
   const packageRuntime = suppliedPackageRuntime ?? new SkillPackageWorkerRuntime()
@@ -1195,12 +1213,21 @@ function lifecycle(
     durableAttachmentsAvailable: () => attachments?.available() ?? false,
     durableImagesAvailable: () => attachments?.imagesAvailable() ?? false,
     remoteImagesAvailable: () => attachments?.remoteImagesAvailable() ?? false,
+    rightsAvailable: () => attachments?.rightsAvailable() ?? false,
     listDurableAttachments: () => attachments?.list() ?? Promise.resolve([]),
     deleteDurableAttachment: (attachmentId) =>
       attachments?.remove(attachmentId) ?? Promise.reject(new Error('presentation_unavailable')),
     importPresentationImageUrl: async (url) => {
       if (!attachments?.remoteImagesAvailable()) throw new Error('presentation_assets_unavailable')
       await attachments.importUrl(url)
+    },
+    attestPresentationImageLicense: async (imageId, license, evidenceId) => {
+      if (!attachments?.rightsAvailable()) throw new Error('presentation_assets_unavailable')
+      await attachments.attestLicense(imageId, license, evidenceId)
+    },
+    revokePresentationImageLicense: async (imageId) => {
+      if (!attachments?.rightsAvailable()) throw new Error('presentation_assets_unavailable')
+      await attachments.revokeLicense(imageId)
     },
     async uploadFile(name, content) {
       if (disposed) throw new Error('upload_cancelled')

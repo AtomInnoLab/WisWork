@@ -81,6 +81,11 @@ interface Metadata {
   source?: string
   sourceUrlHash?: string
   sourceAliases?: { source: string; sourceUrlHash: string }[]
+  licenseDeclaration?: {
+    kind: 'owned' | 'licensed' | 'public_domain'
+    evidenceAttachmentId: string
+    assertedAt: number
+  }
   error?: string
   totalChars?: number
   textDigest?: string
@@ -219,13 +224,29 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
                 !isId(alias.sourceUrlHash) ||
                 alias.sourceUrlHash === m.sourceUrlHash,
             ))) ||
+        (m.licenseDeclaration !== undefined &&
+          (!m.licenseDeclaration ||
+            typeof m.licenseDeclaration !== 'object' ||
+            Array.isArray(m.licenseDeclaration) ||
+            Object.keys(m.licenseDeclaration).sort().join(',') !==
+              'assertedAt,evidenceAttachmentId,kind' ||
+            !['owned', 'licensed', 'public_domain'].includes(m.licenseDeclaration.kind) ||
+            !isId(m.licenseDeclaration.evidenceAttachmentId) ||
+            m.licenseDeclaration.evidenceAttachmentId === id ||
+            !integer(m.licenseDeclaration.assertedAt, 1, Number.MAX_SAFE_INTEGER))) ||
         m.totalChars !== undefined ||
         m.textDigest !== undefined
       )
         fail('invalid_state')
-    } else if (m.kind !== 'text' || !integer(m.totalChars, 0, TEXT_LIMIT) || !isId(m.textDigest))
+    } else if (
+      m.kind !== 'text' ||
+      !integer(m.totalChars, 0, TEXT_LIMIT) ||
+      !isId(m.textDigest) ||
+      m.licenseDeclaration !== undefined
+    )
       fail('invalid_state')
   }
+  if (m.status !== 'ready' && m.licenseDeclaration !== undefined) fail('invalid_state')
   if (m.status === 'failed' && m.error !== 'parse_failed') fail('invalid_state')
   return m
 }
@@ -249,6 +270,7 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
         ...(m.sourceAliases?.length
           ? { sources: [m.source!, ...m.sourceAliases.map((alias) => alias.source)] }
           : {}),
+        ...(m.licenseDeclaration ? { licenseDeclaration: m.licenseDeclaration } : {}),
       }
     : {}),
 })
@@ -345,6 +367,8 @@ export function createPresentationAttachmentService(options: {
       attachment_finish: ['attachmentId'],
       attachment_delete: ['attachmentId'],
       attachment_import_url: ['url'],
+      attachment_attest_license: ['attachmentId', 'license', 'evidenceAttachmentId'],
+      attachment_revoke_license: ['attachmentId'],
       attachment_list: [],
       attachment_list_assets: [],
       attachment_asset: ['attachmentId'],
@@ -574,6 +598,11 @@ export function createPresentationAttachmentService(options: {
       if (!exists && op !== 'attachment_begin') fail('not_found')
       if (op === 'attachment_delete') {
         await metadata(dir, id)
+        for (const entry of entries) {
+          if (entry === id) continue
+          const other = await metadata(join(doc, entry), entry)
+          if (other.licenseDeclaration?.evidenceAttachmentId === id) fail('attachment_in_use')
+        }
         checkAbort(signal)
         await rm(dir, { recursive: true })
         return { attachmentId: id, deleted: true }
@@ -611,6 +640,41 @@ export function createPresentationAttachmentService(options: {
         return publicMetadata(m, 0)
       }
       let m = await metadata(dir, id)
+      if (op === 'attachment_attest_license' || op === 'attachment_revoke_license') {
+        if (m.status !== 'ready' || m.kind !== 'image') fail('invalid_state')
+        if (op === 'attachment_attest_license') {
+          const evidenceId = body.evidenceAttachmentId
+          if (
+            !['owned', 'licensed', 'public_domain'].includes(body.license as string) ||
+            !isId(evidenceId) ||
+            evidenceId === id ||
+            !entries.includes(evidenceId)
+          )
+            fail('invalid_request')
+          const evidenceDir = join(doc, evidenceId)
+          const evidence = await metadata(evidenceDir, evidenceId)
+          if (evidence.status !== 'ready' || evidence.kind !== 'text') fail('invalid_state')
+          const value = (await bytes(join(evidenceDir, 'text.txt'), TEXT_LIMIT * 4)).toString(
+            'utf8',
+          )
+          if (value.length !== evidence.totalChars || hash(value) !== evidence.textDigest)
+            fail('invalid_state')
+          m = {
+            ...m,
+            licenseDeclaration: {
+              kind: body.license as 'owned' | 'licensed' | 'public_domain',
+              evidenceAttachmentId: evidenceId,
+              assertedAt: Date.now(),
+            },
+          }
+        } else {
+          const { licenseDeclaration: _declaration, ...rest } = m
+          m = rest
+        }
+        checkAbort(signal)
+        await atomic(join(dir, 'metadata.json'), JSON.stringify(m))
+        return publicMetadata(m, m.sizeBytes)
+      }
       const rawPath = join(dir, `raw${extname(m.name).toLowerCase()}`)
       const received = await rawSize(rawPath)
       if (received > m.sizeBytes) fail('invalid_state')
@@ -742,6 +806,17 @@ export function createPresentationAttachmentService(options: {
       }
       if (op === 'attachment_asset') {
         const image = await cachedImage(dir, m)
+        if (m.licenseDeclaration) {
+          const evidenceId = m.licenseDeclaration.evidenceAttachmentId
+          const evidenceDir = join(doc, evidenceId)
+          const evidence = await metadata(evidenceDir, evidenceId)
+          if (evidence.status !== 'ready' || evidence.kind !== 'text') fail('invalid_state')
+          const value = (await bytes(join(evidenceDir, 'text.txt'), TEXT_LIMIT * 4)).toString(
+            'utf8',
+          )
+          if (value.length !== evidence.totalChars || hash(value) !== evidence.textDigest)
+            fail('invalid_state')
+        }
         checkAbort(signal)
         return {
           id,
@@ -750,6 +825,12 @@ export function createPresentationAttachmentService(options: {
           width: m.width,
           height: m.height,
           source: m.source ?? `attachment:${id}`,
+          ...(m.licenseDeclaration
+            ? {
+                license: m.licenseDeclaration.kind,
+                licenseEvidence: `attachment:${m.licenseDeclaration.evidenceAttachmentId}`,
+              }
+            : {}),
           ...(m.sourceAliases?.length
             ? { sources: [m.source!, ...m.sourceAliases.map((alias) => alias.source)] }
             : {}),
@@ -784,6 +865,7 @@ export function createPresentationAttachmentService(options: {
           'parse_failed',
           'remote_image_unavailable',
           'remote_image_source_conflict',
+          'attachment_in_use',
           'aborted',
         ].includes(code)
       )

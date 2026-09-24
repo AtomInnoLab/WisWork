@@ -32,6 +32,7 @@ describe('presentation contract and compiler', () => {
   it('writes supplied alt text and license provenance to the PPTX', async () => {
     const deck = benchmarkDeck()
     deck.assets[0]!.license = 'licensed'
+    deck.assets[0]!.licenseEvidence = `attachment:${'a'.repeat(64)}`
     const image = deck.slides[2]!.elements[1]!
     if (image.kind !== 'image') throw new Error('invalid fixture')
     image.altText = '显微镜下的细胞图像'
@@ -41,6 +42,9 @@ describe('presentation contract and compiler', () => {
     expect(await zip.file('ppt/slides/slide3.xml')!.async('string')).toContain('显微镜下的细胞图像')
     expect(await zip.file('ppt/notesSlides/notesSlide3.xml')!.async('string')).toContain(
       'license: licensed',
+    )
+    expect(await zip.file('ppt/notesSlides/notesSlide3.xml')!.async('string')).toContain(
+      'asserted, not verified',
     )
   })
 
@@ -83,6 +87,9 @@ describe('presentation contract and compiler', () => {
       },
       (d) => {
         d.assets[0].license = 'verified by AI'
+      },
+      (d) => {
+        d.assets[0].licenseEvidence = 'attachment:unknown'
       },
       (d) => {
         d.assets[0].sources = []

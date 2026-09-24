@@ -189,6 +189,7 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
     presentation_assets_unavailable: '请更新并连接支持图片素材的 PC 端后重试。',
     presentation_attachment_failed: '资料解析未完成，请检查文件或重新上传。',
     presentation_not_found: '这份 PC 资料已不存在，请刷新附件列表。',
+    presentation_attachment_in_use: '这份资料正被图片使用权声明引用，请先撤回声明再删除。',
     presentation_invalid_state: 'PC 资料状态异常，请重连后重试。',
     presentation_quota_exceeded:
       '当前文档在 PC 的资料容量已满（资料最多 32 个，附件预留容量总计 100 MB）。请删除不再需要的资料或图片后重试。',
@@ -233,9 +234,16 @@ export interface OfficeWorkspaceUi {
   readonly durableAttachmentsAvailable?: () => boolean
   readonly durableImagesAvailable?: () => boolean
   readonly remoteImagesAvailable?: () => boolean
+  readonly rightsAvailable?: () => boolean
   readonly listDurableAttachments?: () => Promise<PresentationAttachmentMetadata[]>
   readonly deleteDurableAttachment?: (attachmentId: string) => Promise<void>
   readonly importPresentationImageUrl?: (url: string) => Promise<void>
+  readonly attestPresentationImageLicense?: (
+    imageId: string,
+    license: 'owned' | 'licensed' | 'public_domain',
+    evidenceId: string,
+  ) => Promise<void>
+  readonly revokePresentationImageLicense?: (imageId: string) => Promise<void>
   readonly attachments: () => readonly string[]
   readonly downloadFile?: (path: string) => void
   readonly skills: () => readonly string[]
@@ -287,9 +295,12 @@ export function createOfficeWorkspaceUi(
     durableAttachmentsAvailable: runtime.durableAttachmentsAvailable,
     durableImagesAvailable: runtime.durableImagesAvailable,
     remoteImagesAvailable: runtime.remoteImagesAvailable,
+    rightsAvailable: runtime.rightsAvailable,
     listDurableAttachments: runtime.listDurableAttachments,
     deleteDurableAttachment: runtime.deleteDurableAttachment,
     importPresentationImageUrl: runtime.importPresentationImageUrl,
+    attestPresentationImageLicense: runtime.attestPresentationImageLicense,
+    revokePresentationImageLicense: runtime.revokePresentationImageLicense,
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
     downloadFile: (path: string) => downloadSessionFile(runtime.vfs, path),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
@@ -917,6 +928,112 @@ export function AgentWorkspace(props: {
                           </ul>
                         </details>
                       )}
+                      {file.kind === 'image' && file.licenseDeclaration && (
+                        <p>
+                          使用权：用户声明 {file.licenseDeclaration.kind}；依据附件{' '}
+                          {file.licenseDeclaration.evidenceAttachmentId.slice(0, 12)}…；尚未核验。
+                        </p>
+                      )}
+                      {file.kind === 'image' && ui.rightsAvailable?.() && (
+                        <details>
+                          <summary>管理使用权声明</summary>
+                          <form
+                            onSubmit={(event) => {
+                              event.preventDefault()
+                              const data = new FormData(event.currentTarget)
+                              const license = data.get('license')
+                              const evidenceId = data.get('evidence')
+                              if (
+                                !['owned', 'licensed', 'public_domain'].includes(String(license)) ||
+                                typeof evidenceId !== 'string' ||
+                                !evidenceId
+                              )
+                                return
+                              setUploadPending(true)
+                              setUploadError('')
+                              void ui
+                                .attestPresentationImageLicense?.(
+                                  file.attachmentId,
+                                  license as 'owned' | 'licensed' | 'public_domain',
+                                  evidenceId,
+                                )
+                                .then(async () => {
+                                  if (mounted.current) {
+                                    setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
+                                    setUploadStatus('图片使用权声明已保存，仍需人工核验依据。')
+                                  }
+                                })
+                                .catch((error: unknown) => {
+                                  if (mounted.current) setUploadError(safeUploadError(error))
+                                })
+                                .finally(() => {
+                                  if (mounted.current) setUploadPending(false)
+                                })
+                            }}
+                          >
+                            <label>
+                              使用权声明
+                              <select name="license" defaultValue="licensed">
+                                <option value="owned">自有</option>
+                                <option value="licensed">已获许可</option>
+                                <option value="public_domain">公有领域</option>
+                              </select>
+                            </label>
+                            <label>
+                              依据附件
+                              <select name="evidence" required defaultValue="">
+                                <option value="" disabled>
+                                  选择已上传的资料
+                                </option>
+                                {durableFiles
+                                  .filter((item) => item.kind === 'text' && item.status === 'ready')
+                                  .map((item) => (
+                                    <option key={item.attachmentId} value={item.attachmentId}>
+                                      {item.name}
+                                    </option>
+                                  ))}
+                              </select>
+                            </label>
+                            <button
+                              type="submit"
+                              disabled={
+                                uploadPending ||
+                                state.busy ||
+                                !durableFiles.some(
+                                  (item) => item.kind === 'text' && item.status === 'ready',
+                                )
+                              }
+                            >
+                              保存声明
+                            </button>
+                          </form>
+                        </details>
+                      )}
+                      {file.kind === 'image' &&
+                        file.licenseDeclaration &&
+                        ui.rightsAvailable?.() && (
+                          <button
+                            type="button"
+                            disabled={uploadPending || state.busy}
+                            onClick={() => {
+                              setUploadPending(true)
+                              void ui
+                                .revokePresentationImageLicense?.(file.attachmentId)
+                                .then(async () => {
+                                  if (mounted.current)
+                                    setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
+                                })
+                                .catch((error: unknown) => {
+                                  if (mounted.current) setUploadError(safeUploadError(error))
+                                })
+                                .finally(() => {
+                                  if (mounted.current) setUploadPending(false)
+                                })
+                            }}
+                          >
+                            撤回声明
+                          </button>
+                        )}
                       <button
                         type="button"
                         disabled={uploadPending || state.busy}
@@ -1210,6 +1327,7 @@ function ConfiguredApp() {
               'presentation-attachments.v1',
               'presentation-assets.v1',
               'presentation-remote-images.v1',
+              'presentation-asset-rights.v1',
             ],
           }),
     [transportMode],
@@ -1291,6 +1409,13 @@ function ConfiguredApp() {
                           snapshot.capabilities?.includes('presentation-remote-images.v1') === true
                         )
                       },
+                      rightsAvailable: () => {
+                        const snapshot = bridge.snapshot()
+                        return (
+                          snapshot.status === 'connected' &&
+                          snapshot.capabilities?.includes('presentation-asset-rights.v1') === true
+                        )
+                      },
                       attachmentsAvailable: () => {
                         const snapshot = bridge.snapshot()
                         return (
@@ -1305,7 +1430,14 @@ function ConfiguredApp() {
                             'operation' in body &&
                             body.operation === 'attachment_import_url'
                             ? 'presentation-remote-images.v1'
-                            : 'presentation-attachments.v1',
+                            : body &&
+                                typeof body === 'object' &&
+                                'operation' in body &&
+                                ['attachment_attest_license', 'attachment_revoke_license'].includes(
+                                  body.operation as string,
+                                )
+                              ? 'presentation-asset-rights.v1'
+                              : 'presentation-attachments.v1',
                           body,
                           signal,
                         ),

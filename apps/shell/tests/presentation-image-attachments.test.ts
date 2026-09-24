@@ -66,6 +66,51 @@ describe('durable presentation image assets', () => {
     await expect(access(fresh)).resolves.toBeUndefined()
     await expect(access(unrelated)).resolves.toBeUndefined()
   })
+  it('binds a user license declaration to a ready evidence attachment', async () => {
+    const { call, userDataPath } = await setup()
+    const imageId = await upload(call)
+    await call({ operation: 'attachment_finish', attachmentId: imageId })
+    const evidence = Buffer.from('Permission granted for this picture.', 'utf8')
+    const evidenceId = await upload(call, evidence, 'permission.txt')
+    await call({ operation: 'attachment_finish', attachmentId: evidenceId })
+    const declared = (await call({
+      operation: 'attachment_attest_license',
+      attachmentId: imageId,
+      license: 'licensed',
+      evidenceAttachmentId: evidenceId,
+    })) as { licenseDeclaration: { kind: string; evidenceAttachmentId: string } }
+    expect(declared.licenseDeclaration).toMatchObject({
+      kind: 'licensed',
+      evidenceAttachmentId: evidenceId,
+    })
+    expect(await call({ operation: 'attachment_asset', attachmentId: imageId })).toMatchObject({
+      license: 'licensed',
+      licenseEvidence: `attachment:${evidenceId}`,
+    })
+    const evidencePath = join(
+      userDataPath,
+      'presentation-attachments',
+      hash('doc'),
+      evidenceId,
+      'text.txt',
+    )
+    await writeFile(evidencePath, 'tampered')
+    await expect(call({ operation: 'attachment_asset', attachmentId: imageId })).rejects.toThrow(
+      'invalid_state',
+    )
+    await writeFile(evidencePath, evidence)
+    await expect(
+      call({ operation: 'attachment_delete', attachmentId: evidenceId }),
+    ).rejects.toThrow('attachment_in_use')
+    await call({ operation: 'attachment_revoke_license', attachmentId: imageId })
+    expect(await call({ operation: 'attachment_asset', attachmentId: imageId })).not.toHaveProperty(
+      'license',
+    )
+    expect(await call({ operation: 'attachment_delete', attachmentId: evidenceId })).toEqual({
+      attachmentId: evidenceId,
+      deleted: true,
+    })
+  })
   it('imports a public image URL once, redacts its query and reuses the PC cache', async () => {
     const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-remote-image-'))
     dirs.push(userDataPath)

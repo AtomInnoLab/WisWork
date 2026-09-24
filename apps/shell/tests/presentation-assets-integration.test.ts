@@ -47,6 +47,28 @@ it('compiles durable image references into real PPTX media and recovers without 
     width: 1,
     height: 1,
   })
+  const evidence = Buffer.from('Licensed for this presentation.', 'utf8')
+  const evidenceId = createHash('sha256').update(evidence).digest('hex')
+  await request({
+    operation: 'attachment_begin',
+    attachmentId: evidenceId,
+    name: 'permission.txt',
+    sha256: evidenceId,
+    sizeBytes: evidence.length,
+  })
+  await request({
+    operation: 'attachment_chunk',
+    attachmentId: evidenceId,
+    offset: 0,
+    base64: evidence.toString('base64'),
+  })
+  await request({ operation: 'attachment_finish', attachmentId: evidenceId })
+  await request({
+    operation: 'attachment_attest_license',
+    attachmentId,
+    license: 'licensed',
+    evidenceAttachmentId: evidenceId,
+  })
   const deck = { ...originalDeck, assets: [{ id: original.id, attachmentId }] }
   const input = { operation: 'compile', requestId: 'images-first', deck }
   expect(Buffer.byteLength(JSON.stringify(input))).toBeLessThan(256 * 1024)
@@ -58,6 +80,9 @@ it('compiles durable image references into real PPTX media and recovers without 
   )
   expect(media.length).toBeGreaterThan(0)
   expect(await zip.file(media[0]!)!.async('nodebuffer')).toEqual(bytes)
+  expect(await zip.file('ppt/notesSlides/notesSlide3.xml')!.async('string')).toContain(
+    `attachment:${evidenceId}`,
+  )
   expect(output.report.checks).toMatchObject({ render: 'not_run', sources: 'not_verified' })
   service = createPresentationService({ userDataPath, normalizeImage })
   expect(await request(input)).toEqual(output)
