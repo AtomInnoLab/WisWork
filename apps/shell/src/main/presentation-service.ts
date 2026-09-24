@@ -1,3 +1,8 @@
+import {
+  handlePresentationJob,
+  hasPresentationWorker,
+  presentationJobOperations,
+} from './presentation-jobs'
 import { parsePresentationClaimReview } from '@wiswork/pptx-engine/presentation-claim-review'
 import { createPresentationPageBackupService } from './presentation-page-backups'
 import {
@@ -21,6 +26,7 @@ import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compi
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
 const errorCodes = new Set([
+  'busy',
   'invalid_request',
   'invalid_plan',
   'plan_mismatch',
@@ -105,6 +111,7 @@ export function createPresentationService(options: {
         return boundedResponse(await attachments(request, signal))
       if (
         ![
+          ...presentationJobOperations,
           'compile',
           'get',
           'status',
@@ -124,8 +131,9 @@ export function createPresentationService(options: {
         ].includes(request.operation as string)
       )
         throw new Error('invalid_request')
-      const allowedKeys =
-        request.operation === 'production_read_claim_review'
+      const allowedKeys = presentationJobOperations.includes(request.operation as string)
+        ? ['operation', 'documentId', 'projectId', 'requestId']
+        : request.operation === 'production_read_claim_review'
           ? ['operation', 'documentId', 'projectId', 'requestId', 'reviewId']
           : ['production_claim_evidence', 'production_record_claim_review'].includes(
                 request.operation as string,
@@ -208,6 +216,7 @@ export function createPresentationService(options: {
       }
       if (
         [
+          ...presentationJobOperations,
           'resume',
           'production_run',
           'production_page',
@@ -321,6 +330,15 @@ export function createPresentationService(options: {
       await previous
       try {
         checkAbort(signal)
+        if (presentationJobOperations.includes(request.operation as string)) {
+          const response = encode(
+            handlePresentationJob(key, request, { store, compile, attachments }),
+          )
+          if (response.byteLength > 256 * 1024) throw new Error('output_too_large')
+          return response
+        }
+        if (request.operation === 'production_run' && hasPresentationWorker(key))
+          throw new Error('busy')
         if ((request.operation as string).startsWith('production_'))
           return boundedResponse(
             await handlePresentationProduction(request, { store, compile, attachments }, signal),

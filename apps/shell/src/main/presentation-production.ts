@@ -90,6 +90,8 @@ export async function handlePresentationProduction(
   options: {
     store: PresentationStore
     compile: typeof compilePresentationDeck
+    shouldStop?: () => boolean
+    onPage?: (record: PresentationProductionRecord, page: PresentationProductionPage) => void
     attachments: (request: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
   },
   signal: AbortSignal,
@@ -349,10 +351,15 @@ export async function handlePresentationProduction(
   if (request.operation !== 'production_run') return presentationProductionSummary(record)
   for (const slide of deck.slides) {
     check(signal)
+    if (options.shouldStop?.()) break
     const current = record.pages.find((p) => p.pageId === slide.id)!
     if (current.state === 'compiled') continue
     const attempt = current.attempt + 1
     record = store.updateProductionPage(record, slide.id, { state: 'building', attempt })
+    options.onPage?.(
+      record,
+      record.pages.find((page) => page.pageId === slide.id)!,
+    )
     let result: NonNullable<PresentationProductionPage['result']>
     let failure: string | undefined
     try {
@@ -407,6 +414,10 @@ export async function handlePresentationProduction(
         attempt,
         error: failure,
       })
+      options.onPage?.(
+        record,
+        record.pages.find((page) => page.pageId === slide.id)!,
+      )
       check(signal)
       continue
     }
@@ -425,6 +436,10 @@ export async function handlePresentationProduction(
         error: 'output_too_large',
       })
     }
+    options.onPage?.(
+      record,
+      record.pages.find((page) => page.pageId === slide.id)!,
+    )
   }
   return presentationProductionSummary(record)
 }
