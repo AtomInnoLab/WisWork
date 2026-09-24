@@ -1,3 +1,4 @@
+import { validatePresentationQaRecord } from './skills/powerpoint/presentation-qa.js'
 import { PresentationQaCard, type PresentationQaController } from './agent/presentation-qa-card.js'
 import {
   PresentationImportProgressCard,
@@ -892,7 +893,36 @@ export function AgentWorkspace(props: {
           />
         )}
         {ui.importProgress && <PresentationImportProgressCard controller={ui.importProgress} />}
-        {ui.qa && <PresentationQaCard controller={ui.qa} />}
+        {ui.qa && (
+          <PresentationQaCard
+            controller={ui.qa}
+            disabled={
+              uploadPending ||
+              state.busy ||
+              state.applying ||
+              Boolean(state.proposal) ||
+              projectPhase !== 'idle'
+            }
+            onRecheck={(record, pageIds) => {
+              if (
+                uploadPending ||
+                state.busy ||
+                state.applying ||
+                state.proposal ||
+                projectPhase !== 'idle' ||
+                !validatePresentationQaRecord(record) ||
+                pageIds.length === 0 ||
+                new Set(pageIds).size !== pageIds.length ||
+                pageIds.some((id) => !record.pages.some((page) => page.pageId === id))
+              )
+                return
+              setInstruction(
+                `请准备页面 QA 重审：projectId=${JSON.stringify(record.projectId)}，requestId=${JSON.stringify(record.requestId)}，pageIds=${JSON.stringify(pageIds)}。` +
+                  '先确认当前文档、目标冻结任务及宿主页面映射一致；不一致时停止并说明。仅对指定页面逐页重新采集实际截图，观察截图后由 Agent 进行视觉复核；不得沿用历史通过结论或将采集成功视为通过。需要修改时先生成提案并等待用户确认。',
+              )
+            }}
+          />
+        )}
         {ui.downloadFile &&
           files.some(
             (file) => file.startsWith('/home/user/generated/') && file.endsWith('.pptx'),

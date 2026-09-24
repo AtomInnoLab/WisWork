@@ -5,7 +5,15 @@ export interface PresentationQaController {
   revision(): number
   subscribe(listener: () => void): () => void
 }
-export function PresentationQaCard({ controller }: { controller: PresentationQaController }) {
+export function PresentationQaCard({
+  controller,
+  onRecheck,
+  disabled = false,
+}: {
+  controller: PresentationQaController
+  onRecheck?: (record: PresentationQaRecord, pageIds: string[]) => void
+  disabled?: boolean
+}) {
   useSyncExternalStore(controller.subscribe, controller.revision, controller.revision)
   let record: PresentationQaRecord | undefined
   try {
@@ -18,6 +26,7 @@ export function PresentationQaCard({ controller }: { controller: PresentationQaC
     )
   }
   if (!record) return null
+  const affected = record.pages.filter((page) => page.recheckRequired).map((page) => page.pageId)
   return (
     <section className="presentation-project" aria-label="页面 QA 记录">
       <strong>
@@ -25,11 +34,18 @@ export function PresentationQaCard({ controller }: { controller: PresentationQaC
         {record.pages.length} 页
       </strong>
       <p>以下为历史检查记录，需重新采集才能确认当前状态；不代表来源核验或保存重开验收。</p>
-      {record.pages.some((page) => page.recheckRequired) && (
-        <p role="status">
-          {record.pages.filter((page) => page.recheckRequired).length}{' '}
-          页已发起修改，需重新采集，历史结论不代表当前状态。
-        </p>
+      {affected.length > 0 && (
+        <>
+          <p role="status">
+            {affected.length} 页的页面或共享样式可能已变化，需重新采集，历史结论不代表当前状态。
+            受影响页面 ID：{affected.join('、')}
+          </p>
+          {onRecheck && (
+            <button type="button" disabled={disabled} onClick={() => onRecheck(record, affected)}>
+              准备重审受影响页
+            </button>
+          )}
+        </>
       )}
       <details>
         <summary>查看结构与视觉复核</summary>
@@ -37,6 +53,17 @@ export function PresentationQaCard({ controller }: { controller: PresentationQaC
           {record.pages.map((page) => (
             <li key={page.pageId}>
               <strong>{page.title}</strong>
+              <small>页面 ID：{page.pageId}</small>
+              {onRecheck && (
+                <button
+                  type="button"
+                  aria-label={`准备重审 ${page.pageId}`}
+                  disabled={disabled}
+                  onClick={() => onRecheck(record, [page.pageId])}
+                >
+                  准备重审此页
+                </button>
+              )}
               {page.recheckRequired && (
                 <p>
                   <strong>已发起修改，需重新采集</strong>
