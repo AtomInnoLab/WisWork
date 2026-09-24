@@ -80,6 +80,8 @@ it('imports separate PPTX files with duplicate source IDs and isolates their che
       sourceSlideIds: ['256#', '256#', '256#'],
     },
   })
+  expect(f.receipts.get('production/project/request')?.checkpoint?.completed.every((page) =>
+    typeof page.completedAt === 'string')).toBe(true)
   expect(f.receipts.get('project/request')!.slideIds).toEqual(['legacy'])
   expect(await f.skill.executeTool(f.call)).toMatchObject({
     output: expect.stringContaining('already_imported'),
@@ -315,4 +317,18 @@ it('shares the exact persisted digest and maps duplicate selectors by business p
   expect(
     presentationPageMapping(f.artifact, { ...record, documentId: 'other' }, 'page1'),
   ).toBeUndefined()
+})
+
+it('accepts legacy undated import prefixes and validates later completion time order', async () => {
+  const f = fixture()
+  await f.confirm()
+  const saved = structuredClone(f.receipts.get(presentationImportKey(f.artifact))!)
+  delete saved.checkpoint!.completed[0]!.completedAt
+  expect(validPresentationImportRecord(saved)).toBe(true)
+  const reordered = structuredClone(saved)
+  reordered.checkpoint!.completed[2]!.completedAt = '2020-01-01T00:00:00.000Z'
+  expect(validPresentationImportRecord(reordered)).toBe(false)
+  const missingSuffix = structuredClone(saved)
+  delete missingSuffix.checkpoint!.completed[2]!.completedAt
+  expect(validPresentationImportRecord(missingSuffix)).toBe(false)
 })

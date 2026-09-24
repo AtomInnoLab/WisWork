@@ -77,6 +77,11 @@ it('checkpoints each verified page and never reimports a completed deck', async 
     state: 'complete',
     slideIds: ['host-256#', 'host-257#', 'host-258#'],
   })
+  const completed = f.receipts.get('project/request')!.checkpoint!.completed
+  expect(completed.map((page) => page.completedAt)).toEqual([
+    expect.any(String), expect.any(String), expect.any(String),
+  ])
+  expect(completed.every((page, index) => index === 0 || page.completedAt! >= completed[index - 1]!.completedAt!)).toBe(true)
   expect(await f.skill.executeTool(f.call)).toMatchObject({
     output: expect.stringContaining('already_imported'),
   })
@@ -110,7 +115,11 @@ it('preserves uncertainty across restart and refuses changed bytes or source IDs
   const f = fixture()
   f.adapter.verify.mockResolvedValue(false)
   await expect(f.confirm()).rejects.toThrow('office_state_uncertain')
-  expect(f.receipts.get('project/request')?.checkpoint?.inFlight).toEqual({ sourceSlideId: '256#' })
+  expect(f.receipts.get('project/request')?.checkpoint?.inFlight).toMatchObject({
+    sourceSlideId: '256#', startedAt: expect.any(String),
+  })
+  const progress = await f.skill.executeTool({ id: 'status', name: 'read_presentation_import_status', input: {} })
+  expect(JSON.parse(progress.output).pages[0]).toMatchObject({ state: 'uncertain', startedAt: expect.any(String) })
   expect(await createPresentationDeliverySkill(f.options).executeTool(f.call)).toMatchObject({
     isError: true,
     output: 'presentation_import_uncertain',
@@ -158,8 +167,8 @@ it('restores the previous in-flight settings after a failed completed checkpoint
     .mockRejectedValueOnce(new Error('save_failed'))
   await skill.executeTool(f.call)
   await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow()
-  expect(binding.readReceipt('project/request')?.checkpoint?.inFlight).toEqual({
-    sourceSlideId: '256#',
+  expect(binding.readReceipt('project/request')?.checkpoint?.inFlight).toMatchObject({
+    sourceSlideId: '256#', startedAt: expect.any(String),
   })
   expect(await skill.executeTool(f.call)).toMatchObject({
     isError: true,
@@ -239,7 +248,9 @@ it('blocks malformed checkpoint prefixes, duplicate host IDs and invalid source 
     { ...checkpoint, sourceSlideIds: ['4294967296#'] },
     { ...checkpoint, completed: [{ sourceSlideId: '257#', slideId: 'new' }] },
     { ...checkpoint, completed: [{ sourceSlideId: '256#', slideId: 'original' }] },
+    { ...checkpoint, completed: [{ sourceSlideId: '256#', slideId: 'new', completedAt: 'tomorrow' }] },
     { ...checkpoint, inFlight: { sourceSlideId: '257#' } },
+    { ...checkpoint, inFlight: { sourceSlideId: '256#', startedAt: 'tomorrow' } },
   ]) {
     await expect(
       binding.writeReceipt('project/request', {

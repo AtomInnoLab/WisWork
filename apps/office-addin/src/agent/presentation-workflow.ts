@@ -120,9 +120,24 @@ export function presentationWorkflowSummary(
       }
     }
   }
-  if (importMatches) timeline.push({ id: 'import', text: `导入检查点：${imported!.completed}/${imported!.total} 页${imported!.status === 'uncertain' ? '，有写入待核查' : ''}` })
-  if (qaMatches) timeline.push({ id: 'qa', text: `历史页面审查：${reviewed}/${qa!.pages.length} 页结构与视觉通过` })
+  if (importMatches) {
+    timeline.push({ id: 'import', text: `导入检查点：${imported!.completed}/${imported!.total} 页${imported!.status === 'uncertain' ? '，有写入待核查' : ''}` })
+    for (const page of imported!.pages) if (page.state === 'complete' && page.completedAt)
+      timeline.push({ id: `import-${page.id}`, text: `已记录导入页面 ${page.title}；尚未完成视觉验收`, at: page.completedAt })
+    for (const page of imported!.pages) if (page.state === 'uncertain' && page.startedAt)
+      timeline.push({ id: `import-uncertain-${page.id}`, text: `页面 ${page.title} 的写入结果待核查；检查宿主页后再继续`, at: page.startedAt })
+  }
+  if (qaMatches) {
+    timeline.push({ id: 'qa', text: `历史页面审查：${reviewed}/${qa!.pages.length} 页结构与视觉通过` })
+    for (const page of qa!.pages) {
+      timeline.push({ id: `capture-${page.pageId}`, text: `已采集页面 ${page.title} 的历史截图${page.recheckRequired ? '；需重审' : ''}`, at: page.capturedAt })
+      if (page.visual.reviewedAt) timeline.push({ id: `review-${page.pageId}`,
+        text: `已记录页面 ${page.title} 的历史视觉复核：${page.visual.status === 'pass' ? '通过' : '需修改'}${page.recheckRequired ? '；结果已失效' : ''}`,
+        at: page.visual.reviewedAt })
+    }
+  }
   if (reportMatches) timeline.push({ id: 'report', text: `内容证据报告：${openIssues} 项问题待处理` })
+  timeline.sort((a, b) => a.at && b.at ? a.at.localeCompare(b.at) : a.at ? -1 : b.at ? 1 : 0)
   const nextAction = !plan
     ? '保存 Brief、资料、故事线与样式规范'
       : !production

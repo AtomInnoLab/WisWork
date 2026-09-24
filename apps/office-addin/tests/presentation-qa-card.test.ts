@@ -47,6 +47,8 @@ it('makes post-edit recapture take precedence over a historical visual pass', ()
   expect(html).toContain('已发起修改，需重新采集')
   expect(html).toContain('历史视觉')
   expect(html).toContain('Earlier title review')
+  expect(html).toContain('复核记录于')
+  expect(html).toContain('dateTime="2026-09-23T00:00:00.000Z"')
   expect(html).not.toContain('视觉：Agent 判断通过')
 })
 

@@ -18,6 +18,8 @@ export interface PresentationImportProgress {
     title: string
     state: 'pending' | 'complete' | 'uncertain'
     slideId?: string
+    completedAt?: string
+    startedAt?: string
   }[]
 }
 export const validSourceSlideId = (value: unknown): value is string =>
@@ -31,6 +33,11 @@ const hostIds = (value: unknown, max = 1000): value is string[] =>
   value.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256) &&
   new Set(value).size === value.length
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+const validTimestamp = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) &&
+  Number.isFinite(Date.parse(value)) &&
+  new Date(value).toISOString() === value
 export function validPresentationImportRecord(value: unknown): value is PresentationImportRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const r = value as PresentationImportRecord
@@ -84,11 +91,16 @@ export function validPresentationImportRecord(value: unknown): value is Presenta
     if (
       !page ||
       typeof page !== 'object' ||
-      Object.keys(page).some((k) => !['sourceSlideId', 'slideId'].includes(k)) ||
+      Object.keys(page).some((k) => !['sourceSlideId', 'slideId', 'completedAt'].includes(k)) ||
       page.sourceSlideId !== c.sourceSlideIds[index] ||
       typeof page.slideId !== 'string' ||
       !page.slideId ||
-      page.slideId.length > 256
+      page.slideId.length > 256 ||
+      (index > 0 && Boolean(c.completed[index - 1]?.completedAt) && page.completedAt === undefined) ||
+      (page.completedAt !== undefined &&
+        (!validTimestamp(page.completedAt) ||
+          (index > 0 && c.completed[index - 1]?.completedAt &&
+            page.completedAt < c.completed[index - 1]!.completedAt!)))
     )
       return false
   }
@@ -97,9 +109,12 @@ export function validPresentationImportRecord(value: unknown): value is Presenta
     c.inFlight !== undefined &&
     (!c.inFlight ||
       typeof c.inFlight !== 'object' ||
-      Object.keys(c.inFlight).length !== 1 ||
+      Object.keys(c.inFlight).some((key) => !['sourceSlideId', 'startedAt'].includes(key)) ||
       !validSourceSlideId(c.inFlight.sourceSlideId) ||
-      c.inFlight.sourceSlideId !== c.sourceSlideIds[c.completed.length])
+      c.inFlight.sourceSlideId !== c.sourceSlideIds[c.completed.length] ||
+      (c.inFlight.startedAt !== undefined &&
+        (!validTimestamp(c.inFlight.startedAt) ||
+          (c.completed.at(-1)?.completedAt && c.inFlight.startedAt < c.completed.at(-1)!.completedAt!))))
   )
     return false
   if (
@@ -186,7 +201,8 @@ export function presentationPageMapping(
 ): { sourceSlideId: string; slideId: string } | undefined {
   if (!record?.checkpoint || !summarizePresentationImport(artifact, record)) return undefined
   const index = artifact.pages!.findIndex((page) => page.id === pageId)
-  return index < 0 ? undefined : record.checkpoint.completed[index]
+  const completed = index < 0 ? undefined : record.checkpoint.completed[index]
+  return completed ? { sourceSlideId: completed.sourceSlideId, slideId: completed.slideId } : undefined
 }
 export function presentationImportKey(artifact: CompiledPresentationArtifact): string {
   if (
@@ -254,6 +270,12 @@ export function summarizePresentationImport(
         index < completed ? 'complete' : uncertain && index === completed ? 'uncertain' : 'pending',
       ...(index < completed
         ? { slideId: checkpoint?.completed[index]?.slideId ?? record?.slideIds?.[index] }
+        : {}),
+      ...(index < completed && checkpoint?.completed[index]?.completedAt
+        ? { completedAt: checkpoint.completed[index].completedAt }
+        : {}),
+      ...(uncertain && index === completed && checkpoint?.inFlight?.startedAt
+        ? { startedAt: checkpoint.inFlight.startedAt }
         : {}),
     })),
   }
@@ -485,7 +507,9 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
               if (!same(actual.slideIds, slideIds) || actual.fingerprint !== baseline.fingerprint)
                 throw new Error('proposal_stale')
               const sourceSlideId = checkpoint.sourceSlideIds[checkpoint.completed.length]!
-              await save({ ...checkpoint, inFlight: { sourceSlideId } })
+              await save({ ...checkpoint, inFlight: { sourceSlideId, startedAt: new Date(Math.max(
+                Date.now(), Date.parse(checkpoint.completed.at(-1)?.completedAt ?? '') || 0,
+              )).toISOString() } })
               let receipt
               try {
                 await current(s)
@@ -523,7 +547,9 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
                 ...checkpoint,
                 completed: [
                   ...checkpoint.completed,
-                  { sourceSlideId, slideId: receipt.slideIds[0]! },
+                  { sourceSlideId, slideId: receipt.slideIds[0]!, completedAt: new Date(Math.max(
+                    Date.now(), Date.parse(checkpoint.completed.at(-1)?.completedAt ?? '') || 0,
+                  )).toISOString() },
                 ],
               }
               await save(

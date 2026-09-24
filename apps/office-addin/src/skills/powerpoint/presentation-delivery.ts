@@ -32,8 +32,8 @@ export interface PresentationImportCheckpoint {
   artifactDigest: string
   sourceSlideIds: string[]
   baselineSlideIds: string[]
-  completed: { sourceSlideId: string; slideId: string }[]
-  inFlight?: { sourceSlideId: string }
+  completed: { sourceSlideId: string; slideId: string; completedAt?: string }[]
+  inFlight?: { sourceSlideId: string; startedAt?: string }
 }
 export interface PresentationDeliveryOptions {
   adapter: PresentationImportAdapter

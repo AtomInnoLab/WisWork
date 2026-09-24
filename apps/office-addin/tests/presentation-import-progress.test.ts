@@ -15,8 +15,8 @@ it('shows completed, pending and uncertain pages as saved records without claimi
           completed: 1,
           status: 'uncertain',
           pages: [
-            { id: 'one', title: '第一页', state: 'complete' },
-            { id: 'two', title: '第二页', state: 'uncertain' },
+            { id: 'one', title: '第一页', state: 'complete', completedAt: '2026-09-24T00:00:00.000Z' },
+            { id: 'two', title: '第二页', state: 'uncertain', startedAt: '2026-09-24T00:01:00.000Z' },
             { id: 'three', title: '第三页', state: 'pending' },
           ],
         }),
@@ -27,6 +27,8 @@ it('shows completed, pending and uncertain pages as saved records without claimi
   expect(markup).toContain('停止自动重试')
   expect(markup).toContain('已记录完成')
   expect(markup).toContain('待导入')
+  expect(markup).toContain('dateTime="2026-09-24T00:00:00.000Z"')
+  expect(markup).toContain('dateTime="2026-09-24T00:01:00.000Z"')
 })
 it('shows invalid persisted state as an actionable error', () => {
   const markup = renderToStaticMarkup(

@@ -49,6 +49,11 @@ export function PresentationImportProgressCard({
             <li key={page.id}>
               {page.title} ·{' '}
               {{ pending: '待导入', complete: '已记录完成', uncertain: '结果不确定' }[page.state]}
+              {(page.completedAt ?? page.startedAt) && <>
+                {' · '}<time dateTime={page.completedAt ?? page.startedAt}>
+                  {page.completedAt ?? page.startedAt}
+                </time>
+              </>}
             </li>
           ))}
         </ol>

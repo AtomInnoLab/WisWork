@@ -79,6 +79,12 @@ it('refuses stale import and QA records and requests recheck after a page edit',
   const uncertain = { ...imported, status: 'uncertain' as const, completed: 0,
     pages: imported.pages.map((page, index) => index === 0 ? { ...page, state: 'uncertain' as const } : { ...page, state: 'pending' as const }) }
   expect(presentationWorkflowSummary(selected, uncertain, qa)?.pages[0]?.nextAction).toContain('检查宿主页')
+  const timedUncertain = { ...uncertain, pages: uncertain.pages.map((page, index) =>
+    index === 0 ? { ...page, startedAt: '2026-09-24T00:02:00.000Z' } : page) }
+  expect(presentationWorkflowSummary(selected, timedUncertain, qa)?.timeline.find((item) =>
+    item.id === `import-uncertain-${uncertain.pages[0]!.id}`)).toMatchObject({
+    at: '2026-09-24T00:02:00.000Z', text: expect.stringContaining('待核查'),
+  })
   expect(presentationWorkflowSummary(selected, uncertain, recheck)?.attention.map((item) => item.id)).toEqual([
     'uncertain-import', 'qa-recheck',
   ])
@@ -93,11 +99,29 @@ it('rebuilds recovery events from saved records and isolates the selected reques
   const first = presentationWorkflowSummary(selected, imported, qa)!
   const replayed = presentationWorkflowSummary(selected, imported, qa)!
   expect(replayed.timeline).toEqual(first.timeline)
-  expect(first.timeline.map((item) => item.id)).toEqual(['plan', 'production', 'job-4', 'import', 'qa'])
-  expect(first.timeline[2]).toMatchObject({ at: event.createdAt, text: expect.stringContaining(event.pageId) })
+  expect(first.timeline.map((item) => item.id)).toEqual(expect.arrayContaining(['plan', 'production', 'job-4', 'import', 'qa']))
+  expect(first.timeline.filter((item) => item.id.startsWith('capture-'))).toHaveLength(qa.pages.length)
+  expect(first.timeline.filter((item) => item.id.startsWith('review-'))).toHaveLength(qa.pages.length)
+  expect(first.timeline.find((item) => item.id === 'job-4')).toMatchObject({ at: event.createdAt, text: expect.stringContaining(event.pageId) })
+  expect(first.timeline.filter((item) => item.at).map((item) => item.at)).toEqual(
+    first.timeline.filter((item) => item.at).map((item) => item.at).sort(),
+  )
   const stale = presentationWorkflowSummary({ ...selected, productionJob: { ...job, requestId: 'old' } },
     { ...imported, requestId: 'old' }, { ...qa, requestId: 'old' })!
   expect(stale.timeline.map((item) => item.id)).toEqual(['plan', 'production'])
+})
+
+it('replays page import and historical QA times only for the current request', () => {
+  const timed = { ...imported, pages: imported.pages.map((page, index) => ({ ...page,
+    completedAt: `2026-09-24T00:0${index}:00.000Z` })) }
+  const summary = presentationWorkflowSummary({ ...project, production }, timed, qa)!
+  expect(summary.timeline.filter((item) => item.id.startsWith('import-'))).toHaveLength(imported.pages.length)
+  expect(summary.timeline.find((item) => item.id === `import-${imported.pages[0]!.id}`)).toMatchObject({
+    at: timed.pages[0]!.completedAt, text: expect.stringContaining('尚未完成视觉验收'),
+  })
+  expect(summary.timeline.find((item) => item.id === `review-${qa.pages[0]!.pageId}`)?.text).toContain('历史视觉复核')
+  expect(presentationWorkflowSummary({ ...project, production }, { ...timed, requestId: 'old' },
+    { ...qa, requestId: 'old' })?.timeline.some((event) => /^(import-|capture-|review-)/.test(event.id))).toBe(false)
 })
 
 it('replays durable plan revisions without inventing research approval', () => {

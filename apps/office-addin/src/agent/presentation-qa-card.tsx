@@ -89,7 +89,10 @@ export function PresentationQaCard({
                 }
               </p>
               {page.visual.notes && <p>{page.visual.notes}</p>}
-              <small>采集于 {page.capturedAt}</small>
+              <small>采集于 <time dateTime={page.capturedAt}>{page.capturedAt}</time></small>
+              {page.visual.reviewedAt && <small> · 复核记录于 <time dateTime={page.visual.reviewedAt}>
+                {page.visual.reviewedAt}
+              </time></small>}
             </li>
           ))}
         </ol>

@@ -49,7 +49,7 @@ export function PresentationWorkflowCard({ project, imported, qa, disabled = fal
     </section>}
     <ol>{workflow.stages.map((stage) => <li key={stage.name}><strong>{stage.name}</strong>：{stage.detail}</li>)}</ol>
     <details><summary>恢复记录 · {workflow.timeline.length} 项</summary>
-      <p>根据已保存记录重建；计划修订和页任务事件带有保存时间，其他条目是当前检查点。</p>
+      <p>根据已保存记录重建；计划修订、页任务、逐页导入和历史 QA 事件带有记录时间，其他条目是当前检查点。</p>
       <ol>{workflow.timeline.map((event) => <li key={event.id}>
         {event.at ? <time dateTime={event.at}>{event.at}</time> : null} {event.text}
       </li>)}</ol>
