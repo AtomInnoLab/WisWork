@@ -82,6 +82,41 @@ export function PresentationProjectCard(props: {
             后台制作剩余页面
           </button>
         )}
+      {project?.productionTasks && project.productionTasks.length > 0 && (
+        <label>
+          选择页生产任务
+          <select
+            aria-label="选择页生产任务"
+            disabled={disabled || project.jobsUnavailable}
+            value={project.production?.requestId ?? ''}
+            onChange={(event) => void controller.selectProduction(event.target.value)}
+          >
+            {project.productionTasks.map((task) => (
+              <option key={task.requestId} value={task.requestId}>
+                任务 {task.sequence} · {task.requestId} · 计划第 {task.planRevision} 版 ·{' '}
+                {task.compiledCount}/{task.total} 页 ·{' '}
+                {task.jobState
+                  ? {
+                      running: '制作中',
+                      pausing: '等待暂停',
+                      paused: '已暂停',
+                      cancelling: '等待取消',
+                      cancelled: '已取消',
+                      interrupted: '已中断',
+                      completed: '编译完成',
+                      failed: '失败待继续',
+                    }[task.jobState]
+                  : {
+                      pending: '待制作',
+                      building: '制作中',
+                      partial: '部分完成',
+                      compiled: '编译完成',
+                    }[task.status]}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {project?.jobsUnavailable && <p>当前 PC 不支持后台任务，请升级；仍可使用继续页任务。</p>}
       {job && project?.production && (
         <section aria-label="后台生产任务">
@@ -105,7 +140,9 @@ export function PresentationProjectCard(props: {
             {['paused', 'interrupted', 'failed'].includes(job.state)
               ? '继续后台制作，已完成页会保留。'
               : job.state === 'completed'
-                ? '保存成果并准备导入，视觉与来源仍需验收。'
+                ? project.production.revision
+                  ? '保存修订单页检查，再单独确认宿主页替换；不能整批追加导入。'
+                  : '保存成果并准备导入，视觉与来源仍需验收。'
                 : job.state === 'cancelled'
                   ? '保存已完成单页；此任务不会重新启动。'
                   : '可离开当前面板；暂停和取消在当前页完成后生效。'}
@@ -192,7 +229,7 @@ export function PresentationProjectCard(props: {
           {project.plan && project.production.planRevision !== project.plan.revision && (
             <p>页任务使用旧计划，继续任务按原快照，不代表当前计划。</p>
           )}
-          {project.production.status === 'compiled' && (
+          {project.production.status === 'compiled' && !project.production.revision && (
             <button
               type="button"
               disabled={disabled}

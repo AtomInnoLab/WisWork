@@ -11,7 +11,17 @@ import {
 import type { AgentSkill } from '@wiswork/agent-core'
 import type { PresentationGenerationOptions } from './presentation-generation.js'
 
+export interface PresentationProductionTask {
+  requestId: string
+  sequence: number
+  planRevision: number
+  status: PresentationProductionStatus['status']
+  compiledCount: number
+  total: number
+  jobState?: PresentationProductionJob['state']
+}
 export interface PresentationProjectStatus {
+  productionTasks?: PresentationProductionTask[]
   productionJob?: PresentationProductionJob | null
   jobsUnavailable?: boolean
   production?: PresentationProductionStatus
@@ -50,6 +60,7 @@ export interface PresentationProjectController {
   restore(): Promise<void>
   resume(requestId: string): Promise<void>
   runProduction(requestId: string): Promise<void>
+  selectProduction(requestId: string): Promise<void>
   startProductionJob(requestId: string): Promise<void>
   pauseProductionJob(requestId: string): Promise<void>
   resumeProductionJob(requestId: string): Promise<void>
@@ -76,6 +87,68 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
     p?.production === undefined ? undefined : parsePresentationProductionStatus(p.production)
   if (production && production.projectId !== projectId)
     throw new Error('presentation_response_invalid')
+  let productionTasks: PresentationProductionTask[] | undefined
+  if (p?.productionTasks !== undefined) {
+    const tasks = p.productionTasks
+    if (
+      !Array.isArray(tasks) ||
+      tasks.length > 32 ||
+      !tasks.every(
+        (task, index) =>
+          task &&
+          typeof task === 'object' &&
+          !Array.isArray(task) &&
+          Object.keys(task).every((key) =>
+            [
+              'requestId',
+              'sequence',
+              'planRevision',
+              'status',
+              'compiledCount',
+              'total',
+              'jobState',
+            ].includes(key),
+          ) &&
+          validId(task.requestId) &&
+          Number.isSafeInteger(task.sequence) &&
+          task.sequence > 0 &&
+          Number.isSafeInteger(task.planRevision) &&
+          task.planRevision > 0 &&
+          Number.isSafeInteger(task.total) &&
+          task.total > 0 &&
+          task.total <= 32 &&
+          Number.isSafeInteger(task.compiledCount) &&
+          task.compiledCount >= 0 &&
+          task.compiledCount <= task.total &&
+          ['pending', 'building', 'partial', 'compiled'].includes(task.status) &&
+          (task.status === 'compiled') === (task.compiledCount === task.total) &&
+          (task.status !== 'pending' || task.compiledCount === 0) &&
+          (task.jobState === undefined ||
+            [
+              'running',
+              'pausing',
+              'paused',
+              'cancelling',
+              'cancelled',
+              'interrupted',
+              'completed',
+              'failed',
+            ].includes(task.jobState)) &&
+          (task.jobState !== 'completed' || task.status === 'compiled') &&
+          (index === 0 || task.sequence < tasks[index - 1]!.sequence),
+      ) ||
+      new Set(tasks.map((task) => task.requestId)).size !== tasks.length ||
+      (production &&
+        !tasks.some(
+          (task) =>
+            task.requestId === production.requestId &&
+            task.planRevision === production.planRevision &&
+            task.total === production.total,
+        ))
+    )
+      throw new Error('presentation_response_invalid')
+    productionTasks = structuredClone(tasks)
+  }
   const planned = p?.status === 'planned'
   if (
     !p ||
@@ -131,6 +204,7 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
   // Copy only the bounded public projection; never retain arbitrary server fields or binary data.
   return {
     ...(production ? { production } : {}),
+    ...(productionTasks ? { productionTasks } : {}),
     projectId: p.projectId,
     title: p.title,
     status: p.status,
@@ -191,6 +265,7 @@ export function createPresentationProjectController(
   const listeners = new Set<() => void>()
   let epoch = 0
   let projectDocument: string | undefined
+  let selection: { documentId: string; projectId: string; requestId: string } | undefined
   let active: AbortController | undefined
   let poll: ReturnType<typeof setTimeout> | undefined
   const stopPolling = () => {
@@ -204,6 +279,7 @@ export function createPresentationProjectController(
   const stop = (error?: string) => {
     stopPolling()
     projectDocument = undefined
+    selection = undefined
     epoch += 1
     active?.abort()
     active = undefined
@@ -249,6 +325,10 @@ export function createPresentationProjectController(
       const documentId = await options.documentId()
       boundDocument = documentId
       check()
+      if (selection && (selection.documentId !== documentId || selection.projectId !== projectId))
+        selection = undefined
+      if (phase === 'loading' && requestId && projectDocument !== documentId)
+        throw new Error('presentation_document_changed')
       if (phase !== 'loading') {
         const result = await options.executeTool(
           {
@@ -286,13 +366,20 @@ export function createPresentationProjectController(
       const value = JSON.parse(text)
       if (value?.error) throw new Error(`presentation_${value.error}`)
       const project = parseStatus(value, projectId)
-      if (project.production) {
+      let selectedRequest = phase === 'loading' && requestId ? requestId : selection?.requestId
+      if (
+        selectedRequest &&
+        !project.productionTasks?.some((task) => task.requestId === selectedRequest)
+      )
+        selectedRequest = undefined
+      const productionRequest = selectedRequest ?? project.production?.requestId
+      if (productionRequest) {
         const response = await options.request(
           {
             operation: 'production_job_status',
             documentId,
             projectId,
-            requestId: project.production.requestId,
+            requestId: productionRequest,
           },
           controller.signal,
         )
@@ -311,7 +398,7 @@ export function createPresentationProjectController(
             value,
             documentId,
             projectId,
-            project.production.requestId,
+            productionRequest,
           )
           project.production = result.production
           project.productionJob = result.job
@@ -320,6 +407,10 @@ export function createPresentationProjectController(
       if ((await options.documentId()) !== documentId)
         throw new Error('presentation_document_changed')
       check()
+      selection =
+        selectedRequest && !project.jobsUnavailable
+          ? { documentId, projectId, requestId: selectedRequest }
+          : undefined
       projectDocument = documentId
       publish({ phase: 'idle', project })
       if (
@@ -333,6 +424,10 @@ export function createPresentationProjectController(
     } catch (error) {
       if (captured === epoch) {
         const code = error instanceof Error ? error.message : ''
+        if (['presentation_document_changed', 'presentation_document_mismatch'].includes(code)) {
+          selection = undefined
+          projectDocument = undefined
+        }
         const retain =
           previous &&
           boundDocument &&
@@ -360,12 +455,21 @@ export function createPresentationProjectController(
       (requestId && requestId !== production.requestId) ||
       (pageId &&
         !production.pages.some((page) => page.id === pageId && page.state === 'compiled')) ||
-      (tool === 'prepare_presentation_production_import' && production.status !== 'compiled')
+      (tool === 'prepare_presentation_production_import' &&
+        (production.status !== 'compiled' || production.revision !== undefined))
     )
       return Promise.resolve()
     return run('producing', production.requestId, tool, pageId)
   }
   return {
+    selectProduction: (requestId) => {
+      if (
+        !validId(requestId) ||
+        !state.project?.productionTasks?.some((task) => task.requestId === requestId)
+      )
+        return Promise.resolve()
+      return run('loading', requestId)
+    },
     startProductionJob: (requestId) =>
       productionAction('start_presentation_production_job', requestId),
     pauseProductionJob: (requestId) =>

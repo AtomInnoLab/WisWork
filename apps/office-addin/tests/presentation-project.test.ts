@@ -308,3 +308,159 @@ it('retains the loaded project on transient same-document failure but clears aft
   await f.controller.refresh()
   expect(f.controller.snapshot().project).toBeUndefined()
 })
+
+describe('saved production task selection', () => {
+  function tasksFixture() {
+    const f = fixture()
+    const production = {
+      projectId: 'project-1',
+      requestId: 'new',
+      planRevision: 1,
+      status: 'pending',
+      compiledCount: 0,
+      total: 1,
+      pages: [{ id: 'a', title: 'A', state: 'pending', attempt: 0 }],
+    }
+    const productionTasks = [
+      {
+        requestId: 'new',
+        sequence: 2,
+        planRevision: 1,
+        status: 'pending',
+        compiledCount: 0,
+        total: 1,
+      },
+      {
+        requestId: 'old',
+        sequence: 1,
+        planRevision: 1,
+        status: 'pending',
+        compiledCount: 0,
+        total: 1,
+        jobState: 'paused',
+      },
+    ]
+    f.request.mockImplementation(async (body) => {
+      const request = body as { operation: string; requestId?: string; documentId: string }
+      if (request.operation === 'status')
+        return new Response(JSON.stringify({ ...project, production, productionTasks }))
+      const job =
+        request.requestId === 'old'
+          ? {
+              version: 1,
+              projectId: 'project-1',
+              documentId: request.documentId,
+              requestId: 'old',
+              inputDigest: 'a'.repeat(64),
+              planDigest: 'b'.repeat(64),
+              planRevision: 1,
+              revision: 3,
+              state: 'paused',
+              events: [
+                { sequence: 1, createdAt: '2026-09-24T00:00:00.000Z', type: 'run.started' },
+                { sequence: 2, createdAt: '2026-09-24T00:00:01.000Z', type: 'run.pause_requested' },
+                { sequence: 3, createdAt: '2026-09-24T00:00:02.000Z', type: 'run.paused' },
+              ],
+            }
+          : null
+      return new Response(
+        JSON.stringify({
+          job,
+          production: {
+            ...production,
+            requestId: request.requestId,
+            inputDigest: 'a'.repeat(64),
+            planDigest: 'b'.repeat(64),
+          },
+        }),
+      )
+    })
+    return { ...f, productionTasks, production }
+  }
+  it('selects older paused work and retains explicit selection across refresh', async () => {
+    const f = tasksFixture()
+    await f.controller.refresh()
+    await f.controller.selectProduction('old')
+    expect(f.controller.snapshot().project?.production?.requestId).toBe('old')
+    expect(f.controller.snapshot().project?.productionJob?.state).toBe('paused')
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.production?.requestId).toBe('old')
+    await f.controller.resumeProductionJob('old')
+    expect(f.executeTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'resume_presentation_production_job',
+        input: { project_id: 'project-1', request_id: 'old' },
+      }),
+      expect.any(AbortSignal),
+    )
+    const calls = f.request.mock.calls.length
+    await f.controller.selectProduction('invented')
+    expect(f.request).toHaveBeenCalledTimes(calls)
+  })
+  it.each(['clear', 'document'] as const)('resets selected task after %s', async (action) => {
+    const f = tasksFixture()
+    await f.controller.refresh()
+    await f.controller.selectProduction('old')
+    if (action === 'clear') f.controller.clear()
+    else f.documentId.mockResolvedValue('other-document')
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.production?.requestId).toBe('new')
+  })
+  it('rejects invalid or duplicated task identities and unordered sequences', async () => {
+    for (const invalid of [
+      [
+        {
+          requestId: '../bad',
+          sequence: 1,
+          planRevision: 1,
+          status: 'pending',
+          compiledCount: 0,
+          total: 1,
+        },
+      ],
+      [
+        {
+          requestId: 'a',
+          sequence: 1,
+          planRevision: 1,
+          status: 'compiled',
+          compiledCount: 0,
+          total: 1,
+        },
+      ],
+      [
+        {
+          requestId: 'a',
+          sequence: 1,
+          planRevision: 1,
+          status: 'pending',
+          compiledCount: 0,
+          total: 1,
+          jobState: 'unknown',
+        },
+      ],
+    ]) {
+      const f = fixture()
+      f.request.mockResolvedValue(
+        new Response(JSON.stringify({ ...project, productionTasks: invalid })),
+      )
+      await f.controller.refresh()
+      expect(f.controller.snapshot().project).toBeUndefined()
+    }
+  })
+  it('does not prepare derived revisions from the workbench even when every page compiled', async () => {
+    const f = tasksFixture()
+    f.production.status = 'compiled'
+    f.production.compiledCount = 1
+    f.production.pages[0]!.state = 'compiled'
+    f.production.pages[0]!.attempt = 1
+    Object.assign(f.production, {
+      revision: { parentRequestId: 'parent', pageId: 'a', parentInputDigest: 'c'.repeat(64) },
+    })
+    f.productionTasks[0]!.status = 'compiled'
+    f.productionTasks[0]!.compiledCount = 1
+    await f.controller.refresh()
+    await f.controller.prepareProduction()
+    expect(f.executeTool).not.toHaveBeenCalled()
+  })
+})

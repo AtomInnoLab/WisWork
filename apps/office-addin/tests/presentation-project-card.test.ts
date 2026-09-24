@@ -40,6 +40,7 @@ async function mount(snapshot: Snapshot, disabled = false) {
     restore: vi.fn(async () => {}),
     resume: vi.fn(async () => {}),
     runProduction: vi.fn(async () => {}),
+    selectProduction: vi.fn(async () => {}),
     startProductionJob: vi.fn(async () => {}),
     pauseProductionJob: vi.fn(async () => {}),
     resumeProductionJob: vi.fn(async () => {}),
@@ -257,4 +258,70 @@ it('shows background pause, retained event history and compiled page download', 
   expect(view.controller.pauseProductionJob).toHaveBeenCalledWith('pages')
   await act(async () => view.button('保存单页到附件：A').click())
   expect(view.controller.downloadProductionPage).toHaveBeenCalledWith('a')
+})
+it('lets users select an older paused task by request and progress', async () => {
+  const view = await mount({
+    ...pending,
+    project: {
+      ...pending.project!,
+      productionTasks: [
+        {
+          requestId: 'new',
+          sequence: 2,
+          planRevision: 1,
+          status: 'pending',
+          compiledCount: 0,
+          total: 1,
+        },
+        {
+          requestId: 'old',
+          sequence: 1,
+          planRevision: 1,
+          status: 'pending',
+          compiledCount: 0,
+          total: 1,
+          jobState: 'paused',
+        },
+      ],
+      production: {
+        projectId: 'p1',
+        requestId: 'new',
+        planRevision: 1,
+        status: 'pending',
+        compiledCount: 0,
+        total: 1,
+        pages: [{ id: 'a', title: 'A', state: 'pending', attempt: 0 }],
+      },
+    },
+  })
+  const select = view.container.querySelector('select')!
+  expect(select.getAttribute('aria-label')).toBe('选择页生产任务')
+  expect(select.textContent).toContain('old')
+  expect(select.textContent).toContain('已暂停')
+  await act(async () => {
+    select.value = 'old'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  expect(view.controller.selectProduction).toHaveBeenCalledWith('old')
+})
+it('offers downloads but no bulk import preparation for a compiled revision', async () => {
+  const view = await mount({
+    ...pending,
+    project: {
+      ...pending.project!,
+      production: {
+        projectId: 'p1',
+        requestId: 'child',
+        planRevision: 1,
+        status: 'compiled',
+        compiledCount: 1,
+        total: 1,
+        pages: [{ id: 'a', title: 'A', state: 'compiled', attempt: 1 }],
+        revision: { parentRequestId: 'parent', pageId: 'a', parentInputDigest: 'a'.repeat(64) },
+      },
+    },
+  })
+  expect(view.button('准备完整成果导入')).toBeUndefined()
+  expect(view.button('保存单页到附件：A')).toBeTruthy()
+  expect(view.container.textContent).toContain('宿主页替换需单独确认')
 })
