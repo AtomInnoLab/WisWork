@@ -182,7 +182,16 @@ it('projects page production and resumes its explicit request through the page t
         { id: 'b', title: 'B', state: 'failed', attempt: 1, error: 'compile_failed' },
       ],
     }
-  f.request.mockImplementation(async () => new Response(JSON.stringify({ ...project, production })))
+  f.request.mockImplementation(
+    async (body) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'production_job_status'
+            ? { error: 'invalid_request' }
+            : { ...project, production },
+        ),
+      ),
+  )
   await f.controller.refresh()
   expect(f.controller.snapshot().project?.production).toEqual(production)
   await f.controller.runProduction('wrong')
@@ -195,4 +204,107 @@ it('projects page production and resumes its explicit request through the page t
     }),
     expect.any(AbortSignal),
   )
+})
+
+it('polls active background work and clears polling without cancelling PC work', async () => {
+  vi.useFakeTimers()
+  try {
+    const f = fixture()
+    const production = {
+      projectId: 'project-1',
+      requestId: 'pages',
+      planRevision: 1,
+      status: 'pending',
+      compiledCount: 0,
+      total: 1,
+      pages: [{ id: 'a', title: 'A', state: 'pending', attempt: 0 }],
+    }
+    const job = {
+      version: 1,
+      projectId: 'project-1',
+      documentId: 'document-1',
+      requestId: 'pages',
+      inputDigest: 'a'.repeat(64),
+      planDigest: 'b'.repeat(64),
+      planRevision: 1,
+      revision: 1,
+      state: 'running',
+      events: [{ sequence: 1, createdAt: '2026-09-24T00:00:00.000Z', type: 'run.started' }],
+    }
+    f.request.mockImplementation(
+      async (body) =>
+        new Response(
+          JSON.stringify(
+            (body as { operation: string }).operation === 'status'
+              ? { ...project, production }
+              : {
+                  job,
+                  production: {
+                    ...production,
+                    inputDigest: job.inputDigest,
+                    planDigest: job.planDigest,
+                  },
+                },
+          ),
+        ),
+    )
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.productionJob?.state).toBe('running')
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(f.request).toHaveBeenCalledTimes(4)
+    f.controller.cancel()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(f.request).toHaveBeenCalledTimes(4)
+    expect(f.executeTool).not.toHaveBeenCalled()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+it('downloads only completed pages and prepares only a fully compiled production', async () => {
+  const f = fixture()
+  const production = {
+    projectId: 'project-1',
+    requestId: 'pages',
+    planRevision: 1,
+    status: 'partial',
+    compiledCount: 1,
+    total: 2,
+    pages: [
+      { id: 'a', title: 'A', state: 'compiled', attempt: 1 },
+      { id: 'b', title: 'B', state: 'pending', attempt: 0 },
+    ],
+  }
+  f.request.mockImplementation(
+    async (body) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'status'
+            ? { ...project, production }
+            : { error: 'invalid_request' },
+        ),
+      ),
+  )
+  await f.controller.refresh()
+  await f.controller.downloadProductionPage('b')
+  await f.controller.prepareProduction()
+  expect(f.executeTool).not.toHaveBeenCalled()
+  await f.controller.downloadProductionPage('a')
+  expect(f.executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'read_presentation_page_artifact',
+      input: { project_id: 'project-1', request_id: 'pages', page_id: 'a' },
+    }),
+    expect.any(AbortSignal),
+  )
+})
+it('retains the loaded project on transient same-document failure but clears after a document switch', async () => {
+  const f = fixture()
+  await f.controller.refresh()
+  f.request.mockImplementation(async () => new Response('', { status: 503 }))
+  await f.controller.refresh()
+  expect(f.controller.snapshot().project).toEqual(project)
+  expect(f.controller.snapshot().error).toBeTruthy()
+  f.documentId.mockResolvedValue('other')
+  await f.controller.refresh()
+  expect(f.controller.snapshot().project).toBeUndefined()
 })

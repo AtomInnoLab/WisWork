@@ -11,6 +11,7 @@ export function PresentationProjectCard(props: {
     () => controller.snapshot(),
     () => controller.snapshot(),
   )
+  const job = project?.productionJob
   const active = phase !== 'idle'
   const disabled = props.disabled || active
   return (
@@ -22,7 +23,7 @@ export function PresentationProjectCard(props: {
               loading: '正在读取项目',
               restoring: '正在恢复最近完成版本',
               resuming: '正在编译已保存版本',
-              producing: '正在编译剩余页面',
+              producing: '正在处理页任务',
             }[phase]
           : project
             ? `${project.slideCount} 页 · ${project.status === 'planned' ? '计划已保存，尚未编译' : project.status === 'pending' ? '已保存，待编译' : '已编译，尚未完成视觉验证'}`
@@ -53,7 +54,7 @@ export function PresentationProjectCard(props: {
             继续编译
           </button>
         )}
-        {project?.production && project.production.status !== 'compiled' && (
+        {project?.production && project.production.status !== 'compiled' && !job && (
           <button
             type="button"
             disabled={disabled}
@@ -62,12 +63,118 @@ export function PresentationProjectCard(props: {
             继续页任务
           </button>
         )}
+        {active && <p>取消仅停止当前等待，不会取消 PC 后台任务。</p>}
         {active && (
           <button type="button" onClick={() => controller.cancel()}>
             取消
           </button>
         )}
       </div>
+      {project?.production &&
+        !project.jobsUnavailable &&
+        !job &&
+        project.production.status !== 'compiled' && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => void controller.startProductionJob(project.production!.requestId)}
+          >
+            后台制作剩余页面
+          </button>
+        )}
+      {project?.jobsUnavailable && <p>当前 PC 不支持后台任务，请升级；仍可使用继续页任务。</p>}
+      {job && project?.production && (
+        <section aria-label="后台生产任务">
+          <p role="status">
+            后台页编译 ·{' '}
+            {
+              {
+                running: '制作中',
+                pausing: '当前页完成后暂停',
+                paused: '已暂停',
+                cancelling: '当前页完成后取消',
+                cancelled: '已取消，成果保留',
+                interrupted: 'PC 运行已中断',
+                completed: '编译完成',
+                failed: '失败待继续',
+              }[job.state]
+            }
+          </p>
+          <p>
+            下一步：
+            {['paused', 'interrupted', 'failed'].includes(job.state)
+              ? '继续后台制作，已完成页会保留。'
+              : job.state === 'completed'
+                ? '保存成果并准备导入，视觉与来源仍需验收。'
+                : job.state === 'cancelled'
+                  ? '保存已完成单页；此任务不会重新启动。'
+                  : '可离开当前面板；暂停和取消在当前页完成后生效。'}
+          </p>
+          <div className="presentation-project-actions">
+            {job.state === 'running' && (
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => void controller.pauseProductionJob(job.requestId)}
+              >
+                暂停后台任务
+              </button>
+            )}
+            {['paused', 'interrupted', 'failed'].includes(job.state) && (
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => void controller.resumeProductionJob(job.requestId)}
+              >
+                继续后台任务
+              </button>
+            )}
+            {!['completed', 'cancelled', 'cancelling'].includes(job.state) && (
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => void controller.cancelProductionJob(job.requestId)}
+              >
+                取消后台任务
+              </button>
+            )}
+          </div>
+          <details className="presentation-job-events">
+            <summary>生产事件 · 最近 {job.events.length} 条</summary>
+            {job.revision > job.events.length && <p>更早历史已截断，此处不是完整审计记录。</p>}
+            <p>仅记录冻结页面编译，不包含研究、宿主写入或 QA。</p>
+            <ol>
+              {job.events.map((event) => (
+                <li key={event.sequence}>
+                  <time dateTime={event.createdAt}>{event.createdAt}</time> ·{' '}
+                  {
+                    {
+                      'run.started': '开始后台制作',
+                      'run.pause_requested': '已请求暂停',
+                      'run.paused': '已暂停',
+                      'run.cancel_requested': '已请求取消',
+                      'run.cancelled': '已取消',
+                      'run.interrupted': '运行已中断',
+                      'run.completed': '编译完成',
+                      'run.failed': '运行失败',
+                      'page.started': '页面开始编译',
+                      'page.compiled': '页面编译完成',
+                      'page.failed': '页面编译失败',
+                    }[event.type]
+                  }
+                  {'pageId' in event
+                    ? ` · 页面 ${project.production?.pages.find((page) => page.id === event.pageId)?.title ?? '未知页面'}`
+                    : ''}
+                  {'attempt' in event ? ` · 尝试 ${event.attempt}` : ''}
+                  {'error' in event && event.error
+                    ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', invalid_state: '任务状态异常' }[event.error]}`
+                    : ''}
+                </li>
+              ))}
+            </ol>
+          </details>
+        </section>
+      )}
       {project?.production && (
         <section aria-label="逐页生产进度">
           <p>
@@ -79,11 +186,20 @@ export function PresentationProjectCard(props: {
             <p>
               单页修订 · 父请求：{project.production.revision.parentRequestId} · 目标页：
               {project.production.revision.pageId}
-              。尚未替换当前页；可下载单页检查，宿主替换待接入，禁止整批追加导入。
+              。尚未替换当前页；可下载单页检查，宿主页替换需单独确认，禁止整批追加导入。
             </p>
           )}
           {project.plan && project.production.planRevision !== project.plan.revision && (
             <p>页任务使用旧计划，继续任务按原快照，不代表当前计划。</p>
+          )}
+          {project.production.status === 'compiled' && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => void controller.prepareProduction()}
+            >
+              准备完整成果导入
+            </button>
           )}
           <ol>
             {project.production.pages.map((page) => (
@@ -101,6 +217,15 @@ export function PresentationProjectCard(props: {
                 {page.error
                   ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用' }[page.error]}`
                   : ''}
+                {page.state === 'compiled' && (
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => void controller.downloadProductionPage(page.id)}
+                  >
+                    保存单页到附件：{page.title}
+                  </button>
+                )}
               </li>
             ))}
           </ol>

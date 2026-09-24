@@ -58,6 +58,12 @@ describe('workspace project integration', () => {
       restore: vi.fn(async () => {}),
       resume: vi.fn(async () => {}),
       runProduction: vi.fn(async () => {}),
+      startProductionJob: vi.fn(async () => {}),
+      pauseProductionJob: vi.fn(async () => {}),
+      resumeProductionJob: vi.fn(async () => {}),
+      cancelProductionJob: vi.fn(async () => {}),
+      downloadProductionPage: vi.fn(async () => {}),
+      prepareProduction: vi.fn(async () => {}),
       cancel: vi.fn(),
       clear: vi.fn(),
     }

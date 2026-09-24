@@ -1,3 +1,5 @@
+import type { PresentationProductionJob } from '@wiswork/project-store/presentation-job'
+import { parsePresentationJobResponse } from './presentation-jobs.js'
 import {
   parsePresentationProductionStatus,
   type PresentationProductionStatus,
@@ -10,6 +12,8 @@ import type { AgentSkill } from '@wiswork/agent-core'
 import type { PresentationGenerationOptions } from './presentation-generation.js'
 
 export interface PresentationProjectStatus {
+  productionJob?: PresentationProductionJob | null
+  jobsUnavailable?: boolean
   production?: PresentationProductionStatus
   projectId: string
   title: string
@@ -46,6 +50,12 @@ export interface PresentationProjectController {
   restore(): Promise<void>
   resume(requestId: string): Promise<void>
   runProduction(requestId: string): Promise<void>
+  startProductionJob(requestId: string): Promise<void>
+  pauseProductionJob(requestId: string): Promise<void>
+  resumeProductionJob(requestId: string): Promise<void>
+  cancelProductionJob(requestId: string): Promise<void>
+  downloadProductionPage(pageId: string): Promise<void>
+  prepareProduction(): Promise<void>
   cancel(): void
   clear(): void
 }
@@ -180,12 +190,20 @@ export function createPresentationProjectController(
   let state: PresentationProjectSnapshot = { phase: 'idle' }
   const listeners = new Set<() => void>()
   let epoch = 0
+  let projectDocument: string | undefined
   let active: AbortController | undefined
+  let poll: ReturnType<typeof setTimeout> | undefined
+  const stopPolling = () => {
+    clearTimeout(poll)
+    poll = undefined
+  }
   const publish = (next: PresentationProjectSnapshot) => {
     state = next
     for (const listener of listeners) listener()
   }
   const stop = (error?: string) => {
+    stopPolling()
+    projectDocument = undefined
     epoch += 1
     active?.abort()
     active = undefined
@@ -194,6 +212,8 @@ export function createPresentationProjectController(
   const run = async (
     phase: 'loading' | 'restoring' | 'resuming' | 'producing',
     requestId?: string,
+    tool?: string,
+    pageId?: string,
   ) => {
     if (active) return
     const projectId = phase === 'loading' ? options.lastProject() : state.project?.projectId
@@ -204,6 +224,7 @@ export function createPresentationProjectController(
     if (
       !validId(projectId) ||
       (phase === 'producing' &&
+        !tool &&
         (!validId(requestId) ||
           requestId !== state.project?.production?.requestId ||
           state.project.production.status === 'compiled')) ||
@@ -212,10 +233,12 @@ export function createPresentationProjectController(
       (phase === 'restoring' && !state.project?.latestCompiledRequestId)
     )
       return
+    stopPolling()
     const controller = new AbortController()
     active = controller
     const captured = ++epoch
     const previous = state.project
+    let boundDocument: string | undefined
     publish({ phase, ...(previous ? { project: previous } : {}) })
     const check = () => {
       if (controller.signal.aborted || captured !== epoch) throw new Error('cancelled')
@@ -224,18 +247,24 @@ export function createPresentationProjectController(
     try {
       check()
       const documentId = await options.documentId()
+      boundDocument = documentId
       check()
       if (phase !== 'loading') {
         const result = await options.executeTool(
           {
             id: `presentation-control-${captured}`,
             name:
-              phase === 'restoring'
+              tool ??
+              (phase === 'restoring'
                 ? 'restore_presentation_project'
                 : phase === 'producing'
                   ? 'run_presentation_production'
-                  : 'resume_presentation_project',
-            input: { project_id: projectId, ...(requestId ? { request_id: requestId } : {}) },
+                  : 'resume_presentation_project'),
+            input: {
+              project_id: projectId,
+              ...(requestId ? { request_id: requestId } : {}),
+              ...(pageId ? { page_id: pageId } : {}),
+            },
           },
           controller.signal,
         )
@@ -257,17 +286,97 @@ export function createPresentationProjectController(
       const value = JSON.parse(text)
       if (value?.error) throw new Error(`presentation_${value.error}`)
       const project = parseStatus(value, projectId)
+      if (project.production) {
+        const response = await options.request(
+          {
+            operation: 'production_job_status',
+            documentId,
+            projectId,
+            requestId: project.production.requestId,
+          },
+          controller.signal,
+        )
+        check()
+        if (!response.ok) throw new Error('presentation_service_unavailable')
+        const text = await response.text()
+        check()
+        if (new TextEncoder().encode(text).byteLength > 256 * 1024)
+          throw new Error('presentation_response_invalid')
+        const value = JSON.parse(text)
+        if (['invalid_request', 'upgrade_required'].includes(value?.error))
+          project.jobsUnavailable = true
+        else {
+          if (value?.error) throw new Error(`presentation_${value.error}`)
+          const result = parsePresentationJobResponse(
+            value,
+            documentId,
+            projectId,
+            project.production.requestId,
+          )
+          project.production = result.production
+          project.productionJob = result.job
+        }
+      }
       if ((await options.documentId()) !== documentId)
         throw new Error('presentation_document_changed')
       check()
+      projectDocument = documentId
       publish({ phase: 'idle', project })
+      if (
+        captured === epoch &&
+        project.productionJob &&
+        ['running', 'pausing', 'cancelling'].includes(project.productionJob.state)
+      )
+        poll = setTimeout(() => {
+          void run('loading')
+        }, 1500)
     } catch (error) {
-      if (captured === epoch) publish({ phase: 'idle', error: message(error) })
+      if (captured === epoch) {
+        const code = error instanceof Error ? error.message : ''
+        const retain =
+          previous &&
+          boundDocument &&
+          boundDocument === projectDocument &&
+          [
+            'presentation_service_unavailable',
+            'presentation_unavailable',
+            'presentation_busy',
+          ].includes(code) &&
+          (await options.documentId().then(
+            (id) => id === boundDocument,
+            () => false,
+          ))
+        if (captured !== epoch) return
+        publish({ phase: 'idle', ...(retain ? { project: previous } : {}), error: message(error) })
+      }
     } finally {
       if (captured === epoch) active = undefined
     }
   }
+  const productionAction = (tool: string, requestId?: string, pageId?: string) => {
+    const production = state.project?.production
+    if (
+      !production ||
+      (requestId && requestId !== production.requestId) ||
+      (pageId &&
+        !production.pages.some((page) => page.id === pageId && page.state === 'compiled')) ||
+      (tool === 'prepare_presentation_production_import' && production.status !== 'compiled')
+    )
+      return Promise.resolve()
+    return run('producing', production.requestId, tool, pageId)
+  }
   return {
+    startProductionJob: (requestId) =>
+      productionAction('start_presentation_production_job', requestId),
+    pauseProductionJob: (requestId) =>
+      productionAction('pause_presentation_production_job', requestId),
+    resumeProductionJob: (requestId) =>
+      productionAction('resume_presentation_production_job', requestId),
+    cancelProductionJob: (requestId) =>
+      productionAction('cancel_presentation_production_job', requestId),
+    downloadProductionPage: (pageId) =>
+      productionAction('read_presentation_page_artifact', undefined, pageId),
+    prepareProduction: () => productionAction('prepare_presentation_production_import'),
     snapshot: () => state,
     subscribe(listener) {
       listeners.add(listener)

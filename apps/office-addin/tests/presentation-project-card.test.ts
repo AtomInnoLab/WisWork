@@ -40,6 +40,12 @@ async function mount(snapshot: Snapshot, disabled = false) {
     restore: vi.fn(async () => {}),
     resume: vi.fn(async () => {}),
     runProduction: vi.fn(async () => {}),
+    startProductionJob: vi.fn(async () => {}),
+    pauseProductionJob: vi.fn(async () => {}),
+    resumeProductionJob: vi.fn(async () => {}),
+    cancelProductionJob: vi.fn(async () => {}),
+    downloadProductionPage: vi.fn(async () => {}),
+    prepareProduction: vi.fn(async () => {}),
     cancel: vi.fn(),
     clear: vi.fn(),
   }
@@ -213,4 +219,42 @@ it('labels a derived page task with its parent and pending host replacement', as
   expect(view.container.textContent).toContain('parent')
   expect(view.container.textContent).toContain('目标页：a')
   expect(view.container.textContent).toContain('尚未替换当前页')
+})
+it('shows background pause, retained event history and compiled page download', async () => {
+  const view = await mount({
+    ...pending,
+    project: {
+      ...pending.project!,
+      productionJob: {
+        version: 1,
+        projectId: 'p1',
+        documentId: 'd',
+        requestId: 'pages',
+        inputDigest: 'a'.repeat(64),
+        planDigest: 'b'.repeat(64),
+        planRevision: 1,
+        revision: 130,
+        state: 'running',
+        events: [{ sequence: 130, createdAt: '2026-09-24T00:00:00.000Z', type: 'run.started' }],
+      },
+      production: {
+        projectId: 'p1',
+        requestId: 'pages',
+        planRevision: 1,
+        status: 'partial',
+        compiledCount: 1,
+        total: 2,
+        pages: [
+          { id: 'a', title: 'A', state: 'compiled', attempt: 1 },
+          { id: 'b', title: 'B', state: 'pending', attempt: 0 },
+        ],
+      },
+    },
+  })
+  expect(view.container.textContent).toContain('更早历史已截断')
+  expect(view.button('继续页任务')).toBeUndefined()
+  await act(async () => view.button('暂停后台任务').click())
+  expect(view.controller.pauseProductionJob).toHaveBeenCalledWith('pages')
+  await act(async () => view.button('保存单页到附件：A').click())
+  expect(view.controller.downloadProductionPage).toHaveBeenCalledWith('a')
 })

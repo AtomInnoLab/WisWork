@@ -848,3 +848,13 @@ p {
 .presentation-project summary {
   cursor: pointer;
 }
+
+.presentation-job-events ol {
+  max-height: 16rem;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.presentation-job-events time {
+  font-variant-numeric: tabular-nums;
+}
