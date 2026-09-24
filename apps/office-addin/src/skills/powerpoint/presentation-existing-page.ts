@@ -1,5 +1,5 @@
 import { validSourceSlideId } from './presentation-page-delivery.js'
-import { validExistingVisualReview, type ExistingVisualReview } from './presentation-existing-visual-review.js'
+import { validExistingVisualCapture, validExistingVisualReview, type ExistingVisualCapture, type ExistingVisualReview } from './presentation-existing-visual-review.js'
 
 export interface PresentationExistingPageChange {
   version: 1
@@ -27,6 +27,7 @@ export interface PresentationExistingPageChange {
     | 'undone'
   newSlideId?: string
   restoredSlideId?: string
+  captures?: ExistingVisualCapture[]
   reviews?: ExistingVisualReview[]
 }
 
@@ -46,7 +47,8 @@ export const existingPageReservedBytes = (r: PresentationExistingPageChange) =>
     state: 'restore_inserted',
     newSlideId: '\uffff'.repeat(256),
     restoredSlideId: '\uffff'.repeat(256),
-  }) - bytes(r) + Math.max(0, 2 * 8202 + 12 - (r.reviews ? bytes(r.reviews) + ',"reviews":'.length : 0))
+  }) - bytes(r) + Math.max(0, 2 * 8202 + 12 - (r.reviews ? bytes(r.reviews) + ',"reviews":'.length : 0)) +
+  Math.max(0, 2 * 524 + 13 - (r.captures ? bytes(r.captures) + ',"captures":'.length : 0))
 
 export function validatePresentationExistingPageChange(value: unknown): value is PresentationExistingPageChange {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
@@ -54,7 +56,7 @@ export function validatePresentationExistingPageChange(value: unknown): value is
   const keys = [
     'version', 'changeId', 'documentId', 'baselineId', 'baselineDigest', 'scope',
     'oldSlideId', 'beforeSlideIds', 'originalPackageDigest', 'replacementPackageDigest',
-    'sourceSlideId', 'backup', 'state', 'newSlideId', 'restoredSlideId', 'reviews',
+    'sourceSlideId', 'backup', 'state', 'newSlideId', 'restoredSlideId', 'captures', 'reviews',
   ]
   if (
     Object.keys(r).some((key) => !keys.includes(key)) ||
@@ -79,15 +81,21 @@ export function validatePresentationExistingPageChange(value: unknown): value is
   if (['restore_inserted', 'undone'].includes(r.state)) {
     if (!hostId(r.restoredSlideId) || r.restoredSlideId === r.newSlideId || r.beforeSlideIds.includes(r.restoredSlideId)) return false
   } else if (r.restoredSlideId !== undefined) return false
-  if (r.reviews !== undefined) {
-    const targets = r.state === 'staged' ? [r.oldSlideId, r.newSlideId] :
+  const targets = r.state === 'staged' ? [r.oldSlideId, r.newSlideId] :
       r.state === 'applied' ? [r.newSlideId] :
       r.state === 'discarded' ? [r.oldSlideId] :
       r.state === 'undone' ? [r.restoredSlideId] : []
+  if (r.captures !== undefined &&
+    (!Array.isArray(r.captures) || r.captures.length > targets.length ||
+      !r.captures.every(validExistingVisualCapture) ||
+      r.captures.some((capture) => !targets.includes(capture.hostSlideId)) ||
+      new Set(r.captures.map((capture) => capture.hostSlideId)).size !== r.captures.length)) return false
+  if (r.reviews !== undefined) {
     if (!Array.isArray(r.reviews) || r.reviews.length > targets.length ||
       !r.reviews.every(validExistingVisualReview) ||
       r.reviews.some((review) => !targets.includes(review.hostSlideId)) ||
-      new Set(r.reviews.map((review) => review.hostSlideId)).size !== r.reviews.length) return false
+      new Set(r.reviews.map((review) => review.hostSlideId)).size !== r.reviews.length ||
+      r.reviews.some((review) => { const capture = r.captures?.find((c) => c.hostSlideId === review.hostSlideId); return capture !== undefined && (capture.screenshotDigest !== review.screenshotDigest || capture.capturedAt !== review.capturedAt) })) return false
   }
   return bytes(r) + existingPageReservedBytes(r) <= 192 * 1024
 }
@@ -100,7 +108,7 @@ export function validExistingPageTransition(
   if (!before) return after.state === 'pending'
   if (!validatePresentationExistingPageChange(before)) return false
   const identity = (r: PresentationExistingPageChange) => JSON.stringify({
-    ...r, state: undefined, newSlideId: undefined, restoredSlideId: undefined, reviews: undefined,
+    ...r, state: undefined, newSlideId: undefined, restoredSlideId: undefined, captures: undefined, reviews: undefined,
   })
   const next: Record<PresentationExistingPageChange['state'], PresentationExistingPageChange['state'][]> = {
     pending: ['inserted'], inserted: ['staged'], staged: ['discard_pending', 'commit_pending'],
@@ -108,11 +116,17 @@ export function validExistingPageTransition(
     commit_pending: ['applied'], applied: ['undo_pending'], undo_pending: ['restore_inserted'],
     restore_inserted: ['undone'], undone: [],
   }
-  const reviewOnly = before.state === after.state && ['staged', 'applied', 'discarded', 'undone'].includes(after.state) &&
+  const terminal = before.state === after.state && ['staged', 'applied', 'discarded', 'undone'].includes(after.state)
+  const captureOnly = terminal && JSON.stringify(before.reviews) === JSON.stringify(after.reviews) &&
+    (after.captures?.length ?? 0) >= (before.captures?.length ?? 0) &&
+    (after.captures?.length ?? 0) <= (before.captures?.length ?? 0) + 2 &&
+    after.captures?.some((capture) => !before.captures?.some((prior) => JSON.stringify(prior) === JSON.stringify(capture))) === true &&
+    (before.captures ?? []).every((capture) => after.captures?.some((nextCapture) => nextCapture.hostSlideId === capture.hostSlideId))
+  const reviewOnly = terminal && JSON.stringify(before.captures) === JSON.stringify(after.captures) &&
     (after.reviews?.length ?? 0) === (before.reviews?.length ?? 0) + 1 &&
     (before.reviews ?? []).every((review) => after.reviews?.some((nextReview) => JSON.stringify(nextReview) === JSON.stringify(review)))
-  return identity(before) === identity(after) && (reviewOnly ||
-    (next[before.state].includes(after.state) && after.reviews === undefined)) &&
+  return identity(before) === identity(after) && (captureOnly || reviewOnly ||
+    (next[before.state].includes(after.state) && after.captures === undefined && after.reviews === undefined)) &&
     (before.newSlideId === undefined || before.newSlideId === after.newSlideId) &&
     (before.restoredSlideId === undefined || before.restoredSlideId === after.restoredSlideId)
 }

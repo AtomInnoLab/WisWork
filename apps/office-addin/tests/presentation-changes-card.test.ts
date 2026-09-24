@@ -171,3 +171,23 @@ it('shows persisted batch page reviews as historical evidence', async () => {
     await act(async () => root.unmount())
   }
 })
+
+it('separates captured, pending, passed and failed existing-page evidence', async () => {
+  const capturedAt = '2026-09-24T00:00:00.000Z'
+  const controller: PresentationChangesController = {
+    snapshot: () => ({ phase: 'idle', entries: [
+      { id: 'one', source: 'existing_page', kind: 'page', pageId: 'old', state: 'staged', before: 'old', after: 'new', actions: [],
+        visualPageIds: ['old', 'new'], visualCaptures: [{ hostSlideId: 'old', screenshotDigest: 'a'.repeat(64), capturedAt }] },
+      { id: 'two', source: 'existing_image', kind: 'image', pageId: 'slide', state: 'complete', before: 'old', after: 'new', actions: [],
+        visualPageIds: ['slide'], visualReviews: [{ hostSlideId: 'slide', screenshotDigest: 'b'.repeat(64), capturedAt, reviewedAt: capturedAt, status: 'fail', notes: 'crop' }] },
+    ] }),
+    subscribe: () => () => {}, run: vi.fn(), refresh: vi.fn(), clear: vi.fn(),
+  }
+  const container = document.createElement('div'), root = createRoot(container)
+  try {
+    await act(async () => root.render(React.createElement(PresentationChangesCard, { controller })))
+    expect(container.textContent).toContain('old：已采集 · 待判断')
+    expect(container.textContent).toContain('new：待采集')
+    expect(container.textContent).toContain('slide：未通过')
+  } finally { await act(async () => root.unmount()) }
+})

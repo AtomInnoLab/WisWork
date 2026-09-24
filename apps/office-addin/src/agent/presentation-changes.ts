@@ -37,6 +37,8 @@ export interface PresentationChangeEntry {
   review?: PresentationExistingChange['review']
   reviews?: PresentationExistingBatch['reviews']
   visualReviews?: PresentationExistingPageChange['reviews']
+  visualCaptures?: PresentationExistingPageChange['captures']
+  visualPageIds?: string[]
   affectedPageCount?: number
   sequence?: number
   legacy?: boolean
@@ -251,6 +253,11 @@ export function createPresentationChangesController(
                     pageId: saved.record.oldSlideId,
                     state: saved.record.state,
                     visualReviews: copy(saved.record.reviews),
+                    visualCaptures: copy(saved.record.captures),
+                    visualPageIds: saved.record.state === 'staged' ? [saved.record.oldSlideId, saved.record.newSlideId!] :
+                      saved.record.state === 'applied' ? [saved.record.newSlideId!] :
+                      saved.record.state === 'discarded' ? [saved.record.oldSlideId] :
+                      saved.record.state === 'undone' ? [saved.record.restoredSlideId!] : [],
                     affectedPageCount: saved.record.state === 'staged' ? 2 : 1,
                     before: `原页：${saved.record.oldSlideId}\n包摘要：${saved.record.originalPackageDigest}\n原页已持久备份`,
                     after: `新页：${saved.record.newSlideId ?? '尚未记录'}\n包摘要：${saved.record.replacementPackageDigest}${saved.record.restoredSlideId ? `\n恢复页面：${saved.record.restoredSlideId}` : ''}`,
@@ -268,6 +275,8 @@ export function createPresentationChangesController(
                     pageId: saved.record.hostSlideId,
                     state: saved.record.state,
                     visualReviews: saved.record.review ? [copy(saved.record.review)] : [],
+                    visualCaptures: saved.record.capture ? [copy(saved.record.capture)] : [],
+                    visualPageIds: ['complete', 'undone'].includes(saved.record.state) ? [saved.record.hostSlideId] : [],
                     affectedPageCount: 1,
                     before: `原图：${saved.record.oldShapeId}\n媒体摘要：${saved.record.original.mediaDigest}\n原图已持久备份`,
                     after: `新图：${saved.record.insertedShapeId ?? '尚未记录'}\n媒体摘要：${saved.record.assetDigest}${saved.record.restoredShapeId ? `\n恢复图片：${saved.record.restoredShapeId}` : ''}`,

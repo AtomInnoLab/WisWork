@@ -1,6 +1,6 @@
 import type { PictureSnapshot } from './browser-presentation-image-adapter.js'
 import type { PresentationImageBackupMetadata } from './presentation-image-backup.js'
-import { validExistingVisualReview, type ExistingVisualReview } from './presentation-existing-visual-review.js'
+import { validExistingVisualCapture, validExistingVisualReview, type ExistingVisualCapture, type ExistingVisualReview } from './presentation-existing-visual-review.js'
 
 export interface PresentationExistingImageChange {
   version: 1
@@ -19,6 +19,7 @@ export interface PresentationExistingImageChange {
   after?: PictureSnapshot
   undoBaseline?: PictureSnapshot
   restoredShapeId?: string
+  capture?: ExistingVisualCapture
   review?: ExistingVisualReview
 }
 
@@ -95,6 +96,7 @@ export const existingImageReservedBytes = (r: PresentationExistingImageChange) =
   (r.undoBaseline ? 0 : bytes(r.original) + 3300) +
   (r.insertedShapeId ? 0 : 1700) +
   (r.restoredShapeId ? 0 : 1700) +
+  (r.capture ? 0 : 524) +
   (r.review ? 0 : 8202) +
   32
 
@@ -120,6 +122,7 @@ export function validatePresentationExistingImageChange(
     'after',
     'undoBaseline',
     'restoredShapeId',
+    'capture',
     'review',
   ]
   if (
@@ -194,8 +197,11 @@ export function validatePresentationExistingImageChange(
     return false
   if (r.state === 'undo_pending' && (!r.after || !r.undoBaseline)) return false
   if (r.state === 'undone' && (!r.after || !r.undoBaseline || !r.restoredShapeId)) return false
+  if (r.capture !== undefined &&
+    (!['complete', 'undone'].includes(r.state) || !validExistingVisualCapture(r.capture) || r.capture.hostSlideId !== r.hostSlideId)) return false
   if (r.review !== undefined &&
-    (!['complete', 'undone'].includes(r.state) || !validExistingVisualReview(r.review) || r.review.hostSlideId !== r.hostSlideId)) return false
+    (!['complete', 'undone'].includes(r.state) || !validExistingVisualReview(r.review) || r.review.hostSlideId !== r.hostSlideId ||
+      (r.capture !== undefined && (r.capture.screenshotDigest !== r.review.screenshotDigest || r.capture.capturedAt !== r.review.capturedAt)))) return false
   return bytes(r) + existingImageReservedBytes(r) <= 192 * 1024
 }
 
@@ -214,6 +220,7 @@ export function validExistingImageTransition(
       after: undefined,
       undoBaseline: undefined,
       restoredShapeId: undefined,
+      capture: undefined,
       review: undefined,
     })
   if (core(before) !== core(after)) return false
@@ -226,9 +233,11 @@ export function validExistingImageTransition(
     )
   if (before.state === 'complete')
     return (
-      ((after.state === 'complete' && before.review === undefined && !!after.review &&
+      ((after.state === 'complete' && before.review === undefined &&
+        ((after.capture !== undefined && JSON.stringify(before.capture) !== JSON.stringify(after.capture) && after.review === undefined) ||
+          (!!after.review && JSON.stringify(before.capture) === JSON.stringify(after.capture))) &&
         before.insertedShapeId === after.insertedShapeId && JSON.stringify(before.after) === JSON.stringify(after.after)) ||
-      (after.state === 'undo_pending' && after.review === undefined &&
+      (after.state === 'undo_pending' && after.review === undefined && after.capture === undefined &&
       before.insertedShapeId === after.insertedShapeId &&
       JSON.stringify(before.after) === JSON.stringify(after.after) &&
       after.restoredShapeId === undefined))
@@ -244,7 +253,9 @@ export function validExistingImageTransition(
           (!before.restoredShapeId || before.restoredShapeId === after.restoredShapeId)))
     )
   if (before.state === 'undone')
-    return after.state === 'undone' && before.review === undefined && !!after.review &&
+    return after.state === 'undone' && before.review === undefined &&
+      ((after.capture !== undefined && JSON.stringify(before.capture) !== JSON.stringify(after.capture) && after.review === undefined) ||
+        (!!after.review && JSON.stringify(before.capture) === JSON.stringify(after.capture))) &&
       before.restoredShapeId === after.restoredShapeId
   return false
 }

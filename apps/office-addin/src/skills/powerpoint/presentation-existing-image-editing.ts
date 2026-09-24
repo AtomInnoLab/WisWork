@@ -418,10 +418,12 @@ export function createPresentationExistingImageEditingSkill(
           await current(); saved()
           if (!same(again, picture)) throw new Error('presentation_existing_image_conflict')
           if (call.name.startsWith('capture_')) {
-            reviewCapture = { changeId: record.changeId, record: JSON.stringify(record), digest: screenshotDigest, capturedAt: new Date().toISOString(), epoch }
+            const capture = { hostSlideId: record.hostSlideId, screenshotDigest, capturedAt: new Date().toISOString() }
+            await store({ ...record, capture })
+            reviewCapture = { changeId: record.changeId, record: JSON.stringify(record), digest: screenshotDigest, capturedAt: capture.capturedAt, epoch }
             return { output: result({ changeId: record.changeId, hostSlideId: record.hostSlideId, screenshotDigest, qaPassed: false }), display: { kind: 'images', items: [{ url: `data:image/png;base64,${png}` }] }, mutated: false, summary: '已采集图片变更页，等待视觉判断' }
           }
-          if (!reviewCapture || reviewCapture.epoch !== epoch || reviewCapture.changeId !== record.changeId || reviewCapture.record !== JSON.stringify(record) || reviewCapture.digest !== screenshotDigest || call.input.screenshot_digest !== screenshotDigest || !['pass', 'fail'].includes(call.input.status as string) || typeof call.input.notes !== 'string' || call.input.notes.length > 2000)
+          if (!reviewCapture || reviewCapture.epoch !== epoch || reviewCapture.changeId !== record.changeId || reviewCapture.record !== JSON.stringify(record) || reviewCapture.digest !== screenshotDigest || record.capture?.screenshotDigest !== screenshotDigest || record.capture.capturedAt !== reviewCapture.capturedAt || call.input.screenshot_digest !== screenshotDigest || !['pass', 'fail'].includes(call.input.status as string) || typeof call.input.notes !== 'string' || call.input.notes.length > 2000)
             throw new Error('presentation_existing_image_review_stale')
           const review = { hostSlideId: record.hostSlideId, screenshotDigest, capturedAt: reviewCapture.capturedAt, reviewedAt: new Date().toISOString(), status: call.input.status as 'pass' | 'fail', notes: call.input.notes }
           await store({ ...record, review })
@@ -570,7 +572,7 @@ export function createPresentationExistingImageEditingSkill(
               )
                 throw new Error('proposal_stale')
               const bytes = await backupBytes()
-              await store({ ...record, state: 'undo_pending', undoBaseline: record.after, review: undefined })
+              await store({ ...record, state: 'undo_pending', undoBaseline: record.after, capture: undefined, review: undefined })
               const restored = await options.imageAdapter.replace(
                 record.hostSlideId,
                 record.insertedShapeId!,
@@ -620,7 +622,9 @@ export function createPresentationExistingImageEditingSkill(
               throw new Error('office_read_failed')
             const pngBase64 = validatePowerPointPageScreenshot(shot.screenshot.base64)
             await check()
-            return { status: 'captured', pages: [{ slideId: record.hostSlideId, pngBase64, digest: await hash(decode(pngBase64)) }] }
+            const digest = await hash(decode(pngBase64))
+            await store({ ...record, capture: { hostSlideId: record.hostSlideId, screenshotDigest: digest, capturedAt: new Date().toISOString() } })
+            return { status: 'captured', pages: [{ slideId: record.hostSlideId, pngBase64, digest }] }
           },
         })
         return {

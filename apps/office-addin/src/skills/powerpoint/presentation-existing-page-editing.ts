@@ -180,10 +180,13 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
           const after = await inspect()
           if (after.status !== status || !same(after.slideIds, before.slideIds)) throw new Error('presentation_existing_page_conflict')
           if (action === 'capture') {
-            reviewCapture = { changeId: record.changeId, slideId, record: JSON.stringify(record), digest: screenshotDigest, capturedAt: new Date().toISOString(), epoch }
+            const capture = { hostSlideId: slideId, screenshotDigest, capturedAt: new Date().toISOString() }
+            await store({ ...record, captures: [...(record.captures ?? []).filter((item) => item.hostSlideId !== slideId), capture] })
+            reviewCapture = { changeId: record.changeId, slideId, record: JSON.stringify(record), digest: screenshotDigest, capturedAt: capture.capturedAt, epoch }
             return { output: output({ changeId: record.changeId, hostSlideId: slideId, screenshotDigest, qaPassed: false }), display: { kind: 'images', items: [{ url: `data:image/png;base64,${png}` }] }, mutated: false, summary: '已采集整页变更截图，等待视觉判断' }
           }
-          if (!reviewCapture || reviewCapture.epoch !== epoch || reviewCapture.changeId !== record.changeId || reviewCapture.slideId !== slideId || reviewCapture.record !== JSON.stringify(record) || reviewCapture.digest !== screenshotDigest || call.input.screenshot_digest !== screenshotDigest || !['pass', 'fail'].includes(call.input.status as string) || typeof call.input.notes !== 'string' || call.input.notes.length > 2000) throw new Error('presentation_existing_page_review_stale')
+          const receipt = record.captures?.find((capture) => capture.hostSlideId === slideId)
+          if (!reviewCapture || reviewCapture.epoch !== epoch || reviewCapture.changeId !== record.changeId || reviewCapture.slideId !== slideId || reviewCapture.record !== JSON.stringify(record) || reviewCapture.digest !== screenshotDigest || receipt?.screenshotDigest !== screenshotDigest || receipt.capturedAt !== reviewCapture.capturedAt || call.input.screenshot_digest !== screenshotDigest || !['pass', 'fail'].includes(call.input.status as string) || typeof call.input.notes !== 'string' || call.input.notes.length > 2000) throw new Error('presentation_existing_page_review_stale')
           const review = { hostSlideId: slideId, screenshotDigest, capturedAt: reviewCapture.capturedAt, reviewedAt: new Date().toISOString(), status: call.input.status as 'pass' | 'fail', notes: call.input.notes }
           await store({ ...record, reviews: [...(record.reviews ?? []), review] })
           return { output: output({ changeId: record.changeId, historicalReview: review, qaPassed: false }), mutated: false, summary: '已保存整页变更历史视觉判断' }
@@ -273,17 +276,17 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
             } else if (action === 'commit') {
               await loadBackup()
               if ((await inspect()).status !== initial) throw new Error('proposal_stale')
-              if (record.state === 'staged') await store({ ...record, state: 'commit_pending', reviews: undefined })
+              if (record.state === 'staged') await store({ ...record, state: 'commit_pending', captures: undefined, reviews: undefined })
               await options.adapter.commit(projected(record), assertCurrent, signal)
               await store({ ...record, state: 'applied' })
             } else if (action === 'discard') {
-              if (record.state === 'staged') await store({ ...record, state: 'discard_pending', reviews: undefined })
+              if (record.state === 'staged') await store({ ...record, state: 'discard_pending', captures: undefined, reviews: undefined })
               await options.adapter.discard(projected(record), assertCurrent, signal)
               await store({ ...record, state: 'discarded' })
             } else {
               const backup = await loadBackup()
               if ((await inspect()).status !== initial) throw new Error('proposal_stale')
-              if (record.state === 'applied') await store({ ...record, state: 'undo_pending', reviews: undefined })
+              if (record.state === 'applied') await store({ ...record, state: 'undo_pending', captures: undefined, reviews: undefined })
               await options.adapter.undo(projected(record), backup, async (restoredSlideId) => { await store({ ...record, state: 'restore_inserted', restoredSlideId }) }, assertCurrent, signal)
               await store({ ...record, state: 'undone' })
             }
@@ -317,6 +320,8 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
               pages.push({ slideId, pngBase64, digest: await sha(bytes(pngBase64)) })
               if (!same(await check(), before)) throw new Error('office_state_uncertain')
             }
+            const capturedAt = new Date().toISOString()
+            await store({ ...record, captures: pages.map((page) => ({ hostSlideId: page.slideId, screenshotDigest: page.digest, capturedAt })) })
             return { status: 'captured', pages }
           },
         })

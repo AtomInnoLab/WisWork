@@ -182,11 +182,13 @@ it('captures the exact native page after confirmed image replacement and undo', 
   expect(first.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'slide' }] })
   expect(f.inspectPage).toHaveBeenCalledWith('slide')
   const changeId = JSON.parse(proposed.output).changeId
+  expect(f.binding.readExistingImageChange(changeId)?.capture).toMatchObject({ hostSlideId: 'slide' })
   await f.call('undo_existing_presentation_image_change', { change_id: changeId })
   const second = await f.confirm()
   expect(second.status).toBe('confirmed')
   if (second.status !== 'confirmed') throw new Error('not confirmed')
   expect(second.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'slide' }] })
+  expect(f.binding.readExistingImageChange(changeId)?.capture).toMatchObject({ hostSlideId: 'slide' })
 })
 
 it('records a reviewed screenshot and rejects reuse after undo', async () => {
@@ -217,6 +219,7 @@ it('keeps a confirmed image write while reporting unavailable evidence if the ho
   const decision = await f.confirm()
   expect(decision).toMatchObject({ status: 'confirmed', postWrite: { status: 'unavailable' } })
   expect(f.binding.readExistingImageChange(JSON.parse(proposed.output).changeId)?.state).toBe('complete')
+  expect(f.binding.readExistingImageChange(JSON.parse(proposed.output).changeId)?.capture).toBeUndefined()
 })
 
 it('backs up before a confirmed native replacement, then undoes from a reopened savepoint', async () => {

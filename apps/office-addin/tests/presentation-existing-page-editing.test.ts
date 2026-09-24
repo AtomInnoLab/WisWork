@@ -95,14 +95,17 @@ it('captures exact durable page IDs after stage, commit and undo', async () => {
   if (staged.status !== 'confirmed') throw new Error('not confirmed')
   expect(staged.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'old' }, { slideId: 'new' }] })
   const changeId = [...f.records.keys()][0]!
+  expect(f.records.get(changeId)?.captures?.map((capture) => capture.hostSlideId)).toEqual(['old', 'new'])
   await f.call('commit', { change_id: changeId })
   const committed = await f.confirm()
   if (committed.status !== 'confirmed') throw new Error('not confirmed')
   expect(committed.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'new' }] })
+  expect(f.records.get(changeId)?.captures?.map((capture) => capture.hostSlideId)).toEqual(['new'])
   await f.call('undo', { change_id: changeId })
   const undone = await f.confirm()
   if (undone.status !== 'confirmed') throw new Error('not confirmed')
   expect(undone.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'restored' }] })
+  expect(f.records.get(changeId)?.captures?.map((capture) => capture.hostSlideId)).toEqual(['restored'])
   expect(f.inspectPage.mock.calls.map(([id]) => id)).toEqual(['old', 'new', 'new', 'restored'])
 })
 
@@ -133,6 +136,7 @@ it('does not claim page evidence if the staged page disappears during capture', 
   })
   expect(await f.confirm()).toMatchObject({ status: 'confirmed', postWrite: { status: 'unavailable' } })
   expect(f.records.get(JSON.parse(proposed.output).changeId)?.state).toBe('staged')
+  expect(f.records.get(JSON.parse(proposed.output).changeId)?.captures).toBeUndefined()
 })
 
 it('stages with durable backup, then separately commits and restores after reopen', async () => {

@@ -100,14 +100,16 @@ export function PresentationChangesCard({
             {(entry.source === 'existing_image' || entry.source === 'existing_page') && (
               <div>
                 <p>
-                  历史视觉复核：{entry.visualReviews?.length ?? 0}/{entry.affectedPageCount ?? 1} 页
-                  {entry.visualReviews?.length ? '已判断' : '待判断'}。写入后截图已采集时，仍需逐页复核；历史结果不代表当前页面 QA 通过。
+                  历史视觉复核：{entry.visualReviews?.length ?? 0}/{entry.visualPageIds?.length ?? 0} 页。历史结果不代表当前页面 QA 通过。
                 </p>
-                {entry.visualReviews?.map((review) => (
-                  <p key={review.hostSlideId}>
-                    {review.hostSlideId}：{review.status === 'pass' ? '通过' : '未通过'} · {review.reviewedAt}
+                {entry.visualPageIds?.map((slideId) => {
+                  const review = entry.visualReviews?.find((item) => item.hostSlideId === slideId)
+                  const capture = entry.visualCaptures?.find((item) => item.hostSlideId === slideId)
+                  return <p key={slideId}>
+                    {slideId}：{review ? (review.status === 'pass' ? '通过' : '未通过') : capture ? '已采集 · 待判断' : '待采集'}
+                    {review ? ` · ${review.reviewedAt}` : capture ? ` · ${capture.capturedAt}` : ''}
                   </p>
-                ))}
+                })}
               </div>
             )}
             {entry.source === 'existing_batch' && (
