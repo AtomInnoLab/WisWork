@@ -1211,7 +1211,19 @@ export function createPowerPointSkill(options: {
         if (await presentationPackageDigest(applied.base64, confirmSignal) !== afterDigest) throw new Error('proposal_stale')
         const backup = await saveChartPackageBackup({ request: durable.request, documentId, hostSlideId: before.slideId, slideIds: beforeSlideIds, base64: current.base64, backupId }, confirmSignal)
         if (!(await unchanged(confirmSignal))) throw new Error('proposal_stale')
-        await store({ version: 1, changeId, documentId, oldSlideId: before.slideId, shapeId, slideIndex, beforeSlideIds, beforePackageDigest: beforeDigest, afterPackageDigest: afterDigest, backup, state: 'pending' })
+        try {
+          await store({ version: 1, changeId, documentId, oldSlideId: before.slideId, shapeId, slideIndex, beforeSlideIds, beforePackageDigest: beforeDigest, afterPackageDigest: afterDigest, backup, state: 'pending' })
+        } catch (error) {
+          // Only a confirmed absence of the first journal entry proves this backup is orphaned.
+          try {
+            if (await durable.documentId() === documentId && !durable.readExistingChartChange(changeId)) {
+              await durable.request({ operation: 'existing_page_backup_release', documentId,
+                backupId: backup.backupId, hostSlideId: before.slideId, slideIds: beforeSlideIds,
+                sha256: backup.sha256, sizeBytes: backup.sizeBytes }, confirmSignal)
+            }
+          } catch { /* Keep the original failure; an uncertain backup must remain recoverable. */ }
+          throw error
+        }
         await store({ ...record!, state: 'write_pending' })
         if (!(await unchanged(confirmSignal))) throw new Error('proposal_stale')
         const inserted = await options.adapter.replaceSlidePackage(slideIndex, applied.base64, false, applied, confirmSignal, { slideId: before.slideId, packageDigest: beforeDigest })

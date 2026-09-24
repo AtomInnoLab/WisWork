@@ -754,6 +754,33 @@ describe('PowerPoint compatibility skill', () => {
     await noBackup.executeTool(call('update_slide_chart_values', { slide_index: 0, shape_id: '8', values: [['7']] }))
     await expect(failedProposals.confirm(failedProposals.pending()!.id)).rejects.toThrow('backup_unavailable')
     expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(2)
+    const orphanProposals = createStructuredProposalController()
+    const release = vi.fn(chartSavepoint.request)
+    const journalFailure = createPowerPointSkill({ adapter: fake, proposals: orphanProposals, chartSavepoint: {
+      ...chartSavepoint,
+      request: release,
+      writeExistingChartChange: async () => { throw new Error('journal_unavailable') },
+    } })
+    await journalFailure.executeTool(call('update_slide_chart_values', { slide_index: 0, shape_id: '8', values: [['7']] }))
+    await expect(orphanProposals.confirm(orphanProposals.pending()!.id)).rejects.toThrow('journal_unavailable')
+    expect(release.mock.calls.some(([body]) => (body as Record<string, unknown>).operation === 'existing_page_backup_release')).toBe(true)
+    expect(savedBytes.length).toBe(0)
+    expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(2)
+    const uncertainProposals = createStructuredProposalController()
+    const uncertainRequest = vi.fn(chartSavepoint.request)
+    const uncertainJournal = createPowerPointSkill({ adapter: fake, proposals: uncertainProposals, chartSavepoint: {
+      ...chartSavepoint,
+      request: uncertainRequest,
+      writeExistingChartChange: async (record) => {
+        records.set(record.changeId, structuredClone(record))
+        throw new Error('journal_ack_lost')
+      },
+    } })
+    await uncertainJournal.executeTool(call('update_slide_chart_values', { slide_index: 0, shape_id: '8', values: [['7']] }))
+    await expect(uncertainProposals.confirm(uncertainProposals.pending()!.id)).rejects.toThrow('journal_ack_lost')
+    expect(uncertainRequest.mock.calls.some(([body]) => (body as Record<string, unknown>).operation === 'existing_page_backup_release')).toBe(false)
+    expect(savedBytes.length).toBeGreaterThan(0)
+    expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(2)
   })
 
   it('validates master edits from the targeted XML instead of volatile package bytes', async () => {
