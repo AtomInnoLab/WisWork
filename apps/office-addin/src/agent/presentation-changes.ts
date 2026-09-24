@@ -1,0 +1,363 @@
+import type { AgentSkill } from '@wiswork/agent-core'
+import type { CompiledPresentationArtifact } from '../skills/powerpoint/presentation-delivery.js'
+import { presentationArtifactContent } from '../skills/powerpoint/presentation-page-delivery.js'
+import {
+  validatePresentationTextChange,
+  type PresentationTextChange,
+} from '../skills/powerpoint/presentation-text-change.js'
+import {
+  validatePresentationGeometryChange,
+  type PresentationGeometryChange,
+} from '../skills/powerpoint/presentation-geometry-change.js'
+import {
+  validatePresentationPageReplacement,
+  type PresentationPageReplacement,
+} from '../skills/powerpoint/presentation-page-replacement-record.js'
+import {
+  validateImageReplacementRecord,
+  type ImageReplacementRecord,
+} from '../skills/powerpoint/presentation-image-replacement-record.js'
+
+export type PresentationChangeAction = 'inspect' | 'undo' | 'resume' | 'commit' | 'discard'
+export interface PresentationChangeEntry {
+  id: string
+  kind: 'text' | 'geometry' | 'image' | 'page'
+  pageId: string
+  state: string
+  before: string
+  after: string
+  actions: PresentationChangeAction[]
+}
+export interface PresentationChangesSnapshot {
+  phase: 'idle' | 'loading' | 'acting'
+  projectId?: string
+  requestId?: string
+  entries: PresentationChangeEntry[]
+  notice?: string
+  error?: string
+}
+export interface PresentationChangesController {
+  snapshot(): PresentationChangesSnapshot
+  subscribe(listener: () => void): () => void
+  refresh(): Promise<void>
+  run(entryId: string, action: PresentationChangeAction): Promise<void>
+  clear(): void
+}
+type Read<T> = () => T | undefined | Promise<T | undefined>
+export interface PresentationChangesOptions {
+  available(): boolean
+  artifact(): CompiledPresentationArtifact | undefined
+  documentId(): Promise<string>
+  readTextChange?: Read<PresentationTextChange>
+  readGeometryChange?: Read<PresentationGeometryChange>
+  readPageReplacement?: Read<PresentationPageReplacement>
+  listImageReplacements?: () => ImageReplacementRecord[] | Promise<ImageReplacementRecord[]>
+  executeTool: AgentSkill['executeTool']
+}
+type RecordValue =
+  | PresentationTextChange
+  | PresentationGeometryChange
+  | PresentationPageReplacement
+  | ImageReplacementRecord
+interface SavedEntry {
+  entry: PresentationChangeEntry
+  record: RecordValue
+  fingerprint: string
+}
+const copy = <T>(value: T): T => structuredClone(value)
+const identity = (artifact: CompiledPresentationArtifact | undefined) => JSON.stringify(artifact)
+const pageActions: Record<PresentationPageReplacement['state'], PresentationChangeAction[]> = {
+  pending: ['inspect'],
+  inserted: ['inspect', 'resume'],
+  staged: ['inspect', 'commit', 'discard'],
+  discard_pending: ['inspect', 'discard'],
+  commit_pending: ['inspect', 'commit'],
+  applied: ['inspect', 'undo'],
+  undo_pending: ['inspect', 'undo'],
+  restore_inserted: ['inspect', 'undo'],
+  discarded: [],
+  undone: [],
+}
+function entry(kind: PresentationChangeEntry['kind'], record: RecordValue): SavedEntry {
+  let before: string, after: string, actions: PresentationChangeAction[]
+  if (kind === 'image') {
+    const r = record as ImageReplacementRecord
+    before = `图片对象：${r.oldShapeId}`
+    after = `图片对象：${r.newShapeId ?? '尚未记录'}\n资源摘要：${r.assetDigest}`
+    actions =
+      r.state === 'pending'
+        ? ['inspect', ...(r.baseline && r.newShapeId ? ['resume' as const] : [])]
+        : []
+  } else if (kind === 'page') {
+    const r = record as PresentationPageReplacement
+    before = `页面：${r.oldSlideId}\n包摘要：${r.originalPackageDigest}`
+    after = `页面：${r.newSlideId ?? '尚未记录'}\n包摘要：${r.replacementPackageDigest}${r.restoredSlideId ? `\n恢复页面：${r.restoredSlideId}\n恢复包摘要：${r.originalPackageDigest}` : ''}`
+    actions = pageActions[r.state]
+  } else {
+    const r = record as PresentationTextChange | PresentationGeometryChange
+    before = typeof r.before === 'string' ? r.before : JSON.stringify(r.before, null, 2)
+    after = typeof r.after === 'string' ? r.after : JSON.stringify(r.after, null, 2)
+    actions = r.state === 'applied' ? ['undo'] : r.state === 'undone' ? [] : ['inspect', 'resume']
+  }
+  const id =
+    kind +
+    ':' +
+    ('changeId' in record ? record.changeId : JSON.stringify([record.pageId, record.oldShapeId]))
+  return {
+    entry: {
+      id,
+      kind,
+      pageId: record.pageId,
+      state: record.state,
+      before,
+      after,
+      actions: [...actions],
+    },
+    record: copy(record),
+    fingerprint: JSON.stringify(record),
+  }
+}
+function inspectionNotice(output: string): string {
+  const messages: Record<string, string> = {
+    ready_to_apply: '可准备继续执行；仍需确认提案。',
+    already_applied: '目标内容已存在；继续操作仅补齐保存回执，仍需确认提案。',
+    ready_to_finish: '可准备完成图片替换；仍需确认提案。',
+    manual_review: '需要人工检查，不能自动重放。',
+    not_pending: '此保存点没有待恢复操作。',
+    baseline: '原页面基线仍在，尚未确认替换完成。',
+    staged: '新页面已暂存，原页面仍保留。',
+    applied: '整页替换已应用。',
+    restore_staged: '恢复页面已暂存，需继续完成撤销。',
+    undone: '整页替换已撤销。',
+    conflict: '需要人工检查：页面现状与保存点不一致。',
+  }
+  try {
+    if (output.length <= 256 * 1024) {
+      const value = JSON.parse(output)
+      const status = value?.inspection?.status ?? value?.status
+      if (typeof status === 'string' && Object.hasOwn(messages, status))
+        return messages[status] + ' 此检查不代表页面 QA 通过。'
+    }
+  } catch {
+    /* Tool output is untrusted; keep unknown results out of the UI. */
+  }
+  return '检查已完成。操作资格仍以工具实时检查为准。'
+}
+export function createPresentationChangesController(
+  options: PresentationChangesOptions,
+): PresentationChangesController {
+  let state: PresentationChangesSnapshot = { phase: 'idle', entries: [] }
+  let saved: SavedEntry[] = [],
+    bound: string | undefined,
+    generation = 0
+  let abort: AbortController | undefined
+  const listeners = new Set<() => void>()
+  const publish = () => {
+    for (const listener of listeners) listener()
+  }
+  const current = (scope: string | undefined, documentId: string) =>
+    options.available() &&
+    identity(options.artifact()) === scope &&
+    options.artifact()?.documentId === documentId
+  async function read(artifact: CompiledPresentationArtifact, scope: string, ticket: number) {
+    const documentId = await options.documentId()
+    if (ticket !== generation || !current(scope, documentId)) throw new Error('stale')
+    const [text, geometry, page, images] = await Promise.all([
+      options.readTextChange?.(),
+      options.readGeometryChange?.(),
+      options.readPageReplacement?.(),
+      options.listImageReplacements?.() ?? [],
+    ])
+    if (
+      (text !== undefined && !validatePresentationTextChange(text)) ||
+      (geometry !== undefined && !validatePresentationGeometryChange(geometry)) ||
+      (page !== undefined && !validatePresentationPageReplacement(page)) ||
+      !Array.isArray(images) ||
+      images.length > 32 ||
+      images.some((r) => !validateImageReplacementRecord(r))
+    )
+      throw new Error('invalid')
+    const digest = Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(presentationArtifactContent(artifact)),
+        ),
+      ),
+      (b) => b.toString(16).padStart(2, '0'),
+    ).join('')
+    const source = artifact.pagePptxBase64 === undefined ? undefined : 'production'
+    const matches = (r: RecordValue) =>
+      r.documentId === documentId &&
+      r.projectId === artifact.projectId &&
+      artifact.pages?.some((p) => p.id === r.pageId)
+    const rows: SavedEntry[] = []
+    for (const [kind, r] of [
+      ['text', text],
+      ['geometry', geometry],
+    ] as const)
+      if (
+        r &&
+        matches(r) &&
+        r.requestId === artifact.requestId &&
+        r.source === source &&
+        r.artifactDigest === digest
+      )
+        rows.push(entry(kind, r))
+    for (const r of images)
+      if (matches(r) && r.requestId === artifact.requestId && r.source === source)
+        rows.push(entry('image', r))
+    if (
+      page &&
+      source === 'production' &&
+      matches(page) &&
+      [page.parentRequestId, page.requestId].includes(artifact.requestId)
+    )
+      rows.push(entry('page', page))
+    if (new Set(rows.map((r) => r.entry.id)).size !== rows.length) throw new Error('invalid')
+    if (ticket !== generation || !current(scope, await options.documentId()))
+      throw new Error('stale')
+    return rows
+  }
+  async function refresh() {
+    // Storage notifications during a tool action are collected by the final refresh.
+    if (state.phase === 'acting') {
+      if (identity(options.artifact()) === bound && options.available()) return
+      ++generation
+      abort?.abort()
+      abort = undefined
+      state = { phase: 'idle', entries: [] }
+      saved = []
+      bound = undefined
+    }
+    const ticket = ++generation
+    const artifact = options.artifact(),
+      scope = identity(artifact)
+    if (!options.available() || !artifact) {
+      saved = []
+      bound = undefined
+      state = { phase: 'idle', entries: [], notice: '恢复当前任务后可查看最近保存点。' }
+      publish()
+      return
+    }
+    state = {
+      phase: 'loading',
+      projectId: artifact.projectId,
+      requestId: artifact.requestId,
+      entries: [],
+    }
+    publish()
+    try {
+      const rows = await read(copy(artifact), scope!, ticket)
+      if (ticket !== generation) return
+      saved = rows
+      bound = scope
+      state = {
+        phase: 'idle',
+        projectId: artifact.projectId,
+        requestId: artifact.requestId,
+        entries: rows.map((r) => copy(r.entry)),
+      }
+    } catch {
+      if (ticket !== generation) return
+      saved = []
+      bound = undefined
+      state = {
+        phase: 'idle',
+        entries: [],
+        error: '保存点无法读取或当前文档/任务已变化，请刷新并检查记录。',
+      }
+    }
+    publish()
+  }
+  return {
+    snapshot: () => copy(state),
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    refresh,
+    clear() {
+      ++generation
+      abort?.abort()
+      abort = undefined
+      saved = []
+      bound = undefined
+      state = { phase: 'idle', entries: [] }
+      publish()
+    },
+    async run(id, action) {
+      if (state.phase !== 'idle') return
+      const selected = saved.find((r) => r.entry.id === id),
+        artifact = options.artifact(),
+        scope = bound
+      if (
+        !selected ||
+        !selected.entry.actions.includes(action) ||
+        !artifact ||
+        !scope ||
+        identity(artifact) !== scope
+      ) {
+        state = { ...state, error: '操作已过期或不可用，请刷新保存点。' }
+        publish()
+        return
+      }
+      const ticket = ++generation,
+        cancellation = new AbortController()
+      abort = cancellation
+      state = { ...state, phase: 'acting', notice: undefined, error: undefined }
+      publish()
+      let notice: string | undefined, error: string | undefined
+      try {
+        const fresh = await read(copy(artifact), scope, ticket)
+        if (ticket !== generation) return
+        if (fresh.find((r) => r.entry.id === id)?.fingerprint !== selected.fingerprint)
+          throw new Error('stale')
+        const r = selected.record,
+          kind = selected.entry.kind
+        const suffix =
+          kind === 'text'
+            ? 'text_change'
+            : kind === 'geometry'
+              ? 'geometry_change'
+              : kind === 'image'
+                ? 'image_replacement'
+                : 'page_replacement'
+        const input: Record<string, unknown> = {
+          project_id: r.projectId,
+          ...(kind === 'page'
+            ? { change_id: (r as PresentationPageReplacement).changeId }
+            : { page_id: r.pageId }),
+          ...(kind === 'image' ? { shape_id: (r as ImageReplacementRecord).oldShapeId } : {}),
+        }
+        let result = await options.executeTool(
+          { id: `change-${ticket}`, name: `${action}_presentation_${suffix}`, input },
+          cancellation.signal,
+        )
+        if ('kind' in result && result.kind === 'tool-execution-suspension')
+          result = await result.result
+        if (ticket !== generation) return
+        if (!current(scope, await options.documentId())) throw new Error('stale')
+        if (result.isError) throw new Error('tool')
+        notice =
+          action === 'inspect'
+            ? inspectionNotice(result.output)
+            : '操作请求已处理；如有待确认提案，请确认后执行。变更后需重新采集页面 QA。'
+      } catch {
+        error = '操作未完成或保存点已变化，请刷新并检查；未自动重试。'
+      } finally {
+        if (ticket === generation) {
+          abort = undefined
+          state = { ...state, phase: 'idle' }
+          await refresh()
+          if (generation === ticket + 1) {
+            state = { ...state, notice, error: error ?? state.error }
+            publish()
+          }
+        }
+      }
+    },
+  }
+}
