@@ -51,6 +51,13 @@ it('traces frozen evidence, records an immutable agent review and reads history 
     await call('attachment_chunk', { attachmentId, offset: 0, base64: raw.toString('base64') })
     expect(await call('attachment_finish', { attachmentId })).toMatchObject({ status: 'ready' })
     plan.sources[0]!.uri = `attachment:${attachmentId}`
+    plan.sources.push({
+      id: 'pending-source',
+      title: 'Source awaiting review',
+      uri: 'https://example.invalid/pending',
+      excerpt: 'Unreviewed material',
+    })
+    plan.claims[0]!.sourceIds.push('pending-source')
     deck.claims = presentationPlanClaims(plan)
     await call('save_plan', { projectId: deck.id, expectedRevision: 0, plan })
     await call('production_begin', {
@@ -68,6 +75,22 @@ it('traces frozen evidence, records an immutable agent review and reads history 
       offset: 0,
       max_chars: 8000,
     }
+    const pageHistory = async () => {
+      const result = await runtime.skill.executeTool({
+        id: 'page-history',
+        name: 'read_presentation_page_reviews',
+        input: { project_id: deck.id, request_id: 'frozen', page_id: deck.slides[0]!.id },
+      })
+      expect(result.isError, result.output).not.toBe(true)
+      return JSON.parse(result.output)
+    }
+    expect((await pageHistory()).claims[0]).toMatchObject({
+      status: 'unreviewed',
+      sources: [
+        { sourceId: plan.sources[0]!.id, status: 'unreviewed', reviews: [] },
+        { sourceId: 'pending-source', status: 'unreviewed', reviews: [] },
+      ],
+    })
     const read = () =>
       runtime.skill.executeTool({ id: 'evidence', name: 'read_presentation_claim_evidence', input })
     const result = await read()
@@ -106,6 +129,38 @@ it('traces frozen evidence, records an immutable agent review and reads history 
       checks: { support: 'agent_reviewed', sourceAuthority: 'not_verified' },
     })
     expect(JSON.parse((await record()).output)).toEqual(review)
+    expect((await pageHistory()).claims[0]).toMatchObject({
+      status: 'partial',
+      sources: [
+        { status: 'supported', reviews: [{ reviewId: 'review-1' }] },
+        { status: 'unreviewed', reviews: [] },
+      ],
+    })
+    const differing = await runtime.skill.executeTool({
+      id: 'different-judgment',
+      name: 'record_presentation_claim_review',
+      input: {
+        ...reviewInput,
+        review_id: 'review-2',
+        outcome: 'contradicted',
+        notes: 'Another historical judgment to retain for reconciliation.',
+      },
+    })
+    expect(differing.isError, differing.output).not.toBe(true)
+    const mixed = await pageHistory()
+    expect(mixed.claims[0]).toMatchObject({
+      status: 'mixed',
+      sources: [
+        {
+          status: 'mixed',
+          reviews: [
+            { reviewId: 'review-1', outcome: 'supported' },
+            { reviewId: 'review-2', outcome: 'contradicted' },
+          ],
+        },
+        { status: 'unreviewed', reviews: [] },
+      ],
+    })
     const conflict = await runtime.skill.executeTool({
       id: 'conflict',
       name: 'record_presentation_claim_review',
@@ -124,6 +179,7 @@ it('traces frozen evidence, records an immutable agent review and reads history 
     })
     expect(history.isError, history.output).not.toBe(true)
     expect(JSON.parse(history.output)).toEqual(review)
+    expect(await pageHistory()).toEqual(mixed)
     expect(await record()).toMatchObject({
       isError: true,
       output: 'presentation_evidence_read_required',

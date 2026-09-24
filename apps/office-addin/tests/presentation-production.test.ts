@@ -1192,3 +1192,113 @@ it('refuses a late review response after clear, abort or document switch without
     expect(f.vfs.list('/home/user')).toEqual([])
   }
 })
+
+const pageReviewsCall = {
+  id: 'page-reviews',
+  name: 'read_presentation_page_reviews',
+  input: { project_id: 'p', request_id: 'r', page_id: 'one' },
+}
+const pageReviewsResponse = () => ({
+  version: 1,
+  projectId: 'p',
+  requestId: 'r',
+  pageId: 'one',
+  planRevision: 1,
+  inputDigest: 'a'.repeat(64),
+  planDigest: 'b'.repeat(64),
+  claims: [
+    {
+      claimId: 'c',
+      status: 'unreviewed',
+      sources: [{ sourceId: 's', status: 'unreviewed', reviews: [] }],
+    },
+  ],
+  checks: {
+    support: 'historical_agent_reviews',
+    sourceAuthority: 'not_verified',
+    timeliness: 'not_verified',
+    host: 'not_checked',
+  },
+})
+it('reads page review history without altering the prepared artifact or authorizing a new review', async () => {
+  const f = prepareFixture()
+  await f.skill.executeTool(prepare)
+  const original = f.skill.artifact()
+  f.rememberProject.mockClear()
+  f.request.mockResolvedValue(new Response(JSON.stringify(pageReviewsResponse())))
+  expect(f.skill.tools.map((t) => t.name)).toContain(pageReviewsCall.name)
+  const result = await f.skill.executeTool(pageReviewsCall)
+  expect(result.isError, result.output).not.toBe(true)
+  expect(JSON.parse(result.output)).toEqual(pageReviewsResponse())
+  expect(f.request).toHaveBeenLastCalledWith(
+    {
+      operation: 'production_page_reviews',
+      documentId: 'doc',
+      projectId: 'p',
+      requestId: 'r',
+      pageId: 'one',
+    },
+    undefined,
+  )
+  expect(f.skill.artifact()).toBe(original)
+  expect(f.rememberProject).not.toHaveBeenCalled()
+  expect(f.vfs.list('/home/user')).toEqual([])
+  expect(await f.skill.executeTool(recordReviewCall)).toMatchObject({
+    isError: true,
+    output: 'presentation_evidence_read_required',
+  })
+})
+it('rejects mismatched page history and fabricated aggregate status', async () => {
+  const f = fixture()
+  for (const response of [
+    { ...pageReviewsResponse(), projectId: 'other' },
+    { ...pageReviewsResponse(), requestId: 'other' },
+    { ...pageReviewsResponse(), pageId: 'other' },
+    { ...pageReviewsResponse(), planRevision: 0 },
+    {
+      ...pageReviewsResponse(),
+      claims: [{ ...pageReviewsResponse().claims[0], status: 'supported' }],
+    },
+    { ...pageReviewsResponse(), checks: { ...pageReviewsResponse().checks, support: 'verified' } },
+    { ...pageReviewsResponse(), extra: true },
+    { ...pageReviewsResponse(), padding: 'x'.repeat(65536) },
+  ]) {
+    f.request.mockResolvedValue(new Response(JSON.stringify(response)))
+    expect(await f.skill.executeTool(pageReviewsCall)).toMatchObject({
+      isError: true,
+      output: 'presentation_response_invalid',
+    })
+  }
+})
+it('requires explicit page/request for review summaries and preserves old PC upgrade errors', async () => {
+  const f = fixture()
+  for (const input of [
+    { project_id: 'p', request_id: 'r' },
+    { project_id: 'p', page_id: 'one' },
+    { ...pageReviewsCall.input, extra: true },
+  ])
+    expect(await f.skill.executeTool({ ...pageReviewsCall, input })).toMatchObject({
+      isError: true,
+      output: 'invalid_tool_input',
+    })
+  expect(f.request).not.toHaveBeenCalled()
+  f.request.mockResolvedValue(new Response(JSON.stringify({ error: 'invalid_request' })))
+  expect(await f.skill.executeTool(pageReviewsCall)).toMatchObject({
+    isError: true,
+    output: 'presentation_upgrade_required',
+  })
+})
+it('does not publish page history after clear, cancellation or a document switch', async () => {
+  for (const mode of ['clear', 'abort', 'document']) {
+    const f = fixture(),
+      ac = new AbortController()
+    f.request.mockImplementation(async () => {
+      if (mode === 'clear') f.skill.clear()
+      if (mode === 'abort') ac.abort()
+      if (mode === 'document') f.documentId.mockResolvedValue('other')
+      return new Response(JSON.stringify(pageReviewsResponse()))
+    })
+    expect((await f.skill.executeTool(pageReviewsCall, ac.signal)).isError).toBe(true)
+    expect(f.rememberProject).not.toHaveBeenCalled()
+  }
+})
