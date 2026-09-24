@@ -95,21 +95,20 @@ function workspaceMarkup(
 describe('Office Agent workspace UI', () => {
   it('requires a user confirmation before deleting a PC attachment', async () => {
     const id = 'a'.repeat(64)
-    const list = vi
-      .fn()
-      .mockResolvedValue([
-        {
-          attachmentId: id,
-          name: 'source.pdf',
-          sizeBytes: 1,
-          sha256: id,
-          receivedBytes: 1,
-          status: 'ready',
-          kind: 'text',
-          totalChars: 1,
-        },
-      ])
+    const list = vi.fn().mockResolvedValue([
+      {
+        attachmentId: id,
+        name: 'source.pdf',
+        sizeBytes: 1,
+        sha256: id,
+        receivedBytes: 1,
+        status: 'ready',
+        kind: 'text',
+        totalChars: 1,
+      },
+    ])
     const remove = vi.fn().mockResolvedValue(undefined)
+    const importUrl = vi.fn().mockResolvedValue(undefined)
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const snapshot = {
       assistantText: '',
@@ -131,8 +130,11 @@ describe('Office Agent workspace UI', () => {
       upload: vi.fn(),
       clear: vi.fn(),
       durableAttachmentsAvailable: () => true,
+      durableImagesAvailable: () => true,
+      remoteImagesAvailable: () => true,
       listDurableAttachments: list,
       deleteDurableAttachment: remove,
+      importPresentationImageUrl: importUrl,
     } as OfficeWorkspaceUi
     const container = document.createElement('div')
     document.body.append(container)
@@ -158,6 +160,20 @@ describe('Office Agent workspace UI', () => {
     confirm.mockReturnValue(true)
     await act(async () => button.click())
     expect(remove).toHaveBeenCalledWith(id)
+    const input = container.querySelector<HTMLInputElement>('#presentation-image-url')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        'https://example.com/image.png',
+      )
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () =>
+      input
+        .closest('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    )
+    expect(importUrl).toHaveBeenCalledWith('https://example.com/image.png')
     await act(async () => root.unmount())
     container.remove()
     confirm.mockRestore()

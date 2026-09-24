@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, rm, writeFile, symlink } from 'node:fs/promises'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm, writeFile, readFile, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -47,6 +47,62 @@ async function upload(
   return attachmentId
 }
 describe('durable presentation image assets', () => {
+  it('imports a public image URL once, redacts its query and reuses the PC cache', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-remote-image-'))
+    dirs.push(userDataPath)
+    const fetchImage = vi.fn(
+      async () => new Response(png, { status: 200, headers: { 'content-type': 'image/png' } }),
+    )
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      fetchImage,
+      normalizeImage: async () => ({ bytes: png, width: 1, height: 1 }),
+    })
+    const call = (body: Record<string, unknown>) =>
+      service({ documentId: 'doc', ...body }, new AbortController().signal)
+    const url = 'https://93.184.216.34/image.png?token=secret'
+    const first = (await call({ operation: 'attachment_import_url', url })) as {
+      attachmentId: string
+      source: string
+    }
+    expect(first).toMatchObject({ status: 'ready', source: 'https://93.184.216.34/image.png' })
+    expect(JSON.stringify(first)).not.toContain('secret')
+    expect(await call({ operation: 'attachment_import_url', url })).toEqual(first)
+    expect(fetchImage).toHaveBeenCalledTimes(1)
+    expect(
+      await call({ operation: 'attachment_asset', attachmentId: first.attachmentId }),
+    ).toMatchObject({ source: first.source })
+    await expect(
+      call({ operation: 'attachment_import_url', url: 'http://127.0.0.1/image.png' }),
+    ).rejects.toThrow('remote_image_unavailable')
+    expect(fetchImage).toHaveBeenCalledTimes(1)
+    const path = join(
+      userDataPath,
+      'presentation-attachments',
+      hash('doc'),
+      first.attachmentId,
+      'metadata.json',
+    )
+    const tampered = JSON.parse(await readFile(path, 'utf8'))
+    tampered.source = 'file:///secret'
+    await writeFile(path, JSON.stringify(tampered))
+    await expect(call({ operation: 'attachment_list_assets' })).rejects.toThrow('invalid_state')
+  })
+  it('rejects an oversized remote response without publishing an attachment', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-remote-large-'))
+    dirs.push(userDataPath)
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      fetchImage: async () => new Response(Buffer.alloc(10 * 1024 * 1024 + 1)),
+      normalizeImage: async () => ({ bytes: png, width: 1, height: 1 }),
+    })
+    const call = (body: Record<string, unknown>) =>
+      service({ documentId: 'doc', ...body }, new AbortController().signal)
+    await expect(
+      call({ operation: 'attachment_import_url', url: 'https://93.184.216.34/image.png' }),
+    ).rejects.toThrow('quota_exceeded')
+    expect(await call({ operation: 'attachment_list_assets' })).toEqual({ attachments: [] })
+  })
   it('allows more than 32 images while paging their bounded list', async () => {
     const { call } = await setup()
     for (let i = 0; i < 33; i++) {

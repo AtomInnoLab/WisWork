@@ -721,7 +721,12 @@ describe('Office relay PC client', () => {
     client.revoke('test_complete')
   })
 
-  it.each(['presentation.v1', 'presentation-attachments.v1', 'presentation-assets.v1'])(
+  it.each([
+    'presentation.v1',
+    'presentation-attachments.v1',
+    'presentation-assets.v1',
+    'presentation-remote-images.v1',
+  ])(
     'negotiates presentation only when provided and streams recoverable generation requests',
     async (capabilityName) => {
       const socket = new FakeSocket()
@@ -749,6 +754,7 @@ describe('Office relay PC client', () => {
         'presentation.v1',
         'presentation-attachments.v1',
         'presentation-assets.v1',
+        'presentation-remote-images.v1',
       ]
       expect(JSON.parse(socket.sent[0]!)).toEqual({
         version: 2,
@@ -807,6 +813,17 @@ describe('Office relay PC client', () => {
       expect(Buffer.concat(chunks.map((item) => Buffer.from(item.data, 'base64')))).toEqual(
         Buffer.from(payload),
       )
+      if (capabilityName === 'presentation-attachments.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_remote_capability',
+          capability_name: capabilityName,
+          body: { operation: 'attachment_import_url', url: 'https://example.com/image.png' },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
       client.revoke('test_complete')
     },
   )

@@ -50,6 +50,7 @@ export interface PresentationGenerationOptions {
   vfs: InMemoryVfs
   available(): boolean
   assetsAvailable?(): boolean
+  remoteImagesAvailable?(): boolean
   attachmentsAvailable?(): boolean
   attachmentsRequest?(body: unknown, signal?: AbortSignal): Promise<Response>
   request(body: unknown, signal?: AbortSignal): Promise<Response>
@@ -57,7 +58,11 @@ export interface PresentationGenerationOptions {
   lastProject(): string | undefined
   rememberProject(id: string): Promise<void>
   selectedProduction?(projectId: string, documentId: string): string | undefined
-  rememberSelectedProduction?(projectId: string, documentId: string, requestId: string): Promise<void>
+  rememberSelectedProduction?(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+  ): Promise<void>
 }
 const abort = (signal?: AbortSignal) => {
   if (signal?.aborted) throw new Error('cancelled')

@@ -14,6 +14,21 @@ const invalid = (): never => {
 }
 const integer = (value: unknown, min: number, max: number): value is number =>
   Number.isSafeInteger(value) && Number(value) >= min && Number(value) <= max
+function sourceValid(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 2048) return false
+  try {
+    const url = new URL(value)
+    return (
+      ['http:', 'https:'].includes(url.protocol) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    )
+  } catch {
+    return false
+  }
+}
 function nameValid(value: unknown): value is string {
   return (
     typeof value === 'string' &&
@@ -36,6 +51,7 @@ export interface PresentationAttachmentMetadata {
   width?: number
   height?: number
   assetSha256?: string
+  source?: string
   error?: string
   totalChars?: number
 }
@@ -59,6 +75,7 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
           'width',
           'height',
           'assetSha256',
+          'source',
         ].includes(k),
     ) ||
     !idValid(v.attachmentId) ||
@@ -75,6 +92,7 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
     !['uploading', 'ready', 'failed'].includes(v.status) ||
     (v.kind !== undefined && v.kind !== 'text' && v.kind !== 'image') ||
     (v.error !== undefined && (typeof v.error !== 'string' || v.error.length > 200)) ||
+    (v.source !== undefined && !sourceValid(v.source)) ||
     (v.totalChars !== undefined && !integer(v.totalChars, 0, 1_000_000)) ||
     (v.status === 'ready' && (v.receivedBytes !== v.sizeBytes || !v.kind))
   )
@@ -136,10 +154,12 @@ const tools: AgentToolDef[] = [
 export function createPresentationAttachmentSkill(
   options: Pick<PresentationGenerationOptions, 'available' | 'request' | 'documentId' | 'vfs'> & {
     imagesAvailable?(): boolean
+    remoteImagesAvailable?(): boolean
   },
 ): AgentSkill & {
   upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
   list(): Promise<PresentationAttachmentMetadata[]>
+  importUrl(url: string): Promise<PresentationAttachmentMetadata>
   remove(attachmentId: string): Promise<void>
   clear(): void
 } {
@@ -258,6 +278,15 @@ export function createPresentationAttachmentSkill(
           after = value.nextAfter as string | undefined
         } while (after)
         return attachments
+      })
+    },
+    async importUrl(url) {
+      if (typeof url !== 'string' || url.length > 2048) throw new Error('invalid_tool_input')
+      return scope(undefined, async (request) => {
+        if (!options.remoteImagesAvailable?.()) throw new Error('presentation_assets_unavailable')
+        const result = metadata(await request({ operation: 'attachment_import_url', url }))
+        if (result.status !== 'ready' || result.kind !== 'image' || !result.source) return invalid()
+        return result
       })
     },
     async remove(attachmentId) {

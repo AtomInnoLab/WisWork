@@ -68,6 +68,7 @@ export type OfficeRelayCapability =
   | 'presentation.v1'
   | 'presentation-attachments.v1'
   | 'presentation-assets.v1'
+  | 'presentation-remote-images.v1'
 
 interface Dependencies {
   createSocket?: (url: string) => RelayWebSocket

@@ -180,6 +180,12 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
   const attachmentErrors: Record<string, string> = {
     presentation_attachment_too_large: '制作资料每个文件最多 50 MB。',
     presentation_image_too_large: '图片每个文件最多 10 MB。',
+    presentation_remote_image_unavailable:
+      '图片网址无法安全下载或图片格式不受支持，请检查网址后重试。',
+    presentation_remote_image_source_conflict:
+      '相同图片内容已从另一来源加入当前文档。请使用已有素材，或手动上传本地文件。',
+    presentation_aborted: '图片下载超时或已取消，请重试。',
+    presentation_parse_failed: '图片无法解码为受支持的 PNG 或 JPEG。',
     presentation_assets_unavailable: '请更新并连接支持图片素材的 PC 端后重试。',
     presentation_attachment_failed: '资料解析未完成，请检查文件或重新上传。',
     presentation_not_found: '这份 PC 资料已不存在，请刷新附件列表。',
@@ -226,8 +232,10 @@ export interface OfficeWorkspaceUi {
   readonly changes?: PresentationChangesController
   readonly durableAttachmentsAvailable?: () => boolean
   readonly durableImagesAvailable?: () => boolean
+  readonly remoteImagesAvailable?: () => boolean
   readonly listDurableAttachments?: () => Promise<PresentationAttachmentMetadata[]>
   readonly deleteDurableAttachment?: (attachmentId: string) => Promise<void>
+  readonly importPresentationImageUrl?: (url: string) => Promise<void>
   readonly attachments: () => readonly string[]
   readonly downloadFile?: (path: string) => void
   readonly skills: () => readonly string[]
@@ -278,8 +286,10 @@ export function createOfficeWorkspaceUi(
     changes: runtime.changes,
     durableAttachmentsAvailable: runtime.durableAttachmentsAvailable,
     durableImagesAvailable: runtime.durableImagesAvailable,
+    remoteImagesAvailable: runtime.remoteImagesAvailable,
     listDurableAttachments: runtime.listDurableAttachments,
     deleteDurableAttachment: runtime.deleteDurableAttachment,
+    importPresentationImageUrl: runtime.importPresentationImageUrl,
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
     downloadFile: (path: string) => downloadSessionFile(runtime.vfs, path),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
@@ -490,6 +500,7 @@ export function AgentWorkspace(props: {
   const [uploadError, setUploadError] = useState('')
   const [uploadPending, setUploadPending] = useState(false)
   const [uploadStatus, setUploadStatus] = useState('')
+  const [imageUrl, setImageUrl] = useState('')
   const uploadEpoch = useRef(0)
   const [diagnosticStatus, setDiagnosticStatus] = useState('')
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
@@ -824,10 +835,58 @@ export function AgentWorkspace(props: {
                   : `Files are limited to ${displayMegabytes(MAX_VFS_FILE_BYTES)} MB each and ${displayMegabytes(MAX_VFS_TOTAL_BYTES)} MB per session, then cleared on logout.`}
               </p>
               {ui.durableImagesAvailable?.() && (
-                <p>
-                  PNG、JPEG 图片每个最多 10 MB，上传后在 PC
-                  校验并缓存；可直接用于制作，无需将图片编码发给 Agent。
-                </p>
+                <>
+                  <p>
+                    PNG、JPEG 图片每个最多 10 MB，上传后在 PC
+                    校验并缓存；可直接用于制作，无需将图片编码发给 Agent。
+                  </p>
+                  {ui.remoteImagesAvailable?.() && (
+                    <form
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        if (uploadPending || state.busy || !imageUrl.trim()) return
+                        setUploadPending(true)
+                        setUploadError('')
+                        setUploadStatus('正在由 PC 下载并校验图片…')
+                        void ui
+                          .importPresentationImageUrl?.(imageUrl.trim())
+                          .then(async () => {
+                            if (!mounted.current) return
+                            setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
+                            setUploadStatus(
+                              '图片已保存到当前文档的 PC 素材缓存；许可状态仍需核验。',
+                            )
+                            setImageUrl('')
+                          })
+                          .catch((error: unknown) => {
+                            if (mounted.current) {
+                              setUploadStatus('')
+                              setUploadError(safeUploadError(error))
+                            }
+                          })
+                          .finally(() => {
+                            if (mounted.current) setUploadPending(false)
+                          })
+                      }}
+                    >
+                      <label htmlFor="presentation-image-url">图片网址</label>
+                      <input
+                        id="presentation-image-url"
+                        type="url"
+                        value={imageUrl}
+                        onChange={(event) => setImageUrl(event.currentTarget.value)}
+                        placeholder="https://example.com/image.png"
+                        required
+                      />
+                      <button
+                        type="submit"
+                        disabled={uploadPending || state.busy || !imageUrl.trim()}
+                      >
+                        由 PC 获取图片
+                      </button>
+                    </form>
+                  )}
+                </>
               )}
               {ui.durableAttachmentsAvailable?.() && (
                 <p>
@@ -1138,6 +1197,7 @@ function ConfiguredApp() {
               'presentation.v1',
               'presentation-attachments.v1',
               'presentation-assets.v1',
+              'presentation-remote-images.v1',
             ],
           }),
     [transportMode],
@@ -1207,6 +1267,13 @@ function ConfiguredApp() {
                           snapshot.capabilities?.includes('presentation-assets.v1') === true
                         )
                       },
+                      remoteImagesAvailable: () => {
+                        const snapshot = bridge.snapshot()
+                        return (
+                          snapshot.status === 'connected' &&
+                          snapshot.capabilities?.includes('presentation-remote-images.v1') === true
+                        )
+                      },
                       attachmentsAvailable: () => {
                         const snapshot = bridge.snapshot()
                         return (
@@ -1215,7 +1282,16 @@ function ConfiguredApp() {
                         )
                       },
                       attachmentsRequest: (body: unknown, signal?: AbortSignal) =>
-                        bridge.capabilityFetch('presentation-attachments.v1', body, signal),
+                        bridge.capabilityFetch(
+                          body &&
+                            typeof body === 'object' &&
+                            'operation' in body &&
+                            body.operation === 'attachment_import_url'
+                            ? 'presentation-remote-images.v1'
+                            : 'presentation-attachments.v1',
+                          body,
+                          signal,
+                        ),
                     },
                   }
                 : {}),

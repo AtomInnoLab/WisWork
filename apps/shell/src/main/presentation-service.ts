@@ -50,6 +50,8 @@ const errorCodes = new Set([
   'quota_exceeded',
   'digest_mismatch',
   'parse_failed',
+  'remote_image_unavailable',
+  'remote_image_source_conflict',
   'page_not_ready',
 ])
 const encode = (value: unknown): Uint8Array => Buffer.from(JSON.stringify(value), 'utf8')
@@ -121,6 +123,7 @@ export function createPresentationService(options: {
           'attachment_chunk',
           'attachment_finish',
           'attachment_delete',
+          'attachment_import_url',
           'attachment_list',
           'attachment_read',
           'attachment_asset',

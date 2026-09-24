@@ -4,6 +4,7 @@ import { lstat, mkdir, open, readdir, rename, rm } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
 import { parseFileToText } from '@wiswork/file-parse'
+import { fetchRemoteImage, isSafeRemoteUrl } from '@wiswork/electron-utils'
 import {
   inspectPresentationImage,
   normalizePresentationImage,
@@ -50,6 +51,21 @@ function supported(name: string) {
     ['.pdf', '.docx', '.txt', '.md', '.csv', '.json'].includes(extname(name).toLowerCase())
   )
 }
+function sourceValid(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 2048) return false
+  try {
+    const url = new URL(value)
+    return (
+      ['http:', 'https:'].includes(url.protocol) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    )
+  } catch {
+    return false
+  }
+}
 interface Metadata {
   attachmentId: string
   name: string
@@ -61,6 +77,8 @@ interface Metadata {
   width?: number
   height?: number
   assetSha256?: string
+  source?: string
+  sourceUrlHash?: string
   error?: string
   totalChars?: number
   textDigest?: string
@@ -167,6 +185,9 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
         !integer(m.height, 1, 8192) ||
         m.width * m.height > 16_000_000 ||
         !isId(m.assetSha256) ||
+        (m.source !== undefined && !sourceValid(m.source)) ||
+        (m.sourceUrlHash !== undefined && !isId(m.sourceUrlHash)) ||
+        (m.source === undefined) !== (m.sourceUrlHash === undefined) ||
         m.totalChars !== undefined ||
         m.textDigest !== undefined
       )
@@ -188,7 +209,13 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
   ...(m.error ? { error: m.error } : {}),
   ...(m.totalChars !== undefined ? { totalChars: m.totalChars } : {}),
   ...(m.kind === 'image'
-    ? { mime: m.mime, width: m.width, height: m.height, assetSha256: m.assetSha256 }
+    ? {
+        mime: m.mime,
+        width: m.width,
+        height: m.height,
+        assetSha256: m.assetSha256,
+        ...(m.source ? { source: m.source } : {}),
+      }
     : {}),
 })
 
@@ -264,10 +291,17 @@ export function createPresentationAttachmentService(options: {
   userDataPath: string
   parse?: typeof parseFileToText
   normalizeImage?: typeof normalizePresentationImage
+  fetchImage?: (url: string, signal: AbortSignal) => Promise<Response | null>
 }) {
   const root = join(resolve(options.userDataPath), 'presentation-attachments')
   const parse = options.parse ?? parseFileToText
   const normalizeImage = options.normalizeImage ?? normalizePresentationImage
+  const fetchImage =
+    options.fetchImage ??
+    ((url: string, signal: AbortSignal) =>
+      fetchRemoteImage(url, {
+        fetchImpl: (input, init) => fetch(input, { ...init, signal }),
+      }))
   return async (body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> => {
     checkAbort(signal)
     const fields: Record<string, string[]> = {
@@ -275,6 +309,7 @@ export function createPresentationAttachmentService(options: {
       attachment_chunk: ['attachmentId', 'offset', 'base64'],
       attachment_finish: ['attachmentId'],
       attachment_delete: ['attachmentId'],
+      attachment_import_url: ['url'],
       attachment_list: [],
       attachment_list_assets: [],
       attachment_asset: ['attachmentId'],
@@ -301,7 +336,12 @@ export function createPresentationAttachmentService(options: {
       allowed.some((k) => k !== 'after' && !Object.hasOwn(body, k))
     )
       fail('invalid_request')
-    if (!['attachment_list', 'attachment_list_assets'].includes(op) && !isId(body.attachmentId))
+    if (
+      !['attachment_list', 'attachment_list_assets', 'attachment_import_url'].includes(op) &&
+      !isId(body.attachmentId)
+    )
+      fail('invalid_request')
+    if (op === 'attachment_import_url' && (typeof body.url !== 'string' || body.url.length > 2048))
       fail('invalid_request')
     if (body.after !== undefined && !isId(body.after)) fail('invalid_request')
     if (op === 'attachment_begin') {
@@ -330,6 +370,113 @@ export function createPresentationAttachmentService(options: {
       const id = body.attachmentId as string
       const dir = id ? join(doc, id) : doc
       const exists = entries.includes(id)
+      if (op === 'attachment_import_url') {
+        let url: URL
+        try {
+          url = new URL(body.url as string)
+        } catch {
+          fail('invalid_request')
+        }
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+          fail('invalid_request')
+        const urlHash = hash(url.toString())
+        for (const entry of entries) {
+          const item = await metadata(join(doc, entry), entry)
+          if (item.sourceUrlHash !== urlHash || item.status !== 'ready') continue
+          await cachedImage(join(doc, entry), item)
+          return publicMetadata(item, item.sizeBytes)
+        }
+        if (!(await isSafeRemoteUrl(url.toString()))) fail('remote_image_unavailable')
+        const timeout = AbortSignal.timeout(15_000)
+        const combined = AbortSignal.any([signal, timeout])
+        let response: Response | null
+        try {
+          response = await fetchImage(url.toString(), combined)
+        } catch {
+          checkAbort(combined)
+          fail('remote_image_unavailable')
+        }
+        if (!response?.ok || !response.body) fail('remote_image_unavailable')
+        if (Number(response.headers.get('content-length')) > PRESENTATION_IMAGE_INPUT_LIMIT)
+          fail('quota_exceeded')
+        const reader = response.body.getReader()
+        const chunks: Uint8Array[] = []
+        let total = 0
+        try {
+          while (true) {
+            checkAbort(combined)
+            let next: ReadableStreamReadResult<Uint8Array>
+            try {
+              next = await reader.read()
+            } catch {
+              checkAbort(combined)
+              fail('remote_image_unavailable')
+            }
+            if (next.done) break
+            total += next.value.byteLength
+            if (total > PRESENTATION_IMAGE_INPUT_LIMIT) fail('quota_exceeded')
+            chunks.push(next.value)
+          }
+        } finally {
+          await reader.cancel().catch(() => undefined)
+        }
+        checkAbort(combined)
+        const raw = Buffer.concat(
+          chunks.map((chunk) => Buffer.from(chunk)),
+          total,
+        )
+        const info = inspectPresentationImage(raw)
+        const image = await normalizeImage(raw)
+        checkAbort(combined)
+        const normalized = inspectPresentationImage(image.bytes)
+        if (
+          image.bytes.length > PRESENTATION_IMAGE_CACHE_LIMIT ||
+          normalized.mime !== 'image/png' ||
+          image.width !== info.width ||
+          image.height !== info.height ||
+          normalized.width !== image.width ||
+          normalized.height !== image.height
+        )
+          fail('parse_failed')
+        const attachmentId = hash(raw)
+        if (entries.includes(attachmentId)) fail('remote_image_source_conflict')
+        let declared = 0
+        for (const entry of entries)
+          declared += Math.max(
+            (await metadata(join(doc, entry), entry)).sizeBytes,
+            FILE_RESERVATION_FLOOR,
+          )
+        if (declared + Math.max(raw.length, FILE_RESERVATION_FLOOR) > DOCUMENT_LIMIT)
+          fail('quota_exceeded')
+        const name = `remote-${attachmentId}.${info.mime === 'image/png' ? 'png' : 'jpg'}`
+        url.search = ''
+        url.hash = ''
+        const item: Metadata = {
+          attachmentId,
+          sha256: attachmentId,
+          name,
+          sizeBytes: raw.length,
+          status: 'ready',
+          kind: 'image',
+          mime: 'image/png',
+          width: image.width,
+          height: image.height,
+          assetSha256: hash(image.bytes),
+          source: url.toString(),
+          sourceUrlHash: urlHash,
+        }
+        const staging = join(root, `.tmp-${randomUUID()}`)
+        await directory(staging)
+        try {
+          await atomic(join(staging, `raw${extname(name)}`), raw)
+          await atomic(join(staging, 'image.png'), Buffer.from(image.bytes))
+          await atomic(join(staging, 'metadata.json'), JSON.stringify(item))
+          await rename(staging, join(doc, attachmentId))
+        } finally {
+          await rm(staging, { recursive: true, force: true })
+        }
+        return publicMetadata(item, raw.length)
+      }
       if (op === 'attachment_list' || op === 'attachment_list_assets') {
         const attachments = []
         const sorted = entries.sort()
@@ -347,7 +494,8 @@ export function createPresentationAttachmentService(options: {
           attachments.push(publicMetadata(m, received))
         }
         checkAbort(signal)
-        return op === 'attachment_list_assets' && page.length > 0 &&
+        return op === 'attachment_list_assets' &&
+          page.length > 0 &&
           sorted.some((entry) => entry > page[page.length - 1]!)
           ? { attachments, nextAfter: page[page.length - 1] }
           : { attachments }
@@ -530,7 +678,7 @@ export function createPresentationAttachmentService(options: {
           base64: image.toString('base64'),
           width: m.width,
           height: m.height,
-          source: `attachment:${id}`,
+          source: m.source ?? `attachment:${id}`,
         }
       }
       if (!integer(body.offset, 0, TEXT_LIMIT) || !integer(body.maxChars, 1, 24000))
@@ -560,6 +708,8 @@ export function createPresentationAttachmentService(options: {
           'quota_exceeded',
           'digest_mismatch',
           'parse_failed',
+          'remote_image_unavailable',
+          'remote_image_source_conflict',
           'aborted',
         ].includes(code)
       )

@@ -123,6 +123,7 @@ export function createOfficeRelayClient(options: {
       'presentation.v1',
       'presentation-attachments.v1',
       'presentation-assets.v1',
+      'presentation-remote-images.v1',
     )
   let pending: (OfficePairingRequest & { capabilities?: string[] }) | null = null
   let session: { sessionId: string; capability: string; capabilities: string[] } | null = null
@@ -214,9 +215,13 @@ export function createOfficeRelayClient(options: {
       if (
         typeof capabilityName !== 'string' ||
         !session.capabilities.includes(capabilityName) ||
+        (jsonObject(frame.body) &&
+          frame.body.operation === 'attachment_import_url' &&
+          capabilityName !== 'presentation-remote-images.v1') ||
         (capabilityName === 'presentation.v1' ||
         capabilityName === 'presentation-attachments.v1' ||
-        capabilityName === 'presentation-assets.v1'
+        capabilityName === 'presentation-assets.v1' ||
+        capabilityName === 'presentation-remote-images.v1'
           ? !options.presentationProxy
           : capabilityName !== 'agent.v1' && !options.retrievalProxy)
       )
@@ -230,7 +235,8 @@ export function createOfficeRelayClient(options: {
               body:
                 capabilityName === 'presentation.v1' ||
                 capabilityName === 'presentation-attachments.v1' ||
-                capabilityName === 'presentation-assets.v1'
+                capabilityName === 'presentation-assets.v1' ||
+                capabilityName === 'presentation-remote-images.v1'
                   ? await options.presentationProxy!(frame.body, controller.signal)
                   : await options.retrievalProxy!(capabilityName, frame.body, controller.signal),
             }

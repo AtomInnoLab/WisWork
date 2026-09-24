@@ -111,6 +111,44 @@ it('pages more than 32 durable images for the UI and Agent', async () => {
     ids[32],
   ])
 })
+it('imports a URL image through the PC asset endpoint without exposing an Agent fetch tool', async () => {
+  const f = setup()
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        attachmentId: f.attachmentId,
+        sha256: f.attachmentId,
+        name: 'remote.png',
+        sizeBytes: 1,
+        receivedBytes: 1,
+        status: 'ready',
+        kind: 'image',
+        mime: 'image/png',
+        width: 1,
+        height: 1,
+        assetSha256: f.attachmentId,
+        source: 'https://example.com/image.png',
+      }),
+    ),
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    imagesAvailable: () => true,
+    remoteImagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  expect(await skill.importUrl('https://example.com/image.png')).toMatchObject({
+    kind: 'image',
+    source: 'https://example.com/image.png',
+  })
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({ operation: 'attachment_import_url', documentId: 'doc1' }),
+    expect.any(AbortSignal),
+  )
+  expect(skill.tools.map((tool) => tool.name)).not.toContain('import_presentation_image_url')
+})
 it('uploads chunks and reads durable sources after reconnect', async () => {
   const f = setup()
   await f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))

@@ -105,8 +105,10 @@ export interface OfficeHostRuntime {
   readonly changes?: PresentationChangesController
   durableAttachmentsAvailable?(): boolean
   durableImagesAvailable?(): boolean
+  remoteImagesAvailable?(): boolean
   listDurableAttachments?(): Promise<PresentationAttachmentMetadata[]>
   deleteDurableAttachment?(attachmentId: string): Promise<void>
+  importPresentationImageUrl?(url: string): Promise<void>
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   vfs: InMemoryVfs
@@ -535,6 +537,7 @@ export function createOfficeHostRuntime(
               options.presentation?.attachmentsAvailable?.() &&
               options.presentation?.assetsAvailable?.(),
             ),
+          remoteImagesAvailable: () => Boolean(options.presentation?.remoteImagesAvailable?.()),
         })
       : undefined
   const planning =
@@ -1134,11 +1137,13 @@ export function createOfficeHostRuntime(
             upload: attachments.upload,
             list: attachments.list,
             remove: attachments.remove,
+            importUrl: attachments.importUrl,
             imagesAvailable: () =>
               Boolean(
                 options.presentation?.attachmentsAvailable?.() &&
                 options.presentation?.assetsAvailable?.(),
               ),
+            remoteImagesAvailable: () => Boolean(options.presentation?.remoteImagesAvailable?.()),
           }
         : undefined,
     ),
@@ -1160,9 +1165,11 @@ function lifecycle(
   attachments?: {
     available(): boolean
     imagesAvailable(): boolean
+    remoteImagesAvailable(): boolean
     upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
     list(): Promise<PresentationAttachmentMetadata[]>
     remove(attachmentId: string): Promise<void>
+    importUrl(url: string): Promise<unknown>
   },
 ): OfficeHostRuntime {
   const packageRuntime = suppliedPackageRuntime ?? new SkillPackageWorkerRuntime()
@@ -1187,9 +1194,14 @@ function lifecycle(
     skillPackagesEnabled,
     durableAttachmentsAvailable: () => attachments?.available() ?? false,
     durableImagesAvailable: () => attachments?.imagesAvailable() ?? false,
+    remoteImagesAvailable: () => attachments?.remoteImagesAvailable() ?? false,
     listDurableAttachments: () => attachments?.list() ?? Promise.resolve([]),
     deleteDurableAttachment: (attachmentId) =>
       attachments?.remove(attachmentId) ?? Promise.reject(new Error('presentation_unavailable')),
+    importPresentationImageUrl: async (url) => {
+      if (!attachments?.remoteImagesAvailable()) throw new Error('presentation_assets_unavailable')
+      await attachments.importUrl(url)
+    },
     async uploadFile(name, content) {
       if (disposed) throw new Error('upload_cancelled')
       if (
