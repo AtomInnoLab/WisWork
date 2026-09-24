@@ -79,6 +79,7 @@ interface Metadata {
   assetSha256?: string
   source?: string
   sourceUrlHash?: string
+  sourceAliases?: { source: string; sourceUrlHash: string }[]
   error?: string
   totalChars?: number
   textDigest?: string
@@ -188,6 +189,20 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
         (m.source !== undefined && !sourceValid(m.source)) ||
         (m.sourceUrlHash !== undefined && !isId(m.sourceUrlHash)) ||
         (m.source === undefined) !== (m.sourceUrlHash === undefined) ||
+        (m.sourceAliases !== undefined &&
+          (!Array.isArray(m.sourceAliases) ||
+            m.sourceAliases.length > 31 ||
+            !m.source ||
+            !m.sourceUrlHash ||
+            new Set(m.sourceAliases.map((alias) => alias?.sourceUrlHash)).size !==
+              m.sourceAliases.length ||
+            m.sourceAliases.some(
+              (alias) =>
+                !alias ||
+                !sourceValid(alias.source) ||
+                !isId(alias.sourceUrlHash) ||
+                alias.sourceUrlHash === m.sourceUrlHash,
+            ))) ||
         m.totalChars !== undefined ||
         m.textDigest !== undefined
       )
@@ -215,6 +230,9 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
         height: m.height,
         assetSha256: m.assetSha256,
         ...(m.source ? { source: m.source } : {}),
+        ...(m.sourceAliases?.length
+          ? { sources: [m.source!, ...m.sourceAliases.map((alias) => alias.source)] }
+          : {}),
       }
     : {}),
 })
@@ -382,7 +400,12 @@ export function createPresentationAttachmentService(options: {
         const urlHash = hash(url.toString())
         for (const entry of entries) {
           const item = await metadata(join(doc, entry), entry)
-          if (item.sourceUrlHash !== urlHash || item.status !== 'ready') continue
+          if (
+            item.status !== 'ready' ||
+            (item.sourceUrlHash !== urlHash &&
+              !item.sourceAliases?.some((alias) => alias.sourceUrlHash === urlHash))
+          )
+            continue
           await cachedImage(join(doc, entry), item)
           return publicMetadata(item, item.sizeBytes)
         }
@@ -439,7 +462,36 @@ export function createPresentationAttachmentService(options: {
         )
           fail('parse_failed')
         const attachmentId = hash(raw)
-        if (entries.includes(attachmentId)) fail('remote_image_source_conflict')
+        if (entries.includes(attachmentId)) {
+          const existingDir = join(doc, attachmentId)
+          const existing = await metadata(existingDir, attachmentId)
+          if (
+            existing.status !== 'ready' ||
+            existing.kind !== 'image' ||
+            !existing.source ||
+            !existing.sourceUrlHash ||
+            !(
+              await bytes(
+                join(existingDir, `raw${extname(existing.name)}`),
+                PRESENTATION_IMAGE_INPUT_LIMIT,
+              )
+            ).equals(raw)
+          )
+            fail('remote_image_source_conflict')
+          await cachedImage(existingDir, existing)
+          if ((existing.sourceAliases?.length ?? 0) >= 31) fail('quota_exceeded')
+          url.search = ''
+          url.hash = ''
+          const updated = {
+            ...existing,
+            sourceAliases: [
+              ...(existing.sourceAliases ?? []),
+              { source: url.toString(), sourceUrlHash: urlHash },
+            ],
+          }
+          await atomic(join(existingDir, 'metadata.json'), JSON.stringify(updated))
+          return publicMetadata(updated, updated.sizeBytes)
+        }
         let declared = 0
         for (const entry of entries)
           declared += Math.max(

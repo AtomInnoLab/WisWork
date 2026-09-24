@@ -103,6 +103,33 @@ describe('durable presentation image assets', () => {
     ).rejects.toThrow('quota_exceeded')
     expect(await call({ operation: 'attachment_list_assets' })).toEqual({ attachments: [] })
   })
+  it('keeps both public sources when distinct URLs return the same image bytes', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-remote-sources-'))
+    dirs.push(userDataPath)
+    const fetchImage = vi.fn(async () => new Response(png))
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      fetchImage,
+      normalizeImage: async () => ({ bytes: png, width: 1, height: 1 }),
+    })
+    const call = (url: string) =>
+      service(
+        { documentId: 'doc', operation: 'attachment_import_url', url },
+        new AbortController().signal,
+      )
+    const first = (await call('https://93.184.216.34/a.png?private=one')) as {
+      attachmentId: string
+    }
+    const second = (await call('https://93.184.216.34/b.png?private=two')) as {
+      attachmentId: string
+      sources: string[]
+    }
+    expect(second.attachmentId).toBe(first.attachmentId)
+    expect(second.sources).toEqual(['https://93.184.216.34/a.png', 'https://93.184.216.34/b.png'])
+    expect(JSON.stringify(second)).not.toContain('private')
+    expect(await call('https://93.184.216.34/b.png?private=two')).toEqual(second)
+    expect(fetchImage).toHaveBeenCalledTimes(2)
+  })
   it('allows more than 32 images while paging their bounded list', async () => {
     const { call } = await setup()
     for (let i = 0; i < 33; i++) {
