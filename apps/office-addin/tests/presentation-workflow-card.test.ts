@@ -50,6 +50,7 @@ it('replays the saved project stage and updates from the import record', async (
       state: index === 0 ? 'failed' as const : 'compiled' as const, attempt: 1 })),
   } } }
   await act(async () => projectListeners.forEach((listener) => listener()))
+  expect(node.querySelector('[aria-label="待处理问题"]')?.textContent).toContain('1 页编译失败')
   await act(async () => (Array.from(node.querySelectorAll('button')).find((button) => button.textContent === '后台制作剩余页面')!).click())
   expect(project.startProductionJob).toHaveBeenCalledWith('run1')
   projectSnapshot = { ...projectSnapshot, project: { ...projectSnapshot.project!, production: {

@@ -5,7 +5,7 @@ import {
   type ToolExecution,
   type ToolExecutionOutcome,
 } from '@wiswork/agent-core'
-import { createAgentHarness } from '@wiswork/agent-harness'
+import { acpToolActivity, createAgentHarness } from '@wiswork/agent-harness'
 import { useSyncExternalStore } from 'react'
 import type {
   OfficeProposal,
@@ -148,17 +148,6 @@ const safeRunError = (error: string): SafeSessionError =>
     message: 'The Agent could not complete this request. Try again.',
     retryable: true,
   }
-
-function toolActivity(name: string, state: 'running' | 'complete' | 'error'): string {
-  const attachment = name === 'read' || name === 'bash'
-  const read = /^(?:get_|read_|list_|search_|screenshot_|verify_)/.test(name)
-  const action = attachment ? '处理附件' : read ? '读取内容' : '准备修改'
-  return state === 'running'
-    ? `正在${action}…`
-    : state === 'error'
-      ? `${action}未完成`
-      : `已${action}`
-}
 
 const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'cancelled',
@@ -470,7 +459,7 @@ export function createOfficeAgentSession(dependencies: {
         activeAssistantId = undefined
       }
       const name = update.name ?? 'tool'
-      const summary = toolActivity(name, 'running')
+      const summary = acpToolActivity(name, 'running')
       append({
         id: eventId(),
         kind: 'tool',
@@ -491,7 +480,7 @@ export function createOfficeAgentSession(dependencies: {
         )
       if (!tool) return
       const terminal = update.status === 'failed' ? 'error' : 'complete'
-      const summary = toolActivity(tool.name, terminal)
+      const summary = acpToolActivity(tool.name, terminal)
       replace(tool.id, (item) =>
         item.kind === 'tool'
           ? {

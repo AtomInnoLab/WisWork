@@ -42,6 +42,9 @@ it('walks the saved plan through production, import and QA without claiming deli
   expect(presentationWorkflowSummary({ ...project, production: partial, jobsUnavailable: true }, undefined, undefined)?.nextTool).toBe('run_pages')
   expect(presentationWorkflowSummary({ ...project, production: partial, productionJob: { state: 'paused' } as NonNullable<PresentationProjectStatus['productionJob']> }, undefined, undefined)?.nextTool).toBe('resume_job')
   expect(presentationWorkflowSummary({ ...project, production: partial }, undefined, undefined)?.pages[0]?.nextAction).toContain('重试此页')
+  expect(presentationWorkflowSummary({ ...project, production: partial }, undefined, undefined)?.attention).toEqual([
+    expect.objectContaining({ id: 'failed-pages', text: expect.stringContaining('1 页编译失败') }),
+  ])
   expect(presentationWorkflowSummary({ ...project, production }, undefined, undefined)?.nextAction).toContain('逐页导入')
   expect(presentationWorkflowSummary({ ...project, production }, undefined, undefined)?.nextTool).toBe('prepare_import')
   expect(presentationWorkflowSummary({ ...project, production: { ...production, revision: { parentRequestId: 'parent', pageId: production.pages[0]!.id, parentInputDigest: 'a'.repeat(64) } } }, undefined, undefined)?.nextAction).toContain('单页修订')
@@ -59,6 +62,7 @@ it('uses only the selected request report and keeps its open issues visible', as
   const exactImport = { ...imported, requestId: report.requestId }
   const exactQa = { ...qa, requestId: report.requestId }
   expect(presentationWorkflowSummary(selected, exactImport, exactQa, report)?.nextAction).toContain('待处理问题')
+  expect(presentationWorkflowSummary(selected, exactImport, exactQa, report)?.attention.map((item) => item.id)).toContain('content-issues')
   expect(presentationWorkflowSummary(selected, exactImport, exactQa, { ...report, requestId: 'old' })?.nextAction).toContain('读取当前任务')
 })
 
@@ -75,6 +79,9 @@ it('refuses stale import and QA records and requests recheck after a page edit',
   const uncertain = { ...imported, status: 'uncertain' as const, completed: 0,
     pages: imported.pages.map((page, index) => index === 0 ? { ...page, state: 'uncertain' as const } : { ...page, state: 'pending' as const }) }
   expect(presentationWorkflowSummary(selected, uncertain, qa)?.pages[0]?.nextAction).toContain('检查宿主页')
+  expect(presentationWorkflowSummary(selected, uncertain, recheck)?.attention.map((item) => item.id)).toEqual([
+    'uncertain-import', 'qa-recheck',
+  ])
 })
 
 it('rebuilds recovery events from saved records and isolates the selected request', () => {

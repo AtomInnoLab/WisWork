@@ -6,6 +6,7 @@ import type { PresentationDeliveryReport } from '@wiswork/pptx-engine/presentati
 export interface PresentationWorkflowSummary {
   stages: { name: string; detail: string }[]
   timeline: { id: string; text: string; at?: string }[]
+  attention: { id: string; text: string }[]
   pages: { id: string; title: string; production: string; imported: string; qa: string; nextAction: string }[]
   nextAction: string
   nextTool?: 'start_job' | 'resume_job' | 'run_pages' | 'prepare_import' | 'read_report'
@@ -38,6 +39,13 @@ export function presentationWorkflowSummary(
   const openIssues = reportMatches ? report!.pages.reduce((sum, page) =>
     sum + page.issues.filter((issue) => issue.disposition.state === 'open' || issue.disposition.stale).length, 0) : 0
   const failed = production?.pages.filter((page) => page.state === 'failed').length ?? 0
+  const uncertain = importMatches ? imported!.pages.filter((page) => page.state === 'uncertain').length : 0
+  const recheck = qaMatches ? qa!.pages.filter((page) => page.recheckRequired).length : 0
+  const attention: PresentationWorkflowSummary['attention'] = []
+  if (failed) attention.push({ id: 'failed-pages', text: `${failed} 页编译失败；已成功页面保留，请修复失败页后继续生产。` })
+  if (uncertain) attention.push({ id: 'uncertain-import', text: `${uncertain} 页写入结果不确定；请先检查 PowerPoint 文档，再继续导入。` })
+  if (recheck) attention.push({ id: 'qa-recheck', text: `${recheck} 页历史审查已失效；请重新采集并审查受影响页面。` })
+  if (openIssues) attention.push({ id: 'content-issues', text: `${openIssues} 项内容证据问题待处理；请查看交付报告。` })
   const pages = (production?.pages ?? project.slides).map((slide) => {
     const page = production?.pages.find((item) => item.id === slide.id)
     const index = production?.pages.findIndex((item) => item.id === slide.id) ?? -1
@@ -153,5 +161,5 @@ export function presentationWorkflowSummary(
       reviewed === qa!.pages.length && !reportMatches)
       nextTool = 'read_report'
   }
-  return { stages, timeline, pages, nextAction, ...(nextTool ? { nextTool } : {}) }
+  return { stages, timeline, attention, pages, nextAction, ...(nextTool ? { nextTool } : {}) }
 }

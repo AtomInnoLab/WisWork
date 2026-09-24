@@ -328,6 +328,30 @@ describe('Office agent session', () => {
     expect(JSON.stringify(session.snapshot())).not.toContain('"summary":"bash"')
   })
 
+  it('shows PowerPoint production as a stage activity through ACP updates', async () => {
+    const harness = transportHarness()
+    let finish!: () => void
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [{ name: 'run_presentation_production', description: 'run', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(() => new Promise<ToolExecution>((resolve) => {
+          finish = () => resolve({ output: '{}', summary: 'internal', mutated: false })
+        })) },
+      proposals: proposalsHarness().controller,
+    })
+    session.send('继续制作')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'production-1', name: 'run_presentation_production', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'tool', summary: '正在处理逐页制作…', state: 'running' }),
+    ])))
+    finish()
+    await vi.waitFor(() => expect(session.snapshot().timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'tool', summary: '逐页制作操作已结束', state: 'complete' }),
+    ])))
+  })
+
   it('retries the last bounded instruction after a stable run error', async () => {
     const harness = transportHarness()
     const session = createOfficeAgentSession({

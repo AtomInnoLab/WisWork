@@ -43,6 +43,10 @@ export function PresentationWorkflowCard({ project, imported, qa, disabled = fal
       onClick={runNext}>
       {actionLabels[workflow.nextTool]}
     </button>}
+    {workflow.attention.length > 0 && <section aria-label="待处理问题">
+      <strong>待处理 · {workflow.attention.length} 项</strong>
+      <ul>{workflow.attention.map((item) => <li key={item.id}>{item.text}</li>)}</ul>
+    </section>}
     <ol>{workflow.stages.map((stage) => <li key={stage.name}><strong>{stage.name}</strong>：{stage.detail}</li>)}</ol>
     <details><summary>恢复记录 · {workflow.timeline.length} 项</summary>
       <p>根据已保存记录重建；仅页任务事件带有操作时间，其他条目是当前检查点。</p>
