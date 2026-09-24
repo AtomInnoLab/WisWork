@@ -397,7 +397,7 @@ describe('Office agent session', () => {
     },
   )
 
-  it('forwards post-write screenshots to the Agent without claiming QA passed', async () => {
+  it('reports screenshot metadata without sending bulk images into model history', async () => {
     const harness = transportHarness()
     const proposals = createStructuredProposalController()
     const pngBase64 =
@@ -435,8 +435,9 @@ describe('Office agent session', () => {
     }
     const result = resumed.messages.at(-1)?.results?.[0]
     expect(JSON.parse(result!.output)).toMatchObject({ status: 'applied', qaPassed: false,
+      visualReview: 'pending',
       postWrite: { status: 'captured', pages: [{ slideId: 'slide-1' }] } })
-    expect(result!.content).toEqual([{ type: 'image', image: { mime: 'image/png', base64: pngBase64 } }])
+    expect(result!.content).toBeUndefined()
   })
 
   it('rejects an in-loop proposal immediately and resumes without executing the write', async () => {

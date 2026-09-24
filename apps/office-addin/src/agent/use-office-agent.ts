@@ -274,16 +274,14 @@ export function createOfficeAgentSession(dependencies: {
             proposalId,
             status: 'applied',
             qaPassed: false,
+            visualReview: 'pending',
+            instruction: 'Capture and inspect each affected page with a one-page review tool before recording a visual judgment.',
             postWrite: postWrite.status === 'captured'
               ? { status: 'captured', pages: pages.map(({ slideId, digest }) => ({ slideId, digest })) }
               : postWrite,
           }),
           mutated: true,
           summary: 'Applied approved change; visual review pending',
-          modelContent: pages.map((page) => ({
-            type: 'image' as const,
-            image: { mime: 'image/png', base64: page.pngBase64 },
-          })),
           display: pages.length ? {
             kind: 'images',
             items: pages.map((page) => ({ url: `data:image/png;base64,${page.pngBase64}`, title: page.slideId })),
