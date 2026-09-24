@@ -56,6 +56,9 @@ jobs:
       - name: Check product branding
         run: npm run test:branding
 
+      - name: Check PPT acceptance accounting
+        run: node --test tools/ppt-agent-acceptance.test.mjs
+
       - name: Check dependency licenses
         run: npm run licenses
 
