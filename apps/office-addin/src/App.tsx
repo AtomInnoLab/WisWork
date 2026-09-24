@@ -15,7 +15,10 @@ import {
 import { PresentationProjectCard } from './agent/presentation-project-card.js'
 import { PresentationWorkflowCard } from './agent/presentation-workflow-card.js'
 import type { PresentationProjectController } from './skills/powerpoint/presentation-project.js'
-import { createBrowserPresentationDocumentBinding } from './skills/powerpoint/presentation-document.js'
+import {
+  createBrowserPresentationDocumentBinding,
+  createPresentationAgentRunCheckpoint,
+} from './skills/powerpoint/presentation-document.js'
 import { downloadSessionFile } from './agent/session-download.js'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Markdown } from '@wiswork/ui'
@@ -1368,6 +1371,9 @@ function ConfiguredApp() {
             const boundPresentationDocumentId = presentationBinding
               ? await presentationBinding.documentId()
               : undefined
+            const runCheckpoint = presentationBinding
+              ? createPresentationAgentRunCheckpoint(presentationBinding)
+              : undefined
             const environment = officeDiagnosticEnvironment(activeHost)
             const diagnostics = createOfficeDiagnostics({
               host: activeHost,
@@ -1461,10 +1467,8 @@ function ConfiguredApp() {
                       interrupted: presentationBinding.interruptedAgentRun(
                         boundPresentationDocumentId,
                       ),
-                      begin: (runId: string) =>
-                        presentationBinding.rememberAgentRun(boundPresentationDocumentId, runId),
-                      finish: (runId: string) =>
-                        presentationBinding.finishAgentRun(boundPresentationDocumentId, runId),
+                      begin: runCheckpoint!.begin,
+                      finish: runCheckpoint!.finish,
                     },
                   }
                 : {}),

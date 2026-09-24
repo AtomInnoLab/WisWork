@@ -1485,6 +1485,28 @@ export function createPresentationDocumentBinding(
   }
 }
 
+export function createPresentationAgentRunCheckpoint(
+  binding: Pick<
+    ReturnType<typeof createPresentationDocumentBinding>,
+    'documentId' | 'rememberAgentRun' | 'finishAgentRun'
+  >,
+) {
+  const runDocuments = new Map<string, string>()
+  return {
+    async begin(runId: string) {
+      const id = await binding.documentId()
+      await binding.rememberAgentRun(id, runId)
+      runDocuments.set(runId, id)
+    },
+    async finish(runId: string) {
+      const id = runDocuments.get(runId)
+      if (!id) return
+      await binding.finishAgentRun(id, runId)
+      runDocuments.delete(runId)
+    },
+  }
+}
+
 export function createBrowserPresentationDocumentBinding() {
   return createPresentationDocumentBinding({
     get: (key) => Office.context.document.settings.get(key),

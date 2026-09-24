@@ -1,7 +1,39 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document.js'
+import {
+  createPresentationAgentRunCheckpoint,
+  createPresentationDocumentBinding,
+} from '../src/skills/powerpoint/presentation-document.js'
 
 describe('presentation AgentRun checkpoint', () => {
+  it('binds a new run to the Save As copy and finishes only that document', async () => {
+    const values = new Map<string, string>()
+    let location = 'file:///original.pptx'
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => location,
+      },
+      () => 'doc-id',
+    )
+    const originalId = await binding.documentId()
+    const checkpoint = createPresentationAgentRunCheckpoint(binding)
+    location = 'file:///copy.pptx'
+    const copyId = await binding.documentId()
+    await checkpoint.begin('run-1')
+    expect(binding.interruptedAgentRun(copyId)).toBe(true)
+    expect(binding.interruptedAgentRun(originalId)).toBe(false)
+    location = 'file:///original.pptx'
+    await expect(checkpoint.finish('run-1')).rejects.toThrow('presentation_document_changed')
+    location = 'file:///copy.pptx'
+    expect(binding.interruptedAgentRun(copyId)).toBe(true)
+    await checkpoint.finish('run-1')
+    expect(binding.interruptedAgentRun(copyId)).toBe(false)
+  })
+
   it('detects a foreground run after reopen, but not in a Save As copy', async () => {
     const values = new Map<string, string>()
     let location = 'file:///original.pptx'
