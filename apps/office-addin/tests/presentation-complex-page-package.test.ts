@@ -1,6 +1,6 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
-import { inspectPowerPointComplexPagePackage, inspectPowerPointTableCellPackage } from '../src/skills/powerpoint/presentation-complex-page-package.js'
+import { inspectPowerPointComplexPagePackage, inspectPowerPointTableCellPackage, inspectPowerPointTableCellsPackage } from '../src/skills/powerpoint/presentation-complex-page-package.js'
 
 async function packageWith(slide: string, rels = '', chart = ''): Promise<string> {
   const zip = new JSZip()
@@ -59,6 +59,27 @@ describe('complex PowerPoint page package read', () => {
     const shifted = await inspectPowerPointTableCellPackage(await packageWith(slide(inserted)), '7', 0, 0)
     expect(shifted.text).toBe(original.text)
     expect(shifted.structureDigest).not.toBe(original.structureDigest)
+  })
+
+  it('binds a batch to unchanged table content outside all selected cells', async () => {
+    const threeCells = table.replace('</a:tr>', '<a:tc><a:txBody><a:p><a:r><a:t>Other</a:t></a:r></a:p></a:txBody></a:tc></a:tr>')
+    const cells = [{ rowIndex: 0, columnIndex: 0 }, { rowIndex: 0, columnIndex: 1 }]
+    const original = await inspectPowerPointTableCellsPackage(await packageWith(slide(threeCells)), '7', cells)
+    expect(original.cells).toEqual([{ ...cells[0], text: 'North' }, { ...cells[1], text: '42' }])
+    const changedSelected = threeCells.replace('North', 'South').replace('42', '43')
+    expect((await inspectPowerPointTableCellsPackage(await packageWith(slide(changedSelected)), '7', cells)).structureDigest).toBe(original.structureDigest)
+    const changedOther = threeCells.replace('Other', 'Else')
+    expect((await inspectPowerPointTableCellsPackage(await packageWith(slide(changedOther)), '7', cells)).structureDigest).not.toBe(original.structureDigest)
+    const changedTopology = threeCells.replace('</a:tbl>', '<a:tr><a:tc><a:txBody><a:p/></a:txBody></a:tc></a:tr></a:tbl>')
+    expect((await inspectPowerPointTableCellsPackage(await packageWith(slide(changedTopology)), '7', cells)).structureDigest).not.toBe(original.structureDigest)
+  })
+
+  it('rejects repeated coordinates and an invalid batch size', async () => {
+    const base64 = await packageWith(slide(table))
+    const cell = { rowIndex: 0, columnIndex: 0 }
+    await expect(inspectPowerPointTableCellsPackage(base64, '7', [cell, cell])).rejects.toThrow('invalid_tool_input')
+    await expect(inspectPowerPointTableCellsPackage(base64, '7', [])).rejects.toThrow('invalid_tool_input')
+    await expect(inspectPowerPointTableCellsPackage(base64, '7', Array(9).fill(cell))).rejects.toThrow('invalid_tool_input')
   })
 
   it('bounds the entire serialized summary even with many large cells', async () => {

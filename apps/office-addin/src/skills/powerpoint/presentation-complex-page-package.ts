@@ -191,8 +191,21 @@ export async function inspectPowerPointTableCellPackage(
   columnIndex: number,
   signal?: AbortSignal,
 ): Promise<{ text: string; structureDigest: string }> {
+  const result = await inspectPowerPointTableCellsPackage(base64, shapeId, [{ rowIndex, columnIndex }], signal)
+  return { text: result.cells[0]!.text, structureDigest: result.structureDigest }
+}
+
+/** Whole-table evidence with only the selected cell text payloads excluded. */
+export async function inspectPowerPointTableCellsPackage(
+  base64: string,
+  shapeId: string,
+  cells: Array<{ rowIndex: number; columnIndex: number }>,
+  signal?: AbortSignal,
+): Promise<{ cells: Array<{ rowIndex: number; columnIndex: number; text: string }>; structureDigest: string }> {
   if (signal?.aborted) throw new Error('cancelled')
-  if (!Number.isSafeInteger(rowIndex) || rowIndex < 0 || !Number.isSafeInteger(columnIndex) || columnIndex < 0)
+  if (!Array.isArray(cells) || cells.length < 1 || cells.length > 8 ||
+    cells.some((cell) => !cell || !Number.isSafeInteger(cell.rowIndex) || cell.rowIndex < 0 || !Number.isSafeInteger(cell.columnIndex) || cell.columnIndex < 0) ||
+    new Set(cells.map(({ rowIndex, columnIndex }) => `${rowIndex}:${columnIndex}`)).size !== cells.length)
     throw new Error('invalid_tool_input')
   const zip = await loadBoundedZip(base64, signal)
   const slides = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
@@ -207,25 +220,30 @@ export async function inspectPowerPointTableCellPackage(
     return attrs && ['@_gridSpan', '@_rowSpan', '@_hMerge', '@_vMerge'].some((name) => Object.hasOwn(attrs, name))
   })) throw new Error('presentation_existing_target_unsupported')
   const rows = elements(tables[0]!, 'a:tr')
-  const cell = rows[rowIndex] && elements(rows[rowIndex]!, 'a:tc')[columnIndex]
-  if (!cell || elements(cell, 'a:p').length > 1 || elements(cell, 'a:r').length > 1 ||
-    ['a:br', 'a:fld'].some((tag) => elements(cell, tag).length))
-    throw new Error('presentation_existing_target_unsupported')
-  const text = value(cell)
-  if (text.length > 128) throw new Error('presentation_existing_target_unsupported')
-  // Bind the exact coordinate to the whole table; only the target cell text may change.
+  const selected = cells.map(({ rowIndex, columnIndex }) => {
+    const cell = rows[rowIndex] && elements(rows[rowIndex]!, 'a:tc')[columnIndex]
+    if (!cell || elements(cell, 'a:p').length > 1 || elements(cell, 'a:r').length > 1 ||
+      ['a:br', 'a:fld', 'a:rPr', 'a:pPr', 'a:endParaRPr'].some((tag) => elements(cell, tag).length))
+      throw new Error('presentation_existing_target_unsupported')
+    const text = value(cell)
+    if (text.length > 128) throw new Error('presentation_existing_target_unsupported')
+    return { rowIndex, columnIndex, text }
+  })
   const tableForDigest = structuredClone(tables[0]!)
-  const digestRow = elements(tableForDigest, 'a:tr')[rowIndex]
-  const digestCell = digestRow && elements(digestRow, 'a:tc')[columnIndex]
-  if (!digestCell) throw new Error('presentation_existing_target_unsupported')
   const blankTargetText = (nodes: Node[]) => {
     for (const node of nodes) for (const [key, entry] of Object.entries(node)) {
       if (key === 'a:t') node[key] = []
       else if (Array.isArray(entry)) blankTargetText(entry as Node[])
     }
   }
-  blankTargetText(digestCell)
+  const digestRows = elements(tableForDigest, 'a:tr')
+  for (const { rowIndex, columnIndex } of cells) {
+    const digestRow = digestRows[rowIndex]
+    const digestCell = digestRow && elements(digestRow, 'a:tc')[columnIndex]
+    if (!digestCell) throw new Error('presentation_existing_target_unsupported')
+    blankTargetText(digestCell)
+  }
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(tableForDigest)))
   if (signal?.aborted) throw new Error('cancelled')
-  return { text, structureDigest: Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('') }
+  return { cells: selected, structureDigest: Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('') }
 }
