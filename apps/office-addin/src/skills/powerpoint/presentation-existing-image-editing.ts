@@ -1,8 +1,10 @@
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import {
   selectionFingerprint,
+  type ProposalPostWriteEvidence,
   type StructuredProposalController,
 } from '../../agent/proposal-controller.js'
+import { validatePowerPointPageScreenshot, type PowerPointPageInspection } from './browser-powerpoint-adapter.js'
 import {
   MAX_IMPORT_BYTES,
   readBoundedImage,
@@ -30,6 +32,7 @@ interface Options {
     'inspect' | 'captureOriginal' | 'replace' | 'inspectRecovery' | 'finishRecovery'
   >
   imageBackup: PresentationImageBackup
+  inspectPage(slideId: string, signal?: AbortSignal): Promise<Pick<PowerPointPageInspection, 'slideId' | 'shapesTruncated' | 'screenshot'>>
   vfs: InMemoryVfs
   proposals: StructuredProposalController
   documentId(): Promise<string>
@@ -555,6 +558,29 @@ export function createPresentationExistingImageEditingSkill(
             saved()
             if (!['complete', 'undone'].includes(record.state))
               throw new Error('office_verify_failed')
+          },
+          postWrite: async (): Promise<ProposalPostWriteEvidence> => {
+            const check = async () => {
+              await current()
+              saved()
+              const reverse = record.state === 'undone'
+              if (!reverse && record.state !== 'complete') throw new Error('office_state_uncertain')
+              const picture = await options.imageAdapter.inspect(
+                record.hostSlideId,
+                reverse ? record.restoredShapeId! : record.insertedShapeId!,
+              )
+              await current()
+              saved()
+              afterPicture(record, picture, reverse)
+              if (!reverse && !same(picture, record.after)) throw new Error('office_state_uncertain')
+            }
+            await check()
+            const shot = await options.inspectPage(record.hostSlideId)
+            if (shot.slideId !== record.hostSlideId || shot.shapesTruncated || shot.screenshot.mime !== 'image/png')
+              throw new Error('office_read_failed')
+            const pngBase64 = validatePowerPointPageScreenshot(shot.screenshot.base64)
+            await check()
+            return { status: 'captured', pages: [{ slideId: record.hostSlideId, pngBase64, digest: await hash(decode(pngBase64)) }] }
           },
         })
         return {

@@ -1,6 +1,7 @@
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import JSZip from 'jszip'
-import { selectionFingerprint, type StructuredProposalController } from '../../agent/proposal-controller.js'
+import { selectionFingerprint, type ProposalPostWriteEvidence, type StructuredProposalController } from '../../agent/proposal-controller.js'
+import { validatePowerPointPageScreenshot, type PowerPointPageInspection } from './browser-powerpoint-adapter.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
 import type { PresentationBaselineSkill } from './presentation-baseline.js'
 import type { PresentationPageReplacementAdapter } from './browser-presentation-page-replacement-adapter.js'
@@ -11,6 +12,7 @@ import { validatePresentationExistingPageChange, type PresentationExistingPageCh
 interface Options {
   baseline: PresentationBaselineSkill
   adapter: PresentationPageReplacementAdapter
+  inspectPage(slideId: string, signal?: AbortSignal): Promise<Pick<PowerPointPageInspection, 'slideId' | 'shapesTruncated' | 'screenshot'>>
   exportAdapter: { exportPresentationPagePackage(slideId: string, signal?: AbortSignal): Promise<{slideId:string; slideIds:string[]; base64:string}> }
   vfs: InMemoryVfs
   request(body: unknown, signal?: AbortSignal): Promise<Response>
@@ -259,6 +261,36 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
             }
           },
           verify: async () => { saved(); const status = (await options.adapter.inspect(projected(record), signal)).status; if (status !== (action === 'stage' ? 'staged' : action === 'discard' ? 'baseline' : action === 'undo' ? 'undone' : action === 'resume' ? initial : 'applied')) throw new Error('office_state_uncertain') },
+          postWrite: async (): Promise<ProposalPostWriteEvidence> => {
+            const targets = record.state === 'staged'
+              ? [record.oldSlideId, record.newSlideId!]
+              : record.state === 'applied'
+                ? [record.newSlideId!]
+                : record.state === 'discarded'
+                  ? [record.oldSlideId]
+                  : record.state === 'undone'
+                    ? [record.restoredSlideId!]
+                    : []
+            if (!targets.length) throw new Error('office_state_uncertain')
+            const status = record.state === 'staged' ? 'staged' : record.state === 'applied' ? 'applied' : record.state === 'discarded' ? 'baseline' : 'undone'
+            const check = async () => {
+              await current(); saved()
+              const observed = await options.adapter.inspect(projected(record))
+              await current(); saved()
+              if (observed.status !== status || !targets.every((id) => observed.slideIds.includes(id))) throw new Error('office_state_uncertain')
+              return observed.slideIds
+            }
+            const before = await check()
+            const pages = [] as {slideId:string;pngBase64:string;digest:string}[]
+            for (const slideId of targets) {
+              const shot = await options.inspectPage(slideId)
+              if (shot.slideId !== slideId || shot.shapesTruncated || shot.screenshot.mime !== 'image/png') throw new Error('office_read_failed')
+              const pngBase64 = validatePowerPointPageScreenshot(shot.screenshot.base64)
+              pages.push({ slideId, pngBase64, digest: await sha(bytes(pngBase64)) })
+              if (!same(await check(), before)) throw new Error('office_state_uncertain')
+            }
+            return { status: 'captured', pages }
+          },
         })
         return { output: output({ proposalId: proposal.id, status: 'awaiting_confirmation', changeId: record.changeId, state: record.state, oldSlideId: record.oldSlideId, newSlideId: record.newSlideId }), mutated: false, summary: '已准备现稿单页变更，等待确认' }
       } catch (error) {

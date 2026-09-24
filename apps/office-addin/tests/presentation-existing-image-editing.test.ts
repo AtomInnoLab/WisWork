@@ -124,6 +124,10 @@ async function fixture() {
   }
   let assetBytes: Uint8Array = bytes(replacementPng)
   const proposals = createStructuredProposalController()
+  const inspectPage = vi.fn(async (slideId: string) => ({
+    slideId, shapesTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: originalPng },
+  }))
   const create = () =>
     createPresentationExistingImageEditingSkill({
       baseline,
@@ -131,6 +135,7 @@ async function fixture() {
       imageBackup: backup,
       vfs: { readBytes: () => assetBytes } as unknown as InMemoryVfs,
       proposals,
+      inspectPage,
       documentId: binding.documentId,
       readExistingImageChange: binding.readExistingImageChange,
       writeExistingImageChange: binding.writeExistingImageChange,
@@ -138,11 +143,17 @@ async function fixture() {
   let skill = create()
   const call = (name: string, input: Record<string, unknown>) =>
     skill.executeTool({ id: 'call', name, input })
-  const confirm = () => proposals.confirm(proposals.pending()!.id)
+  const confirm = async () => {
+    const proposalId = proposals.pending()!.id
+    const decision = proposals.waitForDecision(proposalId)
+    await proposals.confirm(proposalId)
+    return decision
+  }
   return {
     call,
     confirm,
     adapter,
+    inspectPage,
     backup,
     binding,
     save,
@@ -161,6 +172,34 @@ async function fixture() {
     current: () => current,
   }
 }
+
+it('captures the exact native page after confirmed image replacement and undo', async () => {
+  const f = await fixture()
+  const proposed = await f.call('replace_existing_presentation_image', { baseline_id: 'baseline', slide_id: 'slide', shape_id: 'old', path: '/image.png' })
+  const first = await f.confirm()
+  expect(first.status).toBe('confirmed')
+  if (first.status !== 'confirmed') throw new Error('not confirmed')
+  expect(first.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'slide' }] })
+  expect(f.inspectPage).toHaveBeenCalledWith('slide')
+  const changeId = JSON.parse(proposed.output).changeId
+  await f.call('undo_existing_presentation_image_change', { change_id: changeId })
+  const second = await f.confirm()
+  expect(second.status).toBe('confirmed')
+  if (second.status !== 'confirmed') throw new Error('not confirmed')
+  expect(second.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'slide' }] })
+})
+
+it('keeps a confirmed image write while reporting unavailable evidence if the host changes during capture', async () => {
+  const f = await fixture()
+  const proposed = await f.call('replace_existing_presentation_image', { baseline_id: 'baseline', slide_id: 'slide', shape_id: 'old', path: '/image.png' })
+  f.inspectPage.mockImplementationOnce(async (slideId) => {
+    f.setCurrent(f.picture('new', 'f'.repeat(64)))
+    return { slideId, shapesTruncated: false, screenshot: { mime: 'image/png', base64: originalPng } }
+  })
+  const decision = await f.confirm()
+  expect(decision).toMatchObject({ status: 'confirmed', postWrite: { status: 'unavailable' } })
+  expect(f.binding.readExistingImageChange(JSON.parse(proposed.output).changeId)?.state).toBe('complete')
+})
 
 it('backs up before a confirmed native replacement, then undoes from a reopened savepoint', async () => {
   const f = await fixture()

@@ -62,8 +62,12 @@ async function fixture() {
     undo: vi.fn(async (_record: unknown, _base64: string, onRestored: (id: string) => Promise<void>) => { slideIds = ['new', 'restored']; await onRestored('restored'); slideIds = ['restored'] }),
   }
   const proposals = createStructuredProposalController()
+  const inspectPage = vi.fn(async (slideId: string) => ({
+    slideId, shapesTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII=' },
+  }))
   const skill = createPresentationExistingPageEditingSkill({
-    baseline, adapter, exportAdapter: { exportPresentationPagePackage: async () => ({ slideId: 'old', slideIds: ['old'], base64: base64(backupBytes) }) },
+    baseline, adapter, inspectPage, exportAdapter: { exportPresentationPagePackage: async () => ({ slideId: 'old', slideIds: ['old'], base64: base64(backupBytes) }) },
     vfs: { readBytes: () => source } as unknown as InMemoryVfs,
     request, proposals, documentId: async () => 'doc', available: () => true,
     readExistingPageChange: (id) => records.get(id),
@@ -75,9 +79,43 @@ async function fixture() {
     },
   })
   const call = (action: string, input: Record<string, unknown>) => skill.executeTool({ id: 'tool', name: `${action}_existing_presentation_page_change`, input })
-  const confirm = () => proposals.confirm(proposals.pending()!.id)
-  return { call, confirm, records, adapter, request, setWriteFailure: (value: boolean) => { failWrite = value }, removeStaged: () => { slideIds = ['old'] }, source: () => source, changeSource: (value: Uint8Array) => { source = value }, changeBackup: (value: Uint8Array) => { backupBytes = value }, digest, data: () => data }
+  const confirm = async () => {
+    const proposalId = proposals.pending()!.id
+    const decision = proposals.waitForDecision(proposalId)
+    await proposals.confirm(proposalId)
+    return decision
+  }
+  return { call, confirm, records, adapter, inspectPage, request, setWriteFailure: (value: boolean) => { failWrite = value }, removeStaged: () => { slideIds = ['old'] }, source: () => source, changeSource: (value: Uint8Array) => { source = value }, changeBackup: (value: Uint8Array) => { backupBytes = value }, digest, data: () => data }
 }
+
+it('captures exact durable page IDs after stage, commit and undo', async () => {
+  const f = await fixture()
+  await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/home/user/rebuilt.pptx' })
+  const staged = await f.confirm()
+  if (staged.status !== 'confirmed') throw new Error('not confirmed')
+  expect(staged.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'old' }, { slideId: 'new' }] })
+  const changeId = [...f.records.keys()][0]!
+  await f.call('commit', { change_id: changeId })
+  const committed = await f.confirm()
+  if (committed.status !== 'confirmed') throw new Error('not confirmed')
+  expect(committed.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'new' }] })
+  await f.call('undo', { change_id: changeId })
+  const undone = await f.confirm()
+  if (undone.status !== 'confirmed') throw new Error('not confirmed')
+  expect(undone.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'restored' }] })
+  expect(f.inspectPage.mock.calls.map(([id]) => id)).toEqual(['old', 'new', 'new', 'restored'])
+})
+
+it('does not claim page evidence if the staged page disappears during capture', async () => {
+  const f = await fixture()
+  const proposed = await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/home/user/rebuilt.pptx' })
+  f.inspectPage.mockImplementationOnce(async (slideId) => {
+    f.removeStaged()
+    return { slideId, shapesTruncated: false, screenshot: { mime: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII=' } }
+  })
+  expect(await f.confirm()).toMatchObject({ status: 'confirmed', postWrite: { status: 'unavailable' } })
+  expect(f.records.get(JSON.parse(proposed.output).changeId)?.state).toBe('staged')
+})
 
 it('stages with durable backup, then separately commits and restores after reopen', async () => {
   const f = await fixture()
