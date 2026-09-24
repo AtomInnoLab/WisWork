@@ -153,19 +153,31 @@ export class BrowserPresentationBaselineAdapter implements PresentationBaselineA
           height: number(shape.height, 0),
         })),
       }
+      // Placeholder can contain text or a picture. Never assume its textFrame exists.
+      const placeholders = shapes.filter((shape) => shape.type === 'Placeholder')
+      if (placeholders.length && !supported('1.10')) throw new Error('office_api_unsupported')
+      const placeholderFrames = placeholders.map((shape) => ({
+        shape,
+        frame: shape.getTextFrameOrNullObject(),
+      }))
+      if (placeholderFrames.length) await sync(context, signal)
       // Table, group, chart, picture and unknown shapes retain geometry only.
-      const textShapes = shapes.filter(
-        (shape) => shape.type === 'TextBox' || shape.type === 'GeometricShape',
-      )
-      for (const shape of textShapes) {
-        shape.textFrame.textRange.load('text')
-        shape.textFrame.textRange.font.load('name,size,color')
+      const textShapes = shapes
+        .filter((shape) => shape.type === 'TextBox' || shape.type === 'GeometricShape')
+        .map((shape) => ({ shape, frame: shape.textFrame }))
+      for (const entry of placeholderFrames) {
+        if (typeof entry.frame.isNullObject !== 'boolean') invalid()
+        if (!entry.frame.isNullObject) textShapes.push(entry)
+      }
+      for (const { frame } of textShapes) {
+        frame.textRange.load('text')
+        frame.textRange.font.load('name,size,color')
       }
       if (textShapes.length) await sync(context, signal)
       let textLength = 0
-      for (const shape of textShapes) {
+      for (const { shape, frame } of textShapes) {
         const target = result.shapes.find((item) => item.id === shape.id)!
-        const range = shape.textFrame.textRange
+        const range = frame.textRange
         target.text = boundedString(range.text, MAX_TEXT)
         textLength += target.text.length
         if (textLength > MAX_PAGE_TEXT) throw new Error('presentation_baseline_limit_exceeded')

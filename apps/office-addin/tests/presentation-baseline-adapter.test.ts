@@ -183,4 +183,41 @@ describe('existing presentation baseline adapter', () => {
       new BrowserPresentationBaselineAdapter().readPage('native-slide', during.signal),
     ).rejects.toThrow('cancelled')
   })
+  it('reads title and body placeholders and observes later text changes', async () => {
+    const h = host()
+    h.shape.type = 'Placeholder'
+    Object.assign(h.shape, {
+      getTextFrameOrNullObject: () => ({ ...h.shape.textFrame, isNullObject: false }),
+    })
+    const adapter = new BrowserPresentationBaselineAdapter()
+    expect((await adapter.readPage('native-slide')).shapes[0]).toMatchObject({
+      text: 'Existing document',
+      font: { name: null, size: 18, color: null },
+    })
+    h.shape.textFrame.textRange.text = 'Changed body'
+    expect((await adapter.readPage('native-slide')).shapes[0]?.text).toBe('Changed body')
+  })
+  it('does not touch text ranges of picture placeholders', async () => {
+    const h = host()
+    h.shape.type = 'Placeholder'
+    Object.assign(h.shape, {
+      getTextFrameOrNullObject: () => ({
+        isNullObject: true,
+        get textRange() {
+          throw new Error('picture text accessed')
+        },
+      }),
+    })
+    expect(
+      (await new BrowserPresentationBaselineAdapter().readPage('native-slide')).shapes[0],
+    ).not.toHaveProperty('text')
+  })
+  it('refuses unreadable placeholders on older hosts instead of claiming a complete baseline', async () => {
+    const h = host()
+    h.shape.type = 'Placeholder'
+    h.supports.mockImplementation((_name?: string, version?: string) => version !== '1.10')
+    await expect(new BrowserPresentationBaselineAdapter().readPage('native-slide')).rejects.toThrow(
+      'office_api_unsupported',
+    )
+  })
 })
