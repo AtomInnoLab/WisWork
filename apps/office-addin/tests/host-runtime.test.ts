@@ -370,3 +370,40 @@ it('gates QA by host support and refreshes saved QA after project restoration', 
     vi.unstubAllGlobals()
   }
 })
+
+it('registers and routes background production controls only through the PC job capability', async () => {
+  const request = vi.fn(async () => new Response(JSON.stringify({ error: 'not_found' })))
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      documentId: async () => 'doc',
+      lastProject: () => 'p',
+      rememberProject: async () => {},
+      request,
+    },
+  })
+  try {
+    for (const operation of ['start', 'status', 'pause', 'resume', 'cancel']) {
+      const name = `${operation === 'status' ? 'read' : operation}_presentation_production_job`
+      expect(runtime.skill.tools.map((tool) => tool.name)).toContain(name)
+      const result = await runtime.skill.executeTool({
+        id: operation,
+        name,
+        input: { project_id: 'p', request_id: 'r' },
+      })
+      expect(result.isError).toBe(true)
+      expect(request).toHaveBeenLastCalledWith(
+        {
+          operation: `production_job_${operation}`,
+          documentId: 'doc',
+          projectId: 'p',
+          requestId: 'r',
+        },
+        undefined,
+      )
+    }
+    expect(runtime.vfs.list('/home/user')).toEqual([])
+  } finally {
+    runtime.dispose()
+  }
+})
