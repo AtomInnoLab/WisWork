@@ -464,3 +464,84 @@ describe('saved production task selection', () => {
     expect(f.executeTool).not.toHaveBeenCalled()
   })
 })
+
+it('binds report actions to the selected request, CAS revision, and clears late responses', async () => {
+  const { deliveryReportFixture } = await import('./presentation-delivery-fixture.js')
+  const report = await deliveryReportFixture()
+  const documentId = vi.fn(async () => 'd')
+  const production = {
+    projectId: report.projectId,
+    requestId: 'r',
+    planRevision: 1,
+    status: 'pending',
+    compiledCount: 0,
+    total: report.pages.length,
+    pages: report.pages.map((page) => ({
+      id: page.pageId,
+      title: page.title,
+      state: 'pending',
+      attempt: 0,
+    })),
+  }
+  const executeTool = vi.fn(async () => ({
+    output: JSON.stringify(report),
+    mutated: false,
+    summary: 'report',
+  }))
+  const controller = createPresentationProjectController({
+    documentId,
+    available: () => true,
+    lastProject: () => report.projectId,
+    executeTool,
+    request: async (body) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'status'
+            ? { ...project, projectId: report.projectId, production }
+            : { error: 'invalid_request' },
+        ),
+      ),
+  })
+  await controller.refresh()
+  await controller.readDeliveryReport()
+  expect(controller.snapshot().deliveryReport).toEqual(report)
+  const issue = report.pages.flatMap((page) => page.issues)[0]!
+  const action = {
+    actionId: 'act',
+    issueId: issue.id,
+    issueDigest: issue.digest,
+    state: 'deferred' as const,
+    note: 'Needs source',
+  }
+  await controller.recordIssueAction(action)
+  expect(executeTool).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      name: 'record_presentation_issue_action',
+      input: { project_id: report.projectId, request_id: 'r', expected_revision: 0, action },
+    }),
+    expect.any(AbortSignal),
+  )
+  let finish!: (value: Awaited<ReturnType<typeof executeTool>>) => void
+  executeTool.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+  )
+  const pending = controller.readDeliveryReport()
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+  controller.clear()
+  finish({ output: JSON.stringify(report), mutated: false, summary: 'late' })
+  await pending
+  expect(controller.snapshot()).toEqual({ phase: 'idle' })
+  executeTool.mockResolvedValue({
+    output: JSON.stringify(report),
+    mutated: false,
+    summary: 'report',
+  })
+  await controller.refresh()
+  documentId.mockResolvedValue('different')
+  await controller.readDeliveryReport()
+  expect(controller.snapshot().deliveryReport).toBeUndefined()
+  expect(controller.snapshot().project).toBeUndefined()
+})

@@ -54,6 +54,9 @@ describe('workspace project integration', () => {
           projectListeners.delete(fn)
         }
       },
+      readDeliveryReport: vi.fn(async () => {}),
+      exportDeliveryReport: vi.fn(async () => {}),
+      recordIssueAction: vi.fn(async () => {}),
       refresh: vi.fn(async () => {}),
       restore: vi.fn(async () => {}),
       resume: vi.fn(async () => {}),

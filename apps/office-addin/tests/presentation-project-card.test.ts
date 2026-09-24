@@ -36,6 +36,9 @@ async function mount(snapshot: Snapshot, disabled = false) {
         listeners.delete(listener)
       }
     },
+    readDeliveryReport: vi.fn(async () => {}),
+    exportDeliveryReport: vi.fn(async () => {}),
+    recordIssueAction: vi.fn(async () => {}),
     refresh: vi.fn(async () => {}),
     restore: vi.fn(async () => {}),
     resume: vi.fn(async () => {}),
@@ -324,4 +327,51 @@ it('offers downloads but no bulk import preparation for a compiled revision', as
   expect(view.button('准备完整成果导入')).toBeUndefined()
   expect(view.button('保存单页到附件：A')).toBeTruthy()
   expect(view.container.textContent).toContain('宿主页替换需单独确认')
+})
+
+it('shows evidence warnings, explicit issue disposition inputs, and export action', async () => {
+  const { deliveryReportFixture } = await import('./presentation-delivery-fixture.js')
+  const report = await deliveryReportFixture()
+  const view = await mount({
+    ...pending,
+    deliveryReport: report,
+    project: {
+      ...pending.project!,
+      production: {
+        projectId: report.projectId,
+        requestId: 'r',
+        planRevision: 1,
+        status: 'pending',
+        compiledCount: 0,
+        total: 1,
+        pages: [{ id: 'a', title: 'A', state: 'pending', attempt: 0 }],
+      },
+    },
+  })
+  expect(view.container.textContent).toContain('算术复现')
+  expect(view.container.textContent).toContain('已说明不会关闭机器发现')
+  expect(view.container.querySelector('textarea')?.value).toBe('')
+  expect(view.controller.recordIssueAction).not.toHaveBeenCalled()
+  const form = view.container.querySelector('form')!
+  const textarea = form.querySelector('textarea')!
+  const disposition = form.querySelector('select')!
+  await act(async () => {
+    disposition.value = 'deferred'
+    disposition.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+      textarea,
+      'Waiting for evidence',
+    )
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () =>
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+  )
+  expect(view.controller.recordIssueAction).toHaveBeenCalledWith(
+    expect.objectContaining({ state: 'deferred', note: 'Waiting for evidence' }),
+  )
+  await act(async () => view.button('导出证据 JSON + Markdown 到附件').click())
+  expect(view.controller.exportDeliveryReport).toHaveBeenCalledOnce()
 })

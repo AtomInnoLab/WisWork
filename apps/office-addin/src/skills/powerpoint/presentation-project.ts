@@ -1,3 +1,8 @@
+import {
+  parsePresentationDeliveryReport,
+  type PresentationDeliveryReport,
+} from '@wiswork/pptx-engine/presentation-delivery-report'
+import type { PresentationIssueActionInput } from '@wiswork/project-store/presentation-issue'
 import type { PresentationProductionJob } from '@wiswork/project-store/presentation-job'
 import { parsePresentationJobResponse } from './presentation-jobs.js'
 import {
@@ -49,11 +54,16 @@ export interface PresentationProjectStatus {
   }
 }
 export interface PresentationProjectSnapshot {
+  deliveryReport?: PresentationDeliveryReport
+  deliveryNotice?: string
   phase: 'idle' | 'loading' | 'restoring' | 'resuming' | 'producing'
   project?: PresentationProjectStatus
   error?: string
 }
 export interface PresentationProjectController {
+  readDeliveryReport(): Promise<void>
+  exportDeliveryReport(): Promise<void>
+  recordIssueAction(action: PresentationIssueActionInput): Promise<void>
   snapshot(): PresentationProjectSnapshot
   subscribe(listener: () => void): () => void
   refresh(): Promise<void>
@@ -241,7 +251,8 @@ function message(error: unknown): string {
     )
   )
     return '当前 PC 尚不支持此项目操作，请升级 WisWork PC 后重试。'
-  if (code === 'presentation_revision_conflict') return '计划已有更新，请读取最新计划后继续。'
+  if (code === 'presentation_revision_conflict') return '记录已有更新，请重新读取后继续。'
+  if (code === 'presentation_issue_changed') return '问题证据已有变化，请重新读取报告后处理。'
   if (code === 'presentation_plan_mismatch')
     return '编译内容与保存的计划不一致，请先更新计划或修正内容。'
   if (code === 'presentation_not_found')
@@ -448,6 +459,81 @@ export function createPresentationProjectController(
       if (captured === epoch) active = undefined
     }
   }
+  const deliveryAction = async (tool: string, action?: PresentationIssueActionInput) => {
+    if (active || !state.project?.production || !projectDocument) return
+    const project = state.project
+    const requestId = project.production!.requestId
+    const documentId = projectDocument
+    const report = state.deliveryReport
+    if (action && (!report || report.requestId !== requestId)) return
+    stopPolling()
+    const controller = new AbortController()
+    active = controller
+    const captured = ++epoch
+    publish({ phase: 'loading', project, ...(report ? { deliveryReport: report } : {}) })
+    try {
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      if (captured !== epoch || controller.signal.aborted) return
+      const result = await options.executeTool(
+        {
+          id: `presentation-delivery-${captured}`,
+          name: tool,
+          input: {
+            project_id: project.projectId,
+            request_id: requestId,
+            ...(action ? { expected_revision: report!.issueLedger.revision, action } : {}),
+          },
+        },
+        controller.signal,
+      )
+      if (captured !== epoch || controller.signal.aborted) return
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      if (captured !== epoch || controller.signal.aborted) return
+      if (result.isError) throw new Error(result.output)
+      if (tool === 'export_presentation_delivery_report') {
+        publish({
+          phase: 'idle',
+          project,
+          ...(report ? { deliveryReport: report } : {}),
+          deliveryNotice: 'JSON 和 Markdown 已保存到会话附件，可在附件区下载。',
+        })
+      } else {
+        if (new TextEncoder().encode(result.output).byteLength > 8 * 1024 * 1024)
+          throw new Error('presentation_response_invalid')
+        const next = parsePresentationDeliveryReport(JSON.parse(result.output))
+        if (
+          next.documentId !== documentId ||
+          next.projectId !== project.projectId ||
+          next.requestId !== requestId
+        )
+          throw new Error('presentation_response_invalid')
+        publish({ phase: 'idle', project, deliveryReport: next })
+      }
+    } catch (error) {
+      if (captured !== epoch) return
+      if (
+        await options.documentId().then(
+          (id) => id !== documentId,
+          () => true,
+        )
+      ) {
+        stop(message(new Error('presentation_document_changed')))
+      } else if (captured === epoch) publish({ phase: 'idle', project, error: message(error) })
+    } finally {
+      if (captured === epoch) {
+        active = undefined
+        if (
+          state.project?.productionJob &&
+          ['running', 'pausing', 'cancelling'].includes(state.project.productionJob.state)
+        )
+          poll = setTimeout(() => {
+            void run('loading')
+          }, 1500)
+      }
+    }
+  }
   const productionAction = (tool: string, requestId?: string, pageId?: string) => {
     const production = state.project?.production
     if (
@@ -462,6 +548,9 @@ export function createPresentationProjectController(
     return run('producing', production.requestId, tool, pageId)
   }
   return {
+    readDeliveryReport: () => deliveryAction('read_presentation_delivery_report'),
+    exportDeliveryReport: () => deliveryAction('export_presentation_delivery_report'),
+    recordIssueAction: (action) => deliveryAction('record_presentation_issue_action', action),
     selectProduction: (requestId) => {
       if (
         !validId(requestId) ||

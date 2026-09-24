@@ -1,3 +1,4 @@
+import { PresentationDeliveryReportCard } from './presentation-delivery-report-card.js'
 import { useSyncExternalStore } from 'react'
 import type { PresentationProjectController } from '../skills/powerpoint/presentation-project.js'
 
@@ -6,7 +7,7 @@ export function PresentationProjectCard(props: {
   disabled: boolean
 }) {
   const { controller } = props
-  const { phase, project, error } = useSyncExternalStore(
+  const { phase, project, error, deliveryReport, deliveryNotice } = useSyncExternalStore(
     (listener) => controller.subscribe(listener),
     () => controller.snapshot(),
     () => controller.snapshot(),
@@ -267,6 +268,33 @@ export function PresentationProjectCard(props: {
             ))}
           </ol>
         </section>
+      )}
+      {project?.production && (
+        <div className="presentation-project-actions">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => void controller.readDeliveryReport()}
+          >
+            读取内容证据报告
+          </button>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => void controller.exportDeliveryReport()}
+          >
+            导出证据 JSON + Markdown 到附件
+          </button>
+        </div>
+      )}
+      {deliveryNotice && <p role="status">{deliveryNotice}</p>}
+      {deliveryReport && (
+        <PresentationDeliveryReportCard
+          key={`${deliveryReport.documentId}-${deliveryReport.projectId}-${deliveryReport.requestId}`}
+          report={deliveryReport}
+          controller={controller}
+          disabled={disabled}
+        />
       )}
       {project?.plan && (
         <details>

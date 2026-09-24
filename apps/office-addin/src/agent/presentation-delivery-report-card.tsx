@@ -1,0 +1,146 @@
+import { useState } from 'react'
+import type {
+  PresentationDeliveryReport,
+  DeliveryIssue,
+} from '@wiswork/pptx-engine/presentation-delivery-report'
+import type { PresentationProjectController } from '../skills/powerpoint/presentation-project.js'
+
+function IssueForm({
+  issue,
+  disabled,
+  controller,
+}: {
+  issue: DeliveryIssue
+  disabled: boolean
+  controller: PresentationProjectController
+}) {
+  const [state, setState] = useState<'open' | 'deferred' | 'explained'>('open')
+  const [note, setNote] = useState('')
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (note.trim())
+          void controller.recordIssueAction({
+            actionId: crypto.randomUUID(),
+            issueId: issue.id,
+            issueDigest: issue.digest,
+            state,
+            note: note.trim(),
+          })
+      }}
+    >
+      <label>
+        处置状态
+        <select
+          aria-label={`处置状态 ${issue.id}`}
+          value={state}
+          disabled={disabled}
+          onChange={(event) => setState(event.target.value as typeof state)}
+        >
+          <option value="open">待处理</option>
+          <option value="deferred">暂缓</option>
+          <option value="explained">已说明</option>
+        </select>
+      </label>
+      <label>
+        处置理由
+        <textarea
+          aria-label={`处置理由 ${issue.id}`}
+          value={note}
+          maxLength={2000}
+          required
+          disabled={disabled}
+          onChange={(event) => setNote(event.target.value)}
+        />
+      </label>
+      <button type="submit" disabled={disabled || !note.trim()}>
+        记录处置
+      </button>
+    </form>
+  )
+}
+export function PresentationDeliveryReportCard({
+  report,
+  controller,
+  disabled,
+}: {
+  report: PresentationDeliveryReport
+  controller: PresentationProjectController
+  disabled: boolean
+}) {
+  return (
+    <section aria-label="内容证据交付报告">
+      <h3>内容证据交付报告 · {report.requestId}</h3>
+      <p>
+        仅对应冻结计划第 {report.planRevision}{' '}
+        版。已核验仅表示算术复现；来源真实性、时效未核验，宿主检查与 Office
+        往返未执行。来源复核是历史 Agent 判断。已说明不会关闭机器发现。
+      </p>
+      {report.pages.map((page) => (
+        <section key={page.pageId} aria-label={`证据页面 ${page.title}`}>
+          <h4>
+            {page.title} · {page.pageId} · {page.productionState}
+          </h4>
+          <p>
+            已核验（仅算术复现）：
+            {page.calculations.filter((result) => result.status === 'reproduced').length}
+          </p>
+          <ul>
+            {page.calculations.map((result) => (
+              <li key={result.claimId}>
+                主张 {result.claimId}：{result.status}
+                {result.actual !== undefined
+                  ? ` · 复算 ${result.actual} · 声明 ${result.expected} · 容差 ${result.tolerance}`
+                  : ''}
+              </li>
+            ))}
+          </ul>
+          {(['needs_human', 'unverifiable'] as const).map((category) => {
+            const issues = page.issues.filter((issue) => issue.category === category)
+            return (
+              <div key={category}>
+                <h5>
+                  {category === 'needs_human' ? '待人工判断' : '无法核验'} · {issues.length}
+                </h5>
+                <ul>
+                  {issues.slice(0, 20).map((issue) => (
+                    <li key={issue.id}>
+                      <p>
+                        {issue.code} · 主张 {issue.claimId}：
+                        {report.plan.claims.find((claim) => claim.id === issue.claimId)?.statement}
+                        {issue.sourceId ? ` · 来源 ${issue.sourceId}` : ''} ·{' '}
+                        {issue.disposition.state}
+                        {issue.disposition.stale ? ' · 原处置已过期，当前待处理' : ''}
+                      </p>
+                      <IssueForm
+                        key={`${issue.id}-${issue.digest}-${report.issueLedger.revision}`}
+                        issue={issue}
+                        controller={controller}
+                        disabled={disabled}
+                      />
+                    </li>
+                  ))}
+                </ul>
+                {issues.length > 20 && (
+                  <p>另有 {issues.length - 20} 项未在此显示；完整问题和历史可导出查看。</p>
+                )}
+              </div>
+            )
+          })}
+        </section>
+      ))}
+      <details>
+        <summary>完整处置历史 · {report.issueLedger.actions.length} 条</summary>
+        <ul>
+          {report.issueLedger.actions.map((action) => (
+            <li key={action.actionId}>
+              {action.sequence} · {action.issueId} · {action.state} · {action.createdAt} ·{' '}
+              {action.note}
+            </li>
+          ))}
+        </ul>
+      </details>
+    </section>
+  )
+}
