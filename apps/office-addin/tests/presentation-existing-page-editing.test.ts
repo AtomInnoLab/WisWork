@@ -187,9 +187,13 @@ it('stages with durable backup, then separately commits and restores after reope
   await f.call('commit', { change_id: id })
   await f.confirm()
   expect(f.records.get(id)?.state).toBe('applied')
+  expect((await f.call('release', { change_id: id })).isError).toBe(true)
   await f.call('undo', { change_id: id })
   await f.confirm()
   expect(f.records.get(id)?.state).toBe('undone')
+  await f.call('release', { change_id: id })
+  await f.confirm()
+  expect(f.records.get(id)?.backupReleasedAt).toMatch(/^\d{4}-/)
 })
 
 it('stops before host insertion if source drifts during backup', async () => {
@@ -222,11 +226,17 @@ it('discards a staged page without deleting the original', async () => {
   const proposed = await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/home/user/rebuilt.pptx' })
   await f.confirm()
   const id = JSON.parse(proposed.output).changeId as string
+  expect((await f.call('release', { change_id: id })).isError).toBe(true)
   await f.call('discard', { change_id: id })
   await f.confirm()
   expect(f.records.get(id)?.state).toBe('discarded')
   expect(f.adapter.discard).toHaveBeenCalledTimes(1)
   expect(f.adapter.commit).not.toHaveBeenCalled()
+  await f.call('release', { change_id: id })
+  await f.confirm()
+  expect(f.records.get(id)?.backupReleasedAt).toMatch(/^\d{4}-/)
+  expect(f.data().length).toBe(0)
+  expect((await f.call('release', { change_id: id })).isError).toBe(true)
 })
 
 it('rejects a PC backup response with the wrong document before saving intent or inserting', async () => {

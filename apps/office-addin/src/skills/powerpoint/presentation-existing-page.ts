@@ -29,6 +29,7 @@ export interface PresentationExistingPageChange {
   restoredSlideId?: string
   captures?: ExistingVisualCapture[]
   reviews?: ExistingVisualReview[]
+  backupReleasedAt?: string
 }
 
 const id = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
@@ -47,6 +48,7 @@ export const existingPageReservedBytes = (r: PresentationExistingPageChange) =>
     state: 'restore_inserted',
     newSlideId: '\uffff'.repeat(256),
     restoredSlideId: '\uffff'.repeat(256),
+    backupReleasedAt: '2026-09-24T00:00:00.000Z',
   }) - bytes(r) + Math.max(0, 2 * 8202 + 12 - (r.reviews ? bytes(r.reviews) + ',"reviews":'.length : 0)) +
   Math.max(0, 2 * 524 + 13 - (r.captures ? bytes(r.captures) + ',"captures":'.length : 0))
 
@@ -56,7 +58,7 @@ export function validatePresentationExistingPageChange(value: unknown): value is
   const keys = [
     'version', 'changeId', 'documentId', 'baselineId', 'baselineDigest', 'scope',
     'oldSlideId', 'beforeSlideIds', 'originalPackageDigest', 'replacementPackageDigest',
-    'sourceSlideId', 'backup', 'state', 'newSlideId', 'restoredSlideId', 'captures', 'reviews',
+    'sourceSlideId', 'backup', 'state', 'newSlideId', 'restoredSlideId', 'captures', 'reviews', 'backupReleasedAt',
   ]
   if (
     Object.keys(r).some((key) => !keys.includes(key)) ||
@@ -75,6 +77,11 @@ export function validatePresentationExistingPageChange(value: unknown): value is
     r.backup.sizeBytes < 1 || r.backup.sizeBytes > 100 * 1024 * 1024 ||
     !['pending', 'inserted', 'staged', 'discard_pending', 'discarded', 'commit_pending', 'applied', 'undo_pending', 'restore_inserted', 'undone'].includes(r.state)
   ) return false
+  if (r.backupReleasedAt !== undefined &&
+    (!['discarded', 'undone'].includes(r.state) || typeof r.backupReleasedAt !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(r.backupReleasedAt) ||
+      !Number.isFinite(Date.parse(r.backupReleasedAt)) ||
+      new Date(r.backupReleasedAt).toISOString() !== r.backupReleasedAt)) return false
   if (r.state === 'pending') {
     if (r.newSlideId !== undefined) return false
   } else if (!hostId(r.newSlideId) || r.beforeSlideIds.includes(r.newSlideId)) return false
@@ -108,7 +115,7 @@ export function validExistingPageTransition(
   if (!before) return after.state === 'pending'
   if (!validatePresentationExistingPageChange(before)) return false
   const identity = (r: PresentationExistingPageChange) => JSON.stringify({
-    ...r, state: undefined, newSlideId: undefined, restoredSlideId: undefined, captures: undefined, reviews: undefined,
+    ...r, state: undefined, newSlideId: undefined, restoredSlideId: undefined, captures: undefined, reviews: undefined, backupReleasedAt: undefined,
   })
   const next: Record<PresentationExistingPageChange['state'], PresentationExistingPageChange['state'][]> = {
     pending: ['inserted'], inserted: ['staged'], staged: ['discard_pending', 'commit_pending'],
@@ -125,8 +132,15 @@ export function validExistingPageTransition(
   const reviewOnly = terminal && JSON.stringify(before.captures) === JSON.stringify(after.captures) &&
     (after.reviews?.length ?? 0) === (before.reviews?.length ?? 0) + 1 &&
     (before.reviews ?? []).every((review) => after.reviews?.some((nextReview) => JSON.stringify(nextReview) === JSON.stringify(review)))
-  return identity(before) === identity(after) && (captureOnly || reviewOnly ||
-    (next[before.state].includes(after.state) && after.captures === undefined && after.reviews === undefined)) &&
+  const released = before.state === after.state && ['discarded', 'undone'].includes(after.state) &&
+    before.backupReleasedAt === undefined && after.backupReleasedAt !== undefined &&
+    before.newSlideId === after.newSlideId && before.restoredSlideId === after.restoredSlideId &&
+    JSON.stringify(before.captures) === JSON.stringify(after.captures) &&
+    JSON.stringify(before.reviews) === JSON.stringify(after.reviews)
+  return identity(before) === identity(after) && (released ||
+    (before.backupReleasedAt === after.backupReleasedAt && (captureOnly || reviewOnly ||
+    (before.backupReleasedAt === undefined && next[before.state].includes(after.state) &&
+      after.captures === undefined && after.reviews === undefined)))) &&
     (before.newSlideId === undefined || before.newSlideId === after.newSlideId) &&
     (before.restoredSlideId === undefined || before.restoredSlideId === after.restoredSlideId)
 }

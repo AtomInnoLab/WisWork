@@ -67,10 +67,10 @@ async function oneSlide(bytesValue: Uint8Array, signal?: AbortSignal) {
     !/<(?:[A-Za-z][\w.-]*:)?(?:sp|graphicFrame|grpSp|cxnSp)\b/.test(slideXml)
   return { base64, digest, sourceSlideId: `${ids[0]![1]}#`, sha256: await sha(bytesValue), sizeBytes: bytesValue.length, imageOnly }
 }
-const names = ['stage', 'inspect', 'resume', 'commit', 'discard', 'undo', 'capture', 'record'] as const
+const names = ['stage', 'inspect', 'resume', 'commit', 'discard', 'undo', 'release', 'capture', 'record'] as const
 const tools: AgentToolDef[] = names.map((action) => ({
   name: `${action}_existing_presentation_page_change`,
-  description: action === 'stage' ? 'Confirm backup and stage a one-slide PPTX after an existing native page; original remains.' : action === 'inspect' ? 'Inspect current native page order and content against a saved change.' : action === 'resume' ? 'Finish journal for a known inserted page without replaying insertion.' : action === 'commit' ? 'Confirm replacing the original with the verified staged page.' : action === 'discard' ? 'Confirm deleting the verified staged page while keeping the original.' : action === 'undo' ? 'Confirm restoring the backed-up original page and removing the replacement.' : action === 'capture' ? 'Capture one affected page for visual judgment; does not pass QA.' : 'Persist a visual judgment for one unchanged captured page.',
+  description: action === 'stage' ? 'Confirm backup and stage a one-slide PPTX after an existing native page; original remains.' : action === 'inspect' ? 'Inspect current native page order and content against a saved change.' : action === 'resume' ? 'Finish journal for a known inserted page without replaying insertion.' : action === 'commit' ? 'Confirm replacing the original with the verified staged page.' : action === 'discard' ? 'Confirm deleting the verified staged page while keeping the original.' : action === 'undo' ? 'Confirm restoring the backed-up original page and removing the replacement.' : action === 'release' ? 'Confirm releasing the PC backup of a discarded or undone page change.' : action === 'capture' ? 'Capture one affected page for visual judgment; does not pass QA.' : 'Persist a visual judgment for one unchanged captured page.',
   inputSchema: { type: 'object', properties: action === 'stage'
     ? { baseline_id: { type: 'string' }, slide_id: { type: 'string' }, path: { type: 'string' }, explanation: { type: 'string' } }
     : { change_id: { type: 'string' }, ...(action === 'capture' || action === 'record' ? { slide_id: { type: 'string' } } : {}), ...(action === 'record' ? { screenshot_digest: { type: 'string' }, status: { type: 'string', enum: ['pass', 'fail'] }, notes: { type: 'string', maxLength: 2000 } } : {}) }, required: action === 'stage' ? ['baseline_id', 'slide_id', 'path'] : action === 'capture' ? ['change_id', 'slide_id'] : action === 'record' ? ['change_id', 'slide_id', 'screenshot_digest', 'status', 'notes'] : ['change_id'], additionalProperties: false },
@@ -136,6 +136,32 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
           if (!same(options.readExistingPageChange(next.changeId), next)) throw new Error('office_state_uncertain')
           record = structuredClone(next); expected = structuredClone(next)
           reviewCapture = undefined
+        }
+        if (action === 'release') {
+          if (!['discarded', 'undone'].includes(record.state) || record.backupReleasedAt)
+            throw new Error('presentation_existing_page_state_invalid')
+          const proposal = options.proposals.propose({
+            operation: call.name, toolName: call.name, title: '释放已结束整页变更的原页备份',
+            preview: { changeId: record.changeId, state: record.state, backupId: record.backup.backupId, sizeBytes: record.backup.sizeBytes },
+            impact: { host: 'powerpoint', targets: [`backup:${record.backup.backupId}`], count: 1 },
+            fingerprint: selectionFingerprint(output(record)),
+            validate: async () => { try { await assertCurrent(); return true } catch { return false } },
+            execute: async () => {
+              await assertCurrent()
+              const receipt = await request('existing_page_backup_release', {
+                backupId: record.backup.backupId, hostSlideId: record.oldSlideId,
+                slideIds: record.beforeSlideIds, sha256: record.backup.sha256,
+                sizeBytes: record.backup.sizeBytes,
+              })
+              if (receipt.status !== 'released' || receipt.backupId !== record.backup.backupId ||
+                receipt.documentId !== documentId || receipt.hostSlideId !== record.oldSlideId ||
+                !same(receipt.slideIds, record.beforeSlideIds) || receipt.sha256 !== record.backup.sha256 ||
+                receipt.sizeBytes !== record.backup.sizeBytes) throw new Error('presentation_page_backup_invalid')
+              await store({ ...record, backupReleasedAt: new Date().toISOString() })
+            },
+            verify: async () => { saved(); if (!record.backupReleasedAt) throw new Error('office_state_uncertain') },
+          })
+          return { output: output({ proposalId: proposal.id, status: 'awaiting_confirmation', changeId: record.changeId }), mutated: false, summary: '已准备释放整页备份，等待确认' }
         }
         const baselineFresh = async () => {
           if (!baseline || !same(options.baseline.snapshot(baseline.baselineId), baseline)) return false

@@ -296,9 +296,9 @@ export function createPresentationChangesController(
                       saved.record.state === 'discarded' ? [saved.record.oldSlideId] :
                       saved.record.state === 'undone' ? [saved.record.restoredSlideId!] : [],
                     affectedPageCount: saved.record.state === 'staged' ? 2 : 1,
-                    before: `原页：${saved.record.oldSlideId}\n包摘要：${saved.record.originalPackageDigest}\n原页已持久备份`,
+                    before: `原页：${saved.record.oldSlideId}\n包摘要：${saved.record.originalPackageDigest}\n${saved.record.backupReleasedAt ? `备份已释放：${saved.record.backupReleasedAt}` : '原页已持久备份'}`,
                     after: `新页：${saved.record.newSlideId ?? '尚未记录'}\n包摘要：${saved.record.replacementPackageDigest}${saved.record.restoredSlideId ? `\n恢复页面：${saved.record.restoredSlideId}` : ''}`,
-                    actions: pageActions[saved.record.state],
+                    actions: [...pageActions[saved.record.state], ...(['discarded', 'undone'].includes(saved.record.state) && !saved.record.backupReleasedAt ? ['release' as const] : [])],
                   },
                   record: copy(saved.record),
                   fingerprint: JSON.stringify(saved),
@@ -684,7 +684,7 @@ export function createPresentationChangesController(
           action === 'inspect'
             ? inspectionNotice(result.output)
             : action === 'release'
-              ? '图表备份释放提案已创建，确认后执行。'
+              ? '备份释放提案已创建，确认后执行。'
             : '操作请求已处理；如有待确认提案，请确认后执行。变更后需重新采集页面 QA。'
       } catch {
         error = '操作未完成或保存点已变化，请刷新并检查；未自动重试。'

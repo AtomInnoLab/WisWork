@@ -74,7 +74,7 @@ it('reads only current records and clones snapshots; routes undo through the too
   expect(JSON.stringify(controller.snapshot())).not.toContain('unsafe')
 })
 it('shows existing-page identity diff offline and routes commit by exact change ID', async () => {
-  const record: PresentationExistingPageChange = {
+  let record: PresentationExistingPageChange = {
     version: 1,
     changeId: 'native-page',
     documentId: 'doc',
@@ -121,6 +121,17 @@ it('shows existing-page identity diff offline and routes commit by exact change 
   ] }), summary: 'checked' })
   await controller.run(row.id, 'inspect')
   expect(controller.snapshot().notice).toContain('当前截图与历史回执不同')
+  record = { ...record, state: 'discarded' }
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]?.actions).toEqual(['release'])
+  await controller.run(row.id, 'release')
+  expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({
+    name: 'release_existing_presentation_page_change', input: { change_id: 'native-page' },
+  }), expect.any(AbortSignal))
+  expect(controller.snapshot().notice).toContain('确认后执行')
+  record = { ...record, backupReleasedAt: '2026-09-24T00:00:00.000Z' }
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]?.actions).toEqual([])
 })
 it('offers one chart backup release after cancellation and accepts the receipt update', async () => {
   let record: PresentationExistingChartChange = {

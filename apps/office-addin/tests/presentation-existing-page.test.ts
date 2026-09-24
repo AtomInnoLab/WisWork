@@ -75,9 +75,14 @@ it('allows staged replacement to be discarded and releases the global pending gu
   await f.binding.writeExistingPageChange(staged, inserted)
   await f.binding.writeExistingPageChange(discarding, staged)
   await f.binding.writeExistingPageChange(discarded, discarding)
+  const released = { ...discarded, backupReleasedAt: '2026-09-24T00:00:00.000Z' }
+  await f.binding.writeExistingPageChange(released, discarded)
+  await expect(f.binding.writeExistingPageChange({ ...released, backupReleasedAt: '2026-09-24T00:00:01.000Z' }, released)).rejects.toThrow('state_invalid')
+  const reviewed = { ...released, captures: [{ hostSlideId: 's1', screenshotDigest: 'e'.repeat(64), capturedAt: '2026-09-24T00:01:00.000Z' }] }
+  await f.binding.writeExistingPageChange(reviewed, released)
   await f.binding.writeExistingPageChange({ ...f.record, changeId: 'page2' }, undefined)
   expect(f.reopen().listChangeHistory()).toMatchObject([
-    { kind: 'existing_page', record: discarded },
+    { kind: 'existing_page', record: reviewed },
     { kind: 'existing_page', record: { changeId: 'page2', state: 'pending' } },
   ])
 })
