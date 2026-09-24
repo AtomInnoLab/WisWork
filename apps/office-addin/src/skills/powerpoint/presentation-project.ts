@@ -305,6 +305,8 @@ function message(error: unknown): string {
   if (['presentation_document_changed', 'presentation_document_mismatch'].includes(code))
     return '当前文档与项目不匹配，请返回原文档后刷新。'
   if (code === 'presentation_unavailable') return 'PC 连接不可用，请重新连接后刷新项目。'
+  if (code === 'presentation_selection_save_failed')
+    return '无法保存所选页任务，原有项目状态已保留。请检查文档设置后重试。'
   if (code === 'cancelled' || code === 'presentation_aborted')
     return '已停止等待；PC 可能已保存结果，可刷新查看。'
   return '暂时无法恢复项目，已有成果已保留。请检查 PC 连接后重试。'
@@ -313,7 +315,8 @@ function message(error: unknown): string {
 export function createPresentationProjectController(
   options: Pick<
     PresentationGenerationOptions,
-    'request' | 'available' | 'documentId' | 'lastProject'
+    'request' | 'available' | 'documentId' | 'lastProject' |
+    'selectedProduction' | 'rememberSelectedProduction'
   > &
     Pick<AgentSkill, 'executeTool'>,
 ): PresentationProjectController {
@@ -322,6 +325,7 @@ export function createPresentationProjectController(
   let epoch = 0
   let projectDocument: string | undefined
   let selection: { documentId: string; projectId: string; requestId: string } | undefined
+  let ignoreStoredSelection = false
   let active: AbortController | undefined
   let poll: ReturnType<typeof setTimeout> | undefined
   const stopPolling = () => {
@@ -332,10 +336,11 @@ export function createPresentationProjectController(
     state = next
     for (const listener of listeners) listener()
   }
-  const stop = (error?: string) => {
+  const stop = (error?: string, resetSelection = false) => {
     stopPolling()
     projectDocument = undefined
     selection = undefined
+    ignoreStoredSelection = resetSelection
     epoch += 1
     active?.abort()
     active = undefined
@@ -422,7 +427,8 @@ export function createPresentationProjectController(
       const value = JSON.parse(text)
       if (value?.error) throw new Error(`presentation_${value.error}`)
       const project = parseStatus(value, projectId)
-      let selectedRequest = phase === 'loading' && requestId ? requestId : selection?.requestId
+      let selectedRequest = phase === 'loading' && requestId ? requestId : selection?.requestId ??
+        (ignoreStoredSelection ? undefined : options.selectedProduction?.(projectId, documentId))
       if (
         selectedRequest &&
         !project.productionTasks?.some((task) => task.requestId === selectedRequest)
@@ -463,6 +469,19 @@ export function createPresentationProjectController(
       if ((await options.documentId()) !== documentId)
         throw new Error('presentation_document_changed')
       check()
+      if (phase === 'loading' && requestId && selectedRequest && !project.jobsUnavailable) {
+        try {
+          await options.rememberSelectedProduction?.(projectId, documentId, selectedRequest)
+        } catch (error) {
+          if (error instanceof Error && error.message === 'presentation_document_changed') throw error
+          throw new Error('presentation_selection_save_failed', { cause: error })
+        }
+        check()
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
+        ignoreStoredSelection = false
+      }
       selection =
         selectedRequest && !project.jobsUnavailable
           ? { documentId, projectId, requestId: selectedRequest }
@@ -492,6 +511,7 @@ export function createPresentationProjectController(
             'presentation_service_unavailable',
             'presentation_unavailable',
             'presentation_busy',
+            'presentation_selection_save_failed',
           ].includes(code) &&
           (await options.documentId().then(
             (id) => id === boundDocument,
@@ -627,6 +647,6 @@ export function createPresentationProjectController(
     resume: (requestId) => run('resuming', requestId),
     runProduction: (requestId) => run('producing', requestId),
     cancel: () => stop(message(new Error('cancelled'))),
-    clear: () => stop(),
+    clear: () => stop(undefined, true),
   }
 }

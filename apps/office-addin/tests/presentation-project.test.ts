@@ -22,14 +22,24 @@ function fixture() {
   const documentId = vi.fn(async () => 'document-1')
   const available = vi.fn(() => true)
   const lastProject = vi.fn((): string | undefined => 'project-1')
-  const controller = createPresentationProjectController({
+  let saved: { projectId: string; documentId: string; requestId: string } | undefined
+  const selectedProduction = vi.fn((projectId: string, boundDocumentId: string) =>
+    saved?.projectId === projectId && saved.documentId === boundDocumentId ? saved.requestId : undefined)
+  const rememberSelectedProduction = vi.fn(async (projectId: string, boundDocumentId: string, requestId: string) => {
+    saved = { projectId, documentId: boundDocumentId, requestId }
+  })
+  const createController = () => createPresentationProjectController({
     request,
     executeTool,
     documentId,
     available,
     lastProject,
+    selectedProduction,
+    rememberSelectedProduction,
   })
-  return { controller, request, executeTool, documentId, available, lastProject }
+  const controller = createController()
+  return { controller, createController, request, executeTool, documentId, available, lastProject,
+    selectedProduction, rememberSelectedProduction }
 }
 describe('presentation project controls', () => {
   it('loads persisted page inventory/history and restores or resumes through the generation skill', async () => {
@@ -420,6 +430,43 @@ describe('saved production task selection', () => {
     const calls = f.request.mock.calls.length
     await f.controller.selectProduction('invented')
     expect(f.request).toHaveBeenCalledTimes(calls)
+  })
+  it('restores an explicit older task after controller recreation and ignores stale or copied selection', async () => {
+    const f = tasksFixture()
+    await f.controller.refresh()
+    await f.controller.selectProduction('old')
+    expect(f.rememberSelectedProduction).toHaveBeenCalledWith('project-1', 'document-1', 'old')
+    const reopened = f.createController()
+    await reopened.refresh()
+    expect(reopened.snapshot().project?.production?.requestId).toBe('old')
+    f.documentId.mockResolvedValue('copied-document')
+    const copy = f.createController()
+    await copy.refresh()
+    expect(copy.snapshot().project?.production?.requestId).toBe('new')
+    f.documentId.mockResolvedValue('document-1')
+    f.productionTasks.splice(1, 1)
+    const removed = f.createController()
+    await removed.refresh()
+    expect(removed.snapshot().project?.production?.requestId).toBe('new')
+  })
+  it('keeps the previous task when saving a new task choice fails', async () => {
+    const f = tasksFixture()
+    await f.controller.refresh()
+    f.rememberSelectedProduction.mockRejectedValueOnce(new Error('save_failed'))
+    await f.controller.selectProduction('old')
+    expect(f.controller.snapshot().project?.production?.requestId).toBe('new')
+    expect(f.controller.snapshot().error).toContain('无法保存所选页任务')
+  })
+  it('keeps the document task choice after cancelling a wait but resets this panel after new conversation', async () => {
+    const f = tasksFixture()
+    await f.controller.refresh()
+    await f.controller.selectProduction('old')
+    f.controller.cancel()
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.production?.requestId).toBe('old')
+    f.controller.clear()
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.production?.requestId).toBe('new')
   })
   it.each(['clear', 'document'] as const)('resets selected task after %s', async (action) => {
     const f = tasksFixture()

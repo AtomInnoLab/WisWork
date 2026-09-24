@@ -56,6 +56,8 @@ export interface PresentationGenerationOptions {
   documentId(): Promise<string>
   lastProject(): string | undefined
   rememberProject(id: string): Promise<void>
+  selectedProduction?(projectId: string, documentId: string): string | undefined
+  rememberSelectedProduction?(projectId: string, documentId: string, requestId: string): Promise<void>
 }
 const abort = (signal?: AbortSignal) => {
   if (signal?.aborted) throw new Error('cancelled')

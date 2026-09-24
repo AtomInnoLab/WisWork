@@ -70,6 +70,7 @@ const TEXT_KEY = 'wiswork.presentation.text-change.v1'
 const GEOMETRY_KEY = 'wiswork.presentation.geometry-change.v1'
 const QA_KEY = 'wiswork.presentation.qa.v1'
 const PROJECT_KEY = 'wiswork.presentation.project.v1'
+const SELECTED_PRODUCTION_KEY = 'wiswork.presentation.selected-production.v1'
 const validId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 
@@ -1333,6 +1334,31 @@ export function createPresentationDocumentBinding(
     lastProject(): string | undefined {
       const id = settings.get(PROJECT_KEY)
       return validId(id) ? id : undefined
+    },
+    selectedProduction(projectId: string, boundDocumentId: string): string | undefined {
+      const raw = settings.get(SELECTED_PRODUCTION_KEY)
+      if (typeof raw !== 'string' || raw.length > 4600) return undefined
+      try {
+        const value = JSON.parse(raw) as Record<string, unknown>
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+          Object.keys(value).sort().join(',') !== 'documentId,projectId,requestId' ||
+          value.documentId !== boundDocumentId || value.projectId !== projectId ||
+          !validId(value.requestId)) return undefined
+        return value.requestId
+      } catch { return undefined }
+    },
+    async rememberSelectedProduction(projectId: string, boundDocumentId: string, requestId: string) {
+      if (!validId(projectId) || !validId(requestId)) throw new Error('invalid_tool_input')
+      if (await documentId() !== boundDocumentId) throw new Error('presentation_document_changed')
+      const previous = settings.get(SELECTED_PRODUCTION_KEY)
+      const raw = JSON.stringify({ documentId: boundDocumentId, projectId, requestId })
+      settings.set(SELECTED_PRODUCTION_KEY, raw)
+      try { await settings.save() } catch (error) {
+        settings.set(SELECTED_PRODUCTION_KEY, typeof previous === 'string' ? previous : '')
+        throw error
+      }
+      if (await documentId() !== boundDocumentId || settings.get(SELECTED_PRODUCTION_KEY) !== raw)
+        throw new Error('presentation_document_changed')
     },
     async rememberProject(projectId: string) {
       if (!validId(projectId)) throw new Error('invalid_tool_input')
