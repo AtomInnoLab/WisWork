@@ -406,22 +406,8 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
       `## ${safe(page.pageId)} — ${safe(page.title)}`,
       `Production: ${page.productionState}`,
     )
-    for (const claimId of report.plan.slides.find((slide) => slide.id === page.pageId)!.claimIds) {
-      const claim = report.plan.claims.find((claim) => claim.id === claimId)!
-      lines.push('', `### Claim ${safe(claimId)}`, safe(claim.statement))
-      if (claim.calculation)
-        lines.push(
-          `Formula: ${safe(claim.calculation.formula)}`,
-          `Inputs and declared values: ${safe(JSON.stringify(claim.calculation))}`,
-        )
-      for (const sourceId of claim.sourceIds) {
-        const source = report.plan.sources.find((source) => source.id === sourceId)!
-        lines.push(
-          `Source ${safe(sourceId)}: ${safe(source.title)}; URI: ${safe(source.uri)}; locator: ${safe(source.locator ?? '')}; as of: ${safe(source.asOf ?? '')}`,
-          `Excerpt: ${safe(source.excerpt)}`,
-        )
-      }
-    }
+    const claimIds = report.plan.slides.find((slide) => slide.id === page.pageId)!.claimIds
+    lines.push(`Claims (see complete claim catalog): ${claimIds.map(safe).join(', ')}`)
     for (const calculation of page.calculations)
       lines.push(
         `Arithmetic ${calculation.status === 'reproduced' ? '已核验（仅算术） CHECKED (arithmetic only)' : '无法核验 / 待人工判断 UNVERIFIABLE / needs review'}: ${safe(JSON.stringify(calculation))}`,
@@ -430,6 +416,29 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
       lines.push(
         `- ${issue.category === 'needs_human' ? '待人工判断' : '无法核验'} (${issue.category}): ${safe(issue.code)}; claim ${safe(issue.claimId)}${issue.sourceId ? `; source ${safe(issue.sourceId)}` : ''}; ${issue.disposition.state}; stale=${issue.disposition.stale}; issue ${safe(issue.id)}; digest ${issue.digest}`,
       )
+  }
+  lines.push('', '## Complete claim catalog')
+  for (const claim of report.plan.claims) {
+    lines.push(
+      '',
+      `### Claim ${safe(claim.id)}`,
+      safe(claim.statement),
+      `Sources (see source catalog): ${claim.sourceIds.map(safe).join(', ')}`,
+    )
+    if (claim.calculation)
+      lines.push(
+        `Formula: ${safe(claim.calculation.formula)}`,
+        `Inputs and declared values: ${safe(JSON.stringify(claim.calculation))}`,
+      )
+  }
+  lines.push('', '## Complete source catalog')
+  for (const source of report.plan.sources) {
+    lines.push(
+      '',
+      `### Source ${safe(source.id)}`,
+      `Title: ${safe(source.title)}; URI: ${safe(source.uri)}; locator: ${safe(source.locator ?? '')}; as of: ${safe(source.asOf ?? '')}`,
+      `Excerpt: ${safe(source.excerpt)}`,
+    )
   }
   lines.push(
     '',

@@ -258,6 +258,47 @@ describe('delivery evidence report', () => {
     report.reviews.push(report.reviews[0]!)
     expect(() => parsePresentationDeliveryReport(report)).toThrow()
   })
+  it('deduplicates shared source and claim bodies within the attachment byte budget', async () => {
+    const value = input()
+    value.plan.sources = ['s1', 's2', 's3'].map((id) => ({
+      id,
+      title: id,
+      uri: 'urn:test',
+      excerpt: 'EvidenceBody' + 'x'.repeat(11988),
+      locator: 'page 1',
+    }))
+    value.plan.claims = Array.from({ length: 32 }, (_, index) => ({
+      id: `c${index}`,
+      statement: `ClaimBody${index}` + 'y'.repeat(900),
+      type: 'assumption' as const,
+      sourceIds: ['s1', 's2', 's3'],
+      confidence: 'low' as const,
+      reviewStatus: 'needs_review' as const,
+    }))
+    value.plan.slides = Array.from({ length: 32 }, (_, index) => ({
+      ...value.plan.slides[0]!,
+      id: `page${index}`,
+      claimIds: value.plan.claims.map((claim) => claim.id),
+    }))
+    value.deck.slides = value.plan.slides.map((slide) => ({
+      id: slide.id,
+      title: slide.title,
+      claimIds: slide.claimIds,
+      elements: [{ id: 'shape', kind: 'shape', shape: 'rect', x: 1, y: 1, w: 1, h: 1 }],
+    }))
+    value.deck.claims = presentationPlanClaims(value.plan)
+    value.pageStates = value.plan.slides.map((page) => ({ pageId: page.id, state: 'pending' }))
+    const report = await buildPresentationDeliveryReport(value)
+    const markdown = presentationDeliveryMarkdown(report)
+    expect(new TextEncoder().encode(markdown).byteLength).toBeLessThan(20 * 1024 * 1024)
+    // The human-readable catalogs and the complete frozen-plan appendix each retain a copy.
+    expect(markdown.match(/EvidenceBody/g)).toHaveLength(6)
+    expect(markdown.match(/ClaimBody0y/g)).toHaveLength(2)
+    expect(markdown.match(/## page[0-9]+ /g)).toHaveLength(32)
+    expect(markdown).toContain('All source review history')
+    expect(markdown).toContain('All disposition history')
+    expect(markdown).toContain('NOT VERIFIED')
+  }, 20000)
   it('bounds report bytes, page issue counts and exact states', async () => {
     const report = await buildPresentationDeliveryReport(input())
     const oversized = structuredClone(report)
