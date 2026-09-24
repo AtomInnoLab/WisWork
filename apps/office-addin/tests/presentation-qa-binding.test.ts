@@ -400,9 +400,16 @@ it('persists image source namespaces and refuses adding source to a prior image 
   await expect(f.binding.writeImageReplacement(oldKey, production)).rejects.toThrow(
     'presentation_image_replacement_state_invalid',
   )
+  await expect(f.binding.writeImageReplacement(productionKey, production)).rejects.toThrow(
+    'presentation_change_history_pending',
+  )
+  const candidate = { ...value, newShapeId: 'new' }
+  const complete = { ...candidate, state: 'complete' as const }
+  await f.binding.writeImageReplacement(oldKey, candidate)
+  await f.binding.writeImageReplacement(oldKey, complete)
   await f.binding.writeImageReplacement(productionKey, production)
   expect(f.create().readImageReplacement(productionKey)).toEqual(production)
-  expect(f.create().readImageReplacement(oldKey)).toEqual(value)
+  expect(f.create().readImageReplacement(oldKey)).toEqual(complete)
   // Even a manually mis-keyed record cannot change its original source while saving a candidate.
   f.values.set(
     'wiswork.presentation.image-replacements.v1',
