@@ -12,6 +12,7 @@ import {
   validatePresentationExistingChange,
   type PresentationExistingChange,
 } from './presentation-existing-change.js'
+import { validatePresentationExistingBatch } from './presentation-existing-batch.js'
 import type { PresentationHistoryEntry } from './presentation-change-history.js'
 interface Options {
   baseline: PresentationBaselineSkill
@@ -81,7 +82,7 @@ const tools: AgentToolDef[] = names.map((name) => {
       : review
         ? 'Record a historical visual assessment only for this session’s captured screenshot, after freshly recapturing and matching it. Not a current or whole-deck acceptance claim.'
         : list
-          ? 'List existing-deck savepoints for this document, independently of generated projects. History is not proof of current host state.'
+          ? 'List single-object and ordered batch existing-deck savepoints for this document, independently of generated projects. History is not proof of current host state.'
           : name.startsWith('capture_')
             ? 'Capture the saved change target page for local visual review after matching the current target state. This does not pass visual QA.'
             : name.startsWith('inspect_')
@@ -221,10 +222,17 @@ export function createPresentationExistingEditingSkill(
         if (call.name.startsWith('list_')) {
           const history = structuredClone(options.listChangeHistory())
           const entries = history.filter(
-            (e): e is Extract<PresentationHistoryEntry, { kind: 'existing' }> =>
-              e.kind === 'existing' && e.record.documentId === documentId,
+            (e): e is Extract<PresentationHistoryEntry, { kind: 'existing' | 'existing_batch' }> =>
+              (e.kind === 'existing' || e.kind === 'existing_batch') &&
+              e.record.documentId === documentId,
           )
-          if (entries.some((e) => !validatePresentationExistingChange(e.record)))
+          if (
+            entries.some((e) =>
+              e.kind === 'existing'
+                ? !validatePresentationExistingChange(e.record)
+                : e.kind === 'existing_batch' && !validatePresentationExistingBatch(e.record),
+            )
+          )
             throw new Error('presentation_existing_change_invalid')
           await current()
           if (!same(history, options.listChangeHistory()))
@@ -233,15 +241,28 @@ export function createPresentationExistingEditingSkill(
             output: encode({
               documentId,
               currentHostVerified: false,
-              changes: entries.map((e) => ({
-                changeId: e.record.changeId,
-                kind: e.record.kind,
-                hostSlideId: e.record.hostSlideId,
-                shapeId: e.record.shapeId,
-                state: e.record.state,
-                sequence: e.sequence,
-                historicalReview: e.record.review ?? null,
-              })),
+              changes: entries.map((e) =>
+                e.kind === 'existing_batch'
+                  ? {
+                      changeId: e.record.changeId,
+                      kind: 'batch',
+                      state: e.record.state,
+                      cursor: e.record.cursor,
+                      operationCount: e.record.operations.length,
+                      hostSlideIds: [...new Set(e.record.operations.map((op) => op.hostSlideId))],
+                      sequence: e.sequence,
+                      historicalReview: null,
+                    }
+                  : {
+                      changeId: e.record.changeId,
+                      kind: e.record.kind,
+                      hostSlideId: e.record.hostSlideId,
+                      shapeId: e.record.shapeId,
+                      state: e.record.state,
+                      sequence: e.sequence,
+                      historicalReview: e.record.review ?? null,
+                    },
+              ),
             }),
             mutated: false,
             summary: '已读取当前文档现稿保存点',

@@ -30,6 +30,11 @@ const inventories = {
     'set_cell_range',
   ],
   powerpoint: [
+    'edit_existing_presentation_batch',
+    'inspect_existing_presentation_batch',
+    'resume_existing_presentation_batch',
+    'undo_existing_presentation_batch',
+    'capture_existing_presentation_batch_page',
     'edit_existing_presentation_text',
     'edit_existing_presentation_geometry',
     'list_existing_presentation_changes',

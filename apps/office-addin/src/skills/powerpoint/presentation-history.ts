@@ -25,6 +25,18 @@ export function presentationChangeSetSummary(
       validation: ['目标对象回读', '受影响页面截图复核'],
       risk: 'medium',
     }
+  if (entry.kind === 'existing_batch')
+    return {
+      scope: entry.record.scope,
+      intent: entry.record.intent,
+      operations: entry.record.operations.map((op) => ({
+        kind: 'existing_batch',
+        pageId: op.hostSlideId,
+      })),
+      preserved: entry.record.preserved,
+      validation: entry.record.validation,
+      risk: entry.record.risk,
+    }
   const { kind, record: r } = entry
   const scope =
     entry.kind === 'page'
@@ -69,7 +81,7 @@ export async function selectPresentationHistory(
   entries: PresentationHistoryEntry[],
   artifact: CompiledPresentationArtifact,
   documentId: string,
-): Promise<Exclude<PresentationHistoryEntry, { kind: 'existing' }>[]> {
+): Promise<Exclude<PresentationHistoryEntry, { kind: 'existing' | 'existing_batch' }>[]> {
   if (
     !Array.isArray(entries) ||
     entries.length > 64 ||
@@ -92,7 +104,8 @@ export async function selectPresentationHistory(
   const source = artifact.pagePptxBase64 === undefined ? undefined : 'production'
   return entries
     .filter(
-      (e): e is Exclude<PresentationHistoryEntry, { kind: 'existing' }> => e.kind !== 'existing',
+      (e): e is Exclude<PresentationHistoryEntry, { kind: 'existing' | 'existing_batch' }> =>
+        e.kind !== 'existing' && e.kind !== 'existing_batch',
     )
     .filter((e) => {
       const r = e.record

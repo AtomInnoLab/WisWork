@@ -1,4 +1,6 @@
 import { createPresentationExistingEditingSkill } from '../skills/powerpoint/presentation-existing-editing.js'
+import { createPresentationExistingBatchEditingSkill } from '../skills/powerpoint/presentation-existing-batch-editing.js'
+import type { PresentationExistingBatch } from '../skills/powerpoint/presentation-existing-batch.js'
 import type { PresentationExistingChange } from '../skills/powerpoint/presentation-existing-change.js'
 import { createPresentationBaselineSkill } from '../skills/powerpoint/presentation-baseline.js'
 import { BrowserPresentationBaselineAdapter } from '../skills/powerpoint/browser-presentation-baseline-adapter.js'
@@ -131,6 +133,11 @@ export function createOfficeHostRuntime(
   options: {
     presentation?: Omit<PresentationGenerationOptions, 'vfs'> & {
       readExistingChange?(changeId: string): PresentationExistingChange | undefined
+      readExistingBatch?(changeId: string): PresentationExistingBatch | undefined
+      writeExistingBatch?(
+        record: PresentationExistingBatch,
+        expected: PresentationExistingBatch | undefined,
+      ): Promise<void>
       writeExistingChange?(
         record: PresentationExistingChange,
         expected: PresentationExistingChange | undefined,
@@ -190,6 +197,8 @@ export function createOfficeHostRuntime(
       ? (options.presentation ?? createBrowserPresentationDocumentBinding())
       : undefined
   let existingEditing: ReturnType<typeof createPresentationExistingEditingSkill> | undefined
+  let existingBatchEditing:
+    ReturnType<typeof createPresentationExistingBatchEditingSkill> | undefined
   let mutationStarted = false
   const proposals = createStructuredProposalController(
     options.diagnostics,
@@ -234,6 +243,25 @@ export function createOfficeHostRuntime(
               )
                 ? [target]
                 : undefined
+            if (
+              [
+                'edit_existing_presentation_batch',
+                'resume_existing_presentation_batch',
+                'undo_existing_presentation_batch',
+              ].includes(proposal.operation) &&
+              proposal.operation === proposal.toolName &&
+              proposal.impact.host === 'powerpoint' &&
+              proposal.impact.count >= 2 &&
+              proposal.impact.count <= 8 &&
+              proposal.impact.targets.length >= 1 &&
+              proposal.impact.targets.length <= 8
+            ) {
+              try {
+                hostSlideIds = [...presentationQaMutationScope(proposal.impact.targets)!]
+              } catch {
+                hostSlideIds = undefined
+              }
+            }
             // Only the native master tool derives this scope from a complete, revalidated
             // host dependency snapshot. XML/package edits and generic labels remain unknown.
             if (
@@ -353,10 +381,32 @@ export function createOfficeHostRuntime(
         }
       },
     })
+  if (
+    baselineSkill &&
+    powerPointAdapter &&
+    localBinding?.readExistingBatch &&
+    localBinding.writeExistingBatch
+  )
+    existingBatchEditing = createPresentationExistingBatchEditingSkill({
+      baseline: baselineSkill,
+      baselineAdapter: new BrowserPresentationBaselineAdapter(),
+      adapter: powerPointAdapter,
+      proposals,
+      documentId: localBinding.documentId,
+      readExistingBatch: localBinding.readExistingBatch,
+      writeExistingBatch: async (record, expected) => {
+        try {
+          await localBinding.writeExistingBatch!(record, expected)
+        } finally {
+          void changes?.refresh()
+        }
+      },
+    })
   const base = composeOfficeSkills(hostSkill, shared, [
     ...extensions,
     ...(baselineSkill ? [baselineSkill] : []),
     ...(existingEditing ? [existingEditing] : []),
+    ...(existingBatchEditing ? [existingBatchEditing] : []),
   ])
   const generation =
     host === 'powerpoint' && options.presentation
@@ -667,11 +717,13 @@ export function createOfficeHostRuntime(
   const dispatchChangeTool: AgentSkill['executeTool'] = (call, signal) => {
     const owner = existingEditing?.tools.some((tool) => tool.name === call.name)
       ? existingEditing
-      : pageEditing?.tools.some((tool) => tool.name === call.name)
-        ? pageEditing
-        : pageReplacement?.tools.some((tool) => tool.name === call.name)
-          ? pageReplacement
-          : undefined
+      : existingBatchEditing?.tools.some((tool) => tool.name === call.name)
+        ? existingBatchEditing
+        : pageEditing?.tools.some((tool) => tool.name === call.name)
+          ? pageEditing
+          : pageReplacement?.tools.some((tool) => tool.name === call.name)
+            ? pageReplacement
+            : undefined
     return owner
       ? owner.executeTool(call, signal)
       : Promise.resolve({
@@ -929,6 +981,7 @@ export function createOfficeHostRuntime(
         historySkill?.clear()
         baselineSkill?.clear()
         existingEditing?.clear()
+        existingBatchEditing?.clear()
         pageEditing?.clear()
         changes?.clear()
         qaSkill?.clear()

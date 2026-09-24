@@ -1,4 +1,5 @@
 import type { PresentationExistingChange } from '../skills/powerpoint/presentation-existing-change.js'
+import type { PresentationExistingBatch } from '../skills/powerpoint/presentation-existing-batch.js'
 import {
   presentationChangeSetSummary,
   selectPresentationHistory,
@@ -30,7 +31,7 @@ import {
 
 export type PresentationChangeAction = 'inspect' | 'undo' | 'resume' | 'commit' | 'discard'
 export interface PresentationChangeEntry {
-  source?: 'existing'
+  source?: 'existing' | 'existing_batch'
   review?: PresentationExistingChange['review']
   sequence?: number
   legacy?: boolean
@@ -78,7 +79,7 @@ type RecordValue =
   | ImageReplacementRecord
 interface SavedEntry {
   entry: PresentationChangeEntry
-  record: RecordValue | PresentationExistingChange
+  record: RecordValue | PresentationExistingChange | PresentationExistingBatch
   fingerprint: string
   historical?: boolean
 }
@@ -209,7 +210,11 @@ export function createPresentationChangesController(
           : []
       if (options.existingAvailable?.())
         selected.push(
-          ...history.filter((e) => e.kind === 'existing' && e.record.documentId === documentId),
+          ...history.filter(
+            (e) =>
+              (e.kind === 'existing' || e.kind === 'existing_batch') &&
+              e.record.documentId === documentId,
+          ),
         )
       const latestDocumentId = await options.documentId()
       if (
@@ -224,23 +229,20 @@ export function createPresentationChangesController(
         .sort((a, b) => Number(a.legacy) - Number(b.legacy) || b.sequence - a.sequence)
         .map((saved) => {
           const row: SavedEntry =
-            saved.kind === 'existing'
+            saved.kind === 'existing_batch'
               ? {
                   entry: {
                     id: saved.id,
-                    source: 'existing',
-                    kind: saved.record.kind,
-                    pageId: saved.record.hostSlideId,
+                    source: 'existing_batch',
+                    kind: saved.record.operations[0].kind,
+                    pageId: saved.record.operations[0].hostSlideId,
                     state: saved.record.state,
-                    before:
-                      typeof saved.record.before === 'string'
-                        ? saved.record.before
-                        : JSON.stringify(saved.record.before, null, 2),
-                    after:
-                      typeof saved.record.after === 'string'
-                        ? saved.record.after
-                        : JSON.stringify(saved.record.after, null, 2),
-                    review: copy(saved.record.review),
+                    before: saved.record.operations
+                      .map((op) => `${op.hostSlideId}/${op.shapeId}: ${JSON.stringify(op.before)}`)
+                      .join('\n'),
+                    after: saved.record.operations
+                      .map((op) => `${op.hostSlideId}/${op.shapeId}: ${JSON.stringify(op.after)}`)
+                      .join('\n'),
                     actions:
                       saved.record.state === 'applied'
                         ? ['inspect', 'undo']
@@ -251,7 +253,34 @@ export function createPresentationChangesController(
                   record: copy(saved.record),
                   fingerprint: JSON.stringify(saved),
                 }
-              : entry(saved.kind, saved.record)
+              : saved.kind === 'existing'
+                ? {
+                    entry: {
+                      id: saved.id,
+                      source: 'existing',
+                      kind: saved.record.kind,
+                      pageId: saved.record.hostSlideId,
+                      state: saved.record.state,
+                      before:
+                        typeof saved.record.before === 'string'
+                          ? saved.record.before
+                          : JSON.stringify(saved.record.before, null, 2),
+                      after:
+                        typeof saved.record.after === 'string'
+                          ? saved.record.after
+                          : JSON.stringify(saved.record.after, null, 2),
+                      review: copy(saved.record.review),
+                      actions:
+                        saved.record.state === 'applied'
+                          ? ['inspect', 'undo']
+                          : saved.record.state === 'undone'
+                            ? ['inspect']
+                            : ['inspect', 'resume'],
+                    },
+                    record: copy(saved.record),
+                    fingerprint: JSON.stringify(saved),
+                  }
+                : entry(saved.kind, saved.record)
           row.entry = {
             ...row.entry,
             id: saved.id,
@@ -435,8 +464,8 @@ export function createPresentationChangesController(
                 : 'page_replacement'
         const generated = r as RecordValue
         const input: Record<string, unknown> =
-          selected.entry.source === 'existing'
-            ? { change_id: (r as PresentationExistingChange).changeId }
+          selected.entry.source === 'existing' || selected.entry.source === 'existing_batch'
+            ? { change_id: (r as PresentationExistingChange | PresentationExistingBatch).changeId }
             : {
                 project_id: generated.projectId,
                 ...(kind === 'page'
@@ -454,9 +483,11 @@ export function createPresentationChangesController(
           {
             id: `change-${ticket}`,
             name:
-              selected.entry.source === 'existing'
-                ? `${action}_existing_presentation_change`
-                : `${action}_presentation_${suffix}`,
+              selected.entry.source === 'existing_batch'
+                ? `${action}_existing_presentation_batch`
+                : selected.entry.source === 'existing'
+                  ? `${action}_existing_presentation_change`
+                  : `${action}_presentation_${suffix}`,
             input,
           },
           cancellation.signal,
@@ -465,13 +496,20 @@ export function createPresentationChangesController(
           result = await result.result
         if (ticket !== generation) return
         if (!current(scope, await options.documentId())) throw new Error('stale')
-        if (selected.entry.source === 'existing') {
+        if (selected.entry.source === 'existing' || selected.entry.source === 'existing_batch') {
           const latest = (await read(copy(artifact), scope, ticket)).find(
             (row) => row.entry.id === id,
           )
           if (!latest || ticket !== generation) throw new Error('stale')
-          const core = (record: RecordValue | PresentationExistingChange) => {
-            const { state: _state, review: _review, ...rest } = record as PresentationExistingChange
+          const core = (
+            record: RecordValue | PresentationExistingChange | PresentationExistingBatch,
+          ) => {
+            const {
+              state: _state,
+              review: _review,
+              cursor: _cursor,
+              ...rest
+            } = record as PresentationExistingChange & { cursor?: number }
             return JSON.stringify(rest)
           }
           if (

@@ -3,6 +3,11 @@ import {
   type PresentationExistingChange,
 } from './presentation-existing-change.js'
 import {
+  validatePresentationExistingBatch,
+  validExistingBatchTransition,
+  type PresentationExistingBatch,
+} from './presentation-existing-batch.js'
+import {
   historyEntryId,
   validatePresentationHistoryEntry,
   presentationHistoryBytes,
@@ -41,6 +46,7 @@ const IMPORT_KEY = 'wiswork.presentation.imports.v1'
 const IMAGE_KEY = 'wiswork.presentation.image-replacements.v1'
 const PAGE_REPLACEMENT_KEY = 'wiswork.presentation.page-replacement.v1'
 const EXISTING_KEY = 'wiswork.presentation.existing-change.v1'
+const EXISTING_BATCH_KEY = 'wiswork.presentation.existing-batch.v1'
 const HISTORY_KEY = 'wiswork.presentation.change-history.v1'
 const TEXT_KEY = 'wiswork.presentation.text-change.v1'
 const GEOMETRY_KEY = 'wiswork.presentation.geometry-change.v1'
@@ -269,6 +275,7 @@ export function createPresentationDocumentBinding(
     return value
   }
   let existingWriteFailed = false
+  let existingBatchWriteFailed = false
   const readRawExistingChange = (): PresentationExistingChange | undefined => {
     const invalid = () => new Error('presentation_existing_change_state_invalid')
     if (existingWriteFailed) throw invalid()
@@ -283,6 +290,22 @@ export function createPresentationDocumentBinding(
       throw invalid()
     }
     if (!validatePresentationExistingChange(value)) throw invalid()
+    return value
+  }
+  const readRawExistingBatch = (): PresentationExistingBatch | undefined => {
+    if (existingBatchWriteFailed) throw new Error('presentation_existing_batch_state_invalid')
+    const raw = settings.get(EXISTING_BATCH_KEY)
+    if (raw === undefined || raw === null || raw === '') return undefined
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 192 * 1024)
+      throw new Error('presentation_existing_batch_state_invalid')
+    let value: unknown
+    try {
+      value = JSON.parse(raw)
+    } catch {
+      throw new Error('presentation_existing_batch_state_invalid')
+    }
+    if (!validatePresentationExistingBatch(value))
+      throw new Error('presentation_existing_batch_state_invalid')
     return value
   }
   let pageReplacementWriteFailed = false
@@ -386,6 +409,7 @@ export function createPresentationDocumentBinding(
   const invalidHistory = () => new Error('presentation_change_history_state_invalid')
   const rawHeads = () => ({
     existing: readRawExistingChange(),
+    existing_batch: readRawExistingBatch(),
     text: readRawTextChange(),
     geometry: readRawGeometryChange(),
     page: readRawPageReplacement(),
@@ -397,7 +421,7 @@ export function createPresentationDocumentBinding(
       raw = settings.get(HISTORY_KEY)
     if (raw === undefined || raw === null || raw === '') {
       const history: PresentationHistoryEnvelope = { version: 1, entries: [], heads: {} }
-      for (const kind of ['text', 'geometry', 'page', 'existing'] as const) {
+      for (const kind of ['text', 'geometry', 'page', 'existing', 'existing_batch'] as const) {
         const record = heads[kind]
         if (!record) continue
         const id = historyEntryId(kind, record)
@@ -437,7 +461,9 @@ export function createPresentationDocumentBinding(
       !h.heads ||
       typeof h.heads !== 'object' ||
       Array.isArray(h.heads) ||
-      Object.keys(h.heads).some((k) => !['text', 'geometry', 'page', 'existing'].includes(k))
+      Object.keys(h.heads).some(
+        (k) => !['text', 'geometry', 'page', 'existing', 'existing_batch'].includes(k),
+      )
     )
       throw invalidHistory()
     const ids = new Set<string>()
@@ -449,7 +475,7 @@ export function createPresentationDocumentBinding(
       sequence = e.sequence
     }
     if (presentationHistoryBytes(h) > 1024 * 1024) throw invalidHistory()
-    for (const kind of ['text', 'geometry', 'page', 'existing'] as const) {
+    for (const kind of ['text', 'geometry', 'page', 'existing', 'existing_batch'] as const) {
       const head = h.entries.find((e) => e.id === h.heads[kind])
       if ((head && head.kind !== kind) || (!head && h.entries.some((e) => e.kind === kind)))
         throw invalidHistory()
@@ -497,6 +523,11 @@ export function createPresentationDocumentBinding(
     readHistory().entries.find(
       (e): e is Extract<PresentationHistoryEntry, { kind: 'existing' }> =>
         e.kind === 'existing' && e.record.changeId === changeId,
+    )?.record
+  const readExistingBatch = (changeId: string): PresentationExistingBatch | undefined =>
+    readHistory().entries.find(
+      (e): e is Extract<PresentationHistoryEntry, { kind: 'existing_batch' }> =>
+        e.kind === 'existing_batch' && e.record.changeId === changeId,
     )?.record
   const readPageReplacement = () => {
     const raw = readRawPageReplacement()
@@ -589,6 +620,46 @@ export function createPresentationDocumentBinding(
     documentId,
     listChangeHistory: () => structuredClone(readHistory().entries),
     readExistingChange,
+    readExistingBatch,
+    writeExistingBatch(
+      record: PresentationExistingBatch,
+      expectedBatch: PresentationExistingBatch | undefined,
+    ) {
+      const snapshot = structuredClone(record),
+        expected = structuredClone(expectedBatch)
+      const write = async () => {
+        if (
+          !validatePresentationExistingBatch(snapshot) ||
+          (expected !== undefined && !validatePresentationExistingBatch(expected))
+        )
+          throw new Error('presentation_existing_batch_state_invalid')
+        if ((await documentId()) !== snapshot.documentId)
+          throw new Error('presentation_document_changed')
+        const prior = readExistingBatch(snapshot.changeId)
+        if (JSON.stringify(prior) !== JSON.stringify(expected))
+          throw new Error('presentation_existing_batch_stale')
+        if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
+        if (!validExistingBatchTransition(prior, snapshot))
+          throw new Error('presentation_existing_batch_state_invalid')
+        await saveWithHistory(
+          EXISTING_BATCH_KEY,
+          JSON.stringify(snapshot),
+          {
+            id: historyEntryId('existing_batch', snapshot),
+            kind: 'existing_batch',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            existingBatchWriteFailed = true
+          },
+        )
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
     writeExistingChange(
       record: PresentationExistingChange,
       expectedChange: PresentationExistingChange | undefined,
