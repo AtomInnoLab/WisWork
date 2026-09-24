@@ -871,3 +871,134 @@ it('preserves an already prepared artifact when checking a frozen page', async (
   expect(f.vfs.list('/home/user')).toEqual(files)
   expect(f.rememberProject).not.toHaveBeenCalled()
 })
+
+const evidenceCall = {
+  id: 'evidence',
+  name: 'read_presentation_claim_evidence',
+  input: {
+    project_id: 'p',
+    request_id: 'r',
+    page_id: 'one',
+    claim_id: 'c',
+    source_id: 's',
+    offset: 2,
+    max_chars: 8,
+  },
+}
+const evidenceResponse = () => ({
+  version: 1,
+  projectId: 'p',
+  requestId: 'r',
+  planRevision: 1,
+  inputDigest: 'a'.repeat(64),
+  planDigest: 'b'.repeat(64),
+  pageId: 'one',
+  claimId: 'c',
+  statement: 'fact',
+  source: { id: 's', uri: `attachment:${'c'.repeat(64)}`, excerpt: 'fact', locator: 'section 1' },
+  attachment: {
+    id: 'c'.repeat(64),
+    name: 'source.txt',
+    offset: 2,
+    totalChars: 10,
+    text: 'a fact z',
+    offsetUnit: 'utf16_code_unit',
+  },
+  excerptMatch: { status: 'found', offset: 4 },
+  checks: {
+    support: 'not_verified',
+    sourceAuthority: 'not_verified',
+    timeliness: 'not_verified',
+    host: 'not_checked',
+  },
+})
+it('reads exact claim evidence without changing the prepared artifact or other state', async () => {
+  const f = prepareFixture()
+  await f.skill.executeTool(prepare)
+  const original = f.skill.artifact()
+  f.rememberProject.mockClear()
+  f.request.mockResolvedValue(new Response(JSON.stringify(evidenceResponse())))
+  expect(f.skill.tools.map((t) => t.name)).toContain(evidenceCall.name)
+  const result = await f.skill.executeTool(evidenceCall)
+  expect(result.isError, result.output).not.toBe(true)
+  expect(JSON.parse(result.output)).toMatchObject(evidenceResponse())
+  expect(f.request).toHaveBeenLastCalledWith(
+    {
+      operation: 'production_claim_evidence',
+      documentId: 'doc',
+      projectId: 'p',
+      requestId: 'r',
+      pageId: 'one',
+      claimId: 'c',
+      sourceId: 's',
+      offset: 2,
+      maxChars: 8,
+    },
+    undefined,
+  )
+  expect(f.skill.artifact()).toBe(original)
+  expect(f.rememberProject).not.toHaveBeenCalled()
+  expect(f.vfs.list('/home/user')).toEqual([])
+})
+it('rejects wrong evidence binding, fake match, unsupported checks and excessive window output', async () => {
+  const f = fixture()
+  for (const value of [
+    { ...evidenceResponse(), projectId: 'other' },
+    { ...evidenceResponse(), requestId: 'other' },
+    { ...evidenceResponse(), pageId: 'other' },
+    { ...evidenceResponse(), claimId: 'other' },
+    { ...evidenceResponse(), source: { ...evidenceResponse().source, id: 'other' } },
+    { ...evidenceResponse(), attachment: { ...evidenceResponse().attachment, offset: 3 } },
+    {
+      ...evidenceResponse(),
+      attachment: { ...evidenceResponse().attachment, totalChars: 11, text: 'a fact zz' },
+    },
+    { ...evidenceResponse(), excerptMatch: { status: 'found', offset: 3 } },
+    { ...evidenceResponse(), checks: { ...evidenceResponse().checks, support: 'verified' } },
+    { ...evidenceResponse(), extra: true },
+  ]) {
+    f.request.mockResolvedValue(new Response(JSON.stringify(value)))
+    expect(await f.skill.executeTool(evidenceCall)).toMatchObject({
+      isError: true,
+      output: 'presentation_response_invalid',
+    })
+  }
+  expect(f.rememberProject).not.toHaveBeenCalled()
+})
+it('validates evidence window inputs, old PC and unsupported sources', async () => {
+  const f = fixture()
+  for (const change of [
+    { claim_id: undefined },
+    { source_id: undefined },
+    { offset: -1 },
+    { offset: 1.5 },
+    { max_chars: 8001 },
+    { max_chars: 0 },
+    { extra: 1 },
+  ])
+    expect(
+      await f.skill.executeTool({ ...evidenceCall, input: { ...evidenceCall.input, ...change } }),
+    ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
+  expect(f.request).not.toHaveBeenCalled()
+  for (const [error, output] of [
+    ['invalid_request', 'presentation_upgrade_required'],
+    ['evidence_source_unsupported', 'presentation_evidence_source_unsupported'],
+  ]) {
+    f.request.mockResolvedValue(new Response(JSON.stringify({ error })))
+    expect(await f.skill.executeTool(evidenceCall)).toMatchObject({ isError: true, output })
+  }
+})
+it('rejects evidence results after cancellation, clear or document change', async () => {
+  for (const mode of ['abort', 'clear', 'document']) {
+    const f = fixture(),
+      ac = new AbortController()
+    f.request.mockImplementation(async () => {
+      if (mode === 'abort') ac.abort()
+      if (mode === 'clear') f.skill.clear()
+      if (mode === 'document') f.documentId.mockResolvedValue('other')
+      return new Response(JSON.stringify(evidenceResponse()))
+    })
+    expect(await f.skill.executeTool(evidenceCall, ac.signal)).toMatchObject({ isError: true })
+    expect(f.rememberProject).not.toHaveBeenCalled()
+  }
+})
