@@ -1297,8 +1297,8 @@ it('advertises distinct read, undo and recovery semantics for saved text and geo
   for (const kind of ['text', 'geometry']) {
     const description = (action: string) =>
       skill.tools.find((tool) => tool.name === `${action}_presentation_${kind}_change`)?.description
-    expect(description('read')).toContain(`Read the last ${kind}-only saved change`)
-    expect(description('undo')).toContain(`Propose undoing the last ${kind}-only change`)
+    expect(description('read')).toContain(`Read the selected ${kind}-only saved change`)
+    expect(description('undo')).toContain(`Propose undoing the selected ${kind}-only change`)
     expect(description('resume')).toContain('Confirm recovery in the saved pending direction')
   }
 })

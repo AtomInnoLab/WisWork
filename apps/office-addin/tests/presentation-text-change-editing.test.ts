@@ -403,3 +403,194 @@ it('supports full-length text undo with bounded, explicitly truncated proposal p
   expect(f.readTextChange()?.state).toBe('undone')
   expect((await f.adapter.readPresentationPageText()).text).toBe('原'.repeat(12000))
 })
+
+function historySetup(kind: 'text' | 'geometry') {
+  const f = setup()
+  type Record =
+    | import('../src/skills/powerpoint/presentation-text-change.js').PresentationTextChange
+    | import('../src/skills/powerpoint/presentation-geometry-change.js').PresentationGeometryChange
+  const records = new Map<string, Record>()
+  let head: Record | undefined
+  let geometry = { left: 0, top: 0, width: 100, height: 50 }
+  const adapter = {
+    ...f.adapter,
+    readPresentationPageGeometry: vi.fn(async () => ({
+      slideId: 'host-42',
+      shapeId: 'shape1',
+      geometry: { ...geometry },
+    })),
+    editPresentationPageGeometry: vi.fn(
+      async (_slide: string, _shape: string, next: typeof geometry, expected: typeof geometry) => {
+        expect(geometry).toEqual(expected)
+        geometry = { ...next }
+      },
+    ),
+  }
+  const read = (id?: string) => (id === undefined ? head : records.get(id))
+  const write = async (next: Record, expected: Record | undefined) => {
+    expect(records.get(next.changeId) ?? head).toEqual(expected)
+    records.set(next.changeId, structuredClone(next))
+    head = records.get(next.changeId)
+  }
+  const options = {
+    ...f.options,
+    adapter,
+    readTextChange: read as (
+      id?: string,
+    ) =>
+      | import('../src/skills/powerpoint/presentation-text-change.js').PresentationTextChange
+      | undefined,
+    writeTextChange: write,
+    readGeometryChange: read as (
+      id?: string,
+    ) =>
+      | import('../src/skills/powerpoint/presentation-geometry-change.js').PresentationGeometryChange
+      | undefined,
+    writeGeometryChange: write,
+  }
+  const skill = createPresentationPageEditingSkill(options)
+  const action = (verb: string, id?: string) =>
+    skill.executeTool({
+      id: verb,
+      name: `${verb}_presentation_${kind}_change`,
+      input: { page_id: 'page1', ...(id === undefined ? {} : { change_id: id }) },
+    })
+  const edit = async (step: number) => {
+    expect(
+      (
+        await skill.executeTool({
+          id: 'edit',
+          name: `edit_presentation_page_${kind}`,
+          input: {
+            page_id: 'page1',
+            shape_id: 'shape1',
+            ...(kind === 'text'
+              ? { text: `After${step}` }
+              : { geometry: { ...geometry, left: step * 10 } }),
+          },
+        })
+      ).isError,
+    ).not.toBe(true)
+    await f.proposals.confirm(f.proposals.pending()!.id)
+    return head!
+  }
+  return { ...f, options, skill, action, edit, records, read, adapter }
+}
+it.each(['text', 'geometry'] as const)(
+  'undoes two %s changes in reverse by exact ID',
+  async (kind) => {
+    const f = historySetup(kind)
+    const first = await f.edit(1),
+      second = await f.edit(2)
+    for (const record of [second, first]) {
+      expect((await f.action('read', record.changeId)).output).toContain(record.changeId)
+      expect((await f.action('undo', record.changeId)).isError).not.toBe(true)
+      await f.proposals.confirm(f.proposals.pending()!.id)
+      expect(f.read(record.changeId)?.state).toBe('undone')
+    }
+    expect(f.records.size).toBe(2)
+  },
+)
+it.each(['text', 'geometry'] as const)(
+  'recovers an older pending %s record without selecting the latest slot',
+  async (kind) => {
+    const f = historySetup(kind)
+    const first = await f.edit(1),
+      second = await f.edit(2)
+    f.records.set(first.changeId, { ...first, state: 'pending' })
+    if (kind === 'text') f.setText(first.after as string)
+    else
+      f.adapter.readPresentationPageGeometry.mockResolvedValue({
+        slideId: 'host-42',
+        shapeId: 'shape1',
+        geometry: first.after as { left: number; top: number; width: number; height: number },
+      })
+    const writes =
+      kind === 'text' ? f.adapter.editPresentationPageText : f.adapter.editPresentationPageGeometry
+    const count = writes.mock.calls.length
+    expect((await f.action('inspect', first.changeId)).output).toContain('already_applied')
+    expect((await f.action('resume', first.changeId)).isError).not.toBe(true)
+    await f.proposals.confirm(f.proposals.pending()!.id)
+    expect(writes).toHaveBeenCalledTimes(count)
+    expect(f.read(first.changeId)?.state).toBe('applied')
+    expect(f.read(second.changeId)).toEqual(second)
+  },
+)
+it.each(['text', 'geometry'] as const)(
+  'rejects absent IDs and readers ignoring selected %s identity',
+  async (kind) => {
+    const f = historySetup(kind)
+    const first = await f.edit(1)
+    await f.edit(2)
+    expect((await f.action('undo', 'missing')).isError).toBe(true)
+    f.options.readTextChange = () =>
+      f.read() as import('../src/skills/powerpoint/presentation-text-change.js').PresentationTextChange
+    f.options.readGeometryChange = () =>
+      f.read() as import('../src/skills/powerpoint/presentation-geometry-change.js').PresentationGeometryChange
+    for (const verb of ['read', 'inspect', 'undo', 'resume'])
+      expect((await f.action(verb, first.changeId)).isError).toBe(true)
+    expect(f.proposals.pending()).toBeUndefined()
+  },
+)
+
+it.each(['text', 'geometry'] as const)(
+  'validates %s history input and preserves saved scope checks',
+  async (kind) => {
+    const f = historySetup(kind),
+      record = await f.edit(1)
+    for (const id of ['', 'a'.repeat(129), 'bad/id', 42, null]) {
+      expect(
+        await f.skill.executeTool({
+          id: 'bad',
+          name: `read_presentation_${kind}_change`,
+          input: { page_id: 'page1', change_id: id },
+        }),
+      ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
+    }
+    for (const patch of [
+      { pageId: 'page2' },
+      { requestId: 'other' },
+      { projectId: 'other' },
+      { documentId: 'other' },
+      { hostSlideId: 'other' },
+      { source: 'production' as const },
+      { artifactDigest: '0'.repeat(64) },
+    ]) {
+      f.records.set(record.changeId, { ...record, ...patch })
+      expect((await f.action('read', record.changeId)).isError).toBe(true)
+    }
+    const longest = { ...record, changeId: 'a'.repeat(128) }
+    f.records.set(longest.changeId, longest)
+    expect((await f.action('read', longest.changeId)).isError).not.toBe(true)
+    expect(
+      await f.skill.executeTool({
+        ...f.edit,
+        id: 'bad-edit',
+        name: `edit_presentation_page_${kind}`,
+        input: {
+          page_id: 'page1',
+          shape_id: 'shape1',
+          change_id: record.changeId,
+          ...(kind === 'text'
+            ? { text: 'New' }
+            : { geometry: { left: 0, top: 0, width: 100, height: 50 } }),
+        },
+      }),
+    ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
+  },
+)
+it.each(['text', 'geometry'] as const)(
+  'keeps %s confirmation pinned to the selected ID when the reader changes',
+  async (kind) => {
+    const f = historySetup(kind),
+      first = await f.edit(1)
+    expect((await f.action('undo', first.changeId)).isError).not.toBe(true)
+    const changed = { ...first, changeId: 'other' }
+    f.options.readTextChange = () =>
+      changed as import('../src/skills/powerpoint/presentation-text-change.js').PresentationTextChange
+    f.options.readGeometryChange = () =>
+      changed as import('../src/skills/powerpoint/presentation-geometry-change.js').PresentationGeometryChange
+    await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+    expect(f.records.get(first.changeId)?.state).toBe('applied')
+  },
+)
