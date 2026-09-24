@@ -50,7 +50,6 @@ const inventories = {
     'check_presentation_baseline',
     'duplicate_slide',
     'edit_slide_chart',
-    'update_slide_chart_values',
     'edit_slide_master_xml',
     'edit_slide_text',
     'edit_slide_xml',
@@ -543,6 +542,8 @@ it('exposes existing-page rebuild and routes saved-page inspection through the r
       rememberProject: async () => {},
       readExistingPageChange: () => undefined,
       writeExistingPageChange: async () => {},
+      readExistingChartChange: () => undefined,
+      writeExistingChartChange: async () => {},
     },
   })
   try {
@@ -553,6 +554,10 @@ it('exposes existing-page rebuild and routes saved-page inspection through the r
       'undo_existing_presentation_page_change',
     )
     expect(runtime.changes).toBeDefined()
+    expect(runtime.skill.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      'update_slide_chart_values', 'inspect_slide_chart_values_change',
+      'resume_slide_chart_values_change', 'undo_slide_chart_values_change',
+    ]))
     const inspected = await runtime.skill.executeTool({
       id: 'inspect',
       name: 'inspect_existing_presentation_page_change',

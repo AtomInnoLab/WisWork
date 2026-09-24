@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
 import { inspectPowerPointChartSourcePackage, updatePowerPointChartDataPackage } from '../src/skills/powerpoint/presentation-chart-source-package.js'
+import { presentationPackageDigest } from '../src/skills/powerpoint/powerpoint-package.js'
 
 const slide = '<p:sld><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="8" name="Chart"/></p:nvGraphicFramePr><a:graphic><a:graphicData><c:chart r:id="rId5"/></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>'
 const slideRels = '<Relationships><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>'
@@ -54,6 +55,17 @@ describe('PowerPoint chart embedded data update', () => {
     const result = await updatePowerPointChartDataPackage(await pptx(), '8', [['3', '4']])
     expect(result.changedPaths).toEqual(['ppt/charts/chart1.xml', 'ppt/embeddings/Book1.xlsx'])
     expect(await inspectPowerPointChartSourcePackage(result.base64, '8')).toMatchObject({ verification:'matches', series:[{categories:['Q1','Q2'], values:['3','4']}] })
+  })
+  it('produces the same package content when proposal and confirmation cross a ZIP timestamp boundary', async () => {
+    const source = await pptx()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date('2026-09-24T09:00:00Z'))
+      const first = await updatePowerPointChartDataPackage(source, '8', [['3', '4']])
+      vi.setSystemTime(new Date('2026-09-24T09:00:08Z'))
+      const second = await updatePowerPointChartDataPackage(source, '8', [['3', '4']])
+      expect(await presentationPackageDigest(second.base64)).toBe(await presentationPackageDigest(first.base64))
+    } finally { vi.useRealTimers() }
   })
   it('refuses stale cache, external sources, and unsupported formulas', async () => {
     await expect(updatePowerPointChartDataPackage(await pptx({chart:chart(undefined,'9')}), '8', [['3','4']])).rejects.toThrow('office_api_unsupported')

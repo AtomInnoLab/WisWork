@@ -225,9 +225,9 @@ export async function updatePowerPointChartDataPackage(
   }
   if (signal?.aborted) throw new Error('cancelled')
   const builder = new XMLBuilder({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: '@_', format: false })
-  book.file(sheetPath, builder.build(sheetNodes))
-  zip.file(chartPath, builder.build(chartNodes))
-  zip.file(sourcePath, await book.generateAsync({ type: 'uint8array' }))
+  book.file(sheetPath, builder.build(sheetNodes), { date: book.file(sheetPath)!.date })
+  zip.file(chartPath, builder.build(chartNodes), { date: zip.file(chartPath)!.date })
+  zip.file(sourcePath, await book.generateAsync({ type: 'uint8array' }), { date: zip.file(sourcePath)!.date })
   const updated = await zip.generateAsync({ type: 'base64' })
   const report = await inspectPowerPointChartSourcePackage(updated, shapeId, signal)
   if (report.sourceKind !== 'embedded_xlsx' || report.verification !== 'matches' ||

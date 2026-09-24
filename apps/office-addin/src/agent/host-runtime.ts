@@ -4,6 +4,7 @@ import { createPresentationExistingImageEditingSkill } from '../skills/powerpoin
 import { createPresentationExistingPageEditingSkill } from '../skills/powerpoint/presentation-existing-page-editing.js'
 import type { PresentationExistingImageChange } from '../skills/powerpoint/presentation-existing-image.js'
 import type { PresentationExistingPageChange } from '../skills/powerpoint/presentation-existing-page.js'
+import type { PresentationExistingChartChange } from '../skills/powerpoint/presentation-existing-chart.js'
 import type { PresentationExistingBatch } from '../skills/powerpoint/presentation-existing-batch.js'
 import type { PresentationExistingChange } from '../skills/powerpoint/presentation-existing-change.js'
 import { createPresentationBaselineSkill } from '../skills/powerpoint/presentation-baseline.js'
@@ -140,6 +141,11 @@ export function createOfficeHostRuntime(
       readExistingBatch?(changeId: string): PresentationExistingBatch | undefined
       readExistingImageChange?(changeId: string): PresentationExistingImageChange | undefined
       readExistingPageChange?(changeId: string): PresentationExistingPageChange | undefined
+      readExistingChartChange?(changeId: string): PresentationExistingChartChange | undefined
+      writeExistingChartChange?(
+        record: PresentationExistingChartChange,
+        expected: PresentationExistingChartChange | undefined,
+      ): Promise<void>
       writeExistingPageChange?(
         record: PresentationExistingPageChange,
         expected: PresentationExistingPageChange | undefined,
@@ -351,6 +357,14 @@ export function createOfficeHostRuntime(
         vfs,
         nativeMasterEditingSupported: supportsNativePowerPointMasterEditing(),
         platform: options.platform ?? currentOfficePlatform(),
+        chartSavepoint: localBinding?.readExistingChartChange && localBinding.writeExistingChartChange && options.presentation?.request
+          ? {
+              documentId: localBinding.documentId,
+              request: options.presentation.request,
+              readExistingChartChange: localBinding.readExistingChartChange,
+              writeExistingChartChange: localBinding.writeExistingChartChange,
+            }
+          : undefined,
       }),
   }[host]()
   const extensions =

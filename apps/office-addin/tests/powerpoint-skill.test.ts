@@ -6,7 +6,7 @@ import {
   type PowerPointAdapter,
 } from '../src/skills/powerpoint/browser-powerpoint-adapter.js'
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
-import { editPowerPointPackage } from '../src/skills/powerpoint/powerpoint-package.js'
+import { editPowerPointPackage, presentationPackageDigest } from '../src/skills/powerpoint/powerpoint-package.js'
 
 const png = 'iVBORw0KGgoAAAA='
 
@@ -79,7 +79,6 @@ describe('PowerPoint compatibility skill', () => {
       'edit_slide_text',
       'edit_slide_xml',
       'edit_slide_chart',
-      'update_slide_chart_values',
       'edit_slide_master',
       'edit_slide_master_xml',
       'duplicate_slide',
@@ -669,12 +668,38 @@ describe('PowerPoint compatibility skill', () => {
     zip.file('ppt/embeddings/Book1.xlsx', await book.generateAsync({ type: 'uint8array' }))
     const original = await zip.generateAsync({ type: 'base64' })
     let current = original
+    let activeSlideId = 's1'
+    let savedBytes = new Uint8Array(0)
+    let meta: Record<string, unknown> = {}
+    const records = new Map<string, import('../src/skills/powerpoint/presentation-existing-chart.js').PresentationExistingChartChange>()
+    const chartSavepoint = {
+      documentId: async () => 'doc-1',
+      readExistingChartChange: (id: string) => records.get(id),
+      writeExistingChartChange: async (record: import('../src/skills/powerpoint/presentation-existing-chart.js').PresentationExistingChartChange) => { records.set(record.changeId, structuredClone(record)) },
+      request: async (body: unknown) => {
+        const input = body as Record<string, unknown>
+        if (input.operation === 'existing_page_backup_begin') meta = { ...input, status: 'uploading', receivedBytes: 0 }
+        if (input.operation === 'existing_page_backup_chunk') {
+          const bytes = Uint8Array.from(atob(input.base64 as string), (char) => char.charCodeAt(0))
+          const next = new Uint8Array(savedBytes.length + bytes.length)
+          next.set(savedBytes); next.set(bytes, savedBytes.length); savedBytes = next
+          meta.receivedBytes = savedBytes.length
+        }
+        if (input.operation === 'existing_page_backup_finish') meta.status = 'ready'
+        if (input.operation === 'existing_page_backup_read') {
+          const part = savedBytes.subarray(input.offset as number, (input.offset as number) + (input.length as number))
+          return new Response(JSON.stringify({ backupId: meta.backupId, offset: input.offset, sizeBytes: meta.sizeBytes, sha256: meta.sha256, base64: btoa(String.fromCharCode(...part)) }))
+        }
+        return new Response(JSON.stringify(meta))
+      },
+    }
     const fake = adapter({
-      exportSlidePackage: vi.fn().mockImplementation(() => Promise.resolve({ slideId: 's1', base64: current, fingerprint: 's1' })),
-      replaceSlidePackage: vi.fn().mockImplementation((_index, base64) => { current = base64; return Promise.resolve({ slideId: 's1' }) }),
+      verifySlides: vi.fn().mockImplementation(() => Promise.resolve({ slideWidth: 960, slideHeight: 540, slides: [{ slideId: activeSlideId }] })),
+      exportSlidePackage: vi.fn().mockImplementation(() => Promise.resolve({ slideId: activeSlideId, base64: current, fingerprint: activeSlideId })),
+      replaceSlidePackage: vi.fn().mockImplementation((_index, base64) => { current = base64; return Promise.resolve({ slideId: activeSlideId }) }),
     })
     const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const skill = createPowerPointSkill({ adapter: fake, proposals, chartSavepoint })
     await expect(skill.executeTool(call('update_slide_chart_values', { slide_index: 0, shape_id: '8', values: [['5']] }))).resolves.toMatchObject({ mutated: false })
     await proposals.confirm(proposals.pending()!.id)
     expect(fake.replaceSlidePackage).toHaveBeenCalledOnce()
@@ -682,13 +707,44 @@ describe('PowerPoint compatibility skill', () => {
     expect(await updated.file('ppt/charts/chart1.xml')!.async('string')).toContain('<c:v>5</c:v>')
     const updatedBook = await JSZip.loadAsync(await updated.file('ppt/embeddings/Book1.xlsx')!.async('uint8array'))
     expect(await updatedBook.file('xl/worksheets/sheet1.xml')!.async('string')).toContain('<v>5</v>')
+    const changeId = [...records.keys()][0]!
+    expect(records.get(changeId)?.state).toBe('applied')
+    const appliedRecord = structuredClone(records.get(changeId)!)
+    const reopened = createPowerPointSkill({ adapter: fake, proposals, chartSavepoint })
+    await expect(reopened.executeTool(call('inspect_slide_chart_values_change', { change_id: changeId }))).resolves.toMatchObject({ mutated: false })
+    await expect(reopened.executeTool(call('undo_slide_chart_values_change', { change_id: changeId }))).resolves.toMatchObject({ mutated: false })
+    await proposals.confirm(proposals.pending()!.id)
+    expect(records.get(changeId)?.state).toBe('undone')
+    expect(current).not.toBe('')
+    const interruptedId = 'interrupted_chart'
+    records.set(interruptedId, { ...appliedRecord, changeId: interruptedId, state: 'write_pending', newSlideId: undefined })
+    activeSlideId = 's1-restored'
+    current = original
+    const recovered = createPowerPointSkill({ adapter: fake, proposals, chartSavepoint })
+    const inspection = await recovered.executeTool(call('inspect_slide_chart_values_change', { change_id: interruptedId }))
+    expect(inspection.output).toContain('"hostStatus":"before"')
+    await recovered.executeTool(call('resume_slide_chart_values_change', { change_id: interruptedId }))
+    await proposals.confirm(proposals.pending()!.id)
+    expect(records.get(interruptedId)?.state).toBe('cancelled')
+    activeSlideId = 's1'
+    const unavailable = createPowerPointSkill({ adapter: fake, proposals: createStructuredProposalController() })
+    expect(unavailable.tools.some((tool) => tool.name === 'update_slide_chart_values')).toBe(false)
     current = original
     await skill.executeTool(call('update_slide_chart_values', { slide_index: 0, shape_id: '8', values: [['6']] }))
     const drifted = await JSZip.loadAsync(current, { base64: true })
     drifted.file('ppt/slides/slide1.xml', '<p:sld><p:graphicFrame><p:cNvPr id="8"/><c:chart r:id="rId5"/></p:graphicFrame><p:sp name="manual"/></p:sld>')
     current = await drifted.generateAsync({ type: 'base64' })
     await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
-    expect(fake.replaceSlidePackage).toHaveBeenCalledOnce()
+    expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(2)
+    current = original
+    const failedProposals = createStructuredProposalController()
+    const noBackup = createPowerPointSkill({ adapter: fake, proposals: failedProposals, chartSavepoint: {
+      ...chartSavepoint,
+      request: async () => { throw new Error('backup_unavailable') },
+    } })
+    await noBackup.executeTool(call('update_slide_chart_values', { slide_index: 0, shape_id: '8', values: [['7']] }))
+    await expect(failedProposals.confirm(failedProposals.pending()!.id)).rejects.toThrow('backup_unavailable')
+    expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(2)
   })
 
   it('validates master edits from the targeted XML instead of volatile package bytes', async () => {
@@ -2106,6 +2162,28 @@ describe('browser PowerPoint adapter', () => {
         controller.signal,
       ),
     ).rejects.toThrow('cancelled')
+    expect(insertSlidesFromBase64).not.toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('rejects a stale chart package preimage inside the host adapter before insert/delete', async () => {
+    const zip = new JSZip()
+    zip.file('ppt/slides/slide1.xml', '<p:sld/>')
+    const original = await zip.generateAsync({ type: 'base64' })
+    const digest = await presentationPackageDigest(original)
+    const remove = vi.fn(), insertSlidesFromBase64 = vi.fn()
+    const slide = { id: 's1', load: vi.fn(), delete: remove, exportAsBase64: vi.fn(() => ({ value: original })) }
+    const slides = { getCount: vi.fn(() => ({ value: 1 })), getItemAt: vi.fn(() => slide) }
+    Object.assign(globalThis, {
+      Office: { context: { host: 'PowerPoint', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } } },
+      PowerPoint: { run: (callback: (context: unknown) => unknown) => callback({ presentation: { slides, insertSlidesFromBase64 }, sync: vi.fn() }) },
+    })
+    await expect(new BrowserPowerPointAdapter().replaceSlidePackage(0, original, false, undefined, undefined, {
+      slideId: 's1', packageDigest: '0'.repeat(64),
+    })).rejects.toThrow('proposal_stale')
+    await expect(new BrowserPowerPointAdapter().replaceSlidePackage(0, original, false, undefined, undefined, {
+      slideId: 'wrong', packageDigest: digest,
+    })).rejects.toThrow('proposal_stale')
     expect(insertSlidesFromBase64).not.toHaveBeenCalled()
     expect(remove).not.toHaveBeenCalled()
   })

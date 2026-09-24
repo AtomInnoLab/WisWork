@@ -4,6 +4,7 @@ import {
 } from './presentation-style-dependencies.js'
 import {
   capturePowerPointPackage,
+  presentationPackageDigest,
   verifyImportedPowerPointPackage,
   verifyPowerPointPackage,
   type PackageEditResult,
@@ -227,6 +228,7 @@ export interface PowerPointAdapter {
     applyMaster?: boolean,
     expected?: PackageEditResult,
     signal?: AbortSignal,
+    preimage?: { slideId: string; packageDigest: string },
   ): Promise<{ slideId: string }>
   executeDeclarative(
     operations: PowerPointDeclarativeOperation[],
@@ -1368,6 +1370,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     applyMaster = false,
     expected?: PackageEditResult,
     signal?: AbortSignal,
+    preimage?: { slideId: string; packageDigest: string },
   ): Promise<{ slideId: string }> {
     cancelled(signal)
     if (applyMaster && isPowerPointMac()) throw new Error('office_api_unsupported')
@@ -1446,6 +1449,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const originalExpected = await capturePowerPointPackage(original.value, signal)
       const replacementExactProof = await capturePowerPointPackage(base64, signal)
       const originalSlideId = string(slide.id)
+      if (preimage && (originalSlideId !== preimage.slideId ||
+        await presentationPackageDigest(original.value, signal) !== preimage.packageDigest))
+        throw new Error('proposal_stale')
 
       const classifyPackage = async (
         item: RuntimeRecord,

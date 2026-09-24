@@ -27,6 +27,8 @@ import {
   type XmlReplacement,
 } from './powerpoint-package.js'
 import { updatePowerPointChartDataPackage } from './presentation-chart-source-package.js'
+import { saveChartPackageBackup, readChartPackageBackup } from './presentation-chart-backup.js'
+import { validatePresentationExistingChartChange, type PresentationExistingChartChange } from './presentation-existing-chart.js'
 
 const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
@@ -433,6 +435,11 @@ const tools = [
       additionalProperties: false,
     },
   },
+  ...(['inspect', 'resume', 'undo'] as const).map((action) => ({
+    name: `${action}_slide_chart_values_change`,
+    description: action === 'inspect' ? 'Inspect a durable chart value change against the current host package without writing.' : action === 'resume' ? 'Finalize a known interrupted chart value write after classifying the host package; never replay an unknown host write.' : 'Propose confirmed restoration of the original backed-up chart package when the exact applied package is still current.',
+    inputSchema: { type: 'object', properties: { change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' } }, required: ['change_id'], additionalProperties: false },
+  })),
   {
     name: 'edit_slide_master',
     description:
@@ -1075,6 +1082,12 @@ export function createPowerPointSkill(options: {
   platform?: string
   vfs?: InMemoryVfs
   nativeMasterEditingSupported?: boolean
+  chartSavepoint?: {
+    documentId(): Promise<string>
+    request(body: unknown, signal?: AbortSignal): Promise<Response>
+    readExistingChartChange(id: string): PresentationExistingChartChange | undefined
+    writeExistingChartChange(record: PresentationExistingChartChange, expected: PresentationExistingChartChange | undefined): Promise<void>
+  }
 }): AgentSkill {
   const masterXmlEditingSupported = options.platform?.toLowerCase() !== 'mac'
   const nativeMasterEditingSupported = options.nativeMasterEditingSupported !== false
@@ -1150,44 +1163,150 @@ export function createPowerPointSkill(options: {
   }
 
   async function proposeChartValues(slideIndex: number, shapeId: string, values: string[][], explanation: string | undefined, signal?: AbortSignal): Promise<ToolExecution> {
+    const durable = options.chartSavepoint
+    if (!durable) throw new Error('office_api_unsupported')
+    const documentId = await durable.documentId()
     const deck = await options.adapter.verifySlides(signal)
     const before = await options.adapter.exportSlidePackage(slideIndex, signal)
+    const beforeSlideIds = deck.slides.map((slide) => slide.slideId)
+    if (!documentId || beforeSlideIds[slideIndex] !== before.slideId) throw new Error('office_state_uncertain')
     const beforeDigest = await presentationPackageDigest(before.base64, signal)
     const prepared = await updatePowerPointChartDataPackage(before.base64, shapeId, values, signal)
+    const afterDigest = await presentationPackageDigest(prepared.base64, signal)
     const edit = await captureChartValuePackageEdit(before.base64, prepared.base64, signal)
     let applied: typeof edit | undefined
+    const changeId = crypto.randomUUID(), backupId = crypto.randomUUID()
+    let record: PresentationExistingChartChange | undefined
+    const store = async (next: PresentationExistingChartChange) => {
+      if (!validatePresentationExistingChartChange(next)) throw new Error('presentation_existing_chart_state_invalid')
+      if (await durable.documentId() !== documentId) throw new Error('presentation_document_changed')
+      await durable.writeExistingChartChange(next, record)
+      if (JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(next)) throw new Error('office_state_uncertain')
+      record = structuredClone(next)
+    }
+    const unchanged = async (s?: AbortSignal) => {
+      if (await durable.documentId() !== documentId) return false
+      const host = await options.adapter.verifySlides(s)
+      const current = await options.adapter.exportSlidePackage(slideIndex, s)
+      return JSON.stringify(host.slides.map((slide) => slide.slideId)) === JSON.stringify(beforeSlideIds) &&
+        current.slideId === before.slideId && await presentationPackageDigest(current.base64, s) === beforeDigest &&
+        await verifyPowerPointPackageInputs(current.base64, edit.beforeHashes, s)
+    }
     const proposal = options.proposals.propose({
       operation: 'update_slide_chart_values',
       toolName: 'update_slide_chart_values',
       title: explanation || 'Update native chart values',
-      preview: { slideIndex, shapeId, values, changedPaths: edit.changedPaths, beforeHashes: edit.beforeHashes, afterHashes: edit.afterHashes },
+      preview: { changeId, slideIndex, shapeId, values, changedPaths: edit.changedPaths, beforeHashes: edit.beforeHashes, afterHashes: edit.afterHashes },
       impact: { host: 'powerpoint', targets: [`slide:${deck.slides[slideIndex]?.slideId ?? before.slideId}`, `shape:${shapeId}`], count: 1 },
       fingerprint: before.fingerprint,
       before: { slideId: before.slideId, hashes: edit.beforeHashes },
       after: { hashes: edit.afterHashes },
       code: JSON.stringify({ version: 1, operation: 'update_chart_values', shapeId, values }),
-      validate: async (confirmSignal) => {
-        const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
-        return current.slideId === before.slideId &&
-          await presentationPackageDigest(current.base64, confirmSignal) === beforeDigest &&
-          await verifyPowerPointPackageInputs(current.base64, edit.beforeHashes, confirmSignal)
-      },
+      validate: async (confirmSignal) => !durable.readExistingChartChange(changeId) && await unchanged(confirmSignal),
       execute: async (confirmSignal) => {
+        if (!(await unchanged(confirmSignal)) || durable.readExistingChartChange(changeId)) throw new Error('proposal_stale')
         const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
-        if (current.slideId !== before.slideId ||
-          await presentationPackageDigest(current.base64, confirmSignal) !== beforeDigest ||
-          !(await verifyPowerPointPackageInputs(current.base64, edit.beforeHashes, confirmSignal))) throw new Error('proposal_stale')
         const updated = await updatePowerPointChartDataPackage(current.base64, shapeId, values, confirmSignal)
         applied = await captureChartValuePackageEdit(current.base64, updated.base64, confirmSignal)
-        await options.adapter.replaceSlidePackage(slideIndex, applied.base64, false, applied, confirmSignal)
+        if (await presentationPackageDigest(applied.base64, confirmSignal) !== afterDigest) throw new Error('proposal_stale')
+        const backup = await saveChartPackageBackup({ request: durable.request, documentId, hostSlideId: before.slideId, slideIds: beforeSlideIds, base64: current.base64, backupId }, confirmSignal)
+        if (!(await unchanged(confirmSignal))) throw new Error('proposal_stale')
+        await store({ version: 1, changeId, documentId, oldSlideId: before.slideId, shapeId, slideIndex, beforeSlideIds, beforePackageDigest: beforeDigest, afterPackageDigest: afterDigest, backup, state: 'pending' })
+        await store({ ...record!, state: 'write_pending' })
+        if (!(await unchanged(confirmSignal))) throw new Error('proposal_stale')
+        const inserted = await options.adapter.replaceSlidePackage(slideIndex, applied.base64, false, applied, confirmSignal, { slideId: before.slideId, packageDigest: beforeDigest })
+        await store({ ...record!, state: 'applied', newSlideId: inserted.slideId })
       },
       verify: async (confirmSignal) => {
-        if (!applied) throw new Error('office_verify_failed')
+        if (!applied || record?.state !== 'applied') throw new Error('office_verify_failed')
         const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
-        if (!(await verifyImportedPowerPointPackage(current.base64, applied, confirmSignal))) throw new Error('office_verify_failed')
+        if (current.slideId !== record.newSlideId || !(await verifyImportedPowerPointPackage(current.base64, applied, confirmSignal)) ||
+          await presentationPackageDigest(current.base64, confirmSignal) !== afterDigest) throw new Error('office_verify_failed')
       },
     })
     return { output: boundedJson(proposal), mutated: false, summary: 'Proposed native chart values update' }
+  }
+
+  async function chartChangeTool(name: string, changeId: string, signal?: AbortSignal): Promise<ToolExecution> {
+    const durable = options.chartSavepoint
+    if (!durable) throw new Error('office_api_unsupported')
+    const saved = durable.readExistingChartChange(changeId)
+    if (!saved || !validatePresentationExistingChartChange(saved) || await durable.documentId() !== saved.documentId)
+      throw new Error('presentation_existing_chart_missing')
+    let record = structuredClone(saved)
+    const observe = async (s?: AbortSignal) => {
+      if (await durable.documentId() !== record.documentId ||
+        JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(record))
+        throw new Error('presentation_existing_chart_stale')
+      const deck = await options.adapter.verifySlides(s)
+      const ids = deck.slides.map((slide) => slide.slideId)
+      if (ids.length !== record.beforeSlideIds.length || ids.some((id, index) => index !== record.slideIndex && id !== record.beforeSlideIds[index]))
+        return { status: 'conflict' as const, slideId: undefined, digest: undefined }
+      const current = await options.adapter.exportSlidePackage(record.slideIndex, s)
+      const digest = await presentationPackageDigest(current.base64, s)
+      const status = digest === record.beforePackageDigest
+        ? 'before' : digest === record.afterPackageDigest &&
+          (record.newSlideId === undefined || current.slideId === record.newSlideId)
+          ? 'after' : 'conflict'
+      return { status, slideId: current.slideId, digest }
+    }
+    const store = async (next: PresentationExistingChartChange) => {
+      if (await durable.documentId() !== record.documentId) throw new Error('presentation_document_changed')
+      await durable.writeExistingChartChange(next, record)
+      if (JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(next)) throw new Error('office_state_uncertain')
+      record = structuredClone(next)
+    }
+    const observed = await observe(signal)
+    if (name === 'inspect_slide_chart_values_change') {
+      const verified = record.state === 'applied' ? observed.status === 'after' :
+        record.state === 'undone' || record.state === 'cancelled' ? observed.status === 'before' : false
+      return { output: boundedJson({ changeId, state: record.state, hostStatus: observed.status, slideId: observed.slideId, currentHostVerified: verified, manualReview: !verified, qaPassed: false }), mutated: false, summary: 'Inspected chart values change' }
+    }
+    if (name === 'resume_slide_chart_values_change') {
+      const outcome = observed.status === 'before' && ['pending', 'write_pending'].includes(record.state) ? 'cancelled' :
+        observed.status === 'after' && record.state === 'write_pending' ? 'applied' :
+          observed.status === 'before' && record.state === 'undo_pending' ? 'undone' : undefined
+      if (!outcome || !observed.slideId) throw new Error('presentation_existing_chart_manual_review')
+      const proposal = options.proposals.propose({
+        operation: name, toolName: name, title: 'Finalize interrupted chart change',
+        preview: { changeId, previousState: record.state, observed: observed.status, nextState: outcome },
+        impact: { host: 'powerpoint', targets: [`slide:${observed.slideId}`], count: 1 },
+        fingerprint: `${observed.slideId}:${observed.digest}`,
+        before: { state: record.state }, after: { state: outcome }, code: JSON.stringify({ changeId, outcome }),
+        validate: async (s) => { const next = await observe(s); return next.status === observed.status && next.slideId === observed.slideId && next.digest === observed.digest },
+        execute: async (s) => {
+          const next = await observe(s)
+          if (next.status !== observed.status || next.slideId !== observed.slideId || next.digest !== observed.digest) throw new Error('proposal_stale')
+          if (outcome !== 'cancelled') await readChartPackageBackup({ request: durable.request, documentId: record.documentId, hostSlideId: record.oldSlideId, slideIds: record.beforeSlideIds, backup: record.backup, expectedPackageDigest: record.beforePackageDigest }, s)
+          await store({ ...record, state: outcome, ...(outcome === 'applied' ? { newSlideId: observed.slideId } : {}), ...(outcome === 'undone' ? { restoredSlideId: observed.slideId } : {}) })
+        },
+        verify: async (s) => { if ((await observe(s)).status !== observed.status || record.state !== outcome) throw new Error('office_verify_failed') },
+      })
+      return { output: boundedJson(proposal), mutated: false, summary: 'Proposed chart change recovery' }
+    }
+    if (record.state !== 'applied' || observed.status !== 'after' || observed.slideId !== record.newSlideId) throw new Error('presentation_existing_chart_manual_review')
+    const original = await readChartPackageBackup({ request: durable.request, documentId: record.documentId, hostSlideId: record.oldSlideId, slideIds: record.beforeSlideIds, backup: record.backup, expectedPackageDigest: record.beforePackageDigest }, signal)
+    const proposal = options.proposals.propose({
+      operation: name, toolName: name, title: 'Undo native chart values update',
+      preview: { changeId, slideId: observed.slideId, shapeId: record.shapeId, from: record.afterPackageDigest, to: record.beforePackageDigest },
+      impact: { host: 'powerpoint', targets: [`slide:${observed.slideId}`], count: 1 },
+      fingerprint: `${observed.slideId}:${observed.digest}`,
+      before: { digest: record.afterPackageDigest }, after: { digest: record.beforePackageDigest }, code: JSON.stringify({ changeId, operation: 'undo_chart_values' }),
+      validate: async (s) => { const next = await observe(s); return next.status === 'after' && next.slideId === observed.slideId && next.digest === observed.digest },
+      execute: async (s) => {
+        const next = await observe(s)
+        if (next.status !== 'after' || next.slideId !== observed.slideId || next.digest !== observed.digest) throw new Error('proposal_stale')
+        const backup = await readChartPackageBackup({ request: durable.request, documentId: record.documentId, hostSlideId: record.oldSlideId, slideIds: record.beforeSlideIds, backup: record.backup, expectedPackageDigest: record.beforePackageDigest }, s)
+        if (await presentationPackageDigest(backup, s) !== await presentationPackageDigest(original, s)) throw new Error('presentation_chart_backup_invalid')
+        const current = await options.adapter.exportSlidePackage(record.slideIndex, s)
+        const reverse = await captureChartValuePackageEdit(current.base64, backup, s)
+        await store({ ...record, state: 'undo_pending' })
+        const restored = await options.adapter.replaceSlidePackage(record.slideIndex, backup, false, reverse, s, { slideId: record.newSlideId!, packageDigest: record.afterPackageDigest })
+        await store({ ...record, state: 'undone', restoredSlideId: restored.slideId })
+      },
+      verify: async (s) => { const next = await observe(s); if (record.state !== 'undone' || next.status !== 'before' || next.slideId !== record.restoredSlideId) throw new Error('office_verify_failed') },
+    })
+    return { output: boundedJson(proposal), mutated: false, summary: 'Proposed chart values undo' }
   }
 
   return {
@@ -1197,6 +1316,7 @@ export function createPowerPointSkill(options: {
       ' Prefer inspect_slide_masters and native edit_slide_master for backgrounds, theme colors, and layout inheritance. PowerPoint for Mac must never use edit_slide_master_xml.',
     tools: tools.filter(
       (tool) =>
+        (Boolean(options.chartSavepoint) || !['update_slide_chart_values', 'inspect_slide_chart_values_change', 'resume_slide_chart_values_change', 'undo_slide_chart_values_change'].includes(tool.name)) &&
         (masterXmlEditingSupported || tool.name !== 'edit_slide_master_xml') &&
         (nativeMasterEditingSupported ||
           !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
@@ -1736,6 +1856,11 @@ export function createPowerPointSkill(options: {
             input.values.some((series) => !Array.isArray(series) || series.length < 1 || series.length > 32 || series.some((value) => typeof value !== 'string' || value.length > 32 || !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value))) ||
             (input.explanation !== undefined && (typeof input.explanation !== 'string' || input.explanation.length > 100))) throw new Error('invalid_tool_input')
           return await proposeChartValues(input.slide_index as number, input.shape_id, input.values as string[][], input.explanation as string | undefined, signal)
+        }
+        if (['inspect_slide_chart_values_change', 'resume_slide_chart_values_change', 'undo_slide_chart_values_change'].includes(call.name)) {
+          const input = exactRecord(call.input, ['change_id'])
+          if (typeof input.change_id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.change_id)) throw new Error('invalid_tool_input')
+          return await chartChangeTool(call.name, input.change_id, signal)
         }
         if (call.name === 'edit_slide_xml' || call.name === 'edit_slide_chart') {
           const input = declarativeInput(call.input, { slide: true, explanationMax: 50 })
