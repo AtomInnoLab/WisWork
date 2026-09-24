@@ -1,3 +1,4 @@
+import { parsePresentationClaimReview } from '@wiswork/pptx-engine/presentation-claim-review'
 import { createPresentationPageBackupService } from './presentation-page-backups'
 import {
   handlePresentationProduction,
@@ -33,6 +34,7 @@ const errorCodes = new Set([
   'output_too_large',
   'unsupported_file',
   'evidence_source_unsupported',
+  'evidence_changed',
   'attachment_conflict',
   'quota_exceeded',
   'digest_mismatch',
@@ -116,56 +118,65 @@ export function createPresentationService(options: {
           'production_page',
           'production_content_check',
           'production_claim_evidence',
+          'production_record_claim_review',
+          'production_read_claim_review',
         ].includes(request.operation as string)
       )
         throw new Error('invalid_request')
       const allowedKeys =
-        request.operation === 'production_claim_evidence'
-          ? [
-              'operation',
-              'documentId',
-              'projectId',
-              'requestId',
-              'pageId',
-              'claimId',
-              'sourceId',
-              'offset',
-              'maxChars',
-            ]
-          : request.operation === 'production_rebuild_page'
+        request.operation === 'production_read_claim_review'
+          ? ['operation', 'documentId', 'projectId', 'requestId', 'reviewId']
+          : ['production_claim_evidence', 'production_record_claim_review'].includes(
+                request.operation as string,
+              )
             ? [
                 'operation',
                 'documentId',
                 'projectId',
-                'parentRequestId',
                 'requestId',
                 'pageId',
-                'slide',
+                'claimId',
+                'sourceId',
+                'offset',
+                'maxChars',
+                ...(request.operation === 'production_record_claim_review'
+                  ? ['reviewId', 'evidenceDigest', 'outcome', 'notes']
+                  : []),
               ]
-            : request.operation === 'production_begin'
-              ? ['operation', 'documentId', 'projectId', 'requestId', 'planRevision', 'deck']
-              : request.operation === 'production_status'
-                ? ['operation', 'documentId', 'projectId', 'requestId']
-                : request.operation === 'production_run'
+            : request.operation === 'production_rebuild_page'
+              ? [
+                  'operation',
+                  'documentId',
+                  'projectId',
+                  'parentRequestId',
+                  'requestId',
+                  'pageId',
+                  'slide',
+                ]
+              : request.operation === 'production_begin'
+                ? ['operation', 'documentId', 'projectId', 'requestId', 'planRevision', 'deck']
+                : request.operation === 'production_status'
                   ? ['operation', 'documentId', 'projectId', 'requestId']
-                  : ['production_page', 'production_content_check'].includes(
-                        request.operation as string,
-                      )
-                    ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
-                    : request.operation === 'compile'
-                      ? [
-                          'operation',
-                          'documentId',
-                          'projectId',
-                          'requestId',
-                          'deck',
-                          'planRevision',
-                        ]
-                      : request.operation === 'resume'
-                        ? ['operation', 'documentId', 'projectId', 'requestId']
-                        : request.operation === 'save_plan'
-                          ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'plan']
-                          : ['operation', 'documentId', 'projectId']
+                  : request.operation === 'production_run'
+                    ? ['operation', 'documentId', 'projectId', 'requestId']
+                    : ['production_page', 'production_content_check'].includes(
+                          request.operation as string,
+                        )
+                      ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
+                      : request.operation === 'compile'
+                        ? [
+                            'operation',
+                            'documentId',
+                            'projectId',
+                            'requestId',
+                            'deck',
+                            'planRevision',
+                          ]
+                        : request.operation === 'resume'
+                          ? ['operation', 'documentId', 'projectId', 'requestId']
+                          : request.operation === 'save_plan'
+                            ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'plan']
+                            : ['operation', 'documentId', 'projectId']
       const requiredKeys = allowedKeys.filter(
         (key) =>
           !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)) &&
@@ -200,6 +211,8 @@ export function createPresentationService(options: {
           'production_rebuild_page',
           'production_content_check',
           'production_claim_evidence',
+          'production_record_claim_review',
+          'production_read_claim_review',
         ].includes(request.operation as string) ||
         (request.operation === 'production_status' && request.requestId !== undefined)
       )
@@ -210,10 +223,15 @@ export function createPresentationService(options: {
           'production_rebuild_page',
           'production_content_check',
           'production_claim_evidence',
+          'production_record_claim_review',
         ].includes(request.operation as string)
       )
         assertPresentationId(request.pageId)
-      if (request.operation === 'production_claim_evidence') {
+      if (
+        ['production_claim_evidence', 'production_record_claim_review'].includes(
+          request.operation as string,
+        )
+      ) {
         assertPresentationId(request.claimId)
         assertPresentationId(request.sourceId)
         if (
@@ -225,6 +243,44 @@ export function createPresentationService(options: {
           Number(request.maxChars) > 8000
         )
           throw new Error('invalid_request')
+      }
+      if (
+        ['production_record_claim_review', 'production_read_claim_review'].includes(
+          request.operation as string,
+        )
+      )
+        assertPresentationId(request.reviewId)
+      if (request.operation === 'production_record_claim_review') {
+        try {
+          parsePresentationClaimReview({
+            version: 1,
+            projectId: request.projectId,
+            requestId: request.requestId,
+            reviewId: request.reviewId,
+            pageId: request.pageId,
+            claimId: request.claimId,
+            sourceId: request.sourceId,
+            offset: request.offset,
+            maxChars: request.maxChars,
+            evidenceDigest: request.evidenceDigest,
+            outcome: request.outcome,
+            notes: request.notes,
+            reviewer: 'agent',
+            planRevision: 1,
+            inputDigest: '0'.repeat(64),
+            planDigest: '0'.repeat(64),
+            attachmentId: '0'.repeat(64),
+            createdAt: '2026-01-01T00:00:00.000Z',
+            checks: {
+              support: 'agent_reviewed',
+              sourceAuthority: 'not_verified',
+              timeliness: 'not_verified',
+              host: 'not_checked',
+            },
+          })
+        } catch {
+          throw new Error('invalid_request')
+        }
       }
       if (request.operation === 'production_rebuild_page') {
         assertPresentationId(request.parentRequestId)

@@ -1,3 +1,8 @@
+import { createHash } from 'node:crypto'
+import {
+  parsePresentationClaimReview,
+  presentationClaimEvidenceContent,
+} from '@wiswork/pptx-engine/presentation-claim-review'
 import {
   parsePresentationClaimEvidence,
   matchPresentationClaimExcerpt,
@@ -92,6 +97,57 @@ export async function handlePresentationProduction(
   const projectId = request.projectId as string,
     documentId = request.documentId as string,
     requestId = request.requestId as string | undefined
+  if (
+    request.operation === 'production_record_claim_review' ||
+    request.operation === 'production_read_claim_review'
+  ) {
+    check(signal)
+    let saved
+    if (request.operation === 'production_record_claim_review') {
+      const evidence = parsePresentationClaimEvidence(
+        await handlePresentationProduction(
+          { ...request, operation: 'production_claim_evidence' },
+          options,
+          signal,
+        ),
+      )
+      const digest = createHash('sha256')
+        .update(presentationClaimEvidenceContent(evidence))
+        .digest('hex')
+      if (digest !== request.evidenceDigest) throw new Error('evidence_changed')
+      check(signal)
+      saved = store.saveClaimReview(projectId, documentId, requestId!, request.reviewId as string, {
+        pageId: evidence.pageId,
+        claimId: evidence.claimId,
+        sourceId: evidence.source.id,
+        attachmentId: evidence.attachment.id,
+        offset: evidence.attachment.offset,
+        maxChars: request.maxChars,
+        evidenceDigest: digest,
+        outcome: request.outcome,
+        notes: request.notes,
+        reviewer: 'agent',
+      })
+    } else saved = store.claimReview(projectId, documentId, requestId!, request.reviewId as string)
+    if (!saved) throw new Error('not_found')
+    return parsePresentationClaimReview({
+      ...(saved.review as Record<string, unknown>),
+      version: 1,
+      projectId: saved.projectId,
+      requestId: saved.requestId,
+      reviewId: saved.reviewId,
+      planRevision: saved.planRevision,
+      inputDigest: saved.inputDigest,
+      planDigest: saved.planDigest,
+      createdAt: saved.createdAt,
+      checks: {
+        support: 'agent_reviewed',
+        sourceAuthority: 'not_verified',
+        timeliness: 'not_verified',
+        host: 'not_checked',
+      },
+    })
+  }
   let record = store.production(projectId, documentId, requestId)
   if (request.operation === 'production_rebuild_page') {
     const parent = store.production(projectId, documentId, request.parentRequestId as string)
