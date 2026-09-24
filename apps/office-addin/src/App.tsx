@@ -931,7 +931,12 @@ export function AgentWorkspace(props: {
                       {file.kind === 'image' && file.licenseDeclaration && (
                         <p>
                           使用权：用户声明 {file.licenseDeclaration.kind}；依据附件{' '}
-                          {file.licenseDeclaration.evidenceAttachmentId.slice(0, 12)}…；尚未核验。
+                          {durableFiles.find(
+                            (item) =>
+                              item.attachmentId === file.licenseDeclaration?.evidenceAttachmentId,
+                          )?.name ??
+                            `${file.licenseDeclaration.evidenceAttachmentId.slice(0, 12)}…`}
+                          ；尚未核验。
                         </p>
                       )}
                       {file.kind === 'image' && ui.rightsAvailable?.() && (
