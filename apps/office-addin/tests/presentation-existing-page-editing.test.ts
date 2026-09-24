@@ -37,6 +37,7 @@ async function fixture() {
   } as unknown as PresentationBaselineSkill
   const records = new Map<string, PresentationExistingPageChange>()
   let failWrite = false
+  let failAfterWrite = false
   let slideIds = ['old']
   const digest = async (value: Uint8Array) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(value).buffer)), (x) => x.toString(16).padStart(2, '0')).join('')
   const meta = { backupId: '', documentId: 'doc', hostSlideId: 'old', slideIds: ['old'], sha256: '', sizeBytes: 0, receivedBytes: 0, status: 'uploading' }
@@ -52,6 +53,7 @@ async function fixture() {
       data.set(part, input.offset as number)
       meta.receivedBytes += part.length
     } else if (op === 'existing_page_backup_finish') meta.status = 'ready'
+    else if (op === 'existing_page_backup_release') { data = new Uint8Array(); return new Response(JSON.stringify({ ...input, status: 'released' })) }
     else if (op === 'existing_page_backup_read') return new Response(JSON.stringify({ backupId: meta.backupId, offset: input.offset, sizeBytes: meta.sizeBytes, sha256: meta.sha256, base64: base64(data.subarray(input.offset as number, (input.offset as number) + (input.length as number))) }))
     return new Response(JSON.stringify(meta))
   })
@@ -77,6 +79,7 @@ async function fixture() {
       expect(records.get(record.changeId)).toEqual(expected)
       expect(validExistingPageTransition(expected, record)).toBe(true)
       records.set(record.changeId, structuredClone(record))
+      if (failAfterWrite) throw new Error('journal_ack_lost')
     },
   })
   const call = (action: string, input: Record<string, unknown>) => skill.executeTool({ id: 'tool', name: `${action}_existing_presentation_page_change`, input })
@@ -86,7 +89,7 @@ async function fixture() {
     await proposals.confirm(proposalId)
     return decision
   }
-  return { call, confirm, records, adapter, inspectPage, request, setWriteFailure: (value: boolean) => { failWrite = value }, removeStaged: () => { slideIds = ['old'] }, source: () => source, changeSource: (value: Uint8Array) => { source = value }, changeBackup: (value: Uint8Array) => { backupBytes = value }, digest, data: () => data }
+  return { call, confirm, records, adapter, inspectPage, request, setWriteFailure: (value: boolean) => { failWrite = value }, setAckFailure: () => { failAfterWrite = true }, removeStaged: () => { slideIds = ['old'] }, source: () => source, changeSource: (value: Uint8Array) => { source = value }, changeBackup: (value: Uint8Array) => { backupBytes = value }, digest, data: () => data }
 }
 
 it('captures exact durable page IDs after stage, commit and undo', async () => {
@@ -243,6 +246,19 @@ it('does not insert when the durable pending savepoint fails', async () => {
   await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/home/user/rebuilt.pptx' })
   f.setWriteFailure(true)
   await expect(f.confirm()).rejects.toThrow()
+  expect(f.adapter.stage).not.toHaveBeenCalled()
+  expect(f.request.mock.calls.some(([body]) => (body as Record<string, unknown>).operation === 'existing_page_backup_release')).toBe(true)
+  expect(f.data().length).toBe(0)
+})
+
+it('keeps the backup if the first savepoint persisted but its acknowledgement was lost', async () => {
+  const f = await fixture()
+  const proposed = await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/home/user/rebuilt.pptx' })
+  f.setAckFailure()
+  await expect(f.confirm()).rejects.toThrow('journal_ack_lost')
+  expect(f.records.has(JSON.parse(proposed.output).changeId)).toBe(true)
+  expect(f.request.mock.calls.some(([body]) => (body as Record<string, unknown>).operation === 'existing_page_backup_release')).toBe(false)
+  expect(f.data().length).toBeGreaterThan(0)
   expect(f.adapter.stage).not.toHaveBeenCalled()
 })
 

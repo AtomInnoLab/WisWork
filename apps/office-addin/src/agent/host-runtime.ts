@@ -870,7 +870,7 @@ export function createOfficeHostRuntime(
         if (!response.ok) throw new Error('backup_inventory_unavailable')
         const value = await response.json() as { documentId?: unknown; backups?: unknown }
         if (value.documentId !== documentId || !Array.isArray(value.backups)) throw new Error('backup_inventory_invalid')
-        return value.backups as { backupId: string; status: string }[]
+        return value.backups as { backupId: string; status: string; hostSlideId: string; slideIds: string[]; sha256: string; sizeBytes: number }[]
       } : undefined,
       readTextChange: options.presentation?.readTextChange,
       readGeometryChange: options.presentation?.readGeometryChange,

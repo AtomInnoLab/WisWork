@@ -287,7 +287,18 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
               const beforeWrite = await options.exportAdapter.exportPresentationPagePackage(record.oldSlideId, signal)
               if (beforeWrite.slideId !== record.oldSlideId || !same(beforeWrite.slideIds, record.beforeSlideIds) || await presentationPackageDigest(beforeWrite.base64, signal) !== originalPackageDigest) throw new Error('proposal_stale')
               record = { ...record, originalPackageDigest, backup: { backupId: record.backup.backupId, sha256: backupSha, sizeBytes: originalBytes.length } }
-              await store(record)
+              try {
+                await store(record)
+              } catch (error) {
+                // A missing first journal entry means the backup has no owner and no page write began.
+                try {
+                  if (await options.documentId() === documentId && !options.readExistingPageChange(record.changeId))
+                    await request('existing_page_backup_release', { backupId: record.backup.backupId,
+                      hostSlideId: record.oldSlideId, slideIds: record.beforeSlideIds,
+                      sha256: record.backup.sha256, sizeBytes: record.backup.sizeBytes })
+                } catch { /* An uncertain savepoint must remain available for manual recovery. */ }
+                throw error
+              }
               await sourceFresh()
               if (!(await baselineFresh())) throw new Error('proposal_stale')
               await options.adapter.stage(projected(record), source!.base64, async (newSlideId) => { await store({ ...record, state: 'inserted', newSlideId }) }, assertCurrent, signal)

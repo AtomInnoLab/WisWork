@@ -71,7 +71,7 @@ export interface PresentationChangesController {
 type Read<T> = () => T | undefined | Promise<T | undefined>
 export interface PresentationChangesOptions {
   listChangeHistory?: () => PresentationHistoryEntry[]
-  listExistingPageBackups?: (documentId: string) => Promise<{ backupId: string; status: string }[]>
+  listExistingPageBackups?: (documentId: string) => Promise<{ backupId: string; status: string; hostSlideId: string; slideIds: string[]; sha256: string; sizeBytes: number }[]>
   existingAvailable?: () => boolean
   available(): boolean
   artifact(): CompiledPresentationArtifact | undefined
@@ -499,10 +499,16 @@ export function createPresentationChangesController(
         try {
           const backups = await options.listExistingPageBackups(boundDocument)
           if (!Array.isArray(backups) || backups.length > 8 || backups.some((b) =>
-            !b || typeof b.backupId !== 'string' || !['ready', 'uploading'].includes(b.status))) throw new Error('invalid')
-          const known = new Set(rows.filter((r) => r.entry.source === 'existing_chart')
-            .map((r) => (r.record as PresentationExistingChartChange).backup.backupId))
-          backupAudit = { active: backups.length, unmatched: backups.filter((b) => !known.has(b.backupId)).length }
+            !b || typeof b.backupId !== 'string' || !['ready', 'uploading'].includes(b.status) ||
+            typeof b.hostSlideId !== 'string' || !Array.isArray(b.slideIds) ||
+            !b.slideIds.every((id) => typeof id === 'string') || typeof b.sha256 !== 'string' ||
+            !Number.isSafeInteger(b.sizeBytes))) throw new Error('invalid')
+          const known = rows.filter((r) => r.entry.source === 'existing_chart' || r.entry.source === 'existing_page')
+            .map((r) => r.record as PresentationExistingChartChange | PresentationExistingPageChange)
+          backupAudit = { active: backups.length, unmatched: backups.filter((b) => !known.some((r) =>
+            r.backup.backupId === b.backupId && r.backup.sha256 === b.sha256 &&
+            r.backup.sizeBytes === b.sizeBytes && r.oldSlideId === b.hostSlideId &&
+            JSON.stringify(r.beforeSlideIds) === JSON.stringify(b.slideIds))).length }
         } catch { /* Backup inventory is advisory; history remains available. */ }
       }
       if (ticket !== generation || !current(scope, await options.documentId())) return

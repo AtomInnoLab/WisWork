@@ -99,6 +99,7 @@ it('shows existing-page identity diff offline and routes commit by exact change 
     listChangeHistory: () => [
       { id: 'existing_page:native-page', kind: 'existing_page', sequence: 1, legacy: false, record },
     ],
+    listExistingPageBackups: async () => [{ backupId: 'backup', status: 'ready', hostSlideId: 'old', slideIds: ['old', 'other'], sha256: 'd'.repeat(64), sizeBytes: 120 }],
     executeTool,
   })
   await controller.refresh()
@@ -106,6 +107,7 @@ it('shows existing-page identity diff offline and routes commit by exact change 
   expect(row).toMatchObject({ source: 'existing_page', kind: 'page', actions: ['inspect', 'commit', 'discard'] })
   expect(row.before).toContain('old')
   expect(row.after).toContain('new')
+  expect(controller.snapshot().backupAudit).toEqual({ active: 1, unmatched: 0 })
   await controller.run(row.id, 'commit')
   expect(executeTool).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -128,6 +130,7 @@ it('offers one chart backup release after cancellation and accepts the receipt u
     state: 'cancelled',
   }
   let inventoryAvailable = true
+  let inventoryDigest = 'c'.repeat(64)
   const executeTool = vi.fn(async () => ({ output: '{}', mutated: false, summary: 'proposed' }))
   const controller = createPresentationChangesController({
     available: () => false, existingAvailable: () => true, artifact: () => undefined,
@@ -135,7 +138,10 @@ it('offers one chart backup release after cancellation and accepts the receipt u
     listChangeHistory: () => [{ id: 'existing_chart:chart-release', kind: 'existing_chart', sequence: 1, legacy: false, record }],
     listExistingPageBackups: async () => {
       if (!inventoryAvailable) throw new Error('pc_offline')
-      return [{ backupId: 'backup', status: 'ready' }, { backupId: 'unmatched', status: 'ready' }]
+      return [
+        { backupId: 'backup', status: 'ready', hostSlideId: 'old', slideIds: ['old'], sha256: inventoryDigest, sizeBytes: 120 },
+        { backupId: 'unmatched', status: 'ready', hostSlideId: 'old', slideIds: ['old'], sha256: 'c'.repeat(64), sizeBytes: 120 },
+      ]
     },
     executeTool,
   })
@@ -143,6 +149,10 @@ it('offers one chart backup release after cancellation and accepts the receipt u
   const row = controller.snapshot().entries[0]!
   expect(row.actions).toEqual(['inspect', 'release'])
   expect(controller.snapshot().backupAudit).toEqual({ active: 2, unmatched: 1 })
+  inventoryDigest = 'd'.repeat(64)
+  await controller.refresh()
+  expect(controller.snapshot().backupAudit).toEqual({ active: 2, unmatched: 2 })
+  inventoryDigest = 'c'.repeat(64)
   await controller.run(row.id, 'release')
   expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({
     name: 'release_slide_chart_values_change', input: { change_id: 'chart-release' },
