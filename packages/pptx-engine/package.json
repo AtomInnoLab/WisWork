@@ -15,7 +15,9 @@
     "./presentation-content-check": "./src/presentation-content-check.ts",
     "./presentation-claim-evidence": "./src/presentation-claim-evidence.ts",
     "./presentation-page-reviews": "./src/presentation-page-reviews.ts",
-    "./presentation-claim-review": "./src/presentation-claim-review.ts"
+    "./presentation-claim-review": "./src/presentation-claim-review.ts",
+    "./presentation-delivery-report": "./src/presentation-delivery-report.ts",
+    "./presentation-calculation": "./src/presentation-calculation.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -25,7 +27,8 @@
   "dependencies": {
     "fast-xml-parser": "^5.3.4",
     "jszip": "^3.10.1",
-    "pptxgenjs": "^4.0.1"
+    "pptxgenjs": "^4.0.1",
+    "@wiswork/project-store": "*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

@@ -38,7 +38,16 @@ export interface PresentationPlan {
     reviewStatus: 'needs_review'
     asOf?: string
     jurisdiction?: string
-    calculation?: { formula: string; inputs: string[]; unit?: string; currency?: string }
+    calculation?: {
+      formula: string
+      inputs: string[]
+      unit?: string
+      currency?: string
+      reproduction?: {
+        bindings: { name: string; inputIndex: number; value: number; sourceId: string }[]
+        expected: number
+      }
+    }
   }[]
   style: PresentationStyle
   slides: {
@@ -96,6 +105,19 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object({
             inputs: array(text(1000, 1), 32, 1),
             unit: text(100, 1),
             currency: text(100, 1),
+            reproduction: object({
+              bindings: array(
+                object({
+                  name: { ...text(32, 1), pattern: '^[A-Za-z][A-Za-z0-9_]*$' },
+                  inputIndex: number(0, 31),
+                  value: number(-1e12, 1e12),
+                  sourceId: id,
+                }),
+                32,
+                1,
+              ),
+              expected: number(-1e12, 1e12),
+            }),
           },
           ['formula', 'inputs'],
         ),
@@ -151,6 +173,31 @@ export function parsePresentationPlan(input: unknown): PresentationPlan {
     if (['fact', 'quote', 'calculation'].includes(claim.type) && !claim.sourceIds.length)
       reject('source_required')
     if (claim.type === 'calculation' && !claim.calculation) reject('calculation_required')
+    const reproduction = claim.calculation?.reproduction
+    if (reproduction) {
+      if (
+        claim.type !== 'calculation' ||
+        reproduction.bindings.length !== claim.calculation!.inputs.length
+      )
+        reject('reproduction_inputs')
+      unique(
+        reproduction.bindings.map((binding) => binding.name),
+        'binding_name',
+      )
+      unique(
+        reproduction.bindings.map((binding) => String(binding.inputIndex)),
+        'binding_index',
+      )
+      for (const binding of reproduction.bindings) {
+        if (
+          !Number.isInteger(binding.inputIndex) ||
+          binding.inputIndex >= claim.calculation!.inputs.length ||
+          ['prototype', 'constructor', '__proto__'].includes(binding.name) ||
+          !claim.sourceIds.includes(binding.sourceId)
+        )
+          reject('reproduction_binding')
+      }
+    }
   }
   for (const slide of plan.slides) {
     unique(slide.claimIds, 'claim_reference')
