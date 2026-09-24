@@ -28,6 +28,7 @@ export interface PresentationInlineAsset {
   width: number
   height: number
   source?: string
+  sources?: string[]
   license?: 'owned' | 'licensed' | 'public_domain' | 'unknown'
 }
 export interface PresentationClaim {
@@ -135,6 +136,7 @@ export const PRESENTATION_DECK_SCHEMA: Schema = object({
             width: number(1, 16384),
             height: number(1, 16384),
             source: text(2000, 1),
+            sources: array(text(2000, 1), 32, 1),
             license: choice('owned', 'licensed', 'public_domain', 'unknown'),
           },
           ['id', 'mime', 'base64', 'width', 'height'],
@@ -181,10 +183,15 @@ export const PRESENTATION_DECK_SCHEMA: Schema = object({
                 },
                 ['kind', 'shape'],
               ),
-              element({ kind: choice('image'), assetId: id, fit: choice('contain', 'cover'), altText: text(500, 1) }, [
-                'kind',
-                'assetId',
-              ]),
+              element(
+                {
+                  kind: choice('image'),
+                  assetId: id,
+                  fit: choice('contain', 'cover'),
+                  altText: text(500, 1),
+                },
+                ['kind', 'assetId'],
+              ),
               element(
                 {
                   kind: choice('table'),
@@ -240,6 +247,8 @@ export function parsePresentationDeck(input: unknown): PresentationDeck {
   // Attachment references must be resolved by the document-bound PC service before compilation.
   for (const asset of deck.assets) {
     if ('attachmentId' in asset) continue
+    if (asset.sources?.length && asset.source && asset.source !== asset.sources[0])
+      reject('asset_source_conflict')
     if (asset.base64.length % 4 !== 0) reject('image_encoding')
     if (
       !Number.isInteger(asset.width) ||

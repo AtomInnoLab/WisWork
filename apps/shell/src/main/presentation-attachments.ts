@@ -750,6 +750,9 @@ export function createPresentationAttachmentService(options: {
           width: m.width,
           height: m.height,
           source: m.source ?? `attachment:${id}`,
+          ...(m.sourceAliases?.length
+            ? { sources: [m.source!, ...m.sourceAliases.map((alias) => alias.source)] }
+            : {}),
         }
       }
       if (!integer(body.offset, 0, TEXT_LIMIT) || !integer(body.maxChars, 1, 24000))

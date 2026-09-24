@@ -145,6 +145,11 @@ describe('durable presentation image assets', () => {
     }
     expect(second.attachmentId).toBe(first.attachmentId)
     expect(second.sources).toEqual(['https://93.184.216.34/a.png', 'https://93.184.216.34/b.png'])
+    const asset = (await service(
+      { documentId: 'doc', operation: 'attachment_asset', attachmentId: first.attachmentId },
+      new AbortController().signal,
+    )) as { sources: string[] }
+    expect(asset.sources).toEqual(second.sources)
     expect(JSON.stringify(second)).not.toContain('private')
     expect(await call('https://93.184.216.34/b.png?private=two')).toEqual(second)
     expect(fetchImage).toHaveBeenCalledTimes(2)

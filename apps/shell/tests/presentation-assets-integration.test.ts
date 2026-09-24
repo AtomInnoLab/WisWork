@@ -7,6 +7,7 @@ import { PresentationStore } from '@wiswork/project-store'
 import { afterEach, expect, it, vi } from 'vitest'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { createPresentationService } from '../src/main/presentation-service'
+import { createPresentationAttachmentService } from '../src/main/presentation-attachments'
 
 const roots: string[] = []
 afterEach(() => {
@@ -81,4 +82,53 @@ it('compiles durable image references into real PPTX media and recovers without 
       deck: { ...deck, id: 'another-project' },
     }),
   ).toEqual({ error: 'not_found' })
+})
+
+it('keeps all PC image URL sources in compiled PowerPoint notes', async () => {
+  const userDataPath = mkdtempSync(join(tmpdir(), 'presentation-image-sources-'))
+  roots.push(userDataPath)
+  const deck = benchmarkDeck()
+  const image = Buffer.from(deck.assets[0]!.base64, 'base64')
+  const attachments = createPresentationAttachmentService({
+    userDataPath,
+    fetchImage: async () => new Response(image),
+    normalizeImage: async () => ({ bytes: image, width: 1, height: 1 }),
+  })
+  const imported = (await attachments(
+    {
+      documentId: 'document-images',
+      operation: 'attachment_import_url',
+      url: 'https://93.184.216.34/first.png',
+    },
+    signal(),
+  )) as { attachmentId: string }
+  await attachments(
+    {
+      documentId: 'document-images',
+      operation: 'attachment_import_url',
+      url: 'https://93.184.216.34/second.png',
+    },
+    signal(),
+  )
+  const service = createPresentationService({ userDataPath })
+  const output = decode(
+    await service(
+      {
+        documentId: 'document-images',
+        operation: 'compile',
+        requestId: 'all-sources',
+        deck: {
+          ...deck,
+          assets: [{ id: deck.assets[0]!.id, attachmentId: imported.attachmentId }],
+        },
+      },
+      signal(),
+    ),
+  )
+  expect(output.status).toBe('compiled')
+  const zip = await JSZip.loadAsync(Buffer.from(output.pptxBase64, 'base64'))
+  const notes = await zip.file('ppt/notesSlides/notesSlide3.xml')!.async('string')
+  expect(notes).toContain('https://93.184.216.34/first.png')
+  expect(notes).toContain('https://93.184.216.34/second.png')
+  expect(output.report.checks.sources).toBe('not_verified')
 })

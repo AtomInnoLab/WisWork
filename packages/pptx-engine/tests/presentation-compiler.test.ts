@@ -22,7 +22,9 @@ describe('presentation contract and compiler', () => {
     expect(report.geometry).toEqual([])
     expect(opened.deck.slides[2]!.elements.some((el) => el.type === 'picture')).toBe(true)
     expect(report.assetWarnings).toEqual({ missingSource: 0, unknownLicense: 1, missingAltText: 1 })
-    expect(await zip.file('ppt/slides/slide3.xml')!.async('string')).toContain('Image description missing')
+    expect(await zip.file('ppt/slides/slide3.xml')!.async('string')).toContain(
+      'Image description missing',
+    )
     expect(opened.deck.slides[5]!.elements.some((el) => el.type === 'table')).toBe(true)
     expect(opened.deck.slides[6]!.elements.some((el) => el.type === 'chart')).toBe(true)
   })
@@ -37,7 +39,20 @@ describe('presentation contract and compiler', () => {
     expect(report.assetWarnings).toEqual({ missingSource: 0, unknownLicense: 0, missingAltText: 0 })
     const zip = await JSZip.loadAsync(bytes)
     expect(await zip.file('ppt/slides/slide3.xml')!.async('string')).toContain('显微镜下的细胞图像')
-    expect(await zip.file('ppt/notesSlides/notesSlide3.xml')!.async('string')).toContain('license: licensed')
+    expect(await zip.file('ppt/notesSlides/notesSlide3.xml')!.async('string')).toContain(
+      'license: licensed',
+    )
+  })
+
+  it('preserves every recorded image source in slide notes', async () => {
+    const deck = benchmarkDeck()
+    deck.assets[0]!.source = 'https://example.com/first.png'
+    deck.assets[0]!.sources = ['https://example.com/first.png', 'https://example.org/second.png']
+    const { bytes } = await compilePresentationDeck(deck)
+    const zip = await JSZip.loadAsync(bytes)
+    const notes = await zip.file('ppt/notesSlides/notesSlide3.xml')!.async('string')
+    expect(notes).toContain('https://example.com/first.png')
+    expect(notes).toContain('https://example.org/second.png')
   })
 
   it('rejects malformed or unsafe input before compilation', () => {
@@ -68,6 +83,15 @@ describe('presentation contract and compiler', () => {
       },
       (d) => {
         d.assets[0].license = 'verified by AI'
+      },
+      (d) => {
+        d.assets[0].sources = []
+      },
+      (d) => {
+        d.assets[0].sources = ['x'.repeat(2001)]
+      },
+      (d) => {
+        d.assets[0].sources = ['Different from primary source']
       },
       (d) => {
         d.slides[2].elements[1].altText = ''

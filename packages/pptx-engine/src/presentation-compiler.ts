@@ -107,7 +107,7 @@ export async function compilePresentationDeck(
         })
       else if (el.kind === 'image') {
         const asset = assets.get(el.assetId)!
-        if (!asset.source) assetWarnings.missingSource++
+        if (!asset.source && !asset.sources?.length) assetWarnings.missingSource++
         if (!asset.license || asset.license === 'unknown') assetWarnings.unknownLicense++
         if (!el.altText) assetWarnings.missingAltText++
         // Contain uses verified dimensions. Cover uses native image crop, never rasterizes text.
@@ -191,7 +191,10 @@ export async function compilePresentationDeck(
       .filter((el) => el.kind === 'image')
       .map((el) => {
         const asset = assets.get(el.assetId)!
-        return `Image [${asset.id}]: ${asset.source ?? 'source not supplied'}; license: ${asset.license ?? 'unknown'}; alt text: ${el.altText ?? 'missing'}`
+        const sources = asset.sources?.length
+          ? asset.sources.join('; ')
+          : (asset.source ?? 'source not supplied')
+        return `Image [${asset.id}]: ${sources}; license: ${asset.license ?? 'unknown'}; alt text: ${el.altText ?? 'missing'}`
       })
     slide.addNotes(
       [
