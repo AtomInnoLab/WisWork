@@ -454,3 +454,44 @@ it('routes evidence delivery and issue actions through their dedicated PC operat
     runtime.dispose()
   }
 })
+
+it('exposes durable text recovery and a changes workbench through the runtime', async () => {
+  vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => true } } })
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      documentId: async () => 'doc',
+      request: async () => new Response('{}'),
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+      readReceipt: () => undefined,
+      readTextChange: () => undefined,
+      writeTextChange: async () => {},
+      listImageReplacements: () => [],
+    },
+  })
+  try {
+    for (const name of [
+      'read_presentation_text_change',
+      'inspect_presentation_text_change',
+      'undo_presentation_text_change',
+      'resume_presentation_text_change',
+    ]) {
+      expect(
+        runtime.skill.tools.some((tool) => tool.name === name),
+        name,
+      ).toBe(true)
+      expect(
+        (await runtime.skill.executeTool({ id: name, name, input: { page_id: 'p1' } })).output,
+      ).toBe('presentation_restore_required')
+    }
+    expect(runtime.changes).toBeDefined()
+    await runtime.changes!.refresh()
+    expect(runtime.changes!.snapshot().entries).toEqual([])
+    runtime.clearSession()
+    expect(runtime.changes!.snapshot().entries).toEqual([])
+  } finally {
+    runtime.dispose()
+    vi.unstubAllGlobals()
+  }
+})

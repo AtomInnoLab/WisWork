@@ -1,3 +1,8 @@
+import {
+  createPresentationChangesController,
+  type PresentationChangesController,
+} from './presentation-changes.js'
+import type { PresentationTextChange } from '../skills/powerpoint/presentation-text-change.js'
 import { createPresentationEvidenceDeliverySkill } from '../skills/powerpoint/presentation-evidence-delivery.js'
 import { createPresentationJobsSkill } from '../skills/powerpoint/presentation-jobs.js'
 import type { PresentationPageReplacement } from '../skills/powerpoint/presentation-page-replacement-record.js'
@@ -81,6 +86,7 @@ export interface OfficeHostRuntime {
   readonly presentation?: PresentationProjectController
   readonly importProgress?: PresentationImportProgressController
   readonly qa?: PresentationQaController
+  readonly changes?: PresentationChangesController
   durableAttachmentsAvailable?(): boolean
   durableImagesAvailable?(): boolean
   skill: AgentSkill
@@ -121,6 +127,12 @@ export function createOfficeHostRuntime(
         record: PresentationPageReplacement,
         expected: PresentationPageReplacement | undefined,
       ): Promise<void>
+      readTextChange?(): PresentationTextChange | undefined
+      writeTextChange?(
+        record: PresentationTextChange,
+        expected: PresentationTextChange | undefined,
+      ): Promise<void>
+      listImageReplacements?(): ImageReplacementRecord[]
       readGeometryChange?(): PresentationGeometryChange | undefined
       writeGeometryChange?(
         record: PresentationGeometryChange,
@@ -145,6 +157,7 @@ export function createOfficeHostRuntime(
   } = {},
 ): OfficeHostRuntime {
   if (host === 'unknown') throw new Error('office_host_unsupported')
+  let changes: PresentationChangesController | undefined
   const vfs = new InMemoryVfs()
   const skills = new SkillRegistry(vfs)
   if (options.enableHostSkills === false) {
@@ -175,6 +188,8 @@ export function createOfficeHostRuntime(
                 'commit_presentation_page_replacement',
                 'undo_presentation_page_replacement',
                 'edit_presentation_page_text',
+                'undo_presentation_text_change',
+                'resume_presentation_text_change',
                 'edit_presentation_page_geometry',
                 'undo_presentation_geometry_change',
                 'resume_presentation_geometry_change',
@@ -509,6 +524,7 @@ export function createOfficeHostRuntime(
   const notifyQa = () => {
     qaRevision++
     for (const listener of qaListeners) listener()
+    void changes?.refresh()
   }
   const qaSkill =
     generation &&
@@ -545,13 +561,79 @@ export function createOfficeHostRuntime(
           adapter: powerPointAdapter,
           vfs,
           imageAdapter: new BrowserPresentationImageAdapter(),
+          readTextChange: options.presentation.readTextChange,
+          writeTextChange: options.presentation.writeTextChange
+            ? async (record, expected) => {
+                try {
+                  await options.presentation!.writeTextChange!(record, expected)
+                } finally {
+                  void changes?.refresh()
+                }
+              }
+            : undefined,
           readGeometryChange: options.presentation.readGeometryChange,
-          writeGeometryChange: options.presentation.writeGeometryChange,
+          writeGeometryChange: options.presentation.writeGeometryChange
+            ? async (record, expected) => {
+                try {
+                  await options.presentation!.writeGeometryChange!(record, expected)
+                } finally {
+                  void changes?.refresh()
+                }
+              }
+            : undefined,
           readImageReplacement: options.presentation.readImageReplacement,
-          writeImageReplacement: options.presentation.writeImageReplacement,
+          writeImageReplacement: options.presentation.writeImageReplacement
+            ? async (key, record) => {
+                try {
+                  await options.presentation!.writeImageReplacement!(key, record)
+                } finally {
+                  void changes?.refresh()
+                }
+              }
+            : undefined,
           proposals,
         })
       : undefined
+  const dispatchChangeTool: AgentSkill['executeTool'] = (call, signal) => {
+    const owner = pageEditing?.tools.some((tool) => tool.name === call.name)
+      ? pageEditing
+      : pageReplacement?.tools.some((tool) => tool.name === call.name)
+        ? pageReplacement
+        : undefined
+    return owner
+      ? owner.executeTool(call, signal)
+      : Promise.resolve({
+          output: 'presentation_unavailable',
+          isError: true,
+          mutated: false,
+          summary: '当前操作不可用',
+        })
+  }
+  const executeChangeTool: AgentSkill['executeTool'] = async (call, signal) => {
+    try {
+      return await dispatchChangeTool(call, signal)
+    } finally {
+      await changes?.refresh()
+    }
+  }
+  if (
+    generation &&
+    options.presentation &&
+    (options.presentation.readTextChange ||
+      options.presentation.readGeometryChange ||
+      options.presentation.readPageReplacement ||
+      options.presentation.listImageReplacements)
+  )
+    changes = createPresentationChangesController({
+      available: options.presentation.available,
+      artifact: activeArtifact,
+      documentId: options.presentation.documentId,
+      readTextChange: options.presentation.readTextChange,
+      readGeometryChange: options.presentation.readGeometryChange,
+      readPageReplacement: options.presentation.readPageReplacement,
+      listImageReplacements: options.presentation.listImageReplacements,
+      executeTool: dispatchChangeTool,
+    })
   const qa: PresentationQaController | undefined =
     qaSkill && generation
       ? {
@@ -666,7 +748,7 @@ export function createOfficeHostRuntime(
                     'commit_presentation_page_replacement',
                     'undo_presentation_page_replacement',
                   ].includes(call.name) && pageReplacement
-                ? pageReplacement.executeTool(call, signal)
+                ? executeChangeTool(call, signal)
                 : ['save_presentation_page_backup', 'read_presentation_page_backup'].includes(
                       call.name,
                     ) && pageBackup
@@ -687,6 +769,10 @@ export function createOfficeHostRuntime(
                     ? executeProduction(call, signal)
                     : [
                           'read_presentation_page',
+                          'read_presentation_text_change',
+                          'inspect_presentation_text_change',
+                          'undo_presentation_text_change',
+                          'resume_presentation_text_change',
                           'edit_presentation_page_text',
                           'read_presentation_page_geometry',
                           'read_presentation_geometry_change',
@@ -699,7 +785,7 @@ export function createOfficeHostRuntime(
                           'inspect_presentation_image_replacement',
                           'resume_presentation_image_replacement',
                         ].includes(call.name) && pageEditing
-                      ? pageEditing.executeTool(call, signal)
+                      ? executeChangeTool(call, signal)
                       : [
                             'capture_presentation_page_qa',
                             'read_presentation_qa',
@@ -752,6 +838,7 @@ export function createOfficeHostRuntime(
         pageBackup?.clear()
         pageReplacement?.clear()
         pageEditing?.clear()
+        changes?.clear()
         qaSkill?.clear()
         attachments?.clear()
         generation?.clear()
@@ -775,6 +862,7 @@ export function createOfficeHostRuntime(
     ...(presentation ? { presentation } : {}),
     ...(importProgress ? { importProgress } : {}),
     ...(qa ? { qa } : {}),
+    ...(changes ? { changes } : {}),
   }
 }
 

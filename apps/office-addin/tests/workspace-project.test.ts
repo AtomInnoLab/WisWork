@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentWorkspace, createOfficeWorkspaceUi, type OfficeWorkspaceUi } from '../src/App.js'
 import type { OfficeAgentSession, OfficeAgentSnapshot } from '../src/agent/use-office-agent.js'
 import type { OfficeHostRuntime } from '../src/agent/host-runtime.js'
+import type { PresentationChangesController } from '../src/agent/presentation-changes.js'
 import type { PresentationProjectController } from '../src/skills/powerpoint/presentation-project.js'
 
 it('exposes the optional project controller in the UI facade', () => {
@@ -71,9 +72,35 @@ describe('workspace project integration', () => {
       cancel: vi.fn(),
       clear: vi.fn(),
     }
+    const changes: PresentationChangesController = {
+      snapshot: () => ({
+        phase: 'idle',
+        projectId: 'project',
+        requestId: 'request',
+        entries: [
+          {
+            id: 'text:change',
+            kind: 'text',
+            pageId: 'page1',
+            state: 'applied',
+            before: 'original text',
+            after: 'revised text',
+            actions: ['undo'],
+          },
+        ],
+      }),
+      subscribe: () => () => {},
+      refresh: vi.fn(async () => {}),
+      run: vi.fn(async () => {}),
+      clear: vi.fn(),
+    }
+    expect(createOfficeWorkspaceUi({ changes } as unknown as OfficeHostRuntime).changes).toBe(
+      changes,
+    )
     let files: string[] = []
     const ui: OfficeWorkspaceUi = {
       project,
+      changes,
       attachments: () => files,
       downloadFile: vi.fn(),
       skills: () => [],
@@ -100,7 +127,17 @@ describe('workspace project integration', () => {
       )
       expect(container.querySelector('.composer-shell [aria-label="演示文稿项目"]')).not.toBeNull()
       expect(project.refresh).toHaveBeenCalledTimes(1)
+      expect(
+        container.querySelector('.composer-shell [aria-label="修改保存点工作台"]'),
+      ).not.toBeNull()
+      const undo = container.querySelector<HTMLButtonElement>('[aria-label="撤销 page1"]')!
+      await act(async () => undo.click())
+      expect(changes.run).toHaveBeenCalledWith('text:change', 'undo')
+      expect(session.confirm).not.toHaveBeenCalled()
       await update({ busy: true })
+      expect(undo.disabled).toBe(true)
+      await act(async () => undo.click())
+      expect(changes.run).toHaveBeenCalledTimes(1)
       await update({ timeline: [{ id: 'a', kind: 'assistant', text: 'Draft', streaming: true }] })
       expect(project.refresh).toHaveBeenCalledTimes(1)
       await update({ busy: false })
@@ -115,6 +152,9 @@ describe('workspace project integration', () => {
       await update({ error: 'network_error', errorMessage: '连接中断', retryable: true })
       projectSnapshot = { phase: 'restoring' }
       await act(async () => projectListeners.forEach((fn) => fn()))
+      expect(undo.disabled).toBe(true)
+      expect(undo.closest('section')?.textContent).toContain('original text')
+      expect(undo.closest('section')?.textContent).toContain('revised text')
       expect(
         container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled,
       ).toBe(true)

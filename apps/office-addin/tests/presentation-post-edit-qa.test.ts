@@ -832,3 +832,96 @@ it.each(['before_confirm', 'during_save', 'save_failed'] as const)(
     f.runtime.dispose()
   },
 )
+
+it('restores text differences after reopening and undoes from the workbench with scoped QA', async () => {
+  const f = await fixture(true),
+    host = stablePageHost(f)
+  const unrelated = structuredClone(f.secondPage())
+  expect((await host.propose()).isError).not.toBe(true)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  await f.runtime.changes!.refresh()
+  expect(
+    f.runtime.changes!.snapshot().entries.find((entry) => entry.kind === 'text'),
+  ).toMatchObject({ before: 'before', after: 'after', state: 'applied', actions: ['undo'] })
+  f.runtime.dispose()
+  const reopened = f.createRuntime()
+  try {
+    await reopened.skill.executeTool({
+      id: 'restore',
+      name: 'restore_presentation_project',
+      input: { project_id: 'project' },
+    })
+    await reopened.changes!.refresh()
+    const entry = reopened.changes!.snapshot().entries.find((entry) => entry.kind === 'text')!
+    await reopened.changes!.run(entry.id, 'undo')
+    expect(host.edit).toHaveBeenCalledOnce()
+    expect(reopened.proposals.pending()?.operation).toBe('undo_presentation_text_change')
+    await reopened.proposals.confirm(reopened.proposals.pending()!.id)
+    await reopened.changes!.refresh()
+    expect(host.edit).toHaveBeenCalledTimes(2)
+    expect(host.edit.mock.calls[1]!.slice(0, 4)).toEqual(['host', 'shape', 'before', 'after'])
+    expect(
+      reopened.changes!.snapshot().entries.find((value) => value.kind === 'text'),
+    ).toMatchObject({ state: 'undone', actions: [] })
+    expect(f.page().recheckRequired).toBe(true)
+    expect(f.secondPage()).toEqual(unrelated)
+  } finally {
+    reopened.dispose()
+  }
+})
+
+it('recovers a text completion-save failure from the workbench without repeating the native write', async () => {
+  const f = await fixture(true),
+    host = stablePageHost(f)
+  const write = host.edit.getMockImplementation()!
+  host.edit.mockImplementationOnce(async (...args) => {
+    await write(...args)
+    f.save.mockRejectedValueOnce(new Error('completion_save_failed'))
+  })
+  try {
+    await host.propose()
+    await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow(
+      'completion_save_failed',
+    )
+    await f.runtime.changes!.refresh()
+    const entry = f.runtime.changes!.snapshot().entries.find((entry) => entry.kind === 'text')!
+    expect(entry.state).toBe('pending')
+    await f.runtime.changes!.run(entry.id, 'inspect')
+    expect(host.edit).toHaveBeenCalledOnce()
+    expect(f.proposals.pending()).toBeUndefined()
+    await f.runtime.changes!.run(entry.id, 'resume')
+    expect(f.proposals.pending()?.operation).toBe('resume_presentation_text_change')
+    await f.proposals.confirm(f.proposals.pending()!.id)
+    await f.runtime.changes!.refresh()
+    expect(host.edit).toHaveBeenCalledOnce()
+    expect(
+      f.runtime.changes!.snapshot().entries.find((entry) => entry.kind === 'text')!.state,
+    ).toBe('applied')
+  } finally {
+    f.runtime.dispose()
+  }
+})
+
+it('keeps manual text changes intact when undo is requested from a historical workbench entry', async () => {
+  const f = await fixture(),
+    host = stablePageHost(f)
+  try {
+    await host.propose()
+    await f.proposals.confirm(f.proposals.pending()!.id)
+    await f.runtime.changes!.refresh()
+    const entry = f.runtime.changes!.snapshot().entries.find((entry) => entry.kind === 'text')!
+    host.read.mockResolvedValue({
+      slideId: 'host',
+      shapeId: 'shape',
+      text: 'manual edit',
+      paragraphs: ['manual edit'],
+    })
+    await f.runtime.changes!.run(entry.id, 'undo')
+    expect(f.proposals.pending()).toBeUndefined()
+    expect(host.edit).toHaveBeenCalledOnce()
+    expect(f.runtime.changes!.snapshot().error).toBeTruthy()
+    expect(f.binding.readTextChange()!.state).toBe('applied')
+  } finally {
+    f.runtime.dispose()
+  }
+})

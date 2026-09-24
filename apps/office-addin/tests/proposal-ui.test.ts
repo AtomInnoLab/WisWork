@@ -247,3 +247,23 @@ it('enforces the image limit only when the PC asset capability is negotiated', a
   ).resolves.toBeUndefined()
   expect(uploadFile).toHaveBeenCalledOnce()
 })
+
+it('shows an explicit warning when text recovery previews omit the full saved values', () => {
+  const presentation = proposalPresentation({
+    id: 'text-undo',
+    operation: 'undo_presentation_text_change',
+    title: '撤销文字修改',
+    impact: { host: 'powerpoint', targets: ['host'], count: 1 },
+    fingerprint: 'f',
+    before: 'prefix',
+    after: 'old prefix',
+    preview: {
+      beforeTruncated: true,
+      afterTruncated: true,
+      beforeLength: 12000,
+      afterLength: 12000,
+    },
+  })
+  expect(presentation.preview).toContain('文本预览已截断')
+  expect(presentation.preview).toContain('完整文本')
+})

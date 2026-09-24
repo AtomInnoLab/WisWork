@@ -1,3 +1,5 @@
+import { PresentationChangesCard } from './agent/presentation-changes-card.js'
+import type { PresentationChangesController } from './agent/presentation-changes.js'
 import { validatePresentationQaRecord } from './skills/powerpoint/presentation-qa.js'
 import { PresentationQaCard, type PresentationQaController } from './agent/presentation-qa-card.js'
 import {
@@ -151,7 +153,14 @@ export function proposalPresentation(proposal: DisplayProposal) {
       : proposal.impact.targets.map((target) => proposalTarget(target, proposal.impact.host)),
     before,
     after,
-    preview: hasComparison || legacy ? '' : previewSummary(proposal.preview),
+    preview:
+      !legacy &&
+      hasComparison &&
+      (proposal.preview.beforeTruncated === true || proposal.preview.afterTruncated === true)
+        ? '部分文本预览已截断，仅展示开头片段；实际操作会作用于完整文本。请核对完整内容后再确认。'
+        : hasComparison || legacy
+          ? ''
+          : previewSummary(proposal.preview),
     // Declarative code is an internal safety protocol, not user-facing review content.
     code: undefined,
   }
@@ -208,6 +217,7 @@ export interface OfficeWorkspaceUi {
   readonly project?: PresentationProjectController
   readonly importProgress?: PresentationImportProgressController
   readonly qa?: PresentationQaController
+  readonly changes?: PresentationChangesController
   readonly durableAttachmentsAvailable?: () => boolean
   readonly durableImagesAvailable?: () => boolean
   readonly attachments: () => readonly string[]
@@ -257,6 +267,7 @@ export function createOfficeWorkspaceUi(
     project: runtime.presentation,
     importProgress: runtime.importProgress,
     qa: runtime.qa,
+    changes: runtime.changes,
     durableAttachmentsAvailable: runtime.durableAttachmentsAvailable,
     durableImagesAvailable: runtime.durableImagesAvailable,
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
@@ -893,6 +904,18 @@ export function AgentWorkspace(props: {
           />
         )}
         {ui.importProgress && <PresentationImportProgressCard controller={ui.importProgress} />}
+        {ui.changes && (
+          <PresentationChangesCard
+            controller={ui.changes}
+            disabled={
+              uploadPending ||
+              state.busy ||
+              state.applying ||
+              Boolean(state.proposal) ||
+              projectPhase !== 'idle'
+            }
+          />
+        )}
         {ui.qa && (
           <PresentationQaCard
             controller={ui.qa}

@@ -187,8 +187,12 @@ it.each([false, true])(
         name: 'undo_presentation_geometry_change',
         input: { page_id: 'second' },
       }
-      const undo = await runtime.skill.executeTool(undoCall)
-      expect(undo.isError, undo.output).not.toBe(true)
+      await runtime.changes!.refresh()
+      const entry = runtime.changes!.snapshot().entries.find((entry) => entry.kind === 'geometry')!
+      expect(entry.state).toBe('applied')
+      await runtime.changes!.run(entry.id, 'undo')
+      expect(runtime.changes!.snapshot().error).toBeUndefined()
+      expect(runtime.proposals.pending()?.operation).toBe('undo_presentation_geometry_change')
       if (failSaves) {
         failState = 'undone'
         await expect(runtime.proposals.confirm(runtime.proposals.pending()!.id)).rejects.toThrow(
