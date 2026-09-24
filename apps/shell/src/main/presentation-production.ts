@@ -1,3 +1,4 @@
+import { summarizePresentationPageReviews } from '@wiswork/pptx-engine/presentation-page-reviews'
 import { createHash } from 'node:crypto'
 import {
   parsePresentationClaimReview,
@@ -206,6 +207,44 @@ export async function handlePresentationProduction(
   const deck = parsePresentationDeck(record.deck)
   const plan = parsePresentationPlan(record.plan.plan)
   assertDeckMatchesPresentationPlan(deck, plan)
+  if (request.operation === 'production_page_reviews') {
+    check(signal)
+    const reviews = store.listClaimReviews(projectId, documentId, record.requestId).map((saved) =>
+      parsePresentationClaimReview({
+        ...(saved.review as Record<string, unknown>),
+        version: 1,
+        projectId: saved.projectId,
+        requestId: saved.requestId,
+        reviewId: saved.reviewId,
+        planRevision: saved.planRevision,
+        inputDigest: saved.inputDigest,
+        planDigest: saved.planDigest,
+        createdAt: saved.createdAt,
+        checks: {
+          support: 'agent_reviewed',
+          sourceAuthority: 'not_verified',
+          timeliness: 'not_verified',
+          host: 'not_checked',
+        },
+      }),
+    )
+    const report = summarizePresentationPageReviews(
+      plan,
+      deck,
+      {
+        projectId,
+        requestId: record.requestId,
+        pageId: request.pageId as string,
+        planRevision: record.plan.revision,
+        inputDigest: record.inputDigest,
+        planDigest: record.planDigest,
+      },
+      reviews,
+    )
+    if (Buffer.byteLength(JSON.stringify(report)) > 64 * 1024) throw new Error('output_too_large')
+    check(signal)
+    return report
+  }
   if (request.operation === 'production_claim_evidence') {
     check(signal)
     const page = plan.slides.find((page) => page.id === request.pageId)

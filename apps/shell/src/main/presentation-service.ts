@@ -117,6 +117,7 @@ export function createPresentationService(options: {
           'production_run',
           'production_page',
           'production_content_check',
+          'production_page_reviews',
           'production_claim_evidence',
           'production_record_claim_review',
           'production_read_claim_review',
@@ -159,9 +160,11 @@ export function createPresentationService(options: {
                   ? ['operation', 'documentId', 'projectId', 'requestId']
                   : request.operation === 'production_run'
                     ? ['operation', 'documentId', 'projectId', 'requestId']
-                    : ['production_page', 'production_content_check'].includes(
-                          request.operation as string,
-                        )
+                    : [
+                          'production_page',
+                          'production_content_check',
+                          'production_page_reviews',
+                        ].includes(request.operation as string)
                       ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
                       : request.operation === 'compile'
                         ? [
@@ -210,6 +213,7 @@ export function createPresentationService(options: {
           'production_page',
           'production_rebuild_page',
           'production_content_check',
+          'production_page_reviews',
           'production_claim_evidence',
           'production_record_claim_review',
           'production_read_claim_review',
@@ -222,6 +226,7 @@ export function createPresentationService(options: {
           'production_page',
           'production_rebuild_page',
           'production_content_check',
+          'production_page_reviews',
           'production_claim_evidence',
           'production_record_claim_review',
         ].includes(request.operation as string)

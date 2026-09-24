@@ -562,6 +562,17 @@ export class PresentationStore {
     this.write(path, frozen)
     return frozen[frozen.length - 1]!
   }
+  listClaimReviews(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+  ): PresentationClaimReviewRecord[] {
+    assertPresentationId(requestId)
+    const production = this.production(projectId, documentId, requestId)
+    if (!production) return []
+    const path = join(this.directory(projectId), `claim-reviews-${digest(requestId)}.json`)
+    return structuredClone(this.claimReviews(path, production))
+  }
   claimReview(
     projectId: string,
     documentId: string,

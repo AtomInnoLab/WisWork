@@ -203,3 +203,21 @@ it.each([
   writeFileSync(path, JSON.stringify(records))
   expect(read).toThrow('invalid_state')
 })
+
+it('lists all validated immutable history across restart and isolates documents', () => {
+  const one = save(),
+    two = save('review2', { ...review, outcome: 'contradicted' })
+  const restarted = new PresentationStore(root)
+  const listed = restarted.listClaimReviews('project', 'document', 'request')
+  expect(listed).toEqual([one, two])
+  listed[0]!.review = {}
+  expect(restarted.listClaimReviews('project', 'document', 'request')).toEqual([one, two])
+  expect(restarted.listClaimReviews('project', 'document', 'missing')).toEqual([])
+  expect(() => restarted.listClaimReviews('project', 'another-doc', 'request')).toThrow()
+  const damaged = JSON.parse(readFileSync(path, 'utf8'))
+  damaged[1].review.outcome = 'supported'
+  writeFileSync(path, JSON.stringify(damaged))
+  expect(() => restarted.listClaimReviews('project', 'document', 'request')).toThrow(
+    'invalid_state',
+  )
+})

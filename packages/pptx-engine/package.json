@@ -14,6 +14,7 @@
     "./presentation-compiler": "./src/presentation-compiler.ts",
     "./presentation-content-check": "./src/presentation-content-check.ts",
     "./presentation-claim-evidence": "./src/presentation-claim-evidence.ts",
+    "./presentation-page-reviews": "./src/presentation-page-reviews.ts",
     "./presentation-claim-review": "./src/presentation-claim-review.ts"
   },
   "scripts": {
