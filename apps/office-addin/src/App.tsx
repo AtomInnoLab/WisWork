@@ -13,6 +13,7 @@ import {
   supportsPresentationAttachment,
 } from './skills/powerpoint/presentation-attachments.js'
 import { PresentationProjectCard } from './agent/presentation-project-card.js'
+import { PresentationWorkflowCard } from './agent/presentation-workflow-card.js'
 import type { PresentationProjectController } from './skills/powerpoint/presentation-project.js'
 import { createBrowserPresentationDocumentBinding } from './skills/powerpoint/presentation-document.js'
 import { downloadSessionFile } from './agent/session-download.js'
@@ -897,6 +898,8 @@ export function AgentWorkspace(props: {
       )}
 
       <section className="composer-shell" aria-label="Message WisWork Agent">
+        {ui.project && <PresentationWorkflowCard project={ui.project} imported={ui.importProgress} qa={ui.qa}
+          disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)} />}
         {ui.project && (
           <PresentationProjectCard
             controller={ui.project}

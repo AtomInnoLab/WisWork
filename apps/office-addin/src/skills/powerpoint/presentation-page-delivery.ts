@@ -8,6 +8,8 @@ import type {
 } from './presentation-delivery.js'
 export interface PresentationImportProgress {
   source?: 'production'
+  projectId?: string
+  requestId?: string
   total: number
   completed: number
   status: 'not_started' | 'partial' | 'uncertain' | 'complete'
@@ -233,6 +235,8 @@ export function summarizePresentationImport(
   const uncertain = record?.state === 'pending' && (!checkpoint || Boolean(checkpoint.inFlight))
   return {
     ...(production ? { source: 'production' as const } : {}),
+    projectId: artifact.projectId,
+    requestId: artifact.requestId,
     total: artifact.slideCount,
     completed,
     status:
