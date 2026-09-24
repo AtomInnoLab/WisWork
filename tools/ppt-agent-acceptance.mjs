@@ -2,8 +2,9 @@ import { readdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-export const CASE_IDS = Array.from({ length: 20 }, (_, index) =>
-  `PPT-P0-${String(index + 1).padStart(2, '0')}`,
+export const CASE_IDS = Array.from(
+  { length: 20 },
+  (_, index) => `PPT-P0-${String(index + 1).padStart(2, '0')}`,
 )
 const digest = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const nonempty = (value) => typeof value === 'string' && value.trim().length > 0
@@ -16,7 +17,12 @@ export function summarizePresentationAcceptance(records) {
     if (!record || typeof record !== 'object' || Array.isArray(record))
       throw new Error('acceptance_record_invalid')
     const entries = byCase.get(record.case_id)
-    if (!entries || !nonempty(record.attempt_id) || !Number.isSafeInteger(record.attempt_no) || record.attempt_no < 1)
+    if (
+      !entries ||
+      !nonempty(record.attempt_id) ||
+      !Number.isSafeInteger(record.attempt_no) ||
+      record.attempt_no < 1
+    )
       throw new Error('acceptance_record_invalid')
     const key = `${record.case_id}/${record.attempt_id}`
     if (attempts.has(key) || entries.some((entry) => entry.attempt_no === record.attempt_no))
@@ -36,7 +42,8 @@ export function summarizePresentationAcceptance(records) {
         record.artifacts?.editable_after_reopen !== true ||
         record.restart_required !== false ||
         record.p0_defects !== 0
-      ) throw new Error('acceptance_pass_evidence_missing')
+      )
+        throw new Error('acceptance_pass_evidence_missing')
     }
     entries.push(record)
   }

@@ -23,16 +23,26 @@ const passed = (caseId, attemptNo = 1) => ({
 
 test('empty records remain unmeasured against the fixed 20-case denominator', () => {
   const report = summarizePresentationAcceptance([])
-  assert.deepEqual([report.denominator, report.attempted, report.passed, report.notRun], [20, 0, 0, 20])
+  assert.deepEqual(
+    [report.denominator, report.attempted, report.passed, report.notRun],
+    [20, 0, 0, 20],
+  )
   assert.equal(report.completionRate, 'not_measured')
   assert.equal(report.rateThresholdMet, false)
 })
 
 test('keeps every attempt and counts only the latest outcome for each fixed case', () => {
   const initialFailure = {
-    case_id: CASE_IDS[0], attempt_id: 'attempt-1', attempt_no: 1, outcome: 'failed',
+    case_id: CASE_IDS[0],
+    attempt_id: 'attempt-1',
+    attempt_no: 1,
+    outcome: 'failed',
   }
-  const records = [initialFailure, passed(CASE_IDS[0], 2), ...CASE_IDS.slice(1).map((id) => passed(id))]
+  const records = [
+    initialFailure,
+    passed(CASE_IDS[0], 2),
+    ...CASE_IDS.slice(1).map((id) => passed(id)),
+  ]
   const report = summarizePresentationAcceptance(records)
   assert.equal(report.attempts, 21)
   assert.equal(report.passed, 20)
@@ -49,7 +59,10 @@ test('requires all 20 cases to be attempted before the 16-case P0 gate can pass'
   const complete = summarizePresentationAcceptance([
     ...CASE_IDS.slice(0, 16).map((id) => passed(id)),
     ...CASE_IDS.slice(16).map((id) => ({
-      case_id: id, attempt_id: 'attempt-1', attempt_no: 1, outcome: 'failed',
+      case_id: id,
+      attempt_id: 'attempt-1',
+      attempt_no: 1,
+      outcome: 'failed',
     })),
   ])
   assert.equal(complete.completionRate, '80%')
@@ -57,8 +70,23 @@ test('requires all 20 cases to be attempted before the 16-case P0 gate can pass'
 })
 
 test('refuses unsupported cases, duplicate attempts and unsupported success claims', () => {
-  assert.throws(() => summarizePresentationAcceptance([{ ...passed('PPT-P0-21') }]), /record_invalid/)
-  assert.throws(() => summarizePresentationAcceptance([passed(CASE_IDS[0]), passed(CASE_IDS[0])]), /duplicate_attempt/)
-  assert.throws(() => summarizePresentationAcceptance([{ ...passed(CASE_IDS[0]), restart_required: true }]), /pass_evidence_missing/)
-  assert.throws(() => summarizePresentationAcceptance([{ ...passed(CASE_IDS[0]), artifacts: { pptx_sha256: 'a'.repeat(64) } }]), /pass_evidence_missing/)
+  assert.throws(
+    () => summarizePresentationAcceptance([{ ...passed('PPT-P0-21') }]),
+    /record_invalid/,
+  )
+  assert.throws(
+    () => summarizePresentationAcceptance([passed(CASE_IDS[0]), passed(CASE_IDS[0])]),
+    /duplicate_attempt/,
+  )
+  assert.throws(
+    () => summarizePresentationAcceptance([{ ...passed(CASE_IDS[0]), restart_required: true }]),
+    /pass_evidence_missing/,
+  )
+  assert.throws(
+    () =>
+      summarizePresentationAcceptance([
+        { ...passed(CASE_IDS[0]), artifacts: { pptx_sha256: 'a'.repeat(64) } },
+      ]),
+    /pass_evidence_missing/,
+  )
 })
