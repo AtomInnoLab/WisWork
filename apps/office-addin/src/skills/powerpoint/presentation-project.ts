@@ -33,7 +33,8 @@ export interface PresentationProjectStatus {
   projectId: string
   title: string
   status: 'planned' | 'pending' | 'compiled'
-  plan?: { revision: number; value: PresentationPlan }
+  plan?: { revision: number; value: PresentationPlan;
+    revisions?: { revision: number; inputDigest: string; createdAt: string }[] }
   requestPlanRevision?: number
   latestRequestId?: string
   latestCompiledRequestId?: string
@@ -90,7 +91,30 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
   if (p?.plan !== undefined) {
     if (!p.plan || !Number.isSafeInteger(p.plan.revision) || p.plan.revision < 1)
       throw new Error('presentation_response_invalid')
-    plan = { revision: p.plan.revision, value: parsePresentationPlan(p.plan.value) }
+    let revisions: NonNullable<PresentationProjectStatus['plan']>['revisions']
+    if (p.plan.revisions !== undefined) {
+      if (!Array.isArray(p.plan.revisions) || p.plan.revisions.length < 1 || p.plan.revisions.length > 32)
+        throw new Error('presentation_response_invalid')
+      revisions = []
+      for (const [index, event] of p.plan.revisions.entries()) {
+        if (!event || typeof event !== 'object' || Array.isArray(event) ||
+          Object.keys(event).sort().join(',') !== 'createdAt,inputDigest,revision' ||
+          !Number.isSafeInteger(event.revision) || event.revision < 1 ||
+          (index > 0 && event.revision !== revisions[index - 1]!.revision + 1) ||
+          typeof event.inputDigest !== 'string' || !/^[a-f0-9]{64}$/.test(event.inputDigest) ||
+          typeof event.createdAt !== 'string' ||
+          !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(event.createdAt) ||
+          !Number.isFinite(Date.parse(event.createdAt)) ||
+          new Date(event.createdAt).toISOString() !== event.createdAt ||
+          (index > 0 && event.createdAt < revisions[index - 1]!.createdAt))
+          throw new Error('presentation_response_invalid')
+        revisions.push({ revision: event.revision, inputDigest: event.inputDigest, createdAt: event.createdAt })
+      }
+      if (revisions.at(-1)!.revision !== p.plan.revision)
+        throw new Error('presentation_response_invalid')
+    }
+    plan = { revision: p.plan.revision, value: parsePresentationPlan(p.plan.value),
+      ...(revisions ? { revisions } : {}) }
     if (plan.value.projectId !== projectId) throw new Error('presentation_response_invalid')
   }
   const production =

@@ -71,6 +71,7 @@ export interface PresentationPlanRecord extends PresentationPlanBinding {
   projectId: string
   documentId: string
   inputDigest: string
+  revisions?: { revision: number; inputDigest: string; createdAt: string }[]
 }
 function bindingDigest(binding: PresentationPlanBinding, error = 'invalid_plan'): string {
   if (!binding || !Number.isSafeInteger(binding.revision) || binding.revision < 1)
@@ -986,6 +987,28 @@ export class PresentationStore {
       record.inputDigest !== planDigest(record.plan, 'invalid_state')
     )
       throw new Error('invalid_state')
+    if (record.revisions !== undefined) {
+      if (!Array.isArray(record.revisions) || record.revisions.length < 1 || record.revisions.length > 32)
+        throw new Error('invalid_state')
+      let previous = 0
+      let previousTime = ''
+      for (const event of record.revisions) {
+        if (!event || typeof event !== 'object' || Array.isArray(event) ||
+          Object.keys(event).sort().join(',') !== 'createdAt,inputDigest,revision' ||
+          !Number.isSafeInteger(event.revision) || event.revision < 1 ||
+          (previous > 0 && event.revision !== previous + 1) ||
+          typeof event.inputDigest !== 'string' || !/^[a-f0-9]{64}$/.test(event.inputDigest) ||
+          typeof event.createdAt !== 'string' ||
+          !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(event.createdAt) ||
+          !Number.isFinite(Date.parse(event.createdAt)) ||
+          new Date(event.createdAt).toISOString() !== event.createdAt ||
+          event.createdAt < previousTime) throw new Error('invalid_state')
+        previous = event.revision
+        previousTime = event.createdAt
+      }
+      if (previous !== record.revision || record.revisions.at(-1)!.inputDigest !== record.inputDigest)
+        throw new Error('invalid_state')
+    }
     return record
   }
   savePlan(
@@ -1008,6 +1031,7 @@ export class PresentationStore {
     if (expectedRevision !== revision || revision === Number.MAX_SAFE_INTEGER)
       throw new Error('revision_conflict')
     const directory = this.bind(projectId, documentId, true)!
+    const previousTime = previous?.revisions?.at(-1)?.createdAt
     const record: PresentationPlanRecord = {
       version: 1,
       projectId,
@@ -1015,6 +1039,11 @@ export class PresentationStore {
       revision: revision + 1,
       plan,
       inputDigest,
+      revisions: [
+        ...(previous?.revisions ?? []),
+        { revision: revision + 1, inputDigest,
+          createdAt: new Date(Math.max(Date.now(), previousTime ? Date.parse(previousTime) : 0)).toISOString() },
+      ].slice(-32),
     }
     this.write(join(directory, 'plan.json'), record)
     return record

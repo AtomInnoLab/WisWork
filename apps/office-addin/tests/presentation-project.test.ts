@@ -167,6 +167,23 @@ describe('plan-only project status', () => {
     await f.controller.resume('made-up')
     expect(f.executeTool).not.toHaveBeenCalled()
   })
+  it('accepts bounded saved plan revisions and rejects malformed replay history', async () => {
+    const { benchmarkPlan } = await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
+    const plan = benchmarkPlan()
+    const event = { revision: 1, inputDigest: 'a'.repeat(64), createdAt: '2026-09-24T00:00:00.000Z' }
+    const value = { projectId: plan.projectId, title: plan.title, status: 'planned',
+      slideCount: plan.slides.length, slides: plan.slides.map(({ id, title }) => ({ id, title })),
+      history: [], plan: { revision: 1, value: plan, revisions: [event] } }
+    const f = fixture()
+    f.lastProject.mockReturnValue(plan.projectId)
+    f.request.mockResolvedValueOnce(new Response(JSON.stringify(value)))
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.plan?.revisions).toEqual([event])
+    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ ...value,
+      plan: { ...value.plan, revisions: [{ ...event, revision: 2 }] } })))
+    await f.controller.refresh()
+    expect(f.controller.snapshot().error).toBeTruthy()
+  })
 })
 it('projects page production and resumes its explicit request through the page tool', async () => {
   const f = fixture(),

@@ -117,12 +117,16 @@ describe('durable plans', () => {
     expect(() => store.savePlan('p', 'd', 1, { title: 'A' })).toThrow('revision_conflict')
     const first = store.savePlan('p', 'd', 0, { title: 'A' })
     expect(first.revision).toBe(1)
+    expect(first.revisions).toEqual([{ revision: 1, inputDigest: first.inputDigest,
+      createdAt: expect.any(String) }])
     expect(new PresentationStore(root).plan('p', 'd')).toEqual(first)
     expect(store.savePlan('p', 'd', 0, { title: 'A' })).toEqual(first)
     expect(store.savePlan('p', 'd', 1, { title: 'A' })).toEqual(first)
     expect(() => store.savePlan('p', 'd', 0, { title: 'B' })).toThrow('revision_conflict')
     const second = store.savePlan('p', 'd', 1, { title: 'B' })
     expect(second.revision).toBe(2)
+    expect(second.revisions?.map((entry) => entry.revision)).toEqual([1, 2])
+    expect(new PresentationStore(root).plan('p', 'd')?.revisions).toEqual(second.revisions)
     expect(() => store.savePlan('p', 'd', 0, { title: 'B' })).toThrow('revision_conflict')
     expect(() => store.plan('p', 'foreign')).toThrow('document_mismatch')
     expect(() => store.savePlan('p', 'foreign', 2, {})).toThrow('document_mismatch')
@@ -147,6 +151,28 @@ describe('durable plans', () => {
       expect(() => store.plan('p', 'd')).toThrow('invalid_state')
       expect(() => store.savePlan('p', 'd', 1, { title: 'B' })).toThrow('invalid_state')
     }
+  })
+  it('bounds revision history and rejects tampered revision metadata', () => {
+    const { root, store, directory } = planFixture()
+    for (let revision = 0; revision < 34; revision++)
+      store.savePlan('p', 'd', revision, { title: String(revision) })
+    const saved = new PresentationStore(root).plan('p', 'd')!
+    expect(saved.revisions).toHaveLength(32)
+    expect(saved.revisions?.[0]?.revision).toBe(3)
+    expect(saved.revisions?.at(-1)?.revision).toBe(34)
+    const path = join(directory(), 'plan.json')
+    writeFileSync(path, JSON.stringify({ ...saved, revisions: saved.revisions?.map((entry, index) =>
+      index === 0 ? { ...entry, revision: 2 } : entry) }))
+    expect(() => new PresentationStore(root).plan('p', 'd')).toThrow('invalid_state')
+  })
+  it('loads pre-history plans and starts revision events on the next save', () => {
+    const { store, directory } = planFixture()
+    const first = store.savePlan('p', 'd', 0, { title: 'A' })
+    const path = join(directory(), 'plan.json')
+    const { revisions: _revisions, ...legacy } = first
+    writeFileSync(path, JSON.stringify(legacy))
+    expect(store.plan('p', 'd')?.revisions).toBeUndefined()
+    expect(store.savePlan('p', 'd', 1, { title: 'B' }).revisions?.map((entry) => entry.revision)).toEqual([2])
   })
   it('bounds and validates persisted JSON input', () => {
     const { store } = planFixture()

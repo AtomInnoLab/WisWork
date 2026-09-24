@@ -96,7 +96,13 @@ export function presentationWorkflowSummary(
   // Rebuild this view from durable records on every mount. Only the production job
   // has a timestamped event history; the other entries describe saved checkpoints.
   const timeline: PresentationWorkflowSummary['timeline'] = []
-  if (plan) timeline.push({ id: 'plan', text: `已保存计划第 ${project.plan!.revision} 版：${plan.slides.length} 页，${plan.sources.length} 份资料` })
+  if (plan) {
+    const revisions = project.plan!.revisions
+    if (revisions?.length) {
+      for (const event of revisions) timeline.push({ id: `plan-${event.revision}`,
+        text: `已保存计划第 ${event.revision} 版`, at: event.createdAt })
+    } else timeline.push({ id: 'plan', text: `已保存计划第 ${project.plan!.revision} 版：${plan.slides.length} 页，${plan.sources.length} 份资料` })
+  }
   if (production) {
     timeline.push({ id: 'production', text: `当前页任务 ${production.requestId}：已编译 ${production.compiledCount}/${production.total} 页` })
     if (project.productionJob?.requestId === production.requestId &&

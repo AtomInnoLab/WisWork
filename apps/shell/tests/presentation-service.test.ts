@@ -329,7 +329,9 @@ describe('durable presentation planning', () => {
       status: 'planned',
       slideCount: 1,
       history: [],
-      plan: { revision: 1, value: plan() },
+      plan: { revision: 1, value: plan(), revisions: [
+        { revision: 1, createdAt: expect.any(String), inputDigest: expect.any(String) },
+      ] },
     })
     expect(decode(await service(planRequest({ ...plan(), title: 'Changed' }), signal()))).toEqual({
       error: 'revision_conflict',

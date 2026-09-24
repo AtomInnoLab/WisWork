@@ -99,3 +99,13 @@ it('rebuilds recovery events from saved records and isolates the selected reques
     { ...imported, requestId: 'old' }, { ...qa, requestId: 'old' })!
   expect(stale.timeline.map((item) => item.id)).toEqual(['plan', 'production'])
 })
+
+it('replays durable plan revisions without inventing research approval', () => {
+  const revisions = [1, 2].map((revision) => ({ revision,
+    inputDigest: String(revision).repeat(64), createdAt: `2026-09-24T00:0${revision}:00.000Z` }))
+  const summary = presentationWorkflowSummary({ ...project,
+    plan: { ...project.plan!, revision: 2, revisions } }, undefined, undefined)!
+  expect(summary.timeline.map((event) => event.id)).toEqual(['plan-1', 'plan-2'])
+  expect(summary.timeline[1]).toMatchObject({ at: revisions[1]!.createdAt, text: '已保存计划第 2 版' })
+  expect(JSON.stringify(summary.timeline)).not.toContain('批准')
+})

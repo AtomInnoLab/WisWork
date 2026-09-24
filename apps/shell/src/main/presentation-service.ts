@@ -428,7 +428,8 @@ export function createPresentationService(options: {
             : undefined
           const savedPlan = store.plan(projectId, documentId)
           const plan = savedPlan
-            ? { revision: savedPlan.revision, value: parsePresentationPlan(savedPlan.plan) }
+            ? { revision: savedPlan.revision, value: parsePresentationPlan(savedPlan.plan),
+                ...(savedPlan.revisions ? { revisions: savedPlan.revisions } : {}) }
             : undefined
           const history = store.history(projectId, documentId)
           const latest = history[0]
