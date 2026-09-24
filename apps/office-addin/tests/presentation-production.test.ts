@@ -1002,3 +1002,193 @@ it('rejects evidence results after cancellation, clear or document change', asyn
     expect(f.rememberProject).not.toHaveBeenCalled()
   }
 })
+
+const recordReviewCall = {
+  id: 'record-review',
+  name: 'record_presentation_claim_review',
+  input: {
+    ...evidenceCall.input,
+    review_id: 'review1',
+    outcome: 'supported',
+    notes: 'The supplied passage supports this limited claim.',
+  },
+}
+const readReviewCall = {
+  id: 'read-review',
+  name: 'read_presentation_claim_review',
+  input: { project_id: 'p', request_id: 'r', review_id: 'review1' },
+}
+const claimReviewResponse = (evidenceDigest = 'd'.repeat(64)) => ({
+  version: 1,
+  projectId: 'p',
+  requestId: 'r',
+  reviewId: 'review1',
+  planRevision: 1,
+  inputDigest: 'a'.repeat(64),
+  planDigest: 'b'.repeat(64),
+  pageId: 'one',
+  claimId: 'c',
+  sourceId: 's',
+  attachmentId: 'c'.repeat(64),
+  offset: 2,
+  maxChars: 8,
+  evidenceDigest,
+  outcome: 'supported',
+  notes: recordReviewCall.input.notes,
+  reviewer: 'agent',
+  createdAt: '2026-09-24T00:00:00.000Z',
+  checks: {
+    support: 'agent_reviewed',
+    sourceAuthority: 'not_verified',
+    timeliness: 'not_verified',
+    host: 'not_checked',
+  },
+})
+it('requires live evidence before recording a claim judgment and binds the write to its internal digest', async () => {
+  const f = fixture()
+  expect(await f.skill.executeTool(recordReviewCall)).toMatchObject({
+    isError: true,
+    output: 'presentation_evidence_read_required',
+  })
+  expect(f.request).not.toHaveBeenCalled()
+  f.request.mockResolvedValue(new Response(JSON.stringify(evidenceResponse())))
+  expect((await f.skill.executeTool(evidenceCall)).isError).not.toBe(true)
+  f.request.mockImplementation(
+    async (body) =>
+      new Response(
+        JSON.stringify(claimReviewResponse((body as { evidenceDigest: string }).evidenceDigest)),
+      ),
+  )
+  const result = await f.skill.executeTool(recordReviewCall)
+  expect(result.isError, result.output).not.toBe(true)
+  expect(f.request).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      operation: 'production_record_claim_review',
+      documentId: 'doc',
+      reviewId: 'review1',
+      evidenceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      outcome: 'supported',
+      notes: recordReviewCall.input.notes,
+    }),
+    undefined,
+  )
+  expect(JSON.parse(result.output)).toMatchObject({
+    reviewer: 'agent',
+    checks: { support: 'agent_reviewed', host: 'not_checked' },
+  })
+  expect(f.rememberProject).not.toHaveBeenCalled()
+  expect(f.vfs.list('/home/user')).toEqual([])
+})
+it('reads historical review without granting permission to write another judgment', async () => {
+  const f = fixture()
+  f.request.mockResolvedValue(new Response(JSON.stringify(claimReviewResponse())))
+  expect((await f.skill.executeTool(readReviewCall)).isError).not.toBe(true)
+  expect(await f.skill.executeTool(recordReviewCall)).toMatchObject({
+    isError: true,
+    output: 'presentation_evidence_read_required',
+  })
+  expect(f.request).toHaveBeenCalledTimes(1)
+  expect(f.rememberProject).not.toHaveBeenCalled()
+})
+it('rejects forged review outcomes, wrong frozen identities and stale live evidence', async () => {
+  const f = fixture()
+  f.request.mockResolvedValue(new Response(JSON.stringify(evidenceResponse())))
+  await f.skill.executeTool(evidenceCall)
+  for (const change of [
+    { notes: 'altered' },
+    { outcome: 'contradicted' },
+    { pageId: 'other' },
+    { evidenceDigest: 'e'.repeat(64) },
+    { planDigest: 'e'.repeat(64) },
+    { inputDigest: 'e'.repeat(64) },
+    { reviewer: 'human' },
+    { reviewId: 'other' },
+  ]) {
+    f.request.mockImplementation(
+      async (body) =>
+        new Response(
+          JSON.stringify({
+            ...claimReviewResponse((body as { evidenceDigest: string }).evidenceDigest),
+            ...change,
+          }),
+        ),
+    )
+    expect(await f.skill.executeTool(recordReviewCall)).toMatchObject({
+      isError: true,
+      output: 'presentation_response_invalid',
+    })
+  }
+  f.skill.clear()
+  expect(await f.skill.executeTool(recordReviewCall)).toMatchObject({
+    isError: true,
+    output: 'presentation_evidence_read_required',
+  })
+})
+it('validates claim review inputs and preserves explicit server conflicts', async () => {
+  const f = fixture()
+  for (const change of [
+    { review_id: undefined },
+    { outcome: 'verified' },
+    { notes: '' },
+    { notes: ' ' },
+    { notes: 'x'.repeat(2001) },
+    { notes: '\u000b' },
+    { notes: '\uffff' },
+    { notes: '\ud800' },
+    { evidence_digest: 'a'.repeat(64) },
+  ])
+    expect(
+      await f.skill.executeTool({
+        ...recordReviewCall,
+        input: { ...recordReviewCall.input, ...change },
+      }),
+    ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
+  f.request.mockResolvedValue(new Response(JSON.stringify(evidenceResponse())))
+  await f.skill.executeTool(evidenceCall)
+  for (const error of ['evidence_changed', 'request_conflict', 'quota_exceeded']) {
+    f.request.mockResolvedValue(new Response(JSON.stringify({ error })))
+    expect(await f.skill.executeTool(recordReviewCall)).toMatchObject({
+      isError: true,
+      output: `presentation_${error}`,
+    })
+  }
+})
+it('does not authorize reviews from evidence reads cancelled before publication', async () => {
+  for (const mode of ['abort', 'clear', 'document']) {
+    const f = fixture(),
+      ac = new AbortController()
+    f.request.mockImplementation(async () => {
+      if (mode === 'abort') ac.abort()
+      if (mode === 'clear') f.skill.clear()
+      if (mode === 'document') f.documentId.mockResolvedValue('other')
+      return new Response(JSON.stringify(evidenceResponse()))
+    })
+    expect((await f.skill.executeTool(evidenceCall, ac.signal)).isError).toBe(true)
+    f.documentId.mockResolvedValue('doc')
+    f.request.mockClear()
+    expect(await f.skill.executeTool(recordReviewCall)).toMatchObject({
+      isError: true,
+      output: 'presentation_evidence_read_required',
+    })
+    expect(f.request).not.toHaveBeenCalled()
+  }
+})
+it('refuses a late review response after clear, abort or document switch without changing active state', async () => {
+  for (const mode of ['abort', 'clear', 'document']) {
+    const f = fixture(),
+      ac = new AbortController()
+    f.request.mockResolvedValue(new Response(JSON.stringify(evidenceResponse())))
+    await f.skill.executeTool(evidenceCall)
+    f.request.mockImplementation(async (body) => {
+      if (mode === 'abort') ac.abort()
+      if (mode === 'clear') f.skill.clear()
+      if (mode === 'document') f.documentId.mockResolvedValue('other')
+      return new Response(
+        JSON.stringify(claimReviewResponse((body as { evidenceDigest: string }).evidenceDigest)),
+      )
+    })
+    expect((await f.skill.executeTool(recordReviewCall, ac.signal)).isError).toBe(true)
+    expect(f.rememberProject).not.toHaveBeenCalled()
+    expect(f.vfs.list('/home/user')).toEqual([])
+  }
+})

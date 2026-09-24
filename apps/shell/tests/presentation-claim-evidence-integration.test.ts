@@ -11,7 +11,7 @@ import {
 import { createPresentationService } from '../src/main/presentation-service'
 import { createOfficeHostRuntime } from '../../office-addin/src/agent/host-runtime'
 
-it('traces a frozen claim to uploaded original text through runtime and restarts without publishing QA', async () => {
+it('traces frozen evidence, records an immutable agent review and reads history after restart without publishing QA', async () => {
   const root = mkdtempSync(join(tmpdir(), 'wiswork-evidence-integration-'))
   let service = createPresentationService({ userDataPath: root })
   const signal = new AbortController().signal,
@@ -83,12 +83,53 @@ it('traces a frozen claim to uploaded original text through runtime and restarts
       offset: original.indexOf(plan.sources[0]!.excerpt),
     })
     expect(evidence.checks.support).toBe('not_verified')
+    const reviewInput = {
+      ...input,
+      review_id: 'review-1',
+      outcome: 'supported',
+      notes: 'This supplied passage supports only the test-data statement.',
+    }
+    const record = () =>
+      runtime.skill.executeTool({
+        id: 'record',
+        name: 'record_presentation_claim_review',
+        input: reviewInput,
+      })
+    const saved = await record()
+    expect(saved.isError, saved.output).not.toBe(true)
+    const review = JSON.parse(saved.output)
+    expect(review).toMatchObject({
+      reviewId: 'review-1',
+      reviewer: 'agent',
+      outcome: 'supported',
+      attachmentId,
+      checks: { support: 'agent_reviewed', sourceAuthority: 'not_verified' },
+    })
+    expect(JSON.parse((await record()).output)).toEqual(review)
+    const conflict = await runtime.skill.executeTool({
+      id: 'conflict',
+      name: 'record_presentation_claim_review',
+      input: { ...reviewInput, notes: 'A different judgment cannot overwrite this ID.' },
+    })
+    expect(conflict).toMatchObject({ isError: true, output: 'presentation_request_conflict' })
     plan.sources[0]!.uri = 'https://example.invalid/other'
     await call('save_plan', { projectId: deck.id, expectedRevision: 1, plan })
     runtime.dispose()
     service = createPresentationService({ userDataPath: root })
     runtime = create()
+    const history = await runtime.skill.executeTool({
+      id: 'history',
+      name: 'read_presentation_claim_review',
+      input: { project_id: deck.id, request_id: 'frozen', review_id: 'review-1' },
+    })
+    expect(history.isError, history.output).not.toBe(true)
+    expect(JSON.parse(history.output)).toEqual(review)
+    expect(await record()).toMatchObject({
+      isError: true,
+      output: 'presentation_evidence_read_required',
+    })
     expect(JSON.parse((await read()).output)).toEqual(evidence)
+    expect(JSON.parse((await record()).output)).toEqual(review)
     const bounded = await runtime.skill.executeTool({
       id: 'window',
       name: 'read_presentation_claim_evidence',
