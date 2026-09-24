@@ -109,7 +109,13 @@ const encode = (value: unknown) => {
 }
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const goodId = (v: unknown, max = 256): v is string =>
-  typeof v === 'string' && v.length > 0 && v.length <= max && !/[\x00-\x1f\x7f-\x9f]/.test(v)
+  typeof v === 'string' &&
+  v.length > 0 &&
+  v.length <= max &&
+  !Array.from(v).some((char) => {
+    const code = char.charCodeAt(0)
+    return code < 32 || (code >= 127 && code <= 159)
+  })
 const goodGeometry = (v: unknown): v is PresentationPageGeometry =>
   !!v &&
   typeof v === 'object' &&
@@ -241,7 +247,9 @@ export function createPresentationExistingEditingSkill(
             summary: '已读取当前文档现稿保存点',
           }
         }
-        let baseline = editing ? options.baseline.snapshot(input.baseline_id as string) : undefined
+        const baseline = editing
+          ? options.baseline.snapshot(input.baseline_id as string)
+          : undefined
         if (
           editing &&
           (!baseline ||

@@ -29,7 +29,10 @@ const hostId = (value: unknown): value is string =>
   typeof value === 'string' &&
   value.length > 0 &&
   value.length <= 256 &&
-  !/[\u0000-\u001f\u007f-\u009f]/.test(value)
+  !Array.from(value).some((char) => {
+    const code = char.charCodeAt(0)
+    return code < 32 || (code >= 127 && code <= 159)
+  })
 const id = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 const digest = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const ids = (value: unknown): value is string[] =>
