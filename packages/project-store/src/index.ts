@@ -19,6 +19,7 @@ export type {
 } from './ipc.js'
 export { PresentationStore, assertPresentationId } from './presentation-store.js'
 export type {
+  PresentationClaimReviewRecord,
   PresentationReceipt,
   PresentationProductionPage,
   PresentationProductionRecord,

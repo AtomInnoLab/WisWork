@@ -12,6 +12,8 @@ import { dirname, join } from 'node:path'
 
 const MAX_RECORD_BYTES = 17 * 1024 * 1024
 const MAX_PLAN_BYTES = 192 * 1024
+const MAX_CLAIM_REVIEW_BYTES = 8 * 1024
+const MAX_CLAIM_REVIEWS_BYTES = 256 * 1024
 function present(path: string): boolean {
   return lstatSync(path, { throwIfNoEntry: false }) !== undefined
 }
@@ -116,6 +118,62 @@ export interface PresentationProductionRecord {
   planDigest: string
   pages: PresentationProductionPage[]
   revision?: { parentRequestId: string; pageId: string; parentInputDigest: string }
+}
+export interface PresentationClaimReviewRecord {
+  version: 1
+  projectId: string
+  documentId: string
+  requestId: string
+  reviewId: string
+  inputDigest: string
+  planDigest: string
+  planRevision: number
+  createdAt: string
+  review: unknown
+  reviewDigest: string
+}
+function claimReviewDigest(review: unknown, error: string): string {
+  const hash = jsonDigest(review, MAX_CLAIM_REVIEW_BYTES, error)
+  if (!review || typeof review !== 'object' || Array.isArray(review)) throw new Error(error)
+  const value = review as Record<string, unknown>
+  const fields = [
+    'pageId',
+    'claimId',
+    'sourceId',
+    'attachmentId',
+    'offset',
+    'maxChars',
+    'evidenceDigest',
+    'outcome',
+    'notes',
+    'reviewer',
+  ]
+  if (
+    Object.keys(value).length !== fields.length ||
+    Object.keys(value).some((key) => !fields.includes(key)) ||
+    ['pageId', 'claimId', 'sourceId', 'attachmentId'].some(
+      (key) =>
+        typeof value[key] !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value[key] as string),
+    ) ||
+    !Number.isSafeInteger(value.offset) ||
+    Number(value.offset) < 0 ||
+    Number(value.offset) > 1000000 ||
+    !Number.isSafeInteger(value.maxChars) ||
+    Number(value.maxChars) < 1 ||
+    Number(value.maxChars) > 8000 ||
+    typeof value.evidenceDigest !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(value.evidenceDigest) ||
+    !['supported', 'contradicted', 'insufficient_evidence'].includes(value.outcome as string) ||
+    typeof value.notes !== 'string' ||
+    !value.notes.trim() ||
+    value.notes.length > 2000 ||
+    // XML text permits tab, newline and carriage return; other controls are rejected.
+    // eslint-disable-next-line no-control-regex
+    /[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd\u{10000}-\u{10ffff}]/u.test(value.notes) ||
+    value.reviewer !== 'agent'
+  )
+    throw new Error(error)
+  return hash
 }
 const PRODUCTION_ERRORS = new Set([
   'compile_failed',
@@ -407,6 +465,115 @@ export class PresentationStore {
     if (new Set(records.map((record) => record.sequence)).size !== records.length)
       throw new Error('invalid_state')
     return records
+  }
+  private claimReviews(
+    path: string,
+    production: PresentationProductionRecord,
+  ): PresentationClaimReviewRecord[] {
+    if (!present(path)) return []
+    if (lstatSync(path).size > MAX_CLAIM_REVIEWS_BYTES) throw new Error('invalid_state')
+    const records = this.read(path)
+    jsonDigest(records, MAX_CLAIM_REVIEWS_BYTES, 'invalid_state')
+    if (!Array.isArray(records) || records.length > 32) throw new Error('invalid_state')
+    const ids = new Set<string>()
+    for (const record of records as PresentationClaimReviewRecord[]) {
+      if (!record || typeof record !== 'object' || Array.isArray(record))
+        throw new Error('invalid_state')
+      const { reviewDigest, ...content } = record
+      if (
+        Object.keys(record).length !== 11 ||
+        Object.keys(record).some(
+          (key) =>
+            ![
+              'version',
+              'projectId',
+              'documentId',
+              'requestId',
+              'reviewId',
+              'inputDigest',
+              'planDigest',
+              'planRevision',
+              'createdAt',
+              'review',
+              'reviewDigest',
+            ].includes(key),
+        ) ||
+        record.version !== 1 ||
+        record.projectId !== production.projectId ||
+        record.documentId !== production.documentId ||
+        record.requestId !== production.requestId ||
+        record.inputDigest !== production.inputDigest ||
+        record.planDigest !== production.planDigest ||
+        record.planRevision !== production.plan.revision ||
+        typeof record.reviewId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(record.reviewId) ||
+        ids.has(record.reviewId) ||
+        typeof record.createdAt !== 'string' ||
+        !Number.isFinite(Date.parse(record.createdAt)) ||
+        new Date(record.createdAt).toISOString() !== record.createdAt ||
+        reviewDigest !== jsonDigest(content, MAX_CLAIM_REVIEWS_BYTES, 'invalid_state')
+      )
+        throw new Error('invalid_state')
+      claimReviewDigest(record.review, 'invalid_state')
+      ids.add(record.reviewId)
+    }
+    return records as PresentationClaimReviewRecord[]
+  }
+  saveClaimReview(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+    reviewId: string,
+    review: unknown,
+  ): PresentationClaimReviewRecord {
+    assertPresentationId(requestId)
+    assertPresentationId(reviewId)
+    const hash = claimReviewDigest(review, 'invalid_request')
+    const production = this.production(projectId, documentId, requestId)
+    if (!production) throw new Error('page_not_ready')
+    const path = join(this.directory(projectId), `claim-reviews-${digest(requestId)}.json`)
+    const records = this.claimReviews(path, production)
+    const previous = records.find((record) => record.reviewId === reviewId)
+    if (previous) {
+      if (claimReviewDigest(previous.review, 'invalid_state') !== hash)
+        throw new Error('request_conflict')
+      return previous
+    }
+    if (records.length >= 32) throw new Error('quota_exceeded')
+    const content = {
+      version: 1 as const,
+      projectId,
+      documentId,
+      requestId,
+      reviewId,
+      inputDigest: production.inputDigest,
+      planDigest: production.planDigest,
+      planRevision: production.plan.revision,
+      createdAt: new Date().toISOString(),
+      review,
+    }
+    const record: PresentationClaimReviewRecord = {
+      ...content,
+      reviewDigest: jsonDigest(content, MAX_CLAIM_REVIEWS_BYTES, 'invalid_request'),
+    }
+    const next = [...records, record]
+    jsonDigest(next, MAX_CLAIM_REVIEWS_BYTES, 'quota_exceeded')
+    const frozen = JSON.parse(canonical(next)) as PresentationClaimReviewRecord[]
+    this.write(path, frozen)
+    return frozen[frozen.length - 1]!
+  }
+  claimReview(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+    reviewId: string,
+  ): PresentationClaimReviewRecord | undefined {
+    assertPresentationId(requestId)
+    assertPresentationId(reviewId)
+    const production = this.production(projectId, documentId, requestId)
+    if (!production) return undefined
+    const path = join(this.directory(projectId), `claim-reviews-${digest(requestId)}.json`)
+    return this.claimReviews(path, production).find((record) => record.reviewId === reviewId)
   }
   beginProduction(
     projectId: string,
