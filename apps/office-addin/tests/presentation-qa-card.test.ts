@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import React, { act } from 'react'
+import { AgentWorkspace } from '../src/App.js'
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, it, vi } from 'vitest'
@@ -116,7 +117,6 @@ it('keeps legacy cards read-only and reports unreadable records', () => {
 })
 
 it('fills a scoped recheck instruction without running the agent or trusting page prose', async () => {
-  const { AgentWorkspace } = await import('../src/App.js')
   const snapshot: import('../src/agent/use-office-agent.js').OfficeAgentSnapshot = {
     assistantText: '',
     activity: '',
