@@ -15,14 +15,14 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 const decode = (bytes: Uint8Array) => JSON.parse(Buffer.from(bytes).toString('utf8'))
-async function setup(compile = vi.fn(compilePresentationDeck)) {
+async function setup(compile = vi.fn(compilePresentationDeck), documentId = 'doc') {
   const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-page-production-'))
   roots.push(userDataPath)
   const service = createPresentationService({ userDataPath, compile }),
     plan = benchmarkPlan(),
     deck = benchmarkPlannedDeck()
   const call = async (operation: string, extra = {}, signal = new AbortController().signal) =>
-    decode(await service({ operation, documentId: 'doc', projectId: deck.id, ...extra }, signal))
+    decode(await service({ operation, documentId, projectId: deck.id, ...extra }, signal))
   expect((await call('save_plan', { expectedRevision: 0, plan })).revision).toBe(1)
   return { call, service, userDataPath, compile, deck, plan }
 }
@@ -296,10 +296,6 @@ it('prepares real page files and resumes confirmed Office import without mixing 
   const { createOfficeHostRuntime } = await import('../../office-addin/src/agent/host-runtime')
   const { createPresentationDocumentBinding } =
     await import('../../office-addin/src/skills/powerpoint/presentation-document')
-  const f = await setup()
-  await f.call('production_begin', { requestId: 'run', planRevision: 1, deck: f.deck })
-  await f.call('production_run', { requestId: 'run' })
-  await f.call('compile', { requestId: 'whole', planRevision: 1, deck: f.deck })
   const { BrowserPowerPointAdapter } =
     await import('../../office-addin/src/skills/powerpoint/browser-powerpoint-adapter')
   const inspect = vi
@@ -349,6 +345,10 @@ it('prepares real page files and resumes confirmed Office import without mixing 
     },
     () => 'doc',
   )
+  const f = await setup(undefined, await binding.documentId())
+  await f.call('production_begin', { requestId: 'run', planRevision: 1, deck: f.deck })
+  await f.call('production_run', { requestId: 'run' })
+  await f.call('compile', { requestId: 'whole', planRevision: 1, deck: f.deck })
   const hostIds = ['original']
   const slides = { items: [] as { id: string }[], load: () => {} }
   const bytes: string[] = []
@@ -386,7 +386,6 @@ it('prepares real page files and resumes confirmed Office import without mixing 
     createOfficeHostRuntime('powerpoint', {
       presentation: {
         ...binding,
-        documentId: async () => 'doc',
         readQa: (key) => qaRecords.get(key),
         writeQa: async (key, value) => {
           qaRecords.set(key, structuredClone(value))
