@@ -421,6 +421,7 @@ export function createOfficeHostRuntime(
     })
   if (
     baselineSkill &&
+    powerPointAdapter &&
     imageBackup &&
     localBinding?.readExistingImageChange &&
     localBinding.writeExistingImageChange
@@ -428,6 +429,8 @@ export function createOfficeHostRuntime(
     existingImageEditing = createPresentationExistingImageEditingSkill({
       baseline: baselineSkill,
       imageAdapter: new BrowserPresentationImageAdapter(),
+      inspectPage: (slideId, signal) =>
+        powerPointAdapter.inspectPresentationPage(slideId, signal),
       imageBackup,
       vfs,
       proposals,
@@ -452,6 +455,8 @@ export function createOfficeHostRuntime(
       baseline: baselineSkill,
       adapter: new BrowserPresentationPageReplacementAdapter(),
       exportAdapter: powerPointAdapter,
+      inspectPage: (slideId, signal) =>
+        powerPointAdapter.inspectPresentationPage(slideId, signal),
       vfs,
       request: options.presentation.request,
       proposals,
