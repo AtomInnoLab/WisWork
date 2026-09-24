@@ -1,5 +1,8 @@
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
-import type { StructuredProposalController } from '../../agent/proposal-controller.js'
+import type {
+  ProposalPostWriteEvidence,
+  StructuredProposalController,
+} from '../../agent/proposal-controller.js'
 import { selectionFingerprint } from '../../agent/proposal-controller.js'
 import type { PresentationBaselineSkill } from './presentation-baseline.js'
 import type { PresentationBaselineAdapter } from './browser-presentation-baseline-adapter.js'
@@ -142,6 +145,12 @@ async function digest(value: string) {
   return Array.from(
     new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))),
     (b) => b.toString(16).padStart(2, '0'),
+  ).join('')
+}
+async function pngDigest(base64: string) {
+  const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
+  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (b) =>
+    b.toString(16).padStart(2, '0'),
   ).join('')
 }
 export function createPresentationExistingEditingSkill(
@@ -628,6 +637,31 @@ export function createPresentationExistingEditingSkill(
               { ...r, state: reversing ? 'undone' : 'applied' } as PresentationExistingChange,
               s,
             )
+          },
+          postWrite: async (): Promise<ProposalPostWriteEvidence> => {
+            const terminal = reversing ? 'undone' : 'applied'
+            const check = async () => {
+              await current()
+              saved()
+              if (record!.state !== terminal || !matches(await value(), target))
+                throw new Error('presentation_existing_change_conflict')
+            }
+            await check()
+            if (!options.adapter.inspectPresentationPage)
+              return { status: 'unavailable', reason: 'capture_unavailable' }
+            const shot = await options.adapter.inspectPresentationPage(record!.hostSlideId)
+            if (
+              shot.slideId !== record!.hostSlideId ||
+              shot.shapesTruncated ||
+              shot.screenshot.mime !== 'image/png'
+            )
+              throw new Error('office_read_failed')
+            const pngBase64 = validatePowerPointPageScreenshot(shot.screenshot.base64)
+            await check()
+            return {
+              status: 'captured',
+              pages: [{ slideId: record!.hostSlideId, pngBase64, digest: await pngDigest(pngBase64) }],
+            }
           },
         })
         return {

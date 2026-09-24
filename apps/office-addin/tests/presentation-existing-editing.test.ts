@@ -12,6 +12,60 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
+it('returns unreviewed post-write evidence for a verified native text change', async () => {
+  const f = await fixture()
+  await f.propose()
+  const proposal = f.getRuntime().proposals as StructuredProposalController
+  const decision = proposal.waitForDecision(proposal.pending()!.id)
+  await f.confirm()
+  expect(await decision).toMatchObject({
+    status: 'confirmed',
+    postWrite: { status: 'captured', pages: [{ slideId: 'slide', pngBase64: png }] },
+  })
+})
+
+it('keeps a verified text write successful when the post-write screenshot fails', async () => {
+  const f = await fixture()
+  await f.propose()
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'inspectPresentationPage').mockRejectedValueOnce(
+    new Error('office_read_failed'),
+  )
+  const proposal = f.getRuntime().proposals as StructuredProposalController
+  const decision = proposal.waitForDecision(proposal.pending()!.id)
+  await f.confirm()
+  expect(await decision).toMatchObject({ status: 'confirmed', postWrite: { status: 'unavailable' } })
+  expect(f.records()[0]!.record).toMatchObject({ state: 'applied' })
+  expect(f.text()).toBe('after')
+})
+
+it('captures each exact affected native page after a verified batch', async () => {
+  const f = await fixture()
+  const all = await f.call('read_presentation_baseline', { scope: 'deck' })
+  expect(all.isError, all.output).not.toBe(true)
+  const baseline_id = JSON.parse(all.output).baselineId as string
+  const proposed = await f.call('edit_existing_presentation_batch', {
+    baseline_id,
+    intent: 'Update two pages',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      { slide_id: 'other', shape_id: 'other-shape', kind: 'text', text: 'other-after' },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  const proposal = f.getRuntime().proposals as StructuredProposalController
+  const decision = proposal.waitForDecision(proposal.pending()!.id)
+  await f.confirm()
+  expect(await decision).toMatchObject({
+    status: 'confirmed',
+    postWrite: {
+      status: 'captured',
+      pages: [{ slideId: 'slide', pngBase64: png }, { slideId: 'other', pngBase64: png }],
+    },
+  })
+})
 async function fixture() {
   vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => true } } })
   let location = 'file://existing.pptx',
