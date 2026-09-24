@@ -138,7 +138,7 @@ export const PRESENTATION_DECK_SCHEMA: Schema = object({
         ),
       ],
     },
-    32,
+    undefined,
   ),
   claims: array(
     object({ id, text: text(12000, 1), source: text(2000, 1), locator: text(1000, 1) }, [

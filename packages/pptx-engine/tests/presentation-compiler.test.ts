@@ -132,6 +132,24 @@ it('accepts compact attachment references but never compiles unresolved asset by
     parsePresentationDeck({ ...deck, assets: [deck.assets[0], deck.assets[0]] }),
   ).toThrow('duplicate_asset')
 })
+it('accepts more than 32 distinct image references in one editable page', () => {
+  const deck: import('../src/presentation').PresentationDeck = benchmarkDeck()
+  const images = Array.from({ length: 33 }, (_, index) => ({
+    id: `image_${index}`,
+    attachmentId: index.toString(16).padStart(64, '0'),
+  }))
+  deck.assets.push(...images)
+  deck.slides[0]!.elements = images.map((asset, index) => ({
+    kind: 'image' as const,
+    id: `element_${index}`,
+    assetId: asset.id,
+    x: (index % 11) * 1.1,
+    y: Math.floor(index / 11) * 1.1,
+    w: 1,
+    h: 1,
+  }))
+  expect(parsePresentationDeck(deck).assets).toHaveLength(34)
+})
 
 it('returns Office source slide IDs from the final OOXML in deck order on repeated compilation', async () => {
   const deck = benchmarkDeck()

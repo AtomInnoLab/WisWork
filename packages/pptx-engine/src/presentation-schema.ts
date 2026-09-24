@@ -26,11 +26,11 @@ export const number = (minimum: number, maximum: number): Schema => ({
   maximum,
 })
 export const choice = (...values: string[]): Schema => ({ type: 'string', enum: values })
-export const array = (items: Schema, maxItems: number, minItems = 0): Schema => ({
+export const array = (items: Schema, maxItems?: number, minItems = 0): Schema => ({
   type: 'array',
   items,
   minItems,
-  maxItems,
+  ...(maxItems === undefined ? {} : { maxItems }),
 })
 export const object = (
   properties: Record<string, Schema>,
