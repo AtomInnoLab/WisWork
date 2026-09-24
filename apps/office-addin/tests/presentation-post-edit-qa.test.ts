@@ -1142,3 +1142,108 @@ it.each([
     runtime.dispose()
   }
 })
+
+it.each([false, true])(
+  'retains cross-type history across reopen and undoes exact records (last receipt fails=%s)',
+  async (failReceipt) => {
+    const f = await fixture(true),
+      host = stablePageHost(f)
+    let geometry = { left: 1, top: 2, width: 30, height: 40 }
+    const initial = { ...geometry }
+    vi.spyOn(BrowserPowerPointAdapter.prototype, 'readPresentationPageGeometry').mockImplementation(
+      async (slideId, shapeId) => ({ slideId, shapeId, geometry: { ...geometry } }),
+    )
+    const geometryWrites = vi
+      .spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationPageGeometry')
+      .mockImplementation(async (slide, shape, next, expected) => {
+        expect([slide, shape]).toEqual(['host', 'box'])
+        expect(expected).toEqual(geometry)
+        expect(f.page().recheckRequired).toBe(true)
+        geometry = { ...next }
+      })
+    const edit = async (name: string, input: Record<string, unknown>) => {
+      const result = await f.runtime.skill.executeTool({
+        id: 'edit-history',
+        name,
+        input: { page_id: 'page1', ...input },
+      })
+      expect(result.isError, result.output).not.toBe(true)
+      await f.proposals.confirm(f.proposals.pending()!.id)
+    }
+    await edit('edit_presentation_page_text', { shape_id: 'shape', text: 'after' })
+    const first = f.binding.readTextChange()!
+    await edit('edit_presentation_page_geometry', {
+      shape_id: 'box',
+      geometry: { ...geometry, left: 20 },
+    })
+    const middle = f.binding.readGeometryChange()!
+    await edit('edit_presentation_page_text', { shape_id: 'shape', text: 'final' })
+    const last = f.binding.readTextChange()!
+    expect(f.binding.listChangeHistory().map((e) => e.kind)).toEqual(['text', 'geometry', 'text'])
+    expect(f.binding.readTextChange(first.changeId)?.after).toBe('after')
+    const captured = await f.capture()
+    await f.review(JSON.parse(captured.output).page.screenshotDigest)
+    const unrelated = structuredClone(f.secondPage())
+    f.runtime.dispose()
+    const runtime = f.createRuntime()
+    try {
+      expect(
+        (
+          await runtime.skill.executeTool({
+            id: 'restore',
+            name: 'restore_presentation_project',
+            input: { project_id: 'project' },
+          })
+        ).isError,
+      ).not.toBe(true)
+      const listed = await runtime.skill.executeTool({
+        id: 'list',
+        name: 'list_presentation_changes',
+        input: { project_id: 'project' },
+      })
+      expect(listed.isError, listed.output).not.toBe(true)
+      expect(
+        JSON.parse(listed.output).changes.map((r: { change_id: string }) => r.change_id),
+      ).toEqual([last.changeId, middle.changeId, first.changeId])
+      await runtime.changes!.refresh()
+      await runtime.changes!.run(`text:${first.changeId}`, 'undo')
+      expect(runtime.proposals.pending()).toBeUndefined() // a later text write still owns current value
+      expect(host.edit).toHaveBeenCalledTimes(2)
+      for (const [kind, id] of [
+        ['text', last.changeId],
+        ['geometry', middle.changeId],
+        ['text', first.changeId],
+      ]) {
+        await runtime.changes!.refresh()
+        await runtime.changes!.run(`${kind}:${id}`, 'undo')
+        expect(runtime.proposals.pending()).toBeDefined()
+        let armed = failReceipt && id === first.changeId
+        f.save.mockImplementation(async () => {
+          if (armed && f.binding.readTextChange(first.changeId)?.state === 'undone') {
+            armed = false
+            throw new Error('save_failed')
+          }
+        })
+        const confirmation = runtime.proposals.confirm(runtime.proposals.pending()!.id)
+        if (failReceipt && id === first.changeId) {
+          await expect(confirmation).rejects.toThrow('save_failed')
+          expect(f.binding.readTextChange(first.changeId)?.state).toBe('undo_pending')
+          await runtime.changes!.refresh()
+          await runtime.changes!.run(`text:${first.changeId}`, 'inspect')
+          await runtime.changes!.run(`text:${first.changeId}`, 'resume')
+          await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+        } else await confirmation
+      }
+      expect(f.binding.listChangeHistory()).toHaveLength(3)
+      expect(f.binding.listChangeHistory().every((e) => e.record.state === 'undone')).toBe(true)
+      expect((await host.read('host', 'shape')).text).toBe('before')
+      expect(geometry).toEqual(initial)
+      expect(host.edit).toHaveBeenCalledTimes(4)
+      expect(geometryWrites).toHaveBeenCalledTimes(2)
+      expect(f.page().recheckRequired).toBe(true)
+      expect(f.secondPage()).toEqual(unrelated)
+    } finally {
+      runtime.dispose()
+    }
+  },
+)

@@ -1,3 +1,9 @@
+import {
+  presentationChangeSetSummary,
+  selectPresentationHistory,
+  type PresentationChangeSetSummary,
+} from '../skills/powerpoint/presentation-history.js'
+import type { PresentationHistoryEntry } from '../skills/powerpoint/presentation-change-history.js'
 import type { AgentSkill } from '@wiswork/agent-core'
 import type { CompiledPresentationArtifact } from '../skills/powerpoint/presentation-delivery.js'
 import { presentationArtifactContent } from '../skills/powerpoint/presentation-page-delivery.js'
@@ -20,6 +26,9 @@ import {
 
 export type PresentationChangeAction = 'inspect' | 'undo' | 'resume' | 'commit' | 'discard'
 export interface PresentationChangeEntry {
+  sequence?: number
+  legacy?: boolean
+  changeSet?: PresentationChangeSetSummary
   id: string
   kind: 'text' | 'geometry' | 'image' | 'page'
   pageId: string
@@ -45,6 +54,7 @@ export interface PresentationChangesController {
 }
 type Read<T> = () => T | undefined | Promise<T | undefined>
 export interface PresentationChangesOptions {
+  listChangeHistory?: () => PresentationHistoryEntry[]
   available(): boolean
   artifact(): CompiledPresentationArtifact | undefined
   documentId(): Promise<string>
@@ -63,6 +73,7 @@ interface SavedEntry {
   entry: PresentationChangeEntry
   record: RecordValue
   fingerprint: string
+  historical?: boolean
 }
 const copy = <T>(value: T): T => structuredClone(value)
 const identity = (artifact: CompiledPresentationArtifact | undefined) => JSON.stringify(artifact)
@@ -166,6 +177,25 @@ export function createPresentationChangesController(
   async function read(artifact: CompiledPresentationArtifact, scope: string, ticket: number) {
     const documentId = await options.documentId()
     if (ticket !== generation || !current(scope, documentId)) throw new Error('stale')
+    if (options.listChangeHistory) {
+      const history = copy(options.listChangeHistory())
+      const selected = await selectPresentationHistory(history, artifact, documentId)
+      if (ticket !== generation || !current(scope, await options.documentId()))
+        throw new Error('stale')
+      return selected.map((saved) => {
+        const row = entry(saved.kind, saved.record)
+        row.entry = {
+          ...row.entry,
+          id: saved.id,
+          sequence: saved.sequence,
+          legacy: saved.legacy,
+          changeSet: presentationChangeSetSummary(saved),
+        }
+        row.historical = true
+        row.fingerprint = JSON.stringify(saved)
+        return row
+      })
+    }
     const [text, geometry, page, images] = await Promise.all([
       options.readTextChange?.(),
       options.readGeometryChange?.(),
@@ -335,6 +365,9 @@ export function createPresentationChangesController(
             ? { change_id: (r as PresentationPageReplacement).changeId }
             : { page_id: r.pageId }),
           ...(kind === 'image' ? { shape_id: (r as ImageReplacementRecord).oldShapeId } : {}),
+          ...(selected.historical && (kind === 'text' || kind === 'geometry')
+            ? { change_id: (r as PresentationTextChange | PresentationGeometryChange).changeId }
+            : {}),
         }
         let result = await options.executeTool(
           { id: `change-${ticket}`, name: `${action}_presentation_${suffix}`, input },

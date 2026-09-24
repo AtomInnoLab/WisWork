@@ -484,3 +484,47 @@ it.each(['complete', 'undo_pending', 'undone'] as const)(
     }
   },
 )
+
+it('lists ordered historical text records and routes the selected change ID', async () => {
+  const digest = Array.from(
+    new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('base64'))),
+    (b) => b.toString(16).padStart(2, '0'),
+  ).join('')
+  const base = {
+    version: 1 as const,
+    documentId: 'doc',
+    projectId: 'project',
+    requestId: 'request',
+    artifactDigest: digest,
+    pageId: 'page',
+    hostSlideId: 'host',
+    shapeId: 'shape',
+    state: 'applied' as const,
+  }
+  const older = { ...base, changeId: 'old', before: 'a', after: 'b' }
+  const newer = { ...base, changeId: 'new', before: 'b', after: 'c' }
+  const executeTool = vi.fn(async () => ({ output: 'ok', summary: 'Done' }))
+  const controller = createPresentationChangesController({
+    available: () => true,
+    artifact: () => artifact,
+    documentId: async () => 'doc',
+    listChangeHistory: () => [
+      { id: 'text:old', sequence: 1, legacy: true, kind: 'text', record: older },
+      { id: 'text:new', sequence: 2, legacy: false, kind: 'text', record: newer },
+    ],
+    executeTool,
+  })
+  await controller.refresh()
+  const items = controller.snapshot().entries
+  expect(items.map((e) => e.id)).toEqual(['text:new', 'text:old'])
+  expect(items[1].legacy).toBe(true)
+  expect(items[1].changeSet?.scope).toEqual({ slideIds: ['host'], shapeIds: ['shape'] })
+  await controller.run('text:old', 'undo')
+  expect(executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'undo_presentation_text_change',
+      input: { project_id: 'project', page_id: 'page', change_id: 'old' },
+    }),
+    expect.any(AbortSignal),
+  )
+})
