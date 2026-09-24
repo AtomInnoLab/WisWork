@@ -44,6 +44,38 @@ describe('presentation page content precheck', () => {
     expect(parsePresentationPageContentCheck(report)).toEqual(report)
     expect(parsePresentationPageContentCheck(report)).not.toBe(report)
   })
+  it.each([
+    [undefined, 'source_as_of_missing'],
+    [' \n\t ', 'source_as_of_missing'],
+    ['FY 2024', 'source_as_of_differs'],
+    ['FY  2025', undefined],
+  ])('compares source asOf %j as normalized metadata only', (asOf, code) => {
+    const { plan, deck, pageId } = fixture()
+    plan.claims[0]!.asOf = ' FY\n2025 '
+    if (asOf !== undefined) plan.sources[0]!.asOf = asOf
+    deck.claims = presentationPlanClaims(plan)
+    const before = structuredClone({ plan, deck })
+    const report = checkPresentationPageContent(plan, deck, pageId)
+    expect(report.findings).toEqual(code ? [{ code, claimId: 'source-1', sourceId: 'source' }] : [])
+    expect(report.checks).toEqual(conservative)
+    expect({ plan, deck }).toEqual(before)
+    expect(parsePresentationPageContentCheck(report)).toEqual(report)
+  })
+  it.each([undefined, ' \n '])('does not infer an unspecified claim asOf %j', (asOf) => {
+    const { plan, deck, pageId } = fixture()
+    if (asOf !== undefined) plan.claims[0]!.asOf = asOf
+    plan.sources[0]!.asOf = 'FY 2024'
+    deck.claims = presentationPlanClaims(plan)
+    expect(checkPresentationPageContent(plan, deck, pageId).findings).toEqual([])
+  })
+  it('does not report temporal findings for claims on other pages', () => {
+    const { plan, deck, pageId } = fixture()
+    plan.claims[0]!.asOf = 'FY 2025'
+    plan.slides[0]!.claimIds = []
+    deck.slides[0]!.claimIds = []
+    deck.claims = presentationPlanClaims(plan)
+    expect(checkPresentationPageContent(plan, deck, pageId).findings).toEqual([])
+  })
   it('matches individual table cells, chart categories and series names', () => {
     for (const element of [
       { ...box, kind: 'table', rows: [['Revenue grew 20%']] },
@@ -166,6 +198,7 @@ describe('presentation page content precheck', () => {
       ...plan.claims[0]!,
       id: `c${i}`,
       statement: `Missing ${i}`,
+      asOf: 'FY 2025',
       type: 'calculation' as const,
       sourceIds: ['s0', 's1', 's2'],
       calculation: { formula: '1+1', inputs: ['1'] },
@@ -179,7 +212,7 @@ describe('presentation page content precheck', () => {
     })
     deck.claims = presentationPlanClaims(plan)
     const report = checkPresentationPageContent(plan, deck, pageId)
-    expect(report.findings).toHaveLength(256)
+    expect(report.findings).toHaveLength(352)
     expect(parsePresentationPageContentCheck(report)).toEqual(report)
   })
   it('strictly rejects forged reports and invalid finding attribution', () => {
@@ -194,13 +227,21 @@ describe('presentation page content precheck', () => {
       { checks: { ...conservative, content: 'passed' } },
       { checks: { ...conservative, extra: true } },
       { findings: [{ code: 'unknown', claimId: 'source-1' }] },
+      ...['source_as_of_missing', 'source_as_of_differs'].flatMap((code) => [
+        { findings: [{ code, claimId: 'source-1' }] },
+        { findings: [{ code, sourceId: 'source' }] },
+        { findings: [{ code, claimId: 'other', sourceId: 'source' }] },
+        { findings: [{ code, claimId: 'source-1', sourceId: '' }] },
+        { findings: [{ code, claimId: 'source-1', sourceId: 'source', extra: true }] },
+        { findings: Array(2).fill({ code, claimId: 'source-1', sourceId: 'source' }) },
+      ]),
       { findings: [{ code: 'claim_text_not_found', claimId: 'other' }] },
       { findings: [{ code: 'source_excerpt_missing', claimId: 'source-1' }] },
       { findings: [{ code: 'claim_text_not_found', claimId: 'source-1', sourceId: 'source' }] },
       { findings: [{ code: 'claim_text_not_found', claimId: 'source-1', text: 'untrusted' }] },
       { findings: Array(2).fill({ code: 'claim_text_not_found', claimId: 'source-1' }) },
       {
-        findings: Array.from({ length: 257 }, (_, i) => ({
+        findings: Array.from({ length: 353 }, (_, i) => ({
           code: 'source_excerpt_missing',
           claimId: 'source-1',
           sourceId: `s${i}`,
