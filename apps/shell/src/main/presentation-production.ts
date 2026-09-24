@@ -1,3 +1,7 @@
+import {
+  parsePresentationClaimEvidence,
+  matchPresentationClaimExcerpt,
+} from '@wiswork/pptx-engine/presentation-claim-evidence'
 import type {
   PresentationStore,
   PresentationProductionRecord,
@@ -146,6 +150,83 @@ export async function handlePresentationProduction(
   const deck = parsePresentationDeck(record.deck)
   const plan = parsePresentationPlan(record.plan.plan)
   assertDeckMatchesPresentationPlan(deck, plan)
+  if (request.operation === 'production_claim_evidence') {
+    check(signal)
+    const page = plan.slides.find((page) => page.id === request.pageId)
+    const claim = plan.claims.find((claim) => claim.id === request.claimId)
+    const source = plan.sources.find((source) => source.id === request.sourceId)
+    if (
+      !page ||
+      !claim ||
+      !source ||
+      !page.claimIds.includes(claim.id) ||
+      !claim.sourceIds.includes(source.id)
+    )
+      throw new Error('not_found')
+    if (!/^attachment:[a-f0-9]{64}$/.test(source.uri))
+      throw new Error('evidence_source_unsupported')
+    const attachmentId = source.uri.slice('attachment:'.length)
+    const window = (await attachments(
+      {
+        operation: 'attachment_read',
+        documentId,
+        attachmentId,
+        offset: request.offset,
+        maxChars: request.maxChars,
+      },
+      signal,
+    )) as {
+      attachmentId: string
+      name: string
+      offset: number
+      totalChars: number
+      text: string
+      sourceUri: string
+    }
+    check(signal)
+    if (
+      window.attachmentId !== attachmentId ||
+      window.sourceUri !== source.uri ||
+      window.offset !== request.offset ||
+      typeof window.text !== 'string' ||
+      window.text.length !== Math.min(request.maxChars as number, window.totalChars - window.offset)
+    )
+      throw new Error('invalid_state')
+    const report = {
+      version: 1,
+      projectId,
+      requestId: record.requestId,
+      planRevision: record.plan.revision,
+      inputDigest: record.inputDigest,
+      planDigest: record.planDigest,
+      pageId: page.id,
+      claimId: claim.id,
+      statement: claim.statement,
+      source: {
+        id: source.id,
+        uri: source.uri,
+        excerpt: source.excerpt,
+        ...(source.locator !== undefined ? { locator: source.locator } : {}),
+      },
+      attachment: {
+        id: attachmentId,
+        name: window.name,
+        offset: window.offset,
+        totalChars: window.totalChars,
+        text: window.text,
+        offsetUnit: 'utf16_code_unit',
+      },
+      excerptMatch: matchPresentationClaimExcerpt(source.excerpt, window.text, window.offset),
+      checks: {
+        support: 'not_verified',
+        sourceAuthority: 'not_verified',
+        timeliness: 'not_verified',
+        host: 'not_checked',
+      },
+    }
+    if (Buffer.byteLength(JSON.stringify(report)) > 256 * 1024) throw new Error('output_too_large')
+    return parsePresentationClaimEvidence(report)
+  }
   if (request.operation === 'production_content_check') {
     check(signal)
     return {

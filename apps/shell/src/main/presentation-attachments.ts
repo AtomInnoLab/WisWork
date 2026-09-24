@@ -63,13 +63,18 @@ interface Metadata {
   totalChars?: number
   textDigest?: string
 }
-async function directory(path: string) {
-  try {
-    await mkdir(path, { mode: 0o700 })
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+async function directory(path: string, create = true) {
+  if (create) {
+    try {
+      await mkdir(path, { mode: 0o700 })
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+    }
   }
-  const info = await lstat(path)
+  const info = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (!create && error.code === 'ENOENT') fail('not_found')
+    throw error
+  })
   if (!info.isDirectory() || info.isSymbolicLink()) fail('invalid_state')
 }
 async function bytes(path: string, limit: number): Promise<Buffer> {
@@ -308,8 +313,8 @@ export function createPresentationAttachmentService(options: {
     await previous
     try {
       checkAbort(signal)
-      await directory(root)
-      await directory(doc)
+      await directory(root, op !== 'attachment_read')
+      await directory(doc, op !== 'attachment_read')
       const entries = await readdir(doc)
       if (entries.length > 32 || entries.some((e) => !isId(e))) fail('invalid_state')
       const id = body.attachmentId as string

@@ -12,7 +12,8 @@
     "./presentation": "./src/presentation.ts",
     "./presentation-plan": "./src/presentation-plan.ts",
     "./presentation-compiler": "./src/presentation-compiler.ts",
-    "./presentation-content-check": "./src/presentation-content-check.ts"
+    "./presentation-content-check": "./src/presentation-content-check.ts",
+    "./presentation-claim-evidence": "./src/presentation-claim-evidence.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
