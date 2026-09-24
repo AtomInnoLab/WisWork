@@ -52,6 +52,23 @@ function setup() {
   }
 }
 describe('durable page production', () => {
+  it('lists validated production requests newest first with isolated returned data', () => {
+    const { store, path } = setup()
+    expect(store.productionHistory('project', 'doc')).toEqual([])
+    const first = store.beginProduction('project', 'doc', 'first', deck(), plan())
+    const second = store.beginProduction('project', 'doc', 'second', deck(), plan())
+    const history = store.productionHistory('project', 'doc')
+    expect(history).toEqual([second, first])
+    history[0]!.pages[0]!.attempt = 99
+    ;(history[0]!.deck as ReturnType<typeof deck>).slides[0]!.title = 'mutated'
+    expect(store.productionHistory('project', 'doc')).toEqual([second, first])
+    expect(() => store.productionHistory('project', 'foreign')).toThrow('document_mismatch')
+    const corrupted = JSON.parse(readFileSync(path('first'), 'utf8'))
+    corrupted.inputDigest = 'a'.repeat(64)
+    writeFileSync(path('first'), JSON.stringify(corrupted))
+    expect(() => store.productionHistory('project', 'doc')).toThrow('invalid_state')
+  })
+
   it('freezes inputs idempotently and keeps production separate from legacy receipts', () => {
     const { store, root } = setup()
     const input = deck(),

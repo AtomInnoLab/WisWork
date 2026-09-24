@@ -817,17 +817,22 @@ export class PresentationStore {
     this.write(join(directory, `production-${digest(requestId)}.json`), frozen)
     return frozen
   }
+  productionHistory(projectId: string, documentId: string): PresentationProductionRecord[] {
+    const directory = this.bind(projectId, documentId, false)
+    if (!directory) return []
+    return structuredClone(
+      this.productions(directory, projectId, documentId).sort((a, b) => b.sequence - a.sequence),
+    )
+  }
   production(
     projectId: string,
     documentId: string,
     requestId?: string,
   ): PresentationProductionRecord | undefined {
     if (requestId !== undefined) assertPresentationId(requestId)
-    const directory = this.bind(projectId, documentId, false)
-    if (!directory) return undefined
-    const records = this.productions(directory, projectId, documentId)
+    const records = this.productionHistory(projectId, documentId)
     return requestId === undefined
-      ? records.sort((a, b) => b.sequence - a.sequence)[0]
+      ? records[0]
       : records.find((record) => record.requestId === requestId)
   }
   updateProductionPage(
