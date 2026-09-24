@@ -383,6 +383,8 @@ export function createOfficeHostRuntime(
         documentId: localBinding!.documentId,
         inspectPage: (slideId, signal) =>
           powerPointAdapter.inspectPresentationPage(slideId, signal),
+        exportPagePackage: (slideId, signal) =>
+          powerPointAdapter.exportPresentationPagePackage(slideId, signal),
         readMasters: (signal) => powerPointAdapter.inspectSlideMasters(signal),
       })
     : undefined

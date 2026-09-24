@@ -1,3 +1,4 @@
+import JSZip from 'jszip'
 import { expect, it, vi } from 'vitest'
 import { createPresentationBaselineSkill } from '../src/skills/powerpoint/presentation-baseline'
 const page = (slideId = 's1', text = 'original') => ({
@@ -50,10 +51,17 @@ function fixture() {
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII=',
     },
   }))
+  let packageBase64 = ''
+  const exportPagePackage = vi.fn(async (slideId: string) => ({
+    slideId,
+    slideIds: [...context.slideIds],
+    base64: packageBase64,
+  }))
   const skill = createPresentationBaselineSkill({
     adapter,
     documentId: async () => documentId,
     inspectPage,
+    exportPagePackage,
   })
   const call = (name: string, input: Record<string, unknown> = {}, signal?: AbortSignal) =>
     skill.executeTool({ id: 'call', name, input }, signal)
@@ -63,6 +71,7 @@ function fixture() {
     adapter,
     pages,
     inspectPage,
+    exportPagePackage,
     call,
     read,
     setDocument: (id: string) => {
@@ -72,7 +81,15 @@ function fixture() {
       context = next
     },
     getContext: () => context,
+    setPackage: (base64: string) => {
+      packageBase64 = base64
+    },
   }
+}
+async function complexPagePackage(cell = 'North') {
+  const zip = new JSZip()
+  zip.file('ppt/slides/slide1.xml', `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="7" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>${cell}</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`)
+  return zip.generateAsync({ type: 'base64' })
 }
 it('captures arbitrary current/selected/deck scopes without a generation artifact or a host write', async () => {
   const f = fixture()
@@ -279,4 +296,58 @@ it('preserves unsupported theme status and detects a changed master snapshot', a
     input: { baseline_id: b.baselineId },
   })
   expect(JSON.parse(r.output)).toMatchObject({ unchanged: false, stylesChanged: true })
+})
+it('reads bounded native complex objects only from the exact scoped baseline slide', async () => {
+  const f = fixture()
+  f.setPackage(await complexPagePackage())
+  const baseline = JSON.parse((await f.read()).output)
+  const result = await f.call('read_presentation_baseline_complex_page', {
+    baseline_id: baseline.baselineId,
+    slide_id: 's2',
+  })
+  expect(result.isError, result.output).not.toBe(true)
+  expect(JSON.parse(result.output)).toMatchObject({
+    baselineId: baseline.baselineId,
+    slideId: 's2',
+    tables: [{ shapeId: '7', rows: [['North']] }],
+    charts: [],
+    cacheOnly: true,
+    qaPassed: false,
+  })
+  expect(result.mutated).toBe(false)
+  expect(f.exportPagePackage).toHaveBeenCalledTimes(2)
+  expect(f.exportPagePackage).toHaveBeenCalledWith('s2', undefined)
+  expect((await f.call('read_presentation_baseline_complex_page', {
+    baseline_id: baseline.baselineId,
+    slide_id: 's1',
+  })).output).toBe('presentation_baseline_scope_mismatch')
+})
+it('rejects complex page reads when the package or host baseline changes during export', async () => {
+  const f = fixture()
+  const first = await complexPagePackage('North')
+  const changed = await complexPagePackage('South')
+  f.setPackage(first)
+  const baseline = JSON.parse((await f.read()).output)
+  f.exportPagePackage.mockImplementationOnce(async (slideId) => ({
+    slideId,
+    slideIds: [...f.getContext().slideIds],
+    base64: first,
+  })).mockImplementationOnce(async (slideId) => ({
+    slideId,
+    slideIds: [...f.getContext().slideIds],
+    base64: changed,
+  }))
+  expect((await f.call('read_presentation_baseline_complex_page', {
+    baseline_id: baseline.baselineId,
+    slide_id: 's2',
+  })).output).toBe('presentation_baseline_changed')
+  f.exportPagePackage.mockReset()
+  f.exportPagePackage.mockImplementation(async (slideId) => {
+    f.pages.set('s2', page('s2', 'manual change'))
+    return { slideId, slideIds: [...f.getContext().slideIds], base64: first }
+  })
+  expect((await f.call('read_presentation_baseline_complex_page', {
+    baseline_id: baseline.baselineId,
+    slide_id: 's2',
+  })).output).toBe('presentation_baseline_changed')
 })
