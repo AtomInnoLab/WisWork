@@ -5,7 +5,11 @@ import { createHash } from 'node:crypto'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime'
 import type { StructuredProposalController } from '../src/agent/proposal-controller'
-import { BrowserPowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter'
+import {
+  BrowserPowerPointAdapter,
+  type PowerPointMasterState,
+  type PowerPointMasterOperation,
+} from '../src/skills/powerpoint/browser-powerpoint-adapter'
 import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
 
 const beforePng =
@@ -610,7 +614,7 @@ it('does not trust a stable tool label on a general script proposal', async () =
     operation: 'execute_office_js',
     toolName: 'edit_presentation_page_text',
     title: 'Script',
-    preview: {},
+    preview: { qaScope: { basis: 'native_master_layout', hostSlideIds: [] } },
     impact: { host: 'powerpoint', targets: ['host'], count: 1 },
     fingerprint: 'test',
     validate: () => true,
@@ -621,3 +625,210 @@ it('does not trust a stable tool label on a general script proposal', async () =
   expect(f.secondPage().recheckRequired).toBe(true)
   f.runtime.dispose()
 })
+
+it.each([{ scope: ['host'] }, { scope: [] }])(
+  'uses the native master dependency scope $scope for saved and live QA',
+  async ({ scope }) => {
+    const f = await fixture(true)
+    const previous = structuredClone(f.secondPage())
+    const beforeSave = f.save.mock.calls.length
+    const proposal = f.proposals.propose({
+      operation: 'edit_slide_master',
+      toolName: 'edit_slide_master',
+      title: 'Native master edit',
+      preview: { qaScope: { basis: 'native_master_layout', hostSlideIds: scope } },
+      impact: { host: 'powerpoint', targets: ['master:master1'], count: 1 },
+      fingerprint: 'test',
+      validate: () => true,
+      execute: () => {
+        expect(f.page().recheckRequired).toBe(scope.length ? true : undefined)
+      },
+    })
+    await f.proposals.confirm(proposal.id)
+    expect(f.secondPage()).toEqual(previous)
+    expect((await f.review(f.secondDigest!, 'page2')).isError).not.toBe(true)
+    if (!scope.length) {
+      expect(f.save.mock.calls.length).toBe(beforeSave + 1) // only the unrelated review was saved
+      expect((await f.review(f.digest)).isError).not.toBe(true)
+    } else expect((await f.review(f.digest)).output).toBe('presentation_qa_capture_required')
+    f.runtime.dispose()
+  },
+)
+
+it.each([
+  { basis: 'document' },
+  { basis: 'native_master_layout', hostSlideIds: ['host', 'host'] },
+  { basis: 'native_master_layout', hostSlideIds: ['host'], partial: true },
+])('keeps malformed or unknown native scopes document-wide (%j)', async (qaScope) => {
+  const f = await fixture(true)
+  const proposal = f.proposals.propose({
+    operation: 'edit_slide_master',
+    toolName: 'edit_slide_master',
+    title: 'Native master edit',
+    preview: { qaScope },
+    impact: { host: 'powerpoint', targets: ['master:master1'], count: 1 },
+    fingerprint: 'test',
+    validate: () => true,
+    execute: () => {},
+  })
+  await f.proposals.confirm(proposal.id)
+  expect(f.page().recheckRequired).toBe(true)
+  expect(f.secondPage().recheckRequired).toBe(true)
+  f.runtime.dispose()
+})
+
+function nativeStyleHost(dependencies: { slideId: string; masterId: string; layoutId: string }[]) {
+  let slides = structuredClone(dependencies)
+  const masterState: PowerPointMasterState = {
+    masters: ['master1', 'master2', 'unused'].map((id) => ({
+      id,
+      name: id,
+      background: { type: 'Solid', color: '#FFFFFF', transparency: 0 },
+      themeColors: { Light1: '#FFFFFF', Dark1: '#000000' },
+      layouts: ['layout1', 'layout2'].map((id) => ({
+        id,
+        name: id,
+        isMasterBackgroundFollowed: true,
+        areBackgroundGraphicsHidden: false,
+        background: { type: 'Solid' },
+      })),
+    })),
+  }
+  const inspect = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'inspectStyleDependencies')
+    .mockImplementation(async () => ({ slides: structuredClone(slides) }))
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'inspectSlideMasters').mockImplementation(async () =>
+    structuredClone(masterState),
+  )
+  const execute = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'executeMasterOperations')
+    .mockImplementation(async (operations) => {
+      for (const operation of operations) {
+        const master = masterState.masters.find((master) => master.id === operation.master_id)!
+        if (operation.op === 'set_master_theme_color')
+          master.themeColors[operation.theme_color] = operation.color
+        else if (operation.op === 'set_layout_background_following') {
+          const layout = master.layouts.find((layout) => layout.id === operation.layout_id)!
+          layout.isMasterBackgroundFollowed = operation.follow_master
+          layout.areBackgroundGraphicsHidden = !operation.show_master_graphics
+        } else if (operation.fill.type === 'solid')
+          master.background = {
+            type: 'Solid',
+            color: operation.fill.color,
+            transparency: operation.fill.transparency,
+          }
+      }
+    })
+  return {
+    inspect,
+    execute,
+    change: (next: typeof slides) => {
+      slides = structuredClone(next)
+    },
+  }
+}
+const stylePages = [
+  { slideId: 'host', masterId: 'master1', layoutId: 'layout1' },
+  { slideId: 'host-2', masterId: 'master1', layoutId: 'layout2' },
+]
+const themeOperation: PowerPointMasterOperation = {
+  op: 'set_master_theme_color',
+  master_id: 'master1',
+  theme_color: 'Dark1',
+  color: '#333333',
+}
+async function proposeStyle(
+  f: Awaited<ReturnType<typeof fixture>>,
+  operation: PowerPointMasterOperation,
+) {
+  const result = await f.runtime.skill.executeTool({
+    id: 'style',
+    name: 'edit_slide_master',
+    input: { program: { version: 2, operations: [operation] } },
+  })
+  expect(result.isError, result.output).not.toBe(true)
+  return f.proposals.pending()!
+}
+it.each(['theme', 'layout', 'different_master', 'unused_master', 'unknown'] as const)(
+  'connects real native-style proposals to durable and live QA (%s)',
+  async (scenario) => {
+    const f = await fixture(true)
+    const pages = structuredClone(stylePages)
+    if (scenario === 'different_master') pages[1]!.masterId = 'master2'
+    const native = nativeStyleHost(pages)
+    if (scenario === 'unknown')
+      native.inspect.mockRejectedValue(new Error('office_api_unsupported'))
+    const operation: PowerPointMasterOperation =
+      scenario === 'layout'
+        ? {
+            op: 'set_layout_background_following',
+            master_id: 'master1',
+            layout_id: 'layout1',
+            follow_master: false,
+            show_master_graphics: false,
+          }
+        : { ...themeOperation, master_id: scenario === 'unused_master' ? 'unused' : 'master1' }
+    const before = [structuredClone(f.page()), structuredClone(f.secondPage())]
+    const proposal = await proposeStyle(f, operation)
+    const affected =
+      scenario === 'unused_master'
+        ? []
+        : scenario === 'theme' || scenario === 'unknown'
+          ? ['host', 'host-2']
+          : ['host']
+    expect(proposal.preview.qaScope).toEqual(
+      scenario === 'unknown'
+        ? { basis: 'document' }
+        : { basis: 'native_master_layout', hostSlideIds: affected },
+    )
+    await f.proposals.confirm(proposal.id)
+    expect(native.execute).toHaveBeenCalledOnce()
+    for (const [index, entry] of [f.page(), f.secondPage()].entries()) {
+      if (affected.includes(entry.hostSlideId)) expect(entry.recheckRequired).toBe(true)
+      else expect(entry).toEqual(before[index])
+    }
+    expect((await f.review(f.digest)).isError).toBe(affected.includes('host') ? true : undefined)
+    expect((await f.review(f.secondDigest!, 'page2')).isError).toBe(
+      affected.includes('host-2') ? true : undefined,
+    )
+    f.runtime.dispose()
+    const reopened = f.createRuntime()
+    await reopened.skill.executeTool({
+      id: 'restore',
+      name: 'restore_presentation_project',
+      input: { project_id: 'project' },
+    })
+    expect(
+      reopened
+        .qa!.read()!
+        .pages.filter((page) => page.recheckRequired)
+        .map((page) => page.hostSlideId)
+        .sort(),
+    ).toEqual(affected)
+    reopened.dispose()
+  },
+)
+it.each(['before_confirm', 'during_save', 'save_failed'] as const)(
+  'blocks native shared-style writes when the dependency checkpoint is unsafe (%s)',
+  async (scenario) => {
+    const f = await fixture(true)
+    const native = nativeStyleHost(stylePages)
+    const proposal = await proposeStyle(f, themeOperation)
+    const next = structuredClone(stylePages)
+    next[1]!.masterId = 'master2'
+    if (scenario === 'before_confirm') native.change(next)
+    else if (scenario === 'during_save')
+      f.save.mockImplementationOnce(async () => {
+        native.change(next)
+      })
+    else f.save.mockRejectedValueOnce(new Error('save_failed'))
+    await expect(f.proposals.confirm(proposal.id)).rejects.toThrow(
+      scenario === 'save_failed' ? 'save_failed' : 'proposal_stale',
+    )
+    expect(native.execute).not.toHaveBeenCalled()
+    expect(f.page().recheckRequired).toBe(scenario === 'during_save' ? true : undefined)
+    expect(f.secondPage().recheckRequired).toBe(scenario === 'during_save' ? true : undefined)
+    expect((await f.capture()).isError).not.toBe(true)
+    f.runtime.dispose()
+  },
+)

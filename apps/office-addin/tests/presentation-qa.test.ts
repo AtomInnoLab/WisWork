@@ -464,7 +464,6 @@ it('rejects invalid mutation scopes without losing live evidence or acquiring a 
   const f = setup()
   await f.skill.executeTool(f.capture)
   for (const scope of [
-    [],
     ['host1', 'host1'],
     [''],
     ['bad\n'],
@@ -678,4 +677,20 @@ it('keeps production screenshot and metadata paths distinct between requests', a
     expect(f.vfs.list('/home/user').filter((path) => path.endsWith('.json'))).toHaveLength(1)
   }
   expect(new Set(paths).size).toBe(2)
+})
+
+it('locks an explicitly empty mutation scope without discarding any live capture', async () => {
+  const f = setup()
+  await f.skill.executeTool(f.capture)
+  const screenshot_digest = f.readQa()!.pages[0]!.screenshotDigest
+  f.skill.beginMutation([])
+  expect((await f.skill.executeTool(f.capture)).output).toBe('presentation_qa_busy')
+  f.skill.endMutation()
+  expect(
+    await f.skill.executeTool({
+      id: 'review',
+      name: 'record_presentation_page_review',
+      input: { page_id: 'first', screenshot_digest, outcome: 'pass', notes: 'Unchanged page' },
+    }),
+  ).not.toHaveProperty('isError', true)
 })

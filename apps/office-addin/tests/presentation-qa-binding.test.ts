@@ -313,7 +313,6 @@ it('rejects invalid explicit scopes without turning them into full-deck invalida
     value = record(await f.binding.documentId())
   await f.binding.writeQa('project/request-1', value)
   for (const scope of [
-    [],
     ['256', '256'],
     [''],
     ['x'.repeat(257)],
@@ -412,4 +411,13 @@ it('persists image source namespaces and refuses adding source to a prior image 
   await expect(
     f.binding.writeImageReplacement(productionKey, { ...production, newShapeId: 'candidate' }),
   ).rejects.toThrow('presentation_image_replacement_state_invalid')
+})
+
+it('treats known empty dependencies as no invalidation and no settings save', async () => {
+  const f = fixture(),
+    value = record(await f.binding.documentId())
+  await f.binding.writeQa('project/request-1', value)
+  f.fail()
+  await f.binding.invalidateQa([])
+  expect(f.create().readQa('project/request-1')).toEqual(value)
 })

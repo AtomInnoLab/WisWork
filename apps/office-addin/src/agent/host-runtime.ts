@@ -11,6 +11,7 @@ import type { ImageReplacementRecord } from '../skills/powerpoint/presentation-i
 import { createPresentationPageEditingSkill } from '../skills/powerpoint/presentation-page-editing.js'
 import {
   createPresentationQaSkill,
+  presentationQaMutationScope,
   type PresentationQaRecord,
 } from '../skills/powerpoint/presentation-qa.js'
 import type { PresentationQaController } from './presentation-qa-card.js'
@@ -166,7 +167,7 @@ export function createOfficeHostRuntime(
             // Only these internally constructed operations resolve a stable host page before
             // proposing. Generic script/index-based impact labels cannot prove their write scope.
             const target = proposal.impact.targets[0]
-            const hostSlideIds =
+            let hostSlideIds =
               [
                 'stage_presentation_page_replacement',
                 'resume_presentation_page_replacement',
@@ -194,6 +195,34 @@ export function createOfficeHostRuntime(
               )
                 ? [target]
                 : undefined
+            // Only the native master tool derives this scope from a complete, revalidated
+            // host dependency snapshot. XML/package edits and generic labels remain unknown.
+            if (
+              proposal.operation === 'edit_slide_master' &&
+              proposal.toolName === proposal.operation &&
+              proposal.impact.host === 'powerpoint'
+            ) {
+              const scope = proposal.preview.qaScope
+              if (
+                scope &&
+                typeof scope === 'object' &&
+                !Array.isArray(scope) &&
+                Object.keys(scope).length === 2 &&
+                Object.keys(scope).every((key) => ['basis', 'hostSlideIds'].includes(key)) &&
+                (scope as Record<string, unknown>).basis === 'native_master_layout' &&
+                Array.isArray((scope as Record<string, unknown>).hostSlideIds)
+              ) {
+                try {
+                  hostSlideIds = [
+                    ...presentationQaMutationScope(
+                      (scope as { hostSlideIds: string[] }).hostSlideIds,
+                    )!,
+                  ]
+                } catch {
+                  hostSlideIds = undefined
+                }
+              }
+            }
             qaSkill?.beginMutation(hostSlideIds)
             mutationStarted = Boolean(qaSkill)
             await options.presentation!.invalidateQa!(hostSlideIds)

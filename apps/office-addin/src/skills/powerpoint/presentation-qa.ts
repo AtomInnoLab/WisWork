@@ -342,12 +342,12 @@ const tools: AgentToolDef[] = [
     },
   },
 ]
-/** Validate and snapshot an explicit mutation scope before any queued work can observe it. */
+/** Snapshot the scope before queued work: [] proves no affected pages; undefined is unknown. */
 export function presentationQaMutationScope(
   hostSlideIds?: readonly string[],
 ): Set<string> | undefined {
   if (hostSlideIds === undefined) return undefined
-  if (!Array.isArray(hostSlideIds) || hostSlideIds.length < 1 || hostSlideIds.length > 100)
+  if (!Array.isArray(hostSlideIds) || hostSlideIds.length > 100)
     throw new Error('invalid_tool_input')
   const ids = Array.from(hostSlideIds)
   if (
