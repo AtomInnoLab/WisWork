@@ -12,6 +12,8 @@ import {
 } from './presentation-image'
 
 const FILE_LIMIT = 50 * 1024 * 1024
+const DOCUMENT_LIMIT = 100 * 1024 * 1024
+const FILE_RESERVATION_FLOOR = 64 * 1024
 const CHUNK_LIMIT = 128 * 1024
 const TEXT_LIMIT = 1_000_000
 const locks = new Map<string, Promise<void>>()
@@ -288,14 +290,20 @@ export function createPresentationAttachmentService(options: {
       body.documentId.length > 2048
     )
       fail('invalid_request')
-    const allowed = ['operation', 'documentId', ...fields[op]!]
+    const allowed = [
+      'operation',
+      'documentId',
+      ...fields[op]!,
+      ...(op === 'attachment_list_assets' ? ['after'] : []),
+    ]
     if (
       Object.keys(body).some((k) => !allowed.includes(k)) ||
-      allowed.some((k) => !Object.hasOwn(body, k))
+      allowed.some((k) => k !== 'after' && !Object.hasOwn(body, k))
     )
       fail('invalid_request')
     if (!['attachment_list', 'attachment_list_assets'].includes(op) && !isId(body.attachmentId))
       fail('invalid_request')
+    if (body.after !== undefined && !isId(body.after)) fail('invalid_request')
     if (op === 'attachment_begin') {
       if (
         !filename(body.name) ||
@@ -318,13 +326,20 @@ export function createPresentationAttachmentService(options: {
       await directory(root, !['attachment_read', 'attachment_original'].includes(op))
       await directory(doc, !['attachment_read', 'attachment_original'].includes(op))
       const entries = await readdir(doc)
-      if (entries.length > 32 || entries.some((e) => !isId(e))) fail('invalid_state')
+      if (entries.some((e) => !isId(e))) fail('invalid_state')
       const id = body.attachmentId as string
       const dir = id ? join(doc, id) : doc
       const exists = entries.includes(id)
       if (op === 'attachment_list' || op === 'attachment_list_assets') {
         const attachments = []
-        for (const entry of entries) {
+        const sorted = entries.sort()
+        const page =
+          op === 'attachment_list_assets'
+            ? sorted
+                .filter((entry) => entry > ((body.after as string | undefined) ?? ''))
+                .slice(0, 32)
+            : sorted
+        for (const entry of page) {
           const m = await metadata(join(doc, entry), entry)
           if (op === 'attachment_list' && imageFile(m.name)) continue
           const received = await rawSize(join(doc, entry, `raw${extname(m.name).toLowerCase()}`))
@@ -332,7 +347,10 @@ export function createPresentationAttachmentService(options: {
           attachments.push(publicMetadata(m, received))
         }
         checkAbort(signal)
-        return { attachments }
+        return op === 'attachment_list_assets' && page.length > 0 &&
+          sorted.some((entry) => entry > page[page.length - 1]!)
+          ? { attachments, nextAfter: page[page.length - 1] }
+          : { attachments }
       }
       if (!exists && op !== 'attachment_begin') fail('not_found')
       if (op === 'attachment_delete') {
@@ -342,9 +360,17 @@ export function createPresentationAttachmentService(options: {
         return { attachmentId: id, deleted: true }
       }
       if (op === 'attachment_begin' && !exists) {
-        let declared = 0
-        for (const entry of entries) declared += (await metadata(join(doc, entry), entry)).sizeBytes
-        if (entries.length >= 32 || declared + (body.sizeBytes as number) > 100 * 1024 * 1024)
+        let declared = 0,
+          sourceCount = 0
+        for (const entry of entries) {
+          const item = await metadata(join(doc, entry), entry)
+          declared += Math.max(item.sizeBytes, FILE_RESERVATION_FLOOR)
+          if (!imageFile(item.name)) sourceCount++
+        }
+        if (
+          (!imageFile(body.name as string) && sourceCount >= 32) ||
+          declared + Math.max(body.sizeBytes as number, FILE_RESERVATION_FLOOR) > DOCUMENT_LIMIT
+        )
           fail('quota_exceeded')
         checkAbort(signal)
         const m: Metadata = {

@@ -64,6 +64,53 @@ it('lists document-scoped PC copies and deletes only a validated selected ID', a
   )
   expect(f.skill.tools.map((tool) => tool.name)).not.toContain('delete_presentation_attachment')
 })
+it('pages more than 32 durable images for the UI and Agent', async () => {
+  const f = setup()
+  const ids = Array.from({ length: 33 }, (_, i) => i.toString(16).padStart(64, '0'))
+  f.request.mockImplementation(async (body) => {
+    const start = body.after ? ids.indexOf(body.after) + 1 : 0
+    const page = ids.slice(start, start + 32)
+    return new Response(
+      JSON.stringify({
+        attachments: page.map((attachmentId) => ({
+          attachmentId,
+          sha256: attachmentId,
+          name: `${attachmentId}.png`,
+          sizeBytes: 1,
+          receivedBytes: 0,
+          status: 'uploading',
+        })),
+        ...(start + page.length < ids.length ? { nextAfter: page.at(-1) } : {}),
+      }),
+    )
+  })
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    imagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  expect((await skill.list()).map((item) => item.attachmentId)).toEqual(ids)
+  const first = JSON.parse(
+    (await skill.executeTool({ id: 'list', name: 'list_presentation_attachments', input: {} }))
+      .output,
+  )
+  expect(first.attachments).toHaveLength(32)
+  expect(first.nextAfter).toBe(ids[31])
+  const second = JSON.parse(
+    (
+      await skill.executeTool({
+        id: 'next',
+        name: 'list_presentation_attachments',
+        input: { after: first.nextAfter },
+      })
+    ).output,
+  )
+  expect(second.attachments.map((item: { attachmentId: string }) => item.attachmentId)).toEqual([
+    ids[32],
+  ])
+})
 it('uploads chunks and reads durable sources after reconnect', async () => {
   const f = setup()
   await f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))

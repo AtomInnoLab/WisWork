@@ -309,4 +309,27 @@ describe('durable presentation attachments', () => {
       }),
     ).rejects.toThrow('invalid_request')
   })
+  it('reserves minimum storage for empty image uploads', async () => {
+    const { call } = await setup()
+    for (let i = 0; i < 2; i++) {
+      const id = hash(`large-${i}`)
+      await call({
+        operation: 'attachment_begin',
+        attachmentId: id,
+        sha256: id,
+        name: `large-${i}.txt`,
+        sizeBytes: 50 * 1024 * 1024 - 1,
+      })
+    }
+    const id = hash('empty-image')
+    await expect(
+      call({
+        operation: 'attachment_begin',
+        attachmentId: id,
+        sha256: id,
+        name: 'empty.png',
+        sizeBytes: 0,
+      }),
+    ).rejects.toThrow('quota_exceeded')
+  })
 })

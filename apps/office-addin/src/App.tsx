@@ -185,7 +185,7 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
     presentation_not_found: '这份 PC 资料已不存在，请刷新附件列表。',
     presentation_invalid_state: 'PC 资料状态异常，请重连后重试。',
     presentation_quota_exceeded:
-      '当前文档在 PC 的资料容量已满（最多 32 个文件、总计 100 MB）。请删除不再需要的资料后重试。',
+      '当前文档在 PC 的资料容量已满（资料最多 32 个，附件预留容量总计 100 MB）。请删除不再需要的资料或图片后重试。',
     presentation_document_changed: '文档已改变，本次上传已停止。请在目标文档重新上传。',
     presentation_service_unavailable: 'PC 连接不可用，请重连后重新选择同一文件续传。',
     presentation_unavailable: 'PC 连接不可用，请重连后重新选择同一文件续传。',

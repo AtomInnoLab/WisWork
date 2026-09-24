@@ -47,6 +47,35 @@ async function upload(
   return attachmentId
 }
 describe('durable presentation image assets', () => {
+  it('allows more than 32 images while paging their bounded list', async () => {
+    const { call } = await setup()
+    for (let i = 0; i < 33; i++) {
+      const id = hash(`image-${i}`)
+      await call({
+        operation: 'attachment_begin',
+        attachmentId: id,
+        sha256: id,
+        name: `image-${i}.png`,
+        sizeBytes: 1,
+      })
+    }
+    const first = (await call({ operation: 'attachment_list_assets' })) as {
+      attachments: { attachmentId: string }[]
+      nextAfter?: string
+    }
+    expect(first.attachments).toHaveLength(32)
+    expect(first.nextAfter).toBe(first.attachments.at(-1)?.attachmentId)
+    const second = (await call({
+      operation: 'attachment_list_assets',
+      after: first.nextAfter,
+    })) as { attachments: { attachmentId: string }[]; nextAfter?: string }
+    expect(second.attachments).toHaveLength(1)
+    expect(second.nextAfter).toBeUndefined()
+    expect(second.attachments[0]!.attachmentId > first.nextAfter!).toBe(true)
+    await expect(call({ operation: 'attachment_list_assets', after: 'bad' })).rejects.toThrow(
+      'invalid_request',
+    )
+  })
   it('normalizes once, preserves original hash, and restores validated cache after restart', async () => {
     let calls = 0
     const { call, userDataPath } = await setup(async () => {

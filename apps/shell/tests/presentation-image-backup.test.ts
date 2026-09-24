@@ -143,9 +143,9 @@ it('does not expose incomplete uploads or non-image attachments as original imag
   await f.call({ operation: 'attachment_finish', attachmentId: textId })
   await expect(f.call({ ...f.body, attachmentId: textId })).rejects.toThrow('invalid_state')
 })
-it('backup save respects existing document attachment quota', async () => {
+it('backup save works after the source attachment count reaches its limit', async () => {
   const f = await setup()
-  for (let i = 0; i < 31; i++) {
+  for (let i = 0; i < 32; i++) {
     const id = hash(String(i))
     await f.call({
       operation: 'attachment_begin',
@@ -158,16 +158,22 @@ it('backup save respects existing document attachment quota', async () => {
   const client = createPresentationImageBackup({
     available: () => true,
     request: async (body, signal) =>
-      new Response(
-        (await createPresentationService({ userDataPath: f.userDataPath })(
-          body,
-          signal ?? new AbortController().signal,
-        )) as Uint8Array<ArrayBuffer>,
-      ),
+      new Response(JSON.stringify(await f.call(body, signal ?? new AbortController().signal))),
   })
-  await expect(client.save('doc', png.toString('base64'))).rejects.toThrow('unavailable')
+  await expect(client.save('doc', png.toString('base64'))).resolves.toMatchObject({
+    attachmentId: hash(png),
+  })
   const result = (await f.call({ operation: 'attachment_list_assets' })) as {
     attachments: unknown[]
   }
   expect(result.attachments).toHaveLength(32)
+  const page = (await f.call({
+    operation: 'attachment_list_assets',
+    after: (result as { nextAfter: string }).nextAfter,
+  })) as { attachments: { attachmentId: string }[] }
+  expect(
+    [...(result.attachments as { attachmentId: string }[]), ...page.attachments].map(
+      (item) => item.attachmentId,
+    ),
+  ).toContain(hash(png))
 })

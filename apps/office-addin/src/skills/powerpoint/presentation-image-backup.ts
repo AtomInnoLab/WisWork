@@ -139,33 +139,52 @@ export function createPresentationImageBackup(
       }
       check()
       validMetadata(metadata)
-      const list = await request({ operation: 'attachment_list_assets' })
-      if (
-        Object.keys(list).length !== 1 ||
-        !Array.isArray(list.attachments) ||
-        list.attachments.length > 32
-      )
-        return fail()
       const seen = new Set<string>()
       let name = `image-backup-${metadata.attachmentId}.${metadata.mime === 'image/png' ? 'png' : 'jpg'}`
-      for (const item of list.attachments) {
-        const entry = record(item)
-        if (!idValid(entry.attachmentId) || seen.has(entry.attachmentId)) return fail()
-        seen.add(entry.attachmentId)
-        if (entry.attachmentId !== metadata.attachmentId) continue
+      let after: string | undefined
+      do {
+        const list = await request({
+          operation: 'attachment_list_assets',
+          ...(after ? { after } : {}),
+        })
         if (
-          entry.sha256 !== metadata.attachmentId ||
-          entry.sizeBytes !== bytes.length ||
-          typeof entry.name !== 'string' ||
-          entry.name.length > 180 ||
-          !/^[^\\/]+\.(png|jpe?g)$/i.test(entry.name) ||
-          Array.from(entry.name).some(
-            (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
-          )
+          Object.keys(list).some((key) => !['attachments', 'nextAfter'].includes(key)) ||
+          !Array.isArray(list.attachments) ||
+          list.attachments.length > 32 ||
+          (list.nextAfter !== undefined &&
+            (!idValid(list.nextAfter) || list.attachments.length !== 32))
         )
           return fail()
-        name = entry.name
-      }
+        for (const item of list.attachments) {
+          const entry = record(item)
+          if (
+            !idValid(entry.attachmentId) ||
+            seen.has(entry.attachmentId) ||
+            (after && entry.attachmentId <= after)
+          )
+            return fail()
+          seen.add(entry.attachmentId)
+          if (entry.attachmentId !== metadata.attachmentId) continue
+          if (
+            entry.sha256 !== metadata.attachmentId ||
+            entry.sizeBytes !== bytes.length ||
+            typeof entry.name !== 'string' ||
+            entry.name.length > 180 ||
+            !/^[^\\/]+\.(png|jpe?g)$/i.test(entry.name) ||
+            Array.from(entry.name).some(
+              (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+            )
+          )
+            return fail()
+          name = entry.name
+        }
+        if (
+          list.nextAfter !== undefined &&
+          list.nextAfter !== (list.attachments.at(-1) as { attachmentId?: unknown })?.attachmentId
+        )
+          return fail()
+        after = list.nextAfter as string | undefined
+      } while (after)
       const validate = (value: Record<string, unknown>) => {
         if (
           value.attachmentId !== metadata.attachmentId ||

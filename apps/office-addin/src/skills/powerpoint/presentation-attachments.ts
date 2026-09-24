@@ -110,8 +110,12 @@ const tools: AgentToolDef[] = [
   {
     name: 'list_presentation_attachments',
     description:
-      'List durable source attachments bound to this PowerPoint document, including uploads and parse status. Available after reconnect. A parsed source is not verified evidence.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      'List up to 32 durable source attachments bound to this PowerPoint document, including uploads and parse status. Pass nextAfter as after to read the next page. Available after reconnect. A parsed source is not verified evidence.',
+    inputSchema: {
+      type: 'object',
+      properties: { after: { type: 'string', pattern: '^[a-f0-9]{64}$' } },
+      additionalProperties: false,
+    },
   },
   {
     name: 'read_presentation_attachment',
@@ -223,19 +227,36 @@ export function createPresentationAttachmentSkill(
     },
     async list() {
       return scope(undefined, async (request) => {
-        const value = (await request({ operation: 'attachment_list_assets' })) as {
-          attachments?: unknown[]
-        }
-        if (
-          !value ||
-          Object.keys(value).length !== 1 ||
-          !Array.isArray(value.attachments) ||
-          value.attachments.length > 32
-        )
-          return invalid()
-        const attachments = value.attachments.map(metadata)
-        if (new Set(attachments.map((item) => item.attachmentId)).size !== attachments.length)
-          return invalid()
+        const attachments: PresentationAttachmentMetadata[] = []
+        let after: string | undefined
+        do {
+          const value = (await request({
+            operation: 'attachment_list_assets',
+            ...(after ? { after } : {}),
+          })) as { attachments?: unknown[]; nextAfter?: unknown }
+          if (
+            !value ||
+            Object.keys(value).some((key) => !['attachments', 'nextAfter'].includes(key)) ||
+            !Array.isArray(value.attachments) ||
+            value.attachments.length > 32 ||
+            (value.nextAfter !== undefined &&
+              (!idValid(value.nextAfter) || value.attachments.length !== 32))
+          )
+            return invalid()
+          const page = value.attachments.map(metadata)
+          if (
+            page.some(
+              (item, index) =>
+                (after !== undefined && item.attachmentId <= after) ||
+                (index > 0 && item.attachmentId <= page[index - 1]!.attachmentId),
+            )
+          )
+            return invalid()
+          if (value.nextAfter !== undefined && value.nextAfter !== page.at(-1)?.attachmentId)
+            return invalid()
+          attachments.push(...page)
+          after = value.nextAfter as string | undefined
+        } while (after)
         return attachments
       })
     },
@@ -344,28 +365,42 @@ export function createPresentationAttachmentSkill(
             call.truncated ||
             (!list && call.name !== 'read_presentation_attachment') ||
             Object.keys(input).some(
-              (k) => !(list ? [] : ['attachment_id', 'offset', 'max_chars']).includes(k),
+              (k) => !(list ? ['after'] : ['attachment_id', 'offset', 'max_chars']).includes(k),
             )
           )
             throw new Error('invalid_tool_input')
           let output: unknown
           if (list) {
+            const after = input.after
+            if (after !== undefined && !idValid(after)) throw new Error('invalid_tool_input')
             const value = (await request({
               operation: options.imagesAvailable?.() ? 'attachment_list_assets' : 'attachment_list',
+              ...(options.imagesAvailable?.() && after ? { after } : {}),
             })) as {
               attachments: unknown[]
+              nextAfter?: unknown
             }
             if (
               !value ||
-              Object.keys(value).length !== 1 ||
+              Object.keys(value).some((key) => !['attachments', 'nextAfter'].includes(key)) ||
               !Array.isArray(value.attachments) ||
-              value.attachments.length > 32
+              value.attachments.length > 32 ||
+              (value.nextAfter !== undefined &&
+                (!idValid(value.nextAfter) || value.attachments.length !== 32))
             )
               return invalid()
             const attachments = value.attachments.map(metadata)
-            if (new Set(attachments.map((a) => a.attachmentId)).size !== attachments.length)
+            if (
+              attachments.some(
+                (item, index) =>
+                  (after !== undefined && item.attachmentId <= after) ||
+                  (index > 0 && item.attachmentId <= attachments[index - 1]!.attachmentId),
+              ) ||
+              (value.nextAfter !== undefined &&
+                value.nextAfter !== attachments.at(-1)?.attachmentId)
+            )
               return invalid()
-            output = { attachments }
+            output = { attachments, ...(value.nextAfter ? { nextAfter: value.nextAfter } : {}) }
           } else {
             const attachmentId = input.attachment_id,
               offset = input.offset ?? 0,
