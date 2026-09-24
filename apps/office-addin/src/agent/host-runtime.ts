@@ -1,3 +1,4 @@
+import { createPresentationEvidenceDeliverySkill } from '../skills/powerpoint/presentation-evidence-delivery.js'
 import { createPresentationJobsSkill } from '../skills/powerpoint/presentation-jobs.js'
 import type { PresentationPageReplacement } from '../skills/powerpoint/presentation-page-replacement-record.js'
 import { createPresentationPageReplacementSkill } from '../skills/powerpoint/presentation-page-replacement.js'
@@ -281,6 +282,10 @@ export function createOfficeHostRuntime(
     generation && options.presentation
       ? createPresentationJobsSkill(options.presentation)
       : undefined
+  const evidenceDelivery =
+    generation && options.presentation
+      ? createPresentationEvidenceDeliverySkill({ ...options.presentation, vfs })
+      : undefined
   let importSource: 'generation' | 'production' = 'generation'
   let importSelectionEpoch = 0
   const activeArtifact = (projectId?: string) =>
@@ -362,11 +367,13 @@ export function createOfficeHostRuntime(
       ? createPresentationProjectController({
           ...options.presentation,
           executeTool: (call, signal) =>
-            productionJobs?.tools.some((tool) => tool.name === call.name)
-              ? executeProductionJob(call, signal)
-              : production?.tools.some((tool) => tool.name === call.name)
-                ? executeProduction(call, signal)
-                : executeGeneration(call, signal),
+            evidenceDelivery?.tools.some((tool) => tool.name === call.name)
+              ? executeEvidenceDelivery(call, signal)
+              : productionJobs?.tools.some((tool) => tool.name === call.name)
+                ? executeProductionJob(call, signal)
+                : production?.tools.some((tool) => tool.name === call.name)
+                  ? executeProduction(call, signal)
+                  : executeGeneration(call, signal),
         })
       : undefined
   let productionEpoch = 0
@@ -416,6 +423,28 @@ export function createOfficeHostRuntime(
         isError: true,
         mutated: false,
         summary: '已停止等待；后台任务可能继续，可重连后查看',
+      }
+    return result
+  }
+  const executeEvidenceDelivery: AgentSkill['executeTool'] = async (call, signal) => {
+    const captured = productionEpoch
+    const result = await evidenceDelivery!.executeTool(call, signal)
+    const selected = presentation?.snapshot().project?.production
+    if (
+      !result.isError &&
+      !signal?.aborted &&
+      captured === productionEpoch &&
+      call.name !== 'read_presentation_delivery_report' &&
+      selected?.projectId === call.input.project_id &&
+      selected?.requestId === call.input.request_id
+    )
+      await presentation?.readDeliveryReport()
+    if (captured !== productionEpoch || signal?.aborted)
+      return {
+        output: 'presentation_aborted',
+        isError: true,
+        mutated: false,
+        summary: '已停止等待；保存结果可重新读取确认',
       }
     return result
   }
@@ -585,91 +614,95 @@ export function createOfficeHostRuntime(
             ...(pageEditing?.tools ?? []),
             ...(production?.tools ?? []),
             ...(productionJobs?.tools ?? []),
+            ...(evidenceDelivery?.tools ?? []),
             ...(pageBackup?.tools ?? []),
             ...(pageReplacement?.tools ?? []),
           ]
         },
         get systemPrompt() {
-          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}\n${productionJobs?.tools.length ? productionJobs.systemPrompt : ''}\n${pageBackup?.tools.length ? pageBackup.systemPrompt : ''}\n${pageReplacement?.tools.length ? pageReplacement.systemPrompt : ''}\nQA and stable page editing use the currently selected artifact: a successfully prepared production task or explicitly compiled/restored whole deck. Select the intended source before acting; do not substitute another task with the same IDs.`
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}\n${productionJobs?.tools.length ? productionJobs.systemPrompt : ''}\n${evidenceDelivery?.tools.length ? evidenceDelivery.systemPrompt : ''}\n${pageBackup?.tools.length ? pageBackup.systemPrompt : ''}\n${pageReplacement?.tools.length ? pageReplacement.systemPrompt : ''}\nQA and stable page editing use the currently selected artifact: a successfully prepared production task or explicitly compiled/restored whole deck. Select the intended source before acting; do not substitute another task with the same IDs.`
         },
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
         executeTool: (call, signal) =>
-          productionJobs?.tools.some((tool) => tool.name === call.name)
-            ? executeProductionJob(call, signal)
-            : [
-                  'stage_presentation_page_replacement',
-                  'inspect_presentation_page_replacement',
-                  'resume_presentation_page_replacement',
-                  'discard_presentation_page_replacement',
-                  'commit_presentation_page_replacement',
-                  'undo_presentation_page_replacement',
-                ].includes(call.name) && pageReplacement
-              ? pageReplacement.executeTool(call, signal)
-              : ['save_presentation_page_backup', 'read_presentation_page_backup'].includes(
-                    call.name,
-                  ) && pageBackup
-                ? pageBackup.executeTool(call, signal)
-                : [
-                      'start_presentation_production',
-                      'rebuild_presentation_page',
-                      'run_presentation_production',
-                      'read_presentation_production',
-                      'read_presentation_page_artifact',
-                      'check_presentation_page_content',
-                      'read_presentation_claim_evidence',
-                      'record_presentation_claim_review',
-                      'read_presentation_claim_review',
-                      'read_presentation_page_reviews',
-                      'prepare_presentation_production_import',
-                    ].includes(call.name) && production
-                  ? executeProduction(call, signal)
+          evidenceDelivery?.tools.some((tool) => tool.name === call.name)
+            ? executeEvidenceDelivery(call, signal)
+            : productionJobs?.tools.some((tool) => tool.name === call.name)
+              ? executeProductionJob(call, signal)
+              : [
+                    'stage_presentation_page_replacement',
+                    'inspect_presentation_page_replacement',
+                    'resume_presentation_page_replacement',
+                    'discard_presentation_page_replacement',
+                    'commit_presentation_page_replacement',
+                    'undo_presentation_page_replacement',
+                  ].includes(call.name) && pageReplacement
+                ? pageReplacement.executeTool(call, signal)
+                : ['save_presentation_page_backup', 'read_presentation_page_backup'].includes(
+                      call.name,
+                    ) && pageBackup
+                  ? pageBackup.executeTool(call, signal)
                   : [
-                        'read_presentation_page',
-                        'edit_presentation_page_text',
-                        'read_presentation_page_geometry',
-                        'read_presentation_geometry_change',
-                        'inspect_presentation_geometry_change',
-                        'resume_presentation_geometry_change',
-                        'undo_presentation_geometry_change',
-                        'edit_presentation_page_geometry',
-                        'replace_presentation_page_image',
-                        'read_presentation_image_replacement',
-                        'inspect_presentation_image_replacement',
-                        'resume_presentation_image_replacement',
-                      ].includes(call.name) && pageEditing
-                    ? pageEditing.executeTool(call, signal)
+                        'start_presentation_production',
+                        'rebuild_presentation_page',
+                        'run_presentation_production',
+                        'read_presentation_production',
+                        'read_presentation_page_artifact',
+                        'check_presentation_page_content',
+                        'read_presentation_claim_evidence',
+                        'record_presentation_claim_review',
+                        'read_presentation_claim_review',
+                        'read_presentation_page_reviews',
+                        'prepare_presentation_production_import',
+                      ].includes(call.name) && production
+                    ? executeProduction(call, signal)
                     : [
-                          'capture_presentation_page_qa',
-                          'read_presentation_qa',
-                          'record_presentation_page_review',
-                        ].includes(call.name) && qaSkill
-                      ? qaSkill.executeTool(call, signal)
-                      : ['list_presentation_attachments', 'read_presentation_attachment'].includes(
-                            call.name,
-                          ) && attachments
-                        ? attachments.executeTool(call, signal)
-                        : ['save_presentation_plan', 'read_presentation_plan'].includes(
-                              call.name,
-                            ) && planning
-                          ? planning.executeTool(call, signal)
-                          : [
-                                'import_presentation_production',
-                                'read_presentation_production_import_status',
-                              ].includes(call.name) && productionDelivery
-                            ? executeDelivery(call, signal)
+                          'read_presentation_page',
+                          'edit_presentation_page_text',
+                          'read_presentation_page_geometry',
+                          'read_presentation_geometry_change',
+                          'inspect_presentation_geometry_change',
+                          'resume_presentation_geometry_change',
+                          'undo_presentation_geometry_change',
+                          'edit_presentation_page_geometry',
+                          'replace_presentation_page_image',
+                          'read_presentation_image_replacement',
+                          'inspect_presentation_image_replacement',
+                          'resume_presentation_image_replacement',
+                        ].includes(call.name) && pageEditing
+                      ? pageEditing.executeTool(call, signal)
+                      : [
+                            'capture_presentation_page_qa',
+                            'read_presentation_qa',
+                            'record_presentation_page_review',
+                          ].includes(call.name) && qaSkill
+                        ? qaSkill.executeTool(call, signal)
+                        : [
+                              'list_presentation_attachments',
+                              'read_presentation_attachment',
+                            ].includes(call.name) && attachments
+                          ? attachments.executeTool(call, signal)
+                          : ['save_presentation_plan', 'read_presentation_plan'].includes(
+                                call.name,
+                              ) && planning
+                            ? planning.executeTool(call, signal)
                             : [
-                                  'import_generated_presentation',
-                                  'read_presentation_import_status',
-                                ].includes(call.name) && delivery
+                                  'import_presentation_production',
+                                  'read_presentation_production_import_status',
+                                ].includes(call.name) && productionDelivery
                               ? executeDelivery(call, signal)
                               : [
-                                    'compile_deck_with_pptxgenjs',
-                                    'restore_presentation_project',
-                                    'resume_presentation_project',
-                                  ].includes(call.name)
-                                ? executeGeneration(call, signal)
-                                : base.executeTool(call, signal),
+                                    'import_generated_presentation',
+                                    'read_presentation_import_status',
+                                  ].includes(call.name) && delivery
+                                ? executeDelivery(call, signal)
+                                : [
+                                      'compile_deck_with_pptxgenjs',
+                                      'restore_presentation_project',
+                                      'resume_presentation_project',
+                                    ].includes(call.name)
+                                  ? executeGeneration(call, signal)
+                                  : base.executeTool(call, signal),
       }
     : base
   return {
@@ -686,6 +719,7 @@ export function createOfficeHostRuntime(
         productionEpoch++
         production?.clear()
         productionJobs?.clear()
+        evidenceDelivery?.clear()
         pageBackup?.clear()
         pageReplacement?.clear()
         pageEditing?.clear()

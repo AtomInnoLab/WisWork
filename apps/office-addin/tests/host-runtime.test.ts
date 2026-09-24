@@ -407,3 +407,50 @@ it('registers and routes background production controls only through the PC job 
     runtime.dispose()
   }
 })
+
+it('routes evidence delivery and issue actions through their dedicated PC operations', async () => {
+  const request = vi.fn(async () => new Response(JSON.stringify({ error: 'not_found' })))
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      documentId: async () => 'doc',
+      lastProject: () => 'p',
+      rememberProject: async () => {},
+      request,
+    },
+  })
+  const action = {
+    actionId: 'a1',
+    issueId: 'issue-1',
+    issueDigest: 'a'.repeat(64),
+    state: 'explained',
+    note: 'Scoped explanation, not factual acceptance.',
+  }
+  try {
+    for (const [name, operation, extra, body] of [
+      ['read_presentation_delivery_report', 'production_delivery_report', {}, {}],
+      ['export_presentation_delivery_report', 'production_delivery_report', {}, {}],
+      [
+        'record_presentation_issue_action',
+        'production_record_issue_action',
+        { expected_revision: 0, action },
+        { expectedRevision: 0, action },
+      ],
+    ] as const) {
+      expect(runtime.skill.tools.map((tool) => tool.name)).toContain(name)
+      const result = await runtime.skill.executeTool({
+        id: name,
+        name,
+        input: { project_id: 'p', request_id: 'r', ...extra },
+      })
+      expect(result.isError).toBe(true)
+      expect(request).toHaveBeenLastCalledWith(
+        { operation, documentId: 'doc', projectId: 'p', requestId: 'r', ...body },
+        undefined,
+      )
+    }
+    expect(runtime.vfs.list('/home/user')).toEqual([])
+  } finally {
+    runtime.dispose()
+  }
+})
