@@ -58,9 +58,13 @@ export async function inspectPowerPointComplexPagePackage(
   const slide = xmlNodes(await zip.file(slidePath)!.async('string'))
   const frames = elements(slide, 'p:graphicFrame')
   const output: ComplexPagePackageSummary = { tables: [], charts: [], truncated: false }
+  // Fixed text budget also covers JSON escaping and the bounded array structure below.
+  let remainingText = 8 * 1024
   const clip = (text: string, limit = 128): string => {
-    if (text.length > limit) output.truncated = true
-    return text.slice(0, limit)
+    const length = Math.min(text.length, limit, remainingText)
+    if (text.length > length) output.truncated = true
+    remainingText -= length
+    return text.slice(0, length)
   }
   const relPath = slidePath.replace('/slides/', '/slides/_rels/') + '.rels'
   let relationships: Node[] | undefined
@@ -88,7 +92,8 @@ export async function inspectPowerPointComplexPagePackage(
   }
   for (const frame of frames) {
     if (signal?.aborted) throw new Error('cancelled')
-    const shapeId = frameId(frame)
+    const rawShapeId = frameId(frame)
+    const shapeId = rawShapeId ? clip(rawShapeId, 64) : undefined
     if (!shapeId) continue
     const tables = elements(frame, 'a:tbl')
     if (tables.length) {
@@ -114,11 +119,15 @@ export async function inspectPowerPointComplexPagePackage(
       const cache = (container: string): string[] => {
         const groups = elements(ser, container)
         if (!groups.length) return []
+        if (elements(groups[0]!, 'c:multiLvlStrCache').length) output.truncated = true
         const cached = elements(groups[0]!, 'c:strCache')[0] ?? elements(groups[0]!, 'c:numCache')[0]
         if (!cached) return []
-        const points = elements(cached, 'c:pt')
+        const points = tagNodes(cached, 'c:pt')
         if (points.length > 32) output.truncated = true
-        return points.slice(0, 32).map((point) => clip(elements(point, 'c:v')[0]?.map((item) => item['#text'] ?? '').join('') ?? ''))
+        return points.slice(0, 32).map((point, index) => {
+          if ((point[':@'] as Node | undefined)?.['@_idx'] !== String(index)) output.truncated = true
+          return clip(elements(point['c:pt'] as Node[], 'c:v')[0]?.map((item) => item['#text'] ?? '').join('') ?? '')
+        })
       }
       const tx = elements(ser, 'c:tx')[0] ?? []
       const name = elements(tx, 'c:v')[0]?.map((item) => item['#text'] ?? '').join('')
@@ -131,16 +140,17 @@ export async function inspectPowerPointComplexPagePackage(
 }
 
 function relationshipNodes(nodes: Node[]): Node[] {
-  return nodes.flatMap((node) => [
-    ...(Object.hasOwn(node, 'Relationship') ? [node] : []),
-    ...Object.values(node).filter(Array.isArray).flatMap((parts) => relationshipNodes(parts as Node[])),
-  ])
+  return tagNodes(nodes, 'Relationship')
 }
 
 function chartNodes(nodes: Node[]): Node[] {
+  return tagNodes(nodes, 'c:chart')
+}
+
+function tagNodes(nodes: Node[], tag: string): Node[] {
   return nodes.flatMap((node) => [
-    ...(Object.hasOwn(node, 'c:chart') ? [node] : []),
-    ...Object.values(node).filter(Array.isArray).flatMap((parts) => chartNodes(parts as Node[])),
+    ...(Object.hasOwn(node, tag) ? [node] : []),
+    ...Object.values(node).filter(Array.isArray).flatMap((parts) => tagNodes(parts as Node[], tag)),
   ])
 }
 

@@ -44,4 +44,23 @@ describe('complex PowerPoint page package read', () => {
     expect(result.tables[0]?.rows[0]?.[0].length).toBeLessThanOrEqual(128)
     expect(result.truncated).toBe(true)
   })
+
+  it('bounds the entire serialized summary even with many large cells', async () => {
+    const cell = `<a:tc><a:txBody><a:p><a:r><a:t>${'x'.repeat(128)}</a:t></a:r></a:p></a:txBody></a:tc>`
+    const row = `<a:tr>${cell.repeat(12)}</a:tr>`
+    const frame = (id: number) => `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="${id}"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl>${row.repeat(20)}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>`
+    const result = await inspectPowerPointComplexPagePackage(await packageWith(slide(Array.from({ length: 8 }, (_, index) => frame(index + 1)).join(''))))
+    expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(128 * 1024)
+    expect(result.truncated).toBe(true)
+  })
+
+  it('marks unsupported multilevel and sparse chart caches as incomplete', async () => {
+    const multi = chart.replace('<c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strCache>', '<c:multiLvlStrCache><c:lvl><c:pt idx="0"><c:v>Q1</c:v></c:pt></c:lvl></c:multiLvlStrCache>')
+    const sparse = chart.replace('<c:pt idx="1"><c:v>34</c:v></c:pt>', '<c:pt idx="3"><c:v>34</c:v></c:pt>')
+    for (const xml of [multi, sparse]) {
+      const result = await inspectPowerPointComplexPagePackage(await packageWith(slide(chartFrame), rels, xml))
+      expect(result.truncated).toBe(true)
+      expect(result.charts[0]?.truncated).toBe(true)
+    }
+  })
 })
