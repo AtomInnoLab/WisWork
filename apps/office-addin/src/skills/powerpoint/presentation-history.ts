@@ -55,6 +55,15 @@ export function presentationChangeSetSummary(
       validation: ['原页备份与新页回读', '受影响页面截图复核'],
       risk: 'high',
     }
+  if (entry.kind === 'existing_chart')
+    return {
+      scope: { slideIds: [entry.record.oldSlideId], shapeIds: [entry.record.shapeId] },
+      intent: '修改现稿图表数值',
+      operations: [{ kind: 'existing_chart', pageId: entry.record.oldSlideId }],
+      preserved: ['其它页面与对象（需复核）'],
+      validation: ['图表缓存与嵌入工作簿回读', '受影响页面截图复核'],
+      risk: 'high',
+    }
   const { kind, record: r } = entry
   const scope =
     entry.kind === 'page'
@@ -100,7 +109,7 @@ export async function selectPresentationHistory(
   artifact: CompiledPresentationArtifact,
   documentId: string,
 ): Promise<
-  Exclude<PresentationHistoryEntry, { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' }>[]
+  Exclude<PresentationHistoryEntry, { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart' }>[]
 > {
   if (
     !Array.isArray(entries) ||
@@ -128,12 +137,13 @@ export async function selectPresentationHistory(
         e,
       ): e is Exclude<
         PresentationHistoryEntry,
-        { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' }
+        { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart' }
       > =>
         e.kind !== 'existing' &&
         e.kind !== 'existing_batch' &&
         e.kind !== 'existing_image' &&
-        e.kind !== 'existing_page',
+        e.kind !== 'existing_page' &&
+        e.kind !== 'existing_chart',
     )
     .filter((e) => {
       const r = e.record

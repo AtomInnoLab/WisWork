@@ -13,6 +13,11 @@ import {
   type PresentationExistingPageChange,
 } from './presentation-existing-page.js'
 import {
+  validatePresentationExistingChartChange,
+  validExistingChartTransition,
+  type PresentationExistingChartChange,
+} from './presentation-existing-chart.js'
+import {
   validatePresentationExistingBatch,
   validExistingBatchTransition,
   type PresentationExistingBatch,
@@ -59,6 +64,7 @@ const EXISTING_KEY = 'wiswork.presentation.existing-change.v1'
 const EXISTING_BATCH_KEY = 'wiswork.presentation.existing-batch.v1'
 const EXISTING_IMAGE_KEY = 'wiswork.presentation.existing-image.v1'
 const EXISTING_PAGE_KEY = 'wiswork.presentation.existing-page.v1'
+const EXISTING_CHART_KEY = 'wiswork.presentation.existing-chart.v1'
 const HISTORY_KEY = 'wiswork.presentation.change-history.v1'
 const TEXT_KEY = 'wiswork.presentation.text-change.v1'
 const GEOMETRY_KEY = 'wiswork.presentation.geometry-change.v1'
@@ -354,6 +360,19 @@ export function createPresentationDocumentBinding(
       throw new Error('presentation_existing_page_state_invalid')
     return value
   }
+  let existingChartWriteFailed = false
+  const readRawExistingChart = (): PresentationExistingChartChange | undefined => {
+    if (existingChartWriteFailed) throw new Error('presentation_existing_chart_state_invalid')
+    const raw = settings.get(EXISTING_CHART_KEY)
+    if (raw === undefined || raw === null || raw === '') return undefined
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 32 * 1024)
+      throw new Error('presentation_existing_chart_state_invalid')
+    let value: unknown
+    try { value = JSON.parse(raw) } catch { throw new Error('presentation_existing_chart_state_invalid') }
+    if (!validatePresentationExistingChartChange(value))
+      throw new Error('presentation_existing_chart_state_invalid')
+    return value
+  }
   let pageReplacementWriteFailed = false
   type Overrides = Record<string, PresentationImportRecord | null>
   const replacementKeys = (r: PresentationPageReplacement) => [
@@ -458,6 +477,7 @@ export function createPresentationDocumentBinding(
     existing_batch: readRawExistingBatch(),
     existing_image: readRawExistingImage(),
     existing_page: readRawExistingPage(),
+    existing_chart: readRawExistingChart(),
     text: readRawTextChange(),
     geometry: readRawGeometryChange(),
     page: readRawPageReplacement(),
@@ -477,6 +497,7 @@ export function createPresentationDocumentBinding(
         'existing_batch',
         'existing_image',
         'existing_page',
+        'existing_chart',
       ] as const) {
         const record = heads[kind]
         if (!record) continue
@@ -519,7 +540,7 @@ export function createPresentationDocumentBinding(
       Array.isArray(h.heads) ||
       Object.keys(h.heads).some(
         (k) =>
-          !['text', 'geometry', 'page', 'existing', 'existing_batch', 'existing_image', 'existing_page'].includes(k),
+          !['text', 'geometry', 'page', 'existing', 'existing_batch', 'existing_image', 'existing_page', 'existing_chart'].includes(k),
       )
     )
       throw invalidHistory()
@@ -540,6 +561,7 @@ export function createPresentationDocumentBinding(
       'existing_batch',
       'existing_image',
       'existing_page',
+      'existing_chart',
     ] as const) {
       const head = h.entries.find((e) => e.id === h.heads[kind])
       if ((head && head.kind !== kind) || (!head && h.entries.some((e) => e.kind === kind)))
@@ -604,6 +626,11 @@ export function createPresentationDocumentBinding(
       (e): e is Extract<PresentationHistoryEntry, { kind: 'existing_page' }> =>
         e.kind === 'existing_page' && e.record.changeId === changeId,
     )?.record
+  const readExistingChartChange = (changeId: string): PresentationExistingChartChange | undefined =>
+    readHistory().entries.find(
+      (e): e is Extract<PresentationHistoryEntry, { kind: 'existing_chart' }> =>
+        e.kind === 'existing_chart' && e.record.changeId === changeId,
+    )?.record
   const readPageReplacement = () => {
     const raw = readRawPageReplacement()
     readHistory()
@@ -618,7 +645,7 @@ export function createPresentationDocumentBinding(
     const history = readHistory(),
       index = history.entries.findIndex((e) => e.id === entry.id)
     const unresolved = (e: PresentationHistoryEntry) =>
-      !['applied', 'undone', 'discarded', 'complete'].includes(e.record.state)
+      !['applied', 'undone', 'discarded', 'complete', 'cancelled'].includes(e.record.state)
     if (
       (index < 0 || !unresolved(history.entries[index])) &&
       history.entries.some((e) => e.id !== entry.id && unresolved(e))
@@ -698,6 +725,35 @@ export function createPresentationDocumentBinding(
     readExistingBatch,
     readExistingImageChange,
     readExistingPageChange,
+    readExistingChartChange,
+    writeExistingChartChange(
+      record: PresentationExistingChartChange,
+      expectedChange: PresentationExistingChartChange | undefined,
+    ) {
+      const snapshot = structuredClone(record), expected = structuredClone(expectedChange)
+      const write = async () => {
+        if (!validatePresentationExistingChartChange(snapshot) ||
+          (expected !== undefined && !validatePresentationExistingChartChange(expected)))
+          throw new Error('presentation_existing_chart_state_invalid')
+        if ((await documentId()) !== snapshot.documentId)
+          throw new Error('presentation_document_changed')
+        const prior = readExistingChartChange(snapshot.changeId)
+        if (JSON.stringify(prior) !== JSON.stringify(expected))
+          throw new Error('presentation_existing_chart_stale')
+        if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
+        if (!validExistingChartTransition(prior, snapshot))
+          throw new Error('presentation_existing_chart_state_invalid')
+        await saveWithHistory(
+          EXISTING_CHART_KEY,
+          JSON.stringify(snapshot),
+          { id: historyEntryId('existing_chart', snapshot), kind: 'existing_chart', record: snapshot, legacy: false, sequence: 1 },
+          () => { existingChartWriteFailed = true },
+        )
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
     writeExistingPageChange(
       record: PresentationExistingPageChange,
       expectedChange: PresentationExistingPageChange | undefined,

@@ -14,6 +14,11 @@ import {
   type PresentationExistingPageChange,
 } from './presentation-existing-page.js'
 import {
+  validatePresentationExistingChartChange,
+  existingChartReservedBytes,
+  type PresentationExistingChartChange,
+} from './presentation-existing-chart.js'
+import {
   validatePresentationExistingBatch,
   existingBatchReservedBytes,
   type PresentationExistingBatch,
@@ -39,6 +44,7 @@ type Records = {
   existing: PresentationExistingChange
   existing_image: PresentationExistingImageChange
   existing_page: PresentationExistingPageChange
+  existing_chart: PresentationExistingChartChange
   existing_batch: PresentationExistingBatch
   text: PresentationTextChange
   geometry: PresentationGeometryChange
@@ -84,8 +90,10 @@ export function validatePresentationHistoryEntry(
             ? validatePresentationExistingBatch(e.record)
             : e.kind === 'existing_image'
               ? validatePresentationExistingImageChange(e.record)
-              : e.kind === 'existing_page'
+            : e.kind === 'existing_page'
                 ? validatePresentationExistingPageChange(e.record)
+                : e.kind === 'existing_chart'
+                  ? validatePresentationExistingChartChange(e.record)
               : e.kind === 'existing'
                 ? validatePresentationExistingChange(e.record)
                 : e.kind === 'page'
@@ -97,13 +105,13 @@ export interface PresentationHistoryEnvelope {
   version: 1
   entries: PresentationHistoryEntry[]
   heads: Partial<
-    Record<'text' | 'geometry' | 'page' | 'existing' | 'existing_batch' | 'existing_image' | 'existing_page', string>
+    Record<'text' | 'geometry' | 'page' | 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart', string>
   >
 }
 export const presentationHistoryBytes = (history: PresentationHistoryEnvelope) =>
   new TextEncoder().encode(JSON.stringify(history)).byteLength +
   // Updating an older record can lengthen the current-head ID without adding an entry.
-  (['text', 'geometry', 'page', 'existing', 'existing_batch', 'existing_image', 'existing_page'] as const).reduce(
+  (['text', 'geometry', 'page', 'existing', 'existing_batch', 'existing_image', 'existing_page', 'existing_chart'] as const).reduce(
     (sum, kind) =>
       sum +
       (history.heads[kind] === undefined ? 0 : kind.length + 1 + 128 - history.heads[kind]!.length),
@@ -116,8 +124,10 @@ export const presentationHistoryBytes = (history: PresentationHistoryEnvelope) =
         ? existingBatchReservedBytes(e.record)
         : e.kind === 'existing_image'
           ? existingImageReservedBytes(e.record)
-          : e.kind === 'existing_page'
+        : e.kind === 'existing_page'
             ? existingPageReservedBytes(e.record)
+          : e.kind === 'existing_chart'
+            ? existingChartReservedBytes(e.record)
           : e.kind === 'existing'
             ? existingChangeReservedBytes(e.record)
             : e.kind === 'page'
