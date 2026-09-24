@@ -17,6 +17,7 @@ const DOCUMENT_LIMIT = 100 * 1024 * 1024
 const FILE_RESERVATION_FLOOR = 64 * 1024
 const CHUNK_LIMIT = 128 * 1024
 const TEXT_LIMIT = 1_000_000
+const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const locks = new Map<string, Promise<void>>()
 const hash = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 function fail(code: string): never {
@@ -157,6 +158,21 @@ async function atomic(path: string, value: string | Buffer) {
     await rename(temp, path)
   } finally {
     await rm(temp, { force: true })
+  }
+}
+async function cleanupOldStaging(root: string) {
+  const entries = await readdir(root, { withFileTypes: true })
+  for (const entry of entries) {
+    if (!/^\.tmp-[a-f0-9-]{36}$/.test(entry.name) || !entry.isDirectory()) continue
+    const path = join(root, entry.name)
+    const info = await lstat(path).catch(() => undefined)
+    if (
+      !info?.isDirectory() ||
+      info.isSymbolicLink() ||
+      Date.now() - info.mtimeMs < STAGING_MAX_AGE_MS
+    )
+      continue
+    await rm(path, { recursive: true, force: true }).catch(() => undefined)
   }
 }
 async function metadata(dir: string, id: string): Promise<Metadata> {
@@ -320,6 +336,7 @@ export function createPresentationAttachmentService(options: {
       fetchRemoteImage(url, {
         fetchImpl: (input, init) => fetch(input, { ...init, signal }),
       }))
+  let stagingCleanup: Promise<void> | undefined
   return async (body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> => {
     checkAbort(signal)
     const fields: Record<string, string[]> = {
@@ -382,6 +399,8 @@ export function createPresentationAttachmentService(options: {
     try {
       checkAbort(signal)
       await directory(root, !['attachment_read', 'attachment_original'].includes(op))
+      if (!stagingCleanup) stagingCleanup = cleanupOldStaging(root)
+      await stagingCleanup
       await directory(doc, !['attachment_read', 'attachment_original'].includes(op))
       const entries = await readdir(doc)
       if (entries.some((e) => !isId(e))) fail('invalid_state')

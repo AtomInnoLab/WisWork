@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, rm, writeFile, readFile, symlink } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, readFile, symlink, mkdir, utimes, access } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -47,6 +47,25 @@ async function upload(
   return attachmentId
 }
 describe('durable presentation image assets', () => {
+  it('removes only old service staging directories on startup', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-staging-cleanup-'))
+    dirs.push(userDataPath)
+    const root = join(userDataPath, 'presentation-attachments')
+    await mkdir(root)
+    const old = join(root, '.tmp-00000000-0000-0000-0000-000000000001')
+    const fresh = join(root, '.tmp-00000000-0000-0000-0000-000000000002')
+    const unrelated = join(root, 'not-staging')
+    await Promise.all([mkdir(old), mkdir(fresh), mkdir(unrelated)])
+    await utimes(old, new Date(0), new Date(0))
+    const service = createPresentationAttachmentService({ userDataPath })
+    await service(
+      { documentId: 'doc', operation: 'attachment_list_assets' },
+      new AbortController().signal,
+    )
+    await expect(access(old)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(fresh)).resolves.toBeUndefined()
+    await expect(access(unrelated)).resolves.toBeUndefined()
+  })
   it('imports a public image URL once, redacts its query and reuses the PC cache', async () => {
     const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-remote-image-'))
     dirs.push(userDataPath)
