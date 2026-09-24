@@ -547,7 +547,8 @@ export function createPresentationService(options: {
           assets.push(resolved)
         }
         checkAbort(signal)
-        const compiled = await compile({ ...inputDeck, assets })
+        // Only attachment_asset can add evidence after document-bound digest validation.
+        const compiled = await compile({ ...inputDeck, assets }, { trustedAssetEvidence: true })
         checkAbort(signal)
         if (compiled.bytes.byteLength > 10 * 1024 * 1024) throw new Error('output_too_large')
         const sourceSlideIds = compiled.sourceSlideIds

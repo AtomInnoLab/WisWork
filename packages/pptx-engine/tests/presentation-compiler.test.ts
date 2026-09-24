@@ -36,7 +36,7 @@ describe('presentation contract and compiler', () => {
     const image = deck.slides[2]!.elements[1]!
     if (image.kind !== 'image') throw new Error('invalid fixture')
     image.altText = '显微镜下的细胞图像'
-    const { bytes, report } = await compilePresentationDeck(deck)
+    const { bytes, report } = await compilePresentationDeck(deck, { trustedAssetEvidence: true })
     expect(report.assetWarnings).toEqual({ missingSource: 0, unknownLicense: 0, missingAltText: 0 })
     const zip = await JSZip.loadAsync(bytes)
     expect(await zip.file('ppt/slides/slide3.xml')!.async('string')).toContain('显微镜下的细胞图像')
@@ -46,6 +46,14 @@ describe('presentation contract and compiler', () => {
     expect(await zip.file('ppt/notesSlides/notesSlide3.xml')!.async('string')).toContain(
       'asserted, not verified',
     )
+  })
+
+  it('rejects a forged inline evidence reference by default', async () => {
+    const deck = benchmarkDeck()
+    deck.assets[0]!.license = 'licensed'
+    deck.assets[0]!.licenseEvidence = `attachment:${'a'.repeat(64)}`
+    expect(() => parsePresentationDeck(deck)).toThrow(/untrusted_asset_license_evidence/)
+    await expect(compilePresentationDeck(deck)).rejects.toThrow(/untrusted_asset_license_evidence/)
   })
 
   it('preserves every recorded image source in slide notes', async () => {

@@ -16,6 +16,19 @@ afterEach(() => {
 const signal = () => new AbortController().signal
 const decode = (value: Uint8Array) => JSON.parse(Buffer.from(value).toString('utf8'))
 
+it('rejects inline image evidence that was not resolved against this document', async () => {
+  const userDataPath = mkdtempSync(join(tmpdir(), 'presentation-evidence-forgery-'))
+  roots.push(userDataPath)
+  const deck = benchmarkDeck()
+  deck.assets[0]!.license = 'licensed'
+  deck.assets[0]!.licenseEvidence = `attachment:${'a'.repeat(64)}`
+  const service = createPresentationService({ userDataPath })
+  const result = decode(
+    await service({ operation: 'compile', documentId: 'document-forgery', requestId: 'forged', deck }, signal()),
+  )
+  expect(result).toEqual({ error: 'invalid_deck' })
+})
+
 it('compiles durable image references into real PPTX media and recovers without decoding again', async () => {
   const userDataPath = mkdtempSync(join(tmpdir(), 'presentation-assets-'))
   roots.push(userDataPath)

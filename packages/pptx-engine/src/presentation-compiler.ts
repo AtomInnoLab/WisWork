@@ -59,8 +59,9 @@ function imageData(asset: PresentationInlineAsset): string {
 /** Deterministic mapping from validated IR to editable OOXML; this is not a rendered visual review. */
 export async function compilePresentationDeck(
   input: unknown,
+  options: { trustedAssetEvidence?: boolean } = {},
 ): Promise<{ bytes: Uint8Array; report: PresentationCompileReport; sourceSlideIds?: string[] }> {
-  const deck = parsePresentationDeck(input)
+  const deck = parsePresentationDeck(input, options)
   const geometry = inspectPresentationGeometry(deck)
   if (geometry.some((issue) => issue.kind === 'out_of_bounds'))
     throw new Error('presentation_geometry:out_of_bounds')

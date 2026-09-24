@@ -235,7 +235,10 @@ function unique(items: { id: string }[], label: string): void {
   if (new Set(items.map((item) => item.id)).size !== items.length) reject(`duplicate_${label}`)
 }
 
-export function parsePresentationDeck(input: unknown): PresentationDeck {
+export function parsePresentationDeck(
+  input: unknown,
+  options: { trustedAssetEvidence?: boolean } = {},
+): PresentationDeck {
   if (!valid(input, PRESENTATION_DECK_SCHEMA)) reject('schema')
   const deck = input as PresentationDeck
   unique(deck.slides, 'slide')
@@ -249,6 +252,8 @@ export function parsePresentationDeck(input: unknown): PresentationDeck {
   // Attachment references must be resolved by the document-bound PC service before compilation.
   for (const asset of deck.assets) {
     if ('attachmentId' in asset) continue
+    if (asset.licenseEvidence && !options.trustedAssetEvidence)
+      reject('untrusted_asset_license_evidence')
     if (asset.sources?.length && asset.source && asset.source !== asset.sources[0])
       reject('asset_source_conflict')
     if (asset.licenseEvidence && (!asset.license || asset.license === 'unknown'))
