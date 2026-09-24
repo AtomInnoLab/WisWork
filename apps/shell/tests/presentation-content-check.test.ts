@@ -191,3 +191,32 @@ it('honors cancellation while waiting for the shared project lock', async () => 
   expect(files(f.userDataPath)).toEqual(before)
   expect(f.compile).toHaveBeenCalledTimes(8)
 })
+
+it('keeps as-of findings bound to the frozen plan across updates and restart without writes', async () => {
+  const f = await setup()
+  const plan = structuredClone(f.plan)
+  plan.claims[0]!.asOf = '2026-09-24'
+  delete plan.sources[0]!.asOf
+  await f.call('save_plan', { expectedRevision: 1, plan })
+  await f.call('production_begin', { requestId: 'missing-date', planRevision: 2, deck: f.deck })
+  plan.sources[0]!.asOf = '2025-12-31'
+  await f.call('save_plan', { expectedRevision: 2, plan })
+  await f.call('production_begin', { requestId: 'different-date', planRevision: 3, deck: f.deck })
+  plan.sources[0]!.asOf = '2026-09-24'
+  await f.call('save_plan', { expectedRevision: 3, plan })
+  const before = files(f.userDataPath)
+  const restarted = createPresentationService({ userDataPath: f.userDataPath, compile: f.compile })
+  for (const [requestId, planRevision, code] of [
+    ['missing-date', 2, 'source_as_of_missing'],
+    ['different-date', 3, 'source_as_of_differs'],
+  ] as const) {
+    const request = { ...f.request, requestId }
+    const report = decode(await f.service(request, new AbortController().signal))
+    expect(report.planRevision).toBe(planRevision)
+    expect(report.report.findings).toContainEqual({ code, claimId: 'source-1', sourceId: 'source' })
+    expect(report.report.checks.timeliness).toBe('not_verified')
+    expect(decode(await restarted(request, new AbortController().signal))).toEqual(report)
+  }
+  expect(files(f.userDataPath)).toEqual(before)
+  expect(f.compile).not.toHaveBeenCalled()
+})

@@ -1302,3 +1302,59 @@ it('does not publish page history after clear, cancellation or a document switch
     expect(f.rememberProject).not.toHaveBeenCalled()
   }
 })
+
+it('explains as-of metadata findings conservatively without changing session state', async () => {
+  const f = fixture()
+  const value = contentResponse()
+  const findings = [
+    { code: 'source_as_of_missing', claimId: 'c1', sourceId: 's1' },
+    { code: 'source_as_of_differs', claimId: 'c1', sourceId: 's2' },
+  ]
+  f.request.mockResolvedValue(
+    new Response(JSON.stringify({ ...value, report: { ...value.report, findings } })),
+  )
+  const result = await f.skill.executeTool(contentCall)
+  expect(result.isError, result.output).not.toBe(true)
+  const output = JSON.parse(result.output)
+  expect(output.report.findings).toEqual(findings)
+  expect(output.report.checks.timeliness).toBe('not_verified')
+  expect(output.recommendations).toEqual([
+    { code: 'source_as_of_missing', action: expect.stringContaining('时点') },
+    { code: 'source_as_of_differs', action: expect.stringContaining('不代表过期') },
+  ])
+  expect(f.rememberProject).not.toHaveBeenCalled()
+  expect(f.readReceipt).not.toHaveBeenCalled()
+  expect(f.vfs.list('/home/user')).toEqual([])
+  expect(f.skill.artifact()).toBeUndefined()
+})
+
+it('accepts a maximum bounded content report above 64 KiB and rejects transport above 256 KiB', async () => {
+  const f = fixture()
+  const value = contentResponse()
+  const claimIds = Array.from({ length: 32 }, (_, i) => `c${i}`.padEnd(80, 'c'))
+  const sources = Array.from({ length: 3 }, (_, i) => `s${i}`.padEnd(80, 's'))
+  const findings = claimIds.flatMap((claimId) => [
+    { code: 'claim_text_not_found', claimId },
+    { code: 'calculation_not_reproduced', claimId },
+    ...sources.flatMap((sourceId) =>
+      ['source_excerpt_missing', 'source_locator_missing', 'source_as_of_missing'].map((code) => ({
+        code,
+        claimId,
+        sourceId,
+      })),
+    ),
+  ])
+  const body = JSON.stringify({ ...value, report: { ...value.report, claimIds, findings } })
+  expect(findings).toHaveLength(352)
+  expect(new TextEncoder().encode(body).byteLength).toBeGreaterThan(64 * 1024)
+  f.request.mockResolvedValue(new Response(body))
+  const result = await f.skill.executeTool(contentCall)
+  expect(result.isError, result.output).not.toBe(true)
+  expect(JSON.parse(result.output).report.findings).toEqual(findings)
+  // JSON whitespace keeps the payload structurally valid, testing the byte limit itself.
+  f.request.mockResolvedValue(new Response(body + ' '.repeat(256 * 1024)))
+  expect(await f.skill.executeTool(contentCall)).toMatchObject({
+    isError: true,
+    output: 'presentation_response_invalid',
+  })
+})
