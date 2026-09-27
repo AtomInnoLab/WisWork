@@ -13,6 +13,7 @@ export interface PresentationWorkflowSummary {
     production: string
     imported: string
     qa: string
+    evidence: string
     nextAction: string
   }[]
   nextAction: string
@@ -110,6 +111,20 @@ export function presentationWorkflowSummary(
     const index = production?.pages.findIndex((item) => item.id === slide.id) ?? -1
     const importedPage = importMatches && index >= 0 ? imported!.pages[index] : undefined
     const reviewedPage = qaMatches ? qa!.pages.find((item) => item.pageId === slide.id) : undefined
+    const reportPage = reportMatches
+      ? report!.pages.find((item) => item.pageId === slide.id)
+      : undefined
+    const pageIssues =
+      reportPage?.issues.filter(
+        (issue) => issue.disposition.state === 'open' || issue.disposition.stale,
+      ).length ?? 0
+    const evidenceText = !reportMatches
+      ? '无当前任务内容报告'
+      : !reportPage
+        ? '当前报告缺少此页'
+        : pageIssues
+          ? `${pageIssues} 项证据问题待处理`
+          : '无未决证据问题；来源仍需核验'
     const productionText = page
       ? {
           pending: '待编译',
@@ -152,7 +167,9 @@ export function presentationWorkflowSummary(
                     : reviewedPage.visual.status === 'needs_changes'
                       ? '修改页面后重审'
                       : qaText === '历史结构与视觉通过'
-                        ? '继续来源与保存重开核验'
+                        ? pageIssues
+                          ? '处理此页内容证据问题'
+                          : '继续来源与保存重开核验'
                         : '完成页面复核'
     return {
       id: slide.id,
@@ -160,6 +177,7 @@ export function presentationWorkflowSummary(
       production: productionText,
       imported: importText,
       qa: qaText,
+      evidence: evidenceText,
       nextAction: pageNext,
     }
   })

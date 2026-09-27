@@ -160,6 +160,20 @@ it('uses only the selected request report and keeps its open issues visible', as
     presentationWorkflowSummary(selected, exactImport, exactQa, { ...report, requestId: 'old' })
       ?.nextAction,
   ).toContain('读取当前任务')
+  const summary = presentationWorkflowSummary(selected, exactImport, exactQa, report)!
+  const issuePage = report.pages.find((page) =>
+    page.issues.some((issue) => issue.disposition.state === 'open'),
+  )!
+  expect(summary.pages.find((page) => page.id === issuePage.pageId)).toMatchObject({
+    evidence: expect.stringContaining('证据问题待处理'),
+    nextAction: expect.stringContaining('此页内容证据问题'),
+  })
+  expect(
+    presentationWorkflowSummary(selected, exactImport, exactQa, {
+      ...report,
+      requestId: 'old',
+    })?.pages.find((page) => page.id === issuePage.pageId)?.evidence,
+  ).toContain('无当前任务')
 })
 
 it('replays saved content issue decisions without treating explanations as verification', async () => {
