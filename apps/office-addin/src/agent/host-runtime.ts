@@ -774,6 +774,7 @@ export function createOfficeHostRuntime(
           documentId: options.presentation.documentId,
           readReceipt: options.presentation.readReceipt,
           inspectPage: (id, signal) => powerPointAdapter.inspectPresentationPage(id, signal),
+          exportPage: (id, signal) => powerPointAdapter.exportPresentationPagePackage(id, signal),
           readQa: options.presentation.readQa,
           writeQa: async (key, record) => {
             try {

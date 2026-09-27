@@ -7,7 +7,12 @@ type Issue =
   | { name: string; kind: 'type_changed'; sourceType: string; hostType: string }
   | { name: string; kind: 'geometry_changed' }
 type Xml = Record<string, any>
-type SourceObject = { name: string; type: string; box: [number, number, number, number] }
+type SourceObject = {
+  name: string
+  type: string
+  box: [number, number, number, number]
+  text: string[]
+}
 const POINTS_PER_EMU = 72 / 914400
 const types: Record<string, string[]> = {
   shape: ['TextBox', 'GeometricShape'],
@@ -15,9 +20,22 @@ const types: Record<string, string[]> = {
   table: ['Table'],
   chart: ['Chart'],
 }
-const parser = new XMLParser({ ignoreAttributes: false, parseAttributeValue: false })
+const parser = new XMLParser({
+  ignoreAttributes: false,
+  parseAttributeValue: false,
+  parseTagValue: false,
+  trimValues: false,
+})
 const many = (value: unknown): Xml[] =>
   value === undefined ? [] : Array.isArray(value) ? value : [value as Xml]
+
+function textRuns(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(textRuns)
+  if (!value || typeof value !== 'object') return []
+  return Object.entries(value).flatMap(([tag, child]) =>
+    tag === 'a:t' ? [String(child)] : tag.startsWith('@_') ? [] : textRuns(child),
+  )
+}
 
 function sourceObjects(xml: string): SourceObject[] {
   const tree = parser.parse(xml)?.['p:sld']?.['p:cSld']?.['p:spTree'] as Xml | undefined
@@ -49,10 +67,33 @@ function sourceObjects(xml: string): SourceObject[] {
         box.some((value) => !Number.isFinite(value))
       )
         throw new Error('presentation_qa_structure_unavailable')
-      result.push({ name, type, box: box as SourceObject['box'] })
+      result.push({ name, type, box: box as SourceObject['box'], text: textRuns(element) })
     }
   }
   return result
+}
+
+async function readObjects(
+  base64: string,
+  index: number,
+  maxBytes: number,
+): Promise<SourceObject[]> {
+  try {
+    const zip = await loadBoundedZip(base64, undefined, true, maxBytes)
+    const file = zip.file(`ppt/slides/slide${index + 1}.xml`)
+    if (!file) throw new Error('missing slide')
+    const xml = await file.async('string')
+    if (
+      new TextEncoder().encode(xml).byteLength > MAX_PPTX_XML_BYTES ||
+      /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml)
+    )
+      throw new Error('invalid slide XML')
+    const objects = sourceObjects(xml)
+    if (!objects.length || objects.length > 100) throw new Error('invalid slide objects')
+    return objects
+  } catch {
+    throw new Error('presentation_qa_structure_unavailable')
+  }
 }
 
 /** Compare source PPTX objects with the exact imported Office page; no host mutation. */
@@ -60,11 +101,15 @@ export async function comparePresentationPageStructure(
   sourceBase64: string,
   sourceIndex: number,
   host: PowerPointPageInspection,
+  hostBase64?: string,
 ): Promise<{
   status: 'passed' | 'warning' | 'incomplete'
+  structureStatus: 'passed' | 'warning' | 'incomplete'
   sourceCount: number
   hostCount: number
   issues: Issue[]
+  readbackConsistent: boolean
+  content: { status: 'passed' | 'warning' | 'incomplete'; changed: string[]; unchecked: string[] }
 }> {
   if (
     typeof sourceBase64 !== 'string' ||
@@ -77,23 +122,7 @@ export async function comparePresentationPageStructure(
     host.shapes.length > 100
   )
     throw new Error('presentation_qa_structure_unavailable')
-  let source: SourceObject[]
-  try {
-    const zip = await loadBoundedZip(sourceBase64, undefined, true, 10 * 1024 * 1024)
-    const file = zip.file(`ppt/slides/slide${sourceIndex + 1}.xml`)
-    if (!file) throw new Error('missing slide')
-    const xml = await file.async('string')
-    if (
-      new TextEncoder().encode(xml).byteLength > MAX_PPTX_XML_BYTES ||
-      /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml)
-    )
-      throw new Error('invalid slide XML')
-    source = sourceObjects(xml)
-  } catch {
-    throw new Error('presentation_qa_structure_unavailable')
-  }
-  if (!source.length || source.length > 100)
-    throw new Error('presentation_qa_structure_unavailable')
+  const source = await readObjects(sourceBase64, sourceIndex, 10 * 1024 * 1024)
   const issues: Issue[] = []
   const hostByName = new Map<string, PowerPointPageInspection['shapes']>()
   for (const shape of host.shapes) {
@@ -137,10 +166,62 @@ export async function comparePresentationPageStructure(
   }
   for (const name of hostByName.keys())
     if (!sourceNames.has(name)) issues.push({ name, kind: 'extra' })
+  const exported = hostBase64 ? await readObjects(hostBase64, 0, 8 * 1024 * 1024) : []
+  const readbackConsistent =
+    !hostBase64 ||
+    (exported.length === host.shapes.length &&
+      exported.every((element) => {
+        const matches = hostByName.get(element.name) ?? []
+        if (matches.length !== 1 || !types[element.type]!.includes(matches[0]!.type)) return false
+        return [matches[0]!.left, matches[0]!.top, matches[0]!.width, matches[0]!.height].every(
+          (value, index) =>
+            Number.isFinite(value) && Math.abs(value - element.box[index]! * POINTS_PER_EMU) <= 1.5,
+        )
+      }))
+  const exportedByName = new Map(exported.map((element) => [element.name, element]))
+  const changed: string[] = [],
+    unchecked: string[] = []
+  for (const element of source) {
+    if (element.type !== 'shape' && element.type !== 'table') {
+      unchecked.push(element.name)
+      continue
+    }
+    if (!hostBase64 || !readbackConsistent) {
+      unchecked.push(element.name)
+      continue
+    }
+    const actual = exportedByName.get(element.name)
+    if (
+      !actual ||
+      actual.type !== element.type ||
+      JSON.stringify(actual.text) !== JSON.stringify(element.text)
+    )
+      changed.push(element.name)
+  }
+  const content = {
+    status: (changed.length ? 'warning' : unchecked.length ? 'incomplete' : 'passed') as
+      'passed' | 'warning' | 'incomplete',
+    changed,
+    unchecked,
+  }
+  const structureStatus =
+    host.shapesTruncated || !readbackConsistent
+      ? 'incomplete'
+      : issues.length
+        ? 'warning'
+        : 'passed'
   return {
-    status: host.shapesTruncated ? 'incomplete' : issues.length ? 'warning' : 'passed',
+    status:
+      structureStatus === 'incomplete' || content.status === 'incomplete'
+        ? 'incomplete'
+        : structureStatus === 'warning' || content.status === 'warning'
+          ? 'warning'
+          : 'passed',
+    structureStatus,
     sourceCount: source.length,
     hostCount: host.shapes.length,
     issues,
+    readbackConsistent,
+    content,
   }
 }

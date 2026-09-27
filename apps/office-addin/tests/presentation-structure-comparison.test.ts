@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest'
 import { createHash } from 'node:crypto'
+import JSZip from 'jszip'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { openPptx } from '@wiswork/pptx-engine'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
@@ -7,6 +8,102 @@ import { comparePresentationPageStructure } from '../src/skills/powerpoint/prese
 import { createPresentationQaSkill } from '../src/skills/powerpoint/presentation-qa'
 import { presentationArtifactContent } from '../src/skills/powerpoint/presentation-page-delivery'
 import { InMemoryVfs } from '../src/skills/shared/vfs'
+
+it('detects changed native text in an exported host page package', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const hostPackage = await JSZip.loadAsync(bytes)
+  const slide = await hostPackage.file('ppt/slides/slide1.xml')!.async('string')
+  hostPackage.file('ppt/slides/slide1.xml', slide.replace('科研汇报', '替换标题'))
+  const hostBase64 = await hostPackage.generateAsync({ type: 'base64' })
+  const result = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    hostBase64,
+  )
+  expect(result.content).toMatchObject({ status: 'warning', changed: ['title'] })
+})
+
+it('detects changed table cells and leaves chart data explicitly unchecked', async () => {
+  for (const [pageIndex, original, replacement, nativeType] of [
+    [5, '120', '999', 'Table'],
+    [6, '120', '999', 'Chart'],
+  ] as const) {
+    const deck = benchmarkDeck()
+    deck.slides = [deck.slides[pageIndex]!]
+    const { bytes } = await compilePresentationDeck(deck)
+    const source = (await openPptx(bytes)).deck.slides[0]!
+    const shapes = source.elements.map((element, index) => ({
+      id: String(index),
+      name: element.name!,
+      type: element.name === 'table' || element.name === 'chart' ? nativeType : 'TextBox',
+      left: (element.transform.offset.x * 72) / 914400,
+      top: (element.transform.offset.y * 72) / 914400,
+      width: (element.transform.offset.cx * 72) / 914400,
+      height: (element.transform.offset.cy * 72) / 914400,
+    }))
+    const hostPackage = await JSZip.loadAsync(bytes)
+    const target = nativeType === 'Table' ? 'ppt/slides/slide1.xml' : 'ppt/charts/chart1.xml'
+    const content = await hostPackage.file(target)!.async('string')
+    const valueTag = nativeType === 'Table' ? 'a:t' : 'c:v'
+    hostPackage.file(
+      target,
+      content.replace(
+        `<${valueTag}>${original}</${valueTag}>`,
+        `<${valueTag}>${replacement}</${valueTag}>`,
+      ),
+    )
+    const result = await comparePresentationPageStructure(
+      Buffer.from(bytes).toString('base64'),
+      0,
+      {
+        slideId: 'host',
+        slideWidth: 960,
+        slideHeight: 540,
+        shapes,
+        shapesTruncated: false,
+        overflows: [],
+        overlaps: [],
+        overlapsTruncated: false,
+        screenshot: { mime: 'image/png', base64: '' },
+      },
+      await hostPackage.generateAsync({ type: 'base64' }),
+    )
+    expect(result.structureStatus).toBe('passed')
+    if (nativeType === 'Table')
+      expect(result).toMatchObject({
+        status: 'warning',
+        content: { status: 'warning', changed: ['table'] },
+      })
+    else
+      expect(result).toMatchObject({
+        status: 'incomplete',
+        content: { status: 'incomplete', unchecked: ['chart'] },
+      })
+  }
+})
 
 it('matches text, shapes, images, tables and charts from compiled pages to Office shape readback', async () => {
   const { bytes } = await compilePresentationDeck(benchmarkDeck())
@@ -43,7 +140,12 @@ it('matches text, shapes, images, tables and charts from compiled pages to Offic
         screenshot: { mime: 'image/png', base64: '' },
       },
     )
-    expect(result).toMatchObject({ status: 'passed', sourceCount: 3, hostCount: 3, issues: [] })
+    expect(result).toMatchObject({
+      structureStatus: 'passed',
+      sourceCount: 3,
+      hostCount: 3,
+      issues: [],
+    })
   }
 })
 
@@ -65,7 +167,7 @@ it('reports missing, retyped and moved editable objects without a false pass', a
     overlapsTruncated: false,
     screenshot: { mime: 'image/png', base64: '' },
   })
-  expect(result.status).toBe('warning')
+  expect(result.structureStatus).toBe('warning')
   expect(result.issues).toEqual(
     expect.arrayContaining([
       { name: 'chart', kind: 'type_changed', sourceType: 'chart', hostType: 'Image' },
@@ -124,9 +226,43 @@ it('flags a native object moved beyond the host conversion tolerance', async () 
     screenshot: { mime: 'image/png', base64: '' },
   })
   expect(result).toMatchObject({
-    status: 'warning',
+    structureStatus: 'warning',
     issues: [{ name: 'title', kind: 'geometry_changed' }],
   })
+})
+
+it('does not combine inconsistent Office shape and package readbacks into a pass', async () => {
+  const { bytes } = await compilePresentationDeck(benchmarkDeck())
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  shapes[0]!.left += 5
+  const base64 = Buffer.from(bytes).toString('base64')
+  const result = await comparePresentationPageStructure(
+    base64,
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    base64,
+  )
+  expect(result).toMatchObject({ status: 'incomplete', readbackConsistent: false })
+  expect(result.content.status).toBe('incomplete')
 })
 
 it('exposes the comparison for the exact imported production page without changing QA records', async () => {
@@ -185,6 +321,7 @@ it('exposes the comparison for the exact imported production page without changi
       overlapsTruncated: false,
       screenshot: { mime: 'image/png', base64: '' },
     }),
+    exportPage: async (slideId) => ({ slideId, base64 }),
     readQa: () => undefined,
     writeQa: async () => {
       throw new Error('unexpected write')
@@ -201,5 +338,7 @@ it('exposes the comparison for the exact imported production page without changi
     status: 'passed',
     pageId: 'page',
     hostSlideId: 'host',
+    readbackConsistent: true,
+    content: { status: 'passed', changed: [], unchecked: [] },
   })
 })
