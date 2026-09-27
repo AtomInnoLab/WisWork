@@ -153,6 +153,115 @@ async function sourceLinksPackage(target = 'https://example.org/paper?x=1&amp;y=
   )
   return zip.generateAsync({ type: 'base64' })
 }
+it('detects hidden package changes when page integrity is requested', async () => {
+  const f = fixture()
+  f.setPackage(await complexPagePackage('North'))
+  const read = await f.call('read_presentation_baseline', {
+    scope: 'current',
+    package_integrity: true,
+  })
+  expect(read.isError).toBeFalsy()
+  const baseline = JSON.parse(read.output)
+  expect(baseline.coverage.pagePackages).toBe('read')
+  expect(baseline.pagePackageDigests.s2).toMatch(/^[a-f0-9]{64}$/)
+  expect(
+    JSON.parse(
+      (
+        await f.call('check_presentation_baseline', {
+          baseline_id: baseline.baselineId,
+        })
+      ).output,
+    ),
+  ).toMatchObject({ unchanged: true, changedPackageSlideIds: [] })
+  f.setPackage(await complexPagePackage('South'))
+  expect(
+    JSON.parse(
+      (
+        await f.call('check_presentation_baseline', {
+          baseline_id: baseline.baselineId,
+        })
+      ).output,
+    ),
+  ).toMatchObject({ unchanged: false, changedPackageSlideIds: ['s2'] })
+})
+it('fingerprints every page in a selected multi-page baseline', async () => {
+  const f = fixture()
+  f.setContext({ ...f.getContext(), selectedSlideIds: ['s1', 's2'], selectedShapeIds: [] })
+  f.setPackage(await complexPagePackage('North'))
+  const baseline = JSON.parse(
+    (
+      await f.call('read_presentation_baseline', {
+        scope: 'selected',
+        package_integrity: true,
+      })
+    ).output,
+  )
+  expect(Object.keys(baseline.pagePackageDigests)).toEqual(['s1', 's2'])
+  expect(f.exportPagePackage).toHaveBeenCalledTimes(4)
+  const checked = JSON.parse(
+    (
+      await f.call('check_presentation_baseline', {
+        baseline_id: baseline.baselineId,
+      })
+    ).output,
+  )
+  expect(checked).toMatchObject({ unchanged: true, changedPackageSlideIds: [] })
+  expect(f.exportPagePackage).toHaveBeenCalledTimes(8)
+})
+it('retains a package digest for a host slide ID matching an object property name', async () => {
+  const f = fixture()
+  f.pages.set('__proto__', page('__proto__'))
+  f.setContext({ ...f.getContext(), slideIds: ['__proto__'], selectedSlideIds: ['__proto__'] })
+  f.setPackage(await complexPagePackage())
+  const baseline = JSON.parse(
+    (
+      await f.call('read_presentation_baseline', {
+        scope: 'current',
+        package_integrity: true,
+      })
+    ).output,
+  )
+  expect(Object.hasOwn(baseline.pagePackageDigests, '__proto__')).toBe(true)
+  expect(baseline.pagePackageDigests['__proto__']).toMatch(/^[a-f0-9]{64}$/)
+})
+it('rejects an unstable or unavailable requested page package without saving a baseline', async () => {
+  const f = fixture()
+  f.setPackage(await complexPagePackage('North'))
+  const changed = await complexPagePackage('South')
+  f.exportPagePackage
+    .mockImplementationOnce(async (slideId: string) => ({
+      slideId,
+      slideIds: [...f.getContext().slideIds],
+      base64: await complexPagePackage('North'),
+    }))
+    .mockImplementationOnce(async (slideId: string) => ({
+      slideId,
+      slideIds: [...f.getContext().slideIds],
+      base64: changed,
+    }))
+  expect(
+    (
+      await f.call('read_presentation_baseline', {
+        scope: 'current',
+        package_integrity: true,
+      })
+    ).output,
+  ).toBe('presentation_baseline_changed')
+  expect(f.skill.snapshot('any')).toBeUndefined()
+  const noExport = createPresentationBaselineSkill({
+    adapter: f.adapter,
+    documentId: async () => 'doc',
+  })
+  expect(
+    (
+      await noExport.executeTool({
+        id: 'call',
+        name: 'read_presentation_baseline',
+        input: { scope: 'current', package_integrity: true },
+      })
+    ).output,
+  ).toBe('office_api_unsupported')
+})
 it('reads slide source links with labels and package IDs without verifying targets', async () => {
   const f = fixture()
   f.setPackage(await sourceLinksPackage())
