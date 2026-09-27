@@ -19,4 +19,4 @@ node tools/ppt-agent-release-preflight.mjs --origin https://office.example --rel
 node tools/ppt-agent-release-preflight.mjs --origin https://office.example --relay-origin https://relay.example --dist apps/office-addin/dist --deployed 1
 ```
 
-预检核对 Manifest 各 Office 资源地址、`version.json` 与编译入口的一致性、哈希入口、无源码映射、Relay `/office-relay/health` 的精确响应；部署后还逐一读取线上版本、Taskpane，并用 SHA-256 对比线上哈希脚本与本地产物的完整字节。任何失败均以非零退出码阻断继续发布。CI 会构建真实 Taskpane 并执行产物预检，以及使用 LibreOffice 检查 PPTX 包回读。此命令不替代 v1/v2 配对协议测试（CI 的 Relay/Office 测试）及真实 PowerPoint 的附件、图片、页面写入、截图、恢复冒烟。先保留旧版回滚包；发布顺序仍为 Relay、PC、Taskpane。
+预检核对 Manifest 各 Office 资源地址、`version.json` 与编译入口的一致性、哈希入口、无源码映射、Relay `/office-relay/health` 的精确响应；部署后还逐一读取线上版本、Taskpane，并用 SHA-256 对比线上 Taskpane HTML 和哈希脚本与本地产物的完整字节。任何失败均以非零退出码阻断继续发布。CI 会构建真实 Taskpane 并执行产物预检，以及使用 LibreOffice 检查 PPTX 包回读。此命令不替代 v1/v2 配对协议测试（CI 的 Relay/Office 测试）及真实 PowerPoint 的附件、图片、页面写入、截图、恢复冒烟。先保留旧版回滚包；发布顺序仍为 Relay、PC、Taskpane。

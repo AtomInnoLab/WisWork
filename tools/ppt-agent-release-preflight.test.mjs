@@ -33,6 +33,9 @@ test('validates complete release artifact', async (t) => {
     buildId: 'release_123',
     script: 'assets/taskpane-AbC_123.js',
     scriptSha256: createHash('sha256').update('const version="release_123"').digest('hex'),
+    htmlSha256: createHash('sha256')
+      .update('<script src="/assets/taskpane-AbC_123.js"></script>')
+      .digest('hex'),
   })
 })
 
@@ -107,6 +110,9 @@ test('checks deployed version, HTML and immutable script as one build', async ()
     buildId: 'release_123',
     script: 'assets/taskpane-AbC_123.js',
     scriptSha256: createHash('sha256').update('const version="release_123"').digest('hex'),
+    htmlSha256: createHash('sha256')
+      .update('<script src="/assets/taskpane-AbC_123.js"></script>')
+      .digest('hex'),
   }
   const assets = new Map([
     ['/version.json', '{"buildId":"release_123"}'],
@@ -116,6 +122,12 @@ test('checks deployed version, HTML and immutable script as one build', async ()
   const fetcher = async (url) =>
     new Response(assets.get(url.pathname) ?? '', { status: assets.has(url.pathname) ? 200 : 404 })
   await inspectDeployedOffice('https://office.example', build, fetcher)
+  assets.set(
+    '/taskpane.html',
+    '<script src="/assets/taskpane-AbC_123.js"></script><script src="https://evil.example/extra.js"></script>',
+  )
+  await assert.rejects(inspectDeployedOffice('https://office.example', build, fetcher), /differ/)
+  assets.set('/taskpane.html', '<script src="/assets/taskpane-AbC_123.js"></script>')
   assets.set('/version.json', '{"buildId":"old"}')
   await assert.rejects(inspectDeployedOffice('https://office.example', build, fetcher), /differ/)
   assets.set('/version.json', '{"buildId":"release_123"}')

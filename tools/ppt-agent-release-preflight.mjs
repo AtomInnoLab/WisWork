@@ -46,7 +46,8 @@ export async function inspectOfficeBuild(dist, expectedOrigin) {
   const metadata = JSON.parse(await readFile(resolve(dist, 'version.json'), 'utf8'))
   if (!/^[A-Za-z0-9_.-]{3,96}$/.test(metadata.buildId || ''))
     throw new Error('invalid version.json buildId')
-  const html = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
+  const htmlBytes = await readFile(resolve(dist, 'taskpane.html'))
+  const html = htmlBytes.toString('utf8')
   const manifest = await readFile(resolve(dist, 'manifest.xml'), 'utf8')
   checkManifest(manifest, expectedOrigin)
   if (html.includes('__WISWORK_CONNECT_ORIGINS__')) throw new Error('unresolved connect policy')
@@ -61,7 +62,12 @@ export async function inspectOfficeBuild(dist, expectedOrigin) {
   for (const path of files) {
     if (path.endsWith('.map')) throw new Error('source map in release artifact')
   }
-  return { buildId: metadata.buildId, script: scripts[0], scriptSha256: sha256(script) }
+  return {
+    buildId: metadata.buildId,
+    script: scripts[0],
+    scriptSha256: sha256(script),
+    htmlSha256: sha256(htmlBytes),
+  }
 }
 
 export async function inspectRelayHealth(relayOrigin, fetcher = fetch) {
@@ -102,7 +108,7 @@ export async function inspectDeployedOffice(origin, build, fetcher = fetch) {
   }
   if (
     metadata.buildId !== build.buildId ||
-    !responses[1].toString('utf8').includes(`src="/${build.script}"`) ||
+    sha256(responses[1]) !== build.htmlSha256 ||
     sha256(responses[2]) !== build.scriptSha256
   )
     throw new Error('deployed Office assets differ from release artifact')
