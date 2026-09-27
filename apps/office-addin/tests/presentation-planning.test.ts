@@ -3,6 +3,7 @@ import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/pres
 import { createPresentationPlanningSkill } from '../src/skills/powerpoint/presentation-planning.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
 import type { PresentationHistoryEntry } from '../src/skills/powerpoint/presentation-change-history.js'
+import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 const plan = benchmarkPlan()
 function setup(history?: PresentationHistoryEntry[]) {
   const vfs = new InMemoryVfs()
@@ -33,6 +34,36 @@ describe('saved presentation planning tools', () => {
     expect(JSON.parse(result.output).candidates).toMatchObject([{ changeId: 'edit1', status: 'candidate', after: '短标题' }])
     expect(f.request).not.toHaveBeenCalled()
     expect(f.rememberProject).not.toHaveBeenCalled()
+  })
+  it('requires visible confirmation before saving a preference', async () => {
+    const record = { version: 1 as const, changeId: 'edit1', documentId: 'doc-1', projectId: plan.projectId, requestId: 'request1', artifactDigest: 'a'.repeat(64), pageId: 'page1', hostSlideId: 'slide1', shapeId: 'shape1', before: '长标题', after: '短标题', state: 'applied' as const }
+    const history: PresentationHistoryEntry[] = [{ id: 'text:edit1', sequence: 1, legacy: false, kind: 'text', record }]
+    const proposals = createStructuredProposalController()
+    const request = vi.fn(async (body: unknown) => new Response(JSON.stringify({ preference: (body as { preference: unknown }).preference })))
+    const skill = createPresentationPlanningSkill({ vfs: new InMemoryVfs(), available: () => true, documentId: async () => 'doc-1', lastProject: () => plan.projectId, rememberProject: async () => {}, request, listChangeHistory: () => history, proposals })
+    const result = await skill.executeTool({ id: 'save', name: 'save_presentation_preference', input: { project_id: plan.projectId, change_id: 'edit1', preference: '标题尽量简短' } })
+    expect(JSON.parse(result.output).status).toBe('awaiting_confirmation')
+    expect(request).not.toHaveBeenCalled()
+    await proposals.confirm(JSON.parse(result.output).proposalId)
+    expect(request).toHaveBeenCalledWith({ operation: 'preference_save', documentId: 'doc-1', preference: { projectId: plan.projectId, changeId: 'edit1', text: '标题尽量简短' } }, expect.any(AbortSignal))
+    const list = await skill.executeTool({ id: 'list', name: 'list_presentation_preferences', input: { project_id: plan.projectId } })
+    expect(list.isError).toBe(true) // Reject malformed PC response rather than trusting it as a catalog.
+  })
+  it('requires visible confirmation before deleting a stored preference', async () => {
+    const proposals = createStructuredProposalController()
+    let preferences = [{ projectId: plan.projectId, changeId: 'edit1', text: '标题尽量简短' }]
+    const request = vi.fn(async (body: unknown) => {
+      const operation = (body as { operation: string }).operation
+      if (operation === 'preference_list') return new Response(JSON.stringify({ preferences }))
+      preferences = []
+      return new Response(JSON.stringify({ deleted: true }))
+    })
+    const skill = createPresentationPlanningSkill({ vfs: new InMemoryVfs(), available: () => true, documentId: async () => 'doc-1', lastProject: () => plan.projectId, rememberProject: async () => {}, request, proposals })
+    const proposed = await skill.executeTool({ id: 'delete', name: 'delete_presentation_preference', input: { project_id: plan.projectId, change_id: 'edit1' } })
+    expect(preferences).toHaveLength(1)
+    await proposals.confirm(JSON.parse(proposed.output).proposalId)
+    expect(preferences).toEqual([])
+    expect(JSON.parse((await skill.executeTool({ id: 'list', name: 'list_presentation_preferences', input: { project_id: plan.projectId } })).output)).toEqual({ preferences: [] })
   })
   it('returns five local domain planning skills without claiming source verification', async () => {
     const f = setup()

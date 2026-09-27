@@ -242,6 +242,9 @@ export function createOfficeHostRuntime(
     host === 'powerpoint'
       ? {
           beforeWrite: async (proposal) => {
+            // Preference approval writes only the PC's separate local catalog, not the host deck.
+            if (['save_presentation_preference', 'delete_presentation_preference'].includes(proposal.operation) &&
+              proposal.toolName === proposal.operation && proposal.impact.host === 'local_preference') return
             // Only these internally constructed operations resolve a stable host page before
             // proposing. Generic script/index-based impact labels cannot prove their write scope.
             const target = proposal.impact.targets[0]
@@ -553,7 +556,7 @@ export function createOfficeHostRuntime(
       : undefined
   const planning =
     generation && options.presentation
-      ? createPresentationPlanningSkill({ ...options.presentation, vfs })
+      ? createPresentationPlanningSkill({ ...options.presentation, vfs, proposals })
       : undefined
   const production =
     generation && options.presentation

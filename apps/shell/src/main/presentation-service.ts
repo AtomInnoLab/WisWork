@@ -28,6 +28,7 @@ import {
 } from '@wiswork/pptx-engine/presentation'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { assertBrandLogoAsset, PresentationBrandLibrary } from './presentation-brand'
+import { PresentationPreferenceLibrary } from './presentation-preferences'
 
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
@@ -89,6 +90,7 @@ export function createPresentationService(options: {
   const attachments = createPresentationAttachmentService(options)
   const store = new PresentationStore(options.userDataPath)
   const brandLibrary = new PresentationBrandLibrary(options.userDataPath)
+  const preferenceLibrary = new PresentationPreferenceLibrary(options.userDataPath)
   const compile = options.compile ?? compilePresentationDeck
   return async (body, signal) => {
     try {
@@ -101,6 +103,18 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
+      if (request.operation === 'preference_save' || request.operation === 'preference_list' || request.operation === 'preference_delete') {
+        const required = request.operation === 'preference_save' ? ['operation', 'documentId', 'preference'] :
+          request.operation === 'preference_delete' ? ['operation', 'documentId', 'projectId', 'changeId'] : ['operation', 'documentId', 'projectId']
+        if (Object.keys(request).sort().join(',') !== required.sort().join(',') ||
+          typeof request.documentId !== 'string' || !request.documentId || request.documentId.length > 2048)
+          throw new Error('invalid_request')
+        if (request.operation === 'preference_save')
+          return boundedResponse({ preference: preferenceLibrary.save(request.documentId, request.preference) })
+        if (request.operation === 'preference_delete')
+          return boundedResponse({ deleted: preferenceLibrary.delete(request.documentId, request.projectId as string, request.changeId as string) })
+        return boundedResponse({ preferences: preferenceLibrary.list(request.documentId, request.projectId as string) })
+      }
       if (['brand_kit_save', 'brand_kit_get', 'brand_kit_list'].includes(request.operation as string)) {
         const operation = request.operation
         const required = operation === 'brand_kit_save' ? ['operation', 'documentId', 'expectedRevision', 'brandKit'] :
