@@ -1593,9 +1593,7 @@ export function App() {
     void (async () => {
       const deployed = await deployedBuildId()
       if (active)
-        setVersionState(
-          deployed && deployed !== __WISWORK_OFFICE_BUILD_ID__ ? deployed : 'current',
-        )
+        setVersionState(deployed && deployed !== __WISWORK_OFFICE_BUILD_ID__ ? deployed : 'current')
     })()
     return () => {
       active = false

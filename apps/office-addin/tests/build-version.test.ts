@@ -9,13 +9,20 @@ describe('deployedBuildId', () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ buildId: 'release_123' })))
     expect(await deployedBuildId(fetcher as typeof fetch)).toBe('release_123')
     expect(fetcher).toHaveBeenCalledWith(new URL('https://office.example/version.json'), {
-      cache: 'no-store', credentials: 'same-origin', signal: expect.any(AbortSignal),
+      cache: 'no-store',
+      credentials: 'same-origin',
+      signal: expect.any(AbortSignal),
     })
   })
 
-  it.each([{}, { buildId: '../other' }, { buildId: 123 }, [], null])('ignores invalid metadata: %j', async (payload) => {
-    expect(await deployedBuildId(async () => new Response(JSON.stringify(payload)))).toBeUndefined()
-  })
+  it.each([{}, { buildId: '../other' }, { buildId: 123 }, [], null])(
+    'ignores invalid metadata: %j',
+    async (payload) => {
+      expect(
+        await deployedBuildId(async () => new Response(JSON.stringify(payload))),
+      ).toBeUndefined()
+    },
+  )
 
   it('allows older deployments without metadata', async () => {
     expect(await deployedBuildId(async () => new Response('', { status: 404 }))).toBeUndefined()
@@ -30,10 +37,13 @@ describe('deployedBuildId', () => {
 
   it('falls back when response JSON never settles', async () => {
     vi.useFakeTimers()
-    const result = deployedBuildId(async () => ({
-      ok: true,
-      json: () => new Promise(() => {}),
-    }) as unknown as Response)
+    const result = deployedBuildId(
+      async () =>
+        ({
+          ok: true,
+          json: () => new Promise(() => {}),
+        }) as unknown as Response,
+    )
     await vi.advanceTimersByTimeAsync(5_000)
     await expect(result).resolves.toBeUndefined()
   })
