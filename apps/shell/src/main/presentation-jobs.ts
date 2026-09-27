@@ -87,7 +87,9 @@ export function handlePresentationJob(
             controller.signal,
           )
           const state = read()?.state
-          if (state === 'pausing') append({ type: 'run.paused' })
+          if (state === 'pausing' && production().pages.every((page) => page.state === 'compiled'))
+            append({ type: 'run.completed' })
+          else if (state === 'pausing') append({ type: 'run.paused' })
           else if (state === 'cancelling') append({ type: 'run.cancelled' })
           else if (production().pages.every((page) => page.state === 'compiled'))
             append({ type: 'run.completed' })

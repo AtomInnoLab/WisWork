@@ -14,6 +14,22 @@ describe('production job contract', () => {
     state: 'running',
     events: [{ sequence: 1, createdAt: '2026-09-24T00:00:00.000Z', type: 'run.started' }],
   }
+  it('replays two interleaved in-flight pages while rejecting a third', () => {
+    const at = '2026-09-24T00:00:00.000Z'
+    const events = [
+      { type: 'run.started' },
+      { type: 'page.started', pageId: 'a', attempt: 1 },
+      { type: 'page.started', pageId: 'b', attempt: 1 },
+      { type: 'page.compiled', pageId: 'b', attempt: 1 },
+      { type: 'page.compiled', pageId: 'a', attempt: 1 },
+      { type: 'run.completed' },
+    ].map((event, index) => ({ ...event, sequence: index + 1, createdAt: at }))
+    expect(parsePresentationProductionJob({ ...job, revision: events.length, state: 'completed', events }).state).toBe('completed')
+    const third = [events[0], events[1], events[2], { type: 'page.started', pageId: 'c', attempt: 1, sequence: 4, createdAt: at }]
+    expect(() => parsePresentationProductionJob({ ...job, revision: 4, events: third })).toThrow('invalid_state')
+    const premature = [events[0], events[1], { type: 'run.completed', sequence: 3, createdAt: at }]
+    expect(() => parsePresentationProductionJob({ ...job, revision: 3, state: 'completed', events: premature })).toThrow('invalid_state')
+  })
   it('accepts bounded strict jobs and rejects forged history and fields', () => {
     expect(parsePresentationProductionJob(job)).toEqual(job)
     expect(() =>

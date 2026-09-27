@@ -107,7 +107,7 @@ export function presentationProductionJobStateAfter(
     case 'run.interrupted':
       return allowed(['running'], 'interrupted')
     case 'run.completed':
-      return allowed(['running'], 'completed')
+      return allowed(['running', 'pausing'], 'completed')
     case 'run.failed':
       return allowed(['running', 'pausing', 'cancelling'], 'failed')
     case 'page.started':
@@ -152,8 +152,8 @@ export function parsePresentationProductionJob(value: unknown): PresentationProd
   let possibilities: Array<PresentationProductionJobState | undefined> =
     Number(job.revision) <= 128 ? [undefined] : [...states]
   let previousTime = ''
-  let active: { pageId: string; attempt: number } | undefined
-  let unknownStart = Number(job.revision) > 128
+  const active = new Map<string, number>()
+  let unknownActive = Number(job.revision) > 128 ? 2 : 0
   const attempts = new Map<string, number>()
   for (const [index, value] of events.entries()) {
     const event = object(value)
@@ -181,24 +181,26 @@ export function parsePresentationProductionJob(value: unknown): PresentationProd
     )
       invalid()
     if (event.type === 'run.started') {
-      active = undefined
-      unknownStart = false
+      active.clear()
+      unknownActive = 0
     }
     if (page) {
       const pageId = event.pageId as string
       const attempt = event.attempt as number
       if (event.type === 'page.started') {
-        if (active || attempt <= (attempts.get(pageId) ?? 0)) invalid()
-        active = { pageId, attempt }
-        unknownStart = false
+        if (active.size >= 2 || active.has(pageId) || attempt <= (attempts.get(pageId) ?? 0)) invalid()
+        active.set(pageId, attempt)
       } else {
-        if (active ? active.pageId !== pageId || active.attempt !== attempt : !unknownStart)
-          invalid()
-        active = undefined
-        unknownStart = false
+        if (active.has(pageId)) {
+          if (active.get(pageId) !== attempt) invalid()
+        } else if (unknownActive) unknownActive--
+        else invalid()
+        active.delete(pageId)
       }
       attempts.set(pageId, attempt)
     }
+    if (typeof event.type === 'string' && ['run.paused', 'run.cancelled', 'run.completed'].includes(event.type) && active.size)
+      invalid()
     previousTime = event.createdAt
     possibilities = possibilities.flatMap((state) => {
       try {

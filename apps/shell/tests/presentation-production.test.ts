@@ -93,6 +93,82 @@ it('persists eight separate native pages, continues after one failure, and resum
     error: 'document_mismatch',
   })
 })
+it('compiles opted-in independent pages concurrently and waits for declared dependencies', async () => {
+  const entered = [0, 0]
+  const gates = [
+    (() => { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve }); return { promise, release } })(),
+    (() => { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve }); return { promise, release } })(),
+  ]
+  const compile = vi.fn(async (input: unknown) => {
+    const slideId = parsePresentationDeck(input).slides[0]!.id
+    const index = slideId === 'slide-1' ? 0 : 1
+    entered[index]!++
+    await gates[index]!.promise
+    return compilePresentationDeck(input)
+  })
+  const f = await setup(compile)
+  f.plan.slides = f.plan.slides.slice(0, 2)
+  f.deck.slides = f.deck.slides.slice(0, 2)
+  f.plan.parallelism = 2
+  f.plan.slides.forEach((slide) => { slide.dependsOn = [] })
+  expect((await f.call('save_plan', { expectedRevision: 1, plan: f.plan })).revision).toBe(2)
+  await f.call('production_begin', { requestId: 'parallel', planRevision: 2, deck: f.deck })
+  const parallel = f.call('production_run', { requestId: 'parallel' })
+  await vi.waitFor(() => expect(entered).toEqual([1, 1]))
+  gates.forEach((gate) => gate.release())
+  expect(await parallel).toMatchObject({ status: 'compiled', compiledCount: 2 })
+
+  const dependency = structuredClone(f.plan)
+  dependency.slides[1]!.dependsOn = ['slide-1']
+  expect((await f.call('save_plan', { expectedRevision: 2, plan: dependency })).revision).toBe(3)
+  const waiting = [
+    (() => { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve }); return { promise, release } })(),
+    (() => { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve }); return { promise, release } })(),
+  ]
+  entered.fill(0)
+  compile.mockImplementation(async (input: unknown) => {
+    const slideId = parsePresentationDeck(input).slides[0]!.id
+    const index = slideId === 'slide-1' ? 0 : 1
+    entered[index]!++
+    await waiting[index]!.promise
+    return compilePresentationDeck(input)
+  })
+  await f.call('production_begin', { requestId: 'dependent', planRevision: 3, deck: f.deck })
+  const dependent = f.call('production_run', { requestId: 'dependent' })
+  await vi.waitFor(() => expect(entered[0]).toBe(1))
+  expect(entered[1]).toBe(0)
+  waiting[0]!.release()
+  await vi.waitFor(() => expect(entered[1]).toBe(1))
+  waiting[1]!.release()
+  expect(await dependent).toMatchObject({ status: 'compiled', compiledCount: 2 })
+})
+it('holds a dependent page pending when its predecessor fails, then resumes both safely', async () => {
+  let fail = true
+  const compile = vi.fn(async (input: unknown) => {
+    const slideId = parsePresentationDeck(input).slides[0]!.id
+    if (slideId === 'slide-1' && fail) {
+      fail = false
+      throw new Error('transient')
+    }
+    return compilePresentationDeck(input)
+  })
+  const f = await setup(compile)
+  f.plan.slides = f.plan.slides.slice(0, 2)
+  f.deck.slides = f.deck.slides.slice(0, 2)
+  f.plan.parallelism = 2
+  f.plan.slides.forEach((slide) => { slide.dependsOn = [] })
+  f.plan.slides[1]!.dependsOn = ['slide-1']
+  await f.call('save_plan', { expectedRevision: 1, plan: f.plan })
+  await f.call('production_begin', { requestId: 'dependent', planRevision: 2, deck: f.deck })
+  const first = await f.call('production_run', { requestId: 'dependent' })
+  expect(first).toMatchObject({ status: 'partial', compiledCount: 0 })
+  expect(first.pages[0]).toMatchObject({ state: 'failed', attempt: 1 })
+  expect(first.pages[1]).toMatchObject({ state: 'pending', attempt: 0 })
+  expect(compile).toHaveBeenCalledTimes(1)
+  const resumed = await f.call('production_run', { requestId: 'dependent' })
+  expect(resumed).toMatchObject({ status: 'compiled', compiledCount: 2 })
+  expect(compile).toHaveBeenCalledTimes(3)
+})
 it('refuses to compile a page whose planned brand logo bytes do not match', async () => {
   const f = await setup()
   f.plan.slides[2]!.layout = 'cover'

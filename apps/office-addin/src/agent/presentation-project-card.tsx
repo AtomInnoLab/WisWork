@@ -126,7 +126,7 @@ export function PresentationProjectCard(props: {
             {
               {
                 running: '制作中',
-                pausing: '当前页完成后暂停',
+                pausing: '正在编译的页面完成后暂停',
                 paused: '已暂停',
                 cancelling: '当前页完成后取消',
                 cancelled: '已取消，成果保留',
@@ -146,7 +146,7 @@ export function PresentationProjectCard(props: {
                   : '保存成果并准备导入，视觉与来源仍需验收。'
                 : job.state === 'cancelled'
                   ? '保存已完成单页；此任务不会重新启动。'
-                  : '可离开当前面板；暂停和取消在当前页完成后生效。'}
+                  : '可离开当前面板；暂停和取消在正在编译的页面完成后生效。'}
           </p>
           <div className="presentation-project-actions">
             {job.state === 'running' && (

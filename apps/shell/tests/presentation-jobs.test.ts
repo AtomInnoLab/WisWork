@@ -132,6 +132,31 @@ it('pauses and cancels at page boundaries, preserving the in-flight page and suc
   expect(await f.call('production_job_resume')).toMatchObject({ job: { state: 'cancelled' } })
   expect(compile).toHaveBeenCalledTimes(2)
 })
+it('tracks two opted-in pages concurrently and completes when both finish during a pause request', async () => {
+  const gates = [deferred(), deferred()]
+  const entered = [deferred(), deferred()]
+  const compile = vi.fn(async (input: unknown) => {
+    const pageId = (input as { slides: { id: string }[] }).slides[0]!.id
+    const index = pageId === 'slide-1' ? 0 : 1
+    entered[index]!.resolve()
+    await gates[index]!.promise
+    return compilePresentationDeck(input)
+  })
+  const f = await setup(compile)
+  f.plan.parallelism = 2
+  f.plan.slides.forEach((slide) => { slide.dependsOn = [] })
+  expect(await f.call('save_plan', { expectedRevision: 1, plan: f.plan })).toMatchObject({ revision: 2 })
+  expect(await f.call('production_begin', { requestId: 'parallel', planRevision: 2, deck: f.deck })).toMatchObject({ total: 2 })
+  expect(await f.call('production_job_start', { requestId: 'parallel' })).toMatchObject({ job: { state: 'running' } })
+  await Promise.all(entered.map((gate) => gate.promise))
+  expect(await f.call('production_job_pause', { requestId: 'parallel' })).toMatchObject({ job: { state: 'pausing' } })
+  gates.forEach((gate) => gate.resolve())
+  await vi.waitFor(async () => expect((await f.call('production_job_status', { requestId: 'parallel' })).job.state).toBe('completed'), { timeout: 10000, interval: 100 })
+  const done = await f.call('production_job_status', { requestId: 'parallel' })
+  expect(done.production.compiledCount).toBe(2)
+  expect(done.job.events.filter((event: { type: string }) => event.type === 'page.started')).toHaveLength(2)
+  expect(done.job.events.filter((event: { type: string }) => event.type === 'page.compiled')).toHaveLength(2)
+})
 it('rejects a pre-aborted admission without a durable job', async () => {
   const f = await setup(),
     controller = new AbortController()

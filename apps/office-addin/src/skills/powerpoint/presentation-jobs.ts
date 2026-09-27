@@ -60,7 +60,7 @@ export function createPresentationJobsSkill(
   const tools: AgentToolDef[] = Object.keys(operations).map((name) => ({
     name,
     description:
-      'Control or read durable PC compilation of frozen presentation pages. Background work survives client disconnection. Pause/cancel take effect after the current page; preserved compiled pages are not imported or QA checked. Resume only paused, interrupted or failed work. Use saved project/request IDs.',
+      'Control or read durable PC compilation of frozen presentation pages. Background work survives client disconnection. Pause/cancel take effect after in-flight pages finish; preserved compiled pages are not imported or QA checked. Resume only paused, interrupted or failed work. Use saved project/request IDs.',
     inputSchema: {
       type: 'object',
       properties: { project_id: { type: 'string' }, request_id: { type: 'string' } },
@@ -71,7 +71,7 @@ export function createPresentationJobsSkill(
   return {
     id: 'office-presentation-jobs',
     systemPrompt:
-      'Use background presentation production jobs for recoverable compilation of already frozen pages. Read status on reconnect. Pausing and cancelling may finish the current page first. Stopping a client wait does not cancel PC work. Events describe page compilation only, never research, host delivery or QA.',
+      'Use background presentation production jobs for recoverable compilation of already frozen pages. Read status on reconnect. Pausing and cancelling may finish in-flight pages first. Stopping a client wait does not cancel PC work. Events describe page compilation only, never research, host delivery or QA.',
     get tools() {
       return options.available() ? tools : []
     },

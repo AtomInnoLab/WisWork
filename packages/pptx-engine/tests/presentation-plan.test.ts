@@ -11,6 +11,22 @@ import { benchmarkPlan } from './fixtures/presentation-plan'
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
 describe('durable presentation plan', () => {
+  it('bounds opt-in parallelism and requires backward-only page dependencies', () => {
+    const plan = benchmarkPlan()
+    plan.parallelism = 2
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:page_dependency')
+    plan.slides.forEach((slide) => { slide.dependsOn = [] })
+    plan.slides[1]!.dependsOn = [plan.slides[0]!.id]
+    expect(() => parsePresentationPlan(plan)).not.toThrow()
+    plan.slides[0]!.dependsOn = [plan.slides[1]!.id]
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:page_dependency')
+    plan.slides[0]!.dependsOn = []
+    plan.slides[1]!.dependsOn = [plan.slides[0]!.id, plan.slides[0]!.id]
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:duplicate_page_dependency')
+    plan.slides[1]!.dependsOn = []
+    plan.parallelism = 3 as 2
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:schema')
+  })
   it('requires the selected domain workflow sections while leaving generic plans valid', () => {
     const plan = benchmarkPlan()
     expect(() => parsePresentationPlan(plan)).not.toThrow()

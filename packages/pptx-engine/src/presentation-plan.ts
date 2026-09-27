@@ -64,6 +64,7 @@ export interface PresentationPlan {
   }[]
   style: PresentationStyle
   domain?: PresentationDomainKind
+  parallelism?: 1 | 2
   brandKit?: {
     id: string
     revision: number
@@ -84,6 +85,7 @@ export interface PresentationPlan {
     claimIds: string[]
     layout: 'cover' | 'content' | 'comparison' | 'process' | 'chart' | 'summary'
     domainSection?: PresentationDomainSection
+    dependsOn?: string[]
     layoutComponentId?: string
     requiredAssets: string[]
     acceptanceCriteria: string[]
@@ -158,6 +160,7 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object({
   ),
   style: PRESENTATION_DECK_SCHEMA.properties!.style!,
   domain: choice(...domainKinds),
+  parallelism: { type: 'number', enum: [1, 2] },
   brandKit: object({
     id,
     revision: number(1, 1_000_000),
@@ -186,6 +189,7 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object({
       claimIds: array(id, 32),
       layout: choice('cover', 'content', 'comparison', 'process', 'chart', 'summary'),
       domainSection: choice(...domainSections),
+      dependsOn: array(id, 31),
       layoutComponentId: id,
       requiredAssets: array(text(1000, 1), 32),
       acceptanceCriteria: array(text(2000, 1), 32),
@@ -292,9 +296,15 @@ export function parsePresentationPlan(input: unknown): PresentationPlan {
       }
     }
   }
+  const previousSlideIds = new Set<string>()
   for (const slide of plan.slides) {
+    if (plan.parallelism === 2 && slide.dependsOn === undefined) reject('page_dependency')
     unique(slide.claimIds, 'claim_reference')
     if (slide.claimIds.some((claim) => !claimIds.has(claim))) reject('claim_reference')
+    unique(slide.dependsOn ?? [], 'page_dependency')
+    if (slide.dependsOn?.some((dependency) => !previousSlideIds.has(dependency)))
+      reject('page_dependency')
+    previousSlideIds.add(slide.id)
   }
   const claims = mappedClaims(plan)
   const requiredText = claims.reduce(
