@@ -60,6 +60,7 @@ const inventories = {
     'read_presentation_baseline',
     'read_presentation_baseline_chart_source',
     'read_presentation_baseline_complex_page',
+    'read_presentation_baseline_notes',
     'read_presentation_baseline_page',
     'read_slide_text',
     'screenshot_slide',
@@ -270,26 +271,93 @@ it('composes saved planning tools and clears their asynchronous state with the s
   runtime.dispose()
 })
 it('routes every advertised planning tool through the planning skill', async () => {
-  const request = vi.fn(async (body: unknown) => new Response(JSON.stringify(
-    (body as { operation: string }).operation === 'brand_kit_list'
-      ? { brandKits: [] }
-      : (body as { operation: string }).operation === 'comment_list'
-        ? { version: 1, documentId: 'doc-1', projectId: 'project-1', revision: 0, comments: [] }
-        : { preferences: [] },
-  )))
-  const runtime = createOfficeHostRuntime('powerpoint', { presentation: {
-    available: () => true, request, documentId: async () => 'doc-1',
-    lastProject: () => 'project-1', rememberProject: async () => {},
-  } })
+  const request = vi.fn(
+    async (body: unknown) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'brand_kit_list'
+            ? { brandKits: [] }
+            : (body as { operation: string }).operation === 'comment_list'
+              ? {
+                  version: 1,
+                  documentId: 'doc-1',
+                  projectId: 'project-1',
+                  revision: 0,
+                  comments: [],
+                }
+              : { preferences: [] },
+        ),
+      ),
+  )
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request,
+      documentId: async () => 'doc-1',
+      lastProject: () => 'project-1',
+      rememberProject: async () => {},
+    },
+  })
   try {
-    expect(JSON.parse((await runtime.skill.executeTool({ id: 'domain', name: 'read_presentation_domain_skill', input: { domain: 'research' } })).output).sections).toContain('method')
-    expect(JSON.parse((await runtime.skill.executeTool({ id: 'brands', name: 'list_presentation_brand_kits', input: {} })).output)).toEqual({ brandKits: [] })
-    expect(JSON.parse((await runtime.skill.executeTool({ id: 'preferences', name: 'list_presentation_preferences', input: { project_id: 'project-1' } })).output)).toEqual({ preferences: [] })
-    expect(JSON.parse((await runtime.skill.executeTool({ id: 'comments', name: 'list_presentation_review_comments', input: { project_id: 'project-1' } })).output).comments).toEqual([])
-    expect(request).toHaveBeenCalledWith({ operation: 'brand_kit_list', documentId: 'doc-1' }, undefined)
-    expect(request).toHaveBeenCalledWith({ operation: 'preference_list', documentId: 'doc-1', projectId: 'project-1' }, undefined)
-    expect(request).toHaveBeenCalledWith({ operation: 'comment_list', documentId: 'doc-1', projectId: 'project-1' }, undefined)
-  } finally { runtime.dispose() }
+    expect(
+      JSON.parse(
+        (
+          await runtime.skill.executeTool({
+            id: 'domain',
+            name: 'read_presentation_domain_skill',
+            input: { domain: 'research' },
+          })
+        ).output,
+      ).sections,
+    ).toContain('method')
+    expect(
+      JSON.parse(
+        (
+          await runtime.skill.executeTool({
+            id: 'brands',
+            name: 'list_presentation_brand_kits',
+            input: {},
+          })
+        ).output,
+      ),
+    ).toEqual({ brandKits: [] })
+    expect(
+      JSON.parse(
+        (
+          await runtime.skill.executeTool({
+            id: 'preferences',
+            name: 'list_presentation_preferences',
+            input: { project_id: 'project-1' },
+          })
+        ).output,
+      ),
+    ).toEqual({ preferences: [] })
+    expect(
+      JSON.parse(
+        (
+          await runtime.skill.executeTool({
+            id: 'comments',
+            name: 'list_presentation_review_comments',
+            input: { project_id: 'project-1' },
+          })
+        ).output,
+      ).comments,
+    ).toEqual([])
+    expect(request).toHaveBeenCalledWith(
+      { operation: 'brand_kit_list', documentId: 'doc-1' },
+      undefined,
+    )
+    expect(request).toHaveBeenCalledWith(
+      { operation: 'preference_list', documentId: 'doc-1', projectId: 'project-1' },
+      undefined,
+    )
+    expect(request).toHaveBeenCalledWith(
+      { operation: 'comment_list', documentId: 'doc-1', projectId: 'project-1' },
+      undefined,
+    )
+  } finally {
+    runtime.dispose()
+  }
 })
 it('routes supported attachments to PC and cancels outstanding reads on disposal', async () => {
   const request = vi.fn(
@@ -541,8 +609,12 @@ it('exposes durable text undo and hides unreleased native image writes through t
         ).output,
       ).toBe('presentation_restore_required')
     }
-    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('replace_presentation_page_image')
-    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('undo_presentation_image_replacement')
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain(
+      'replace_presentation_page_image',
+    )
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain(
+      'undo_presentation_image_replacement',
+    )
     expect(runtime.skill.systemPrompt).toContain('Native picture replacement is unavailable')
     expect(runtime.skill.systemPrompt).not.toContain('replace_presentation_page_image uses')
     expect(runtime.changes).toBeDefined()
@@ -579,11 +651,15 @@ it('exposes existing-page rebuild and routes saved-page inspection through the r
       'undo_existing_presentation_page_change',
     )
     expect(runtime.changes).toBeDefined()
-    expect(runtime.skill.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      'update_slide_chart_values', 'inspect_slide_chart_values_change',
-      'resume_slide_chart_values_change', 'undo_slide_chart_values_change',
-      'release_slide_chart_values_change',
-    ]))
+    expect(runtime.skill.tools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        'update_slide_chart_values',
+        'inspect_slide_chart_values_change',
+        'resume_slide_chart_values_change',
+        'undo_slide_chart_values_change',
+        'release_slide_chart_values_change',
+      ]),
+    )
     const inspected = await runtime.skill.executeTool({
       id: 'inspect',
       name: 'inspect_existing_presentation_page_change',
