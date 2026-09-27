@@ -99,6 +99,7 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
             version: 2,
             type: 'pc.approved',
             session_id: 'session',
+            capability: 'pcCredential',
             capabilities: ['presentation.v1'],
           }),
         )
@@ -107,6 +108,7 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
             version: 2,
             type: 'office.approved',
             session_id: 'session',
+            capability: 'officeCredential',
             capabilities: ['presentation.v1'],
           }),
         )
@@ -122,6 +124,79 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
 test('pairing smoke fails closed on invalid destination and missing credential', async () => {
   await assert.rejects(inspectRelayPairing('http://relay.example', 'secret'), /requires HTTPS/)
   await assert.rejects(inspectRelayPairing('https://relay.example', ''), /requires PC token/)
+})
+
+test('pairing smoke requires distinct nonempty session credentials', async (t) => {
+  const server = createServer()
+  const ws = new WebSocketServer({ server, path: '/office-relay' })
+  t.after(() => {
+    ws.close()
+    server.close()
+  })
+  server.listen(0, '127.0.0.1')
+  await new Promise((resolveReady) => server.once('listening', resolveReady))
+  let office
+  let caseNumber = 0
+  ws.on('connection', (socket, request) => {
+    if (request.headers.origin) office = socket
+    socket.on('message', (bytes) => {
+      const { type } = JSON.parse(bytes.toString())
+      if (type === 'office.create')
+        socket.send(
+          JSON.stringify({
+            version: 2,
+            type: 'office.created',
+            pairing_id: 'pair',
+            verification_code: '123456',
+          }),
+        )
+      if (type === 'pc.negotiate')
+        socket.send(
+          JSON.stringify({
+            version: 2,
+            type: 'pc.negotiated',
+            pairing_version: 2,
+            capabilities: ['presentation.v1'],
+          }),
+        )
+      if (type === 'pc.claim')
+        socket.send(
+          JSON.stringify({
+            version: 2,
+            type: 'pc.claimed',
+            pairing_id: 'pair',
+            capabilities: ['presentation.v1'],
+          }),
+        )
+      if (type === 'pc.approve') {
+        const capability = caseNumber === 0 ? undefined : 'sameCredential'
+        socket.send(
+          JSON.stringify({
+            version: 2,
+            type: 'pc.approved',
+            session_id: 'session',
+            capability,
+            capabilities: ['presentation.v1'],
+          }),
+        )
+        office.send(
+          JSON.stringify({
+            version: 2,
+            type: 'office.approved',
+            session_id: 'session',
+            capability: 'sameCredential',
+            capabilities: ['presentation.v1'],
+          }),
+        )
+      }
+    })
+  })
+  for (caseNumber = 0; caseNumber < 2; caseNumber++) {
+    await assert.rejects(
+      inspectRelayPairing(`http://127.0.0.1:${server.address().port}`, 'test-secret'),
+      /capability credentials invalid/,
+    )
+  }
 })
 
 test('pairing smoke rejects capability mismatch without disclosing credentials', async (t) => {

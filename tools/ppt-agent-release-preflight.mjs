@@ -209,6 +209,15 @@ function requireCapabilities(frame) {
     throw new Error('relay capability negotiation mismatch')
 }
 
+function opaque(value) {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    /^[A-Za-z0-9_-]+$/.test(value)
+  )
+}
+
 export async function inspectRelayPairing(relayOrigin, pcToken, options = {}) {
   const origin = new URL(relayOrigin)
   if (
@@ -284,8 +293,14 @@ export async function inspectRelayPairing(relayOrigin, pcToken, options = {}) {
     const approved = await officeApproved
     requireCapabilities(approved)
     requireCapabilities(pcApproved)
-    if (!approved.session_id || approved.session_id !== pcApproved.session_id)
+    if (!opaque(approved.session_id) || approved.session_id !== pcApproved.session_id)
       throw new Error('relay session mismatch')
+    if (
+      !opaque(approved.capability) ||
+      !opaque(pcApproved.capability) ||
+      approved.capability === pcApproved.capability
+    )
+      throw new Error('relay session capability credentials invalid')
   } finally {
     office.terminate()
     pc?.terminate()
