@@ -8,6 +8,6 @@
 | v2 / v2 / v2，PC 只提供 `agent.v1` | 保留普通 Agent；PPT 专用请求在 Taskpane 侧拒绝                                 | `apps/office-addin/tests/relay-session.test.ts`                                                                                          | 工程路径已覆盖；真实旧 PC 构建待验收               |
 | v1 / v2 / v2                       | Relay 仍接受 v1 基础配对；仅提供旧版 `agent.v1` 协议                           | `services/wiswork-relay/tests/relay.rs`、`apps/office-addin/tests/relay-session.test.ts`                                                 | 工程路径已覆盖；真实旧 Taskpane 构建待验收         |
 | v2 / v2 / v1                       | v1 PC 不能完成 v2 配对，Taskpane 最终超时；不能作为受支持混合版本发布          | `services/wiswork-relay/src/lib.rs` 的配对版本校验                                                                                       | **发布阻塞：需协调 PC 升级或实现明确的不兼容提示** |
-| v2 / v1 / 任意 PC                  | v1 Relay 不支持 v2 配对；没有静默降级                                          | v2 协议帧与能力协商要求                                                                                                                  | **发布阻塞：必须先升级 Relay**                     |
+| v2 / v1 / 任意 PC                  | v1 Relay 不支持 v2 配对；收到精确旧版协议错误时提示升级，不会静默降级          | `apps/office-addin/tests/relay-session.test.ts`                                                                                          | **发布阻塞：必须先升级 Relay**                     |
 
 构建版本探测、Manifest、能力协商分别解决静态资源、协议能力和会话入口的问题；三者不能互相替代。发布时应先部署支持 v2 的 Relay 和 PC，再发布 v2 Taskpane，并保留旧 Taskpane 的回滚包。`version.json`、`taskpane.html` 与其哈希资源需原子发布；真实 Win/Mac/Web 混合版本与端到端冒烟仍待执行。
