@@ -281,6 +281,8 @@ export type PowerPointDeclarativeOperation =
       fontFace: string
       fontSize: number
       color: string
+      borderColor?: string
+      cellMargin?: number
     }
   | {
       op: 'add_text_box'
@@ -1143,7 +1145,11 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     })
   }
 
-  async readSlideTable(slideIndex: number, shapeId: string, signal?: AbortSignal): Promise<string[][]> {
+  async readSlideTable(
+    slideIndex: number,
+    shapeId: string,
+    signal?: AbortSignal,
+  ): Promise<string[][]> {
     cancelled(signal)
     return this.run('1.8', async (context) => {
       const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
@@ -1157,11 +1163,22 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       ;(table.load as (properties: string) => void)('values,rowCount,columnCount')
       await sync(context, signal)
       const columnCount = table.columnCount
-      if (!Array.isArray(table.values) || table.values.length < 1 || table.values.length !== table.rowCount ||
-        table.values.length > 20 || typeof columnCount !== 'number' || !Number.isSafeInteger(columnCount) ||
-        columnCount < 1 || columnCount > 12 ||
-        table.values.some((row: unknown) => !Array.isArray(row) || row.length !== columnCount ||
-          row.some((cell: unknown) => typeof cell !== 'string' || cell.length > 256)))
+      if (
+        !Array.isArray(table.values) ||
+        table.values.length < 1 ||
+        table.values.length !== table.rowCount ||
+        table.values.length > 20 ||
+        typeof columnCount !== 'number' ||
+        !Number.isSafeInteger(columnCount) ||
+        columnCount < 1 ||
+        columnCount > 12 ||
+        table.values.some(
+          (row: unknown) =>
+            !Array.isArray(row) ||
+            row.length !== columnCount ||
+            row.some((cell: unknown) => typeof cell !== 'string' || cell.length > 256),
+        )
+      )
         throw new Error('office_read_failed')
       return table.values as string[][]
     })
@@ -1831,18 +1848,45 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           operation.height <= 0)
       )
         throw new Error('invalid_tool_input')
-      if (operation.op === 'add_native_table' && (
-        !operation.name || operation.name.length > 256 || !Array.isArray(operation.rows) ||
-        operation.rows.length < 1 || operation.rows.length > 20 ||
-        !operation.rows[0]?.length || operation.rows[0].length > 12 ||
-        operation.rows.length * operation.rows[0].length > 128 ||
-        operation.rows.some((row) => !Array.isArray(row) || row.length !== operation.rows[0].length ||
-          row.some((cell) => typeof cell !== 'string' || cell.length > 256)) ||
-        JSON.stringify(operation.rows).length > 12_000 ||
-        [operation.left, operation.top, operation.width, operation.height, operation.fontSize].some((value) => !Number.isFinite(value)) ||
-        operation.width <= 0 || operation.height <= 0 || operation.fontSize < 6 || operation.fontSize > 48 ||
-        !operation.fontFace || operation.fontFace.length > 128 || !/^[0-9A-Fa-f]{6}$/.test(operation.color)
-      )) throw new Error('invalid_tool_input')
+      if (
+        operation.op === 'add_native_table' &&
+        (!operation.name ||
+          operation.name.length > 256 ||
+          !Array.isArray(operation.rows) ||
+          operation.rows.length < 1 ||
+          operation.rows.length > 20 ||
+          !operation.rows[0]?.length ||
+          operation.rows[0].length > 12 ||
+          operation.rows.length * operation.rows[0].length > 128 ||
+          operation.rows.some(
+            (row) =>
+              !Array.isArray(row) ||
+              row.length !== operation.rows[0].length ||
+              row.some((cell) => typeof cell !== 'string' || cell.length > 256),
+          ) ||
+          JSON.stringify(operation.rows).length > 12_000 ||
+          [
+            operation.left,
+            operation.top,
+            operation.width,
+            operation.height,
+            operation.fontSize,
+          ].some((value) => !Number.isFinite(value)) ||
+          operation.width <= 0 ||
+          operation.height <= 0 ||
+          operation.fontSize < 6 ||
+          operation.fontSize > 48 ||
+          !operation.fontFace ||
+          operation.fontFace.length > 128 ||
+          !/^[0-9A-Fa-f]{6}$/.test(operation.color) ||
+          (operation.borderColor !== undefined &&
+            !/^[0-9A-Fa-f]{6}$/.test(operation.borderColor)) ||
+          (operation.cellMargin !== undefined &&
+            (!Number.isFinite(operation.cellMargin) ||
+              operation.cellMargin < 0 ||
+              operation.cellMargin > 36)))
+      )
+        throw new Error('invalid_tool_input')
       if (operation.op !== 'set_shape_text' && operation.op !== 'set_shape_geometry') continue
       const key = `${operation.slide_index}/${operation.shape_id}/${operation.op}`
       if (repeatedTargets.has(key)) throw new Error('invalid_tool_input')
@@ -1938,7 +1982,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
                 frame.bottomMargin = operation.margin
               }
               if (operation.verticalAlignment)
-                frame.verticalAlignment = { top: 'Top', middle: 'Middle', bottom: 'Bottom' }[operation.verticalAlignment]
+                frame.verticalAlignment = { top: 'Top', middle: 'Middle', bottom: 'Bottom' }[
+                  operation.verticalAlignment
+                ]
             }
             if (
               operation.fontFace ||
@@ -1954,8 +2000,11 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               if (operation.bold !== undefined) font.bold = operation.bold
             }
             if (operation.align) {
-              const paragraph = (((created.textFrame as RuntimeRecord).textRange as RuntimeRecord).paragraphFormat as RuntimeRecord)
-              paragraph.horizontalAlignment = { left: 'Left', center: 'Center', right: 'Right' }[operation.align]
+              const paragraph = ((created.textFrame as RuntimeRecord).textRange as RuntimeRecord)
+                .paragraphFormat as RuntimeRecord
+              paragraph.horizontalAlignment = { left: 'Left', center: 'Center', right: 'Right' }[
+                operation.align
+              ]
             }
             if (typeof created.load !== 'function') throw new Error('office_api_unsupported')
             ;(created.load as (properties: string) => void)('id')
@@ -1997,11 +2046,46 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           const shapes = slide.shapes as RuntimeRecord
           if (typeof shapes.addTable !== 'function') throw new Error('office_api_unsupported')
           queued.push(() => {
-            const created = (shapes.addTable as (rows: number, columns: number, options: Record<string, unknown>) => RuntimeRecord)(
-              operation.rows.length, operation.rows[0]!.length,
-              { left: operation.left, top: operation.top, width: operation.width, height: operation.height,
-                values: operation.rows, uniformCellProperties: { font: { name: operation.fontFace, size: operation.fontSize, color: `#${operation.color}` } } },
-            )
+            const created = (
+              shapes.addTable as (
+                rows: number,
+                columns: number,
+                options: Record<string, unknown>,
+              ) => RuntimeRecord
+            )(operation.rows.length, operation.rows[0]!.length, {
+              left: operation.left,
+              top: operation.top,
+              width: operation.width,
+              height: operation.height,
+              values: operation.rows,
+              uniformCellProperties: {
+                font: {
+                  name: operation.fontFace,
+                  size: operation.fontSize,
+                  color: `#${operation.color}`,
+                },
+                ...(operation.borderColor
+                  ? {
+                      borders: Object.fromEntries(
+                        ['top', 'right', 'bottom', 'left'].map((side) => [
+                          side,
+                          { color: `#${operation.borderColor}`, weight: 1 },
+                        ]),
+                      ),
+                    }
+                  : {}),
+                ...(operation.cellMargin !== undefined
+                  ? {
+                      margins: {
+                        top: operation.cellMargin,
+                        right: operation.cellMargin,
+                        bottom: operation.cellMargin,
+                        left: operation.cellMargin,
+                      },
+                    }
+                  : {}),
+              },
+            })
             created.name = operation.name
             if (typeof created.load !== 'function') throw new Error('office_api_unsupported')
             ;(created.load as (properties: string) => void)('id')

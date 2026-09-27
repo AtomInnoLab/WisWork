@@ -29,7 +29,10 @@ import {
 } from './powerpoint-package.js'
 import { updatePowerPointChartDataPackage } from './presentation-chart-source-package.js'
 import { saveChartPackageBackup, readChartPackageBackup } from './presentation-chart-backup.js'
-import { validatePresentationExistingChartChange, type PresentationExistingChartChange } from './presentation-existing-chart.js'
+import {
+  validatePresentationExistingChartChange,
+  type PresentationExistingChartChange,
+} from './presentation-existing-chart.js'
 import { officeOperationsForSlideIR } from './presentation-office-ir.js'
 
 const MAX_SLIDE_INDEX = 100_000
@@ -178,22 +181,64 @@ const declarativeProgramSchema = {
             ['op', 'slide_index', 'name', 'text', 'left', 'top', 'width', 'height'],
           ),
           exactOperation(
-            { op: { type: 'string', enum: ['add_geometric_shape'] }, slide_index: operationSlideIndex,
+            {
+              op: { type: 'string', enum: ['add_geometric_shape'] },
+              slide_index: operationSlideIndex,
               name: { type: 'string', minLength: 1, maxLength: 256 },
               shape: { type: 'string', enum: ['rect', 'ellipse', 'roundRect'] },
               fill: { type: 'string', pattern: '^[0-9A-Fa-f]{6}$' },
-              lineColor: { type: 'string', pattern: '^[0-9A-Fa-f]{6}$' }, ...geometryProperties },
-            ['op', 'slide_index', 'name', 'shape', 'fill', 'lineColor', 'left', 'top', 'width', 'height'],
+              lineColor: { type: 'string', pattern: '^[0-9A-Fa-f]{6}$' },
+              ...geometryProperties,
+            },
+            [
+              'op',
+              'slide_index',
+              'name',
+              'shape',
+              'fill',
+              'lineColor',
+              'left',
+              'top',
+              'width',
+              'height',
+            ],
           ),
           exactOperation(
-            { op: { type: 'string', enum: ['add_native_table'] }, slide_index: operationSlideIndex,
+            {
+              op: { type: 'string', enum: ['add_native_table'] },
+              slide_index: operationSlideIndex,
               name: { type: 'string', minLength: 1, maxLength: 256 },
-              rows: { type: 'array', minItems: 1, maxItems: 20,
-                items: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string', maxLength: 256 } } },
+              rows: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 20,
+                items: {
+                  type: 'array',
+                  minItems: 1,
+                  maxItems: 12,
+                  items: { type: 'string', maxLength: 256 },
+                },
+              },
               fontFace: { type: 'string', minLength: 1, maxLength: 128 },
               fontSize: { type: 'number', minimum: 6, maximum: 48 },
-              color: { type: 'string', pattern: '^[0-9A-Fa-f]{6}$' }, ...geometryProperties },
-            ['op', 'slide_index', 'name', 'rows', 'fontFace', 'fontSize', 'color', 'left', 'top', 'width', 'height'],
+              color: { type: 'string', pattern: '^[0-9A-Fa-f]{6}$' },
+              borderColor: { type: 'string', pattern: '^[0-9A-Fa-f]{6}$' },
+              cellMargin: { type: 'number', minimum: 0, maximum: 36 },
+              ...geometryProperties,
+            },
+            [
+              'op',
+              'slide_index',
+              'name',
+              'rows',
+              'fontFace',
+              'fontSize',
+              'color',
+              'left',
+              'top',
+              'width',
+              'height',
+            ],
           ),
           exactOperation(
             {
@@ -409,14 +454,20 @@ const tools = [
   },
   {
     name: 'add_slide_ir_objects',
-    description: 'Propose adding all text, shape and table objects plus a visible source footer from one validated SlideIR and Claim Ledger to an existing PowerPoint slide using native Office.js objects. Source truth is not verified here. Unsupported image/chart pages are rejected before writing. This does not create a slide or provide page-level atomic rollback; review the resulting page.',
-    inputSchema: { type: 'object', properties: {
-      slide_index: { type: 'integer', minimum: 0, maximum: 31 },
-      slide: PRESENTATION_DECK_SCHEMA.properties!.slides.items!,
-      style: PRESENTATION_DECK_SCHEMA.properties!.style,
-      claims: PRESENTATION_DECK_SCHEMA.properties!.claims,
-      explanation: { type: 'string', maxLength: 100 },
-    }, required: ['slide_index', 'slide', 'style', 'claims'], additionalProperties: false },
+    description:
+      'Propose adding all text, shape and table objects plus a visible source footer from one validated SlideIR and Claim Ledger to an existing PowerPoint slide using native Office.js objects. Source truth is not verified here. Unsupported image/chart pages are rejected before writing. This does not create a slide or provide page-level atomic rollback; review the resulting page.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slide_index: { type: 'integer', minimum: 0, maximum: 31 },
+        slide: PRESENTATION_DECK_SCHEMA.properties!.slides.items!,
+        style: PRESENTATION_DECK_SCHEMA.properties!.style,
+        claims: PRESENTATION_DECK_SCHEMA.properties!.claims,
+        explanation: { type: 'string', maxLength: 100 },
+      },
+      required: ['slide_index', 'slide', 'style', 'claims'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'edit_slide_text',
@@ -461,13 +512,24 @@ const tools = [
   },
   {
     name: 'update_slide_chart_values',
-    description: 'Propose a confirmed update of numeric values for one native chart whose embedded Sheet1 XLSX and cache already match. Preserves categories and chart structure; rechecks and reads back both package parts.',
+    description:
+      'Propose a confirmed update of numeric values for one native chart whose embedded Sheet1 XLSX and cache already match. Preserves categories and chart structure; rechecks and reads back both package parts.',
     inputSchema: {
       type: 'object',
       properties: {
         ...slideProperties,
         shape_id: { type: 'string', pattern: '^[1-9][0-9]{0,9}$' },
-        values: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string', maxLength: 32 } } },
+        values: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 8,
+          items: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 32,
+            items: { type: 'string', maxLength: 32 },
+          },
+        },
         explanation: { type: 'string', maxLength: 100 },
       },
       required: ['slide_index', 'shape_id', 'values'],
@@ -476,8 +538,20 @@ const tools = [
   },
   ...(['inspect', 'resume', 'undo', 'release'] as const).map((action) => ({
     name: `${action}_slide_chart_values_change`,
-    description: action === 'inspect' ? 'Inspect a durable chart value change against the current host package without writing.' : action === 'resume' ? 'Finalize a known interrupted chart value write after classifying the host package; never replay an unknown host write.' : action === 'release' ? 'Propose release of the PC backup only for a cancelled or undone chart change.' : 'Propose confirmed restoration of the original backed-up chart package when the exact applied package is still current.',
-    inputSchema: { type: 'object', properties: { change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' } }, required: ['change_id'], additionalProperties: false },
+    description:
+      action === 'inspect'
+        ? 'Inspect a durable chart value change against the current host package without writing.'
+        : action === 'resume'
+          ? 'Finalize a known interrupted chart value write after classifying the host package; never replay an unknown host write.'
+          : action === 'release'
+            ? 'Propose release of the PC backup only for a cancelled or undone chart change.'
+            : 'Propose confirmed restoration of the original backed-up chart package when the exact applied package is still current.',
+    inputSchema: {
+      type: 'object',
+      properties: { change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' } },
+      required: ['change_id'],
+      additionalProperties: false,
+    },
   })),
   {
     name: 'edit_slide_master',
@@ -553,7 +627,15 @@ function boundedJson(value: unknown): string {
 }
 function errorCode(error: unknown, write = false): string {
   const code = error instanceof Error ? error.message : ''
-  if (['invalid_tool_input', 'office_api_unsupported', 'office_concurrent_change', 'cancelled'].includes(code)) return code
+  if (
+    [
+      'invalid_tool_input',
+      'office_api_unsupported',
+      'office_concurrent_change',
+      'cancelled',
+    ].includes(code)
+  )
+    return code
   if (code === 'office_verify_failed') return code
   return write ? 'office_write_failed' : 'office_read_failed'
 }
@@ -1022,6 +1104,8 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
     'fontFace',
     'fontSize',
     'color',
+    'borderColor',
+    'cellMargin',
     'bold',
     'align',
     'margin',
@@ -1071,20 +1155,50 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
     if (
       Object.keys(operation).some(
         (key) =>
-          !['op', 'slide_index', 'name', 'text', 'left', 'top', 'width', 'height', 'fontFace', 'fontSize', 'color', 'bold', 'align', 'margin', 'verticalAlignment'].includes(key),
+          ![
+            'op',
+            'slide_index',
+            'name',
+            'text',
+            'left',
+            'top',
+            'width',
+            'height',
+            'fontFace',
+            'fontSize',
+            'color',
+            'bold',
+            'align',
+            'margin',
+            'verticalAlignment',
+          ].includes(key),
       ) ||
       typeof operation.name !== 'string' ||
       !operation.name ||
       operation.name.length > 256 ||
       typeof operation.text !== 'string' ||
       operation.text.length > 12_000 ||
-      (operation.fontFace !== undefined && (typeof operation.fontFace !== 'string' || !operation.fontFace || operation.fontFace.length > 128)) ||
-      (operation.fontSize !== undefined && (typeof operation.fontSize !== 'number' || !Number.isFinite(operation.fontSize) || operation.fontSize < 6 || operation.fontSize > 96)) ||
-      (operation.color !== undefined && (typeof operation.color !== 'string' || !/^[0-9A-Fa-f]{6}$/.test(operation.color))) ||
+      (operation.fontFace !== undefined &&
+        (typeof operation.fontFace !== 'string' ||
+          !operation.fontFace ||
+          operation.fontFace.length > 128)) ||
+      (operation.fontSize !== undefined &&
+        (typeof operation.fontSize !== 'number' ||
+          !Number.isFinite(operation.fontSize) ||
+          operation.fontSize < 6 ||
+          operation.fontSize > 96)) ||
+      (operation.color !== undefined &&
+        (typeof operation.color !== 'string' || !/^[0-9A-Fa-f]{6}$/.test(operation.color))) ||
       (operation.bold !== undefined && typeof operation.bold !== 'boolean') ||
-      (operation.align !== undefined && !['left', 'center', 'right'].includes(String(operation.align))) ||
-      (operation.margin !== undefined && (typeof operation.margin !== 'number' || !Number.isFinite(operation.margin) || operation.margin < 0 || operation.margin > 72)) ||
-      (operation.verticalAlignment !== undefined && !['top', 'middle', 'bottom'].includes(String(operation.verticalAlignment)))
+      (operation.align !== undefined &&
+        !['left', 'center', 'right'].includes(String(operation.align))) ||
+      (operation.margin !== undefined &&
+        (typeof operation.margin !== 'number' ||
+          !Number.isFinite(operation.margin) ||
+          operation.margin < 0 ||
+          operation.margin > 72)) ||
+      (operation.verticalAlignment !== undefined &&
+        !['top', 'middle', 'bottom'].includes(String(operation.verticalAlignment)))
     )
       throw new Error('invalid_tool_input')
     finiteGeometry()
@@ -1101,43 +1215,131 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
       ...(operation.fontSize !== undefined ? { fontSize: operation.fontSize as number } : {}),
       ...(operation.color !== undefined ? { color: operation.color as string } : {}),
       ...(operation.bold !== undefined ? { bold: operation.bold as boolean } : {}),
-      ...(operation.align !== undefined ? { align: operation.align as 'left' | 'center' | 'right' } : {}),
+      ...(operation.align !== undefined
+        ? { align: operation.align as 'left' | 'center' | 'right' }
+        : {}),
       ...(operation.margin !== undefined ? { margin: operation.margin as number } : {}),
-      ...(operation.verticalAlignment !== undefined ? { verticalAlignment: operation.verticalAlignment as 'top' | 'middle' | 'bottom' } : {}),
+      ...(operation.verticalAlignment !== undefined
+        ? { verticalAlignment: operation.verticalAlignment as 'top' | 'middle' | 'bottom' }
+        : {}),
     }
   }
   if (operation.op === 'add_geometric_shape') {
-    if (Object.keys(operation).some((key) => !['op', 'slide_index', 'name', 'shape', 'fill', 'lineColor', 'left', 'top', 'width', 'height'].includes(key)) ||
-      typeof operation.name !== 'string' || !operation.name || operation.name.length > 256 ||
+    if (
+      Object.keys(operation).some(
+        (key) =>
+          ![
+            'op',
+            'slide_index',
+            'name',
+            'shape',
+            'fill',
+            'lineColor',
+            'left',
+            'top',
+            'width',
+            'height',
+          ].includes(key),
+      ) ||
+      typeof operation.name !== 'string' ||
+      !operation.name ||
+      operation.name.length > 256 ||
       !['rect', 'ellipse', 'roundRect'].includes(String(operation.shape)) ||
-      typeof operation.fill !== 'string' || !/^[0-9A-Fa-f]{6}$/.test(operation.fill) ||
-      typeof operation.lineColor !== 'string' || !/^[0-9A-Fa-f]{6}$/.test(operation.lineColor))
+      typeof operation.fill !== 'string' ||
+      !/^[0-9A-Fa-f]{6}$/.test(operation.fill) ||
+      typeof operation.lineColor !== 'string' ||
+      !/^[0-9A-Fa-f]{6}$/.test(operation.lineColor)
+    )
       throw new Error('invalid_tool_input')
     finiteGeometry()
-    return { op: 'add_geometric_shape', slide_index: operation.slide_index as number,
-      name: operation.name, shape: operation.shape as 'rect' | 'ellipse' | 'roundRect',
-      fill: operation.fill, lineColor: operation.lineColor,
-      left: operation.left as number, top: operation.top as number,
-      width: operation.width as number, height: operation.height as number }
+    return {
+      op: 'add_geometric_shape',
+      slide_index: operation.slide_index as number,
+      name: operation.name,
+      shape: operation.shape as 'rect' | 'ellipse' | 'roundRect',
+      fill: operation.fill,
+      lineColor: operation.lineColor,
+      left: operation.left as number,
+      top: operation.top as number,
+      width: operation.width as number,
+      height: operation.height as number,
+    }
   }
   if (operation.op === 'add_native_table') {
     const rows = operation.rows
-    if (Object.keys(operation).some((key) => !['op', 'slide_index', 'name', 'rows', 'fontFace', 'fontSize', 'color', 'left', 'top', 'width', 'height'].includes(key)) ||
-      typeof operation.name !== 'string' || !operation.name || operation.name.length > 256 ||
-      !Array.isArray(rows) || rows.length < 1 || rows.length > 20 ||
-      !Array.isArray(rows[0]) || rows[0].length < 1 || rows[0].length > 12 || rows.length * rows[0].length > 128 ||
-      rows.some((row) => !Array.isArray(row) || row.length !== rows[0].length || row.some((cell) => typeof cell !== 'string' || cell.length > 256)) ||
+    if (
+      Object.keys(operation).some(
+        (key) =>
+          ![
+            'op',
+            'slide_index',
+            'name',
+            'rows',
+            'fontFace',
+            'fontSize',
+            'color',
+            'borderColor',
+            'cellMargin',
+            'left',
+            'top',
+            'width',
+            'height',
+          ].includes(key),
+      ) ||
+      typeof operation.name !== 'string' ||
+      !operation.name ||
+      operation.name.length > 256 ||
+      !Array.isArray(rows) ||
+      rows.length < 1 ||
+      rows.length > 20 ||
+      !Array.isArray(rows[0]) ||
+      rows[0].length < 1 ||
+      rows[0].length > 12 ||
+      rows.length * rows[0].length > 128 ||
+      rows.some(
+        (row) =>
+          !Array.isArray(row) ||
+          row.length !== rows[0].length ||
+          row.some((cell) => typeof cell !== 'string' || cell.length > 256),
+      ) ||
       JSON.stringify(rows).length > 12_000 ||
-      typeof operation.fontFace !== 'string' || !operation.fontFace || operation.fontFace.length > 128 ||
-      typeof operation.fontSize !== 'number' || !Number.isFinite(operation.fontSize) || operation.fontSize < 6 || operation.fontSize > 48 ||
-      typeof operation.color !== 'string' || !/^[0-9A-Fa-f]{6}$/.test(operation.color))
+      typeof operation.fontFace !== 'string' ||
+      !operation.fontFace ||
+      operation.fontFace.length > 128 ||
+      typeof operation.fontSize !== 'number' ||
+      !Number.isFinite(operation.fontSize) ||
+      operation.fontSize < 6 ||
+      operation.fontSize > 48 ||
+      typeof operation.color !== 'string' ||
+      !/^[0-9A-Fa-f]{6}$/.test(operation.color) ||
+      (operation.borderColor !== undefined &&
+        (typeof operation.borderColor !== 'string' ||
+          !/^[0-9A-Fa-f]{6}$/.test(operation.borderColor))) ||
+      (operation.cellMargin !== undefined &&
+        (typeof operation.cellMargin !== 'number' ||
+          !Number.isFinite(operation.cellMargin) ||
+          operation.cellMargin < 0 ||
+          operation.cellMargin > 36))
+    )
       throw new Error('invalid_tool_input')
     finiteGeometry()
-    return { op: 'add_native_table', slide_index: operation.slide_index as number,
-      name: operation.name, rows: rows as string[][], fontFace: operation.fontFace,
-      fontSize: operation.fontSize, color: operation.color,
-      left: operation.left as number, top: operation.top as number,
-      width: operation.width as number, height: operation.height as number }
+    return {
+      op: 'add_native_table',
+      slide_index: operation.slide_index as number,
+      name: operation.name,
+      rows: rows as string[][],
+      fontFace: operation.fontFace,
+      fontSize: operation.fontSize,
+      color: operation.color,
+      ...(operation.borderColor !== undefined
+        ? { borderColor: operation.borderColor as string }
+        : {}),
+      ...(operation.cellMargin !== undefined ? { cellMargin: operation.cellMargin as number } : {}),
+      left: operation.left as number,
+      top: operation.top as number,
+      width: operation.width as number,
+      height: operation.height as number,
+    }
   }
   if (operation.op === 'delete_shape') {
     if (
@@ -1183,7 +1385,10 @@ export function createPowerPointSkill(options: {
     documentId(): Promise<string>
     request(body: unknown, signal?: AbortSignal): Promise<Response>
     readExistingChartChange(id: string): PresentationExistingChartChange | undefined
-    writeExistingChartChange(record: PresentationExistingChartChange, expected: PresentationExistingChartChange | undefined): Promise<void>
+    writeExistingChartChange(
+      record: PresentationExistingChartChange,
+      expected: PresentationExistingChartChange | undefined,
+    ): Promise<void>
   }
 }): AgentSkill {
   const masterXmlEditingSupported = options.platform?.toLowerCase() !== 'mac'
@@ -1259,192 +1464,463 @@ export function createPowerPointSkill(options: {
     }
   }
 
-  async function proposeChartValues(slideIndex: number, shapeId: string, values: string[][], explanation: string | undefined, signal?: AbortSignal): Promise<ToolExecution> {
+  async function proposeChartValues(
+    slideIndex: number,
+    shapeId: string,
+    values: string[][],
+    explanation: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<ToolExecution> {
     const durable = options.chartSavepoint
     if (!durable) throw new Error('office_api_unsupported')
     const documentId = await durable.documentId()
     const deck = await options.adapter.verifySlides(signal)
     const before = await options.adapter.exportSlidePackage(slideIndex, signal)
     const beforeSlideIds = deck.slides.map((slide) => slide.slideId)
-    if (!documentId || beforeSlideIds[slideIndex] !== before.slideId) throw new Error('office_state_uncertain')
+    if (!documentId || beforeSlideIds[slideIndex] !== before.slideId)
+      throw new Error('office_state_uncertain')
     const beforeDigest = await presentationPackageDigest(before.base64, signal)
     const prepared = await updatePowerPointChartDataPackage(before.base64, shapeId, values, signal)
     const afterDigest = await presentationPackageDigest(prepared.base64, signal)
     const edit = await captureChartValuePackageEdit(before.base64, prepared.base64, signal)
     let applied: typeof edit | undefined
-    const changeId = crypto.randomUUID(), backupId = crypto.randomUUID()
+    const changeId = crypto.randomUUID(),
+      backupId = crypto.randomUUID()
     let record: PresentationExistingChartChange | undefined
     const store = async (next: PresentationExistingChartChange) => {
-      if (!validatePresentationExistingChartChange(next)) throw new Error('presentation_existing_chart_state_invalid')
-      if (await durable.documentId() !== documentId) throw new Error('presentation_document_changed')
+      if (!validatePresentationExistingChartChange(next))
+        throw new Error('presentation_existing_chart_state_invalid')
+      if ((await durable.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
       await durable.writeExistingChartChange(next, record)
-      if (JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(next)) throw new Error('office_state_uncertain')
+      if (JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(next))
+        throw new Error('office_state_uncertain')
       record = structuredClone(next)
     }
     const unchanged = async (s?: AbortSignal) => {
-      if (await durable.documentId() !== documentId) return false
+      if ((await durable.documentId()) !== documentId) return false
       const host = await options.adapter.verifySlides(s)
       const current = await options.adapter.exportSlidePackage(slideIndex, s)
-      return JSON.stringify(host.slides.map((slide) => slide.slideId)) === JSON.stringify(beforeSlideIds) &&
-        current.slideId === before.slideId && await presentationPackageDigest(current.base64, s) === beforeDigest &&
-        await verifyPowerPointPackageInputs(current.base64, edit.beforeHashes, s)
+      return (
+        JSON.stringify(host.slides.map((slide) => slide.slideId)) ===
+          JSON.stringify(beforeSlideIds) &&
+        current.slideId === before.slideId &&
+        (await presentationPackageDigest(current.base64, s)) === beforeDigest &&
+        (await verifyPowerPointPackageInputs(current.base64, edit.beforeHashes, s))
+      )
     }
     const proposal = options.proposals.propose({
       operation: 'update_slide_chart_values',
       toolName: 'update_slide_chart_values',
       title: explanation || 'Update native chart values',
-      preview: { changeId, slideIndex, shapeId, values, changedPaths: edit.changedPaths, beforeHashes: edit.beforeHashes, afterHashes: edit.afterHashes },
-      impact: { host: 'powerpoint', targets: [`slide:${deck.slides[slideIndex]?.slideId ?? before.slideId}`, `shape:${shapeId}`], count: 1 },
+      preview: {
+        changeId,
+        slideIndex,
+        shapeId,
+        values,
+        changedPaths: edit.changedPaths,
+        beforeHashes: edit.beforeHashes,
+        afterHashes: edit.afterHashes,
+      },
+      impact: {
+        host: 'powerpoint',
+        targets: [
+          `slide:${deck.slides[slideIndex]?.slideId ?? before.slideId}`,
+          `shape:${shapeId}`,
+        ],
+        count: 1,
+      },
       fingerprint: before.fingerprint,
       before: { slideId: before.slideId, hashes: edit.beforeHashes },
       after: { hashes: edit.afterHashes },
       code: JSON.stringify({ version: 1, operation: 'update_chart_values', shapeId, values }),
-      validate: async (confirmSignal) => !durable.readExistingChartChange(changeId) && await unchanged(confirmSignal),
+      validate: async (confirmSignal) =>
+        !durable.readExistingChartChange(changeId) && (await unchanged(confirmSignal)),
       execute: async (confirmSignal) => {
-        if (!(await unchanged(confirmSignal)) || durable.readExistingChartChange(changeId)) throw new Error('proposal_stale')
+        if (!(await unchanged(confirmSignal)) || durable.readExistingChartChange(changeId))
+          throw new Error('proposal_stale')
         const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
-        const updated = await updatePowerPointChartDataPackage(current.base64, shapeId, values, confirmSignal)
+        const updated = await updatePowerPointChartDataPackage(
+          current.base64,
+          shapeId,
+          values,
+          confirmSignal,
+        )
         applied = await captureChartValuePackageEdit(current.base64, updated.base64, confirmSignal)
-        if (await presentationPackageDigest(applied.base64, confirmSignal) !== afterDigest) throw new Error('proposal_stale')
-        const backup = await saveChartPackageBackup({ request: durable.request, documentId, hostSlideId: before.slideId, slideIds: beforeSlideIds, base64: current.base64, backupId }, confirmSignal)
+        if ((await presentationPackageDigest(applied.base64, confirmSignal)) !== afterDigest)
+          throw new Error('proposal_stale')
+        const backup = await saveChartPackageBackup(
+          {
+            request: durable.request,
+            documentId,
+            hostSlideId: before.slideId,
+            slideIds: beforeSlideIds,
+            base64: current.base64,
+            backupId,
+          },
+          confirmSignal,
+        )
         if (!(await unchanged(confirmSignal))) throw new Error('proposal_stale')
         try {
-          await store({ version: 1, changeId, documentId, oldSlideId: before.slideId, shapeId, slideIndex, beforeSlideIds, beforePackageDigest: beforeDigest, afterPackageDigest: afterDigest, backup, state: 'pending' })
+          await store({
+            version: 1,
+            changeId,
+            documentId,
+            oldSlideId: before.slideId,
+            shapeId,
+            slideIndex,
+            beforeSlideIds,
+            beforePackageDigest: beforeDigest,
+            afterPackageDigest: afterDigest,
+            backup,
+            state: 'pending',
+          })
         } catch (error) {
           // Only a confirmed absence of the first journal entry proves this backup is orphaned.
           try {
-            if (await durable.documentId() === documentId && !durable.readExistingChartChange(changeId)) {
-              await durable.request({ operation: 'existing_page_backup_release', documentId,
-                backupId: backup.backupId, hostSlideId: before.slideId, slideIds: beforeSlideIds,
-                sha256: backup.sha256, sizeBytes: backup.sizeBytes }, confirmSignal)
+            if (
+              (await durable.documentId()) === documentId &&
+              !durable.readExistingChartChange(changeId)
+            ) {
+              await durable.request(
+                {
+                  operation: 'existing_page_backup_release',
+                  documentId,
+                  backupId: backup.backupId,
+                  hostSlideId: before.slideId,
+                  slideIds: beforeSlideIds,
+                  sha256: backup.sha256,
+                  sizeBytes: backup.sizeBytes,
+                },
+                confirmSignal,
+              )
             }
-          } catch { /* Keep the original failure; an uncertain backup must remain recoverable. */ }
+          } catch {
+            /* Keep the original failure; an uncertain backup must remain recoverable. */
+          }
           throw error
         }
         await store({ ...record!, state: 'write_pending' })
         if (!(await unchanged(confirmSignal))) throw new Error('proposal_stale')
-        const inserted = await options.adapter.replaceSlidePackage(slideIndex, applied.base64, false, applied, confirmSignal, { slideId: before.slideId, packageDigest: beforeDigest })
+        const inserted = await options.adapter.replaceSlidePackage(
+          slideIndex,
+          applied.base64,
+          false,
+          applied,
+          confirmSignal,
+          { slideId: before.slideId, packageDigest: beforeDigest },
+        )
         await store({ ...record!, state: 'applied', newSlideId: inserted.slideId })
       },
       verify: async (confirmSignal) => {
         if (!applied || record?.state !== 'applied') throw new Error('office_verify_failed')
         const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
-        if (current.slideId !== record.newSlideId || !(await verifyImportedPowerPointPackage(current.base64, applied, confirmSignal)) ||
-          await presentationPackageDigest(current.base64, confirmSignal) !== afterDigest) throw new Error('office_verify_failed')
+        if (
+          current.slideId !== record.newSlideId ||
+          !(await verifyImportedPowerPointPackage(current.base64, applied, confirmSignal)) ||
+          (await presentationPackageDigest(current.base64, confirmSignal)) !== afterDigest
+        )
+          throw new Error('office_verify_failed')
       },
     })
-    return { output: boundedJson(proposal), mutated: false, summary: 'Proposed native chart values update' }
+    return {
+      output: boundedJson(proposal),
+      mutated: false,
+      summary: 'Proposed native chart values update',
+    }
   }
 
-  async function chartChangeTool(name: string, changeId: string, signal?: AbortSignal): Promise<ToolExecution> {
+  async function chartChangeTool(
+    name: string,
+    changeId: string,
+    signal?: AbortSignal,
+  ): Promise<ToolExecution> {
     const durable = options.chartSavepoint
     if (!durable) throw new Error('office_api_unsupported')
     const saved = durable.readExistingChartChange(changeId)
-    if (!saved || !validatePresentationExistingChartChange(saved) || await durable.documentId() !== saved.documentId)
+    if (
+      !saved ||
+      !validatePresentationExistingChartChange(saved) ||
+      (await durable.documentId()) !== saved.documentId
+    )
       throw new Error('presentation_existing_chart_missing')
     let record = structuredClone(saved)
     const observe = async (s?: AbortSignal) => {
-      if (await durable.documentId() !== record.documentId ||
-        JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(record))
+      if (
+        (await durable.documentId()) !== record.documentId ||
+        JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(record)
+      )
         throw new Error('presentation_existing_chart_stale')
       const deck = await options.adapter.verifySlides(s)
       const ids = deck.slides.map((slide) => slide.slideId)
-      if (ids.length !== record.beforeSlideIds.length || ids.some((id, index) => index !== record.slideIndex && id !== record.beforeSlideIds[index]))
+      if (
+        ids.length !== record.beforeSlideIds.length ||
+        ids.some((id, index) => index !== record.slideIndex && id !== record.beforeSlideIds[index])
+      )
         return { status: 'conflict' as const, slideId: undefined, digest: undefined }
       const current = await options.adapter.exportSlidePackage(record.slideIndex, s)
       const digest = await presentationPackageDigest(current.base64, s)
-      const status = digest === record.beforePackageDigest
-        ? 'before' : digest === record.afterPackageDigest &&
-          (record.newSlideId === undefined || current.slideId === record.newSlideId)
-          ? 'after' : 'conflict'
+      const status =
+        digest === record.beforePackageDigest
+          ? 'before'
+          : digest === record.afterPackageDigest &&
+              (record.newSlideId === undefined || current.slideId === record.newSlideId)
+            ? 'after'
+            : 'conflict'
       return { status, slideId: current.slideId, digest }
     }
     const store = async (next: PresentationExistingChartChange) => {
-      if (await durable.documentId() !== record.documentId) throw new Error('presentation_document_changed')
+      if ((await durable.documentId()) !== record.documentId)
+        throw new Error('presentation_document_changed')
       await durable.writeExistingChartChange(next, record)
-      if (JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(next)) throw new Error('office_state_uncertain')
+      if (JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(next))
+        throw new Error('office_state_uncertain')
       record = structuredClone(next)
     }
     if (name === 'release_slide_chart_values_change') {
       if (!['cancelled', 'undone'].includes(record.state) || record.backupReleasedAt)
         throw new Error('presentation_existing_chart_state_invalid')
       const initial = JSON.stringify(record)
-      const currentRecord = async () => await durable.documentId() === record.documentId &&
+      const currentRecord = async () =>
+        (await durable.documentId()) === record.documentId &&
         JSON.stringify(durable.readExistingChartChange(changeId)) === initial
       const proposal = options.proposals.propose({
-        operation: name, toolName: name, title: 'Release completed chart backup',
-        preview: { changeId, state: record.state, backupId: record.backup.backupId, sizeBytes: record.backup.sizeBytes },
+        operation: name,
+        toolName: name,
+        title: 'Release completed chart backup',
+        preview: {
+          changeId,
+          state: record.state,
+          backupId: record.backup.backupId,
+          sizeBytes: record.backup.sizeBytes,
+        },
         impact: { host: 'powerpoint', targets: [`backup:${record.backup.backupId}`], count: 1 },
         fingerprint: `${record.changeId}:${record.state}:${record.backup.sha256}`,
-        before: { backupId: record.backup.backupId }, after: { released: true }, code: JSON.stringify({ changeId, operation: 'release_chart_backup' }),
+        before: { backupId: record.backup.backupId },
+        after: { released: true },
+        code: JSON.stringify({ changeId, operation: 'release_chart_backup' }),
         validate: async () => currentRecord(),
         execute: async (s) => {
           if (!(await currentRecord())) throw new Error('proposal_stale')
           const backup = record.backup
-          const response = await durable.request({ operation: 'existing_page_backup_release', documentId: record.documentId,
-            backupId: backup.backupId, hostSlideId: record.oldSlideId, slideIds: record.beforeSlideIds,
-            sha256: backup.sha256, sizeBytes: backup.sizeBytes }, s)
-          const receipt = await response.json() as Record<string, unknown>
-          if (!response.ok || receipt.status !== 'released' || receipt.documentId !== record.documentId ||
-            receipt.backupId !== backup.backupId || receipt.hostSlideId !== record.oldSlideId ||
+          const response = await durable.request(
+            {
+              operation: 'existing_page_backup_release',
+              documentId: record.documentId,
+              backupId: backup.backupId,
+              hostSlideId: record.oldSlideId,
+              slideIds: record.beforeSlideIds,
+              sha256: backup.sha256,
+              sizeBytes: backup.sizeBytes,
+            },
+            s,
+          )
+          const receipt = (await response.json()) as Record<string, unknown>
+          if (
+            !response.ok ||
+            receipt.status !== 'released' ||
+            receipt.documentId !== record.documentId ||
+            receipt.backupId !== backup.backupId ||
+            receipt.hostSlideId !== record.oldSlideId ||
             JSON.stringify(receipt.slideIds) !== JSON.stringify(record.beforeSlideIds) ||
-            receipt.sha256 !== backup.sha256 || receipt.sizeBytes !== backup.sizeBytes)
+            receipt.sha256 !== backup.sha256 ||
+            receipt.sizeBytes !== backup.sizeBytes
+          )
             throw new Error('presentation_chart_backup_release_failed')
           await store({ ...record, backupReleasedAt: new Date().toISOString() })
         },
-        verify: async () => { if (!record.backupReleasedAt || !(await durable.documentId() === record.documentId)) throw new Error('office_verify_failed') },
+        verify: async () => {
+          if (!record.backupReleasedAt || !((await durable.documentId()) === record.documentId))
+            throw new Error('office_verify_failed')
+        },
       })
-      return { output: boundedJson(proposal), mutated: false, summary: 'Proposed completed chart backup release' }
+      return {
+        output: boundedJson(proposal),
+        mutated: false,
+        summary: 'Proposed completed chart backup release',
+      }
     }
     const observed = await observe(signal)
     if (name === 'inspect_slide_chart_values_change') {
-      const verified = record.state === 'applied' ? observed.status === 'after' :
-        record.state === 'undone' || record.state === 'cancelled' ? observed.status === 'before' : false
-      return { output: boundedJson({ changeId, state: record.state, hostStatus: observed.status, slideId: observed.slideId, currentHostVerified: verified, manualReview: !verified, qaPassed: false }), mutated: false, summary: 'Inspected chart values change' }
+      const verified =
+        record.state === 'applied'
+          ? observed.status === 'after'
+          : record.state === 'undone' || record.state === 'cancelled'
+            ? observed.status === 'before'
+            : false
+      return {
+        output: boundedJson({
+          changeId,
+          state: record.state,
+          hostStatus: observed.status,
+          slideId: observed.slideId,
+          currentHostVerified: verified,
+          manualReview: !verified,
+          qaPassed: false,
+        }),
+        mutated: false,
+        summary: 'Inspected chart values change',
+      }
     }
     if (name === 'resume_slide_chart_values_change') {
-      const outcome = observed.status === 'before' && ['pending', 'write_pending'].includes(record.state) ? 'cancelled' :
-        observed.status === 'after' && record.state === 'write_pending' ? 'applied' :
-          observed.status === 'before' && record.state === 'undo_pending' ? 'undone' : undefined
-      if (!outcome || !observed.slideId) throw new Error('presentation_existing_chart_manual_review')
+      const outcome =
+        observed.status === 'before' && ['pending', 'write_pending'].includes(record.state)
+          ? 'cancelled'
+          : observed.status === 'after' && record.state === 'write_pending'
+            ? 'applied'
+            : observed.status === 'before' && record.state === 'undo_pending'
+              ? 'undone'
+              : undefined
+      if (!outcome || !observed.slideId)
+        throw new Error('presentation_existing_chart_manual_review')
       const proposal = options.proposals.propose({
-        operation: name, toolName: name, title: 'Finalize interrupted chart change',
-        preview: { changeId, previousState: record.state, observed: observed.status, nextState: outcome },
+        operation: name,
+        toolName: name,
+        title: 'Finalize interrupted chart change',
+        preview: {
+          changeId,
+          previousState: record.state,
+          observed: observed.status,
+          nextState: outcome,
+        },
         impact: { host: 'powerpoint', targets: [`slide:${observed.slideId}`], count: 1 },
         fingerprint: `${observed.slideId}:${observed.digest}`,
-        before: { state: record.state }, after: { state: outcome }, code: JSON.stringify({ changeId, outcome }),
-        validate: async (s) => { const next = await observe(s); return next.status === observed.status && next.slideId === observed.slideId && next.digest === observed.digest },
+        before: { state: record.state },
+        after: { state: outcome },
+        code: JSON.stringify({ changeId, outcome }),
+        validate: async (s) => {
+          const next = await observe(s)
+          return (
+            next.status === observed.status &&
+            next.slideId === observed.slideId &&
+            next.digest === observed.digest
+          )
+        },
         execute: async (s) => {
           const next = await observe(s)
-          if (next.status !== observed.status || next.slideId !== observed.slideId || next.digest !== observed.digest) throw new Error('proposal_stale')
-          if (outcome !== 'cancelled') await readChartPackageBackup({ request: durable.request, documentId: record.documentId, hostSlideId: record.oldSlideId, slideIds: record.beforeSlideIds, backup: record.backup, expectedPackageDigest: record.beforePackageDigest }, s)
-          await store({ ...record, state: outcome, ...(outcome === 'applied' ? { newSlideId: observed.slideId } : {}), ...(outcome === 'undone' ? { restoredSlideId: observed.slideId } : {}) })
+          if (
+            next.status !== observed.status ||
+            next.slideId !== observed.slideId ||
+            next.digest !== observed.digest
+          )
+            throw new Error('proposal_stale')
+          if (outcome !== 'cancelled')
+            await readChartPackageBackup(
+              {
+                request: durable.request,
+                documentId: record.documentId,
+                hostSlideId: record.oldSlideId,
+                slideIds: record.beforeSlideIds,
+                backup: record.backup,
+                expectedPackageDigest: record.beforePackageDigest,
+              },
+              s,
+            )
+          await store({
+            ...record,
+            state: outcome,
+            ...(outcome === 'applied' ? { newSlideId: observed.slideId } : {}),
+            ...(outcome === 'undone' ? { restoredSlideId: observed.slideId } : {}),
+          })
         },
-        verify: async (s) => { if ((await observe(s)).status !== observed.status || record.state !== outcome) throw new Error('office_verify_failed') },
+        verify: async (s) => {
+          if ((await observe(s)).status !== observed.status || record.state !== outcome)
+            throw new Error('office_verify_failed')
+        },
       })
-      return { output: boundedJson(proposal), mutated: false, summary: 'Proposed chart change recovery' }
+      return {
+        output: boundedJson(proposal),
+        mutated: false,
+        summary: 'Proposed chart change recovery',
+      }
     }
-    if (record.state !== 'applied' || observed.status !== 'after' || observed.slideId !== record.newSlideId) throw new Error('presentation_existing_chart_manual_review')
-    const original = await readChartPackageBackup({ request: durable.request, documentId: record.documentId, hostSlideId: record.oldSlideId, slideIds: record.beforeSlideIds, backup: record.backup, expectedPackageDigest: record.beforePackageDigest }, signal)
+    if (
+      record.state !== 'applied' ||
+      observed.status !== 'after' ||
+      observed.slideId !== record.newSlideId
+    )
+      throw new Error('presentation_existing_chart_manual_review')
+    const original = await readChartPackageBackup(
+      {
+        request: durable.request,
+        documentId: record.documentId,
+        hostSlideId: record.oldSlideId,
+        slideIds: record.beforeSlideIds,
+        backup: record.backup,
+        expectedPackageDigest: record.beforePackageDigest,
+      },
+      signal,
+    )
     const proposal = options.proposals.propose({
-      operation: name, toolName: name, title: 'Undo native chart values update',
-      preview: { changeId, slideId: observed.slideId, shapeId: record.shapeId, from: record.afterPackageDigest, to: record.beforePackageDigest },
+      operation: name,
+      toolName: name,
+      title: 'Undo native chart values update',
+      preview: {
+        changeId,
+        slideId: observed.slideId,
+        shapeId: record.shapeId,
+        from: record.afterPackageDigest,
+        to: record.beforePackageDigest,
+      },
       impact: { host: 'powerpoint', targets: [`slide:${observed.slideId}`], count: 1 },
       fingerprint: `${observed.slideId}:${observed.digest}`,
-      before: { digest: record.afterPackageDigest }, after: { digest: record.beforePackageDigest }, code: JSON.stringify({ changeId, operation: 'undo_chart_values' }),
-      validate: async (s) => { const next = await observe(s); return next.status === 'after' && next.slideId === observed.slideId && next.digest === observed.digest },
+      before: { digest: record.afterPackageDigest },
+      after: { digest: record.beforePackageDigest },
+      code: JSON.stringify({ changeId, operation: 'undo_chart_values' }),
+      validate: async (s) => {
+        const next = await observe(s)
+        return (
+          next.status === 'after' &&
+          next.slideId === observed.slideId &&
+          next.digest === observed.digest
+        )
+      },
       execute: async (s) => {
         const next = await observe(s)
-        if (next.status !== 'after' || next.slideId !== observed.slideId || next.digest !== observed.digest) throw new Error('proposal_stale')
-        const backup = await readChartPackageBackup({ request: durable.request, documentId: record.documentId, hostSlideId: record.oldSlideId, slideIds: record.beforeSlideIds, backup: record.backup, expectedPackageDigest: record.beforePackageDigest }, s)
-        if (await presentationPackageDigest(backup, s) !== await presentationPackageDigest(original, s)) throw new Error('presentation_chart_backup_invalid')
+        if (
+          next.status !== 'after' ||
+          next.slideId !== observed.slideId ||
+          next.digest !== observed.digest
+        )
+          throw new Error('proposal_stale')
+        const backup = await readChartPackageBackup(
+          {
+            request: durable.request,
+            documentId: record.documentId,
+            hostSlideId: record.oldSlideId,
+            slideIds: record.beforeSlideIds,
+            backup: record.backup,
+            expectedPackageDigest: record.beforePackageDigest,
+          },
+          s,
+        )
+        if (
+          (await presentationPackageDigest(backup, s)) !==
+          (await presentationPackageDigest(original, s))
+        )
+          throw new Error('presentation_chart_backup_invalid')
         const current = await options.adapter.exportSlidePackage(record.slideIndex, s)
         const reverse = await captureChartValuePackageEdit(current.base64, backup, s)
         await store({ ...record, state: 'undo_pending' })
-        const restored = await options.adapter.replaceSlidePackage(record.slideIndex, backup, false, reverse, s, { slideId: record.newSlideId!, packageDigest: record.afterPackageDigest })
+        const restored = await options.adapter.replaceSlidePackage(
+          record.slideIndex,
+          backup,
+          false,
+          reverse,
+          s,
+          { slideId: record.newSlideId!, packageDigest: record.afterPackageDigest },
+        )
         await store({ ...record, state: 'undone', restoredSlideId: restored.slideId })
       },
-      verify: async (s) => { const next = await observe(s); if (record.state !== 'undone' || next.status !== 'before' || next.slideId !== record.restoredSlideId) throw new Error('office_verify_failed') },
+      verify: async (s) => {
+        const next = await observe(s)
+        if (
+          record.state !== 'undone' ||
+          next.status !== 'before' ||
+          next.slideId !== record.restoredSlideId
+        )
+          throw new Error('office_verify_failed')
+      },
     })
     return { output: boundedJson(proposal), mutated: false, summary: 'Proposed chart values undo' }
   }
@@ -1456,7 +1932,14 @@ export function createPowerPointSkill(options: {
       ' Prefer inspect_slide_masters and native edit_slide_master for backgrounds, theme colors, and layout inheritance. PowerPoint for Mac must never use edit_slide_master_xml.',
     tools: tools.filter(
       (tool) =>
-        (Boolean(options.chartSavepoint) || !['update_slide_chart_values', 'inspect_slide_chart_values_change', 'resume_slide_chart_values_change', 'undo_slide_chart_values_change', 'release_slide_chart_values_change'].includes(tool.name)) &&
+        (Boolean(options.chartSavepoint) ||
+          ![
+            'update_slide_chart_values',
+            'inspect_slide_chart_values_change',
+            'resume_slide_chart_values_change',
+            'undo_slide_chart_values_change',
+            'release_slide_chart_values_change',
+          ].includes(tool.name)) &&
         (masterXmlEditingSupported || tool.name !== 'edit_slide_master_xml') &&
         (nativeMasterEditingSupported ||
           !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
@@ -1640,19 +2123,51 @@ export function createPowerPointSkill(options: {
         if (call.name === 'execute_office_js' || call.name === 'add_slide_ir_objects') {
           let input: { code: string; explanation?: string }
           if (call.name === 'add_slide_ir_objects') {
-            const value = exactRecord(call.input, ['slide_index', 'slide', 'style', 'claims', 'explanation'])
-            if (!Number.isSafeInteger(value.slide_index) || (value.slide_index as number) < 0 || (value.slide_index as number) > 31 ||
-              (value.explanation !== undefined && (typeof value.explanation !== 'string' || value.explanation.length > 100)))
+            const value = exactRecord(call.input, [
+              'slide_index',
+              'slide',
+              'style',
+              'claims',
+              'explanation',
+            ])
+            if (
+              !Number.isSafeInteger(value.slide_index) ||
+              (value.slide_index as number) < 0 ||
+              (value.slide_index as number) > 31 ||
+              (value.explanation !== undefined &&
+                (typeof value.explanation !== 'string' || value.explanation.length > 100))
+            )
               throw new Error('invalid_tool_input')
             let serialized: string
-            try { serialized = JSON.stringify([value.slide, value.style, value.claims]) } catch { throw new Error('invalid_tool_input') }
-            if (!serialized || new TextEncoder().encode(serialized).byteLength > MAX_CODE) throw new Error('invalid_tool_input')
-            const deck = parsePresentationDeck({ version: 1, id: 'office-ir', title: 'Office IR', style: value.style,
-              assets: [], claims: value.claims, slides: [value.slide] })
-            const operations = officeOperationsForSlideIR(deck.slides[0]!, deck.style, value.slide_index as number, deck.claims)
+            try {
+              serialized = JSON.stringify([value.slide, value.style, value.claims])
+            } catch {
+              throw new Error('invalid_tool_input')
+            }
+            if (!serialized || new TextEncoder().encode(serialized).byteLength > MAX_CODE)
+              throw new Error('invalid_tool_input')
+            const deck = parsePresentationDeck({
+              version: 1,
+              id: 'office-ir',
+              title: 'Office IR',
+              style: value.style,
+              assets: [],
+              claims: value.claims,
+              slides: [value.slide],
+            })
+            const operations = officeOperationsForSlideIR(
+              deck.slides[0]!,
+              deck.style,
+              value.slide_index as number,
+              deck.claims,
+            )
             const code = JSON.stringify({ version: 1, operations })
-            if (new TextEncoder().encode(code).byteLength > MAX_CODE) throw new Error('invalid_tool_input')
-            input = { code, ...(typeof value.explanation === 'string' ? { explanation: value.explanation } : {}) }
+            if (new TextEncoder().encode(code).byteLength > MAX_CODE)
+              throw new Error('invalid_tool_input')
+            input = {
+              code,
+              ...(typeof value.explanation === 'string' ? { explanation: value.explanation } : {}),
+            }
           } else input = declarativeInput(call.input, { slide: false, explanationMax: 100 })
           let program
           try {
@@ -1682,13 +2197,23 @@ export function createPowerPointSkill(options: {
             )
           )
             throw new Error('invalid_tool_input')
-          const plannedNames = call.name === 'add_slide_ir_objects'
-            ? new Set(program.operations.flatMap((operation) => 'name' in operation ? [operation.name] : []))
-            : undefined
+          const plannedNames =
+            call.name === 'add_slide_ir_objects'
+              ? new Set(
+                  program.operations.flatMap((operation) =>
+                    'name' in operation ? [operation.name] : [],
+                  ),
+                )
+              : undefined
           if (plannedNames) {
-            const current = await options.adapter.listSlideShapes(program.operations[0]!.slide_index, signal)
-            if (current.shapes.length + plannedNames.size > 1_000 ||
-              current.shapes.some((shape) => plannedNames.has(shape.name)))
+            const current = await options.adapter.listSlideShapes(
+              program.operations[0]!.slide_index,
+              signal,
+            )
+            if (
+              current.shapes.length + plannedNames.size > 1_000 ||
+              current.shapes.some((shape) => plannedNames.has(shape.name))
+            )
               throw new Error('office_concurrent_change')
           }
           await options.adapter.verifySlides(signal)
@@ -1738,7 +2263,10 @@ export function createPowerPointSkill(options: {
             after: { operations: program.operations },
             validate: async (confirmSignal) => {
               if (plannedNames) {
-                const current = await options.adapter.listSlideShapes(program.operations[0]!.slide_index, confirmSignal)
+                const current = await options.adapter.listSlideShapes(
+                  program.operations[0]!.slide_index,
+                  confirmSignal,
+                )
                 if (current.shapes.some((shape) => plannedNames.has(shape.name))) return false
               }
               const current = await Promise.all(
@@ -1782,7 +2310,11 @@ export function createPowerPointSkill(options: {
                     return current.text === operation.text
                   }, confirmSignal)
                 } else if (operation.op !== 'duplicate_slide') {
-                  if (operation.op === 'add_text_box' || operation.op === 'add_geometric_shape' || operation.op === 'add_native_table') {
+                  if (
+                    operation.op === 'add_text_box' ||
+                    operation.op === 'add_geometric_shape' ||
+                    operation.op === 'add_native_table'
+                  ) {
                     const createdShapeId = declarativeResult?.createdShapeIds[createdShapeIndex++]
                     await verifyPowerPointReadback(async () => {
                       const current = await options.adapter.listSlideShapes(
@@ -1797,13 +2329,22 @@ export function createPowerPointSkill(options: {
                         sameGeometry(shape.width, operation.width) &&
                         sameGeometry(shape.height, operation.height)
                       ) {
-                        if (operation.op === 'add_geometric_shape') return shape.type === 'GeometricShape'
+                        if (operation.op === 'add_geometric_shape')
+                          return shape.type === 'GeometricShape'
                         if (operation.op === 'add_native_table') {
                           if (shape.type !== 'Table') return false
-                          const rows = await options.adapter.readSlideTable(operation.slide_index, shape.id, confirmSignal)
+                          const rows = await options.adapter.readSlideTable(
+                            operation.slide_index,
+                            shape.id,
+                            confirmSignal,
+                          )
                           return JSON.stringify(rows) === JSON.stringify(operation.rows)
                         }
-                        const text = await options.adapter.readSlideText(operation.slide_index, shape.id, confirmSignal)
+                        const text = await options.adapter.readSlideText(
+                          operation.slide_index,
+                          shape.id,
+                          confirmSignal,
+                        )
                         if (text.text === operation.text) return true
                       }
                       return false
@@ -2019,17 +2560,59 @@ export function createPowerPointSkill(options: {
           )
         }
         if (call.name === 'update_slide_chart_values') {
-          const input = exactRecord(call.input, ['slide_index', 'shape_id', 'values', 'explanation'])
-          if (!Number.isInteger(input.slide_index) || (input.slide_index as number) < 0 || (input.slide_index as number) > MAX_SLIDE_INDEX ||
-            typeof input.shape_id !== 'string' || !/^[1-9]\d{0,9}$/.test(input.shape_id) ||
-            !Array.isArray(input.values) || input.values.length < 1 || input.values.length > 8 ||
-            input.values.some((series) => !Array.isArray(series) || series.length < 1 || series.length > 32 || series.some((value) => typeof value !== 'string' || value.length > 32 || !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value))) ||
-            (input.explanation !== undefined && (typeof input.explanation !== 'string' || input.explanation.length > 100))) throw new Error('invalid_tool_input')
-          return await proposeChartValues(input.slide_index as number, input.shape_id, input.values as string[][], input.explanation as string | undefined, signal)
+          const input = exactRecord(call.input, [
+            'slide_index',
+            'shape_id',
+            'values',
+            'explanation',
+          ])
+          if (
+            !Number.isInteger(input.slide_index) ||
+            (input.slide_index as number) < 0 ||
+            (input.slide_index as number) > MAX_SLIDE_INDEX ||
+            typeof input.shape_id !== 'string' ||
+            !/^[1-9]\d{0,9}$/.test(input.shape_id) ||
+            !Array.isArray(input.values) ||
+            input.values.length < 1 ||
+            input.values.length > 8 ||
+            input.values.some(
+              (series) =>
+                !Array.isArray(series) ||
+                series.length < 1 ||
+                series.length > 32 ||
+                series.some(
+                  (value) =>
+                    typeof value !== 'string' ||
+                    value.length > 32 ||
+                    !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value),
+                ),
+            ) ||
+            (input.explanation !== undefined &&
+              (typeof input.explanation !== 'string' || input.explanation.length > 100))
+          )
+            throw new Error('invalid_tool_input')
+          return await proposeChartValues(
+            input.slide_index as number,
+            input.shape_id,
+            input.values as string[][],
+            input.explanation as string | undefined,
+            signal,
+          )
         }
-        if (['inspect_slide_chart_values_change', 'resume_slide_chart_values_change', 'undo_slide_chart_values_change', 'release_slide_chart_values_change'].includes(call.name)) {
+        if (
+          [
+            'inspect_slide_chart_values_change',
+            'resume_slide_chart_values_change',
+            'undo_slide_chart_values_change',
+            'release_slide_chart_values_change',
+          ].includes(call.name)
+        ) {
           const input = exactRecord(call.input, ['change_id'])
-          if (typeof input.change_id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.change_id)) throw new Error('invalid_tool_input')
+          if (
+            typeof input.change_id !== 'string' ||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(input.change_id)
+          )
+            throw new Error('invalid_tool_input')
           return await chartChangeTool(call.name, input.change_id, signal)
         }
         if (call.name === 'edit_slide_xml' || call.name === 'edit_slide_chart') {

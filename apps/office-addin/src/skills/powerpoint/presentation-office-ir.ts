@@ -1,7 +1,15 @@
-import { presentationSlideSourceLabels, type PresentationClaim, type PresentationStyle, type SlideIR } from '@wiswork/pptx-engine/presentation'
+import {
+  presentationSlideSourceLabels,
+  type PresentationClaim,
+  type PresentationStyle,
+  type SlideIR,
+} from '@wiswork/pptx-engine/presentation'
 import type { PowerPointDeclarativeOperation } from './browser-powerpoint-adapter.js'
 
-type AddOperation = Extract<PowerPointDeclarativeOperation, { op: 'add_text_box' | 'add_geometric_shape' | 'add_native_table' }>
+type AddOperation = Extract<
+  PowerPointDeclarativeOperation,
+  { op: 'add_text_box' | 'add_geometric_shape' | 'add_native_table' }
+>
 
 /** Translate a complete supported SlideIR page into bounded native Office operations. */
 export function officeOperationsForSlideIR(
@@ -25,8 +33,11 @@ export function officeOperationsForSlideIR(
     throw new Error('invalid_tool_input')
   const names = new Set<string>()
   const labels = presentationSlideSourceLabels(slide, claims)
-  if (slide.elements.length + Number(labels.length > 0) > 32 ||
-    slide.elements.some((element) => element.id === 'source-attribution')) throw new Error('invalid_tool_input')
+  if (
+    slide.elements.length + Number(labels.length > 0) > 32 ||
+    slide.elements.some((element) => element.id === 'source-attribution')
+  )
+    throw new Error('invalid_tool_input')
   const operations: AddOperation[] = slide.elements.map((element): AddOperation => {
     if (!element.id || element.id.length > 256 || names.has(element.id))
       throw new Error('invalid_tool_input')
@@ -85,20 +96,54 @@ export function officeOperationsForSlideIR(
     if (element.kind === 'table') {
       const rows = element.rows
       const width = rows?.[0]?.length
-      if (!Array.isArray(rows) || rows.length < 1 || rows.length > 20 || !width || width > 12 ||
-        rows.length * width > 128 || rows.some((row) => !Array.isArray(row) || row.length !== width || row.some((cell) => typeof cell !== 'string' || cell.length > 256)) ||
+      if (
+        !Array.isArray(rows) ||
+        rows.length < 1 ||
+        rows.length > 20 ||
+        !width ||
+        width > 12 ||
+        rows.length * width > 128 ||
+        rows.some(
+          (row) =>
+            !Array.isArray(row) ||
+            row.length !== width ||
+            row.some((cell) => typeof cell !== 'string' || cell.length > 256),
+        ) ||
         JSON.stringify(rows).length > 12_000 ||
-        (element.fontSize !== undefined && (!Number.isFinite(element.fontSize) || element.fontSize < 6 || element.fontSize > 48)))
+        (element.fontSize !== undefined &&
+          (!Number.isFinite(element.fontSize) || element.fontSize < 6 || element.fontSize > 48))
+      )
         throw new Error('invalid_tool_input')
-      return { op: 'add_native_table', ...box, rows, fontFace: style.fontFace,
-        fontSize: element.fontSize ?? 16, color: style.textColor }
+      return {
+        op: 'add_native_table',
+        ...box,
+        rows,
+        fontFace: style.fontFace,
+        fontSize: element.fontSize ?? 16,
+        color: style.textColor,
+        borderColor: style.accentColor,
+        cellMargin: 0.04 * 72,
+      }
     }
     throw new Error('office_api_unsupported')
   })
-  if (labels.length) operations.push({
-    op: 'add_text_box', slide_index: slideIndex, name: 'source-attribution',
-    text: labels.join('；').slice(0, 500), left: 36, top: 507.6, width: 885.6, height: 21.6,
-    fontFace: style.fontFace, fontSize: 8, color: style.textColor, bold: false, align: 'left', margin: 0, verticalAlignment: 'top',
-  })
+  if (labels.length)
+    operations.push({
+      op: 'add_text_box',
+      slide_index: slideIndex,
+      name: 'source-attribution',
+      text: labels.join('；').slice(0, 500),
+      left: 36,
+      top: 507.6,
+      width: 885.6,
+      height: 21.6,
+      fontFace: style.fontFace,
+      fontSize: 8,
+      color: style.textColor,
+      bold: false,
+      align: 'left',
+      margin: 0,
+      verticalAlignment: 'top',
+    })
   return operations
 }

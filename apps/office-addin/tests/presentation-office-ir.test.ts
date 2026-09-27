@@ -41,9 +41,16 @@ it('maps shared SlideIR text and shape into native Office point geometry and sty
 
 it('preserves explicit SlideIR text alignment in the Office operation', () => {
   const deck = benchmarkDeck()
-  deck.slides[0]!.elements[0] = { ...deck.slides[0]!.elements[0]!, kind: 'text', text: 'Centered', align: 'center' }
+  deck.slides[0]!.elements[0] = {
+    ...deck.slides[0]!.elements[0]!,
+    kind: 'text',
+    text: 'Centered',
+    align: 'center',
+  }
   expect(officeOperationsForSlideIR(deck.slides[0]!, deck.style, 0, deck.claims)[0]).toMatchObject({
-    op: 'add_text_box', align: 'center', text: 'Centered',
+    op: 'add_text_box',
+    align: 'center',
+    text: 'Centered',
   })
 })
 
@@ -56,14 +63,24 @@ it('rejects an unsupported page before emitting a partial native write plan', ()
     ...deck.slides[3]!,
     elements: [deck.slides[3]!.elements[0]!, deck.slides[3]!.elements[0]!],
   }
-  expect(() => officeOperationsForSlideIR(duplicate, deck.style, 0, deck.claims)).toThrow('invalid_tool_input')
+  expect(() => officeOperationsForSlideIR(duplicate, deck.style, 0, deck.claims)).toThrow(
+    'invalid_tool_input',
+  )
 })
 
 it('maps a shared SlideIR table to a native Office table operation', () => {
   const deck = benchmarkDeck()
   expect(officeOperationsForSlideIR(deck.slides[5]!, deck.style, 0, deck.claims)[1]).toMatchObject({
-    op: 'add_native_table', name: 'table', left: 72, top: 180,
-    fontFace: 'Microsoft YaHei', fontSize: 16, color: '172033', rows: expect.arrayContaining([expect.arrayContaining(['120'])]),
+    op: 'add_native_table',
+    name: 'table',
+    left: 72,
+    top: 180,
+    fontFace: 'Microsoft YaHei',
+    fontSize: 16,
+    color: '172033',
+    borderColor: '2255AA',
+    cellMargin: 2.88,
+    rows: expect.arrayContaining([expect.arrayContaining(['120'])]),
   })
 })
 
@@ -72,31 +89,69 @@ it('keeps supported Office operation structure aligned with the PptxGenJS benchm
   const { bytes } = await compilePresentationDeck(deck)
   const actual = (await openPptx(bytes)).deck
   for (const pageIndex of [0, 1, 3, 4, 5, 7]) {
-    const operations = officeOperationsForSlideIR(deck.slides[pageIndex]!, deck.style, pageIndex, deck.claims)
+    const operations = officeOperationsForSlideIR(
+      deck.slides[pageIndex]!,
+      deck.style,
+      pageIndex,
+      deck.claims,
+    )
     const elements = actual.slides[pageIndex]!.elements
-    expect(elements.map((element) => element.name).sort()).toEqual(operations.map((op) => op.name).sort())
+    expect(elements.map((element) => element.name).sort()).toEqual(
+      operations.map((op) => op.name).sort(),
+    )
     for (const operation of operations) {
       const element = elements.find((item) => item.name === operation.name)!
       expect(element).toBeDefined()
-      expect(Math.abs((element.transform.offset.x * 72) / 914400 - operation.left)).toBeLessThan(1.5)
+      expect(Math.abs((element.transform.offset.x * 72) / 914400 - operation.left)).toBeLessThan(
+        1.5,
+      )
       expect(Math.abs((element.transform.offset.y * 72) / 914400 - operation.top)).toBeLessThan(1.5)
-      expect(Math.abs((element.transform.offset.cx * 72) / 914400 - operation.width)).toBeLessThan(1.5)
-      expect(Math.abs((element.transform.offset.cy * 72) / 914400 - operation.height)).toBeLessThan(1.5)
+      expect(Math.abs((element.transform.offset.cx * 72) / 914400 - operation.width)).toBeLessThan(
+        1.5,
+      )
+      expect(Math.abs((element.transform.offset.cy * 72) / 914400 - operation.height)).toBeLessThan(
+        1.5,
+      )
       if (operation.op === 'add_text_box') {
         expect(element.type).toBe('shape')
         if (element.type === 'shape') {
-          expect(element.text?.paragraphs.flatMap((paragraph) => paragraph.runs.map((run) => run.text)).join('')).toBe(operation.text)
-          expect(element.text?.paragraphs[0]?.runs[0]?.fontSize).toBe(operation.fontSize)
+          expect(
+            element.text?.paragraphs
+              .flatMap((paragraph) => paragraph.runs.map((run) => run.text))
+              .join(''),
+          ).toBe(operation.text)
+          const run = element.text?.paragraphs[0]?.runs[0]
+          expect(run?.fontSize).toBe(operation.fontSize)
+          expect(run?.fontFamily).toBe(operation.fontFace)
+          expect(run?.color?.toUpperCase()).toBe(`#${operation.color}`)
+          expect(run?.bold ?? false).toBe(operation.bold)
+          expect(element.text?.paragraphs[0]?.align ?? 'left').toBe(operation.align)
         }
       } else if (operation.op === 'add_geometric_shape') {
         expect(element.type).toBe('shape')
-        if (element.type === 'shape')
-          expect(element.presetGeometry).toBe({ rect: 'rect', ellipse: 'ellipse', roundRect: 'roundRect' }[operation.shape])
+        if (element.type === 'shape') {
+          expect(element.presetGeometry).toBe(
+            { rect: 'rect', ellipse: 'ellipse', roundRect: 'roundRect' }[operation.shape],
+          )
+          expect(element.fill).toEqual({ type: 'solid', color: `#${operation.fill}` })
+          expect(element.stroke?.fill).toEqual({ type: 'solid', color: `#${operation.lineColor}` })
+        }
       } else if (operation.op === 'add_native_table') {
         expect(element.type).toBe('table')
         if (element.type === 'table') {
-          expect(element.rows.map((row) => row.map((cell) => cell.text?.paragraphs.flatMap((paragraph) => paragraph.runs.map((run) => run.text)).join('') ?? ''))).toEqual(operation.rows)
-          expect(element.rows[0]?.[0]?.text?.paragraphs[0]?.runs[0]?.fontSize).toBe(operation.fontSize)
+          expect(
+            element.rows.map((row) =>
+              row.map(
+                (cell) =>
+                  cell.text?.paragraphs
+                    .flatMap((paragraph) => paragraph.runs.map((run) => run.text))
+                    .join('') ?? '',
+              ),
+            ),
+          ).toEqual(operation.rows)
+          expect(element.rows[0]?.[0]?.text?.paragraphs[0]?.runs[0]?.fontSize).toBe(
+            operation.fontSize,
+          )
         }
       }
     }
