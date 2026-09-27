@@ -6,7 +6,7 @@ import {
   MAX_PPTX_XML_BYTES,
 } from './powerpoint-package.js'
 import { inspectPowerPointComplexPagePackage } from './presentation-complex-page-package.js'
-import { inspectPowerPointChartSourcePackage } from './presentation-chart-source-package.js'
+import { inspectPowerPointChartSourcesBatch } from './presentation-chart-source-package.js'
 
 type Issue =
   | { name: string; kind: 'missing' | 'extra' | 'duplicate' }
@@ -350,33 +350,46 @@ export async function comparePresentationPageStructure(
     } catch {
       // Unsupported chart packages stay unchecked; text and geometry still report.
     }
-    for (const element of source.filter((item) => item.type === 'chart')) {
-      const hostElement = exportedByName.get(element.name)
-      if (!hostElement || hostElement.type !== 'chart') continue
-      try {
-        const [before, after] = await Promise.all([
-          inspectPowerPointChartSourcePackage(sourceBase64, element.shapeId, undefined, {
+    const charts = source.filter((item) => item.type === 'chart')
+    try {
+      const [before, after] = await Promise.all([
+        inspectPowerPointChartSourcesBatch(
+          sourceBase64,
+          charts.map((item) => item.shapeId),
+          undefined,
+          {
             slideIndex: sourceIndex,
             maxBytes: 10 * 1024 * 1024,
             allowAbsoluteChartTarget: true,
             includeWorkbookContentDigest: true,
+          },
+        ),
+        inspectPowerPointChartSourcesBatch(
+          hostBase64,
+          charts.flatMap((item) => {
+            const actual = exportedByName.get(item.name)
+            return actual?.type === 'chart' ? [actual.shapeId] : []
           }),
-          inspectPowerPointChartSourcePackage(hostBase64, hostElement.shapeId, undefined, {
-            allowAbsoluteChartTarget: true,
-            includeWorkbookContentDigest: true,
-          }),
-        ])
+          undefined,
+          { allowAbsoluteChartTarget: true, includeWorkbookContentDigest: true },
+        ),
+      ])
+      for (const element of charts) {
+        const hostElement = exportedByName.get(element.name)
+        if (!hostElement || hostElement.type !== 'chart') continue
+        const original = before.reports[element.shapeId]
+        const current = after.reports[hostElement.shapeId]
         if (
-          before.sourceKind === 'embedded_xlsx' &&
-          after.sourceKind === 'embedded_xlsx' &&
-          before.workbookContentDigest &&
-          after.workbookContentDigest &&
-          before.workbookContentDigest !== after.workbookContentDigest
+          original?.sourceKind === 'embedded_xlsx' &&
+          current?.sourceKind === 'embedded_xlsx' &&
+          original.workbookContentDigest &&
+          current.workbookContentDigest &&
+          original.workbookContentDigest !== current.workbookContentDigest
         )
           workbookBytesChanged.push(element.name)
-      } catch {
-        // Unsupported workbooks remain unchecked; cache evidence still reports.
       }
+    } catch {
+      // Unsupported packages remain unchecked; cache evidence still reports.
     }
   }
   for (const element of source) {
