@@ -10,6 +10,7 @@ import {
 import { createPresentationAttachmentSkill } from '../../office-addin/src/skills/powerpoint/presentation-attachments'
 import { InMemoryVfs } from '../../office-addin/src/skills/shared/vfs'
 import { createPresentationService } from '../src/main/presentation-service'
+import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
 
 const roots: string[] = []
 afterEach(() => {
@@ -19,6 +20,59 @@ const signal = () => new AbortController().signal
 const decode = (bytes: Uint8Array) => JSON.parse(Buffer.from(bytes).toString('utf8'))
 
 describe('presentation attachment service integration', () => {
+  it('rebuilds plan source readiness from document-bound attachment metadata', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-source-readiness-'))
+    roots.push(userDataPath)
+    let service = createPresentationService({ userDataPath })
+    const documentId = 'source-document'
+    const plan = benchmarkPlan()
+    const bytes = Buffer.from(buildPdfFixture('Traceable research source'))
+    const attachmentId = createHash('sha256').update(bytes).digest('hex')
+    plan.sources[0]!.uri = `attachment:${attachmentId}`
+    const send = async (body: Record<string, unknown>) =>
+      decode(
+        await service(
+          {
+            documentId,
+            ...(!String(body.operation).startsWith('attachment_')
+              ? { projectId: plan.projectId }
+              : {}),
+            ...body,
+          },
+          signal(),
+        ),
+      )
+    await send({ operation: 'save_plan', expectedRevision: 0, plan })
+    expect((await send({ operation: 'status' })).sourcePreparation).toEqual([
+      { sourceId: plan.sources[0]!.id, attachmentId, status: 'missing' },
+    ])
+    await send({
+      operation: 'attachment_begin',
+      attachmentId,
+      name: 'research.pdf',
+      sizeBytes: bytes.length,
+      sha256: attachmentId,
+    })
+    expect((await send({ operation: 'status' })).sourcePreparation[0].status).toBe('uploading')
+    await send({
+      operation: 'attachment_chunk',
+      attachmentId,
+      offset: 0,
+      base64: bytes.toString('base64'),
+    })
+    await send({ operation: 'attachment_finish', attachmentId })
+    service = createPresentationService({ userDataPath })
+    expect((await send({ operation: 'status' })).sourcePreparation[0].status).toBe('ready')
+    expect(
+      await send({
+        operation: 'attachment_metadata',
+        attachmentId,
+        documentId: 'another-document',
+      }),
+    ).toEqual({ error: 'not_found' })
+    await send({ operation: 'attachment_delete', attachmentId })
+    expect((await send({ operation: 'status' })).sourcePreparation[0].status).toBe('missing')
+  })
   it('uploads a real PDF, parses it and reads it after PC recreation without a presentation plan', async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-attachment-integration-'))
     roots.push(userDataPath)

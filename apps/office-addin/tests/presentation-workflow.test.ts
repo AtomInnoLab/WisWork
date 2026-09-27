@@ -61,6 +61,30 @@ const qa: PresentationQaRecord = {
   })),
 }
 
+it('shows document-bound source preparation without claiming source truth', () => {
+  const withSource = structuredClone(project)
+  const attachmentId = 'a'.repeat(64)
+  withSource.plan!.value.sources[0]!.uri = `attachment:${attachmentId}`
+  withSource.sourcePreparation = [
+    { sourceId: withSource.plan!.value.sources[0]!.id, attachmentId, status: 'missing' },
+  ]
+  const missing = presentationWorkflowSummary(withSource, undefined, undefined)!
+  expect(missing.stages[0]!.detail).toContain('0/1 份已解析为文本')
+  expect(missing.attention).toContainEqual(expect.objectContaining({ id: 'source-preparation' }))
+  expect(missing.nextAction).toContain('补齐计划引用的资料')
+  expect(missing.timeline).toContainEqual(expect.objectContaining({ id: 'source-preparation' }))
+  withSource.sourcePreparation[0]!.status = 'ready'
+  const ready = presentationWorkflowSummary(withSource, undefined, undefined)!
+  expect(ready.attention.some((item) => item.id === 'source-preparation')).toBe(false)
+  expect(ready.nextAction).toContain('启动逐页生产')
+  expect(ready.stages[0]!.detail).toContain('真实性仍需核验')
+  delete withSource.sourcePreparation
+  withSource.sourcePreparationUnavailable = true
+  expect(presentationWorkflowSummary(withSource, undefined, undefined)?.attention).toContainEqual(
+    expect.objectContaining({ id: 'source-preparation-unavailable' }),
+  )
+})
+
 it('shows the chosen domain sections only for the matching plan revision', () => {
   const domainPlan = benchmarkPlan()
   domainPlan.domain = 'research'
@@ -485,16 +509,40 @@ it('warns when the selected production task still uses an older saved plan', () 
 
 it('labels old QA as historical after a brand or style revision', () => {
   const snapshots = [
-    { revision: 1, inputDigest: '1'.repeat(64), createdAt: '2026-09-24T00:01:00.000Z', snapshot: {
-      sourceCount: 0, claimCount: 0, slideCount: plan.slides.length,
-      sourcesDigest: 'a'.repeat(64), claimsDigest: 'b'.repeat(64), slidesDigest: 'c'.repeat(64), styleDigest: 'd'.repeat(64),
-    } },
-    { revision: 2, inputDigest: '2'.repeat(64), createdAt: '2026-09-24T00:02:00.000Z', snapshot: {
-      sourceCount: 0, claimCount: 0, slideCount: plan.slides.length,
-      sourcesDigest: 'a'.repeat(64), claimsDigest: 'b'.repeat(64), slidesDigest: 'c'.repeat(64), styleDigest: 'e'.repeat(64),
-    } },
+    {
+      revision: 1,
+      inputDigest: '1'.repeat(64),
+      createdAt: '2026-09-24T00:01:00.000Z',
+      snapshot: {
+        sourceCount: 0,
+        claimCount: 0,
+        slideCount: plan.slides.length,
+        sourcesDigest: 'a'.repeat(64),
+        claimsDigest: 'b'.repeat(64),
+        slidesDigest: 'c'.repeat(64),
+        styleDigest: 'd'.repeat(64),
+      },
+    },
+    {
+      revision: 2,
+      inputDigest: '2'.repeat(64),
+      createdAt: '2026-09-24T00:02:00.000Z',
+      snapshot: {
+        sourceCount: 0,
+        claimCount: 0,
+        slideCount: plan.slides.length,
+        sourcesDigest: 'a'.repeat(64),
+        claimsDigest: 'b'.repeat(64),
+        slidesDigest: 'c'.repeat(64),
+        styleDigest: 'e'.repeat(64),
+      },
+    },
   ]
-  const selected = { ...project, plan: { ...project.plan!, revision: 2, revisions: snapshots }, production }
+  const selected = {
+    ...project,
+    plan: { ...project.plan!, revision: 2, revisions: snapshots },
+    production,
+  }
   const summary = presentationWorkflowSummary(selected, imported, qa)!
   expect(summary.attention.map((item) => item.id)).toContain('style-revision')
   expect(summary.pages[0]?.qa).toBe('旧样式版本历史通过')

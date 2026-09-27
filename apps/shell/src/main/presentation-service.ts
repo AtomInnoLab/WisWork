@@ -105,14 +105,28 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
-      if (['comment_list', 'comment_add', 'comment_resolve'].includes(request.operation as string)) {
-        const required = request.operation === 'comment_add' ?
-          ['operation', 'documentId', 'projectId', 'expectedRevision', 'planRevision', 'comment'] :
-          request.operation === 'comment_resolve' ?
-            ['operation', 'documentId', 'projectId', 'expectedRevision', 'commentId'] :
-            ['operation', 'documentId', 'projectId']
-        if (Object.keys(request).sort().join(',') !== required.sort().join(',') ||
-          typeof request.documentId !== 'string' || !request.documentId || request.documentId.length > 2048)
+      if (
+        ['comment_list', 'comment_add', 'comment_resolve'].includes(request.operation as string)
+      ) {
+        const required =
+          request.operation === 'comment_add'
+            ? [
+                'operation',
+                'documentId',
+                'projectId',
+                'expectedRevision',
+                'planRevision',
+                'comment',
+              ]
+            : request.operation === 'comment_resolve'
+              ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'commentId']
+              : ['operation', 'documentId', 'projectId']
+        if (
+          Object.keys(request).sort().join(',') !== required.sort().join(',') ||
+          typeof request.documentId !== 'string' ||
+          !request.documentId ||
+          request.documentId.length > 2048
+        )
           throw new Error('invalid_request')
         assertPresentationId(request.projectId)
         const record = store.plan(request.projectId, request.documentId)
@@ -120,40 +134,90 @@ export function createPresentationService(options: {
         if (request.operation === 'comment_list')
           return boundedResponse(commentLibrary.list(request.documentId, request.projectId))
         if (request.operation === 'comment_resolve')
-          return boundedResponse(commentLibrary.resolve(request.documentId, request.projectId,
-            request.expectedRevision as number, request.commentId as string))
-        return boundedResponse(commentLibrary.add(request.documentId, request.projectId,
-          request.expectedRevision as number, request.planRevision as number, request.comment,
-          { revision: record.revision, plan: parsePresentationPlan(record.plan) }))
+          return boundedResponse(
+            commentLibrary.resolve(
+              request.documentId,
+              request.projectId,
+              request.expectedRevision as number,
+              request.commentId as string,
+            ),
+          )
+        return boundedResponse(
+          commentLibrary.add(
+            request.documentId,
+            request.projectId,
+            request.expectedRevision as number,
+            request.planRevision as number,
+            request.comment,
+            { revision: record.revision, plan: parsePresentationPlan(record.plan) },
+          ),
+        )
       }
-      if (request.operation === 'preference_save' || request.operation === 'preference_list' || request.operation === 'preference_delete') {
-        const required = request.operation === 'preference_save' ? ['operation', 'documentId', 'preference'] :
-          request.operation === 'preference_delete' ? ['operation', 'documentId', 'projectId', 'changeId'] : ['operation', 'documentId', 'projectId']
-        if (Object.keys(request).sort().join(',') !== required.sort().join(',') ||
-          typeof request.documentId !== 'string' || !request.documentId || request.documentId.length > 2048)
+      if (
+        request.operation === 'preference_save' ||
+        request.operation === 'preference_list' ||
+        request.operation === 'preference_delete'
+      ) {
+        const required =
+          request.operation === 'preference_save'
+            ? ['operation', 'documentId', 'preference']
+            : request.operation === 'preference_delete'
+              ? ['operation', 'documentId', 'projectId', 'changeId']
+              : ['operation', 'documentId', 'projectId']
+        if (
+          Object.keys(request).sort().join(',') !== required.sort().join(',') ||
+          typeof request.documentId !== 'string' ||
+          !request.documentId ||
+          request.documentId.length > 2048
+        )
           throw new Error('invalid_request')
         if (request.operation === 'preference_save')
-          return boundedResponse({ preference: preferenceLibrary.save(request.documentId, request.preference) })
+          return boundedResponse({
+            preference: preferenceLibrary.save(request.documentId, request.preference),
+          })
         if (request.operation === 'preference_delete')
-          return boundedResponse({ deleted: preferenceLibrary.delete(request.documentId, request.projectId as string, request.changeId as string) })
-        return boundedResponse({ preferences: preferenceLibrary.list(request.documentId, request.projectId as string) })
+          return boundedResponse({
+            deleted: preferenceLibrary.delete(
+              request.documentId,
+              request.projectId as string,
+              request.changeId as string,
+            ),
+          })
+        return boundedResponse({
+          preferences: preferenceLibrary.list(request.documentId, request.projectId as string),
+        })
       }
-      if (['brand_kit_save', 'brand_kit_get', 'brand_kit_list'].includes(request.operation as string)) {
+      if (
+        ['brand_kit_save', 'brand_kit_get', 'brand_kit_list'].includes(request.operation as string)
+      ) {
         const operation = request.operation
-        const required = operation === 'brand_kit_save' ? ['operation', 'documentId', 'expectedRevision', 'brandKit'] :
-          operation === 'brand_kit_get' ? ['operation', 'documentId', 'brandKitId', 'revision'] : ['operation', 'documentId']
-        if (Object.keys(request).sort().join(',') !== required.sort().join(',') ||
-          typeof request.documentId !== 'string' || !request.documentId || request.documentId.length > 2048)
+        const required =
+          operation === 'brand_kit_save'
+            ? ['operation', 'documentId', 'expectedRevision', 'brandKit']
+            : operation === 'brand_kit_get'
+              ? ['operation', 'documentId', 'brandKitId', 'revision']
+              : ['operation', 'documentId']
+        if (
+          Object.keys(request).sort().join(',') !== required.sort().join(',') ||
+          typeof request.documentId !== 'string' ||
+          !request.documentId ||
+          request.documentId.length > 2048
+        )
           throw new Error('invalid_request')
-        if (operation === 'brand_kit_list') return boundedResponse({ brandKits: brandLibrary.list() })
+        if (operation === 'brand_kit_list')
+          return boundedResponse({ brandKits: brandLibrary.list() })
         if (operation === 'brand_kit_get') {
           const kit = brandLibrary.get(request.brandKitId as string, request.revision as number)
           if (!kit) throw new Error('not_found')
           return boundedResponse({ brandKit: kit })
         }
-        try { return boundedResponse({ brandKit: brandLibrary.save(request.expectedRevision as number, request.brandKit) }) }
-        catch (error) {
-          if (error instanceof Error && error.message === 'presentation_brand_kit_invalid') throw new Error('invalid_brand_kit', { cause: error })
+        try {
+          return boundedResponse({
+            brandKit: brandLibrary.save(request.expectedRevision as number, request.brandKit),
+          })
+        } catch (error) {
+          if (error instanceof Error && error.message === 'presentation_brand_kit_invalid')
+            throw new Error('invalid_brand_kit', { cause: error })
           throw error
         }
       }
@@ -193,6 +257,7 @@ export function createPresentationService(options: {
           'attachment_asset',
           'attachment_original',
           'attachment_list_assets',
+          'attachment_metadata',
         ].includes(request.operation as string)
       )
         return boundedResponse(await attachments(request, signal))
@@ -461,8 +526,11 @@ export function createPresentationService(options: {
           if (request.operation === 'save_plan') {
             const previousPlan = store.plan(projectId, documentId)
             if (previousPlan && previousPlan.revision === request.expectedRevision) {
-              try { assertBrandKitRevision(parsePresentationPlan(previousPlan.plan), plan!) }
-              catch { throw new Error('invalid_plan') }
+              try {
+                assertBrandKitRevision(parsePresentationPlan(previousPlan.plan), plan!)
+              } catch {
+                throw new Error('invalid_plan')
+              }
             }
           }
           const record =
@@ -477,25 +545,50 @@ export function createPresentationService(options: {
           })
         }
         if (request.operation === 'status') {
-          let reviewComments: { revision: number; openCount: number; resolvedCount: number;
-            recent: { id: string; targetKind: string; targetId: string; authorLabel: string;
-              text: string; state: string; planRevision: number; createdAt: string }[] } | undefined
+          let reviewComments:
+            | {
+                revision: number
+                openCount: number
+                resolvedCount: number
+                recent: {
+                  id: string
+                  targetKind: string
+                  targetId: string
+                  authorLabel: string
+                  text: string
+                  state: string
+                  planRevision: number
+                  createdAt: string
+                }[]
+              }
+            | undefined
           let commentsUnavailable = false
           try {
             const ledger = commentLibrary.list(documentId, projectId)
             reviewComments = {
               revision: ledger.revision,
               openCount: ledger.comments.filter((comment) => comment.state === 'open').length,
-              resolvedCount: ledger.comments.filter((comment) => comment.state === 'resolved').length,
+              resolvedCount: ledger.comments.filter((comment) => comment.state === 'resolved')
+                .length,
               recent: ledger.comments.slice(-8).map((comment) => ({
-                id: comment.id, targetKind: comment.targetKind, targetId: comment.targetId,
-                authorLabel: comment.authorLabel, text: comment.text.slice(0, 400),
-                state: comment.state, planRevision: comment.planRevision, createdAt: comment.createdAt,
+                id: comment.id,
+                targetKind: comment.targetKind,
+                targetId: comment.targetId,
+                authorLabel: comment.authorLabel,
+                text: comment.text.slice(0, 400),
+                state: comment.state,
+                planRevision: comment.planRevision,
+                createdAt: comment.createdAt,
               })),
             }
-          } catch { commentsUnavailable = true }
-          const commentStatus = commentsUnavailable ? { commentsUnavailable: true } :
-            reviewComments && reviewComments.openCount + reviewComments.resolvedCount > 0 ? { reviewComments } : {}
+          } catch {
+            commentsUnavailable = true
+          }
+          const commentStatus = commentsUnavailable
+            ? { commentsUnavailable: true }
+            : reviewComments && reviewComments.openCount + reviewComments.resolvedCount > 0
+              ? { reviewComments }
+              : {}
           const productionRecord = store.production(
             projectId,
             documentId,
@@ -528,6 +621,61 @@ export function createPresentationService(options: {
                 ...(savedPlan.revisions ? { revisions: savedPlan.revisions } : {}),
               }
             : undefined
+          let sourcePreparation:
+            | {
+                sourceId: string
+                attachmentId: string
+                status: 'ready' | 'uploading' | 'failed' | 'missing' | 'unsupported'
+              }[]
+            | undefined
+          let sourcePreparationUnavailable = false
+          if (plan) {
+            const references = plan.value.sources.flatMap((source) => {
+              const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
+              return match ? [{ sourceId: source.id, attachmentId: match[1]! }] : []
+            })
+            if (references.length) {
+              try {
+                sourcePreparation = []
+                for (const reference of references) {
+                  try {
+                    const item = (await attachments(
+                      {
+                        operation: 'attachment_metadata',
+                        documentId,
+                        attachmentId: reference.attachmentId,
+                      },
+                      signal,
+                    )) as {
+                      attachmentId: string
+                      status: 'ready' | 'uploading' | 'failed'
+                      kind?: 'text' | 'image'
+                    }
+                    if (item.attachmentId !== reference.attachmentId)
+                      throw new Error('invalid_state')
+                    sourcePreparation.push({
+                      ...reference,
+                      status:
+                        item.status === 'ready' && item.kind !== 'text'
+                          ? 'unsupported'
+                          : item.status,
+                    })
+                  } catch (error) {
+                    if (!(error instanceof Error) || error.message !== 'not_found') throw error
+                    sourcePreparation.push({ ...reference, status: 'missing' })
+                  }
+                }
+              } catch {
+                sourcePreparation = undefined
+                sourcePreparationUnavailable = true
+              }
+            }
+          }
+          const preparationStatus = sourcePreparationUnavailable
+            ? { sourcePreparationUnavailable: true }
+            : sourcePreparation
+              ? { sourcePreparation }
+              : {}
           const history = store.history(projectId, documentId)
           const latest = history[0]
           if (!latest) {
@@ -542,6 +690,7 @@ export function createPresentationService(options: {
               history: [],
               plan,
               ...commentStatus,
+              ...preparationStatus,
             })
           }
           const latestDeck = savedDeck(latest.deck)
@@ -568,6 +717,7 @@ export function createPresentationService(options: {
               slideCount: savedDeck(record.deck).slides.length,
             })),
             ...commentStatus,
+            ...preparationStatus,
             ...(checks
               ? {
                   checks: {

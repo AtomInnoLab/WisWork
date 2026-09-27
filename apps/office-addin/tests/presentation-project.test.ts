@@ -24,11 +24,29 @@ function fixture() {
   const lastProject = vi.fn((): string | undefined => 'project-1')
   let saved: { projectId: string; documentId: string; requestId: string } | undefined
   const selectedProduction = vi.fn((projectId: string, boundDocumentId: string) =>
-    saved?.projectId === projectId && saved.documentId === boundDocumentId ? saved.requestId : undefined)
-  const rememberSelectedProduction = vi.fn(async (projectId: string, boundDocumentId: string, requestId: string) => {
-    saved = { projectId, documentId: boundDocumentId, requestId }
-  })
-  const createController = () => createPresentationProjectController({
+    saved?.projectId === projectId && saved.documentId === boundDocumentId
+      ? saved.requestId
+      : undefined,
+  )
+  const rememberSelectedProduction = vi.fn(
+    async (projectId: string, boundDocumentId: string, requestId: string) => {
+      saved = { projectId, documentId: boundDocumentId, requestId }
+    },
+  )
+  const createController = () =>
+    createPresentationProjectController({
+      request,
+      executeTool,
+      documentId,
+      available,
+      lastProject,
+      selectedProduction,
+      rememberSelectedProduction,
+    })
+  const controller = createController()
+  return {
+    controller,
+    createController,
     request,
     executeTool,
     documentId,
@@ -36,20 +54,40 @@ function fixture() {
     lastProject,
     selectedProduction,
     rememberSelectedProduction,
-  })
-  const controller = createController()
-  return { controller, createController, request, executeTool, documentId, available, lastProject,
-    selectedProduction, rememberSelectedProduction }
+  }
 }
 describe('presentation project controls', () => {
   it('keeps bounded review comment summaries separate from QA status', async () => {
     const f = fixture()
-    f.request.mockResolvedValue(new Response(JSON.stringify({ ...project, reviewComments: {
-      revision: 2, openCount: 1, resolvedCount: 1,
-      recent: [{ id: 'comment-1', targetKind: 'source', targetId: 'source-1', authorLabel: '审阅人甲', text: '请复核来源', state: 'open', planRevision: 1, createdAt: '2026-09-28T00:00:00.000Z' }],
-    } })))
+    f.request.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...project,
+          reviewComments: {
+            revision: 2,
+            openCount: 1,
+            resolvedCount: 1,
+            recent: [
+              {
+                id: 'comment-1',
+                targetKind: 'source',
+                targetId: 'source-1',
+                authorLabel: '审阅人甲',
+                text: '请复核来源',
+                state: 'open',
+                planRevision: 1,
+                createdAt: '2026-09-28T00:00:00.000Z',
+              },
+            ],
+          },
+        }),
+      ),
+    )
     await f.controller.refresh()
-    expect(f.controller.snapshot().project?.reviewComments).toMatchObject({ openCount: 1, recent: [{ id: 'comment-1' }] })
+    expect(f.controller.snapshot().project?.reviewComments).toMatchObject({
+      openCount: 1,
+      recent: [{ id: 'comment-1' }],
+    })
     expect(f.controller.snapshot().project?.checks).toBeUndefined()
   })
   it('loads persisted page inventory/history and restores or resumes through the generation skill', async () => {
@@ -86,7 +124,12 @@ describe('presentation project controls', () => {
     await f.controller.refresh()
     f.lastProject.mockReturnValue('project-2')
     let resolve!: (response: Response) => void
-    f.request.mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    f.request.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done
+        }),
+    )
     const pending = f.controller.refresh()
     expect(f.controller.snapshot()).toEqual({ phase: 'loading' })
     await vi.waitFor(() => expect(f.request).toHaveBeenCalledTimes(2))
@@ -180,6 +223,38 @@ describe('presentation project controls', () => {
 })
 
 describe('plan-only project status', () => {
+  it('accepts document source preparation and rejects forged attachment mappings', async () => {
+    const { benchmarkPlan } =
+      await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
+    const attachmentId = 'a'.repeat(64)
+    const plan = benchmarkPlan()
+    plan.sources[0]!.uri = `attachment:${attachmentId}`
+    const value = {
+      projectId: plan.projectId,
+      title: plan.title,
+      status: 'planned',
+      slideCount: plan.slides.length,
+      slides: plan.slides.map(({ id, title }) => ({ id, title })),
+      history: [],
+      plan: { revision: 1, value: plan },
+      sourcePreparation: [{ sourceId: plan.sources[0]!.id, attachmentId, status: 'ready' }],
+    }
+    const f = fixture()
+    f.lastProject.mockReturnValue(plan.projectId)
+    f.request.mockResolvedValueOnce(new Response(JSON.stringify(value)))
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.sourcePreparation).toEqual(value.sourcePreparation)
+    f.request.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...value,
+          sourcePreparation: [{ ...value.sourcePreparation[0], attachmentId: 'b'.repeat(64) }],
+        }),
+      ),
+    )
+    await f.controller.refresh()
+    expect(f.controller.snapshot().error).toBeTruthy()
+  })
   it('accepts a saved plan before compilation without inventing request history or QA', async () => {
     const { benchmarkPlan } =
       await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
@@ -203,26 +278,59 @@ describe('plan-only project status', () => {
     expect(f.executeTool).not.toHaveBeenCalled()
   })
   it('accepts bounded saved plan revisions and rejects malformed replay history', async () => {
-    const { benchmarkPlan } = await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
+    const { benchmarkPlan } =
+      await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
     const plan = benchmarkPlan()
-    const snapshot = { sourceCount: plan.sources.length, claimCount: plan.claims.length,
-      slideCount: plan.slides.length, sourcesDigest: 'a'.repeat(64), claimsDigest: 'b'.repeat(64),
-      slidesDigest: 'c'.repeat(64), styleDigest: 'd'.repeat(64) }
-    const event = { revision: 1, inputDigest: 'a'.repeat(64), createdAt: '2026-09-24T00:00:00.000Z', snapshot }
-    const value = { projectId: plan.projectId, title: plan.title, status: 'planned',
-      slideCount: plan.slides.length, slides: plan.slides.map(({ id, title }) => ({ id, title })),
-      history: [], plan: { revision: 1, value: plan, revisions: [event] } }
+    const snapshot = {
+      sourceCount: plan.sources.length,
+      claimCount: plan.claims.length,
+      slideCount: plan.slides.length,
+      sourcesDigest: 'a'.repeat(64),
+      claimsDigest: 'b'.repeat(64),
+      slidesDigest: 'c'.repeat(64),
+      styleDigest: 'd'.repeat(64),
+    }
+    const event = {
+      revision: 1,
+      inputDigest: 'a'.repeat(64),
+      createdAt: '2026-09-24T00:00:00.000Z',
+      snapshot,
+    }
+    const value = {
+      projectId: plan.projectId,
+      title: plan.title,
+      status: 'planned',
+      slideCount: plan.slides.length,
+      slides: plan.slides.map(({ id, title }) => ({ id, title })),
+      history: [],
+      plan: { revision: 1, value: plan, revisions: [event] },
+    }
     const f = fixture()
     f.lastProject.mockReturnValue(plan.projectId)
     f.request.mockResolvedValueOnce(new Response(JSON.stringify(value)))
     await f.controller.refresh()
     expect(f.controller.snapshot().project?.plan?.revisions).toEqual([event])
-    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ ...value,
-      plan: { ...value.plan, revisions: [{ ...event, revision: 2 }] } })))
+    f.request.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...value,
+          plan: { ...value.plan, revisions: [{ ...event, revision: 2 }] },
+        }),
+      ),
+    )
     await f.controller.refresh()
     expect(f.controller.snapshot().error).toBeTruthy()
-    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ ...value,
-      plan: { ...value.plan, revisions: [{ ...event, snapshot: { ...snapshot, sourceCount: 999 } }] } })))
+    f.request.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...value,
+          plan: {
+            ...value.plan,
+            revisions: [{ ...event, snapshot: { ...snapshot, sourceCount: 999 } }],
+          },
+        }),
+      ),
+    )
     await f.controller.refresh()
     expect(f.controller.snapshot().error).toBeTruthy()
   })
@@ -322,30 +430,60 @@ it('polls active background work and clears polling without cancelling PC work',
 it('automatically resumes only an interrupted frozen page job after reconnect', async () => {
   const f = fixture()
   const production = {
-    projectId: 'project-1', requestId: 'pages', planRevision: 1,
-    status: 'pending', compiledCount: 0, total: 1,
+    projectId: 'project-1',
+    requestId: 'pages',
+    planRevision: 1,
+    status: 'pending',
+    compiledCount: 0,
+    total: 1,
     pages: [{ id: 'a', title: 'A', state: 'pending', attempt: 0 }],
   }
   let state: 'interrupted' | 'running' = 'interrupted'
   const job = () => ({
-    version: 1, projectId: 'project-1', documentId: 'document-1', requestId: 'pages',
-    inputDigest: 'a'.repeat(64), planDigest: 'b'.repeat(64), planRevision: 1,
-    revision: state === 'running' ? 3 : 2, state,
+    version: 1,
+    projectId: 'project-1',
+    documentId: 'document-1',
+    requestId: 'pages',
+    inputDigest: 'a'.repeat(64),
+    planDigest: 'b'.repeat(64),
+    planRevision: 1,
+    revision: state === 'running' ? 3 : 2,
+    state,
     events: [
       { sequence: 1, createdAt: '2026-09-24T00:00:00.000Z', type: 'run.started' },
       { sequence: 2, createdAt: '2026-09-24T00:00:01.000Z', type: 'run.interrupted' },
-      ...(state === 'running' ? [{ sequence: 3, createdAt: '2026-09-24T00:00:02.000Z', type: 'run.started' }] : []),
+      ...(state === 'running'
+        ? [{ sequence: 3, createdAt: '2026-09-24T00:00:02.000Z', type: 'run.started' }]
+        : []),
     ],
   })
-  f.request.mockImplementation(async (body) => new Response(JSON.stringify(
-    (body as { operation: string }).operation === 'status'
-      ? { ...project, production }
-      : { job: job(), production: { ...production, inputDigest: 'a'.repeat(64), planDigest: 'b'.repeat(64) } },
-  )))
+  f.request.mockImplementation(
+    async (body) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'status'
+            ? { ...project, production }
+            : {
+                job: job(),
+                production: {
+                  ...production,
+                  inputDigest: 'a'.repeat(64),
+                  planDigest: 'b'.repeat(64),
+                },
+              },
+        ),
+      ),
+  )
   let attempts = 0
   f.executeTool.mockImplementation(async () => {
     attempts++
-    if (attempts === 1) return { output: 'presentation_service_unavailable', isError: true, mutated: false, summary: '连接中断' }
+    if (attempts === 1)
+      return {
+        output: 'presentation_service_unavailable',
+        isError: true,
+        mutated: false,
+        summary: '连接中断',
+      }
     state = 'running'
     return { output: '{}', mutated: false, summary: '已继续' }
   })
@@ -356,33 +494,59 @@ it('automatically resumes only an interrupted frozen page job after reconnect', 
   expect(f.controller.snapshot().error).toBeTruthy()
   await f.controller.refresh()
   expect(f.executeTool).toHaveBeenCalledTimes(2)
-  expect(f.executeTool).toHaveBeenCalledWith(expect.objectContaining({
-    name: 'resume_presentation_production_job',
-    input: { project_id: 'project-1', request_id: 'pages' },
-  }), expect.any(AbortSignal))
+  expect(f.executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'resume_presentation_production_job',
+      input: { project_id: 'project-1', request_id: 'pages' },
+    }),
+    expect.any(AbortSignal),
+  )
   expect(f.controller.snapshot().project?.productionJob?.state).toBe('running')
   f.controller.cancel()
 })
 it('does not automatically resume a paused job or one in a different document', async () => {
   const f = fixture()
   const production = {
-    projectId: 'project-1', requestId: 'pages', planRevision: 1,
-    status: 'pending', compiledCount: 0, total: 1,
+    projectId: 'project-1',
+    requestId: 'pages',
+    planRevision: 1,
+    status: 'pending',
+    compiledCount: 0,
+    total: 1,
     pages: [{ id: 'a', title: 'A', state: 'pending', attempt: 0 }],
   }
   const job = {
-    version: 1, projectId: 'project-1', documentId: 'document-1', requestId: 'pages',
-    inputDigest: 'a'.repeat(64), planDigest: 'b'.repeat(64), planRevision: 1,
-    revision: 2, state: 'paused', events: [
+    version: 1,
+    projectId: 'project-1',
+    documentId: 'document-1',
+    requestId: 'pages',
+    inputDigest: 'a'.repeat(64),
+    planDigest: 'b'.repeat(64),
+    planRevision: 1,
+    revision: 2,
+    state: 'paused',
+    events: [
       { sequence: 1, createdAt: '2026-09-24T00:00:00.000Z', type: 'run.started' },
       { sequence: 2, createdAt: '2026-09-24T00:00:01.000Z', type: 'run.paused' },
     ],
   }
-  f.request.mockImplementation(async (body) => new Response(JSON.stringify(
-    (body as { operation: string }).operation === 'status'
-      ? { ...project, production }
-      : { job, production: { ...production, inputDigest: job.inputDigest, planDigest: job.planDigest } },
-  )))
+  f.request.mockImplementation(
+    async (body) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'status'
+            ? { ...project, production }
+            : {
+                job,
+                production: {
+                  ...production,
+                  inputDigest: job.inputDigest,
+                  planDigest: job.planDigest,
+                },
+              },
+        ),
+      ),
+  )
   f.controller.prepareReconnect()
   await f.controller.refresh()
   expect(f.executeTool).not.toHaveBeenCalled()

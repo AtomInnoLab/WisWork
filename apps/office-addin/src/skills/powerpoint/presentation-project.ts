@@ -27,10 +27,27 @@ export interface PresentationProductionTask {
   jobState?: PresentationProductionJob['state']
 }
 export interface PresentationProjectStatus {
-  reviewComments?: { revision: number; openCount: number; resolvedCount: number; recent: {
-    id: string; targetKind: 'slide' | 'claim' | 'source'; targetId: string; authorLabel: string;
-    text: string; state: 'open' | 'resolved'; planRevision: number; createdAt: string
-  }[] }
+  sourcePreparation?: {
+    sourceId: string
+    attachmentId: string
+    status: 'ready' | 'uploading' | 'failed' | 'missing' | 'unsupported'
+  }[]
+  sourcePreparationUnavailable?: boolean
+  reviewComments?: {
+    revision: number
+    openCount: number
+    resolvedCount: number
+    recent: {
+      id: string
+      targetKind: 'slide' | 'claim' | 'source'
+      targetId: string
+      authorLabel: string
+      text: string
+      state: 'open' | 'resolved'
+      planRevision: number
+      createdAt: string
+    }[]
+  }
   commentsUnavailable?: boolean
   productionTasks?: PresentationProductionTask[]
   productionJob?: PresentationProductionJob | null
@@ -39,9 +56,16 @@ export interface PresentationProjectStatus {
   projectId: string
   title: string
   status: 'planned' | 'pending' | 'compiled'
-  plan?: { revision: number; value: PresentationPlan;
-    revisions?: { revision: number; inputDigest: string; createdAt: string;
-      snapshot?: PresentationPlanRevisionSnapshot }[] }
+  plan?: {
+    revision: number
+    value: PresentationPlan
+    revisions?: {
+      revision: number
+      inputDigest: string
+      createdAt: string
+      snapshot?: PresentationPlanRevisionSnapshot
+    }[]
+  }
   requestPlanRevision?: number
   latestRequestId?: string
   latestCompiledRequestId?: string
@@ -96,13 +120,22 @@ const pageCount = (value: unknown): value is number =>
 function validRevisionSnapshot(value: unknown): value is PresentationPlanRevisionSnapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const snapshot = value as PresentationPlanRevisionSnapshot
-  return Object.keys(snapshot).sort().join(',') ===
-    'claimCount,claimsDigest,slideCount,slidesDigest,sourceCount,sourcesDigest,styleDigest' &&
-    [snapshot.sourceCount, snapshot.claimCount, snapshot.slideCount].every((count) =>
-      Number.isSafeInteger(count) && count >= 0) &&
-    snapshot.sourceCount <= 256 && snapshot.claimCount <= 256 && snapshot.slideCount <= 32 &&
-    [snapshot.sourcesDigest, snapshot.claimsDigest, snapshot.slidesDigest, snapshot.styleDigest]
-      .every((hash) => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))
+  return (
+    Object.keys(snapshot).sort().join(',') ===
+      'claimCount,claimsDigest,slideCount,slidesDigest,sourceCount,sourcesDigest,styleDigest' &&
+    [snapshot.sourceCount, snapshot.claimCount, snapshot.slideCount].every(
+      (count) => Number.isSafeInteger(count) && count >= 0,
+    ) &&
+    snapshot.sourceCount <= 256 &&
+    snapshot.claimCount <= 256 &&
+    snapshot.slideCount <= 32 &&
+    [
+      snapshot.sourcesDigest,
+      snapshot.claimsDigest,
+      snapshot.slidesDigest,
+      snapshot.styleDigest,
+    ].every((hash) => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))
+  )
 }
 function parseStatus(value: unknown, projectId: string): PresentationProjectStatus {
   const p = value as PresentationProjectStatus | undefined
@@ -112,36 +145,58 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
       throw new Error('presentation_response_invalid')
     let revisions: NonNullable<PresentationProjectStatus['plan']>['revisions']
     if (p.plan.revisions !== undefined) {
-      if (!Array.isArray(p.plan.revisions) || p.plan.revisions.length < 1 || p.plan.revisions.length > 32)
+      if (
+        !Array.isArray(p.plan.revisions) ||
+        p.plan.revisions.length < 1 ||
+        p.plan.revisions.length > 32
+      )
         throw new Error('presentation_response_invalid')
       revisions = []
       for (const [index, event] of p.plan.revisions.entries()) {
-        if (!event || typeof event !== 'object' || Array.isArray(event) ||
+        if (
+          !event ||
+          typeof event !== 'object' ||
+          Array.isArray(event) ||
           Object.keys(event).sort().join(',') !==
-            (event.snapshot === undefined ? 'createdAt,inputDigest,revision' : 'createdAt,inputDigest,revision,snapshot') ||
-          !Number.isSafeInteger(event.revision) || event.revision < 1 ||
+            (event.snapshot === undefined
+              ? 'createdAt,inputDigest,revision'
+              : 'createdAt,inputDigest,revision,snapshot') ||
+          !Number.isSafeInteger(event.revision) ||
+          event.revision < 1 ||
           (index > 0 && event.revision !== revisions[index - 1]!.revision + 1) ||
-          typeof event.inputDigest !== 'string' || !/^[a-f0-9]{64}$/.test(event.inputDigest) ||
+          typeof event.inputDigest !== 'string' ||
+          !/^[a-f0-9]{64}$/.test(event.inputDigest) ||
           (event.snapshot !== undefined && !validRevisionSnapshot(event.snapshot)) ||
           typeof event.createdAt !== 'string' ||
           !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(event.createdAt) ||
           !Number.isFinite(Date.parse(event.createdAt)) ||
           new Date(event.createdAt).toISOString() !== event.createdAt ||
-          (index > 0 && event.createdAt < revisions[index - 1]!.createdAt))
+          (index > 0 && event.createdAt < revisions[index - 1]!.createdAt)
+        )
           throw new Error('presentation_response_invalid')
-        revisions.push({ revision: event.revision, inputDigest: event.inputDigest, createdAt: event.createdAt,
-          ...(event.snapshot ? { snapshot: event.snapshot } : {}) })
+        revisions.push({
+          revision: event.revision,
+          inputDigest: event.inputDigest,
+          createdAt: event.createdAt,
+          ...(event.snapshot ? { snapshot: event.snapshot } : {}),
+        })
       }
       if (revisions.at(-1)!.revision !== p.plan.revision)
         throw new Error('presentation_response_invalid')
     }
-    plan = { revision: p.plan.revision, value: parsePresentationPlan(p.plan.value),
-      ...(revisions ? { revisions } : {}) }
+    plan = {
+      revision: p.plan.revision,
+      value: parsePresentationPlan(p.plan.value),
+      ...(revisions ? { revisions } : {}),
+    }
     if (plan.value.projectId !== projectId) throw new Error('presentation_response_invalid')
     const latestSnapshot = revisions?.at(-1)?.snapshot
-    if (latestSnapshot && (latestSnapshot.sourceCount !== plan.value.sources.length ||
-      latestSnapshot.claimCount !== plan.value.claims.length ||
-      latestSnapshot.slideCount !== plan.value.slides.length))
+    if (
+      latestSnapshot &&
+      (latestSnapshot.sourceCount !== plan.value.sources.length ||
+        latestSnapshot.claimCount !== plan.value.claims.length ||
+        latestSnapshot.slideCount !== plan.value.slides.length)
+    )
       throw new Error('presentation_response_invalid')
   }
   const production =
@@ -214,31 +269,79 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
   const comments = p?.reviewComments
   if (p?.commentsUnavailable !== undefined && p.commentsUnavailable !== true)
     throw new Error('presentation_response_invalid')
-  if (comments !== undefined && (!comments || typeof comments !== 'object' || Array.isArray(comments)))
+  if (
+    comments !== undefined &&
+    (!comments || typeof comments !== 'object' || Array.isArray(comments))
+  )
     throw new Error('presentation_response_invalid')
   if (comments !== undefined) {
     if (
-    p?.commentsUnavailable ||
-    !Number.isSafeInteger(comments.revision) || comments.revision < 0 || comments.revision > 256 ||
-    !Number.isSafeInteger(comments.openCount) || comments.openCount < 0 || comments.openCount > 128 ||
-    !Number.isSafeInteger(comments.resolvedCount) || comments.resolvedCount < 0 || comments.resolvedCount > 128 ||
-    comments.openCount + comments.resolvedCount > 128 ||
-    !Array.isArray(comments.recent) || comments.recent.length > 8 ||
-    comments.recent.length > comments.openCount + comments.resolvedCount ||
-    comments.recent.some((comment) => !comment || typeof comment !== 'object' ||
-      Object.keys(comment).sort().join(',') !== 'authorLabel,createdAt,id,planRevision,state,targetId,targetKind,text' ||
-      !validId(comment.id) || !validId(comment.targetId) ||
-      !['slide', 'claim', 'source'].includes(comment.targetKind) ||
-      typeof comment.authorLabel !== 'string' || !comment.authorLabel || comment.authorLabel.length > 80 ||
-      typeof comment.text !== 'string' || !comment.text || comment.text.length > 400 ||
-      !['open', 'resolved'].includes(comment.state) ||
-      !Number.isSafeInteger(comment.planRevision) || comment.planRevision < 1 ||
-      (plan && comment.planRevision > plan.revision) ||
-      typeof comment.createdAt !== 'string' || !Number.isFinite(Date.parse(comment.createdAt)) ||
-      new Date(comment.createdAt).toISOString() !== comment.createdAt) ||
-    new Set(comments.recent.map((comment) => comment.id)).size !== comments.recent.length
-    ) throw new Error('presentation_response_invalid')
+      p?.commentsUnavailable ||
+      !Number.isSafeInteger(comments.revision) ||
+      comments.revision < 0 ||
+      comments.revision > 256 ||
+      !Number.isSafeInteger(comments.openCount) ||
+      comments.openCount < 0 ||
+      comments.openCount > 128 ||
+      !Number.isSafeInteger(comments.resolvedCount) ||
+      comments.resolvedCount < 0 ||
+      comments.resolvedCount > 128 ||
+      comments.openCount + comments.resolvedCount > 128 ||
+      !Array.isArray(comments.recent) ||
+      comments.recent.length > 8 ||
+      comments.recent.length > comments.openCount + comments.resolvedCount ||
+      comments.recent.some(
+        (comment) =>
+          !comment ||
+          typeof comment !== 'object' ||
+          Object.keys(comment).sort().join(',') !==
+            'authorLabel,createdAt,id,planRevision,state,targetId,targetKind,text' ||
+          !validId(comment.id) ||
+          !validId(comment.targetId) ||
+          !['slide', 'claim', 'source'].includes(comment.targetKind) ||
+          typeof comment.authorLabel !== 'string' ||
+          !comment.authorLabel ||
+          comment.authorLabel.length > 80 ||
+          typeof comment.text !== 'string' ||
+          !comment.text ||
+          comment.text.length > 400 ||
+          !['open', 'resolved'].includes(comment.state) ||
+          !Number.isSafeInteger(comment.planRevision) ||
+          comment.planRevision < 1 ||
+          (plan && comment.planRevision > plan.revision) ||
+          typeof comment.createdAt !== 'string' ||
+          !Number.isFinite(Date.parse(comment.createdAt)) ||
+          new Date(comment.createdAt).toISOString() !== comment.createdAt,
+      ) ||
+      new Set(comments.recent.map((comment) => comment.id)).size !== comments.recent.length
+    )
+      throw new Error('presentation_response_invalid')
   }
+  if (p?.sourcePreparationUnavailable !== undefined && p.sourcePreparationUnavailable !== true)
+    throw new Error('presentation_response_invalid')
+  if (p?.sourcePreparation !== undefined) {
+    const expected = plan?.value.sources.flatMap((source) => {
+      const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
+      return match ? [{ sourceId: source.id, attachmentId: match[1]! }] : []
+    })
+    if (
+      !expected ||
+      p.sourcePreparationUnavailable ||
+      !Array.isArray(p.sourcePreparation) ||
+      p.sourcePreparation.length !== expected.length ||
+      p.sourcePreparation.some(
+        (item, index) =>
+          !item ||
+          typeof item !== 'object' ||
+          Object.keys(item).sort().join(',') !== 'attachmentId,sourceId,status' ||
+          item.sourceId !== expected[index]!.sourceId ||
+          item.attachmentId !== expected[index]!.attachmentId ||
+          !['ready', 'uploading', 'failed', 'missing', 'unsupported'].includes(item.status),
+      )
+    )
+      throw new Error('presentation_response_invalid')
+  }
+  if (p?.sourcePreparationUnavailable && !plan) throw new Error('presentation_response_invalid')
   if (
     !p ||
     p.projectId !== projectId ||
@@ -292,6 +395,8 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
     throw new Error('presentation_response_invalid')
   // Copy only the bounded public projection; never retain arbitrary server fields or binary data.
   return {
+    ...(p.sourcePreparation ? { sourcePreparation: structuredClone(p.sourcePreparation) } : {}),
+    ...(p.sourcePreparationUnavailable ? { sourcePreparationUnavailable: true } : {}),
     ...(comments ? { reviewComments: structuredClone(comments) } : {}),
     ...(p.commentsUnavailable ? { commentsUnavailable: true } : {}),
     ...(production ? { production } : {}),
@@ -351,8 +456,12 @@ function message(error: unknown): string {
 export function createPresentationProjectController(
   options: Pick<
     PresentationGenerationOptions,
-    'request' | 'available' | 'documentId' | 'lastProject' |
-    'selectedProduction' | 'rememberSelectedProduction'
+    | 'request'
+    | 'available'
+    | 'documentId'
+    | 'lastProject'
+    | 'selectedProduction'
+    | 'rememberSelectedProduction'
   > &
     Pick<AgentSkill, 'executeTool'>,
 ): PresentationProjectController {
@@ -465,8 +574,13 @@ export function createPresentationProjectController(
       const value = JSON.parse(text)
       if (value?.error) throw new Error(`presentation_${value.error}`)
       const project = parseStatus(value, projectId)
-      let selectedRequest = phase === 'loading' && requestId ? requestId : selection?.requestId ??
-        (ignoreStoredSelection ? undefined : options.selectedProduction?.(projectId, documentId))
+      let selectedRequest =
+        phase === 'loading' && requestId
+          ? requestId
+          : (selection?.requestId ??
+            (ignoreStoredSelection
+              ? undefined
+              : options.selectedProduction?.(projectId, documentId)))
       if (
         selectedRequest &&
         !project.productionTasks?.some((task) => task.requestId === selectedRequest)
@@ -506,16 +620,25 @@ export function createPresentationProjectController(
             if ((await options.documentId()) !== documentId)
               throw new Error('presentation_document_changed')
             check()
-            const resumed = await options.executeTool({
-              id: `presentation-reconnect-${captured}`,
-              name: 'resume_presentation_production_job',
-              input: { project_id: projectId, request_id: productionRequest },
-            }, controller.signal)
+            const resumed = await options.executeTool(
+              {
+                id: `presentation-reconnect-${captured}`,
+                name: 'resume_presentation_production_job',
+                input: { project_id: projectId, request_id: productionRequest },
+              },
+              controller.signal,
+            )
             check()
             if (resumed.isError) throw new Error(resumed.output)
-            const refreshed = await options.request({
-              operation: 'production_job_status', documentId, projectId, requestId: productionRequest,
-            }, controller.signal)
+            const refreshed = await options.request(
+              {
+                operation: 'production_job_status',
+                documentId,
+                projectId,
+                requestId: productionRequest,
+              },
+              controller.signal,
+            )
             check()
             if (!refreshed.ok) throw new Error('presentation_service_unavailable')
             const refreshedText = await refreshed.text()
@@ -524,7 +647,12 @@ export function createPresentationProjectController(
               throw new Error('presentation_response_invalid')
             const refreshedValue = JSON.parse(refreshedText)
             if (refreshedValue?.error) throw new Error(`presentation_${refreshedValue.error}`)
-            const resumedStatus = parsePresentationJobResponse(refreshedValue, documentId, projectId, productionRequest)
+            const resumedStatus = parsePresentationJobResponse(
+              refreshedValue,
+              documentId,
+              projectId,
+              productionRequest,
+            )
             project.production = resumedStatus.production
             project.productionJob = resumedStatus.job
           }
@@ -538,7 +666,8 @@ export function createPresentationProjectController(
         try {
           await options.rememberSelectedProduction?.(projectId, documentId, selectedRequest)
         } catch (error) {
-          if (error instanceof Error && error.message === 'presentation_document_changed') throw error
+          if (error instanceof Error && error.message === 'presentation_document_changed')
+            throw error
           throw new Error('presentation_selection_save_failed', { cause: error })
         }
         check()
@@ -713,6 +842,9 @@ export function createPresentationProjectController(
     runProduction: (requestId) => run('producing', requestId),
     cancel: () => stop(message(new Error('cancelled'))),
     clear: () => stop(undefined, true),
-    prepareReconnect: () => { ignoreStoredSelection = false; recoverInterruptedJob = true },
+    prepareReconnect: () => {
+      ignoreStoredSelection = false
+      recoverInterruptedJob = true
+    },
   }
 }

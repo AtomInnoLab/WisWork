@@ -31,9 +31,19 @@ export function presentationWorkflowSummary(
 ): PresentationWorkflowSummary | undefined {
   if (!project) return undefined
   const plan = project.plan?.value
+  const preparedSources = project.sourcePreparation
+  const sourceProblems = preparedSources?.filter((source) => source.status !== 'ready') ?? []
+  const sourceStatus = preparedSources
+    ? `；当前文档引用附件 ${preparedSources.filter((source) => source.status === 'ready').length}/${preparedSources.length} 份已解析为文本${sourceProblems.length ? `，${sourceProblems.length} 份需处理` : ''}`
+    : project.sourcePreparationUnavailable
+      ? '；当前文档引用附件状态暂不可读取'
+      : ''
   const domainProfile = plan?.domain ? PRESENTATION_DOMAIN_PROFILES[plan.domain] : undefined
-  const sectionLabels = new Map<string, string>(domainProfile?.sections.map((section, index) =>
-    [section, domainProfile.labels[index]!] as [string, string]) ?? [])
+  const sectionLabels = new Map<string, string>(
+    domainProfile?.sections.map(
+      (section, index) => [section, domainProfile.labels[index]!] as [string, string],
+    ) ?? [],
+  )
   const production = project.production
   const pageIds = production?.pages.map((page) => page.id)
   const importMatches = Boolean(
@@ -82,9 +92,13 @@ export function presentationWorkflowSummary(
     plan && production && production.planRevision !== project.plan!.revision,
   )
   const revisions = project.plan?.revisions
-  const productionStyle = revisions?.find((entry) => entry.revision === production?.planRevision)?.snapshot?.styleDigest
-  const latestStyle = revisions?.find((entry) => entry.revision === project.plan?.revision)?.snapshot?.styleDigest
-  const styleChangedSinceProduction = Boolean(planChangedSinceProduction && productionStyle && latestStyle && productionStyle !== latestStyle)
+  const productionStyle = revisions?.find((entry) => entry.revision === production?.planRevision)
+    ?.snapshot?.styleDigest
+  const latestStyle = revisions?.find((entry) => entry.revision === project.plan?.revision)
+    ?.snapshot?.styleDigest
+  const styleChangedSinceProduction = Boolean(
+    planChangedSinceProduction && productionStyle && latestStyle && productionStyle !== latestStyle,
+  )
   const uncertain = importMatches
     ? imported!.pages.filter((page) => page.state === 'uncertain').length
     : 0
@@ -96,7 +110,10 @@ export function presentationWorkflowSummary(
       text: `当前选中页任务依据计划第 ${production!.planRevision} 版，现已保存第 ${project.plan!.revision} 版；请确认继续旧任务或选择新任务。`,
     })
   if (styleChangedSinceProduction)
-    attention.push({ id: 'style-revision', text: '品牌或样式规则已变化；当前页面的历史视觉审查只适用于旧计划。选择新任务后需重新审查受影响页面。' })
+    attention.push({
+      id: 'style-revision',
+      text: '品牌或样式规则已变化；当前页面的历史视觉审查只适用于旧计划。选择新任务后需重新审查受影响页面。',
+    })
   if (failed)
     attention.push({
       id: 'failed-pages',
@@ -116,6 +133,31 @@ export function presentationWorkflowSummary(
     attention.push({
       id: 'content-issues',
       text: `${openIssues} 项内容证据问题待处理；请查看交付报告。`,
+    })
+  if (sourceProblems.length) {
+    const labels = sourceProblems
+      .slice(0, 3)
+      .map(
+        (source) =>
+          `${plan?.sources.find((item) => item.id === source.sourceId)?.title ?? source.sourceId}（${
+            {
+              uploading: '上传中',
+              failed: '解析失败',
+              missing: '缺失',
+              unsupported: '非文本资料',
+              ready: '已就绪',
+            }[source.status]
+          }）`,
+      )
+      .join('、')
+    attention.push({
+      id: 'source-preparation',
+      text: `${sourceProblems.length} 份计划引用资料尚不可用于原文追溯：${labels}${sourceProblems.length > 3 ? '等' : ''}；请检查当前文档附件。`,
+    })
+  } else if (project.sourcePreparationUnavailable)
+    attention.push({
+      id: 'source-preparation-unavailable',
+      text: '当前文档引用资料状态暂不可读取；请重试项目状态后再判断原文追溯是否可用。',
     })
   const pages = (production?.pages ?? project.slides).map((slide) => {
     const plannedSlide = plan?.slides.find((item) => item.id === slide.id)
@@ -156,13 +198,16 @@ export function presentationWorkflowSummary(
       ? reviewedPage.recheckRequired
         ? '历史检查已失效'
         : reviewedPage.visual.status === 'pass' && reviewedPage.structure.status === 'passed'
-          ? styleChangedSinceProduction ? '旧样式版本历史通过' : '历史结构与视觉通过'
+          ? styleChangedSinceProduction
+            ? '旧样式版本历史通过'
+            : '历史结构与视觉通过'
           : reviewedPage.visual.status === 'needs_changes'
             ? '历史检查需修改'
             : '待完成页面复核'
       : '无当前任务 QA 记录'
-    const pageNext = planChangedSinceProduction ? '先确认继续旧计划或选择新任务' :
-      !page || page.state === 'pending'
+    const pageNext = planChangedSinceProduction
+      ? '先确认继续旧计划或选择新任务'
+      : !page || page.state === 'pending'
         ? '制作页面'
         : page.state === 'building'
           ? '等待当前编译'
@@ -200,7 +245,7 @@ export function presentationWorkflowSummary(
     {
       name: '目标与资料',
       detail: plan
-        ? `Brief 已保存；登记 ${plan.sources.length} 份资料、${plan.claims.length} 条主张，真实性仍需核验`
+        ? `Brief 已保存；登记 ${plan.sources.length} 份资料、${plan.claims.length} 条主张${sourceStatus}，真实性仍需核验`
         : '尚无已保存的结构化计划',
     },
     {
@@ -240,6 +285,11 @@ export function presentationWorkflowSummary(
   ]
   // Rebuild from durable records. Undated entries are current checkpoints, not events.
   const timeline: PresentationWorkflowSummary['timeline'] = []
+  if (preparedSources)
+    timeline.push({
+      id: 'source-preparation',
+      text: `当前文档资料检查点：${preparedSources.filter((source) => source.status === 'ready').length}/${preparedSources.length} 份计划引用附件可读取原文；来源真实性未核验`,
+    })
   if (plan) {
     const revisions = project.plan!.revisions
     if (revisions?.length) {
@@ -377,37 +427,39 @@ export function presentationWorkflowSummary(
   const nextAction = !plan
     ? '保存 Brief、资料、故事线与样式规范'
     : !production
-      ? '按已保存计划启动逐页生产'
+      ? sourceProblems.length
+        ? '检查并补齐计划引用的资料，再决定是否开始生产'
+        : '按已保存计划启动逐页生产'
       : planChangedSinceProduction
         ? '核对已保存的新计划，选择继续旧任务或按新计划重新生产'
-      : production.revision
-        ? '检查单页修订并按保存点确认宿主页替换'
-        : project.productionJob &&
-            ['running', 'pausing', 'cancelling'].includes(project.productionJob.state)
-          ? '等待当前后台页任务完成或处理暂停/取消请求'
-          : project.productionJob?.state === 'cancelled'
-            ? '当前后台任务已取消；如需继续，请重新建立页生产任务'
-            : failed
-              ? '修复失败页后继续生产'
-              : production.compiledCount < production.total
-                ? '继续生产剩余页面'
-                : !importMatches
-                  ? '准备成果并确认逐页导入'
-                  : imported!.status === 'uncertain'
-                    ? '先检查写入结果不确定的页面'
-                    : imported!.completed < imported!.total
-                      ? '继续导入剩余页面'
-                      : !qaMatches
-                        ? '采集页面截图并记录审查'
-                        : qa!.pages.some((page) => page.recheckRequired)
-                          ? '重审受影响页面'
-                          : reviewed < qa!.pages.length
-                            ? '处理未通过或待审页面'
-                            : !reportMatches
-                              ? '读取当前任务的内容证据交付报告'
-                              : openIssues
-                                ? '处理内容证据报告中的待处理问题'
-                                : '继续来源核验与保存重开验收'
+        : production.revision
+          ? '检查单页修订并按保存点确认宿主页替换'
+          : project.productionJob &&
+              ['running', 'pausing', 'cancelling'].includes(project.productionJob.state)
+            ? '等待当前后台页任务完成或处理暂停/取消请求'
+            : project.productionJob?.state === 'cancelled'
+              ? '当前后台任务已取消；如需继续，请重新建立页生产任务'
+              : failed
+                ? '修复失败页后继续生产'
+                : production.compiledCount < production.total
+                  ? '继续生产剩余页面'
+                  : !importMatches
+                    ? '准备成果并确认逐页导入'
+                    : imported!.status === 'uncertain'
+                      ? '先检查写入结果不确定的页面'
+                      : imported!.completed < imported!.total
+                        ? '继续导入剩余页面'
+                        : !qaMatches
+                          ? '采集页面截图并记录审查'
+                          : qa!.pages.some((page) => page.recheckRequired)
+                            ? '重审受影响页面'
+                            : reviewed < qa!.pages.length
+                              ? '处理未通过或待审页面'
+                              : !reportMatches
+                                ? '读取当前任务的内容证据交付报告'
+                                : openIssues
+                                  ? '处理内容证据报告中的待处理问题'
+                                  : '继续来源核验与保存重开验收'
   let nextTool: PresentationWorkflowSummary['nextTool']
   if (plan && production && !production.revision && !planChangedSinceProduction) {
     if (

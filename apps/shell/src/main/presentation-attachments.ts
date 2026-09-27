@@ -257,7 +257,11 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
       fail('invalid_state')
   }
   if (m.status !== 'ready' && m.licenseDeclaration !== undefined) fail('invalid_state')
-  if (m.status === 'failed' && !['parse_failed', 'animated_image_unsupported'].includes(m.error ?? '')) fail('invalid_state')
+  if (
+    m.status === 'failed' &&
+    !['parse_failed', 'animated_image_unsupported'].includes(m.error ?? '')
+  )
+    fail('invalid_state')
   return m
 }
 const publicMetadata = (m: Metadata, receivedBytes: number) => ({
@@ -381,6 +385,7 @@ export function createPresentationAttachmentService(options: {
       attachment_revoke_license: ['attachmentId'],
       attachment_list: [],
       attachment_list_assets: [],
+      attachment_metadata: ['attachmentId'],
       attachment_asset: ['attachmentId'],
       attachment_original: ['attachmentId', 'offset', 'length'],
       attachment_read: ['attachmentId', 'offset', 'maxChars'],
@@ -432,10 +437,16 @@ export function createPresentationAttachmentService(options: {
     await previous
     try {
       checkAbort(signal)
-      await directory(root, !['attachment_read', 'attachment_original'].includes(op))
+      await directory(
+        root,
+        !['attachment_read', 'attachment_original', 'attachment_metadata'].includes(op),
+      )
       if (!stagingCleanup) stagingCleanup = cleanupOldStaging(root)
       await stagingCleanup
-      await directory(doc, !['attachment_read', 'attachment_original'].includes(op))
+      await directory(
+        doc,
+        !['attachment_read', 'attachment_original', 'attachment_metadata'].includes(op),
+      )
       const entries = await readdir(doc)
       if (entries.some((e) => !isId(e))) fail('invalid_state')
       const id = body.attachmentId as string
@@ -688,6 +699,7 @@ export function createPresentationAttachmentService(options: {
       const rawPath = join(dir, `raw${extname(m.name).toLowerCase()}`)
       const received = await rawSize(rawPath)
       if (received > m.sizeBytes) fail('invalid_state')
+      if (op === 'attachment_metadata') return publicMetadata(m, received)
       if (op === 'attachment_begin') {
         if (m.name !== body.name || m.sizeBytes !== body.sizeBytes) fail('attachment_conflict')
         return publicMetadata(m, received)
@@ -784,7 +796,10 @@ export function createPresentationAttachmentService(options: {
               name: m.name,
               sizeBytes: m.sizeBytes,
               status: 'failed',
-              error: error instanceof Error && error.message === 'animated_image_unsupported' ? 'animated_image_unsupported' : 'parse_failed',
+              error:
+                error instanceof Error && error.message === 'animated_image_unsupported'
+                  ? 'animated_image_unsupported'
+                  : 'parse_failed',
             }
           }
           await atomic(join(dir, 'metadata.json'), JSON.stringify(m))
