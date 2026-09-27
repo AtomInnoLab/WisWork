@@ -4,11 +4,44 @@ import {
   parsePresentationPlan,
   presentationPlanClaims,
   assertDeckMatchesPresentationPlan,
+  assertBrandKitRevision,
 } from '../src/presentation-plan'
 import { benchmarkPlan } from './fixtures/presentation-plan'
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
 describe('durable presentation plan', () => {
+  it('pins reusable layout slots to native object types and geometry', () => {
+    const plan = benchmarkPlan()
+    plan.brandKit = {
+      id: 'research-brand', revision: 1, name: 'Research',
+      allowedColors: ['FFFFFF', '172033', '2255AA'],
+      layoutComponents: [{ id: 'title-body', name: 'Title and body', layout: 'content', slots: [
+        { id: 'title', kind: 'text', x: 1, y: 1, w: 10, h: 1 },
+        { id: 'body', kind: 'text', x: 1, y: 2.5, w: 10, h: 3 },
+      ] }],
+    }
+    plan.slides[0]!.layoutComponentId = 'title-body'
+    const deck = benchmarkDeck()
+    expect(() => assertDeckMatchesPresentationPlan(deck, parsePresentationPlan(plan))).not.toThrow()
+    deck.slides[0]!.elements[1]!.x = 1.1
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow('presentation_plan_mismatch:layout_component')
+    deck.slides[0]!.elements[1]!.x = 1
+    deck.slides[0]!.elements[1] = { kind: 'shape', shape: 'rect', id: 'body', x: 1, y: 2.5, w: 10, h: 3 }
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow('presentation_plan_mismatch:layout_component')
+    plan.slides[0]!.layout = 'cover'
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:layout_component')
+    plan.slides[0]!.layout = 'content'
+    plan.slides[0]!.layoutComponentId = 'missing'
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:layout_component')
+    plan.slides[0]!.layoutComponentId = 'title-body'
+    const revised = structuredClone(plan)
+    revised.brandKit!.layoutComponents![0]!.slots[0]!.x = 2
+    expect(() => assertBrandKitRevision(plan, revised)).toThrow('presentation_plan_invalid:brand_kit_revision')
+    revised.brandKit!.revision = 2
+    expect(() => assertBrandKitRevision(plan, revised)).not.toThrow()
+    plan.brandKit.layoutComponents![0]!.slots[1]!.w = 13
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:brand_kit')
+  })
   it('enforces an optional brand palette and required cover logo in the compiled deck', () => {
     const plan = benchmarkPlan()
     plan.brandKit = {

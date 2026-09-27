@@ -13,7 +13,12 @@ it('reuses exact brand kit revisions across PC service restarts and projects', a
     const kit = { id: 'research', revision: 1, name: '研究品牌', allowedColors: ['FFFFFF', '172033', '2255AA'] }
     expect(await call(first, { operation: 'brand_kit_save', expectedRevision: 0, brandKit: kit })).toEqual({ brandKit: kit })
     expect(await call(first, { operation: 'brand_kit_list' })).toEqual({ brandKits: [kit] })
-    const changed = { ...kit, revision: 2, allowedColors: [...kit.allowedColors, '008844'] }
+    const changed = { ...kit, revision: 2, allowedColors: [...kit.allowedColors, '008844'], layoutComponents: [
+      { id: 'title-body', name: '标题与正文', layout: 'content', slots: [
+        { id: 'title', kind: 'text', x: 1, y: 1, w: 10, h: 1 },
+        { id: 'body', kind: 'text', x: 1, y: 2.5, w: 10, h: 3 },
+      ] },
+    ] }
     expect(await call(first, { operation: 'brand_kit_save', expectedRevision: 1, brandKit: changed })).toEqual({ brandKit: changed })
     expect(await call(first, { operation: 'brand_kit_save', expectedRevision: 1, brandKit: changed })).toEqual({ error: 'revision_conflict' })
     const reopened = createPresentationService({ userDataPath: root })

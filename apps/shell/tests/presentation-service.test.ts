@@ -302,6 +302,27 @@ const planRequest = (value = plan(), expectedRevision = 0) => ({
   plan: value,
 })
 describe('durable presentation planning', () => {
+  it('reuses a catalog layout component across projects and rejects slot drift before compilation', async () => {
+    const compile = vi.fn(async () => result())
+    const service = createPresentationService({ userDataPath: root(), compile })
+    const brandKit = { id: 'research', revision: 1, name: 'Research', allowedColors: ['FFFFFF', '111111', '3366FF'], layoutComponents: [
+      { id: 'headline', name: 'Headline', layout: 'content', slots: [
+        { id: 'text', kind: 'text', x: 1, y: 1, w: 4, h: 1 },
+      ] },
+    ] }
+    expect(decode(await service({ operation: 'brand_kit_save', documentId: input.documentId, expectedRevision: 0, brandKit }, signal()))).toEqual({ brandKit })
+    for (const projectId of ['deck', 'deck-two']) {
+      const documentId = `office:${projectId}`
+      const current = { ...plan(), projectId, brandKit, slides: [{ ...plan().slides[0]!, layoutComponentId: 'headline' }] }
+      expect(decode(await service({ operation: 'save_plan', documentId, projectId, expectedRevision: 0, plan: current }, signal()))).toMatchObject({ revision: 1 })
+      const deck = { ...input.deck, id: projectId }
+      expect(decode(await service({ ...input, documentId, projectId, requestId: `bad-${projectId}`, planRevision: 1, deck: {
+        ...deck, slides: [{ ...deck.slides[0]!, elements: [{ ...deck.slides[0]!.elements[0]!, x: 1.2 }] }],
+      } }, signal()))).toEqual({ error: 'plan_mismatch' })
+      expect(decode(await service({ ...input, documentId, projectId, requestId: `good-${projectId}`, planRevision: 1, deck }, signal()))).toMatchObject({ status: 'compiled' })
+    }
+    expect(compile).toHaveBeenCalledTimes(2)
+  })
   it('binds a planned brand logo to the bytes passed to the compiler', async () => {
     const compile = vi.fn(async () => result())
     const service = createPresentationService({ userDataPath: root(), compile })

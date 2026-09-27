@@ -1,5 +1,5 @@
 import type { PresentationClaim, PresentationDeck, PresentationStyle } from './presentation'
-import { PRESENTATION_DECK_SCHEMA, PRESENTATION_TEXT_BUDGET } from './presentation'
+import { PRESENTATION_DECK_SCHEMA, PRESENTATION_HEIGHT, PRESENTATION_TEXT_BUDGET, PRESENTATION_WIDTH } from './presentation'
 import { type Schema, text, number, choice, array, object, id, color, valid } from './presentation-schema'
 
 /** Mandatory deck JSON may consume 192 KiB of the 256 KiB compile transport.
@@ -56,6 +56,12 @@ export interface PresentationPlan {
     name: string
     allowedColors: string[]
     logo?: { assetId: string; assetDigest: string; placement: 'cover' | 'all' }
+    layoutComponents?: {
+      id: string
+      name: string
+      layout: PresentationPlan['slides'][number]['layout']
+      slots: { id: string; kind: 'text' | 'shape' | 'image' | 'table' | 'chart'; x: number; y: number; w: number; h: number }[]
+    }[]
   }
   slides: {
     id: string
@@ -63,6 +69,7 @@ export interface PresentationPlan {
     purpose: string
     claimIds: string[]
     layout: 'cover' | 'content' | 'comparison' | 'process' | 'chart' | 'summary'
+    layoutComponentId?: string
     requiredAssets: string[]
     acceptanceCriteria: string[]
   }[]
@@ -141,6 +148,19 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object({
     name: text(160, 1),
     allowedColors: array(color, 32, 1),
     logo: object({ assetId: id, assetDigest: { ...text(64, 64), pattern: '^[a-f0-9]{64}$' }, placement: choice('cover', 'all') }),
+    layoutComponents: array(object({
+      id,
+      name: text(160, 1),
+      layout: choice('cover', 'content', 'comparison', 'process', 'chart', 'summary'),
+      slots: array(object({
+        id,
+        kind: choice('text', 'shape', 'image', 'table', 'chart'),
+        x: number(0, PRESENTATION_WIDTH),
+        y: number(0, PRESENTATION_HEIGHT),
+        w: number(0.01, PRESENTATION_WIDTH),
+        h: number(0.01, PRESENTATION_HEIGHT),
+      }), 32, 1),
+    }), 32),
   }, ['id', 'revision', 'name', 'allowedColors']),
   slides: array(
     object({
@@ -149,9 +169,10 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object({
       purpose: text(2000, 1),
       claimIds: array(id, 32),
       layout: choice('cover', 'content', 'comparison', 'process', 'chart', 'summary'),
+      layoutComponentId: id,
       requiredAssets: array(text(1000, 1), 32),
       acceptanceCriteria: array(text(2000, 1), 32),
-    }),
+    }, ['id', 'title', 'purpose', 'claimIds', 'layout', 'requiredAssets', 'acceptanceCriteria']),
     32,
     1,
   ),
@@ -164,6 +185,14 @@ export function parsePresentationBrandKit(input: unknown): PresentationBrandKit 
   const colors = kit.allowedColors.map((value) => value.toUpperCase())
   if (!Number.isSafeInteger(kit.revision) || new Set(colors).size !== colors.length)
     throw new Error('presentation_brand_kit_invalid')
+  const components = kit.layoutComponents ?? []
+  if (new Set(components.map((item) => item.id)).size !== components.length)
+    throw new Error('presentation_brand_kit_invalid')
+  for (const component of components) {
+    if (new Set(component.slots.map((slot) => slot.id)).size !== component.slots.length ||
+      component.slots.some((slot) => slot.x + slot.w > PRESENTATION_WIDTH || slot.y + slot.h > PRESENTATION_HEIGHT))
+      throw new Error('presentation_brand_kit_invalid')
+  }
   return structuredClone(kit)
 }
 
@@ -178,12 +207,20 @@ export function parsePresentationPlan(input: unknown): PresentationPlan {
   if (!valid(input, PRESENTATION_PLAN_SCHEMA)) reject('schema')
   const plan = input as PresentationPlan
   if (plan.brandKit) {
-    const colors = parsePresentationBrandKit(plan.brandKit).allowedColors.map((value) => value.toUpperCase())
+    let brandKit: PresentationBrandKit
+    try { brandKit = parsePresentationBrandKit(plan.brandKit) }
+    catch { reject('brand_kit') }
+    const colors = brandKit.allowedColors.map((value) => value.toUpperCase())
     if (
       [plan.style.background, plan.style.textColor, plan.style.accentColor].some((value) => !colors.includes(value.toUpperCase())))
       reject('brand_kit')
     if (plan.brandKit.logo?.placement === 'cover' && !plan.slides.some((slide) => slide.layout === 'cover'))
       reject('brand_kit_logo_scope')
+  }
+  const components = new Map(plan.brandKit?.layoutComponents?.map((item) => [item.id, item]) ?? [])
+  for (const slide of plan.slides) {
+    if (slide.layoutComponentId && components.get(slide.layoutComponentId)?.layout !== slide.layout)
+      reject('layout_component')
   }
   if (new TextEncoder().encode(JSON.stringify(plan)).byteLength > 192 * 1024) reject('size_budget')
   unique(
@@ -270,6 +307,7 @@ export function assertBrandKitRevision(previous: PresentationPlan, next: Present
   if (!before || !after || before.id !== after.id) return
   const rules = (kit: NonNullable<PresentationPlan['brandKit']>) => JSON.stringify({
     name: kit.name, allowedColors: kit.allowedColors.map((color) => color.toUpperCase()), logo: kit.logo,
+    layoutComponents: kit.layoutComponents,
   })
   if (rules(before) !== rules(after) && after.revision <= before.revision)
     throw new Error('presentation_plan_invalid:brand_kit_revision')
@@ -331,6 +369,16 @@ export function assertDeckMatchesPresentationPlan(
       JSON.stringify(slide.claimIds ?? []) !== JSON.stringify(planned.claimIds)
     )
       mismatch('slide')
+    if (planned.layoutComponentId) {
+      const component = plan.brandKit?.layoutComponents?.find((item) => item.id === planned.layoutComponentId)
+      if (!component) throw new Error('presentation_plan_mismatch:layout_component')
+      for (const slot of component.slots) {
+        const element = slide.elements.find((item) => item.id === slot.id)
+        if (!element || element.kind !== slot.kind ||
+          element.x !== slot.x || element.y !== slot.y || element.w !== slot.w || element.h !== slot.h)
+          mismatch('layout_component')
+      }
+    }
   }
   if (deck.claims.length !== expectedClaims.length) mismatch('claims')
   for (const [index, claim] of deck.claims.entries()) {
