@@ -258,6 +258,7 @@ export function createPresentationService(options: {
           'attachment_original',
           'attachment_list_assets',
           'attachment_metadata',
+          'attachment_match_excerpt',
         ].includes(request.operation as string)
       )
         return boundedResponse(await attachments(request, signal))
@@ -270,6 +271,7 @@ export function createPresentationService(options: {
           'resume',
           'save_plan',
           'get_plan',
+          'audit_sources',
           'production_begin',
           'production_rebuild_page',
           'production_status',
@@ -542,6 +544,56 @@ export function createPresentationService(options: {
             projectId,
             revision: record.revision,
             plan: parsePresentationPlan(record.plan),
+          })
+        }
+        if (request.operation === 'audit_sources') {
+          const record = store.plan(projectId, documentId)
+          if (!record) throw new Error('not_found')
+          const plan = parsePresentationPlan(record.plan)
+          const sources = []
+          for (const source of plan.sources) {
+            const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
+            if (!match) continue
+            try {
+              const result = (await attachments(
+                {
+                  operation: 'attachment_match_excerpt',
+                  documentId,
+                  attachmentId: match[1],
+                  excerpt: source.excerpt,
+                },
+                signal,
+              )) as { attachmentId: string; status: string; offset?: number }
+              if (
+                result.attachmentId !== match[1] ||
+                !['found', 'not_found', 'empty_excerpt', 'not_ready', 'unsupported'].includes(
+                  result.status,
+                ) ||
+                (result.status === 'found'
+                  ? !Number.isSafeInteger(result.offset)
+                  : result.offset !== undefined)
+              )
+                throw new Error('invalid_state')
+              sources.push({
+                sourceId: source.id,
+                attachmentId: match[1],
+                status: result.status,
+                ...(result.status === 'found' ? { offset: result.offset } : {}),
+              })
+            } catch (error) {
+              if (!(error instanceof Error) || error.message !== 'not_found') throw error
+              sources.push({ sourceId: source.id, attachmentId: match[1], status: 'missing' })
+            }
+          }
+          return boundedResponse({
+            projectId,
+            planRevision: record.revision,
+            sources,
+            checks: {
+              support: 'not_verified',
+              sourceAuthority: 'not_verified',
+              timeliness: 'not_verified',
+            },
           })
         }
         if (request.operation === 'status') {

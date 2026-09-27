@@ -386,6 +386,7 @@ export function createPresentationAttachmentService(options: {
       attachment_list: [],
       attachment_list_assets: [],
       attachment_metadata: ['attachmentId'],
+      attachment_match_excerpt: ['attachmentId', 'excerpt'],
       attachment_asset: ['attachmentId'],
       attachment_original: ['attachmentId', 'offset', 'length'],
       attachment_read: ['attachmentId', 'offset', 'maxChars'],
@@ -418,6 +419,11 @@ export function createPresentationAttachmentService(options: {
     if (op === 'attachment_import_url' && (typeof body.url !== 'string' || body.url.length > 2048))
       fail('invalid_request')
     if (body.after !== undefined && !isId(body.after)) fail('invalid_request')
+    if (
+      op === 'attachment_match_excerpt' &&
+      (typeof body.excerpt !== 'string' || body.excerpt.length > 12000)
+    )
+      fail('invalid_request')
     if (op === 'attachment_begin') {
       if (
         !filename(body.name) ||
@@ -439,13 +445,23 @@ export function createPresentationAttachmentService(options: {
       checkAbort(signal)
       await directory(
         root,
-        !['attachment_read', 'attachment_original', 'attachment_metadata'].includes(op),
+        ![
+          'attachment_read',
+          'attachment_original',
+          'attachment_metadata',
+          'attachment_match_excerpt',
+        ].includes(op),
       )
       if (!stagingCleanup) stagingCleanup = cleanupOldStaging(root)
       await stagingCleanup
       await directory(
         doc,
-        !['attachment_read', 'attachment_original', 'attachment_metadata'].includes(op),
+        ![
+          'attachment_read',
+          'attachment_original',
+          'attachment_metadata',
+          'attachment_match_excerpt',
+        ].includes(op),
       )
       const entries = await readdir(doc)
       if (entries.some((e) => !isId(e))) fail('invalid_state')
@@ -700,6 +716,18 @@ export function createPresentationAttachmentService(options: {
       const received = await rawSize(rawPath)
       if (received > m.sizeBytes) fail('invalid_state')
       if (op === 'attachment_metadata') return publicMetadata(m, received)
+      if (op === 'attachment_match_excerpt') {
+        if (m.status !== 'ready') return { attachmentId: id, status: 'not_ready' }
+        if (m.kind !== 'text') return { attachmentId: id, status: 'unsupported' }
+        const value = (await bytes(join(dir, 'text.txt'), TEXT_LIMIT * 4)).toString('utf8')
+        if (value.length !== m.totalChars || hash(value) !== m.textDigest) fail('invalid_state')
+        checkAbort(signal)
+        if (!(body.excerpt as string).trim()) return { attachmentId: id, status: 'empty_excerpt' }
+        const offset = value.indexOf(body.excerpt as string)
+        return offset < 0
+          ? { attachmentId: id, status: 'not_found' }
+          : { attachmentId: id, status: 'found', offset }
+      }
       if (op === 'attachment_begin') {
         if (m.name !== body.name || m.sizeBytes !== body.sizeBytes) fail('attachment_conflict')
         return publicMetadata(m, received)

@@ -26,27 +26,142 @@ function setup(history?: PresentationHistoryEntry[]) {
   return { skill, vfs, request, rememberProject, documentId, available }
 }
 describe('saved presentation planning tools', () => {
+  it('exposes bounded literal source audit without claiming factual verification', async () => {
+    const f = setup()
+    const auditPlan = structuredClone(plan)
+    auditPlan.sources[0]!.uri = `attachment:${'a'.repeat(64)}`
+    const result = {
+      projectId: plan.projectId,
+      planRevision: 2,
+      sources: [{ sourceId: 'source', attachmentId: 'a'.repeat(64), status: 'found', offset: 12 }],
+      checks: {
+        support: 'not_verified',
+        sourceAuthority: 'not_verified',
+        timeliness: 'not_verified',
+      },
+    }
+    f.request
+      .mockResolvedValueOnce(new Response(JSON.stringify(result)))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ projectId: plan.projectId, revision: 2, plan: auditPlan })),
+      )
+    const call = {
+      id: 'audit',
+      name: 'audit_presentation_sources',
+      input: { project_id: plan.projectId },
+    }
+    expect(JSON.parse((await f.skill.executeTool(call)).output)).toEqual(result)
+    expect(f.request).toHaveBeenCalledWith(
+      { operation: 'audit_sources', documentId: 'doc-1', projectId: plan.projectId },
+      undefined,
+    )
+    expect(f.request).toHaveBeenCalledWith(
+      { operation: 'get_plan', documentId: 'doc-1', projectId: plan.projectId },
+      undefined,
+    )
+    f.request.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...result, checks: { support: 'verified' } })),
+    )
+    expect(await f.skill.executeTool(call)).toMatchObject({
+      isError: true,
+      output: 'presentation_response_invalid',
+    })
+    f.request
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ...result, sources: [{ ...result.sources[0], sourceId: 'forged' }] }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ projectId: plan.projectId, revision: 2, plan: auditPlan })),
+      )
+    expect(await f.skill.executeTool(call)).toMatchObject({
+      isError: true,
+      output: 'presentation_response_invalid',
+    })
+  })
   it('exposes applied edit candidates without changing the plan or brand kit', async () => {
-    const record = { version: 1 as const, changeId: 'edit1', documentId: 'doc-1', projectId: plan.projectId, requestId: 'request1', artifactDigest: 'a'.repeat(64), pageId: 'page1', hostSlideId: 'slide1', shapeId: 'shape1', before: '长标题', after: '短标题', state: 'applied' as const }
+    const record = {
+      version: 1 as const,
+      changeId: 'edit1',
+      documentId: 'doc-1',
+      projectId: plan.projectId,
+      requestId: 'request1',
+      artifactDigest: 'a'.repeat(64),
+      pageId: 'page1',
+      hostSlideId: 'slide1',
+      shapeId: 'shape1',
+      before: '长标题',
+      after: '短标题',
+      state: 'applied' as const,
+    }
     const f = setup([{ id: 'text:edit1', sequence: 1, legacy: false, kind: 'text', record }])
-    const result = await f.skill.executeTool({ id: 'preferences', name: 'read_presentation_preference_candidates', input: { project_id: plan.projectId } })
+    const result = await f.skill.executeTool({
+      id: 'preferences',
+      name: 'read_presentation_preference_candidates',
+      input: { project_id: plan.projectId },
+    })
     expect(result.mutated).toBe(false)
-    expect(JSON.parse(result.output).candidates).toMatchObject([{ changeId: 'edit1', status: 'candidate', after: '短标题' }])
+    expect(JSON.parse(result.output).candidates).toMatchObject([
+      { changeId: 'edit1', status: 'candidate', after: '短标题' },
+    ])
     expect(f.request).not.toHaveBeenCalled()
     expect(f.rememberProject).not.toHaveBeenCalled()
   })
   it('requires visible confirmation before saving a preference', async () => {
-    const record = { version: 1 as const, changeId: 'edit1', documentId: 'doc-1', projectId: plan.projectId, requestId: 'request1', artifactDigest: 'a'.repeat(64), pageId: 'page1', hostSlideId: 'slide1', shapeId: 'shape1', before: '长标题', after: '短标题', state: 'applied' as const }
-    const history: PresentationHistoryEntry[] = [{ id: 'text:edit1', sequence: 1, legacy: false, kind: 'text', record }]
+    const record = {
+      version: 1 as const,
+      changeId: 'edit1',
+      documentId: 'doc-1',
+      projectId: plan.projectId,
+      requestId: 'request1',
+      artifactDigest: 'a'.repeat(64),
+      pageId: 'page1',
+      hostSlideId: 'slide1',
+      shapeId: 'shape1',
+      before: '长标题',
+      after: '短标题',
+      state: 'applied' as const,
+    }
+    const history: PresentationHistoryEntry[] = [
+      { id: 'text:edit1', sequence: 1, legacy: false, kind: 'text', record },
+    ]
     const proposals = createStructuredProposalController()
-    const request = vi.fn(async (body: unknown) => new Response(JSON.stringify({ preference: (body as { preference: unknown }).preference })))
-    const skill = createPresentationPlanningSkill({ vfs: new InMemoryVfs(), available: () => true, documentId: async () => 'doc-1', lastProject: () => plan.projectId, rememberProject: async () => {}, request, listChangeHistory: () => history, proposals })
-    const result = await skill.executeTool({ id: 'save', name: 'save_presentation_preference', input: { project_id: plan.projectId, change_id: 'edit1', preference: '标题尽量简短' } })
+    const request = vi.fn(
+      async (body: unknown) =>
+        new Response(JSON.stringify({ preference: (body as { preference: unknown }).preference })),
+    )
+    const skill = createPresentationPlanningSkill({
+      vfs: new InMemoryVfs(),
+      available: () => true,
+      documentId: async () => 'doc-1',
+      lastProject: () => plan.projectId,
+      rememberProject: async () => {},
+      request,
+      listChangeHistory: () => history,
+      proposals,
+    })
+    const result = await skill.executeTool({
+      id: 'save',
+      name: 'save_presentation_preference',
+      input: { project_id: plan.projectId, change_id: 'edit1', preference: '标题尽量简短' },
+    })
     expect(JSON.parse(result.output).status).toBe('awaiting_confirmation')
     expect(request).not.toHaveBeenCalled()
     await proposals.confirm(JSON.parse(result.output).proposalId)
-    expect(request).toHaveBeenCalledWith({ operation: 'preference_save', documentId: 'doc-1', preference: { projectId: plan.projectId, changeId: 'edit1', text: '标题尽量简短' } }, expect.any(AbortSignal))
-    const list = await skill.executeTool({ id: 'list', name: 'list_presentation_preferences', input: { project_id: plan.projectId } })
+    expect(request).toHaveBeenCalledWith(
+      {
+        operation: 'preference_save',
+        documentId: 'doc-1',
+        preference: { projectId: plan.projectId, changeId: 'edit1', text: '标题尽量简短' },
+      },
+      expect.any(AbortSignal),
+    )
+    const list = await skill.executeTool({
+      id: 'list',
+      name: 'list_presentation_preferences',
+      input: { project_id: plan.projectId },
+    })
     expect(list.isError).toBe(true) // Reject malformed PC response rather than trusting it as a catalog.
   })
   it('requires visible confirmation before deleting a stored preference', async () => {
@@ -58,42 +173,131 @@ describe('saved presentation planning tools', () => {
       preferences = []
       return new Response(JSON.stringify({ deleted: true }))
     })
-    const skill = createPresentationPlanningSkill({ vfs: new InMemoryVfs(), available: () => true, documentId: async () => 'doc-1', lastProject: () => plan.projectId, rememberProject: async () => {}, request, proposals })
-    const proposed = await skill.executeTool({ id: 'delete', name: 'delete_presentation_preference', input: { project_id: plan.projectId, change_id: 'edit1' } })
+    const skill = createPresentationPlanningSkill({
+      vfs: new InMemoryVfs(),
+      available: () => true,
+      documentId: async () => 'doc-1',
+      lastProject: () => plan.projectId,
+      rememberProject: async () => {},
+      request,
+      proposals,
+    })
+    const proposed = await skill.executeTool({
+      id: 'delete',
+      name: 'delete_presentation_preference',
+      input: { project_id: plan.projectId, change_id: 'edit1' },
+    })
     expect(preferences).toHaveLength(1)
     await proposals.confirm(JSON.parse(proposed.output).proposalId)
     expect(preferences).toEqual([])
-    expect(JSON.parse((await skill.executeTool({ id: 'list', name: 'list_presentation_preferences', input: { project_id: plan.projectId } })).output)).toEqual({ preferences: [] })
+    expect(
+      JSON.parse(
+        (
+          await skill.executeTool({
+            id: 'list',
+            name: 'list_presentation_preferences',
+            input: { project_id: plan.projectId },
+          })
+        ).output,
+      ),
+    ).toEqual({ preferences: [] })
   })
   it('returns five local domain planning skills without claiming source verification', async () => {
     const f = setup()
     for (const domain of ['pitch', 'report', 'training', 'research', 'sales']) {
-      const result = await f.skill.executeTool({ id: domain, name: 'read_presentation_domain_skill', input: { domain } })
+      const result = await f.skill.executeTool({
+        id: domain,
+        name: 'read_presentation_domain_skill',
+        input: { domain },
+      })
       expect(result.isError).not.toBe(true)
-      expect(JSON.parse(result.output)).toMatchObject({ domain, sections: expect.any(Array), questions: expect.any(Array) })
+      expect(JSON.parse(result.output)).toMatchObject({
+        domain,
+        sections: expect.any(Array),
+        questions: expect.any(Array),
+      })
     }
     expect(f.request).not.toHaveBeenCalled()
-    expect(await f.skill.executeTool({ id: 'bad', name: 'read_presentation_domain_skill', input: { domain: 'finance' } })).toMatchObject({ isError: true, output: 'invalid_tool_input' })
+    expect(
+      await f.skill.executeTool({
+        id: 'bad',
+        name: 'read_presentation_domain_skill',
+        input: { domain: 'finance' },
+      }),
+    ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
   })
   it('saves, lists and reads a pinned PC brand kit revision', async () => {
     const f = setup()
-    const brandKit = { id: 'research', revision: 1, name: 'Research', allowedColors: ['FFFFFF', '172033'] }
-    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ brandKit })))
+    const brandKit = {
+      id: 'research',
+      revision: 1,
+      name: 'Research',
+      allowedColors: ['FFFFFF', '172033'],
+    }
+    f.request
+      .mockResolvedValueOnce(new Response(JSON.stringify({ brandKit })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ brandKits: [brandKit] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ brandKit })))
-    expect((await f.skill.executeTool({ id: 'save-kit', name: 'save_presentation_brand_kit', input: { expected_revision: 0, brand_kit: brandKit } })).isError).not.toBe(true)
-    expect(f.request).toHaveBeenNthCalledWith(1, { operation: 'brand_kit_save', documentId: 'doc-1', expectedRevision: 0, brandKit }, undefined)
-    expect(JSON.parse((await f.skill.executeTool({ id: 'list-kit', name: 'list_presentation_brand_kits', input: {} })).output)).toEqual({ brandKits: [brandKit] })
-    expect(JSON.parse((await f.skill.executeTool({ id: 'read-kit', name: 'read_presentation_brand_kit', input: { brand_kit_id: 'research', revision: 1 } })).output)).toEqual({ brandKit })
+    expect(
+      (
+        await f.skill.executeTool({
+          id: 'save-kit',
+          name: 'save_presentation_brand_kit',
+          input: { expected_revision: 0, brand_kit: brandKit },
+        })
+      ).isError,
+    ).not.toBe(true)
+    expect(f.request).toHaveBeenNthCalledWith(
+      1,
+      { operation: 'brand_kit_save', documentId: 'doc-1', expectedRevision: 0, brandKit },
+      undefined,
+    )
+    expect(
+      JSON.parse(
+        (
+          await f.skill.executeTool({
+            id: 'list-kit',
+            name: 'list_presentation_brand_kits',
+            input: {},
+          })
+        ).output,
+      ),
+    ).toEqual({ brandKits: [brandKit] })
+    expect(
+      JSON.parse(
+        (
+          await f.skill.executeTool({
+            id: 'read-kit',
+            name: 'read_presentation_brand_kit',
+            input: { brand_kit_id: 'research', revision: 1 },
+          })
+        ).output,
+      ),
+    ).toEqual({ brandKit })
     expect(f.rememberProject).not.toHaveBeenCalled()
   })
   it('reports brand revision conflicts and rejects invalid catalog responses', async () => {
     const f = setup()
     const brandKit = { id: 'research', revision: 1, name: 'Research', allowedColors: ['FFFFFF'] }
-    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'revision_conflict' })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ brandKits: [{ ...brandKit, revision: 0 }] })))
-    expect(await f.skill.executeTool({ id: 'save-kit', name: 'save_presentation_brand_kit', input: { expected_revision: 0, brand_kit: brandKit } })).toMatchObject({ isError: true, output: 'presentation_revision_conflict' })
-    expect(await f.skill.executeTool({ id: 'list-kit', name: 'list_presentation_brand_kits', input: {} })).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+    f.request
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'revision_conflict' })))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ brandKits: [{ ...brandKit, revision: 0 }] })),
+      )
+    expect(
+      await f.skill.executeTool({
+        id: 'save-kit',
+        name: 'save_presentation_brand_kit',
+        input: { expected_revision: 0, brand_kit: brandKit },
+      }),
+    ).toMatchObject({ isError: true, output: 'presentation_revision_conflict' })
+    expect(
+      await f.skill.executeTool({
+        id: 'list-kit',
+        name: 'list_presentation_brand_kits',
+        input: {},
+      }),
+    ).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
   })
   it('saves a versioned plan and returns exact compile claim mapping', async () => {
     const f = setup()
