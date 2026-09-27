@@ -100,8 +100,8 @@ export function PresentationWorkflowCard({
       <details>
         <summary>恢复记录 · {workflow.timeline.length} 项</summary>
         <p>
-          根据已保存记录重建；计划修订、页任务、逐页导入、历史 QA
-          和内容问题处置带有记录时间，其他条目是当前检查点。
+          根据已保存记录重建；计划修订、页任务、逐页导入、历史
+          QA、证据判断和内容问题处置带有记录时间，其他条目是当前检查点。
         </p>
         <ol>
           {workflow.timeline.map((event) => (

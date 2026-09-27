@@ -205,6 +205,55 @@ it('replays saved content issue decisions without treating explanations as verif
   ).toBe(false)
 })
 
+it('replays scoped agent evidence judgments as historical research events', async () => {
+  const report = await deliveryReportFixture()
+  const selected = { ...project, production: { ...production, requestId: report.requestId } }
+  const source = report.plan.sources[0]!
+  const claim = report.plan.claims.find((item) => item.sourceIds.includes(source.id))!
+  const page = report.plan.slides.find((item) => item.claimIds.includes(claim.id))!
+  const review = {
+    version: 1 as const,
+    projectId: report.projectId,
+    requestId: report.requestId,
+    reviewId: 'evidence1',
+    planRevision: report.planRevision,
+    inputDigest: report.inputDigest,
+    planDigest: report.planDigest,
+    pageId: page.id,
+    claimId: claim.id,
+    sourceId: source.id,
+    attachmentId: 'a'.repeat(64),
+    offset: 0,
+    maxChars: 100,
+    evidenceDigest: 'b'.repeat(64),
+    outcome: 'supported' as const,
+    notes: 'Scoped judgment',
+    reviewer: 'agent' as const,
+    createdAt: '2026-09-24T00:04:00.000Z',
+    checks: {
+      support: 'agent_reviewed' as const,
+      sourceAuthority: 'not_verified' as const,
+      timeliness: 'not_verified' as const,
+      host: 'not_checked' as const,
+    },
+  }
+  const withReview = { ...report, reviews: [review] }
+  const event = presentationWorkflowSummary(
+    selected,
+    undefined,
+    undefined,
+    withReview,
+  )?.timeline.find((item) => item.id === 'evidence-evidence1')
+  expect(event).toMatchObject({ at: review.createdAt, text: expect.stringContaining('Agent') })
+  expect(event?.text).toContain('来源真实性仍需核验')
+  expect(
+    presentationWorkflowSummary(selected, undefined, undefined, {
+      ...withReview,
+      requestId: 'old',
+    })?.timeline.some((item) => item.id === 'evidence-evidence1'),
+  ).toBe(false)
+})
+
 it('refuses stale import and QA records and requests recheck after a page edit', () => {
   const selected = { ...project, production }
   const staleImport = {

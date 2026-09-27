@@ -313,6 +313,18 @@ export function presentationWorkflowSummary(
   }
   if (reportMatches) {
     timeline.push({ id: 'report', text: `内容证据报告：${openIssues} 项问题待处理` })
+    for (const review of report!.reviews.slice(-20)) {
+      const outcome = {
+        supported: '支持',
+        contradicted: '冲突',
+        insufficient_evidence: '证据不足',
+      }[review.outcome]
+      timeline.push({
+        id: `evidence-${review.reviewId}`,
+        text: `Agent 对页面 ${review.pageId} 的主张 ${review.claimId}、来源 ${review.sourceId} 记录历史判断：${outcome}；来源真实性仍需核验`,
+        at: review.createdAt,
+      })
+    }
     const currentIssues = new Map(
       report!.pages.flatMap((page) =>
         page.issues.map((issue) => [issue.id, issue.digest] as const),
