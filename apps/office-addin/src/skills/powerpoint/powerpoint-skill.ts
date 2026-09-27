@@ -168,6 +168,14 @@ const declarativeProgramSchema = {
             ['op', 'slide_index', 'name', 'text', 'left', 'top', 'width', 'height'],
           ),
           exactOperation(
+            { op: { type: 'string', enum: ['add_geometric_shape'] }, slide_index: operationSlideIndex,
+              name: { type: 'string', minLength: 1, maxLength: 256 },
+              shape: { type: 'string', enum: ['rect', 'ellipse', 'roundRect'] },
+              fill: { type: 'string', pattern: '^[0-9A-Fa-f]{6}$' },
+              lineColor: { type: 'string', pattern: '^[0-9A-Fa-f]{6}$' }, ...geometryProperties },
+            ['op', 'slide_index', 'name', 'shape', 'fill', 'lineColor', 'left', 'top', 'width', 'height'],
+          ),
+          exactOperation(
             {
               op: { type: 'string', enum: ['delete_shape'] },
               slide_index: operationSlideIndex,
@@ -368,7 +376,7 @@ const tools = [
   {
     name: 'execute_office_js',
     description:
-      'Execute a confirmation-gated bounded declarative PowerPoint program. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields. Supported operations are set_shape_text (slide_index, shape_id, text), set_shape_geometry (slide_index, shape_id, left, top, width, height), add_text_box (slide_index, name, text, left, top, width, height), delete_shape (slide_index, shape_id), and duplicate_slide (slide_index; it must be the only operation).',
+      'Execute a confirmation-gated bounded declarative PowerPoint program. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields. Supported operations are set_shape_text, set_shape_geometry, add_text_box, add_geometric_shape (rect, ellipse or roundRect with six-digit RGB fill and lineColor), delete_shape, and duplicate_slide (it must be the only operation).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -976,6 +984,9 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
     'top',
     'width',
     'height',
+    'shape',
+    'fill',
+    'lineColor',
   ])
   const operation = root
   if (
@@ -1041,6 +1052,20 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
       width: operation.width as number,
       height: operation.height as number,
     }
+  }
+  if (operation.op === 'add_geometric_shape') {
+    if (Object.keys(operation).some((key) => !['op', 'slide_index', 'name', 'shape', 'fill', 'lineColor', 'left', 'top', 'width', 'height'].includes(key)) ||
+      typeof operation.name !== 'string' || !operation.name || operation.name.length > 256 ||
+      !['rect', 'ellipse', 'roundRect'].includes(String(operation.shape)) ||
+      typeof operation.fill !== 'string' || !/^[0-9A-Fa-f]{6}$/.test(operation.fill) ||
+      typeof operation.lineColor !== 'string' || !/^[0-9A-Fa-f]{6}$/.test(operation.lineColor))
+      throw new Error('invalid_tool_input')
+    finiteGeometry()
+    return { op: 'add_geometric_shape', slide_index: operation.slide_index as number,
+      name: operation.name, shape: operation.shape as 'rect' | 'ellipse' | 'roundRect',
+      fill: operation.fill, lineColor: operation.lineColor,
+      left: operation.left as number, top: operation.top as number,
+      width: operation.width as number, height: operation.height as number }
   }
   if (operation.op === 'delete_shape') {
     if (
@@ -1657,7 +1682,7 @@ export function createPowerPointSkill(options: {
                     return current.text === operation.text
                   }, confirmSignal)
                 } else if (operation.op !== 'duplicate_slide') {
-                  if (operation.op === 'add_text_box') {
+                  if (operation.op === 'add_text_box' || operation.op === 'add_geometric_shape') {
                     const createdShapeId = declarativeResult?.createdShapeIds[createdShapeIndex++]
                     await verifyPowerPointReadback(async () => {
                       const current = await options.adapter.listSlideShapes(
@@ -1672,11 +1697,8 @@ export function createPowerPointSkill(options: {
                         sameGeometry(shape.width, operation.width) &&
                         sameGeometry(shape.height, operation.height)
                       ) {
-                        const text = await options.adapter.readSlideText(
-                          operation.slide_index,
-                          shape.id,
-                          confirmSignal,
-                        )
+                        if (operation.op === 'add_geometric_shape') return shape.type === 'GeometricShape'
+                        const text = await options.adapter.readSlideText(operation.slide_index, shape.id, confirmSignal)
                         if (text.text === operation.text) return true
                       }
                       return false

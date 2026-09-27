@@ -257,6 +257,18 @@ export type PowerPointDeclarativeOperation =
       height: number
     }
   | {
+      op: 'add_geometric_shape'
+      slide_index: number
+      name: string
+      shape: 'rect' | 'ellipse' | 'roundRect'
+      left: number
+      top: number
+      width: number
+      height: number
+      fill: string
+      lineColor: string
+    }
+  | {
       op: 'add_text_box'
       slide_index: number
       name: string
@@ -265,6 +277,10 @@ export type PowerPointDeclarativeOperation =
       top: number
       width: number
       height: number
+      fontFace?: string
+      fontSize?: number
+      color?: string
+      bold?: boolean
     }
   | { op: 'delete_shape'; slide_index: number; shape_id: string }
 
@@ -1760,6 +1776,20 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       throw new Error('invalid_tool_input')
     const repeatedTargets = new Set<string>()
     for (const operation of operations) {
+      if (
+        operation.op === 'add_geometric_shape' &&
+        (!['rect', 'ellipse', 'roundRect'].includes(operation.shape) ||
+          !operation.name ||
+          operation.name.length > 256 ||
+          !/^[0-9A-Fa-f]{6}$/.test(operation.fill) ||
+          !/^[0-9A-Fa-f]{6}$/.test(operation.lineColor) ||
+          [operation.left, operation.top, operation.width, operation.height].some(
+            (value) => !Number.isFinite(value),
+          ) ||
+          operation.width <= 0 ||
+          operation.height <= 0)
+      )
+        throw new Error('invalid_tool_input')
       if (operation.op !== 'set_shape_text' && operation.op !== 'set_shape_geometry') continue
       const key = `${operation.slide_index}/${operation.shape_id}/${operation.op}`
       if (repeatedTargets.has(key)) throw new Error('invalid_tool_input')
@@ -1846,6 +1876,50 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               height: operation.height,
             })
             created.name = operation.name
+            if (
+              operation.fontFace ||
+              operation.fontSize ||
+              operation.color ||
+              operation.bold !== undefined
+            ) {
+              const font = ((created.textFrame as RuntimeRecord).textRange as RuntimeRecord)
+                .font as RuntimeRecord
+              if (operation.fontFace) font.name = operation.fontFace
+              if (operation.fontSize) font.size = operation.fontSize
+              if (operation.color) font.color = `#${operation.color}`
+              if (operation.bold !== undefined) font.bold = operation.bold
+            }
+            if (typeof created.load !== 'function') throw new Error('office_api_unsupported')
+            ;(created.load as (properties: string) => void)('id')
+            createdShapes.push(created)
+          })
+          hasUnrecoverableMutation = true
+        } else if (operation.op === 'add_geometric_shape') {
+          const shapes = slide.shapes as RuntimeRecord
+          if (typeof shapes.addGeometricShape !== 'function')
+            throw new Error('office_api_unsupported')
+          queued.push(() => {
+            const shapeType = {
+              rect: 'Rectangle',
+              ellipse: 'Ellipse',
+              roundRect: 'RoundRectangle',
+            }[operation.shape]
+            const created = (
+              shapes.addGeometricShape as (
+                kind: string,
+                options: Record<string, number>,
+              ) => RuntimeRecord
+            )(shapeType, {
+              left: operation.left,
+              top: operation.top,
+              width: operation.width,
+              height: operation.height,
+            })
+            created.name = operation.name
+            ;((created.fill as RuntimeRecord).setSolidColor as (color: string) => void)(
+              `#${operation.fill}`,
+            )
+            ;(created.lineFormat as RuntimeRecord).color = `#${operation.lineColor}`
             if (typeof created.load !== 'function') throw new Error('office_api_unsupported')
             ;(created.load as (properties: string) => void)('id')
             createdShapes.push(created)

@@ -1369,6 +1369,40 @@ describe('browser PowerPoint adapter', () => {
     expect(run).not.toHaveBeenCalled()
   })
 
+  it('creates a native geometric shape from a bounded declarative operation', async () => {
+    const fill = { setSolidColor: vi.fn() }
+    const created = { id: 'new-shape', name: '', fill, lineFormat: { color: '' }, load: vi.fn() }
+    const addGeometricShape = vi.fn(() => created)
+    const slide = { id: 's1', load: vi.fn(), shapes: { addGeometricShape } }
+    const slides = { getCount: vi.fn(() => ({ value: 1 })), getItemAt: vi.fn(() => slide) }
+    Object.assign(globalThis, {
+      Office: { context: { host: 'PowerPoint', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } } },
+      PowerPoint: { run: (callback: (context: unknown) => unknown) => callback({ presentation: { slides }, sync: vi.fn().mockResolvedValue(undefined) }) },
+    })
+    await expect(new BrowserPowerPointAdapter().executeDeclarative([{
+      op: 'add_geometric_shape', slide_index: 0, name: 'step', shape: 'roundRect',
+      left: 72, top: 180, width: 216, height: 144, fill: '2255AA', lineColor: '2255AA',
+    }])).resolves.toEqual({ createdShapeIds: ['new-shape'] })
+    expect(addGeometricShape).toHaveBeenCalledWith('RoundRectangle', { left: 72, top: 180, width: 216, height: 144 })
+    expect(fill.setSolidColor).toHaveBeenCalledWith('#2255AA')
+    expect(created.lineFormat.color).toBe('#2255AA')
+  })
+
+  it('confirms and verifies a native geometric shape creation', async () => {
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['new-shape'] }),
+      listSlideShapes: vi.fn().mockResolvedValue({ slideId: 'slide-1', slideIndex: 0,
+        shapes: [{ id: 'new-shape', name: 'step', type: 'GeometricShape', left: 72, top: 180, width: 216, height: 144 }] }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const operation = { op: 'add_geometric_shape', slide_index: 0, name: 'step', shape: 'roundRect', left: 72, top: 180, width: 216, height: 144, fill: '2255AA', lineColor: '2255AA' }
+    await skill.executeTool(call('execute_office_js', { code: JSON.stringify({ version: 1, operations: [operation] }) }))
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(fake.executeDeclarative).toHaveBeenCalledWith([operation], expect.any(AbortSignal))
+  })
+
   it('returns stable IDs/geometry and verifies negative, overflow, and overlap geometry', async () => {
     const sync = vi.fn().mockResolvedValue(undefined)
     const shapes = {

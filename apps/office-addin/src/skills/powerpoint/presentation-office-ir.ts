@@ -1,0 +1,78 @@
+import type { PresentationStyle, SlideIR } from '@wiswork/pptx-engine/presentation'
+import type { PowerPointDeclarativeOperation } from './browser-powerpoint-adapter.js'
+
+/** Translate a complete supported SlideIR page into bounded native Office operations. */
+export function officeOperationsForSlideIR(
+  slide: SlideIR,
+  style: PresentationStyle,
+  slideIndex: number,
+): PowerPointDeclarativeOperation[] {
+  if (
+    !Number.isSafeInteger(slideIndex) ||
+    slideIndex < 0 ||
+    slideIndex > 31 ||
+    !Array.isArray(slide?.elements) ||
+    !slide.elements.length ||
+    slide.elements.length > 32 ||
+    !style?.fontFace ||
+    style.fontFace.length > 128 ||
+    !/^[0-9A-Fa-f]{6}$/.test(style.textColor) ||
+    !/^[0-9A-Fa-f]{6}$/.test(style.accentColor)
+  )
+    throw new Error('invalid_tool_input')
+  const names = new Set<string>()
+  return slide.elements.map((element) => {
+    if (!element.id || element.id.length > 256 || names.has(element.id))
+      throw new Error('invalid_tool_input')
+    names.add(element.id)
+    if (
+      [element.x, element.y, element.w, element.h].some((value) => !Number.isFinite(value)) ||
+      element.w <= 0 ||
+      element.h <= 0
+    )
+      throw new Error('invalid_tool_input')
+    const box = {
+      slide_index: slideIndex,
+      name: element.id,
+      left: element.x * 72,
+      top: element.y * 72,
+      width: element.w * 72,
+      height: element.h * 72,
+    }
+    if (element.kind === 'text') {
+      if (
+        typeof element.text !== 'string' ||
+        element.text.length > 12_000 ||
+        (element.fontSize !== undefined &&
+          (!Number.isFinite(element.fontSize) || element.fontSize < 6 || element.fontSize > 96)) ||
+        (element.color !== undefined && !/^[0-9A-Fa-f]{6}$/.test(element.color))
+      )
+        throw new Error('invalid_tool_input')
+      return {
+        op: 'add_text_box',
+        ...box,
+        text: element.text,
+        fontFace: style.fontFace,
+        fontSize: element.fontSize ?? 18,
+        color: element.color ?? style.textColor,
+        bold: element.bold ?? false,
+      }
+    }
+    if (element.kind === 'shape') {
+      if (
+        !['rect', 'ellipse', 'roundRect'].includes(element.shape) ||
+        (element.fill !== undefined && !/^[0-9A-Fa-f]{6}$/.test(element.fill)) ||
+        (element.lineColor !== undefined && !/^[0-9A-Fa-f]{6}$/.test(element.lineColor))
+      )
+        throw new Error('invalid_tool_input')
+      return {
+        op: 'add_geometric_shape',
+        ...box,
+        shape: element.shape,
+        fill: element.fill ?? style.accentColor,
+        lineColor: element.lineColor ?? element.fill ?? style.accentColor,
+      }
+    }
+    throw new Error('office_api_unsupported')
+  })
+}
