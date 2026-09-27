@@ -2,6 +2,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import WebSocket from 'ws'
 
 const defaultDist = resolve(dirname(fileURLToPath(import.meta.url)), '../apps/office-addin/dist')
 
@@ -114,6 +115,183 @@ export async function inspectDeployedOffice(origin, build, fetcher = fetch) {
     throw new Error('deployed Office assets differ from release artifact')
 }
 
+const OFFICE_RELAY_ORIGIN = 'https://office.8-216-134-194.sslip.io'
+const PAIRING_CAPABILITY = 'presentation.v1'
+
+function relaySocket(origin, options) {
+  const url = new URL('/office-relay', origin)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return new WebSocket(url, options)
+}
+
+function waitForOpen(socket, role, timeoutMs) {
+  return new Promise((resolveOpen, reject) => {
+    const timer = setTimeout(() => finish(new Error(`${role} relay upgrade timed out`)), timeoutMs)
+    function finish(error) {
+      clearTimeout(timer)
+      socket.off('open', onOpen)
+      socket.off('error', onError)
+      socket.off('unexpected-response', onUpgradeError)
+      if (error) reject(error)
+      else resolveOpen()
+    }
+    function onOpen() {
+      finish()
+    }
+    function onError() {
+      finish(new Error(`${role} relay connection failed`))
+    }
+    function onUpgradeError() {
+      finish(new Error(`${role} relay upgrade failed`))
+    }
+    socket.once('open', onOpen)
+    socket.once('error', onError)
+    socket.once('unexpected-response', onUpgradeError)
+  })
+}
+
+function waitForFrame(socket, expected, timeoutMs) {
+  return new Promise((resolveFrame, reject) => {
+    const timer = setTimeout(
+      () => finish(new Error(`relay pairing timed out at ${expected}`)),
+      timeoutMs,
+    )
+    function finish(error, frame) {
+      clearTimeout(timer)
+      socket.off('message', onMessage)
+      socket.off('close', onClose)
+      socket.off('error', onError)
+      if (error) reject(error)
+      else resolveFrame(frame)
+    }
+    function onClose() {
+      finish(new Error(`relay connection closed at ${expected}`))
+    }
+    function onError() {
+      finish(new Error(`relay connection failed at ${expected}`))
+    }
+    function onMessage(data) {
+      let frame
+      try {
+        frame = JSON.parse(data.toString())
+      } catch {
+        finish(new Error('invalid relay frame'))
+        return
+      }
+      if (frame.type === 'relay.error') {
+        finish(new Error(`relay pairing failed: ${frame.code}`))
+        return
+      }
+      if (frame.type !== expected || frame.version !== 2) {
+        finish(new Error(`unexpected relay frame at ${expected}`))
+        return
+      }
+      finish(null, frame)
+    }
+    socket.on('message', onMessage)
+    socket.once('close', onClose)
+    socket.once('error', onError)
+  })
+}
+
+function sendAndReceive(socket, frame, expected, timeoutMs) {
+  const received = waitForFrame(socket, expected, timeoutMs)
+  socket.send(JSON.stringify(frame))
+  return received
+}
+
+function requireCapabilities(frame) {
+  if (
+    !Array.isArray(frame.capabilities) ||
+    frame.capabilities.length !== 1 ||
+    frame.capabilities[0] !== PAIRING_CAPABILITY
+  )
+    throw new Error('relay capability negotiation mismatch')
+}
+
+export async function inspectRelayPairing(relayOrigin, pcToken, options = {}) {
+  const origin = new URL(relayOrigin)
+  if (
+    origin.origin !== relayOrigin ||
+    (origin.protocol !== 'https:' &&
+      !(
+        origin.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)
+      ))
+  )
+    throw new Error('relay pairing requires HTTPS or a loopback HTTP origin')
+  if (typeof pcToken !== 'string' || !pcToken.trim())
+    throw new Error('relay pairing requires PC token')
+  const timeoutMs = options.timeoutMs ?? 5_000
+  const connect = options.connect ?? relaySocket
+  const office = connect(relayOrigin, { headers: { Origin: OFFICE_RELAY_ORIGIN } })
+  let pc
+  try {
+    await waitForOpen(office, 'Office', timeoutMs)
+    const created = await sendAndReceive(
+      office,
+      {
+        version: 2,
+        type: 'office.create',
+        host: 'PowerPoint',
+        capabilities: [PAIRING_CAPABILITY],
+      },
+      'office.created',
+      timeoutMs,
+    )
+    if (!/^[0-9]{6}$/.test(created.verification_code) || typeof created.pairing_id !== 'string')
+      throw new Error('invalid relay pairing invitation')
+    pc = connect(relayOrigin, { headers: { Authorization: `Bearer ${pcToken}` } })
+    await waitForOpen(pc, 'PC', timeoutMs)
+    const negotiated = await sendAndReceive(
+      pc,
+      {
+        version: 2,
+        type: 'pc.negotiate',
+        verification_code: created.verification_code,
+        capabilities: [PAIRING_CAPABILITY],
+      },
+      'pc.negotiated',
+      timeoutMs,
+    )
+    if (negotiated.pairing_version !== 2) throw new Error('relay pairing version mismatch')
+    requireCapabilities(negotiated)
+    const claimed = await sendAndReceive(
+      pc,
+      {
+        version: 2,
+        type: 'pc.claim',
+        verification_code: created.verification_code,
+        capabilities: [PAIRING_CAPABILITY],
+      },
+      'pc.claimed',
+      timeoutMs,
+    )
+    if (claimed.pairing_id !== created.pairing_id) throw new Error('relay pairing ID mismatch')
+    requireCapabilities(claimed)
+    const officeApproved = waitForFrame(office, 'office.approved', timeoutMs)
+    officeApproved.catch(() => {})
+    const pcApproved = await sendAndReceive(
+      pc,
+      {
+        version: 2,
+        type: 'pc.approve',
+        pairing_id: created.pairing_id,
+        capabilities: [PAIRING_CAPABILITY],
+      },
+      'pc.approved',
+      timeoutMs,
+    )
+    const approved = await officeApproved
+    requireCapabilities(approved)
+    requireCapabilities(pcApproved)
+    if (!approved.session_id || approved.session_id !== pcApproved.session_id)
+      throw new Error('relay session mismatch')
+  } finally {
+    office.terminate()
+    pc?.terminate()
+  }
+}
+
 async function main(args) {
   const options = Object.fromEntries(
     args.flatMap((arg, index) =>
@@ -127,12 +305,13 @@ async function main(args) {
     !options['--origin'] ||
     !options['--relay-origin'] ||
     Object.keys(options).some(
-      (key) => !['--origin', '--relay-origin', '--dist', '--deployed'].includes(key),
+      (key) => !['--origin', '--relay-origin', '--dist', '--deployed', '--pairing'].includes(key),
     ) ||
-    (options['--deployed'] && options['--deployed'] !== '1')
+    (options['--deployed'] && options['--deployed'] !== '1') ||
+    (options['--pairing'] && options['--pairing'] !== '1')
   )
     throw new Error(
-      'usage: node tools/ppt-agent-release-preflight.mjs --origin https://office.example --relay-origin https://relay.example [--dist path] [--deployed 1]',
+      'usage: node tools/ppt-agent-release-preflight.mjs --origin https://office.example --relay-origin https://relay.example [--dist path] [--deployed 1] [--pairing 1]',
     )
   const build = await inspectOfficeBuild(
     resolve(options['--dist'] || defaultDist),
@@ -140,8 +319,12 @@ async function main(args) {
   )
   if (options['--deployed']) await inspectDeployedOffice(options['--origin'], build)
   await inspectRelayHealth(options['--relay-origin'])
+  if (options['--pairing']) {
+    if (!options['--deployed']) throw new Error('pairing smoke requires --deployed 1')
+    await inspectRelayPairing(options['--relay-origin'], process.env.PPT_AGENT_RELEASE_PC_TOKEN)
+  }
   process.stdout.write(
-    `PPT Agent release preflight passed: build ${build.buildId}, ${build.script}, Relay healthy\n`,
+    `PPT Agent release preflight passed: build ${build.buildId}, ${build.script}, Relay healthy${options['--pairing'] ? ', v2 pairing verified' : ''}\n`,
   )
 }
 

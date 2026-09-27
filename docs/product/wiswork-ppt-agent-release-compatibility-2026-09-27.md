@@ -17,6 +17,9 @@
 ```bash
 node tools/ppt-agent-release-preflight.mjs --origin https://office.example --relay-origin https://relay.example --dist apps/office-addin/dist
 node tools/ppt-agent-release-preflight.mjs --origin https://office.example --relay-origin https://relay.example --dist apps/office-addin/dist --deployed 1
+PPT_AGENT_RELEASE_PC_TOKEN='<release-test-PC-token>' node tools/ppt-agent-release-preflight.mjs --origin https://office.example --relay-origin https://relay.example --dist apps/office-addin/dist --deployed 1 --pairing 1
 ```
 
 预检核对 Manifest 各 Office 资源地址、`version.json` 与编译入口的一致性、哈希入口、无源码映射、Relay `/office-relay/health` 的精确响应；部署后还逐一读取线上版本、Taskpane，并用 SHA-256 对比线上 Taskpane HTML 和哈希脚本与本地产物的完整字节。任何失败均以非零退出码阻断继续发布。CI 会构建真实 Taskpane 并执行产物预检，以及使用 LibreOffice 检查 PPTX 包回读。此命令不替代 v1/v2 配对协议测试（CI 的 Relay/Office 测试）及真实 PowerPoint 的附件、图片、页面写入、截图、恢复冒烟。先保留旧版回滚包；发布顺序仍为 Relay、PC、Taskpane。
+
+`--pairing 1` 仅在部署后的显式检查中使用。它从 `PPT_AGENT_RELEASE_PC_TOKEN` 读取专用测试 PC 身份令牌，使用固定 Office Origin 建立两条临时 WebSocket 连接，完成 v2 创建、协商、领取、批准，并确认两端只协商 `presentation.v1`；随后关闭连接。不要在命令行传令牌，也不要使用日常用户令牌。检查失败时不会打印令牌、配对码或会话凭证。此测试仅覆盖 Relay 协议及该测试身份的认证路径，不代表真实 PC 客户端或 PowerPoint 宿主已经通过验收。

@@ -4,10 +4,13 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { test } from 'node:test'
+import { createServer } from 'node:http'
+import { WebSocketServer } from 'ws'
 import {
   inspectOfficeBuild,
   inspectRelayHealth,
   inspectDeployedOffice,
+  inspectRelayPairing,
 } from './ppt-agent-release-preflight.mjs'
 
 async function artifact(t) {
@@ -37,6 +40,128 @@ test('validates complete release artifact', async (t) => {
       .update('<script src="/assets/taskpane-AbC_123.js"></script>')
       .digest('hex'),
   })
+})
+
+test('v2 pairing smoke negotiates and approves one presentation capability', async (t) => {
+  const server = createServer()
+  const ws = new WebSocketServer({ server, path: '/office-relay' })
+  t.after(() => {
+    ws.close()
+    server.close()
+  })
+  server.listen(0, '127.0.0.1')
+  await new Promise((resolveReady) => server.once('listening', resolveReady))
+  let office
+  let pc
+  const seen = []
+  ws.on('connection', (socket, request) => {
+    if (request.headers.origin) {
+      assert.equal(request.headers.origin, 'https://office.8-216-134-194.sslip.io')
+      office = socket
+    } else {
+      assert.equal(request.headers.authorization, 'Bearer test-secret')
+      pc = socket
+    }
+    socket.on('message', (bytes) => {
+      const frame = JSON.parse(bytes.toString())
+      seen.push(frame.type)
+      assert.deepEqual(frame.capabilities, ['presentation.v1'])
+      if (frame.type === 'office.create')
+        socket.send(
+          JSON.stringify({
+            version: 2,
+            type: 'office.created',
+            pairing_id: 'pair',
+            verification_code: '123456',
+          }),
+        )
+      if (frame.type === 'pc.negotiate')
+        socket.send(
+          JSON.stringify({
+            version: 2,
+            type: 'pc.negotiated',
+            pairing_version: 2,
+            capabilities: ['presentation.v1'],
+          }),
+        )
+      if (frame.type === 'pc.claim')
+        socket.send(
+          JSON.stringify({
+            version: 2,
+            type: 'pc.claimed',
+            pairing_id: 'pair',
+            capabilities: ['presentation.v1'],
+          }),
+        )
+      if (frame.type === 'pc.approve') {
+        socket.send(
+          JSON.stringify({
+            version: 2,
+            type: 'pc.approved',
+            session_id: 'session',
+            capabilities: ['presentation.v1'],
+          }),
+        )
+        office.send(
+          JSON.stringify({
+            version: 2,
+            type: 'office.approved',
+            session_id: 'session',
+            capabilities: ['presentation.v1'],
+          }),
+        )
+      }
+    })
+  })
+  await inspectRelayPairing(`http://127.0.0.1:${server.address().port}`, 'test-secret')
+  assert.ok(office)
+  assert.ok(pc)
+  assert.deepEqual(seen, ['office.create', 'pc.negotiate', 'pc.claim', 'pc.approve'])
+})
+
+test('pairing smoke fails closed on invalid destination and missing credential', async () => {
+  await assert.rejects(inspectRelayPairing('http://relay.example', 'secret'), /requires HTTPS/)
+  await assert.rejects(inspectRelayPairing('https://relay.example', ''), /requires PC token/)
+})
+
+test('pairing smoke rejects capability mismatch without disclosing credentials', async (t) => {
+  const server = createServer()
+  const ws = new WebSocketServer({ server, path: '/office-relay' })
+  t.after(() => {
+    ws.close()
+    server.close()
+  })
+  server.listen(0, '127.0.0.1')
+  await new Promise((resolveReady) => server.once('listening', resolveReady))
+  ws.on('connection', (socket) =>
+    socket.on('message', (bytes) => {
+      const frame = JSON.parse(bytes.toString())
+      if (frame.type === 'office.create')
+        socket.send(
+          JSON.stringify({
+            version: 2,
+            type: 'office.created',
+            pairing_id: 'pair',
+            verification_code: '123456',
+          }),
+        )
+      if (frame.type === 'pc.negotiate')
+        socket.send(
+          JSON.stringify({
+            version: 2,
+            type: 'pc.negotiated',
+            pairing_version: 2,
+            capabilities: ['agent.v1'],
+          }),
+        )
+    }),
+  )
+  await assert.rejects(
+    inspectRelayPairing(`http://127.0.0.1:${server.address().port}`, 'test-secret'),
+    (error) =>
+      error.message.includes('capability negotiation mismatch') &&
+      !error.message.includes('test-secret'),
+  )
 })
 
 test('fails closed on mismatched metadata, origin and unhashed entry', async (t) => {
