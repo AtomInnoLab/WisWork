@@ -206,6 +206,62 @@ it('compares a selected chart cache from a multi-page source deck', async () => 
   })
 })
 
+it('detects chart category, series label and native plot type drift after host export', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.type === 'chart' ? 'Chart' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const original = Buffer.from(bytes).toString('base64')
+  const inspect = {
+    slideId: 'host',
+    slideWidth: 960,
+    slideHeight: 540,
+    shapes,
+    shapesTruncated: false,
+    overflows: [],
+    overlaps: [],
+    overlapsTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: '' },
+  }
+  const sourceZip = await JSZip.loadAsync(bytes)
+  const path = Object.keys(sourceZip.files).find((item) =>
+    /^ppt\/charts\/chart\d+\.xml$/.test(item),
+  )!
+  const chart = await sourceZip.file(path)!.async('string')
+  expect(chart).toContain('<c:barChart>')
+  for (const [edited, cacheChanged, chartTypeChanged] of [
+    [chart.replace('<c:v>甲</c:v>', '<c:v>丙</c:v>'), ['chart'], []],
+    [chart.replace('<c:v>示例</c:v>', '<c:v>修改后</c:v>'), ['chart'], []],
+    [chart.replace(/<c:ser>[\s\S]*?<\/c:ser>/, ''), ['chart'], []],
+    [chart.replaceAll('c:barChart', 'c:lineChart'), [], ['chart']],
+  ] as const) {
+    expect(edited).not.toBe(chart)
+    const zip = await JSZip.loadAsync(bytes)
+    zip.file(path, edited)
+    const result = await comparePresentationPageStructure(
+      original,
+      0,
+      inspect,
+      await zip.generateAsync({ type: 'base64' }),
+    )
+    expect(result.content).toMatchObject({
+      status: 'warning',
+      cacheChanged,
+      chartTypeChanged,
+      unchecked: ['chart'],
+    })
+  }
+})
+
 it('reports embedded chart workbook bytes changing while cached values stay the same', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[6]!]

@@ -172,6 +172,7 @@ export async function comparePresentationPageStructure(
     status: 'passed' | 'warning' | 'incomplete'
     changed: string[]
     cacheChanged: string[]
+    chartTypeChanged: string[]
     workbookBytesChanged: string[]
     mediaChanged: string[]
     altTextChanged: string[]
@@ -257,6 +258,7 @@ export async function comparePresentationPageStructure(
     }
   const changed: string[] = [],
     cacheChanged: string[] = [],
+    chartTypeChanged: string[] = [],
     workbookBytesChanged: string[] = [],
     mediaChanged: string[] = [],
     altTextChanged: string[] = [],
@@ -322,13 +324,12 @@ export async function comparePresentationPageStructure(
         const hostElement = exportedByName.get(element.name)
         const original = before.charts.find((chart) => chart.shapeId === element.shapeId)
         const current = after.charts.find((chart) => chart.shapeId === hostElement?.shapeId)
+        if (!original || !current || original.truncated || current.truncated) continue
+        if (JSON.stringify(original.plotTypes) !== JSON.stringify(current.plotTypes))
+          chartTypeChanged.push(element.name)
         if (
-          original?.series.length &&
-          current?.series.length &&
-          original.series.every((series) => series.values.length > 0) &&
-          current.series.every((series) => series.values.length > 0) &&
-          JSON.stringify(original.series.map((series) => series.values)) !==
-            JSON.stringify(current.series.map((series) => series.values))
+          (original.series.length || current.series.length) &&
+          JSON.stringify(original.series) !== JSON.stringify(current.series)
         )
           cacheChanged.push(element.name)
       }
@@ -384,6 +385,7 @@ export async function comparePresentationPageStructure(
   const content = {
     status: (changed.length ||
     cacheChanged.length ||
+    chartTypeChanged.length ||
     workbookBytesChanged.length ||
     mediaChanged.length ||
     altTextChanged.length ||
@@ -396,6 +398,7 @@ export async function comparePresentationPageStructure(
         : 'passed') as 'passed' | 'warning' | 'incomplete',
     changed,
     cacheChanged,
+    chartTypeChanged,
     workbookBytesChanged,
     mediaChanged,
     altTextChanged,
