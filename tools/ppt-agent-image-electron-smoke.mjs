@@ -23,7 +23,7 @@ try {
   await writeFile(
     driver,
     `
-const { app } = require('electron')
+const { app, BrowserWindow } = require('electron')
 const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
 const { normalizePresentationImage } = require(${JSON.stringify(bundle)})
@@ -38,7 +38,13 @@ app.whenReady().then(async () => {
     try { await normalizePresentationImage(readFileSync(join(fixture, name))); throw Error('animation accepted') }
     catch (error) { if (error.message !== 'parse_failed') throw error }
   }
-  console.log('Electron image smoke passed: 5 consecutive/concurrent static decodes, 2 animations rejected')
+  const main = new BrowserWindow({ show: false })
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(Error('decoder prevented window-all-closed')), 1000)
+    app.once('window-all-closed', () => { clearTimeout(timer); resolve() })
+    main.close()
+  })
+  console.log('Electron image smoke passed: 5 consecutive/concurrent static decodes, 2 animations rejected, app lifecycle preserved')
   app.quit()
 }).catch(error => { console.error(error); app.exit(1) })
 `,

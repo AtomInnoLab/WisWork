@@ -11,7 +11,7 @@ let decodeQueue: Promise<void> = Promise.resolve()
 function invalid(): never {
   throw new Error('parse_failed')
 }
-/** Header admission only. The native decoder must subsequently validate the full image. */
+/** Header admission only. Electron must subsequently validate the full image. */
 export function inspectPresentationImage(input: Uint8Array): {
   mime: ImageMime
   width: number
