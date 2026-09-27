@@ -23,6 +23,15 @@ export interface PresentationExistingBatch {
   documentId: string
   baselineId: string
   baselineDigest: string
+  beforeSlideIds?: string[]
+  backups?: {
+    hostSlideId: string
+    backupId: string
+    sha256: string
+    sizeBytes: number
+    packageDigest: string
+  }[]
+  backupReleasedAt?: string
   scope: { slideIds: string[]; shapeIds?: string[] }
   intent: string
   preserved: string[]
@@ -91,6 +100,9 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
           'documentId',
           'baselineId',
           'baselineDigest',
+          'beforeSlideIds',
+          'backups',
+          'backupReleasedAt',
           'scope',
           'intent',
           'preserved',
@@ -113,6 +125,33 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
     r.documentId.length > 4096 ||
     typeof r.baselineDigest !== 'string' ||
     !/^[a-f0-9]{64}$/.test(r.baselineDigest) ||
+    (r.beforeSlideIds !== undefined && !uniqueIds(r.beforeSlideIds, 500)) ||
+    (r.backups !== undefined &&
+      (!r.beforeSlideIds ||
+        !Array.isArray(r.backups) ||
+        r.backups.length > 8 ||
+        new Set(r.backups.map((backup) => backup?.hostSlideId)).size !== r.backups.length ||
+        new Set(r.backups.map((backup) => backup?.backupId)).size !== r.backups.length ||
+        r.backups.some(
+          (backup) =>
+            !backup ||
+            typeof backup !== 'object' ||
+            Array.isArray(backup) ||
+            Object.keys(backup).sort().join(',') !==
+              'backupId,hostSlideId,packageDigest,sha256,sizeBytes' ||
+            !hostId(backup.hostSlideId) ||
+            !id(backup.backupId) ||
+            typeof backup.sha256 !== 'string' ||
+            !/^[a-f0-9]{64}$/.test(backup.sha256) ||
+            typeof backup.packageDigest !== 'string' ||
+            !/^[a-f0-9]{64}$/.test(backup.packageDigest) ||
+            !Number.isSafeInteger(backup.sizeBytes) ||
+            backup.sizeBytes < 1 ||
+            backup.sizeBytes > 8 * 1024 * 1024 ||
+            !r.beforeSlideIds!.includes(backup.hostSlideId),
+        ))) ||
+    (r.backupReleasedAt !== undefined &&
+      (!r.backups || r.state !== 'undone' || !timestamp(r.backupReleasedAt))) ||
     !r.scope ||
     typeof r.scope !== 'object' ||
     Array.isArray(r.scope) ||
@@ -218,6 +257,14 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
   const tableOps = r.operations.filter(
     (op): op is Extract<ExistingBatchOperation, { kind: 'table_cell' }> => op.kind === 'table_cell',
   )
+  if (r.backups) {
+    const affected = new Set(r.operations.map((op) => op.hostSlideId))
+    if (
+      r.backups.length !== affected.size ||
+      r.backups.some((backup) => !affected.has(backup.hostSlideId))
+    )
+      return false
+  }
   if (r.preservedPageDigests) {
     const affected = new Set(r.operations.map((op) => op.hostSlideId))
     if (
@@ -285,11 +332,13 @@ export const existingBatchReservedBytes = (r: PresentationExistingBatch) => {
     Math.max('applying'.length, 'applied'.length, 'undoing'.length, 'undone'.length) -
     r.state.length +
     1
-  if (!r.reviewCapacity) return stateBytes
+  const releaseBytes = r.backups && !r.backupReleasedAt ? 68 : 0
+  if (!r.reviewCapacity) return stateBytes + releaseBytes
   const pages = new Set(r.operations.map((op) => op.hostSlideId)).size
   const reviews = r.reviews ?? []
   return (
     stateBytes +
+    releaseBytes +
     (r.reviews === undefined ? ',"reviews":[]'.length : 0) +
     pages * (8192 + 2) -
     reviews.reduce((sum, review) => sum + bytes(review), 0)
@@ -302,8 +351,24 @@ export function validExistingBatchTransition(
 ): boolean {
   if (!before) return after.state === 'applying' && after.cursor === 0
   const core = (r: PresentationExistingBatch) =>
-    JSON.stringify({ ...r, state: undefined, cursor: undefined, reviews: undefined })
+    JSON.stringify({
+      ...r,
+      state: undefined,
+      cursor: undefined,
+      reviews: undefined,
+      backupReleasedAt: undefined,
+    })
   if (core(before) !== core(after)) return false
+  if (before.backupReleasedAt !== after.backupReleasedAt)
+    return (
+      before.state === 'undone' &&
+      after.state === 'undone' &&
+      before.cursor === 0 &&
+      after.cursor === 0 &&
+      before.backupReleasedAt === undefined &&
+      timestamp(after.backupReleasedAt) &&
+      JSON.stringify(before.reviews) === JSON.stringify(after.reviews)
+    )
   if (before.state !== after.state && after.reviews !== undefined) return false
   if (
     before.state === after.state &&

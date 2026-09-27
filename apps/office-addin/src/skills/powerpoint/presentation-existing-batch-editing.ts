@@ -23,6 +23,7 @@ import {
 } from './presentation-existing-batch.js'
 import { inspectPowerPointTableCellsPackage } from './presentation-complex-page-package.js'
 import { presentationPackageDigest } from './powerpoint-package.js'
+import { readChartPackageBackup, saveChartPackageBackup } from './presentation-chart-backup.js'
 
 interface Options {
   baseline: PresentationBaselineSkill
@@ -30,6 +31,7 @@ interface Options {
   adapter: PowerPointAdapter
   proposals: StructuredProposalController
   documentId(): Promise<string>
+  request(body: unknown, signal?: AbortSignal): Promise<Response>
   readExistingBatch(id: string): PresentationExistingBatch | undefined
   writeExistingBatch(
     record: PresentationExistingBatch,
@@ -41,7 +43,7 @@ const tools: AgentToolDef[] = [
   {
     name: 'edit_existing_presentation_batch',
     description:
-      'Propose 2–8 ordered native text/geometry edits from one fresh scoped baseline. Confirmation creates one durable batch savepoint before host writes. Each step is read back; interrupted writes require explicit recovery.',
+      'Propose 2–8 ordered native text/geometry edits from one fresh scoped baseline. Confirmation backs up every affected original page to the paired PC before any host write. Each step is read back; interrupted writes require explicit recovery.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -90,7 +92,7 @@ const tools: AgentToolDef[] = [
   {
     name: 'edit_existing_presentation_table_batch',
     description:
-      'Propose 2–8 ordered native text cell edits in one existing table. Requires a fresh scoped baseline and confirmation; saves each verified step for recovery and undo.',
+      'Propose 2–8 ordered native text cell edits in one existing table. Confirmation backs up its original page to the paired PC before host writes; saves each verified step for recovery and undo.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -129,12 +131,14 @@ const tools: AgentToolDef[] = [
       additionalProperties: false,
     },
   },
-  ...(['inspect', 'resume', 'undo'] as const).map((action): AgentToolDef => ({
+  ...(['inspect', 'resume', 'undo', 'release'] as const).map((action): AgentToolDef => ({
     name: `${action}_existing_presentation_batch`,
     description:
       action === 'inspect'
         ? 'Read every saved target and classify batch recovery without writing.'
-        : 'Propose confirmed, stepwise batch recovery. Exact host values are checked before each write; ambiguous values stop without replay.',
+        : action === 'release'
+          ? 'After a batch has been fully undone, propose releasing its original page package backups from the paired PC. Requires separate confirmation.'
+          : 'Propose confirmed, stepwise batch recovery. Exact host values are checked before each write; ambiguous values stop without replay.',
     inputSchema: {
       type: 'object',
       properties: { change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' } },
@@ -204,6 +208,15 @@ async function digest(value: string) {
     (b) => b.toString(16).padStart(2, '0'),
   ).join('')
 }
+async function backupMetadata(base64: string, signal?: AbortSignal) {
+  const packageDigest = await presentationPackageDigest(base64, signal)
+  const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
+  if (!bytes.length || bytes.length > 8 * 1024 * 1024) throw new Error('office_api_unsupported')
+  const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('')
+  return { packageDigest, sha256, sizeBytes: bytes.length }
+}
 function preservedFields(page: PresentationBaselinePage, operations: ExistingBatchOperation[]) {
   const targets = new Set(
     operations.filter((op) => op.hostSlideId === page.slideId).map((op) => op.shapeId),
@@ -250,7 +263,7 @@ export function createPresentationExistingBatchEditingSkill(
     id: 'presentation-existing-batch-editing',
     tools,
     systemPrompt:
-      'For two or more existing-deck text/geometry changes, read_presentation_baseline then edit_existing_presentation_batch. For 2–8 cells in one native existing table use edit_existing_presentation_table_batch. Use exact native IDs. Geometry proposals support TextBox, GeometricShape, Image and Line only; use a page rebuild or dedicated validated operation for Chart, Group, SmartArt and placeholders. Whole-range text edits require TextBox or GeometricShape and determinate aggregate font fields; mixed or unknown formatting requires a dedicated validated operation. A batch is ordered and recoverable, not atomic. After confirmed writes, capture_existing_presentation_batch_page for every affected page, visually review, then record_existing_presentation_batch_page_review using its screenshot_digest. Historical reviews do not certify current or whole-deck QA. If interrupted, inspect then resume or undo. Never replay ambiguous host values.',
+      'For two or more existing-deck text/geometry changes, read_presentation_baseline then edit_existing_presentation_batch. For 2–8 cells in one native existing table use edit_existing_presentation_table_batch. Use exact native IDs. Geometry proposals support TextBox, GeometricShape, Image and Line only; use a page rebuild or dedicated validated operation for Chart, Group, SmartArt and placeholders. Whole-range text edits require TextBox or GeometricShape and determinate aggregate font fields; mixed or unknown formatting requires a dedicated validated operation. Confirmation requires all affected original page packages to be saved and read back on the paired PC before any host write. A batch is ordered and recoverable, not atomic; undo restores captured fields and does not replace the original page. After confirmed writes, capture_existing_presentation_batch_page for every affected page, visually review, then record_existing_presentation_batch_page_review using its screenshot_digest. Historical reviews do not certify current or whole-deck QA. If interrupted, inspect then resume or undo. Never replay ambiguous host values.',
     clear() {
       epoch++
       qaEpoch++
@@ -294,6 +307,7 @@ export function createPresentationExistingBatchEditingSkill(
         }
         let record: PresentationExistingBatch
         let initialBaseline: ReturnType<PresentationBaselineSkill['snapshot']>
+        const proposalPackages = new Map<string, string>()
         if (creating) {
           const i = call.input
           if (
@@ -512,12 +526,34 @@ export function createPresentationExistingBatchEditingSkill(
               ),
             ),
           )
+          if (!options.adapter.exportPresentationPagePackage)
+            throw new Error('office_api_unsupported')
+          const backups: NonNullable<PresentationExistingBatch['backups']> = []
+          for (const slideId of new Set(operations.map((op) => op.hostSlideId))) {
+            const first = await options.adapter.exportPresentationPagePackage(slideId, signal)
+            const second = await options.adapter.exportPresentationPagePackage(slideId, signal)
+            await current()
+            if (
+              first.slideId !== slideId ||
+              second.slideId !== slideId ||
+              !same(first.slideIds, baseline.context.slideIds) ||
+              !same(second.slideIds, first.slideIds)
+            )
+              throw new Error('presentation_baseline_changed')
+            const metadata = await backupMetadata(first.base64, signal)
+            if ((await presentationPackageDigest(second.base64, signal)) !== metadata.packageDigest)
+              throw new Error('presentation_baseline_changed')
+            proposalPackages.set(slideId, first.base64)
+            backups.push({ hostSlideId: slideId, backupId: crypto.randomUUID(), ...metadata })
+          }
           record = {
             version: 1,
             changeId: crypto.randomUUID(),
             documentId,
             baselineId: baseline.baselineId,
             baselineDigest: baseline.contentDigest,
+            beforeSlideIds: [...baseline.context.slideIds],
+            backups,
             scope: {
               slideIds: [...baseline.scope.slideIds],
               ...(baseline.scope.shapeIds ? { shapeIds: [...baseline.scope.shapeIds] } : {}),
@@ -656,6 +692,109 @@ export function createPresentationExistingBatchEditingSkill(
           return values
         }
         const values = await classify()
+        if (call.name === 'release_existing_presentation_batch') {
+          const originalPackagesRestored = async (signal?: AbortSignal) => {
+            if (!options.adapter.exportPresentationPagePackage || !record.beforeSlideIds)
+              return false
+            for (const backup of record.backups ?? []) {
+              const exported = await options.adapter.exportPresentationPagePackage(
+                backup.hostSlideId,
+                signal,
+              )
+              if (
+                exported.slideId !== backup.hostSlideId ||
+                !same(exported.slideIds, record.beforeSlideIds) ||
+                (await presentationPackageDigest(exported.base64, signal)) !== backup.packageDigest
+              )
+                return false
+            }
+            return true
+          }
+          if (
+            record.state !== 'undone' ||
+            !record.backups?.length ||
+            !record.beforeSlideIds ||
+            record.backupReleasedAt ||
+            !values.every((value) => value === 'before')
+          )
+            throw new Error('presentation_existing_batch_state_invalid')
+          if (!(await originalPackagesRestored(signal)))
+            throw new Error('presentation_existing_batch_original_page_changed')
+          const proposal = options.proposals.propose({
+            operation: call.name,
+            toolName: call.name,
+            title: '释放已撤销批量修改的原页备份',
+            preview: {
+              changeId: record.changeId,
+              pages: record.backups.map(({ hostSlideId }) => hostSlideId),
+              backupCount: record.backups.length,
+              originalPagePackages: '已核对原页包内容与写前保存点一致；释放后本机备份不可恢复',
+            },
+            impact: {
+              host: 'powerpoint',
+              targets: record.backups.map(({ backupId }) => `backup:${backupId}`),
+              count: record.backups.length,
+            },
+            fingerprint: selectionFingerprint(output(record)),
+            validate: async () => {
+              try {
+                return same(values, await classify()) && (await originalPackagesRestored())
+              } catch {
+                return false
+              }
+            },
+            execute: async (writeSignal) => {
+              if (!same(values, await classify()) || !(await originalPackagesRestored(writeSignal)))
+                throw new Error('proposal_stale')
+              for (const backup of record.backups!) {
+                await current()
+                saved()
+                const response = await options.request(
+                  {
+                    operation: 'existing_page_backup_release',
+                    documentId,
+                    backupId: backup.backupId,
+                    hostSlideId: backup.hostSlideId,
+                    slideIds: record.beforeSlideIds,
+                    sha256: backup.sha256,
+                    sizeBytes: backup.sizeBytes,
+                  },
+                  writeSignal,
+                )
+                await current()
+                if (!response.ok)
+                  throw new Error('presentation_existing_batch_backup_release_failed')
+                const receipt = (await response.json()) as Record<string, unknown>
+                if (
+                  receipt.status !== 'released' ||
+                  receipt.documentId !== documentId ||
+                  receipt.backupId !== backup.backupId ||
+                  receipt.hostSlideId !== backup.hostSlideId ||
+                  !same(receipt.slideIds, record.beforeSlideIds) ||
+                  receipt.sha256 !== backup.sha256 ||
+                  receipt.sizeBytes !== backup.sizeBytes
+                )
+                  throw new Error('presentation_existing_batch_backup_release_failed')
+              }
+              if (!same(values, await classify()))
+                throw new Error('presentation_existing_batch_conflict')
+              await store({ ...record, backupReleasedAt: new Date().toISOString() })
+            },
+            verify: async () => {
+              saved()
+              if (!record.backupReleasedAt) throw new Error('office_state_uncertain')
+            },
+          })
+          return {
+            output: output({
+              proposalId: proposal.id,
+              status: 'awaiting_confirmation',
+              changeId: record.changeId,
+            }),
+            mutated: false,
+            summary: '已准备释放撤销后的批量原页备份，等待确认',
+          }
+        }
         if (
           call.name === 'capture_existing_presentation_batch_page' ||
           call.name === 'record_existing_presentation_batch_page_review'
@@ -781,6 +920,83 @@ export function createPresentationExistingBatchEditingSkill(
             same(initialBaseline, options.baseline.snapshot(initialBaseline.baselineId))
           )
         }
+        const ensureBackups = async (writeSignal?: AbortSignal) => {
+          if (!record.backups || !record.beforeSlideIds) return // Legacy records predate package savepoints.
+          if (!options.adapter.exportPresentationPagePackage)
+            throw new Error('office_api_unsupported')
+          for (const backup of record.backups) {
+            await current()
+            saved()
+            const scope = {
+              request: options.request,
+              documentId,
+              hostSlideId: backup.hostSlideId,
+              slideIds: record.beforeSlideIds,
+            }
+            let ready = false
+            try {
+              await readChartPackageBackup(
+                { ...scope, backup, expectedPackageDigest: backup.packageDigest },
+                writeSignal,
+              )
+              ready = true
+            } catch (error) {
+              if (writeSignal?.aborted) throw error
+            }
+            if (!ready) {
+              if (record.state !== 'applying' || record.cursor !== 0)
+                throw new Error('presentation_existing_batch_backup_missing')
+              const exported = await options.adapter.exportPresentationPagePackage(
+                backup.hostSlideId,
+                writeSignal,
+              )
+              await current()
+              if (
+                exported.slideId !== backup.hostSlideId ||
+                !same(exported.slideIds, record.beforeSlideIds) ||
+                (await presentationPackageDigest(exported.base64, writeSignal)) !==
+                  backup.packageDigest
+              )
+                throw new Error('presentation_baseline_changed')
+              const base64 = proposalPackages.get(backup.hostSlideId) ?? exported.base64
+              const metadata = await backupMetadata(base64, writeSignal)
+              if (
+                metadata.packageDigest !== backup.packageDigest ||
+                metadata.sha256 !== backup.sha256 ||
+                metadata.sizeBytes !== backup.sizeBytes
+              )
+                throw new Error('presentation_existing_batch_backup_missing')
+              const stored = await saveChartPackageBackup(
+                { ...scope, base64, backupId: backup.backupId },
+                writeSignal,
+              )
+              if (stored.sha256 !== backup.sha256 || stored.sizeBytes !== backup.sizeBytes)
+                throw new Error('presentation_existing_batch_backup_missing')
+              await readChartPackageBackup(
+                { ...scope, backup, expectedPackageDigest: backup.packageDigest },
+                writeSignal,
+              )
+            }
+            await current()
+            saved()
+          }
+          if (record.state === 'applying' && record.cursor === 0) {
+            for (const backup of record.backups) {
+              const exported = await options.adapter.exportPresentationPagePackage(
+                backup.hostSlideId,
+                writeSignal,
+              )
+              await current()
+              if (
+                exported.slideId !== backup.hostSlideId ||
+                !same(exported.slideIds, record.beforeSlideIds) ||
+                (await presentationPackageDigest(exported.base64, writeSignal)) !==
+                  backup.packageDigest
+              )
+                throw new Error('presentation_baseline_changed')
+            }
+          }
+        }
         if (call.name === 'inspect_existing_presentation_batch')
           return {
             output: output({
@@ -789,6 +1005,10 @@ export function createPresentationExistingBatchEditingSkill(
               cursor: record.cursor,
               values,
               currentHostVerified: true,
+              packageSavepoints:
+                record.backups?.map(({ hostSlideId, backupId }) => ({ hostSlideId, backupId })) ??
+                [],
+              packageSavepointsRequireReadbackBeforeWrite: Boolean(record.backups?.length),
               qaPassed: false,
             }),
             mutated: false,
@@ -829,6 +1049,9 @@ export function createPresentationExistingBatchEditingSkill(
             preserved: record.preserved,
             preservedFields: '已读取的受影响页非目标形状字段和目标形状未计划修改字段自动对照',
             validation: record.validation,
+            originalPageBackup: record.backups
+              ? `${record.backups.length} 个原页包写前保存到已配对的本机 PC，单页不超过 8 MiB`
+              : '旧记录仅保存已读取字段',
             atomic: false,
             textFormatting: '文字与表格单元格撤销仅恢复内容，不恢复全部富文本格式',
           },
@@ -847,10 +1070,11 @@ export function createPresentationExistingBatchEditingSkill(
               return false
             }
           },
-          execute: async () => {
+          execute: async (writeSignal) => {
             if (!(await freshBaseline())) throw new Error('proposal_stale')
             if (!same(values, await classify())) throw new Error('proposal_stale')
             if (creating) await store(record)
+            await ensureBackups(writeSignal)
             if (call.name === 'undo_existing_presentation_batch') {
               const { reviews: _reviews, ...r } = record
               await store({ ...r, state: 'undoing' })

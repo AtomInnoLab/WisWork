@@ -244,9 +244,19 @@ export function createOfficeHostRuntime(
       ? {
           beforeWrite: async (proposal) => {
             // Local preference and review writes do not touch the host deck or its QA state.
-            if (proposal.toolName === proposal.operation &&
-              ((['save_presentation_preference', 'delete_presentation_preference'].includes(proposal.operation) && proposal.impact.host === 'local_preference') ||
-                (['add_presentation_review_comment', 'resolve_presentation_review_comment'].includes(proposal.operation) && proposal.impact.host === 'local_review'))) return
+            if (
+              proposal.toolName === proposal.operation &&
+              ((['save_presentation_preference', 'delete_presentation_preference'].includes(
+                proposal.operation,
+              ) &&
+                proposal.impact.host === 'local_preference') ||
+                ([
+                  'add_presentation_review_comment',
+                  'resolve_presentation_review_comment',
+                ].includes(proposal.operation) &&
+                  proposal.impact.host === 'local_review'))
+            )
+              return
             // Only these internally constructed operations resolve a stable host page before
             // proposing. Generic script/index-based impact labels cannot prove their write scope.
             const target = proposal.impact.targets[0]
@@ -460,7 +470,8 @@ export function createOfficeHostRuntime(
     baselineSkill &&
     powerPointAdapter &&
     imageBackup &&
-    import.meta.env.MODE === 'test' && options.imageAdapterOverrideForTests === true &&
+    import.meta.env.MODE === 'test' &&
+    options.imageAdapterOverrideForTests === true &&
     localBinding?.readExistingImageChange &&
     localBinding.writeExistingImageChange
   )
@@ -519,6 +530,11 @@ export function createOfficeHostRuntime(
       adapter: powerPointAdapter,
       proposals,
       documentId: localBinding.documentId,
+      request:
+        options.presentation?.request ??
+        (async () => {
+          throw new Error('presentation_page_backup_unavailable')
+        }),
       readExistingBatch: localBinding.readExistingBatch,
       writeExistingBatch: async (record, expected) => {
         try {
@@ -560,9 +576,10 @@ export function createOfficeHostRuntime(
     generation && options.presentation
       ? createPresentationPlanningSkill({ ...options.presentation, vfs, proposals })
       : undefined
-  const comments = generation && options.presentation
-    ? createPresentationCommentsSkill({ ...options.presentation, proposals })
-    : undefined
+  const comments =
+    generation && options.presentation
+      ? createPresentationCommentsSkill({ ...options.presentation, proposals })
+      : undefined
   const production =
     generation && options.presentation
       ? createPresentationProductionSkill({ ...options.presentation, vfs })
@@ -806,8 +823,10 @@ export function createOfficeHostRuntime(
           readReceipt: options.presentation.readReceipt,
           adapter: powerPointAdapter,
           vfs,
-          imageAdapter: import.meta.env.MODE === 'test' && options.imageAdapterOverrideForTests === true
-            ? new BrowserPresentationImageAdapter() : undefined,
+          imageAdapter:
+            import.meta.env.MODE === 'test' && options.imageAdapterOverrideForTests === true
+              ? new BrowserPresentationImageAdapter()
+              : undefined,
           imageBackup,
           readTextChange: options.presentation.readTextChange,
           writeTextChange: options.presentation.writeTextChange
@@ -1100,24 +1119,24 @@ export function createOfficeHostRuntime(
                             : comments?.tools.some((tool) => tool.name === call.name)
                               ? comments.executeTool(call, signal)
                               : planning?.tools.some((tool) => tool.name === call.name)
-                              ? planning.executeTool(call, signal)
-                              : [
-                                    'import_presentation_production',
-                                    'read_presentation_production_import_status',
-                                  ].includes(call.name) && productionDelivery
-                                ? executeDelivery(call, signal)
+                                ? planning.executeTool(call, signal)
                                 : [
-                                      'import_generated_presentation',
-                                      'read_presentation_import_status',
-                                    ].includes(call.name) && delivery
+                                      'import_presentation_production',
+                                      'read_presentation_production_import_status',
+                                    ].includes(call.name) && productionDelivery
                                   ? executeDelivery(call, signal)
                                   : [
-                                        'compile_deck_with_pptxgenjs',
-                                        'restore_presentation_project',
-                                        'resume_presentation_project',
-                                      ].includes(call.name)
-                                    ? executeGeneration(call, signal)
-                                    : base.executeTool(call, signal),
+                                        'import_generated_presentation',
+                                        'read_presentation_import_status',
+                                      ].includes(call.name) && delivery
+                                    ? executeDelivery(call, signal)
+                                    : [
+                                          'compile_deck_with_pptxgenjs',
+                                          'restore_presentation_project',
+                                          'resume_presentation_project',
+                                        ].includes(call.name)
+                                      ? executeGeneration(call, signal)
+                                      : base.executeTool(call, signal),
       }
     : base
   return {

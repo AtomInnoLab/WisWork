@@ -4,6 +4,7 @@ import type { CompiledPresentationArtifact } from '../src/skills/powerpoint/pres
 import type { PresentationGeometryChange } from '../src/skills/powerpoint/presentation-geometry-change.js'
 import type { PresentationExistingPageChange } from '../src/skills/powerpoint/presentation-existing-page.js'
 import type { PresentationExistingChartChange } from '../src/skills/powerpoint/presentation-existing-chart.js'
+import type { PresentationExistingBatch } from '../src/skills/powerpoint/presentation-existing-batch.js'
 const artifact: CompiledPresentationArtifact = {
   documentId: 'doc',
   projectId: 'project',
@@ -97,14 +98,33 @@ it('shows existing-page identity diff offline and routes commit by exact change 
     artifact: () => undefined,
     documentId: async () => 'doc',
     listChangeHistory: () => [
-      { id: 'existing_page:native-page', kind: 'existing_page', sequence: 1, legacy: false, record },
+      {
+        id: 'existing_page:native-page',
+        kind: 'existing_page',
+        sequence: 1,
+        legacy: false,
+        record,
+      },
     ],
-    listExistingPageBackups: async () => [{ backupId: 'backup', status: 'ready', hostSlideId: 'old', slideIds: ['old', 'other'], sha256: 'd'.repeat(64), sizeBytes: 120 }],
+    listExistingPageBackups: async () => [
+      {
+        backupId: 'backup',
+        status: 'ready',
+        hostSlideId: 'old',
+        slideIds: ['old', 'other'],
+        sha256: 'd'.repeat(64),
+        sizeBytes: 120,
+      },
+    ],
     executeTool,
   })
   await controller.refresh()
   const row = controller.snapshot().entries[0]!
-  expect(row).toMatchObject({ source: 'existing_page', kind: 'page', actions: ['inspect', 'commit', 'discard'] })
+  expect(row).toMatchObject({
+    source: 'existing_page',
+    kind: 'page',
+    actions: ['inspect', 'commit', 'discard'],
+  })
   expect(row.before).toContain('old')
   expect(row.after).toContain('new')
   expect(controller.snapshot().backupAudit).toEqual({ active: 1, unmatched: 0 })
@@ -116,42 +136,156 @@ it('shows existing-page identity diff offline and routes commit by exact change 
     }),
     expect.any(AbortSignal),
   )
-  executeTool.mockResolvedValueOnce({ output: JSON.stringify({ inspection: { status: 'staged' }, visualReceipts: [
-    { hostSlideId: 'old', status: 'matched' }, { hostSlideId: 'new', status: 'different' },
-  ] }), summary: 'checked' })
+  executeTool.mockResolvedValueOnce({
+    output: JSON.stringify({
+      inspection: { status: 'staged' },
+      visualReceipts: [
+        { hostSlideId: 'old', status: 'matched' },
+        { hostSlideId: 'new', status: 'different' },
+      ],
+    }),
+    summary: 'checked',
+  })
   await controller.run(row.id, 'inspect')
   expect(controller.snapshot().notice).toContain('当前截图与历史回执不同')
   record = { ...record, state: 'discarded' }
   await controller.refresh()
   expect(controller.snapshot().entries[0]?.actions).toEqual(['release'])
   await controller.run(row.id, 'release')
-  expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({
-    name: 'release_existing_presentation_page_change', input: { change_id: 'native-page' },
-  }), expect.any(AbortSignal))
+  expect(executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'release_existing_presentation_page_change',
+      input: { change_id: 'native-page' },
+    }),
+    expect.any(AbortSignal),
+  )
   expect(controller.snapshot().notice).toContain('确认后执行')
   record = { ...record, backupReleasedAt: '2026-09-24T00:00:00.000Z' }
   await controller.refresh()
   expect(controller.snapshot().entries[0]?.actions).toEqual([])
 })
+it('counts batch page savepoints as linked PC backups', async () => {
+  const record: PresentationExistingBatch = {
+    version: 1,
+    changeId: 'batch',
+    documentId: 'doc',
+    baselineId: 'baseline',
+    baselineDigest: 'a'.repeat(64),
+    beforeSlideIds: ['s1', 's2'],
+    scope: { slideIds: ['s1', 's2'] },
+    intent: 'Update titles',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    state: 'applied',
+    cursor: 2,
+    operations: [
+      {
+        kind: 'text',
+        hostSlideId: 's1',
+        shapeId: 'a',
+        shapeType: 'TextBox',
+        before: 'old',
+        after: 'new',
+      },
+      {
+        kind: 'text',
+        hostSlideId: 's2',
+        shapeId: 'b',
+        shapeType: 'TextBox',
+        before: 'old',
+        after: 'new',
+      },
+    ],
+    backups: [
+      {
+        hostSlideId: 's1',
+        backupId: 'backup1',
+        sha256: 'b'.repeat(64),
+        sizeBytes: 120,
+        packageDigest: 'c'.repeat(64),
+      },
+      {
+        hostSlideId: 's2',
+        backupId: 'backup2',
+        sha256: 'd'.repeat(64),
+        sizeBytes: 140,
+        packageDigest: 'e'.repeat(64),
+      },
+    ],
+  }
+  const controller = createPresentationChangesController({
+    available: () => false,
+    existingAvailable: () => true,
+    artifact: () => undefined,
+    documentId: async () => 'doc',
+    listChangeHistory: () => [
+      { id: 'existing_batch:batch', kind: 'existing_batch', sequence: 1, legacy: false, record },
+    ],
+    listExistingPageBackups: async () =>
+      record.backups!.map((backup) => ({
+        backupId: backup.backupId,
+        status: 'ready',
+        hostSlideId: backup.hostSlideId,
+        slideIds: record.beforeSlideIds!,
+        sha256: backup.sha256,
+        sizeBytes: backup.sizeBytes,
+      })),
+    executeTool: vi.fn(),
+  })
+  await controller.refresh()
+  expect(controller.snapshot().backupAudit).toEqual({ active: 2, unmatched: 0 })
+})
 it('offers one chart backup release after cancellation and accepts the receipt update', async () => {
   let record: PresentationExistingChartChange = {
-    version: 1, changeId: 'chart-release', documentId: 'doc', oldSlideId: 'old', shapeId: '7',
-    slideIndex: 0, beforeSlideIds: ['old'], beforePackageDigest: 'a'.repeat(64),
-    afterPackageDigest: 'b'.repeat(64), backup: { backupId: 'backup', sha256: 'c'.repeat(64), sizeBytes: 120 },
+    version: 1,
+    changeId: 'chart-release',
+    documentId: 'doc',
+    oldSlideId: 'old',
+    shapeId: '7',
+    slideIndex: 0,
+    beforeSlideIds: ['old'],
+    beforePackageDigest: 'a'.repeat(64),
+    afterPackageDigest: 'b'.repeat(64),
+    backup: { backupId: 'backup', sha256: 'c'.repeat(64), sizeBytes: 120 },
     state: 'cancelled',
   }
   let inventoryAvailable = true
   let inventoryDigest = 'c'.repeat(64)
   const executeTool = vi.fn(async () => ({ output: '{}', mutated: false, summary: 'proposed' }))
   const controller = createPresentationChangesController({
-    available: () => false, existingAvailable: () => true, artifact: () => undefined,
+    available: () => false,
+    existingAvailable: () => true,
+    artifact: () => undefined,
     documentId: async () => 'doc',
-    listChangeHistory: () => [{ id: 'existing_chart:chart-release', kind: 'existing_chart', sequence: 1, legacy: false, record }],
+    listChangeHistory: () => [
+      {
+        id: 'existing_chart:chart-release',
+        kind: 'existing_chart',
+        sequence: 1,
+        legacy: false,
+        record,
+      },
+    ],
     listExistingPageBackups: async () => {
       if (!inventoryAvailable) throw new Error('pc_offline')
       return [
-        { backupId: 'backup', status: 'ready', hostSlideId: 'old', slideIds: ['old'], sha256: inventoryDigest, sizeBytes: 120 },
-        { backupId: 'unmatched', status: 'ready', hostSlideId: 'old', slideIds: ['old'], sha256: 'c'.repeat(64), sizeBytes: 120 },
+        {
+          backupId: 'backup',
+          status: 'ready',
+          hostSlideId: 'old',
+          slideIds: ['old'],
+          sha256: inventoryDigest,
+          sizeBytes: 120,
+        },
+        {
+          backupId: 'unmatched',
+          status: 'ready',
+          hostSlideId: 'old',
+          slideIds: ['old'],
+          sha256: 'c'.repeat(64),
+          sizeBytes: 120,
+        },
       ]
     },
     executeTool,
@@ -165,9 +299,13 @@ it('offers one chart backup release after cancellation and accepts the receipt u
   expect(controller.snapshot().backupAudit).toEqual({ active: 2, unmatched: 2 })
   inventoryDigest = 'c'.repeat(64)
   await controller.run(row.id, 'release')
-  expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({
-    name: 'release_slide_chart_values_change', input: { change_id: 'chart-release' },
-  }), expect.any(AbortSignal))
+  expect(executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'release_slide_chart_values_change',
+      input: { change_id: 'chart-release' },
+    }),
+    expect.any(AbortSignal),
+  )
   expect(controller.snapshot().notice).toContain('确认后执行')
   expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect', 'release'])
   record = { ...record, backupReleasedAt: '2026-09-24T09:00:00.000Z' }

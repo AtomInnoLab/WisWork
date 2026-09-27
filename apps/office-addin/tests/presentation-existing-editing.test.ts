@@ -421,14 +421,86 @@ async function fixture() {
     }),
   )
   const invalidateQa = vi.fn(async (_ids?: readonly string[]) => {})
+  const backups = new Map<
+    string,
+    { meta: Record<string, unknown>; bytes: Uint8Array; ready: boolean }
+  >()
+  const releasedBackups = new Map<string, Record<string, unknown>>()
+  let backupOffline = false
+  let backupQuota = 8
+  const request = async (body: unknown) => {
+    const input = body as Record<string, unknown>
+    if (backupOffline) throw new Error('offline')
+    const id = input.backupId as string
+    let stored = backups.get(id)
+    if (input.operation === 'existing_page_backup_release') {
+      const receipt =
+        releasedBackups.get(id) ??
+        (stored?.ready ? { ...stored.meta, status: 'released' } : undefined)
+      if (!receipt) throw new Error('backup_missing')
+      releasedBackups.set(id, receipt)
+      backups.delete(id)
+      return new Response(JSON.stringify(receipt), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (input.operation === 'existing_page_backup_begin') {
+      if (!stored) {
+        if (backups.size >= backupQuota) throw new Error('quota_exceeded')
+        stored = {
+          meta: Object.fromEntries(
+            ['backupId', 'documentId', 'hostSlideId', 'slideIds', 'sha256', 'sizeBytes'].map(
+              (key) => [key, input[key]],
+            ),
+          ),
+          bytes: new Uint8Array(),
+          ready: false,
+        }
+        backups.set(id, stored)
+      }
+    } else if (!stored) throw new Error('backup_missing')
+    if (input.operation === 'existing_page_backup_chunk') {
+      const chunk = Uint8Array.from(atob(input.base64 as string), (character) =>
+        character.charCodeAt(0),
+      )
+      if (input.offset !== stored!.bytes.length) throw new Error('offset_mismatch')
+      stored!.bytes = Uint8Array.from([...stored!.bytes, ...chunk])
+    }
+    if (input.operation === 'existing_page_backup_finish') stored!.ready = true
+    const result =
+      input.operation === 'existing_page_backup_read'
+        ? {
+            backupId: id,
+            offset: input.offset,
+            sizeBytes: stored!.meta.sizeBytes,
+            sha256: stored!.meta.sha256,
+            base64: btoa(
+              Array.from(
+                stored!.bytes.slice(
+                  input.offset as number,
+                  (input.offset as number) + (input.length as number),
+                ),
+                (byte) => String.fromCharCode(byte),
+              ).join(''),
+            ),
+          }
+        : {
+            ...stored!.meta,
+            status: stored!.ready ? 'ready' : 'uploading',
+            receivedBytes: stored!.bytes.length,
+          }
+    return new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
   const create = () =>
     createOfficeHostRuntime('powerpoint', {
       presentation: {
         ...bind(),
         available: () => false,
-        request: async () => {
-          throw new Error('offline')
-        },
+        request,
         invalidateQa,
       },
     })
@@ -502,6 +574,13 @@ async function fixture() {
     setScreenshot: (v: string) => {
       screenshot = v
     },
+    setBackupOffline: (value: boolean) => {
+      backupOffline = value
+    },
+    setBackupQuota: (value: number) => {
+      backupQuota = value
+    },
+    readyBackups: () => [...backups.values()].filter((backup) => backup.ready).length,
     geometry: () => geometry,
   }
 }
@@ -687,6 +766,115 @@ it('applies and reverses an ordered text plus geometry batch through one durable
   expect(f.geometry().left).toBe(1)
   expect(f.binding().listChangeHistory()[0].record).toMatchObject({ state: 'undone', cursor: 0 })
   expect(f.binding().readExistingBatch(changeId)?.reviews).toBeUndefined()
+  expect(f.readyBackups()).toBe(1)
+  await workbench.refresh()
+  const undoneRow = workbench
+    .snapshot()
+    .entries.find((entry) => entry.id === `existing_batch:${changeId}`)
+  expect(undoneRow?.actions).toEqual(['inspect', 'release'])
+  f.setTableText2('unrelated page content changed')
+  const blockedRelease = await f.call('release_existing_presentation_batch', {
+    change_id: changeId,
+  })
+  expect(blockedRelease.isError).toBe(true)
+  expect(f.readyBackups()).toBe(1)
+  f.setTableText2('before-2')
+  await workbench.run(undoneRow!.id, 'release')
+  await f.confirm()
+  expect(f.readyBackups()).toBe(0)
+  expect(f.binding().readExistingBatch(changeId)?.backupReleasedAt).toBeTruthy()
+  await workbench.refresh()
+  expect(workbench.snapshot().entries.find((entry) => entry.id === undoneRow!.id)?.actions).toEqual(
+    ['inspect'],
+  )
+})
+it('completes all affected page package backups before the first batch host write', async () => {
+  const f = await fixture()
+  const baseline = await f.call('read_presentation_baseline', { scope: 'deck' })
+  const proposed = await f.call('edit_existing_presentation_batch', {
+    baseline_id: JSON.parse(baseline.output).baselineId,
+    intent: 'Update two titles',
+    preserved: ['Other objects'],
+    validation: ['Read back both pages'],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      { slide_id: 'other', shape_id: 'other-shape', kind: 'text', text: 'other-after' },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  f.editText.mockImplementationOnce(async (_slide, _shape, next) => {
+    expect(f.readyBackups()).toBe(2)
+    f.setText(next)
+  })
+  await f.confirm()
+  const record = f.binding().readExistingBatch(JSON.parse(proposed.output).changeId)
+  expect(record?.backups).toHaveLength(2)
+  expect(record?.backups?.map((backup) => backup.hostSlideId)).toEqual(['slide', 'other'])
+})
+it('keeps PowerPoint unchanged when PC backup is unavailable and resumes after reconnect', async () => {
+  const f = await fixture()
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_batch', {
+    baseline_id,
+    intent: 'Update title and position',
+    preserved: ['Other objects'],
+    validation: ['Readback'],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      {
+        slide_id: 'slide',
+        shape_id: 'shape',
+        kind: 'geometry',
+        geometry: { ...f.geometry(), left: 30 },
+      },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  const changeId = JSON.parse(proposed.output).changeId as string
+  f.setBackupOffline(true)
+  await expect(f.confirm()).rejects.toThrow('offline')
+  expect(f.text()).toBe('before')
+  expect(f.geometry().left).toBe(1)
+  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'applying', cursor: 0 })
+  f.setBackupOffline(false)
+  f.reopen()
+  const resumed = await f.call('resume_existing_presentation_batch', { change_id: changeId })
+  expect(resumed.isError, resumed.output).not.toBe(true)
+  await f.confirm()
+  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'applied', cursor: 2 })
+  expect(f.readyBackups()).toBe(1)
+})
+it('does not begin a multi-page batch when PC backup quota fills partway', async () => {
+  const f = await fixture()
+  const baseline = await f.call('read_presentation_baseline', { scope: 'deck' })
+  const proposed = await f.call('edit_existing_presentation_batch', {
+    baseline_id: JSON.parse(baseline.output).baselineId,
+    intent: 'Update two titles',
+    preserved: ['Other objects'],
+    validation: ['Readback'],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      { slide_id: 'other', shape_id: 'other-shape', kind: 'text', text: 'other-after' },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  f.setBackupQuota(1)
+  await expect(f.confirm()).rejects.toThrow('quota_exceeded')
+  expect(f.readyBackups()).toBe(1)
+  expect(f.text()).toBe('before')
+  expect(f.otherText()).toBe('other-before')
+  f.setBackupQuota(2)
+  f.reopen()
+  const resumed = await f.call('resume_existing_presentation_batch', {
+    change_id: JSON.parse(proposed.output).changeId,
+  })
+  expect(resumed.isError, resumed.output).not.toBe(true)
+  await f.confirm()
+  expect(f.readyBackups()).toBe(2)
+  expect(f.otherText()).toBe('other-after')
 })
 it('stops a batch when a non-target shape changes during a confirmed write', async () => {
   const f = await fixture()

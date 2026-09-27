@@ -35,6 +35,7 @@ const inventories = {
     'inspect_existing_presentation_batch',
     'resume_existing_presentation_batch',
     'undo_existing_presentation_batch',
+    'release_existing_presentation_batch',
     'capture_existing_presentation_batch_page',
     'record_existing_presentation_batch_page_review',
     'edit_existing_presentation_text',

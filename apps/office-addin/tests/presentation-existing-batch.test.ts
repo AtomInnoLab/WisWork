@@ -2,6 +2,7 @@ import { expect, it, vi } from 'vitest'
 import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
 import {
   validatePresentationExistingBatch,
+  validExistingBatchTransition,
   type PresentationExistingBatch,
 } from '../src/skills/powerpoint/presentation-existing-batch'
 
@@ -149,6 +150,55 @@ it('validates persisted non-target shape digests for exactly the affected pages'
       ...f.batch,
       preservedTargetDigests: { [JSON.stringify(['s1', 'a'])]: hashes.s1 },
     }),
+  ).toBe(false)
+})
+it('requires one bounded package savepoint per affected page in new batch records', async () => {
+  const f = await fixture()
+  const backups = [
+    {
+      hostSlideId: 's1',
+      backupId: 'backup1',
+      sha256: 'a'.repeat(64),
+      sizeBytes: 1024,
+      packageDigest: 'b'.repeat(64),
+    },
+    {
+      hostSlideId: 's2',
+      backupId: 'backup2',
+      sha256: 'c'.repeat(64),
+      sizeBytes: 2048,
+      packageDigest: 'd'.repeat(64),
+    },
+  ]
+  const record = { ...f.batch, beforeSlideIds: ['s1', 's2'], backups }
+  expect(validatePresentationExistingBatch(record)).toBe(true)
+  expect(validatePresentationExistingBatch({ ...record, backups: backups.slice(0, 1) })).toBe(false)
+  expect(
+    validatePresentationExistingBatch({
+      ...record,
+      backups: [backups[0], { ...backups[1], backupId: backups[0].backupId }],
+    }),
+  ).toBe(false)
+  expect(
+    validatePresentationExistingBatch({
+      ...record,
+      backups: [{ ...backups[0], sizeBytes: 8 * 1024 * 1024 + 1 }, backups[1]],
+    }),
+  ).toBe(false)
+  expect(
+    validatePresentationExistingBatch({
+      ...record,
+      beforeSlideIds: ['s2', 's1'],
+      backups: [{ ...backups[0], hostSlideId: 'foreign' }, backups[1]],
+    }),
+  ).toBe(false)
+  const undone: PresentationExistingBatch = { ...record, state: 'undone', cursor: 0 }
+  const released = { ...undone, backupReleasedAt: '2026-09-28T00:00:00.000Z' }
+  expect(validatePresentationExistingBatch(released)).toBe(true)
+  expect(validExistingBatchTransition(undone, released)).toBe(true)
+  expect(validExistingBatchTransition(released, undone)).toBe(false)
+  expect(
+    validatePresentationExistingBatch({ ...record, backupReleasedAt: released.backupReleasedAt }),
   ).toBe(false)
 })
 
