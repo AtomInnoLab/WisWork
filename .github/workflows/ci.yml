@@ -59,6 +59,9 @@ jobs:
       - name: Check PPT acceptance accounting
         run: node --test tools/ppt-agent-acceptance.test.mjs
 
+      - name: Check PPT release preflight
+        run: node --test tools/ppt-agent-release-preflight.test.mjs
+
       - name: Check dependency licenses
         run: npm run licenses
 

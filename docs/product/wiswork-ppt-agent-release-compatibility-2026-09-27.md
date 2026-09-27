@@ -11,3 +11,12 @@
 | v2 / v1 / 任意 PC                  | v1 Relay 不支持 v2 配对；收到精确旧版协议错误时提示升级，不会静默降级                                                                                                                    | `apps/office-addin/tests/relay-session.test.ts`                                                                                          | **发布阻塞：必须先升级 Relay**                          |
 
 构建版本探测、Manifest、能力协商分别解决静态资源、协议能力和会话入口的问题；三者不能互相替代。发布时应先部署支持 v2 的 Relay 和 PC，再发布 v2 Taskpane，并保留旧 Taskpane 的回滚包。`version.json`、`taskpane.html` 与其哈希资源需原子发布；真实 Win/Mac/Web 混合版本与端到端冒烟仍待执行。
+
+发布预检命令（部署前先用构建产物执行，部署后再加 `--deployed 1`）：
+
+```bash
+node tools/ppt-agent-release-preflight.mjs --origin https://office.example --relay-origin https://relay.example --dist apps/office-addin/dist
+node tools/ppt-agent-release-preflight.mjs --origin https://office.example --relay-origin https://relay.example --dist apps/office-addin/dist --deployed 1
+```
+
+预检核对 Manifest 来源、`version.json` 与编译入口的一致性、哈希入口、无源码映射、Relay `/office-relay/health` 的精确响应；部署后还逐一读取线上版本、Taskpane 和哈希脚本。任何失败均以非零退出码阻断继续发布。此命令不替代 v1/v2 配对协议测试（CI 的 Relay/Office 测试）及真实 PowerPoint 的附件、图片、页面写入、截图、恢复冒烟。先保留旧版回滚包；发布顺序仍为 Relay、PC、Taskpane。
