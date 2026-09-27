@@ -13,6 +13,7 @@ export interface PresentationExistingPageChange {
   originalPackageDigest: string
   replacementPackageDigest: string
   sourceSlideId: string
+  pictureTarget?: { shapeId: string; name: string; beforeDigest: string; afterDigest: string }
   backup: { backupId: string; sha256: string; sizeBytes: number }
   state:
     | 'pending'
@@ -58,7 +59,7 @@ export function validatePresentationExistingPageChange(value: unknown): value is
   const keys = [
     'version', 'changeId', 'documentId', 'baselineId', 'baselineDigest', 'scope',
     'oldSlideId', 'beforeSlideIds', 'originalPackageDigest', 'replacementPackageDigest',
-    'sourceSlideId', 'backup', 'state', 'newSlideId', 'restoredSlideId', 'captures', 'reviews', 'backupReleasedAt',
+    'sourceSlideId', 'pictureTarget', 'backup', 'state', 'newSlideId', 'restoredSlideId', 'captures', 'reviews', 'backupReleasedAt',
   ]
   if (
     Object.keys(r).some((key) => !keys.includes(key)) ||
@@ -77,6 +78,13 @@ export function validatePresentationExistingPageChange(value: unknown): value is
     r.backup.sizeBytes < 1 || r.backup.sizeBytes > 100 * 1024 * 1024 ||
     !['pending', 'inserted', 'staged', 'discard_pending', 'discarded', 'commit_pending', 'applied', 'undo_pending', 'restore_inserted', 'undone'].includes(r.state)
   ) return false
+  if (r.pictureTarget !== undefined && (
+    !r.pictureTarget || typeof r.pictureTarget !== 'object' || Array.isArray(r.pictureTarget) ||
+    Object.keys(r.pictureTarget).sort().join(',') !== 'afterDigest,beforeDigest,name,shapeId' ||
+    !/^[1-9]\d{0,9}$/.test(r.pictureTarget.shapeId) || !hostId(r.pictureTarget.name) ||
+    !digest(r.pictureTarget.beforeDigest) || !digest(r.pictureTarget.afterDigest) ||
+    r.pictureTarget.beforeDigest === r.pictureTarget.afterDigest
+  )) return false
   if (r.backupReleasedAt !== undefined &&
     (!['discarded', 'undone'].includes(r.state) || typeof r.backupReleasedAt !== 'string' ||
       !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(r.backupReleasedAt) ||

@@ -432,6 +432,24 @@ export interface PowerPointPicturePackageInspection {
   mediaDigest: string
   shapeIds: string[]
 }
+/** Resolve an ordinary top-level picture by its exact OOXML name or ID. */
+export async function resolvePowerPointPictureIdentity(base64: string, key: { shapeId?: string; name?: string }, signal?: AbortSignal): Promise<{ shapeId: string; name: string; mediaDigest: string }> {
+  if ((key.shapeId === undefined) === (key.name === undefined)) throw new Error('invalid_tool_input')
+  const zip = await loadBoundedZip(base64, signal)
+  const paths = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
+  if (paths.length !== 1) throw new Error('office_api_unsupported')
+  const xml = await zip.file(paths[0]!)!.async('string')
+  if (xml.length > MAX_PPTX_XML_BYTES || XMLValidator.validate(xml) !== true) throw new Error('office_api_unsupported')
+  const candidates = [...xml.matchAll(/<p:pic\b[^>]*>[\s\S]*?<\/p:pic>/g)].map(([picture]) => {
+    const nv = picture.match(/<p:cNvPr\b[^>]*\/?\s*>/)
+    return { shapeId: nv?.[0].match(/\bid="(\d+)"/)?.[1], name: nv?.[0].match(/\bname="([^"]{1,256})"/)?.[1] }
+  }).filter((item) => item.shapeId && item.name)
+  const matches = candidates.filter((item) => key.shapeId !== undefined ? item.shapeId === key.shapeId : item.name === key.name)
+  if (matches.length !== 1) throw new Error('office_api_unsupported')
+  const item = matches[0]!
+  const inspected = await inspectPowerPointPicturePackage(base64, item.shapeId!, signal)
+  return { shapeId: item.shapeId!, name: item.name!, mediaDigest: inspected.mediaDigest }
+}
 /** Inspect a conservative, lossless subset: one ordinary top-level embedded raster picture. */
 export async function inspectPowerPointPicturePackage(
   base64: string,

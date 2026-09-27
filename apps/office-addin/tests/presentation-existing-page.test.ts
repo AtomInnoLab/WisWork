@@ -64,6 +64,19 @@ it('rejects bad backup, IDs, and skipped phases', async () => {
   await expect(f.binding.writeExistingPageChange({ ...f.record, state: 'inserted', newSlideId: 's3' }, undefined)).rejects.toThrow('stale')
 })
 
+it('persists picture readback identity and forbids changing it after staging', async () => {
+  const f = await fixture()
+  const target = { shapeId: '7', name: 'Picture 1', beforeDigest: 'e'.repeat(64), afterDigest: 'f'.repeat(64) }
+  const pending = { ...f.record, pictureTarget: target }
+  expect(validatePresentationExistingPageChange(pending)).toBe(true)
+  expect(validatePresentationExistingPageChange({ ...pending, pictureTarget: { ...target, afterDigest: target.beforeDigest } })).toBe(false)
+  await f.binding.writeExistingPageChange(pending, undefined)
+  const inserted = { ...pending, state: 'inserted' as const, newSlideId: 's3' }
+  await f.reopen().writeExistingPageChange(inserted, pending)
+  expect(f.reopen().readExistingPageChange('page1')?.pictureTarget).toEqual(target)
+  await expect(f.binding.writeExistingPageChange({ ...inserted, state: 'staged', pictureTarget: { ...target, afterDigest: 'a'.repeat(64) } }, inserted)).rejects.toThrow('state_invalid')
+})
+
 it('allows staged replacement to be discarded and releases the global pending guard', async () => {
   const f = await fixture()
   const inserted = { ...f.record, state: 'inserted' as const, newSlideId: 's3' }

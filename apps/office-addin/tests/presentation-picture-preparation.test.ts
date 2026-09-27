@@ -26,6 +26,7 @@ it('prepares a native picture revision for the confirmed page transaction withou
   expect((await readBoundedImage(vfs, '/home/user/new.png')).mime).toBe('image/png')
   let hostWrites = 0
   let slideIds = ['old']
+  let corruptNew = false
   const records = new Map<string, PresentationExistingPageChange>()
   const backup = { backupId: '', documentId: 'doc', hostSlideId: 'old', slideIds: ['old'], sha256: '', sizeBytes: 0, receivedBytes: 0, status: 'uploading' }
   let backupBytes = new Uint8Array()
@@ -74,7 +75,7 @@ it('prepares a native picture revision for the confirmed page transaction withou
     inspectPage: async (slideId: string) => ({ slideId, shapesTruncated: false, screenshot: {
       mime: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII=',
     } }),
-    exportAdapter: { exportPresentationPagePackage: async () => ({ slideId: 'old', slideIds: ['old'], base64: source }) },
+    exportAdapter: { exportPresentationPagePackage: async (slideId: string) => ({ slideId, slideIds: [...slideIds], base64: slideId === 'new' && !corruptNew ? changed : source }) },
     vfs, request, proposals: createStructuredProposalController(),
     documentId: async () => 'doc', readExistingPageChange: (id: string) => records.get(id),
     writeExistingPageChange: async (record: PresentationExistingPageChange) => { records.set(record.changeId, structuredClone(record)) }, available: () => true,
@@ -96,7 +97,7 @@ it('prepares a native picture revision for the confirmed page transaction withou
   const changed = Buffer.from(vfs.readBytes(prepared.path, { maxBytes: 8 * 1024 * 1024 })).toString('base64')
   expect((await inspectPowerPointPicturePackage(changed, shapeId)).mediaDigest).not.toBe(original.mediaDigest)
   const staged = await skill.executeTool({ id: 'stage', name: 'stage_existing_presentation_page_change', input: {
-    baseline_id: 'baseline', slide_id: 'old', path: prepared.path,
+    baseline_id: 'baseline', slide_id: 'old', path: prepared.path, picture_shape_id: shapeId,
   } })
   expect(staged.isError, staged.output).not.toBe(true)
   expect(JSON.parse(staged.output)).toMatchObject({ status: 'awaiting_confirmation' })
@@ -113,9 +114,12 @@ it('prepares a native picture revision for the confirmed page transaction withou
   expect(Buffer.from(backupBytes).toString('base64')).toBe(source)
   const changeId = [...records.keys()][0]!
   expect(records.get(changeId)?.state).toBe('staged')
+  expect(records.get(changeId)?.pictureTarget?.afterDigest).toBe((await inspectPowerPointPicturePackage(changed, shapeId)).mediaDigest)
   const commit = await skill.executeTool({ id: 'commit', name: 'commit_existing_presentation_page_change', input: { change_id: changeId } })
   expect(commit.isError, commit.output).not.toBe(true)
-  expect((await confirm()).status).toBe('confirmed')
+  corruptNew = true
+  expect(await confirm()).toMatchObject({ status: 'confirmed', postWrite: { status: 'unavailable', reason: 'picture_readback_failed' } })
+  corruptNew = false
   expect(records.get(changeId)?.state).toBe('applied')
   const undo = await skill.executeTool({ id: 'undo', name: 'undo_existing_presentation_page_change', input: { change_id: changeId } })
   expect(undo.isError, undo.output).not.toBe(true)

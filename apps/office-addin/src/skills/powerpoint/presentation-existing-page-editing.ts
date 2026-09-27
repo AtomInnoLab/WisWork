@@ -6,7 +6,7 @@ import type { InMemoryVfs } from '../shared/vfs.js'
 import type { PresentationBaselineSkill } from './presentation-baseline.js'
 import type { PresentationPageReplacementAdapter } from './browser-presentation-page-replacement-adapter.js'
 import type { PresentationPageReplacement } from './presentation-page-replacement-record.js'
-import { presentationPackageDigest, MAX_PPTX_PACKAGE_BYTES } from './powerpoint-package.js'
+import { presentationPackageDigest, MAX_PPTX_PACKAGE_BYTES, resolvePowerPointPictureIdentity } from './powerpoint-package.js'
 import { validatePresentationExistingPageChange, type PresentationExistingPageChange } from './presentation-existing-page.js'
 import { readBoundedImage } from '../shared/import-media.js'
 import { replacePowerPointPictureMediaPackage } from './presentation-picture-package.js'
@@ -74,7 +74,7 @@ const tools: AgentToolDef[] = names.map((action) => ({
   name: `${action}_existing_presentation_page_change`,
   description: action === 'stage' ? 'Confirm backup and stage a one-slide PPTX after an existing native page; original remains.' : action === 'inspect' ? 'Inspect current native page order and content against a saved change.' : action === 'resume' ? 'Finish journal for a known inserted page without replaying insertion.' : action === 'commit' ? 'Confirm replacing the original with the verified staged page.' : action === 'discard' ? 'Confirm deleting the verified staged page while keeping the original.' : action === 'undo' ? 'Confirm restoring the backed-up original page and removing the replacement.' : action === 'release' ? 'Confirm releasing the PC backup of a discarded or undone page change.' : action === 'capture' ? 'Capture one affected page for visual judgment; does not pass QA.' : 'Persist a visual judgment for one unchanged captured page.',
   inputSchema: { type: 'object', properties: action === 'stage'
-    ? { baseline_id: { type: 'string' }, slide_id: { type: 'string' }, path: { type: 'string' }, explanation: { type: 'string' } }
+    ? { baseline_id: { type: 'string' }, slide_id: { type: 'string' }, path: { type: 'string' }, picture_shape_id: { type: 'string' }, explanation: { type: 'string' } }
     : { change_id: { type: 'string' }, ...(action === 'capture' || action === 'record' ? { slide_id: { type: 'string' } } : {}), ...(action === 'record' ? { screenshot_digest: { type: 'string' }, status: { type: 'string', enum: ['pass', 'fail'] }, notes: { type: 'string', maxLength: 2000 } } : {}) }, required: action === 'stage' ? ['baseline_id', 'slide_id', 'path'] : action === 'capture' ? ['change_id', 'slide_id'] : action === 'record' ? ['change_id', 'slide_id', 'screenshot_digest', 'status', 'notes'] : ['change_id'], additionalProperties: false },
 }))
 tools.unshift({
@@ -89,7 +89,7 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
   return {
     id: 'presentation-existing-page-editing',
     get tools() { return options.available() ? tools : tools.filter((t) => ['inspect_', 'capture_', 'record_'].some((prefix) => t.name.startsWith(prefix))) },
-    systemPrompt: 'Existing page rebuild uses a validated one-slide VFS PPTX. For an ordinary embedded native picture, prepare_existing_presentation_image_revision creates a one-slide revision in VFS; then stage the returned path through the existing page change flow. Preparation does not modify PowerPoint. An image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. Inspect and resume interrupted insertion before further action; never replay unknown insertion. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
+    systemPrompt: 'Existing page rebuild uses a validated one-slide VFS PPTX. For an ordinary embedded native picture, prepare_existing_presentation_image_revision creates a one-slide revision in VFS; then stage the returned path with picture_shape_id through the existing page change flow so post-write media can be read back. Preparation does not modify PowerPoint. An image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. Inspect and resume interrupted insertion before further action; never replay unknown insertion. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
     clear() { epoch++; reviewCapture = undefined },
     async executeTool(call, signal) {
       const token = epoch
@@ -127,7 +127,7 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
           await current()
           const path = `/home/user/presentation-image-revision-${crypto.randomUUID()}.pptx`
           options.vfs.writeFile(path, bytes(revision.base64))
-          return { output: output({ path, baselineId: baseline.baselineId, slideId: input.slide_id, shapeId: input.shape_id, beforeDigest: revision.beforeDigest, afterDigest: revision.afterDigest, mediaDigest: revision.mediaDigest, nextTool: 'stage_existing_presentation_page_change' }), mutated: false, summary: '已准备原生图片修订稿，尚未修改演示文稿' }
+          return { output: output({ path, baselineId: baseline.baselineId, slideId: input.slide_id, shapeId: input.shape_id, beforeDigest: revision.beforeDigest, afterDigest: revision.afterDigest, mediaDigest: revision.mediaDigest, nextTool: 'stage_existing_presentation_page_change', nextPictureShapeId: input.shape_id }), mutated: false, summary: '已准备原生图片修订稿，尚未修改演示文稿' }
         }
         let record: PresentationExistingPageChange
         let source: Awaited<ReturnType<typeof oneSlide>> | undefined
@@ -135,7 +135,7 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
         let baseline = undefined as ReturnType<PresentationBaselineSkill['snapshot']>
         if (action === 'stage') {
           const input = call.input
-          if (!id(input.baseline_id) || !host(input.slide_id) || typeof input.path !== 'string' || !input.path.endsWith('.pptx') || input.path.length > 1024 || (input.explanation !== undefined && (typeof input.explanation !== 'string' || input.explanation.length > 300))) throw new Error('invalid_tool_input')
+          if (!id(input.baseline_id) || !host(input.slide_id) || typeof input.path !== 'string' || !input.path.endsWith('.pptx') || input.path.length > 1024 || (input.picture_shape_id !== undefined && (typeof input.picture_shape_id !== 'string' || !/^[1-9]\d{0,9}$/.test(input.picture_shape_id))) || (input.explanation !== undefined && (typeof input.explanation !== 'string' || input.explanation.length > 300))) throw new Error('invalid_tool_input')
           baseline = options.baseline.snapshot(input.baseline_id)
           if (!baseline || baseline.documentId !== documentId || !baseline.scope.slideIds.includes(input.slide_id) || baseline.scope.shapeIds?.length) throw new Error('presentation_existing_scope_mismatch')
           sourcePath = input.path
@@ -146,7 +146,16 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
           await current()
           if (original.slideId !== input.slide_id || !same(original.slideIds, baseline.context.slideIds)) throw new Error('presentation_baseline_changed')
           const originalPackageDigest = await presentationPackageDigest(original.base64, signal)
-          record = { version: 1, changeId: crypto.randomUUID(), documentId, baselineId: baseline.baselineId, baselineDigest: baseline.contentDigest, scope: { slideIds: [...baseline.scope.slideIds] }, oldSlideId: input.slide_id, beforeSlideIds: [...baseline.context.slideIds], originalPackageDigest, replacementPackageDigest: source.digest, sourceSlideId: source.sourceSlideId, backup: { backupId: crypto.randomUUID(), sha256: '0'.repeat(64), sizeBytes: 1 }, state: 'pending' }
+          let pictureTarget: PresentationExistingPageChange['pictureTarget']
+          if (input.picture_shape_id) {
+            const [before, after] = await Promise.all([
+              resolvePowerPointPictureIdentity(original.base64, { shapeId: input.picture_shape_id }, signal),
+              resolvePowerPointPictureIdentity(source.base64, { shapeId: input.picture_shape_id }, signal),
+            ])
+            if (before.name !== after.name || before.mediaDigest === after.mediaDigest) throw new Error('presentation_page_source_invalid')
+            pictureTarget = { shapeId: input.picture_shape_id, name: before.name, beforeDigest: before.mediaDigest, afterDigest: after.mediaDigest }
+          }
+          record = { version: 1, changeId: crypto.randomUUID(), documentId, baselineId: baseline.baselineId, baselineDigest: baseline.contentDigest, scope: { slideIds: [...baseline.scope.slideIds] }, oldSlideId: input.slide_id, beforeSlideIds: [...baseline.context.slideIds], originalPackageDigest, replacementPackageDigest: source.digest, sourceSlideId: source.sourceSlideId, ...(pictureTarget ? { pictureTarget } : {}), backup: { backupId: crypto.randomUUID(), sha256: '0'.repeat(64), sizeBytes: 1 }, state: 'pending' }
         } else {
           if (!id(call.input.change_id)) throw new Error('invalid_tool_input')
           const saved = options.readExistingPageChange(call.input.change_id)
@@ -399,6 +408,20 @@ export function createPresentationExistingPageEditingSkill(options: Options): Ag
               return observed.slideIds
             }
             const before = await check()
+            if (record.pictureTarget) {
+              try {
+                const targetSlideId = record.state === 'staged' || record.state === 'applied' ? record.newSlideId! :
+                  record.state === 'undone' ? record.restoredSlideId! : record.oldSlideId
+                const exported = await options.exportAdapter.exportPresentationPagePackage(targetSlideId)
+                await current(); saved()
+                if (exported.slideId !== targetSlideId || !same(exported.slideIds, before)) throw new Error('office_state_uncertain')
+                const picture = await resolvePowerPointPictureIdentity(exported.base64, { name: record.pictureTarget.name })
+                const expectedDigest = record.state === 'staged' || record.state === 'applied' ? record.pictureTarget.afterDigest : record.pictureTarget.beforeDigest
+                if (picture.mediaDigest !== expectedDigest || !same(await check(), before)) throw new Error('office_state_uncertain')
+              } catch {
+                return { status: 'unavailable', reason: 'picture_readback_failed' }
+              }
+            }
             const pages = [] as {slideId:string;pngBase64:string;digest:string}[]
             for (const slideId of targets) {
               const shot = await options.inspectPage(slideId)
