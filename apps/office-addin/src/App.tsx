@@ -1382,9 +1382,20 @@ function ConfiguredApp() {
             const boundPresentationDocumentId = presentationBinding
               ? await presentationBinding.documentId()
               : undefined
-            const runCheckpoint = presentationBinding
-              ? createPresentationAgentRunCheckpoint(presentationBinding)
-              : undefined
+            const runCheckpoint =
+              presentationBinding && boundPresentationDocumentId
+                ? createPresentationAgentRunCheckpoint(
+                    presentationBinding,
+                    boundPresentationDocumentId,
+                    (() => {
+                      try {
+                        return window.localStorage
+                      } catch {
+                        return undefined
+                      }
+                    })(),
+                  )
+                : undefined
             const environment = officeDiagnosticEnvironment(activeHost)
             const diagnostics = createOfficeDiagnostics({
               host: activeHost,
@@ -1478,7 +1489,7 @@ function ConfiguredApp() {
                       interrupted: presentationBinding.interruptedAgentRun(
                         boundPresentationDocumentId,
                       ),
-                      recovery: presentationBinding.agentRunRecovery(boundPresentationDocumentId),
+                      recovery: runCheckpoint!.recovery(),
                       validateDocument: async () =>
                         (await presentationBinding.documentId()) === boundPresentationDocumentId,
                       begin: runCheckpoint!.begin,

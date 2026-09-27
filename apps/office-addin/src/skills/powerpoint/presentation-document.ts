@@ -78,6 +78,8 @@ export interface PresentationAgentRunRecovery {
   phase: 'running' | 'tool_pending' | 'tool_completed'
   toolName?: string
 }
+const AGENT_RUN_LOCAL_PREFIX = 'wiswork.presentation.agent-run.prompt.v1.'
+const AGENT_RUN_LOCAL_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const validId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 
@@ -1403,13 +1405,13 @@ export function createPresentationDocumentBinding(
         if (keys === 'documentId,runId,startedAt')
           return { runId: value.runId as string, instruction: '', phase: 'tool_pending' }
         if (
+          keys !== 'documentId,phase,runId,startedAt' &&
+          keys !== 'documentId,phase,runId,startedAt,toolName' &&
           keys !== 'documentId,instruction,phase,runId,startedAt' &&
           keys !== 'documentId,instruction,phase,runId,startedAt,toolName'
         )
           return undefined
         if (
-          typeof value.instruction !== 'string' ||
-          value.instruction.length > 1000 ||
           !['running', 'tool_pending', 'tool_completed'].includes(value.phase as string) ||
           (value.toolName !== undefined &&
             (typeof value.toolName !== 'string' || value.toolName.length > 128))
@@ -1417,7 +1419,7 @@ export function createPresentationDocumentBinding(
           return undefined
         return {
           runId: value.runId as string,
-          instruction: value.instruction,
+          instruction: '',
           phase: value.phase as PresentationAgentRunRecovery['phase'],
           ...(typeof value.toolName === 'string' ? { toolName: value.toolName } : {}),
         }
@@ -1428,21 +1430,15 @@ export function createPresentationDocumentBinding(
     interruptedAgentRun(boundDocumentId: string): boolean {
       return Boolean(this.agentRunRecovery(boundDocumentId))
     },
-    async rememberAgentRun(boundDocumentId: string, runId: string, instruction = '') {
+    async rememberAgentRun(boundDocumentId: string, runId: string) {
       return queueRunCheckpoint(async () => {
-        if (
-          !validId(runId) ||
-          instruction.length > 1000 ||
-          new TextEncoder().encode(instruction).byteLength > 3000 ||
-          (await documentId()) !== boundDocumentId
-        )
+        if (!validId(runId) || (await documentId()) !== boundDocumentId)
           throw new Error('presentation_document_changed')
         const previous = settings.get(AGENT_RUN_KEY)
         const raw = JSON.stringify({
           documentId: boundDocumentId,
           runId,
           startedAt: Date.now(),
-          instruction,
           phase: 'running',
         })
         if (new TextEncoder().encode(raw).byteLength > 4096)
@@ -1471,7 +1467,9 @@ export function createPresentationDocumentBinding(
         const current = this.agentRunRecovery(boundDocumentId)
         if (!current || current.runId !== runId || typeof previous !== 'string')
           throw new Error('presentation_run_checkpoint_unavailable')
-        const raw = JSON.stringify({ ...JSON.parse(previous), phase, toolName })
+        const next = JSON.parse(previous) as Record<string, unknown>
+        delete next.instruction
+        const raw = JSON.stringify({ ...next, phase, toolName })
         if (new TextEncoder().encode(raw).byteLength > 4096)
           throw new Error('presentation_run_checkpoint_unavailable')
         settings.set(AGENT_RUN_KEY, raw)
@@ -1559,15 +1557,95 @@ export function createPresentationDocumentBinding(
 export function createPresentationAgentRunCheckpoint(
   binding: Pick<
     ReturnType<typeof createPresentationDocumentBinding>,
-    'documentId' | 'rememberAgentRun' | 'updateAgentRun' | 'finishAgentRun'
+    'documentId' | 'agentRunRecovery' | 'rememberAgentRun' | 'updateAgentRun' | 'finishAgentRun'
   >,
+  boundDocumentId: string,
+  storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>,
 ) {
   const runDocuments = new Map<string, string>()
+  const localKey = (runId: string) => `${AGENT_RUN_LOCAL_PREFIX}${runId}`
+  const recovery = (): PresentationAgentRunRecovery | undefined => {
+    const record = binding.agentRunRecovery(boundDocumentId)
+    if (!record) return undefined
+    if (!storage) return record
+    try {
+      const raw = storage.getItem(localKey(record.runId))
+      if (!raw) return record
+      if (new TextEncoder().encode(raw).byteLength > 4096) {
+        storage.removeItem(localKey(record.runId))
+        return record
+      }
+      const value = JSON.parse(raw) as Record<string, unknown>
+      if (
+        !value ||
+        Array.isArray(value) ||
+        Object.keys(value).sort().join(',') !== 'documentId,expiresAt,instruction,runId' ||
+        value.documentId !== boundDocumentId ||
+        value.runId !== record.runId ||
+        typeof value.expiresAt !== 'number' ||
+        !Number.isSafeInteger(value.expiresAt) ||
+        value.expiresAt <= Date.now() ||
+        value.expiresAt > Date.now() + AGENT_RUN_LOCAL_TTL_MS ||
+        typeof value.instruction !== 'string' ||
+        value.instruction.length > 1000 ||
+        new TextEncoder().encode(value.instruction).byteLength > 3000
+      ) {
+        storage.removeItem(localKey(record.runId))
+        return record
+      }
+      return { ...record, instruction: value.instruction }
+    } catch {
+      return record
+    }
+  }
   return {
+    recovery,
     async begin(runId: string, instruction = '') {
-      const id = await binding.documentId()
-      await binding.rememberAgentRun(id, runId, instruction)
-      runDocuments.set(runId, id)
+      if ((await binding.documentId()) !== boundDocumentId)
+        throw new Error('presentation_document_changed')
+      const recoverableInstruction =
+        instruction.length <= 1000 && new TextEncoder().encode(instruction).byteLength <= 3000
+          ? instruction
+          : ''
+      const previous = binding.agentRunRecovery(boundDocumentId)
+      await binding.rememberAgentRun(boundDocumentId, runId)
+      try {
+        if (storage && recoverableInstruction)
+          storage.setItem(
+            localKey(runId),
+            JSON.stringify({
+              documentId: boundDocumentId,
+              runId,
+              instruction: recoverableInstruction,
+              expiresAt: Date.now() + AGENT_RUN_LOCAL_TTL_MS,
+            }),
+          )
+      } catch {
+        await binding.finishAgentRun(boundDocumentId, runId)
+        try {
+          storage?.removeItem(localKey(runId))
+        } catch {
+          /* browser storage unavailable */
+        }
+        throw new Error('presentation_run_checkpoint_unavailable')
+      }
+      if ((await binding.documentId()) !== boundDocumentId) {
+        await binding.finishAgentRun(boundDocumentId, runId).catch(() => undefined)
+        try {
+          storage?.removeItem(localKey(runId))
+        } catch {
+          /* browser storage unavailable */
+        }
+        throw new Error('presentation_document_changed')
+      }
+      if (previous && previous.runId !== runId) {
+        try {
+          storage?.removeItem(localKey(previous.runId))
+        } catch {
+          /* stale local cache */
+        }
+      }
+      runDocuments.set(runId, boundDocumentId)
     },
     async tool(runId: string, phase: 'tool_pending' | 'tool_completed', toolName: string) {
       const id = runDocuments.get(runId)
@@ -1578,6 +1656,11 @@ export function createPresentationAgentRunCheckpoint(
       const id = runDocuments.get(runId)
       if (!id) return
       await binding.finishAgentRun(id, runId)
+      try {
+        storage?.removeItem(localKey(runId))
+      } catch {
+        /* checkpoint is already cleared */
+      }
       runDocuments.delete(runId)
     },
   }

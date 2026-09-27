@@ -98,6 +98,31 @@ describe('Office agent session', () => {
     expect(validateDocument).toHaveBeenCalledOnce()
   })
 
+  it('never streams a recovered request when the deck switches after validation', async () => {
+    const harness = transportHarness()
+    let activeDocument = 'original'
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: { instruction: 'Create deck', phase: 'running' },
+        validateDocument: async () => {
+          activeDocument = 'copy'
+          return true
+        },
+        begin: async () => {
+          if (activeDocument !== 'original') throw new Error('presentation_document_changed')
+        },
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    await session.resumeInterrupted?.()
+    await vi.waitFor(() => expect(session.snapshot().status).toBe('error'))
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+
   it('does not resume a run after a tool boundary', async () => {
     const harness = transportHarness()
     const session = createOfficeAgentSession({

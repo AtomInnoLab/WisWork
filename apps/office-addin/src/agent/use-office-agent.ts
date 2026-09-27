@@ -225,7 +225,7 @@ export function createOfficeAgentSession(dependencies: {
       ? appendPresentationEvent(emptyPresentationTimeline(), {
           id: 'event-1',
           kind: 'system',
-          text: `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}请先核对项目、页面和写入记录；未自动重放写入。恢复信息保存在本演示文稿设置中。`,
+          text: `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}请先核对项目、页面和写入记录；未自动重放写入。运行阶段保存在演示文稿设置中，请求仅保存在本机浏览器。`,
         })
       : emptyPresentationTimeline(),
   }

@@ -20,9 +20,9 @@ describe('presentation AgentRun checkpoint', () => {
       () => 'doc-id',
     )
     const originalId = await binding.documentId()
-    const checkpoint = createPresentationAgentRunCheckpoint(binding)
     location = 'file:///copy.pptx'
     const copyId = await binding.documentId()
+    const checkpoint = createPresentationAgentRunCheckpoint(binding, copyId)
     await checkpoint.begin('run-1')
     expect(binding.interruptedAgentRun(copyId)).toBe(true)
     expect(binding.interruptedAgentRun(originalId)).toBe(false)
@@ -32,6 +32,73 @@ describe('presentation AgentRun checkpoint', () => {
     expect(binding.interruptedAgentRun(copyId)).toBe(true)
     await checkpoint.finish('run-1')
     expect(binding.interruptedAgentRun(copyId)).toBe(false)
+  })
+
+  it('never starts an old request when the document changes after resume validation', async () => {
+    const values = new Map<string, string>()
+    let location = 'file:///original.pptx'
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => location,
+      },
+      () => 'doc-id',
+    )
+    const originalId = await binding.documentId()
+    const checkpoint = createPresentationAgentRunCheckpoint(binding, originalId)
+    location = 'file:///copy.pptx'
+    await expect(checkpoint.begin('run-1', 'Old request')).rejects.toThrow(
+      'presentation_document_changed',
+    )
+    expect(binding.agentRunRecovery(await binding.documentId())).toBeUndefined()
+  })
+
+  it('keeps recoverable instructions in local storage, isolated by document and run', async () => {
+    const values = new Map<string, string>()
+    const local = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => local.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        local.set(key, value)
+      },
+      removeItem: (key: string) => {
+        local.delete(key)
+      },
+    }
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => 'file:///deck.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    const checkpoint = createPresentationAgentRunCheckpoint(binding, id, storage)
+    await checkpoint.begin('run-1', 'Private request')
+    expect(values.get('wiswork.presentation.agent-run.v1')).not.toContain('Private request')
+    expect(createPresentationAgentRunCheckpoint(binding, id, storage).recovery()?.instruction).toBe(
+      'Private request',
+    )
+    expect(
+      createPresentationAgentRunCheckpoint(binding, 'foreign-document', storage).recovery(),
+    ).toBeUndefined()
+    const [localKey] = local.keys()
+    const stored = JSON.parse(local.get(localKey)!)
+    local.set(localKey, JSON.stringify({ ...stored, expiresAt: Date.now() - 1 }))
+    expect(createPresentationAgentRunCheckpoint(binding, id, storage).recovery()?.instruction).toBe(
+      '',
+    )
+    expect(local.size).toBe(0)
+    await checkpoint.finish('run-1')
+    expect(local.size).toBe(0)
   })
 
   it('detects a foreground run after reopen, but not in a Save As copy', async () => {
@@ -93,10 +160,10 @@ describe('presentation AgentRun checkpoint', () => {
       )
     const binding = create()
     const id = await binding.documentId()
-    await binding.rememberAgentRun(id, 'run-1', 'Create a sales deck')
+    await binding.rememberAgentRun(id, 'run-1')
     await binding.updateAgentRun(id, 'run-1', 'tool_pending', 'write_presentation_page')
     expect(create().agentRunRecovery(id)).toMatchObject({
-      instruction: 'Create a sales deck',
+      instruction: '',
       phase: 'tool_pending',
       toolName: 'write_presentation_page',
     })
@@ -126,12 +193,15 @@ describe('presentation AgentRun checkpoint', () => {
       documentId: id,
       runId: 'run-1',
       startedAt: Date.now(),
-      instruction: 'Create deck',
       phase: 'running',
     }
     values.set(key, JSON.stringify({ ...base, unexpected: true }))
     expect(binding.agentRunRecovery(id)).toBeUndefined()
-    values.set(key, JSON.stringify({ ...base, instruction: '界'.repeat(1500) }))
+    values.set(key, JSON.stringify({ ...base, toolName: '界'.repeat(1500) }))
     expect(binding.agentRunRecovery(id)).toBeUndefined()
+    values.set(key, JSON.stringify({ ...base, instruction: 'Old embedded request' }))
+    expect(binding.agentRunRecovery(id)).toMatchObject({ instruction: '', phase: 'running' })
+    await binding.updateAgentRun(id, 'run-1', 'tool_pending', 'read_page')
+    expect(values.get(key)).not.toContain('Old embedded request')
   })
 })
