@@ -252,6 +252,20 @@ export function presentationPlanClaims(plan: PresentationPlan): PresentationClai
   return mappedClaims(parsePresentationPlan(plan))
 }
 
+/** A changed rule set under the same brand ID must advance its own revision. */
+export function assertBrandKitRevision(previous: PresentationPlan, next: PresentationPlan): void {
+  const before = previous.brandKit
+  const after = next.brandKit
+  if (!before || !after || before.id !== after.id) return
+  const rules = (kit: NonNullable<PresentationPlan['brandKit']>) => JSON.stringify({
+    name: kit.name, allowedColors: kit.allowedColors.map((color) => color.toUpperCase()), logo: kit.logo,
+  })
+  if (rules(before) !== rules(after) && after.revision <= before.revision)
+    throw new Error('presentation_plan_invalid:brand_kit_revision')
+  if (after.revision < before.revision)
+    throw new Error('presentation_plan_invalid:brand_kit_revision')
+}
+
 function mappedClaims(plan: PresentationPlan): PresentationClaim[] {
   const sources = new Map(plan.sources.map((source) => [source.id, source]))
   return plan.claims.map((claim) => {

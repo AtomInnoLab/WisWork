@@ -76,6 +76,10 @@ export function presentationWorkflowSummary(
   const planChangedSinceProduction = Boolean(
     plan && production && production.planRevision !== project.plan!.revision,
   )
+  const revisions = project.plan?.revisions
+  const productionStyle = revisions?.find((entry) => entry.revision === production?.planRevision)?.snapshot?.styleDigest
+  const latestStyle = revisions?.find((entry) => entry.revision === project.plan?.revision)?.snapshot?.styleDigest
+  const styleChangedSinceProduction = Boolean(planChangedSinceProduction && productionStyle && latestStyle && productionStyle !== latestStyle)
   const uncertain = importMatches
     ? imported!.pages.filter((page) => page.state === 'uncertain').length
     : 0
@@ -86,6 +90,8 @@ export function presentationWorkflowSummary(
       id: 'plan-revision',
       text: `当前选中页任务依据计划第 ${production!.planRevision} 版，现已保存第 ${project.plan!.revision} 版；请确认继续旧任务或选择新任务。`,
     })
+  if (styleChangedSinceProduction)
+    attention.push({ id: 'style-revision', text: '品牌或样式规则已变化；当前页面的历史视觉审查只适用于旧计划。选择新任务后需重新审查受影响页面。' })
   if (failed)
     attention.push({
       id: 'failed-pages',
@@ -144,12 +150,12 @@ export function presentationWorkflowSummary(
       ? reviewedPage.recheckRequired
         ? '历史检查已失效'
         : reviewedPage.visual.status === 'pass' && reviewedPage.structure.status === 'passed'
-          ? '历史结构与视觉通过'
+          ? styleChangedSinceProduction ? '旧样式版本历史通过' : '历史结构与视觉通过'
           : reviewedPage.visual.status === 'needs_changes'
             ? '历史检查需修改'
             : '待完成页面复核'
       : '无当前任务 QA 记录'
-    const pageNext =
+    const pageNext = planChangedSinceProduction ? '先确认继续旧计划或选择新任务' :
       !page || page.state === 'pending'
         ? '制作页面'
         : page.state === 'building'
@@ -363,6 +369,8 @@ export function presentationWorkflowSummary(
     ? '保存 Brief、资料、故事线与样式规范'
     : !production
       ? '按已保存计划启动逐页生产'
+      : planChangedSinceProduction
+        ? '核对已保存的新计划，选择继续旧任务或按新计划重新生产'
       : production.revision
         ? '检查单页修订并按保存点确认宿主页替换'
         : project.productionJob &&
@@ -392,7 +400,7 @@ export function presentationWorkflowSummary(
                                 ? '处理内容证据报告中的待处理问题'
                                 : '继续来源核验与保存重开验收'
   let nextTool: PresentationWorkflowSummary['nextTool']
-  if (plan && production && !production.revision) {
+  if (plan && production && !production.revision && !planChangedSinceProduction) {
     if (
       (failed || production.compiledCount < production.total) &&
       ['paused', 'interrupted', 'failed'].includes(project.productionJob?.state ?? '')

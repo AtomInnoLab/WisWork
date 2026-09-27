@@ -17,6 +17,7 @@ import { createPresentationAttachmentService } from './presentation-attachments'
 import {
   parsePresentationPlan,
   assertDeckMatchesPresentationPlan,
+  assertBrandKitRevision,
 } from '@wiswork/pptx-engine/presentation-plan'
 import { resolve } from 'node:path'
 import { PresentationStore, assertPresentationId } from '@wiswork/project-store'
@@ -397,6 +398,13 @@ export function createPresentationService(options: {
             await handlePresentationProduction(request, { store, compile, attachments }, signal),
           )
         if (request.operation === 'save_plan' || request.operation === 'get_plan') {
+          if (request.operation === 'save_plan') {
+            const previousPlan = store.plan(projectId, documentId)
+            if (previousPlan && previousPlan.revision === request.expectedRevision) {
+              try { assertBrandKitRevision(parsePresentationPlan(previousPlan.plan), plan!) }
+              catch { throw new Error('invalid_plan') }
+            }
+          }
           const record =
             request.operation === 'save_plan'
               ? store.savePlan(projectId, documentId, request.expectedRevision as number, plan)

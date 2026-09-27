@@ -316,6 +316,9 @@ describe('durable presentation planning', () => {
     expect(compile).not.toHaveBeenCalled()
     expect(decode(await service({ ...input, planRevision: 1 }, signal()))).toMatchObject({ status: 'compiled' })
     expect(compile).toHaveBeenCalledTimes(1)
+    const changedPalette = { ...branded, brandKit: { ...branded.brandKit, allowedColors: [...branded.brandKit.allowedColors, 'AA5500'] } }
+    expect(decode(await service(planRequest(changedPalette, 1), signal()))).toEqual({ error: 'invalid_plan' })
+    expect(decode(await service(planRequest({ ...changedPalette, brandKit: { ...changedPalette.brandKit, revision: 2 } }, 1), signal()))).toMatchObject({ revision: 2 })
   })
   it('saves and reloads a plan before any compile and exposes a planned project', async () => {
     const userDataPath = root()

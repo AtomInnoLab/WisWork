@@ -93,7 +93,8 @@ function planRevisionSnapshot(plan: unknown): PresentationPlanRevisionSnapshot |
     sourceCount: value.sources.length, claimCount: value.claims.length,
     slideCount: value.slides.length,
     sourcesDigest: digest(canonical(value.sources)), claimsDigest: digest(canonical(value.claims)),
-    slidesDigest: digest(canonical(value.slides)), styleDigest: digest(canonical(value.style)),
+    slidesDigest: digest(canonical(value.slides)),
+    styleDigest: digest(canonical(value.brandKit === undefined ? value.style : { style: value.style, brandKit: value.brandKit })),
   }
 }
 function validPlanRevisionSnapshot(value: unknown): value is PresentationPlanRevisionSnapshot {

@@ -464,5 +464,25 @@ it('warns when the selected production task still uses an older saved plan', () 
     ]),
   )
   expect(summary.attention.find((item) => item.id === 'plan-revision')?.text).toContain('第 2 版')
-  expect(summary.nextTool).toBe('prepare_import')
+  expect(summary.nextTool).toBeUndefined()
+  expect(summary.nextAction).toContain('选择继续旧任务或按新计划重新生产')
+})
+
+it('labels old QA as historical after a brand or style revision', () => {
+  const snapshots = [
+    { revision: 1, inputDigest: '1'.repeat(64), createdAt: '2026-09-24T00:01:00.000Z', snapshot: {
+      sourceCount: 0, claimCount: 0, slideCount: plan.slides.length,
+      sourcesDigest: 'a'.repeat(64), claimsDigest: 'b'.repeat(64), slidesDigest: 'c'.repeat(64), styleDigest: 'd'.repeat(64),
+    } },
+    { revision: 2, inputDigest: '2'.repeat(64), createdAt: '2026-09-24T00:02:00.000Z', snapshot: {
+      sourceCount: 0, claimCount: 0, slideCount: plan.slides.length,
+      sourcesDigest: 'a'.repeat(64), claimsDigest: 'b'.repeat(64), slidesDigest: 'c'.repeat(64), styleDigest: 'e'.repeat(64),
+    } },
+  ]
+  const selected = { ...project, plan: { ...project.plan!, revision: 2, revisions: snapshots }, production }
+  const summary = presentationWorkflowSummary(selected, imported, qa)!
+  expect(summary.attention.map((item) => item.id)).toContain('style-revision')
+  expect(summary.pages[0]?.qa).toBe('旧样式版本历史通过')
+  expect(summary.pages[0]?.nextAction).toBe('先确认继续旧计划或选择新任务')
+  expect(summary.nextTool).toBeUndefined()
 })

@@ -193,6 +193,17 @@ describe('durable plans', () => {
     writeFileSync(path, JSON.stringify(corrupt))
     expect(() => store.plan('p', 'd')).toThrow('invalid_state')
   })
+  it('treats a brand kit revision as a style change in durable plan history', () => {
+    const { root, store } = planFixture()
+    const base = { sources: [], claims: [], slides: [{ id: 'page' }], style: { accent: 'blue' } }
+    const first = store.savePlan('p', 'd', 0, base)
+    const branded = { ...base, brandKit: { id: 'brand', revision: 1, allowedColors: ['3366FF'] } }
+    const second = store.savePlan('p', 'd', 1, branded)
+    expect(second.revisions?.[1]?.snapshot?.styleDigest).not.toBe(first.revisions?.[0]?.snapshot?.styleDigest)
+    const updated = store.savePlan('p', 'd', 2, { ...branded, brandKit: { ...branded.brandKit, revision: 2 } })
+    expect(updated.revisions?.[2]?.snapshot?.styleDigest).not.toBe(second.revisions?.[1]?.snapshot?.styleDigest)
+    expect(new PresentationStore(root).plan('p', 'd')?.revisions).toEqual(updated.revisions)
+  })
   it('bounds and validates persisted JSON input', () => {
     const { store } = planFixture()
     for (const plan of [
