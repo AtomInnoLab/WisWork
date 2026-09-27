@@ -6,6 +6,7 @@ import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/pres
 import { createPresentationBaselineSkill } from '../src/skills/powerpoint/presentation-baseline'
 import { inspectPowerPointPageNotes } from '../src/skills/powerpoint/presentation-notes-package'
 import { inspectPowerPointSourceLinks } from '../src/skills/powerpoint/presentation-source-links-package'
+import { inspectPowerPointRichText } from '../src/skills/powerpoint/presentation-rich-text-package'
 const page = (slideId = 's1', text = 'original') => ({
   slideId,
   masterId: 'm',
@@ -238,6 +239,91 @@ it('reads a PptxGenJS-authored hyperlink from a real slide package', async () =>
   )
   expect(report.links).toEqual([
     expect.objectContaining({ target: 'https://example.org/research', sourceVerified: false }),
+  ])
+})
+it('reads mixed direct run formatting and paragraph alignment on a stable baseline page', async () => {
+  const zip = new JSZip()
+  zip.file(
+    'ppt/slides/slide1.xml',
+    `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree>
+    <p:sp><p:nvSpPr><p:cNvPr id="7" name="Citation"/></p:nvSpPr><p:txBody>
+      <a:p><a:pPr algn="ctr"><a:defRPr sz="1400"/></a:pPr><a:r><a:rPr b="1" sz="1800"><a:latin typeface="Arial"/><a:solidFill><a:srgbClr val="ff0000"/></a:solidFill></a:rPr><a:t>Bold</a:t></a:r><a:r><a:rPr i="1"/><a:t> &amp; italic</a:t></a:r><a:endParaRPr sz="1600"/></a:p>
+      <a:p><a:r><a:t>Inherited</a:t></a:r><a:tab/><a:r><a:rPr><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:rPr><a:t>Theme</a:t></a:r></a:p>
+    </p:txBody></p:sp>
+  </p:spTree></p:cSld></p:sld>`,
+  )
+  const packageBase64 = await zip.generateAsync({ type: 'base64' })
+  const f = fixture()
+  f.setPackage(packageBase64)
+  const baseline = JSON.parse((await f.read()).output)
+  const result = await f.call('read_presentation_baseline_rich_text', {
+    baseline_id: baseline.baselineId,
+    slide_id: 's2',
+  })
+  expect(result.isError, result.output).not.toBe(true)
+  expect(JSON.parse(result.output)).toMatchObject({
+    inheritanceResolved: false,
+    qaPassed: false,
+    shapes: [
+      {
+        packageShapeId: '7',
+        paragraphs: [
+          {
+            alignment: 'ctr',
+            paragraphDefaultFont: { sizePt: 14 },
+            endParagraphFont: { sizePt: 16 },
+            runs: [
+              {
+                text: 'Bold',
+                directFont: { bold: true, sizePt: 18, color: '#FF0000', typeface: 'Arial' },
+              },
+              { text: ' & italic', directFont: { italic: true } },
+            ],
+          },
+          {
+            runs: [
+              { text: 'Inherited', directFont: {} },
+              { text: '\t', directFont: {} },
+              { text: 'Theme', directFont: { themeColor: 'accent1' } },
+            ],
+          },
+        ],
+      },
+    ],
+  })
+  expect(f.exportPagePackage).toHaveBeenCalledTimes(2)
+  expect(
+    (
+      await f.call('read_presentation_baseline_rich_text', {
+        baseline_id: baseline.baselineId,
+        slide_id: 's1',
+      })
+    ).output,
+  ).toBe('presentation_baseline_scope_mismatch')
+})
+it('reads formatted runs from a real PptxGenJS slide without claiming inherited style', async () => {
+  const deck = new PptxGenJS()
+  deck.addSlide().addText(
+    [
+      { text: 'First', options: { bold: true, color: '112233' } },
+      { text: 'Second', options: { italic: true } },
+    ],
+    { x: 1, y: 1, w: 3, h: 0.5 },
+  )
+  const bytes = await deck.write({ outputType: 'nodebuffer' })
+  const report = await inspectPowerPointRichText(
+    Buffer.from(bytes as Uint8Array).toString('base64'),
+  )
+  expect(report.inheritanceResolved).toBe(false)
+  expect(report.shapes[0]?.paragraphs[0]?.runs).toEqual([
+    expect.objectContaining({
+      text: 'First',
+      directFont: expect.objectContaining({ bold: true, color: '#112233' }),
+    }),
+    expect.objectContaining({
+      text: 'Second',
+      directFont: expect.objectContaining({ italic: true }),
+    }),
   ])
 })
 it('captures arbitrary current/selected/deck scopes without a generation artifact or a host write', async () => {
