@@ -171,6 +171,8 @@ const declarativeProgramSchema = {
               color: { type: 'string', pattern: '^[0-9A-Fa-f]{6}$' },
               bold: { type: 'boolean' },
               align: { type: 'string', enum: ['left', 'center', 'right'] },
+              margin: { type: 'number', minimum: 0, maximum: 72 },
+              verticalAlignment: { type: 'string', enum: ['top', 'middle', 'bottom'] },
               ...geometryProperties,
             },
             ['op', 'slide_index', 'name', 'text', 'left', 'top', 'width', 'height'],
@@ -1022,6 +1024,8 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
     'color',
     'bold',
     'align',
+    'margin',
+    'verticalAlignment',
   ])
   const operation = root
   if (
@@ -1067,7 +1071,7 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
     if (
       Object.keys(operation).some(
         (key) =>
-          !['op', 'slide_index', 'name', 'text', 'left', 'top', 'width', 'height', 'fontFace', 'fontSize', 'color', 'bold', 'align'].includes(key),
+          !['op', 'slide_index', 'name', 'text', 'left', 'top', 'width', 'height', 'fontFace', 'fontSize', 'color', 'bold', 'align', 'margin', 'verticalAlignment'].includes(key),
       ) ||
       typeof operation.name !== 'string' ||
       !operation.name ||
@@ -1078,7 +1082,9 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
       (operation.fontSize !== undefined && (typeof operation.fontSize !== 'number' || !Number.isFinite(operation.fontSize) || operation.fontSize < 6 || operation.fontSize > 96)) ||
       (operation.color !== undefined && (typeof operation.color !== 'string' || !/^[0-9A-Fa-f]{6}$/.test(operation.color))) ||
       (operation.bold !== undefined && typeof operation.bold !== 'boolean') ||
-      (operation.align !== undefined && !['left', 'center', 'right'].includes(String(operation.align)))
+      (operation.align !== undefined && !['left', 'center', 'right'].includes(String(operation.align))) ||
+      (operation.margin !== undefined && (typeof operation.margin !== 'number' || !Number.isFinite(operation.margin) || operation.margin < 0 || operation.margin > 72)) ||
+      (operation.verticalAlignment !== undefined && !['top', 'middle', 'bottom'].includes(String(operation.verticalAlignment)))
     )
       throw new Error('invalid_tool_input')
     finiteGeometry()
@@ -1096,6 +1102,8 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
       ...(operation.color !== undefined ? { color: operation.color as string } : {}),
       ...(operation.bold !== undefined ? { bold: operation.bold as boolean } : {}),
       ...(operation.align !== undefined ? { align: operation.align as 'left' | 'center' | 'right' } : {}),
+      ...(operation.margin !== undefined ? { margin: operation.margin as number } : {}),
+      ...(operation.verticalAlignment !== undefined ? { verticalAlignment: operation.verticalAlignment as 'top' | 'middle' | 'bottom' } : {}),
     }
   }
   if (operation.op === 'add_geometric_shape') {

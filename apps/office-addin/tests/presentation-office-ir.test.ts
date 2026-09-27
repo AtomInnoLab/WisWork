@@ -17,6 +17,8 @@ it('maps shared SlideIR text and shape into native Office point geometry and sty
       fontFace: 'Microsoft YaHei',
       fontSize: 32,
       color: '172033',
+      margin: 0,
+      verticalAlignment: 'top',
     },
     {
       op: 'add_geometric_shape',
@@ -61,7 +63,7 @@ it('maps a shared SlideIR table to a native Office table operation', () => {
   const deck = benchmarkDeck()
   expect(officeOperationsForSlideIR(deck.slides[5]!, deck.style, 0, deck.claims)[1]).toMatchObject({
     op: 'add_native_table', name: 'table', left: 72, top: 180,
-    fontFace: 'Microsoft YaHei', color: '172033', rows: expect.arrayContaining([expect.arrayContaining(['120'])]),
+    fontFace: 'Microsoft YaHei', fontSize: 16, color: '172033', rows: expect.arrayContaining([expect.arrayContaining(['120'])]),
   })
 })
 
@@ -82,16 +84,20 @@ it('keeps supported Office operation structure aligned with the PptxGenJS benchm
       expect(Math.abs((element.transform.offset.cy * 72) / 914400 - operation.height)).toBeLessThan(1.5)
       if (operation.op === 'add_text_box') {
         expect(element.type).toBe('shape')
-        if (element.type === 'shape')
+        if (element.type === 'shape') {
           expect(element.text?.paragraphs.flatMap((paragraph) => paragraph.runs.map((run) => run.text)).join('')).toBe(operation.text)
+          expect(element.text?.paragraphs[0]?.runs[0]?.fontSize).toBe(operation.fontSize)
+        }
       } else if (operation.op === 'add_geometric_shape') {
         expect(element.type).toBe('shape')
         if (element.type === 'shape')
           expect(element.presetGeometry).toBe({ rect: 'rect', ellipse: 'ellipse', roundRect: 'roundRect' }[operation.shape])
       } else if (operation.op === 'add_native_table') {
         expect(element.type).toBe('table')
-        if (element.type === 'table')
+        if (element.type === 'table') {
           expect(element.rows.map((row) => row.map((cell) => cell.text?.paragraphs.flatMap((paragraph) => paragraph.runs.map((run) => run.text)).join('') ?? ''))).toEqual(operation.rows)
+          expect(element.rows[0]?.[0]?.text?.paragraphs[0]?.runs[0]?.fontSize).toBe(operation.fontSize)
+        }
       }
     }
   }

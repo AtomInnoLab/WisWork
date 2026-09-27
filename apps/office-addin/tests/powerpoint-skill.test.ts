@@ -1405,10 +1405,11 @@ describe('browser PowerPoint adapter', () => {
     await new BrowserPowerPointAdapter().executeDeclarative([{
       op: 'add_text_box', slide_index: 0, name: 'title', text: 'Centered',
       left: 72, top: 72, width: 720, height: 72,
-      fontFace: 'Microsoft YaHei', fontSize: 32, color: '172033', bold: true, align: 'center',
+      fontFace: 'Microsoft YaHei', fontSize: 32, color: '172033', bold: true, align: 'center', margin: 0, verticalAlignment: 'top',
     }])
     expect(font).toMatchObject({ name: 'Microsoft YaHei', size: 32, color: '#172033', bold: true })
     expect(paragraphFormat.horizontalAlignment).toBe('Center')
+    expect(created.textFrame).toMatchObject({ leftMargin: 0, rightMargin: 0, topMargin: 0, bottomMargin: 0, verticalAlignment: 'Top' })
   })
 
   it('confirms and verifies a native geometric shape creation', async () => {

@@ -296,6 +296,8 @@ export type PowerPointDeclarativeOperation =
       color?: string
       bold?: boolean
       align?: 'left' | 'center' | 'right'
+      margin?: number
+      verticalAlignment?: 'top' | 'middle' | 'bottom'
     }
   | { op: 'delete_shape'; slide_index: number; shape_id: string }
 
@@ -1927,6 +1929,17 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               height: operation.height,
             })
             created.name = operation.name
+            if (operation.margin !== undefined || operation.verticalAlignment) {
+              const frame = created.textFrame as RuntimeRecord
+              if (operation.margin !== undefined) {
+                frame.leftMargin = operation.margin
+                frame.rightMargin = operation.margin
+                frame.topMargin = operation.margin
+                frame.bottomMargin = operation.margin
+              }
+              if (operation.verticalAlignment)
+                frame.verticalAlignment = { top: 'Top', middle: 'Middle', bottom: 'Bottom' }[operation.verticalAlignment]
+            }
             if (
               operation.fontFace ||
               operation.fontSize ||

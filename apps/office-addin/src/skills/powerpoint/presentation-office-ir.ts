@@ -59,10 +59,12 @@ export function officeOperationsForSlideIR(
         ...box,
         text: element.text,
         fontFace: style.fontFace,
-        fontSize: element.fontSize ?? 18,
+        fontSize: element.fontSize ?? 20,
         color: element.color ?? style.textColor,
         bold: element.bold ?? false,
         align: element.align ?? 'left',
+        margin: 0,
+        verticalAlignment: 'top',
       }
     }
     if (element.kind === 'shape') {
@@ -89,14 +91,14 @@ export function officeOperationsForSlideIR(
         (element.fontSize !== undefined && (!Number.isFinite(element.fontSize) || element.fontSize < 6 || element.fontSize > 48)))
         throw new Error('invalid_tool_input')
       return { op: 'add_native_table', ...box, rows, fontFace: style.fontFace,
-        fontSize: element.fontSize ?? 12, color: style.textColor }
+        fontSize: element.fontSize ?? 16, color: style.textColor }
     }
     throw new Error('office_api_unsupported')
   })
   if (labels.length) operations.push({
     op: 'add_text_box', slide_index: slideIndex, name: 'source-attribution',
     text: labels.join('；').slice(0, 500), left: 36, top: 507.6, width: 885.6, height: 21.6,
-    fontFace: style.fontFace, fontSize: 8, color: style.textColor, bold: false, align: 'left',
+    fontFace: style.fontFace, fontSize: 8, color: style.textColor, bold: false, align: 'left', margin: 0, verticalAlignment: 'top',
   })
   return operations
 }
