@@ -1382,6 +1382,16 @@ function ConfiguredApp() {
   const [hostSupported, setHostSupported] = useState(false)
   const [status, setStatus] = useState('Connecting to Office…')
   const [busy, setBusy] = useState(true)
+  const reconnectEligible = useRef(false)
+
+  useEffect(() => {
+    if (bridgeState.status === 'connected') {
+      reconnectEligible.current = true
+    } else if (bridgeState.status === 'offline' && reconnectEligible.current && host !== 'unknown') {
+      reconnectEligible.current = false
+      void bridge.connect(host)
+    }
+  }, [bridge, bridgeState.status, host])
 
   useEffect(() => {
     let active = true
@@ -1603,6 +1613,7 @@ function ConfiguredApp() {
   if (!workspace)
     return <StatusScreen title="Starting WisWork Agent" detail="Loading tools…" busy />
   const disconnect = () => {
+    reconnectEligible.current = false
     workspace.session.logout()
     workspace.runtime.dispose()
     bridge.disconnect()

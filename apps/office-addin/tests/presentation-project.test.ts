@@ -308,6 +308,81 @@ it('polls active background work and clears polling without cancelling PC work',
     vi.useRealTimers()
   }
 })
+it('automatically resumes only an interrupted frozen page job after reconnect', async () => {
+  const f = fixture()
+  const production = {
+    projectId: 'project-1', requestId: 'pages', planRevision: 1,
+    status: 'pending', compiledCount: 0, total: 1,
+    pages: [{ id: 'a', title: 'A', state: 'pending', attempt: 0 }],
+  }
+  let state: 'interrupted' | 'running' = 'interrupted'
+  const job = () => ({
+    version: 1, projectId: 'project-1', documentId: 'document-1', requestId: 'pages',
+    inputDigest: 'a'.repeat(64), planDigest: 'b'.repeat(64), planRevision: 1,
+    revision: state === 'running' ? 3 : 2, state,
+    events: [
+      { sequence: 1, createdAt: '2026-09-24T00:00:00.000Z', type: 'run.started' },
+      { sequence: 2, createdAt: '2026-09-24T00:00:01.000Z', type: 'run.interrupted' },
+      ...(state === 'running' ? [{ sequence: 3, createdAt: '2026-09-24T00:00:02.000Z', type: 'run.started' }] : []),
+    ],
+  })
+  f.request.mockImplementation(async (body) => new Response(JSON.stringify(
+    (body as { operation: string }).operation === 'status'
+      ? { ...project, production }
+      : { job: job(), production: { ...production, inputDigest: 'a'.repeat(64), planDigest: 'b'.repeat(64) } },
+  )))
+  let attempts = 0
+  f.executeTool.mockImplementation(async () => {
+    attempts++
+    if (attempts === 1) return { output: 'presentation_service_unavailable', isError: true, mutated: false, summary: '连接中断' }
+    state = 'running'
+    return { output: '{}', mutated: false, summary: '已继续' }
+  })
+  await f.controller.refresh()
+  expect(f.executeTool).not.toHaveBeenCalled()
+  f.controller.prepareReconnect()
+  await f.controller.refresh()
+  expect(f.controller.snapshot().error).toBeTruthy()
+  await f.controller.refresh()
+  expect(f.executeTool).toHaveBeenCalledTimes(2)
+  expect(f.executeTool).toHaveBeenCalledWith(expect.objectContaining({
+    name: 'resume_presentation_production_job',
+    input: { project_id: 'project-1', request_id: 'pages' },
+  }), expect.any(AbortSignal))
+  expect(f.controller.snapshot().project?.productionJob?.state).toBe('running')
+  f.controller.cancel()
+})
+it('does not automatically resume a paused job or one in a different document', async () => {
+  const f = fixture()
+  const production = {
+    projectId: 'project-1', requestId: 'pages', planRevision: 1,
+    status: 'pending', compiledCount: 0, total: 1,
+    pages: [{ id: 'a', title: 'A', state: 'pending', attempt: 0 }],
+  }
+  const job = {
+    version: 1, projectId: 'project-1', documentId: 'document-1', requestId: 'pages',
+    inputDigest: 'a'.repeat(64), planDigest: 'b'.repeat(64), planRevision: 1,
+    revision: 2, state: 'paused', events: [
+      { sequence: 1, createdAt: '2026-09-24T00:00:00.000Z', type: 'run.started' },
+      { sequence: 2, createdAt: '2026-09-24T00:00:01.000Z', type: 'run.paused' },
+    ],
+  }
+  f.request.mockImplementation(async (body) => new Response(JSON.stringify(
+    (body as { operation: string }).operation === 'status'
+      ? { ...project, production }
+      : { job, production: { ...production, inputDigest: job.inputDigest, planDigest: job.planDigest } },
+  )))
+  f.controller.prepareReconnect()
+  await f.controller.refresh()
+  expect(f.executeTool).not.toHaveBeenCalled()
+  f.controller.clear()
+  f.controller.prepareReconnect()
+  job.state = 'interrupted'
+  job.events[1]!.type = 'run.interrupted'
+  f.documentId.mockResolvedValueOnce('document-1').mockResolvedValue('document-2')
+  await f.controller.refresh()
+  expect(f.executeTool).not.toHaveBeenCalled()
+})
 it('downloads only completed pages and prepares only a fully compiled production', async () => {
   const f = fixture()
   const production = {

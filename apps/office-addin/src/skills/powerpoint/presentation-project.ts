@@ -327,6 +327,7 @@ export function createPresentationProjectController(
   let projectDocument: string | undefined
   let selection: { documentId: string; projectId: string; requestId: string } | undefined
   let ignoreStoredSelection = false
+  let recoverInterruptedJob = false
   let active: AbortController | undefined
   let poll: ReturnType<typeof setTimeout> | undefined
   const stopPolling = () => {
@@ -342,6 +343,7 @@ export function createPresentationProjectController(
     projectDocument = undefined
     selection = undefined
     ignoreStoredSelection = resetSelection
+    recoverInterruptedJob = false
     epoch += 1
     active?.abort()
     active = undefined
@@ -465,11 +467,38 @@ export function createPresentationProjectController(
           )
           project.production = result.production
           project.productionJob = result.job
+          if (recoverInterruptedJob && result.job?.state === 'interrupted') {
+            if ((await options.documentId()) !== documentId)
+              throw new Error('presentation_document_changed')
+            check()
+            const resumed = await options.executeTool({
+              id: `presentation-reconnect-${captured}`,
+              name: 'resume_presentation_production_job',
+              input: { project_id: projectId, request_id: productionRequest },
+            }, controller.signal)
+            check()
+            if (resumed.isError) throw new Error(resumed.output)
+            const refreshed = await options.request({
+              operation: 'production_job_status', documentId, projectId, requestId: productionRequest,
+            }, controller.signal)
+            check()
+            if (!refreshed.ok) throw new Error('presentation_service_unavailable')
+            const refreshedText = await refreshed.text()
+            check()
+            if (new TextEncoder().encode(refreshedText).byteLength > 256 * 1024)
+              throw new Error('presentation_response_invalid')
+            const refreshedValue = JSON.parse(refreshedText)
+            if (refreshedValue?.error) throw new Error(`presentation_${refreshedValue.error}`)
+            const resumedStatus = parsePresentationJobResponse(refreshedValue, documentId, projectId, productionRequest)
+            project.production = resumedStatus.production
+            project.productionJob = resumedStatus.job
+          }
         }
       }
       if ((await options.documentId()) !== documentId)
         throw new Error('presentation_document_changed')
       check()
+      recoverInterruptedJob = false
       if (phase === 'loading' && requestId && selectedRequest && !project.jobsUnavailable) {
         try {
           await options.rememberSelectedProduction?.(projectId, documentId, selectedRequest)
@@ -649,6 +678,6 @@ export function createPresentationProjectController(
     runProduction: (requestId) => run('producing', requestId),
     cancel: () => stop(message(new Error('cancelled'))),
     clear: () => stop(undefined, true),
-    prepareReconnect: () => { ignoreStoredSelection = false },
+    prepareReconnect: () => { ignoreStoredSelection = false; recoverInterruptedJob = true },
   }
 }
