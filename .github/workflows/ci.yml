@@ -62,6 +62,11 @@ jobs:
       - name: Check PPT release preflight
         run: node --test tools/ppt-agent-release-preflight.test.mjs
 
+      - name: Check built PPT Office release artifact
+        run: |
+          VITE_WISWORK_ADDIN_ORIGIN=https://office.example npm run build -w @wiswork/office-addin
+          node --input-type=module -e "import { inspectOfficeBuild } from './tools/ppt-agent-release-preflight.mjs'; await inspectOfficeBuild('apps/office-addin/dist', 'https://office.example')"
+
       - name: Check dependency licenses
         run: npm run licenses
 
@@ -109,6 +114,16 @@ jobs:
         run: |
           cargo test --locked --manifest-path services/wiswork-relay/Cargo.toml
           cargo clippy --locked --manifest-path services/wiswork-relay/Cargo.toml --all-targets -- -D warnings
+
+      - name: Install LibreOffice for PPT package roundtrip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-impress
+
+      - name: Check PPT package roundtrip through LibreOffice
+        env:
+          WISWORK_REQUIRE_LIBREOFFICE: '1'
+        run: npm exec -w @wiswork/pptx-engine -- vitest run tests/presentation-libreoffice-roundtrip.test.ts
 
       - name: Regenerate test fixtures
         run: npm run fixtures
