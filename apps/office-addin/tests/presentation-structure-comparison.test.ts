@@ -96,6 +96,61 @@ it('reports changed and unverified native slide backgrounds', async () => {
     )
     expect(result.content).toMatchObject(expected)
   }
+
+  const inherited =
+    '<p:bg><p:bgPr><a:solidFill><a:srgbClr val="112233"/></a:solidFill></p:bgPr></p:bg>'
+  for (const folder of ['slideLayouts', 'slideMasters'] as const) {
+    const host = await JSZip.loadAsync(bytes)
+    host.file('ppt/slides/slide1.xml', xml.replace(background!, ''))
+    if (folder === 'slideMasters') {
+      const layoutPath = Object.keys(host.files).find((part) =>
+        /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(part),
+      )!
+      const layout = await host.file(layoutPath)!.async('string')
+      host.file(layoutPath, layout.replace(/<p:bg>[\s\S]*?<\/p:bg>/, ''))
+    }
+    const path = Object.keys(host.files).find((part) =>
+      new RegExp(`^ppt/${folder}/slide(?:Layout|Master)\\d+\\.xml$`).test(part),
+    )
+    expect(path).toBeTruthy()
+    const parent = await host.file(path!)!.async('string')
+    const withoutBackground = parent.replace(/<p:bg>[\s\S]*?<\/p:bg>/, '')
+    host.file(
+      path!,
+      withoutBackground.replace(/<p:cSld\b[^>]*>/, (tag) => `${tag}${inherited}`),
+    )
+    const result = await comparePresentationPageStructure(
+      Buffer.from(bytes).toString('base64'),
+      0,
+      inspection,
+      await host.generateAsync({ type: 'base64' }),
+    )
+    expect(result.content).toMatchObject({
+      status: 'warning',
+      backgroundChanged: true,
+      backgroundUnchecked: false,
+    })
+  }
+  const themed = await JSZip.loadAsync(bytes)
+  themed.file('ppt/slides/slide1.xml', xml.replace(background!, ''))
+  const layoutPath = Object.keys(themed.files).find((part) =>
+    /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(part),
+  )!
+  const layout = await themed.file(layoutPath)!.async('string')
+  const themeBackground = '<p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg>'
+  themed.file(
+    layoutPath,
+    layout
+      .replace(/<p:bg>[\s\S]*?<\/p:bg>/, '')
+      .replace(/<p:cSld\b[^>]*>/, (tag) => `${tag}${themeBackground}`),
+  )
+  const themedResult = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    inspection,
+    await themed.generateAsync({ type: 'base64' }),
+  )
+  expect(themedResult.content).toMatchObject({ status: 'incomplete', backgroundUnchecked: true })
 })
 
 it('detects native text font and size drift while text content remains unchanged', async () => {

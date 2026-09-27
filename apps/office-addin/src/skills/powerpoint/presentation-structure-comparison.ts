@@ -1,4 +1,5 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
+import type JSZip from 'jszip'
 import type { PowerPointPageInspection } from './browser-powerpoint-adapter.js'
 import {
   inspectPowerPointPictureMediaBatch,
@@ -39,6 +40,70 @@ const parser = new XMLParser({
   parseTagValue: false,
   trimValues: false,
 })
+const SOLID_HEX = /^[0-9A-Fa-f]{6}$/
+const RELATIONSHIP_BASE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+
+async function readXml(zip: JSZip, path: string): Promise<Xml | undefined> {
+  const file = zip.file(path)
+  if (!file) return undefined
+  const xml = await file.async('string')
+  if (
+    new TextEncoder().encode(xml).byteLength > MAX_PPTX_XML_BYTES ||
+    /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) ||
+    XMLValidator.validate(xml) !== true
+  )
+    return undefined
+  return parser.parse(xml) as Xml
+}
+
+function directBackground(
+  root: Xml,
+  tag: 'p:sld' | 'p:sldLayout' | 'p:sldMaster',
+): string | null | undefined {
+  const bg = root[tag]?.['p:cSld']?.['p:bg']
+  if (bg === undefined) return undefined
+  const color = bg?.['p:bgPr']?.['a:solidFill']?.['a:srgbClr']?.['@_val']
+  return typeof color === 'string' && SOLID_HEX.test(color) ? color.toUpperCase() : null
+}
+
+async function linkedPart(
+  zip: JSZip,
+  path: string,
+  type: 'slideLayout' | 'slideMaster',
+): Promise<string | undefined> {
+  const slash = path.lastIndexOf('/')
+  const rels = await readXml(zip, `${path.slice(0, slash)}/_rels/${path.slice(slash + 1)}.rels`)
+  const relations = many(rels?.Relationships?.Relationship).filter(
+    (item) => item['@_Type'] === `${RELATIONSHIP_BASE}${type}`,
+  )
+  if (relations.length !== 1 || relations[0]?.['@_TargetMode'] !== undefined) return undefined
+  const target = relations[0]?.['@_Target']
+  const folder = type === 'slideLayout' ? 'slideLayouts' : 'slideMasters'
+  const file = type === 'slideLayout' ? 'slideLayout' : 'slideMaster'
+  const match =
+    typeof target === 'string' &&
+    new RegExp(`^(?:\\.\\./${folder}/|/ppt/${folder}/)(${file}\\d+\\.xml)$`).exec(target)
+  return match ? `ppt/${folder}/${match[1]}` : undefined
+}
+
+async function resolvedBackground(
+  zip: JSZip,
+  slidePath: string,
+  root: Xml,
+): Promise<string | undefined> {
+  const slideColor = directBackground(root, 'p:sld')
+  if (slideColor !== undefined) return slideColor ?? undefined
+  const layoutPath = await linkedPart(zip, slidePath, 'slideLayout')
+  if (!layoutPath) return undefined
+  const layout = await readXml(zip, layoutPath)
+  if (!layout) return undefined
+  const layoutColor = directBackground(layout, 'p:sldLayout')
+  if (layoutColor !== undefined) return layoutColor ?? undefined
+  const masterPath = await linkedPart(zip, layoutPath, 'slideMaster')
+  if (!masterPath) return undefined
+  const master = await readXml(zip, masterPath)
+  return master ? (directBackground(master, 'p:sldMaster') ?? undefined) : undefined
+}
 const many = (value: unknown): Xml[] =>
   value === undefined ? [] : Array.isArray(value) ? value : [value as Xml]
 
@@ -139,22 +204,12 @@ async function readPage(
 ): Promise<{ objects: SourceObject[]; backgroundColor?: string }> {
   try {
     const zip = await loadBoundedZip(base64, undefined, true, maxBytes)
-    const file = zip.file(`ppt/slides/slide${index + 1}.xml`)
-    if (!file) throw new Error('missing slide')
-    const xml = await file.async('string')
-    if (
-      new TextEncoder().encode(xml).byteLength > MAX_PPTX_XML_BYTES ||
-      /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) ||
-      XMLValidator.validate(xml) !== true
-    )
-      throw new Error('invalid slide XML')
-    const root = parser.parse(xml) as Xml
+    const slidePath = `ppt/slides/slide${index + 1}.xml`
+    const root = await readXml(zip, slidePath)
+    if (!root) throw new Error('invalid slide XML')
     const objects = sourceObjects(root)
     if (!objects.length || objects.length > 100) throw new Error('invalid slide objects')
-    const solid =
-      root['p:sld']?.['p:cSld']?.['p:bg']?.['p:bgPr']?.['a:solidFill']?.['a:srgbClr']?.['@_val']
-    const backgroundColor =
-      typeof solid === 'string' && /^[0-9A-Fa-f]{6}$/.test(solid) ? solid.toUpperCase() : undefined
+    const backgroundColor = await resolvedBackground(zip, slidePath, root)
     return { objects, ...(backgroundColor ? { backgroundColor } : {}) }
   } catch {
     throw new Error('presentation_qa_structure_unavailable')
