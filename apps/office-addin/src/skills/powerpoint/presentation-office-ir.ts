@@ -56,6 +56,7 @@ export function officeOperationsForSlideIR(
         fontSize: element.fontSize ?? 18,
         color: element.color ?? style.textColor,
         bold: element.bold ?? false,
+        align: element.align ?? 'left',
       }
     }
     if (element.kind === 'shape') {

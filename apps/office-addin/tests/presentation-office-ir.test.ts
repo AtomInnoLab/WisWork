@@ -30,6 +30,14 @@ it('maps shared SlideIR text and shape into native Office point geometry and sty
   ])
 })
 
+it('preserves explicit SlideIR text alignment in the Office operation', () => {
+  const deck = benchmarkDeck()
+  deck.slides[0]!.elements[0] = { ...deck.slides[0]!.elements[0]!, kind: 'text', text: 'Centered', align: 'center' }
+  expect(officeOperationsForSlideIR(deck.slides[0]!, deck.style, 0)[0]).toMatchObject({
+    op: 'add_text_box', align: 'center', text: 'Centered',
+  })
+})
+
 it('rejects an unsupported page before emitting a partial native write plan', () => {
   const deck = benchmarkDeck()
   expect(() => officeOperationsForSlideIR(deck.slides[2]!, deck.style, 0)).toThrow(

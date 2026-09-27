@@ -47,6 +47,7 @@ const inventories = {
     'capture_existing_presentation_change',
     'record_existing_presentation_change_review',
     'bash',
+    'add_slide_ir_objects',
     'check_presentation_baseline',
     'duplicate_slide',
     'edit_slide_chart',

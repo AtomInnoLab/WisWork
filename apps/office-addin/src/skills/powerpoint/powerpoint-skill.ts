@@ -4,6 +4,7 @@ import {
   type PowerPointStyleDependencies,
 } from './presentation-style-dependencies.js'
 import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
+import { parsePresentationDeck, PRESENTATION_DECK_SCHEMA } from '@wiswork/pptx-engine/presentation'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
 import { parseDeclarativeProgram } from '../shared/declarative-program.js'
@@ -29,6 +30,7 @@ import {
 import { updatePowerPointChartDataPackage } from './presentation-chart-source-package.js'
 import { saveChartPackageBackup, readChartPackageBackup } from './presentation-chart-backup.js'
 import { validatePresentationExistingChartChange, type PresentationExistingChartChange } from './presentation-existing-chart.js'
+import { officeOperationsForSlideIR } from './presentation-office-ir.js'
 
 const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
@@ -92,6 +94,7 @@ const MASTER_PATTERN_TYPES = [
 ] as const
 const PROGRAM_TOOLS = new Set([
   'execute_office_js',
+  'add_slide_ir_objects',
   'edit_slide_xml',
   'edit_slide_chart',
   'edit_slide_master',
@@ -163,6 +166,11 @@ const declarativeProgramSchema = {
               slide_index: operationSlideIndex,
               name: { type: 'string', minLength: 1, maxLength: 256 },
               text: { type: 'string', maxLength: 12_000 },
+              fontFace: { type: 'string', minLength: 1, maxLength: 128 },
+              fontSize: { type: 'number', minimum: 6, maximum: 96 },
+              color: { type: 'string', pattern: '^[0-9A-Fa-f]{6}$' },
+              bold: { type: 'boolean' },
+              align: { type: 'string', enum: ['left', 'center', 'right'] },
               ...geometryProperties,
             },
             ['op', 'slide_index', 'name', 'text', 'left', 'top', 'width', 'height'],
@@ -398,6 +406,16 @@ const tools = [
     },
   },
   {
+    name: 'add_slide_ir_objects',
+    description: 'Propose adding all text, shape and table objects from one validated SlideIR to an existing PowerPoint slide using native Office.js objects. Claims are not verified here. Unsupported image/chart pages are rejected before writing. This does not create a slide or provide page-level atomic rollback; review the resulting page.',
+    inputSchema: { type: 'object', properties: {
+      slide_index: { type: 'integer', minimum: 0, maximum: 31 },
+      slide: PRESENTATION_DECK_SCHEMA.properties!.slides.items!,
+      style: PRESENTATION_DECK_SCHEMA.properties!.style,
+      explanation: { type: 'string', maxLength: 100 },
+    }, required: ['slide_index', 'slide', 'style'], additionalProperties: false },
+  },
+  {
     name: 'edit_slide_text',
     description: 'Propose replacing the text of one shape.',
     inputSchema: {
@@ -532,7 +550,7 @@ function boundedJson(value: unknown): string {
 }
 function errorCode(error: unknown, write = false): string {
   const code = error instanceof Error ? error.message : ''
-  if (['invalid_tool_input', 'office_api_unsupported', 'cancelled'].includes(code)) return code
+  if (['invalid_tool_input', 'office_api_unsupported', 'office_concurrent_change', 'cancelled'].includes(code)) return code
   if (code === 'office_verify_failed') return code
   return write ? 'office_write_failed' : 'office_read_failed'
 }
@@ -1001,6 +1019,8 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
     'fontFace',
     'fontSize',
     'color',
+    'bold',
+    'align',
   ])
   const operation = root
   if (
@@ -1046,13 +1066,18 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
     if (
       Object.keys(operation).some(
         (key) =>
-          !['op', 'slide_index', 'name', 'text', 'left', 'top', 'width', 'height'].includes(key),
+          !['op', 'slide_index', 'name', 'text', 'left', 'top', 'width', 'height', 'fontFace', 'fontSize', 'color', 'bold', 'align'].includes(key),
       ) ||
       typeof operation.name !== 'string' ||
       !operation.name ||
       operation.name.length > 256 ||
       typeof operation.text !== 'string' ||
-      operation.text.length > 12_000
+      operation.text.length > 12_000 ||
+      (operation.fontFace !== undefined && (typeof operation.fontFace !== 'string' || !operation.fontFace || operation.fontFace.length > 128)) ||
+      (operation.fontSize !== undefined && (typeof operation.fontSize !== 'number' || !Number.isFinite(operation.fontSize) || operation.fontSize < 6 || operation.fontSize > 96)) ||
+      (operation.color !== undefined && (typeof operation.color !== 'string' || !/^[0-9A-Fa-f]{6}$/.test(operation.color))) ||
+      (operation.bold !== undefined && typeof operation.bold !== 'boolean') ||
+      (operation.align !== undefined && !['left', 'center', 'right'].includes(String(operation.align)))
     )
       throw new Error('invalid_tool_input')
     finiteGeometry()
@@ -1065,6 +1090,11 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
       top: operation.top as number,
       width: operation.width as number,
       height: operation.height as number,
+      ...(operation.fontFace !== undefined ? { fontFace: operation.fontFace as string } : {}),
+      ...(operation.fontSize !== undefined ? { fontSize: operation.fontSize as number } : {}),
+      ...(operation.color !== undefined ? { color: operation.color as string } : {}),
+      ...(operation.bold !== undefined ? { bold: operation.bold as boolean } : {}),
+      ...(operation.align !== undefined ? { align: operation.align as 'left' | 'center' | 'right' } : {}),
     }
   }
   if (operation.op === 'add_geometric_shape') {
@@ -1598,8 +1628,30 @@ export function createPowerPointSkill(options: {
             summary: 'Proposed PowerPoint slide duplication',
           }
         }
-        if (call.name === 'execute_office_js') {
-          const input = declarativeInput(call.input, { slide: false, explanationMax: 100 })
+        if (call.name === 'execute_office_js' || call.name === 'add_slide_ir_objects') {
+          let input: { code: string; explanation?: string }
+          if (call.name === 'add_slide_ir_objects') {
+            const value = exactRecord(call.input, ['slide_index', 'slide', 'style', 'explanation'])
+            if (!Number.isSafeInteger(value.slide_index) || (value.slide_index as number) < 0 || (value.slide_index as number) > 31 ||
+              (value.explanation !== undefined && (typeof value.explanation !== 'string' || value.explanation.length > 100)))
+              throw new Error('invalid_tool_input')
+            let serialized: string
+            try { serialized = JSON.stringify([value.slide, value.style]) } catch { throw new Error('invalid_tool_input') }
+            if (!serialized || new TextEncoder().encode(serialized).byteLength > MAX_CODE) throw new Error('invalid_tool_input')
+            const slideRecord = exactRecord(value.slide, ['id', 'title', 'notes', 'claimIds', 'elements'])
+            if (slideRecord.claimIds !== undefined &&
+              (!Array.isArray(slideRecord.claimIds) || slideRecord.claimIds.length > 32 ||
+                slideRecord.claimIds.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(id)) ||
+                new Set(slideRecord.claimIds).size !== slideRecord.claimIds.length))
+              throw new Error('invalid_tool_input')
+            const { claimIds: _claimIds, ...slideWithoutClaims } = slideRecord
+            const deck = parsePresentationDeck({ version: 1, id: 'office-ir', title: 'Office IR', style: value.style,
+              assets: [], claims: [], slides: [slideWithoutClaims] })
+            const operations = officeOperationsForSlideIR(deck.slides[0]!, deck.style, value.slide_index as number)
+            const code = JSON.stringify({ version: 1, operations })
+            if (new TextEncoder().encode(code).byteLength > MAX_CODE) throw new Error('invalid_tool_input')
+            input = { code, ...(typeof value.explanation === 'string' ? { explanation: value.explanation } : {}) }
+          } else input = declarativeInput(call.input, { slide: false, explanationMax: 100 })
           let program
           try {
             program = parseDeclarativeProgram(input.code, parsePowerPointOperation)
@@ -1628,6 +1680,15 @@ export function createPowerPointSkill(options: {
             )
           )
             throw new Error('invalid_tool_input')
+          const plannedNames = call.name === 'add_slide_ir_objects'
+            ? new Set(program.operations.flatMap((operation) => 'name' in operation ? [operation.name] : []))
+            : undefined
+          if (plannedNames) {
+            const current = await options.adapter.listSlideShapes(program.operations[0]!.slide_index, signal)
+            if (current.shapes.length + plannedNames.size > 1_000 ||
+              current.shapes.some((shape) => plannedNames.has(shape.name)))
+              throw new Error('office_concurrent_change')
+          }
           await options.adapter.verifySlides(signal)
           const slideIndexes = [
             ...new Set(program.operations.map((operation) => operation.slide_index)),
@@ -1674,6 +1735,10 @@ export function createPowerPointSkill(options: {
             },
             after: { operations: program.operations },
             validate: async (confirmSignal) => {
+              if (plannedNames) {
+                const current = await options.adapter.listSlideShapes(program.operations[0]!.slide_index, confirmSignal)
+                if (current.shapes.some((shape) => plannedNames.has(shape.name))) return false
+              }
               const current = await Promise.all(
                 slideIndexes.map((index) => options.adapter.snapshotSlide(index, confirmSignal)),
               )

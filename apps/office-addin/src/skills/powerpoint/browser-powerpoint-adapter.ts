@@ -295,6 +295,7 @@ export type PowerPointDeclarativeOperation =
       fontSize?: number
       color?: string
       bold?: boolean
+      align?: 'left' | 'center' | 'right'
     }
   | { op: 'delete_shape'; slide_index: number; shape_id: string }
 
@@ -1938,6 +1939,10 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               if (operation.fontSize) font.size = operation.fontSize
               if (operation.color) font.color = `#${operation.color}`
               if (operation.bold !== undefined) font.bold = operation.bold
+            }
+            if (operation.align) {
+              const paragraph = (((created.textFrame as RuntimeRecord).textRange as RuntimeRecord).paragraphFormat as RuntimeRecord)
+              paragraph.horizontalAlignment = { left: 'Left', center: 'Center', right: 'Right' }[operation.align]
             }
             if (typeof created.load !== 'function') throw new Error('office_api_unsupported')
             ;(created.load as (properties: string) => void)('id')

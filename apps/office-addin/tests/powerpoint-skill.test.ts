@@ -6,6 +6,7 @@ import {
   type PowerPointAdapter,
 } from '../src/skills/powerpoint/browser-powerpoint-adapter.js'
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
+import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { editPowerPointPackage, presentationPackageDigest } from '../src/skills/powerpoint/powerpoint-package.js'
 
 const png = 'iVBORw0KGgoAAAA='
@@ -77,6 +78,7 @@ describe('PowerPoint compatibility skill', () => {
       'read_slide_text',
       'verify_slides',
       'execute_office_js',
+      'add_slide_ir_objects',
       'edit_slide_text',
       'edit_slide_xml',
       'edit_slide_chart',
@@ -1389,6 +1391,26 @@ describe('browser PowerPoint adapter', () => {
     expect(created.lineFormat.color).toBe('#2255AA')
   })
 
+  it('applies shared text style and alignment when creating a native text box', async () => {
+    const font: Record<string, unknown> = {}
+    const paragraphFormat: Record<string, unknown> = {}
+    const created = { id: 'new-text', name: '', load: vi.fn(), textFrame: { textRange: { font, paragraphFormat } } }
+    const addTextBox = vi.fn(() => created)
+    const slide = { id: 's1', load: vi.fn(), shapes: { addTextBox } }
+    const slides = { getCount: vi.fn(() => ({ value: 1 })), getItemAt: vi.fn(() => slide) }
+    Object.assign(globalThis, {
+      Office: { context: { host: 'PowerPoint', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } } },
+      PowerPoint: { run: (callback: (context: unknown) => unknown) => callback({ presentation: { slides }, sync: vi.fn().mockResolvedValue(undefined) }) },
+    })
+    await new BrowserPowerPointAdapter().executeDeclarative([{
+      op: 'add_text_box', slide_index: 0, name: 'title', text: 'Centered',
+      left: 72, top: 72, width: 720, height: 72,
+      fontFace: 'Microsoft YaHei', fontSize: 32, color: '172033', bold: true, align: 'center',
+    }])
+    expect(font).toMatchObject({ name: 'Microsoft YaHei', size: 32, color: '#172033', bold: true })
+    expect(paragraphFormat.horizontalAlignment).toBe('Center')
+  })
+
   it('confirms and verifies a native geometric shape creation', async () => {
     const fake = adapter({
       executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['new-shape'] }),
@@ -1428,6 +1450,65 @@ describe('browser PowerPoint adapter', () => {
     await skill.executeTool(call('execute_office_js', { code: JSON.stringify({ version: 1, operations: [operation] }) }))
     await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
     expect(fake.readSlideTable).toHaveBeenCalledWith(0, 'new-table', expect.any(AbortSignal))
+  })
+
+  it('confirms a complete supported SlideIR page and rejects unsupported pages before writing', async () => {
+    const deck = benchmarkDeck()
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['title-host', 'shape-host'] }),
+      listSlideShapes: vi.fn().mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
+        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] }).mockResolvedValue({ slideId: 'slide-1', slideIndex: 0, shapes: [
+        { id: 'title-host', name: 'title', type: 'TextBox', left: 72, top: 72, width: 720, height: 72 },
+        { id: 'shape-host', name: 'step', type: 'GeometricShape', left: 72, top: 180, width: 216, height: 144 },
+      ] }),
+      readSlideText: vi.fn().mockResolvedValue({ slideId: 'slide-1', shapeId: 'title-host', text: '研究流程', paragraphs: ['研究流程'] }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const proposed = await skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[3], style: deck.style }))
+    expect(proposed).toMatchObject({ mutated: false, summary: 'Proposed declarative PowerPoint execution' })
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(fake.executeDeclarative).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ op: 'add_text_box', name: 'title' }),
+      expect.objectContaining({ op: 'add_geometric_shape', name: 'step' }),
+    ]), expect.any(AbortSignal))
+    const count = (fake.executeDeclarative as ReturnType<typeof vi.fn>).mock.calls.length
+    await expect(skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[2], style: deck.style }))).resolves.toMatchObject({ isError: true })
+    expect((fake.executeDeclarative as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(count)
+  })
+
+  it('routes a SlideIR table page through native table readback', async () => {
+    const deck = benchmarkDeck()
+    const rows = (deck.slides[5]!.elements[1] as { rows: string[][] }).rows
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['title-host', 'table-host'] }),
+      listSlideShapes: vi.fn().mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
+        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] }).mockResolvedValue({ slideId: 'slide-1', slideIndex: 0, shapes: [
+        { id: 'title-host', name: 'title', type: 'TextBox', left: 72, top: 72, width: 720, height: 72 },
+        { id: 'table-host', name: 'table', type: 'Table', left: 72, top: 180, width: 576, height: 144 },
+      ] }),
+      readSlideText: vi.fn().mockResolvedValue({ slideId: 'slide-1', shapeId: 'title-host', text: '实验表格', paragraphs: ['实验表格'] }),
+      readSlideTable: vi.fn().mockResolvedValue(rows),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const proposed = await skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[5], style: deck.style }))
+    expect(proposed.mutated).toBe(false)
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(fake.readSlideTable).toHaveBeenCalledWith(0, 'table-host', expect.any(AbortSignal))
+  })
+
+  it('rejects a SlideIR page when the host already has an object with a planned name', async () => {
+    const deck = benchmarkDeck()
+    const fake = adapter({ listSlideShapes: vi.fn().mockResolvedValue({ slideId: 'slide-1', slideIndex: 0,
+      shapes: [{ id: 'old', name: 'title', type: 'TextBox', left: 0, top: 0, width: 100, height: 20 }] }) })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await expect(skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[3], style: deck.style })))
+      .resolves.toMatchObject({ isError: true, output: 'office_concurrent_change' })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
   })
 
   it('reads native table values with bounded dimensions', async () => {
