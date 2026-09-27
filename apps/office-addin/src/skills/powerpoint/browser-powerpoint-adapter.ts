@@ -183,7 +183,15 @@ export interface PowerPointAdapter {
     rowIndex: number,
     columnIndex: number,
     signal?: AbortSignal,
-  ): Promise<{ slideId: string; shapeId: string; rowIndex: number; columnIndex: number; text: string; rowCount: number; columnCount: number }>
+  ): Promise<{
+    slideId: string
+    shapeId: string
+    rowIndex: number
+    columnIndex: number
+    text: string
+    rowCount: number
+    columnCount: number
+  }>
   editPresentationTableCell?(
     slideId: string,
     shapeId: string,
@@ -314,6 +322,22 @@ function shapeInfo(value: RuntimeRecord): PowerPointShape {
     width: Math.max(0, finite(value.width)),
     height: Math.max(0, finite(value.height)),
   }
+}
+
+function explicitCanvasBackground(
+  shape: PowerPointShape,
+  slideWidth: number,
+  slideHeight: number,
+): boolean {
+  const tolerance = 0.01
+  return (
+    shape.type === 'GeometricShape' &&
+    /^(?:background|背景)(?:[\s_-]|$)/i.test(shape.name) &&
+    Math.abs(shape.left) <= tolerance &&
+    Math.abs(shape.top) <= tolerance &&
+    Math.abs(shape.width - slideWidth) <= tolerance &&
+    Math.abs(shape.height - slideHeight) <= tolerance
+  )
 }
 
 function loadSlides(slides: RuntimeRecord): void {
@@ -475,7 +499,12 @@ async function pageTableCell(
   columnIndex: number,
   signal?: AbortSignal,
 ): Promise<{ cell: RuntimeRecord; rowCount: number; columnCount: number }> {
-  if (!Number.isSafeInteger(rowIndex) || rowIndex < 0 || !Number.isSafeInteger(columnIndex) || columnIndex < 0)
+  if (
+    !Number.isSafeInteger(rowIndex) ||
+    rowIndex < 0 ||
+    !Number.isSafeInteger(columnIndex) ||
+    columnIndex < 0
+  )
     throw new Error('invalid_tool_input')
   const slide = await getPageById(context, slideId, signal)
   const shapes = slide.shapes as RuntimeRecord
@@ -493,16 +522,27 @@ async function pageTableCell(
   ;(table.load as (properties: string) => void)('rowCount,columnCount')
   await sync(context, signal)
   const { rowCount, columnCount } = table
-  if (typeof rowCount !== 'number' || typeof columnCount !== 'number' || !Number.isSafeInteger(rowCount) || !Number.isSafeInteger(columnCount) || rowCount < 1 || columnCount < 1)
+  if (
+    typeof rowCount !== 'number' ||
+    typeof columnCount !== 'number' ||
+    !Number.isSafeInteger(rowCount) ||
+    !Number.isSafeInteger(columnCount) ||
+    rowCount < 1 ||
+    columnCount < 1
+  )
     throw new Error('office_read_failed')
   if (rowIndex >= rowCount || columnIndex >= columnCount) throw new Error('invalid_tool_input')
-  const cell = (table.getCellOrNullObject as (row: number, column: number) => RuntimeRecord)(rowIndex, columnIndex)
+  const cell = (table.getCellOrNullObject as (row: number, column: number) => RuntimeRecord)(
+    rowIndex,
+    columnIndex,
+  )
   if (typeof cell?.load !== 'function') throw new Error('office_api_unsupported')
   ;(cell.load as (properties: string) => void)('rowIndex,columnIndex,rowCount,columnCount,text')
   await sync(context, signal)
   if (cell.isNullObject || cell.rowCount !== 1 || cell.columnCount !== 1)
     throw new Error('office_api_unsupported')
-  if (cell.rowIndex !== rowIndex || cell.columnIndex !== columnIndex) throw new Error('office_read_failed')
+  if (cell.rowIndex !== rowIndex || cell.columnIndex !== columnIndex)
+    throw new Error('office_read_failed')
   return { cell, rowCount, columnCount }
 }
 async function writeTextRange(
@@ -956,13 +996,36 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     rowIndex: number,
     columnIndex: number,
     signal?: AbortSignal,
-  ): Promise<{ slideId: string; shapeId: string; rowIndex: number; columnIndex: number; text: string; rowCount: number; columnCount: number }> {
+  ): Promise<{
+    slideId: string
+    shapeId: string
+    rowIndex: number
+    columnIndex: number
+    text: string
+    rowCount: number
+    columnCount: number
+  }> {
     cancelled(signal)
     pageId(slideId)
     pageId(shapeId)
     return this.run('1.8', async (context) => {
-      const { cell, rowCount, columnCount } = await pageTableCell(context, slideId, shapeId, rowIndex, columnIndex, signal)
-      return { slideId, shapeId, rowIndex, columnIndex, text: boundedPageText(cell.text), rowCount, columnCount }
+      const { cell, rowCount, columnCount } = await pageTableCell(
+        context,
+        slideId,
+        shapeId,
+        rowIndex,
+        columnIndex,
+        signal,
+      )
+      return {
+        slideId,
+        shapeId,
+        rowIndex,
+        columnIndex,
+        text: boundedPageText(cell.text),
+        rowCount,
+        columnCount,
+      }
     })
   }
 
@@ -978,7 +1041,12 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     cancelled(signal)
     pageId(slideId)
     pageId(shapeId)
-    if (typeof text !== 'string' || text.length > MAX_POWERPOINT_TEXT || typeof expectedText !== 'string' || expectedText.length > MAX_POWERPOINT_TEXT)
+    if (
+      typeof text !== 'string' ||
+      text.length > MAX_POWERPOINT_TEXT ||
+      typeof expectedText !== 'string' ||
+      expectedText.length > MAX_POWERPOINT_TEXT
+    )
       throw new Error('invalid_tool_input')
     await this.run('1.8', async (context) => {
       const { cell } = await pageTableCell(context, slideId, shapeId, rowIndex, columnIndex, signal)
@@ -1129,6 +1197,11 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         for (let j = i + 1; j < shapes.length; j++) {
           const a = shapes[i]!,
             b = shapes[j]!
+          if (
+            explicitCanvasBackground(a, slideWidth, slideHeight) ||
+            explicitCanvasBackground(b, slideWidth, slideHeight)
+          )
+            continue
           const overlapX = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left)
           const overlapY = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top)
           if (overlapX > 0 && overlapY > 0) {
@@ -1220,6 +1293,11 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             }
             const a = shapes[first]
             const b = shapes[second]
+            if (
+              explicitCanvasBackground(a, slideWidth, slideHeight) ||
+              explicitCanvasBackground(b, slideWidth, slideHeight)
+            )
+              continue
             const overlapX = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left)
             const overlapY = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top)
             if (overlapX > 0 && overlapY > 0) {
@@ -1449,8 +1527,11 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const originalExpected = await capturePowerPointPackage(original.value, signal)
       const replacementExactProof = await capturePowerPointPackage(base64, signal)
       const originalSlideId = string(slide.id)
-      if (preimage && (originalSlideId !== preimage.slideId ||
-        await presentationPackageDigest(original.value, signal) !== preimage.packageDigest))
+      if (
+        preimage &&
+        (originalSlideId !== preimage.slideId ||
+          (await presentationPackageDigest(original.value, signal)) !== preimage.packageDigest)
+      )
         throw new Error('proposal_stale')
 
       const classifyPackage = async (

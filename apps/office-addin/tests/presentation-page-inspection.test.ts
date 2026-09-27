@@ -48,6 +48,24 @@ const shape = (id: string, left = 0, top = 0, width = 10, height = 10) => ({
   height,
 })
 describe('exact imported PowerPoint page inspection', () => {
+  it('ignores a full-slide geometric background but keeps content collisions', async () => {
+    const background = shape('Background', 0, 0, 960, 540)
+    const title = { ...shape('title', 20, 20, 300, 80), type: 'TextBox' }
+    const subtitle = { ...shape('subtitle', 50, 50, 300, 80), type: 'TextBox' }
+    const { adapter } = setup([background, title, subtitle])
+    const result = await adapter.inspectPresentationPage('host-page-25')
+    expect(result.overlaps).toEqual([
+      { shapeAId: 'title', shapeBId: 'subtitle', overlapX: 270, overlapY: 50 },
+    ])
+  })
+  it('does not hide a full-slide overlay that lacks explicit background semantics', async () => {
+    const overlay = shape('Cover overlay', 0, 0, 960, 540)
+    const title = { ...shape('title', 20, 20, 300, 80), type: 'TextBox' }
+    const { adapter } = setup([overlay, title])
+    expect((await adapter.inspectPresentationPage('host-page-25')).overlaps).toEqual([
+      { shapeAId: 'Cover overlay', shapeBId: 'title', overlapX: 300, overlapY: 80 },
+    ])
+  })
   it('reads an exact host page beyond slide twenty with real geometry and screenshot', async () => {
     const { adapter, slides, shapes, slide, supports } = setup([
       shape('a', -1, 0, 10, 20),
