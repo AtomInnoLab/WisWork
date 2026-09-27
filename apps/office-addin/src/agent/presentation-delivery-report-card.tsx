@@ -128,7 +128,8 @@ export function PresentationDeliveryReportCard({
       <p>
         仅对应冻结计划第 {report.planRevision}{' '}
         版。已核验仅表示算术复现；来源真实性、时效未核验，宿主检查与 Office
-        往返未执行。来源复核是历史 Agent 判断。已说明不会关闭机器发现。
+        往返未执行。附件字面核对反映读取报告时的当前文档，不属于冻结生产快照。来源复核是历史 Agent
+        判断。已说明不会关闭机器发现。
       </p>
       {report.pages.map((page) => (
         <section key={page.pageId} aria-label={`证据页面 ${page.title}`}>
@@ -175,6 +176,22 @@ export function PresentationDeliveryReportCard({
             <p>原文位置：{source.locator?.trim() || '未提供'}</p>
             <p>资料时点：{source.asOf?.trim() || '未提供'}</p>
             <p>原文片段：{source.excerpt.trim() || '未提供'}</p>
+            {report.sourceAudit?.find((item) => item.sourceId === source.id) && (
+              <p>
+                当前附件字面核对：
+                {
+                  {
+                    found: '找到原文片段',
+                    not_found: '完整原文中未找到片段',
+                    empty_excerpt: '计划未填写原文片段',
+                    not_ready: '附件尚未解析就绪',
+                    unsupported: '附件不是可读文本',
+                    missing: '当前文档缺少附件',
+                  }[report.sourceAudit.find((item) => item.sourceId === source.id)!.status]
+                }
+                。仅核对字面存在，不核验事实支持、来源权威性或时效。
+              </p>
+            )}
           </section>
         ))}
       </details>

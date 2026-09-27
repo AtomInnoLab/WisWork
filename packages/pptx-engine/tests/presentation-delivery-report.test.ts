@@ -79,6 +79,43 @@ function review(
   } as PresentationClaimReview
 }
 describe('delivery evidence report', () => {
+  it('makes source dispositions stale when current attachment evidence disappears', async () => {
+    const value = input()
+    value.sourceAudit = [
+      { sourceId: 'source', attachmentId: 'a'.repeat(64), status: 'found', offset: 0 },
+    ]
+    const before = await buildPresentationDeliveryReport(value)
+    const issue = before.pages[0]!.issues.find((item) => item.code === 'source_review_missing')!
+    value.issueLedger.actions = [
+      {
+        actionId: 'source-action',
+        issueId: issue.id,
+        issueDigest: issue.digest,
+        state: 'explained',
+        note: 'Original text was present',
+        sequence: 1,
+        createdAt: '2026-09-24T00:00:00.000Z',
+      },
+    ]
+    value.issueLedger.revision = 1
+    expect(
+      (await buildPresentationDeliveryReport(value)).pages[0]!.issues.find(
+        (item) => item.id === issue.id,
+      )?.disposition.state,
+    ).toBe('explained')
+    value.sourceAudit = [{ sourceId: 'source', attachmentId: 'a'.repeat(64), status: 'missing' }]
+    const after = await buildPresentationDeliveryReport(value)
+    expect(after.pages[0]!.issues.find((item) => item.id === issue.id)?.disposition).toMatchObject({
+      state: 'open',
+      stale: true,
+    })
+    expect(after.pages[0]!.issues.some((item) => item.code === 'source_attachment_missing')).toBe(
+      true,
+    )
+    const forged = structuredClone(after)
+    forged.sourceAudit![0]!.attachmentId = 'b'.repeat(64)
+    expect(() => parsePresentationDeliveryReport(forged)).toThrow()
+  })
   it('covers all frozen pages and preserves all input and calculation evidence', async () => {
     const value = input(),
       report = await buildPresentationDeliveryReport(value)

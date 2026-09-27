@@ -4,11 +4,13 @@ import { parsePresentationPlan } from '@wiswork/pptx-engine/presentation-plan'
 import { parsePresentationDeck } from '@wiswork/pptx-engine/presentation'
 import { parsePresentationClaimReview } from '@wiswork/pptx-engine/presentation-claim-review'
 import { buildPresentationDeliveryReport } from '@wiswork/pptx-engine/presentation-delivery-report'
+import { auditPresentationSources } from './presentation-source-audit'
 
 /** Called under the service's project lock; this path never invokes Office or compilation. */
 export async function handlePresentationDeliveryReport(
   request: Record<string, unknown>,
   store: PresentationStore,
+  attachments: (body: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>,
   signal: AbortSignal,
 ) {
   const projectId = request.projectId as string
@@ -36,9 +38,15 @@ export async function handlePresentationDeliveryReport(
     }),
   )
   let issueLedger = store.issueActions(projectId, documentId, requestId)
-  const build = () =>
+  const build = async () =>
     buildPresentationDeliveryReport({
       plan: parsePresentationPlan(production.plan.plan),
+      sourceAudit: await auditPresentationSources(
+        parsePresentationPlan(production.plan.plan),
+        documentId,
+        attachments,
+        signal,
+      ),
       deck: parsePresentationDeck(production.deck),
       metadata: {
         projectId,

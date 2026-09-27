@@ -29,6 +29,12 @@ export interface DeliveryIssue {
   category: 'needs_human' | 'unverifiable'
   disposition: { state: 'open' | 'deferred' | 'explained'; stale: boolean; actionId?: string }
 }
+export interface PresentationSourceAudit {
+  sourceId: string
+  attachmentId: string
+  status: 'found' | 'not_found' | 'empty_excerpt' | 'not_ready' | 'unsupported' | 'missing'
+  offset?: number
+}
 export interface PresentationDeliveryReport {
   version: 1
   projectId: string
@@ -38,6 +44,7 @@ export interface PresentationDeliveryReport {
   inputDigest: string
   planDigest: string
   plan: PresentationPlan
+  sourceAudit?: PresentationSourceAudit[]
   reviews: PresentationClaimReview[]
   issueLedger: PresentationIssueLedger
   pages: {
@@ -58,6 +65,7 @@ export interface PresentationDeliveryReport {
 }
 export interface PresentationDeliveryReportInput {
   plan: PresentationPlan
+  sourceAudit?: PresentationSourceAudit[]
   deck: PresentationDeck
   metadata: Pick<
     PresentationDeliveryReport,
@@ -118,6 +126,10 @@ function seeds(
       const unverifiable = [
         'claim_no_sources',
         'source_excerpt_missing',
+        'source_excerpt_not_in_attachment',
+        'source_attachment_missing',
+        'source_attachment_not_ready',
+        'source_attachment_unsupported',
         'source_locator_missing',
         'source_review_missing',
         'source_review_insufficient',
@@ -137,6 +149,11 @@ function seeds(
     if (!claim.sourceIds.length) add('claim_no_sources')
     for (const sourceId of claim.sourceIds) {
       const source = report.plan.sources.find((item) => item.id === sourceId)!
+      const audit = report.sourceAudit?.find((item) => item.sourceId === sourceId)
+      if (audit?.status === 'not_found') add('source_excerpt_not_in_attachment', sourceId)
+      if (audit?.status === 'missing') add('source_attachment_missing', sourceId)
+      if (audit?.status === 'not_ready') add('source_attachment_not_ready', sourceId)
+      if (audit?.status === 'unsupported') add('source_attachment_unsupported', sourceId)
       const excerpt = normalize(source.excerpt)
       if (!excerpt) add('source_excerpt_missing', sourceId)
       if (!source.locator?.trim()) add('source_locator_missing', sourceId)
@@ -199,6 +216,7 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
     'inputDigest',
     'planDigest',
     'plan',
+    'sourceAudit',
     'reviews',
     'issueLedger',
     'pages',
@@ -223,6 +241,28 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
   )
     invalid()
   const plan = parsePresentationPlan(report.plan)
+  if (report.sourceAudit !== undefined) {
+    const expected = plan.sources.flatMap((source) => {
+      const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
+      return match ? [{ sourceId: source.id, attachmentId: match[1] }] : []
+    })
+    if (!Array.isArray(report.sourceAudit) || report.sourceAudit.length !== expected.length)
+      invalid()
+    for (const [index, audit] of report.sourceAudit.entries()) {
+      exact(audit, ['sourceId', 'attachmentId', 'status', 'offset'])
+      if (
+        audit.sourceId !== expected[index]!.sourceId ||
+        audit.attachmentId !== expected[index]!.attachmentId ||
+        !['found', 'not_found', 'empty_excerpt', 'not_ready', 'unsupported', 'missing'].includes(
+          audit.status,
+        ) ||
+        (audit.status === 'found'
+          ? !Number.isSafeInteger(audit.offset) || audit.offset! < 0 || audit.offset! > 1_000_000
+          : audit.offset !== undefined)
+      )
+        invalid()
+    }
+  }
   const ledger = parsePresentationIssueLedger(report.issueLedger)
   if (
     plan.projectId !== report.projectId ||
@@ -310,6 +350,7 @@ export async function buildPresentationDeliveryReport(
     version: 1,
     ...input.metadata,
     plan,
+    ...(input.sourceAudit ? { sourceAudit: input.sourceAudit } : {}),
     reviews: input.reviews,
     issueLedger: input.issueLedger,
     pages: [],
@@ -358,6 +399,9 @@ export async function buildPresentationDeliveryReport(
         code: seed.code,
         claimId: seed.claimId,
         ...(seed.sourceId ? { sourceId: seed.sourceId } : {}),
+        ...(seed.sourceId && report.sourceAudit
+          ? { sourceAudit: report.sourceAudit.find((item) => item.sourceId === seed.sourceId) }
+          : {}),
         relevantReviews,
         ...(calculation ? { calculation } : {}),
       })
@@ -394,6 +438,7 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
     safe(report.plan.title),
     '',
     'Scope: frozen production. Content needs review. Source authority and timeliness NOT VERIFIED. Host NOT CHECKED; round trip NOT RUN.',
+    'Attachment excerpt audit reflects current document files when this report was read; it is not part of the frozen production snapshot.',
     'Arithmetic reproduction checks IEEE double arithmetic only; inputs, source truth, units and conclusions require human judgment. Supported reviews are historical Agent judgments.',
     '分类：已核验（仅算术） / 待人工判断 / 无法核验。解释不关闭机器发现，过期处置恢复为待处理。',
     '',
@@ -438,6 +483,11 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
       `### Source ${safe(source.id)}`,
       `Title: ${safe(source.title)}; URI: ${safe(source.uri)}; locator: ${safe(source.locator ?? '')}; as of: ${safe(source.asOf ?? '')}`,
       `Excerpt: ${safe(source.excerpt)}`,
+      ...(report.sourceAudit?.find((item) => item.sourceId === source.id)
+        ? [
+            `Current attachment excerpt audit: ${safe(JSON.stringify(report.sourceAudit.find((item) => item.sourceId === source.id)))}`,
+          ]
+        : []),
     )
   }
   lines.push(

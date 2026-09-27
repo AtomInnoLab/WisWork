@@ -14,6 +14,7 @@ import {
   presentationProductionSummary,
 } from './presentation-production'
 import { createPresentationAttachmentService } from './presentation-attachments'
+import { auditPresentationSources } from './presentation-source-audit'
 import {
   parsePresentationPlan,
   assertDeckMatchesPresentationPlan,
@@ -519,7 +520,9 @@ export function createPresentationService(options: {
             request.operation as string,
           )
         )
-          return boundedResponse(await handlePresentationDeliveryReport(request, store, signal))
+          return boundedResponse(
+            await handlePresentationDeliveryReport(request, store, attachments, signal),
+          )
         if ((request.operation as string).startsWith('production_'))
           return boundedResponse(
             await handlePresentationProduction(request, { store, compile, attachments }, signal),
@@ -550,41 +553,7 @@ export function createPresentationService(options: {
           const record = store.plan(projectId, documentId)
           if (!record) throw new Error('not_found')
           const plan = parsePresentationPlan(record.plan)
-          const sources = []
-          for (const source of plan.sources) {
-            const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
-            if (!match) continue
-            try {
-              const result = (await attachments(
-                {
-                  operation: 'attachment_match_excerpt',
-                  documentId,
-                  attachmentId: match[1],
-                  excerpt: source.excerpt,
-                },
-                signal,
-              )) as { attachmentId: string; status: string; offset?: number }
-              if (
-                result.attachmentId !== match[1] ||
-                !['found', 'not_found', 'empty_excerpt', 'not_ready', 'unsupported'].includes(
-                  result.status,
-                ) ||
-                (result.status === 'found'
-                  ? !Number.isSafeInteger(result.offset)
-                  : result.offset !== undefined)
-              )
-                throw new Error('invalid_state')
-              sources.push({
-                sourceId: source.id,
-                attachmentId: match[1],
-                status: result.status,
-                ...(result.status === 'found' ? { offset: result.offset } : {}),
-              })
-            } catch (error) {
-              if (!(error instanceof Error) || error.message !== 'not_found') throw error
-              sources.push({ sourceId: source.id, attachmentId: match[1], status: 'missing' })
-            }
-          }
+          const sources = await auditPresentationSources(plan, documentId, attachments, signal)
           return boundedResponse({
             projectId,
             planRevision: record.revision,

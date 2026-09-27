@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
@@ -140,6 +140,9 @@ it('connects arithmetic, historical evidence, scoped dispositions, restart and J
     await runtime.presentation!.readDeliveryReport()
     const report = runtime.presentation!.snapshot().deliveryReport!
     expect(report, runtime.presentation!.snapshot().error).toBeDefined()
+    expect(report.sourceAudit).toEqual([
+      { sourceId: 'source', attachmentId, status: 'found', offset: 0 },
+    ])
     expect(report.pages[0]!.calculations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ claimId: claim.id, status: 'reproduced', actual: 30 }),
@@ -258,6 +261,44 @@ it('connects arithmetic, historical evidence, scoped dispositions, restart and J
     expect(markdown).toContain('待人工判断')
     expect(markdown).toContain('无法核验')
     expect(markdown).not.toContain('<script>')
+    expect(markdown).toContain('Current attachment excerpt audit')
+    const currentMixed = runtime
+      .presentation!.snapshot()
+      .deliveryReport!.pages[0]!.issues.find((issue) => issue.id === mixedIssue.id)!
+    await runtime.presentation!.recordIssueAction({
+      actionId: 'current-source',
+      issueId: currentMixed.id,
+      issueDigest: currentMixed.digest,
+      state: 'explained',
+      note: 'Present in source before deletion.',
+    })
+    expect(runtime.presentation!.snapshot().error).toBeUndefined()
+    await call('attachment_delete', { attachmentId })
+    await runtime.presentation!.readDeliveryReport()
+    const missingSource = runtime.presentation!.snapshot().deliveryReport!
+    expect(missingSource.sourceAudit?.[0]?.status).toBe('missing')
+    expect(
+      missingSource.pages[0]!.issues.some((issue) => issue.code === 'source_attachment_missing'),
+    ).toBe(true)
+    expect(
+      missingSource.pages[0]!.issues.find((issue) => issue.id === currentMixed.id)?.disposition,
+    ).toMatchObject({ state: 'open', stale: true, actionId: 'current-source' })
+    await call('attachment_begin', {
+      attachmentId,
+      sha256: attachmentId,
+      name: 'numbers.txt',
+      sizeBytes: raw.length,
+    })
+    await call('attachment_chunk', { attachmentId, offset: 0, base64: raw.toString('base64') })
+    await call('attachment_finish', { attachmentId })
+    const docHash = createHash('sha256').update(documentId).digest('hex')
+    writeFileSync(
+      join(root, 'presentation-attachments', docHash, attachmentId, 'text.txt'),
+      'tampered text',
+    )
+    expect(await call('production_delivery_report', { projectId: deck.id, requestId })).toEqual({
+      error: 'invalid_state',
+    })
     expect((globalThis as Record<string, unknown>).__wisworkDeliveryProbe).toBeUndefined()
     expect(compile).toHaveBeenCalledTimes(8)
     expect(writeQa).not.toHaveBeenCalled()

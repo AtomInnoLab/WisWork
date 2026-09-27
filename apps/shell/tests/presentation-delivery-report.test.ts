@@ -15,6 +15,9 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 const decode = (value: Uint8Array) => JSON.parse(Buffer.from(value).toString())
+const missingAttachment = async () => {
+  throw new Error('not_found')
+}
 const files = (root: string) =>
   readdirSync(root, { recursive: true, withFileTypes: true })
     .filter((item) => item.isFile())
@@ -44,6 +47,7 @@ it('reads frozen reports without writes, records explanations, and retries after
   const report = await handlePresentationDeliveryReport(
     { ...f.base, operation: 'production_delivery_report' },
     f.store,
+    missingAttachment,
     new AbortController().signal,
   )
   expect(report).not.toHaveProperty('error')
@@ -120,6 +124,7 @@ it('keeps retries idempotent after reviews change and cancels before persistence
     handlePresentationDeliveryReport(
       { ...f.base, operation: 'production_delivery_report' },
       f.store,
+      missingAttachment,
       new AbortController().signal,
     )
   const report = await read()
@@ -179,6 +184,7 @@ it('keeps retries idempotent after reviews change and cancels before persistence
         action: { ...action, actionId: 'cancelled', issueId: next.id, issueDigest: next.digest },
       },
       f.store,
+      missingAttachment,
       controller.signal,
     ),
   ).rejects.toThrow('aborted')

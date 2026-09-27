@@ -33,6 +33,7 @@ it('lets the reviewer reach and record issues after the first 20', async () => {
       ],
     },
     issueLedger: { revision: 0, actions: [] },
+    sourceAudit: [{ sourceId: 'source', attachmentId: 'a'.repeat(64), status: 'not_found' }],
     pages: [
       { pageId: 'page', title: 'Page', productionState: 'compiled', calculations: [], issues },
     ],
@@ -57,6 +58,8 @@ it('lets the reviewer reach and record issues after the first 20', async () => {
     expect(container.querySelector('#evidence-source-request-source')?.textContent).toContain(
       '第 12 页',
     )
+    expect(container.textContent).toContain('完整原文中未找到片段')
+    expect(container.textContent).toContain('不核验事实支持')
     expect(container.querySelector('#evidence-source-request-source script')).toBeNull()
     await act(async () =>
       Array.from(container.querySelectorAll('button'))
