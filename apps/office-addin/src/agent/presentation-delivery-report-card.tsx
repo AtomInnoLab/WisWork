@@ -60,6 +60,51 @@ function IssueForm({
     </form>
   )
 }
+function IssueList({
+  category,
+  issues,
+  report,
+  controller,
+  disabled,
+}: {
+  category: DeliveryIssue['category']
+  issues: DeliveryIssue[]
+  report: PresentationDeliveryReport
+  controller: PresentationProjectController
+  disabled: boolean
+}) {
+  const [limit, setLimit] = useState(20)
+  return (
+    <div>
+      <h5>
+        {category === 'needs_human' ? '待人工判断' : '无法核验'} · {issues.length}
+      </h5>
+      <ul>
+        {issues.slice(0, limit).map((issue) => (
+          <li key={issue.id}>
+            <p>
+              {issue.code} · 主张 {issue.claimId}：
+              {report.plan.claims.find((claim) => claim.id === issue.claimId)?.statement}
+              {issue.sourceId ? ` · 来源 ${issue.sourceId}` : ''} · {issue.disposition.state}
+              {issue.disposition.stale ? ' · 原处置已过期，当前待处理' : ''}
+            </p>
+            <IssueForm
+              key={`${issue.id}-${issue.digest}-${report.issueLedger.revision}`}
+              issue={issue}
+              controller={controller}
+              disabled={disabled}
+            />
+          </li>
+        ))}
+      </ul>
+      {issues.length > limit && (
+        <button type="button" onClick={() => setLimit(Math.min(limit + 20, issues.length))}>
+          显示更多问题 · 剩余 {issues.length - limit} 项
+        </button>
+      )}
+    </div>
+  )
+}
 export function PresentationDeliveryReportCard({
   report,
   controller,
@@ -99,33 +144,14 @@ export function PresentationDeliveryReportCard({
           {(['needs_human', 'unverifiable'] as const).map((category) => {
             const issues = page.issues.filter((issue) => issue.category === category)
             return (
-              <div key={category}>
-                <h5>
-                  {category === 'needs_human' ? '待人工判断' : '无法核验'} · {issues.length}
-                </h5>
-                <ul>
-                  {issues.slice(0, 20).map((issue) => (
-                    <li key={issue.id}>
-                      <p>
-                        {issue.code} · 主张 {issue.claimId}：
-                        {report.plan.claims.find((claim) => claim.id === issue.claimId)?.statement}
-                        {issue.sourceId ? ` · 来源 ${issue.sourceId}` : ''} ·{' '}
-                        {issue.disposition.state}
-                        {issue.disposition.stale ? ' · 原处置已过期，当前待处理' : ''}
-                      </p>
-                      <IssueForm
-                        key={`${issue.id}-${issue.digest}-${report.issueLedger.revision}`}
-                        issue={issue}
-                        controller={controller}
-                        disabled={disabled}
-                      />
-                    </li>
-                  ))}
-                </ul>
-                {issues.length > 20 && (
-                  <p>另有 {issues.length - 20} 项未在此显示；完整问题和历史可导出查看。</p>
-                )}
-              </div>
+              <IssueList
+                key={`${report.requestId}-${report.planRevision}-${page.pageId}-${category}`}
+                category={category}
+                issues={issues}
+                report={report}
+                controller={controller}
+                disabled={disabled}
+              />
             )
           })}
         </section>
