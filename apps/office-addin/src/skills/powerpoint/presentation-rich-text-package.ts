@@ -52,11 +52,15 @@ function directFont(run: Node[]): Record<string, string | number | boolean> {
   const fillTree = (fill?.['a:solidFill'] as Node[] | undefined) ?? []
   const color = attr(tags(fillTree, 'a:srgbClr')[0], 'val')
   const themeColor = attr(tags(fillTree, 'a:schemeClr')[0], 'val')
+  const themeColorModified = (
+    (tags(fillTree, 'a:schemeClr')[0]?.['a:schemeClr'] as Node[] | undefined) ?? []
+  ).some((node) => Object.keys(node).some((key) => key !== ':@' && key !== '#text'))
   const typeface = attr(tags(propertyTree, 'a:latin')[0], 'typeface')
   return {
     ...(size && /^\d+$/.test(size) ? { sizePt: Number(size) / 100 } : {}),
     ...(color && /^[0-9a-fA-F]{6}$/.test(color) ? { color: `#${color.toUpperCase()}` } : {}),
     ...(themeColor ? { themeColor: themeColor.slice(0, 64) } : {}),
+    ...(themeColorModified ? { themeColorModified: true } : {}),
     ...(typeface ? { typeface: typeface.slice(0, 256) } : {}),
     ...(attr(properties, 'b') !== undefined
       ? { bold: ['1', 'true'].includes(attr(properties, 'b')!) }
@@ -70,8 +74,14 @@ function directFont(run: Node[]): Record<string, string | number | boolean> {
 function knownFont(...layers: Array<Record<string, string | number | boolean>>) {
   const result: Record<string, string | number | boolean> = {}
   for (const layer of layers) {
-    if ('color' in layer) delete result.themeColor
-    if ('themeColor' in layer) delete result.color
+    if ('color' in layer) {
+      delete result.themeColor
+      delete result.themeColorModified
+    }
+    if ('themeColor' in layer) {
+      delete result.color
+      delete result.themeColorModified
+    }
     Object.assign(result, layer)
   }
   return result
@@ -82,6 +92,10 @@ export interface RichTextRun {
   directFont: Record<string, string | number | boolean>
   /** Known local formatting only; theme and master/layout inheritance remain unresolved. */
   knownFont: Record<string, string | number | boolean>
+  /** Exact theme RGB only when the page's linked layout/master/theme chain is unambiguous. */
+  resolvedThemeColor?: string
+  /** Exact Latin theme typeface for +mj-lt or +mn-lt only. */
+  resolvedThemeTypeface?: string
 }
 export interface RichTextShape {
   packageShapeId: string
@@ -96,7 +110,103 @@ export interface RichTextShape {
   }>
 }
 
-/** Local list, paragraph and run formatting; theme, layout and master inheritance remain unresolved. */
+type Zip = Awaited<ReturnType<typeof loadBoundedZip>>
+function relationshipPath(part: string): string {
+  const index = part.lastIndexOf('/')
+  return `${part.slice(0, index)}/_rels/${part.slice(index + 1)}.rels`
+}
+function relatedPath(source: string, target: string): string | undefined {
+  if (
+    !target ||
+    target.startsWith('/') ||
+    target.includes('\\') ||
+    target.includes('?') ||
+    target.includes('#')
+  )
+    return
+  const parts = source.split('/').slice(0, -1)
+  for (const segment of target.split('/')) {
+    if (segment === '..') parts.pop()
+    else if (segment !== '.' && segment !== '') parts.push(segment)
+    else if (segment === '') return
+    if (!parts.length) return
+  }
+  const path = parts.join('/')
+  return path.startsWith('ppt/') && /^[A-Za-z0-9_./-]+$/.test(path) ? path : undefined
+}
+async function related(zip: Zip, source: string, kind: string): Promise<string | undefined> {
+  const file = zip.file(relationshipPath(source))
+  if (!file) return
+  const relationships = tags(xml(await file.async('string')), 'Relationship').filter(
+    (node) =>
+      attr(node, 'Type') ===
+        `http://schemas.openxmlformats.org/officeDocument/2006/relationships/${kind}` &&
+      attr(node, 'TargetMode') !== 'External',
+  )
+  if (relationships.length !== 1) return
+  const path = relatedPath(source, attr(relationships[0], 'Target') ?? '')
+  return path && zip.file(path) ? path : undefined
+}
+async function linkedThemeStyle(
+  zip: Zip,
+  slidePath: string,
+): Promise<{
+  colors: Record<string, string>
+  typefaces: Record<string, string>
+}> {
+  const empty = { colors: {}, typefaces: {} }
+  const layoutPath = await related(zip, slidePath, 'slideLayout')
+  const masterPath = layoutPath && (await related(zip, layoutPath, 'slideMaster'))
+  const themePath = masterPath && (await related(zip, masterPath, 'theme'))
+  if (!layoutPath || !masterPath || !themePath) return empty
+  const layout = xml(await zip.file(layoutPath)!.async('string'))
+  const master = xml(await zip.file(masterPath)!.async('string'))
+  const theme = xml(await zip.file(themePath)!.async('string'))
+  const override = tags(layout, 'a:overrideClrMapping')[0]
+  const mapping = override ?? tags(master, 'p:clrMap')[0]
+  const scheme = tags(theme, 'a:clrScheme')[0]
+  const colors: Record<string, string> = {}
+  const typefaces: Record<string, string> = {}
+  const fontScheme = tags(theme, 'a:fontScheme')[0]
+  const fontChildren = (fontScheme?.['a:fontScheme'] as Node[] | undefined) ?? []
+  for (const [symbol, tag] of [
+    ['+mj-lt', 'a:majorFont'],
+    ['+mn-lt', 'a:minorFont'],
+  ] as const) {
+    const font = tags(fontChildren, tag)[0]
+    const face = attr(tags((font?.[tag] as Node[] | undefined) ?? [], 'a:latin')[0], 'typeface')
+    if (face && face.length <= 256 && !Array.from(face).some((char) => char.charCodeAt(0) < 32))
+      typefaces[symbol] = face
+  }
+  if (!mapping || !scheme) return { colors, typefaces }
+  for (const key of [
+    'accent1',
+    'accent2',
+    'accent3',
+    'accent4',
+    'accent5',
+    'accent6',
+    'hlink',
+    'folHlink',
+  ]) {
+    const mapped = attr(mapping, key)
+    if (!mapped || !/^(accent[1-6]|hlink|folHlink)$/.test(mapped)) continue
+    const entry = tags(scheme['a:clrScheme'] as Node[], `a:${mapped}`)[0]
+    const children = (entry?.[`a:${mapped}`] as Node[] | undefined) ?? []
+    const rgbNode = tags(children, 'a:srgbClr')[0]
+    const rgb = attr(rgbNode, 'val')
+    if (
+      rgb &&
+      /^[0-9a-fA-F]{6}$/.test(rgb) &&
+      children.length === 1 &&
+      !((rgbNode?.['a:srgbClr'] as Node[] | undefined) ?? []).length
+    )
+      colors[key] = `#${rgb.toUpperCase()}`
+  }
+  return { colors, typefaces }
+}
+
+/** Local formatting plus exact linked theme RGB where provable; layout/master font inheritance remains unresolved. */
 export async function inspectPowerPointRichText(
   base64: string,
   signal?: AbortSignal,
@@ -105,6 +215,7 @@ export async function inspectPowerPointRichText(
   const slides = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
   if (slides.length !== 1) throw new Error('office_api_unsupported')
   const slide = xml(await zip.file(slides[0]!)!.async('string'))
+  const themeStyle = await linkedThemeStyle(zip, slides[0]!)
   const shapes: RichTextShape[] = []
   let runCount = 0
   let textLength = 0
@@ -139,6 +250,23 @@ export async function inspectPowerPointRichText(
         : {}
       const endParagraphFont = directFont(tags(children, 'a:endParaRPr'))
       const runs: RichTextRun[] = []
+      const addRun = (text: string, font: RichTextRun['directFont']) => {
+        const resolved = knownFont(listStyleFont, paragraphDefaultFont, font)
+        const themeColor = resolved.themeColor
+        runs.push({
+          text,
+          directFont: font,
+          knownFont: resolved,
+          ...(typeof themeColor === 'string' &&
+          !resolved.themeColorModified &&
+          themeStyle.colors[themeColor]
+            ? { resolvedThemeColor: themeStyle.colors[themeColor] }
+            : {}),
+          ...(typeof resolved.typeface === 'string' && themeStyle.typefaces[resolved.typeface]
+            ? { resolvedThemeTypeface: themeStyle.typefaces[resolved.typeface] }
+            : {}),
+        })
+      }
       for (const child of children) {
         const entry = child['a:r'] ?? child['a:fld']
         if (Array.isArray(entry)) {
@@ -146,24 +274,12 @@ export async function inspectPowerPointRichText(
             .map((node) => contents(node['a:t'] as Node[]))
             .join('')
           const font = directFont(entry as Node[])
-          runs.push({
-            text,
-            directFont: font,
-            knownFont: knownFont(listStyleFont, paragraphDefaultFont, font),
-          })
+          addRun(text, font)
         } else if (Array.isArray(child['a:br'])) {
           const font = directFont(child['a:br'] as Node[])
-          runs.push({
-            text: '\n',
-            directFont: font,
-            knownFont: knownFont(listStyleFont, paragraphDefaultFont, font),
-          })
+          addRun('\n', font)
         } else if (Array.isArray(child['a:tab'])) {
-          runs.push({
-            text: '\t',
-            directFont: {},
-            knownFont: knownFont(listStyleFont, paragraphDefaultFont),
-          })
+          addRun('\t', {})
         }
       }
       runCount += runs.length

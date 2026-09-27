@@ -457,6 +457,68 @@ it('merges local list, paragraph and run font evidence without claiming master i
   })
   expect(report.shapes[0]?.paragraphs[0]?.runs[1]?.knownFont).not.toHaveProperty('themeColor')
 })
+it('resolves only explicitly linked and unmodified theme colors', async () => {
+  const zip = new JSZip()
+  zip.file(
+    'ppt/slides/slide1.xml',
+    `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="7" name="Theme"/></p:nvSpPr><p:txBody><a:p><a:r><a:rPr><a:latin typeface="+mj-lt"/><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:rPr><a:t>Exact</a:t></a:r><a:r><a:rPr><a:solidFill><a:schemeClr val="accent1"><a:tint val="50000"/></a:schemeClr></a:solidFill></a:rPr><a:t>Tinted</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+  )
+  zip.file(
+    'ppt/slides/_rels/slide1.xml.rels',
+    `<Relationships><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/></Relationships>`,
+  )
+  zip.file('ppt/slideLayouts/slideLayout1.xml', `<p:sldLayout xmlns:p="urn:p"/>`)
+  zip.file(
+    'ppt/slideLayouts/_rels/slideLayout1.xml.rels',
+    `<Relationships><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/></Relationships>`,
+  )
+  zip.file(
+    'ppt/slideMasters/slideMaster1.xml',
+    `<p:sldMaster xmlns:p="urn:p"><p:clrMap accent1="accent2"/></p:sldMaster>`,
+  )
+  zip.file(
+    'ppt/slideMasters/_rels/slideMaster1.xml.rels',
+    `<Relationships><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>`,
+  )
+  zip.file(
+    'ppt/theme/theme1.xml',
+    `<a:theme xmlns:a="urn:a"><a:themeElements><a:clrScheme><a:accent2><a:srgbClr val="123456"/></a:accent2></a:clrScheme><a:fontScheme><a:majorFont><a:latin typeface="Aptos Display"/></a:majorFont></a:fontScheme></a:themeElements></a:theme>`,
+  )
+  const base64 = await zip.generateAsync({ type: 'base64' })
+  const report = await inspectPowerPointRichText(base64)
+  expect(report.shapes[0]?.paragraphs[0]?.runs).toEqual([
+    expect.objectContaining({
+      text: 'Exact',
+      resolvedThemeColor: '#123456',
+      resolvedThemeTypeface: 'Aptos Display',
+    }),
+    expect.objectContaining({
+      text: 'Tinted',
+      directFont: expect.objectContaining({ themeColor: 'accent1' }),
+    }),
+  ])
+  expect(report.shapes[0]?.paragraphs[0]?.runs[1]).not.toHaveProperty('resolvedThemeColor')
+  zip.file(
+    'ppt/slideLayouts/slideLayout1.xml',
+    `<p:sldLayout xmlns:p="urn:p" xmlns:a="urn:a"><p:clrMapOvr><a:overrideClrMapping accent1="accent1"/></p:clrMapOvr></p:sldLayout>`,
+  )
+  zip.file(
+    'ppt/theme/theme1.xml',
+    `<a:theme xmlns:a="urn:a"><a:themeElements><a:clrScheme><a:accent1><a:srgbClr val="ABCDEF"/></a:accent1><a:accent2><a:srgbClr val="123456"/></a:accent2></a:clrScheme><a:fontScheme><a:majorFont><a:latin typeface="Aptos Display"/></a:majorFont></a:fontScheme></a:themeElements></a:theme>`,
+  )
+  const overridden = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  expect(overridden.shapes[0]?.paragraphs[0]?.runs[0]?.resolvedThemeColor).toBe('#ABCDEF')
+  zip.file(
+    'ppt/theme/theme1.xml',
+    `<a:theme xmlns:a="urn:a"><a:themeElements><a:clrScheme><a:accent1><a:srgbClr val="ABCDEF"><a:tint val="50000"/></a:srgbClr></a:accent1></a:clrScheme></a:themeElements></a:theme>`,
+  )
+  const transformed = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  expect(transformed.shapes[0]?.paragraphs[0]?.runs[0]).not.toHaveProperty('resolvedThemeColor')
+  zip.remove('ppt/slideMasters/_rels/slideMaster1.xml.rels')
+  const unlinked = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  expect(unlinked.shapes[0]?.paragraphs[0]?.runs[0]).not.toHaveProperty('resolvedThemeColor')
+  expect(unlinked.shapes[0]?.paragraphs[0]?.runs[0]).not.toHaveProperty('resolvedThemeTypeface')
+})
 it('reads formatted runs from a real PptxGenJS slide without claiming inherited style', async () => {
   const deck = new PptxGenJS()
   deck.addSlide().addText(
@@ -481,6 +543,25 @@ it('reads formatted runs from a real PptxGenJS slide without claiming inherited 
       directFont: expect.objectContaining({ italic: true }),
     }),
   ])
+})
+it('follows theme relationships in a complete generated PPTX package', async () => {
+  const deck = new PptxGenJS()
+  deck.addSlide().addText('Theme-linked', { x: 1, y: 1, w: 3, h: 1, color: '123456' })
+  const bytes = await deck.write({ outputType: 'nodebuffer' })
+  const zip = await JSZip.loadAsync(bytes as Uint8Array)
+  const slidePath = 'ppt/slides/slide1.xml'
+  const original = await zip.file(slidePath)!.async('string')
+  expect(original).toContain('123456')
+  zip.file(
+    slidePath,
+    original.replace(/<a:srgbClr val="123456"\s*\/>/, '<a:schemeClr val="accent1"/>'),
+  )
+  const report = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  const run = report.shapes
+    .flatMap((shape) => shape.paragraphs.flatMap((p) => p.runs))
+    .find((entry) => entry.text === 'Theme-linked')
+  expect(run?.directFont.themeColor).toBe('accent1')
+  expect(run?.resolvedThemeColor).toMatch(/^#[0-9A-F]{6}$/)
 })
 it('captures arbitrary current/selected/deck scopes without a generation artifact or a host write', async () => {
   const f = fixture()
