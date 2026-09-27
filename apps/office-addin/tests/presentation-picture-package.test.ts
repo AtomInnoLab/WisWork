@@ -1,90 +1,72 @@
-import { describe, expect, it } from 'vitest'
+import { expect, it } from 'vitest'
+import { PNG } from 'pngjs'
 import JSZip from 'jszip'
-import PptxGenJS from 'pptxgenjs'
+import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { openPptx } from '@wiswork/pptx-engine'
+import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { inspectPowerPointPicturePackage } from '../src/skills/powerpoint/powerpoint-package'
-const png =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII='
-async function fixture() {
-  const pptx = new PptxGenJS()
-  const slide = pptx.addSlide()
-  slide.addImage({ data: `data:image/png;base64,${png}`, x: 1, y: 1, w: 2, h: 2 })
-  slide.addText('preserve', { x: 0, y: 0, w: 1, h: 1 })
-  const zip = await JSZip.loadAsync(await pptx.write({ outputType: 'uint8array' }))
-  const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
-  const id = /<p:pic>[\s\S]*?<p:cNvPr id="(\d+)"/.exec(xml)![1]!
-  return { zip, xml, id, base64: await zip.generateAsync({ type: 'base64' }) }
-}
-describe('ordinary embedded picture package proof', () => {
-  it('inspects a real PptxGenJS PNG picture with SHA256 media and semantic fingerprint', async () => {
-    const { base64, id } = await fixture()
-    const proof = await inspectPowerPointPicturePackage(base64, id)
-    expect(proof.mediaDigest).toMatch(/^[a-f0-9]{64}$/)
-    expect(proof.pictureFingerprint).toMatch(/^[a-f0-9]{64}$/)
-    expect(proof.shapeIds).toHaveLength(2)
-    await expect(inspectPowerPointPicturePackage(base64, '999')).rejects.toThrow(
-      'office_api_unsupported',
-    )
-    await expect(inspectPowerPointPicturePackage(base64, proof.shapeIds[1]!)).rejects.toThrow(
-      'office_api_unsupported',
-    )
+import { replacePowerPointPictureMediaPackage } from '../src/skills/powerpoint/presentation-picture-package'
+
+it('replaces only the selected native picture media in an exported one-page package', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const source = Buffer.from((await compilePresentationDeck(deck)).bytes).toString('base64')
+  const zip = await JSZip.loadAsync(source, { base64: true })
+  const slideXml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const picture = [...slideXml.matchAll(/<p:pic\b[^]*?<\/p:pic>/g)].find(([xml]) => xml.includes('name="image"'))![0]
+  const shapeId = picture.match(/<p:cNvPr\b[^>]*\bid="(\d+)"/)![1]!
+  const original = await inspectPowerPointPicturePackage(source, shapeId)
+  const replacement = new PNG({ width: 2, height: 1 })
+  replacement.data[0] = 255
+  const changed = await replacePowerPointPictureMediaPackage(source, shapeId, {
+    mime: 'image/png', base64: PNG.sync.write(replacement).toString('base64'),
   })
-  it.each([
-    'crop',
-    'effect',
-    'linked',
-    'animation',
-    'duplicate-relation',
-    'black-white-mode',
-    'rotation-disabled',
-  ] as const)('rejects unsupported %s without changing bytes', async (variant) => {
-    const { zip, xml, id } = await fixture()
-    if (variant === 'crop')
-      zip.file(
-        'ppt/slides/slide1.xml',
-        xml.replace('<a:stretch>', '<a:srcRect l="1000"/><a:stretch>'),
-      )
-    if (variant === 'effect')
-      zip.file(
-        'ppt/slides/slide1.xml',
-        xml.replace('</p:spPr>', '<a:effectLst><a:grayscl/></a:effectLst></p:spPr>'),
-      )
-    if (variant === 'linked') zip.file('ppt/slides/slide1.xml', xml.replace('r:embed=', 'r:link='))
-    if (variant === 'animation')
-      zip.file('ppt/slides/slide1.xml', xml.replace('</p:sld>', '<p:timing/></p:sld>'))
-    if (variant === 'black-white-mode')
-      zip.file('ppt/slides/slide1.xml', xml.replace('<p:spPr>', '<p:spPr bwMode="gray">'))
-    if (variant === 'rotation-disabled')
-      zip.file(
-        'ppt/slides/slide1.xml',
-        xml.replace('<p:blipFill>', '<p:blipFill rotWithShape="0">'),
-      )
-    if (variant === 'duplicate-relation') {
-      const rel = await zip.file('ppt/slides/_rels/slide1.xml.rels')!.async('string')
-      const item = /<Relationship\s[^>]*\/>/.exec(rel)![0]
-      zip.file(
-        'ppt/slides/_rels/slide1.xml.rels',
-        rel.replace('</Relationships>', `${item}</Relationships>`),
-      )
-    }
-    await expect(
-      inspectPowerPointPicturePackage(await zip.generateAsync({ type: 'base64' }), id),
-    ).rejects.toThrow('office_api_unsupported')
-  })
+  expect(changed.beforeDigest).not.toBe(changed.afterDigest)
+  expect(changed.mediaDigest).not.toBe(original.mediaDigest)
+  const updated = await inspectPowerPointPicturePackage(changed.base64, shapeId)
+  expect(updated.shapeIds).toEqual(original.shapeIds)
+  expect(updated.mediaDigest).toBe(changed.mediaDigest)
+  const reopened = await openPptx(Buffer.from(changed.base64, 'base64'))
+  expect(reopened.deck.slides).toHaveLength(1)
+  expect(reopened.deck.slides[0]!.elements.map((item) => item.name)).toEqual(
+    (await openPptx(Buffer.from(source, 'base64'))).deck.slides[0]!.elements.map((item) => item.name),
+  )
+  expect(reopened.deck.slides[0]!.elements.find((item) => item.name === 'image')?.type).toBe('picture')
 })
 
-it('captures exact original media only after the ordinary-picture proof succeeds', async () => {
-  const f = await fixture()
-  let original: string | undefined
-  const proof = await inspectPowerPointPicturePackage(f.base64, f.id, undefined, (value) => {
-    original = value
+it('rejects a missing picture ID before changing the package', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const source = Buffer.from((await compilePresentationDeck(deck)).bytes).toString('base64')
+  const replacement = new PNG({ width: 2, height: 1 })
+  replacement.data[0] = 255
+  await expect(replacePowerPointPictureMediaPackage(source, '999999', {
+    mime: 'image/png', base64: PNG.sync.write(replacement).toString('base64'),
+  })).rejects.toThrow('office_api_unsupported')
+})
+
+it('does not change a second picture that shares the original image relationship', async () => {
+  const deck = benchmarkDeck()
+  const slide = deck.slides[2]!
+  const image = slide.elements[1]!
+  if (image.kind !== 'image') throw new Error('benchmark image missing')
+  slide.elements.push({ ...image, id: 'second-image', x: 5 })
+  deck.slides = [slide]
+  const zip = await JSZip.loadAsync((await compilePresentationDeck(deck)).bytes)
+  const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const pictures = [...xml.matchAll(/<p:pic\b[^]*?<\/p:pic>/g)]
+  expect(pictures).toHaveLength(2)
+  const firstId = pictures[0]![0].match(/<p:cNvPr\b[^>]*\bid="(\d+)"/)![1]!
+  const secondId = pictures[1]![0].match(/<p:cNvPr\b[^>]*\bid="(\d+)"/)![1]!
+  const firstEmbed = pictures[0]![0].match(/r:embed="([^"]+)"/)![1]!
+  zip.file('ppt/slides/slide1.xml', xml.replace(pictures[1]![0], pictures[1]![0].replace(/r:embed="[^"]+"/, `r:embed="${firstEmbed}"`)))
+  const source = await zip.generateAsync({ type: 'base64' })
+  const before = await inspectPowerPointPicturePackage(source, secondId)
+  const replacement = new PNG({ width: 2, height: 1 })
+  replacement.data[0] = 255
+  const changed = await replacePowerPointPictureMediaPackage(source, firstId, {
+    mime: 'image/png', base64: PNG.sync.write(replacement).toString('base64'),
   })
-  expect(original).toBe(png)
-  expect(Object.keys(proof).sort()).toEqual(['mediaDigest', 'pictureFingerprint', 'shapeIds'])
-  original = undefined
-  await expect(
-    inspectPowerPointPicturePackage(f.base64, '999', undefined, (value) => {
-      original = value
-    }),
-  ).rejects.toThrow()
-  expect(original).toBeUndefined()
+  expect((await inspectPowerPointPicturePackage(changed.base64, secondId)).mediaDigest).toBe(before.mediaDigest)
+  expect((await inspectPowerPointPicturePackage(changed.base64, firstId)).mediaDigest).toBe(changed.mediaDigest)
 })
