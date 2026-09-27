@@ -13,6 +13,14 @@ import {
   inspectRelayPairing,
 } from './ppt-agent-release-preflight.mjs'
 
+const PRESENTATION_CAPABILITIES = [
+  'presentation.v1',
+  'presentation-attachments.v1',
+  'presentation-assets.v1',
+  'presentation-remote-images.v1',
+  'presentation-asset-rights.v1',
+]
+
 async function artifact(t) {
   const dist = await mkdtemp(resolve(tmpdir(), 'ppt-release-'))
   t.after(() => rm(dist, { recursive: true, force: true }))
@@ -42,7 +50,7 @@ test('validates complete release artifact', async (t) => {
   })
 })
 
-test('v2 pairing smoke negotiates and approves one presentation capability', async (t) => {
+test('v2 pairing smoke negotiates and routes every presentation capability', async (t) => {
   const server = createServer()
   const ws = new WebSocketServer({ server, path: '/office-relay' })
   t.after(() => {
@@ -55,6 +63,7 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
   let pc
   let corruptChunk = false
   const seen = []
+  const routed = []
   ws.on('connection', (socket, request) => {
     if (request.headers.origin) {
       assert.equal(request.headers.origin, 'https://office.8-216-134-194.sslip.io')
@@ -66,7 +75,7 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
     socket.on('message', (bytes) => {
       const frame = JSON.parse(bytes.toString())
       seen.push(frame.type)
-      if (frame.capabilities) assert.deepEqual(frame.capabilities, ['presentation.v1'])
+      if (frame.capabilities) assert.deepEqual(frame.capabilities, PRESENTATION_CAPABILITIES)
       if (frame.type === 'office.create')
         socket.send(
           JSON.stringify({
@@ -82,7 +91,7 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
             version: 2,
             type: 'pc.negotiated',
             pairing_version: 2,
-            capabilities: ['presentation.v1'],
+            capabilities: PRESENTATION_CAPABILITIES,
           }),
         )
       if (frame.type === 'pc.claim')
@@ -91,7 +100,7 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
             version: 2,
             type: 'pc.claimed',
             pairing_id: 'pair',
-            capabilities: ['presentation.v1'],
+            capabilities: PRESENTATION_CAPABILITIES,
           }),
         )
       if (frame.type === 'pc.approve') {
@@ -101,7 +110,7 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
             type: 'pc.approved',
             session_id: 'session',
             capability: 'pcCredential',
-            capabilities: ['presentation.v1'],
+            capabilities: PRESENTATION_CAPABILITIES,
           }),
         )
         office.send(
@@ -110,13 +119,14 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
             type: 'office.approved',
             session_id: 'session',
             capability: 'officeCredential',
-            capabilities: ['presentation.v1'],
+            capabilities: PRESENTATION_CAPABILITIES,
           }),
         )
       }
       if (frame.type === 'office.request') {
         assert.equal(frame.capability, 'officeCredential')
-        assert.equal(frame.capability_name, 'presentation.v1')
+        assert.ok(PRESENTATION_CAPABILITIES.includes(frame.capability_name))
+        routed.push(frame.capability_name)
         assert.equal(frame.body.operation, 'release_preflight')
         pc.send(
           JSON.stringify({
@@ -151,15 +161,18 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
   await inspectRelayPairing(`http://127.0.0.1:${server.address().port}`, 'test-secret')
   assert.ok(office)
   assert.ok(pc)
+  assert.deepEqual(routed, PRESENTATION_CAPABILITIES)
   assert.deepEqual(seen, [
     'office.create',
     'pc.negotiate',
     'pc.claim',
     'pc.approve',
-    'office.request',
-    'pc.start',
-    'pc.chunk',
-    'pc.done',
+    ...PRESENTATION_CAPABILITIES.flatMap(() => [
+      'office.request',
+      'pc.start',
+      'pc.chunk',
+      'pc.done',
+    ]),
   ])
   corruptChunk = true
   await assert.rejects(
@@ -203,7 +216,7 @@ test('pairing smoke requires distinct nonempty session credentials', async (t) =
             version: 2,
             type: 'pc.negotiated',
             pairing_version: 2,
-            capabilities: ['presentation.v1'],
+            capabilities: PRESENTATION_CAPABILITIES,
           }),
         )
       if (type === 'pc.claim')
@@ -212,7 +225,7 @@ test('pairing smoke requires distinct nonempty session credentials', async (t) =
             version: 2,
             type: 'pc.claimed',
             pairing_id: 'pair',
-            capabilities: ['presentation.v1'],
+            capabilities: PRESENTATION_CAPABILITIES,
           }),
         )
       if (type === 'pc.approve') {
@@ -223,7 +236,7 @@ test('pairing smoke requires distinct nonempty session credentials', async (t) =
             type: 'pc.approved',
             session_id: 'session',
             capability,
-            capabilities: ['presentation.v1'],
+            capabilities: PRESENTATION_CAPABILITIES,
           }),
         )
         office.send(
@@ -232,7 +245,7 @@ test('pairing smoke requires distinct nonempty session credentials', async (t) =
             type: 'office.approved',
             session_id: 'session',
             capability: 'sameCredential',
-            capabilities: ['presentation.v1'],
+            capabilities: PRESENTATION_CAPABILITIES,
           }),
         )
       }
@@ -273,7 +286,7 @@ test('pairing smoke rejects capability mismatch without disclosing credentials',
             version: 2,
             type: 'pc.negotiated',
             pairing_version: 2,
-            capabilities: ['agent.v1'],
+            capabilities: PRESENTATION_CAPABILITIES.slice(0, -1),
           }),
         )
     }),
