@@ -8,6 +8,8 @@ import { compilePresentationDeck } from '../src/presentation-compiler'
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
 const sofficeAvailable = spawnSync('soffice', ['--version'], { timeout: 5_000 }).status === 0
+if (process.env.WISWORK_REQUIRE_LIBREOFFICE === '1' && !sofficeAvailable)
+  throw new Error('LibreOffice is required for the PPTX round-trip gate')
 
 it.skipIf(!sofficeAvailable)(
   'reopens the eight-page editable benchmark through LibreOffice without losing native content',
