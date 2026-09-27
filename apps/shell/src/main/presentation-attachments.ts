@@ -41,7 +41,17 @@ function filename(name: unknown): name is string {
   )
 }
 function imageFile(name: string) {
-  return ['.png', '.jpg', '.jpeg'].includes(extname(name).toLowerCase())
+  return ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(extname(name).toLowerCase())
+}
+function imageMime(name: string) {
+  const ext = extname(name).toLowerCase()
+  return ext === '.png'
+    ? 'image/png'
+    : ext === '.gif'
+      ? 'image/gif'
+      : ext === '.webp'
+        ? 'image/webp'
+        : 'image/jpeg'
 }
 function fileLimit(name: string) {
   return imageFile(name) ? PRESENTATION_IMAGE_INPUT_LIMIT : FILE_LIMIT
@@ -543,7 +553,7 @@ export function createPresentationAttachmentService(options: {
           )
         if (declared + Math.max(raw.length, FILE_RESERVATION_FLOOR) > DOCUMENT_LIMIT)
           fail('quota_exceeded')
-        const name = `remote-${attachmentId}.${info.mime === 'image/png' ? 'png' : 'jpg'}`
+        const name = `remote-${attachmentId}.${{ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }[info.mime]}`
         url.search = ''
         url.hash = ''
         const item: Metadata = {
@@ -713,7 +723,7 @@ export function createPresentationAttachmentService(options: {
           try {
             if (imageFile(m.name)) {
               const info = inspectPresentationImage(raw)
-              const expected = extname(m.name).toLowerCase() === '.png' ? 'image/png' : 'image/jpeg'
+              const expected = imageMime(m.name)
               if (info.mime !== expected) fail('parse_failed')
               checkAbort(signal)
               const image = await normalizeImage(raw)
@@ -791,7 +801,7 @@ export function createPresentationAttachmentService(options: {
         const raw = await bytes(rawPath, 2 * 1024 * 1024)
         if (raw.length !== m.sizeBytes || hash(raw) !== id) fail('digest_mismatch')
         const info = inspectPresentationImage(raw)
-        const expected = extname(m.name).toLowerCase() === '.png' ? 'image/png' : 'image/jpeg'
+        const expected = imageMime(m.name)
         if (info.mime !== expected || info.width !== m.width || info.height !== m.height)
           fail('invalid_state')
         checkAbort(signal)

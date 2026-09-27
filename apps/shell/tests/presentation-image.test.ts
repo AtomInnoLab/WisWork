@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { inspectPresentationImage } from '../src/main/presentation-image'
+const fixture = (name: string) => readFileSync(join(__dirname, 'fixtures/presentation-image', name))
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII=',
   'base64',
@@ -24,5 +27,30 @@ describe('image admission before native decoding', () => {
       'parse_failed',
     )
     expect(() => inspectPresentationImage(png.subarray(0, 30))).toThrow('parse_failed')
+  })
+  it('accepts bounded static GIF/WebP and rejects animation before decoding', () => {
+    expect(inspectPresentationImage(fixture('static.gif'))).toEqual({
+      mime: 'image/gif',
+      width: 2,
+      height: 3,
+    })
+    expect(inspectPresentationImage(fixture('static.webp'))).toEqual({
+      mime: 'image/webp',
+      width: 2,
+      height: 3,
+    })
+    expect(inspectPresentationImage(fixture('extended.webp'))).toEqual({
+      mime: 'image/webp',
+      width: 2,
+      height: 3,
+    })
+    expect(() => inspectPresentationImage(fixture('animated.gif'))).toThrow('parse_failed')
+    expect(() => inspectPresentationImage(fixture('animated.webp'))).toThrow('parse_failed')
+    const huge = fixture('static.gif')
+    huge.writeUInt16LE(8193, 6)
+    expect(() => inspectPresentationImage(huge)).toThrow('parse_failed')
+    expect(() => inspectPresentationImage(fixture('static.webp').subarray(0, -4))).toThrow(
+      'parse_failed',
+    )
   })
 })

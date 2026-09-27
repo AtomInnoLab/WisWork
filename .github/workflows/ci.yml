@@ -200,6 +200,9 @@ jobs:
           DEBUG: 'pw:browser'
         run: xvfb-run --auto-servernum -- npm run test:e2e
 
+      - name: PPT image conversion (real Electron)
+        run: node tools/ppt-agent-image-electron-smoke.mjs
+
       - name: Upload E2E artifacts on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

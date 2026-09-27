@@ -3,7 +3,9 @@ import { mkdtemp, rm, writeFile, readFile, symlink, mkdir, utimes, access } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { createPresentationAttachmentService } from '../src/main/presentation-attachments'
+const fixture = (name: string) => readFileSync(join(__dirname, 'fixtures/presentation-image', name))
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII=',
   'base64',
@@ -47,6 +49,52 @@ async function upload(
   return attachmentId
 }
 describe('durable presentation image assets', () => {
+  it('normalizes static GIF/WebP uploads into durable PNG assets', async () => {
+    const { call } = await setup(async () => ({
+      bytes: fixture('control.png'),
+      width: 2,
+      height: 3,
+    }))
+    for (const name of ['static.gif', 'static.webp']) {
+      const id = await upload(call, fixture(name), name)
+      await expect(
+        call({ operation: 'attachment_finish', attachmentId: id }),
+      ).resolves.toMatchObject({ status: 'ready' })
+      await expect(
+        call({ operation: 'attachment_asset', attachmentId: id }),
+      ).resolves.toMatchObject({ mime: 'image/png', width: 2, height: 3 })
+    }
+  })
+  it('imports a static WebP URL and serves the converted asset after a restart', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-webp-url-'))
+    dirs.push(userDataPath)
+    const raw = fixture('static.webp')
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      fetchImage: async () => new Response(raw, { headers: { 'content-type': 'image/webp' } }),
+      normalizeImage: async () => ({ bytes: fixture('control.png'), width: 2, height: 3 }),
+    })
+    const call = (body: Record<string, unknown>) =>
+      service({ documentId: 'doc', ...body }, new AbortController().signal)
+    const imported = (await call({
+      operation: 'attachment_import_url',
+      url: 'https://93.184.216.34/figure.webp',
+    })) as { attachmentId: string }
+    expect(imported).toMatchObject({
+      status: 'ready',
+      name: `remote-${imported.attachmentId}.webp`,
+    })
+    expect(
+      await call({ operation: 'attachment_asset', attachmentId: imported.attachmentId }),
+    ).toMatchObject({ mime: 'image/png', width: 2, height: 3 })
+    const reopened = createPresentationAttachmentService({ userDataPath })
+    expect(
+      await reopened(
+        { documentId: 'doc', operation: 'attachment_asset', attachmentId: imported.attachmentId },
+        new AbortController().signal,
+      ),
+    ).toMatchObject({ mime: 'image/png', width: 2, height: 3 })
+  })
   it('removes only old service staging directories on startup', async () => {
     const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-staging-cleanup-'))
     dirs.push(userDataPath)
