@@ -186,6 +186,7 @@ export function createPresentationAttachmentSkill(
   upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
   list(): Promise<PresentationAttachmentMetadata[]>
   importUrl(url: string): Promise<PresentationAttachmentMetadata>
+  importUrls(urls: string[]): Promise<PresentationAttachmentMetadata>
   attestLicense(
     imageId: string,
     license: 'owned' | 'licensed' | 'public_domain',
@@ -259,6 +260,53 @@ export function createPresentationAttachmentSkill(
       signal?.removeEventListener('abort', abort)
     }
   }
+  async function importUrls(urls: string[]): Promise<PresentationAttachmentMetadata> {
+    if (
+      !Array.isArray(urls) ||
+      urls.length < 1 ||
+      urls.length > 4 ||
+      new Set(urls).size !== urls.length
+    )
+      throw new Error('invalid_tool_input')
+    for (const value of urls) {
+      if (typeof value !== 'string' || value.length > 2048 || value !== value.trim())
+        throw new Error('invalid_tool_input')
+      let parsed: URL
+      try {
+        parsed = new URL(value)
+      } catch {
+        throw new Error('invalid_tool_input')
+      }
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password)
+        throw new Error('invalid_tool_input')
+    }
+    return scope(undefined, async (request) => {
+      if (!options.remoteImagesAvailable?.()) throw new Error('presentation_assets_unavailable')
+      for (const url of urls) {
+        try {
+          const result = metadata(await request({ operation: 'attachment_import_url', url }))
+          if (result.status !== 'ready' || result.kind !== 'image' || !result.source)
+            return invalid()
+          return result
+        } catch (error) {
+          const code = error instanceof Error ? error.message : ''
+          if (
+            ![
+              'presentation_remote_image_unavailable',
+              'presentation_parse_failed',
+              'presentation_aborted',
+            ].includes(code)
+          )
+            throw error
+          if (url === urls.at(-1))
+            throw new Error(urls.length === 1 ? code : 'presentation_image_candidates_exhausted', {
+              cause: error,
+            })
+        }
+      }
+      return invalid()
+    })
+  }
   return {
     id: 'office-presentation-attachments',
     get tools() {
@@ -313,14 +361,9 @@ export function createPresentationAttachmentSkill(
       })
     },
     async importUrl(url) {
-      if (typeof url !== 'string' || url.length > 2048) throw new Error('invalid_tool_input')
-      return scope(undefined, async (request) => {
-        if (!options.remoteImagesAvailable?.()) throw new Error('presentation_assets_unavailable')
-        const result = metadata(await request({ operation: 'attachment_import_url', url }))
-        if (result.status !== 'ready' || result.kind !== 'image' || !result.source) return invalid()
-        return result
-      })
+      return importUrls([url])
     },
+    importUrls,
     async attestLicense(imageId, license, evidenceId) {
       if (
         !idValid(imageId) ||

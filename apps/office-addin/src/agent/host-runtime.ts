@@ -109,7 +109,7 @@ export interface OfficeHostRuntime {
   rightsAvailable?(): boolean
   listDurableAttachments?(): Promise<PresentationAttachmentMetadata[]>
   deleteDurableAttachment?(attachmentId: string): Promise<void>
-  importPresentationImageUrl?(url: string): Promise<void>
+  importPresentationImageUrl?(url: string | string[]): Promise<void>
   attestPresentationImageLicense?(
     imageId: string,
     license: 'owned' | 'licensed' | 'public_domain',
@@ -1146,6 +1146,7 @@ export function createOfficeHostRuntime(
             list: attachments.list,
             remove: attachments.remove,
             importUrl: attachments.importUrl,
+            importUrls: attachments.importUrls,
             attestLicense: attachments.attestLicense,
             revokeLicense: attachments.revokeLicense,
             imagesAvailable: () =>
@@ -1182,6 +1183,7 @@ function lifecycle(
     list(): Promise<PresentationAttachmentMetadata[]>
     remove(attachmentId: string): Promise<void>
     importUrl(url: string): Promise<unknown>
+    importUrls(urls: string[]): Promise<unknown>
     attestLicense(
       imageId: string,
       license: 'owned' | 'licensed' | 'public_domain',
@@ -1219,7 +1221,7 @@ function lifecycle(
       attachments?.remove(attachmentId) ?? Promise.reject(new Error('presentation_unavailable')),
     importPresentationImageUrl: async (url) => {
       if (!attachments?.remoteImagesAvailable()) throw new Error('presentation_assets_unavailable')
-      await attachments.importUrl(url)
+      await attachments.importUrls(Array.isArray(url) ? url : [url])
     },
     attestPresentationImageLicense: async (imageId, license, evidenceId) => {
       if (!attachments?.rightsAvailable()) throw new Error('presentation_assets_unavailable')

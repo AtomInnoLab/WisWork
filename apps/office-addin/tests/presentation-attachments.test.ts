@@ -155,6 +155,92 @@ it('imports a URL image through the PC asset endpoint without exposing an Agent 
   )
   expect(skill.tools.map((tool) => tool.name)).not.toContain('import_presentation_image_url')
 })
+it('tries bounded image URL candidates only for recoverable download failures', async () => {
+  const f = setup()
+  const first = 'https://example.com/failed.webp'
+  const second = 'https://example.org/usable.webp'
+  f.request.mockImplementation(
+    async (body) =>
+      new Response(
+        JSON.stringify(
+          body.url === first
+            ? { error: 'remote_image_unavailable' }
+            : {
+                attachmentId: f.attachmentId,
+                sha256: f.attachmentId,
+                name: 'remote.webp',
+                sizeBytes: 3,
+                receivedBytes: 3,
+                status: 'ready',
+                kind: 'image',
+                mime: 'image/png',
+                width: 2,
+                height: 3,
+                assetSha256: f.attachmentId,
+                source: second,
+              },
+        ),
+      ),
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    imagesAvailable: () => true,
+    remoteImagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  await expect(skill.importUrls([first, second])).resolves.toMatchObject({ source: second })
+  expect(f.request.mock.calls.map(([body]) => body.url)).toEqual([first, second])
+  f.request.mockClear()
+  await expect(skill.importUrls([first, first])).rejects.toThrow('invalid_tool_input')
+  await expect(skill.importUrls(['http://user:pass@example.com/a.png', second])).rejects.toThrow(
+    'invalid_tool_input',
+  )
+  await expect(
+    skill.importUrls(Array.from({ length: 5 }, (_, i) => `https://example.com/${i}.png`)),
+  ).rejects.toThrow('invalid_tool_input')
+  expect(f.request).not.toHaveBeenCalled()
+})
+it('does not try another image candidate after a document change or cancellation', async () => {
+  const f = setup()
+  f.request.mockResolvedValue(new Response(JSON.stringify({ error: 'document_changed' })))
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    remoteImagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  await expect(
+    skill.importUrls(['https://example.com/a.png', 'https://example.com/b.png']),
+  ).rejects.toThrow('presentation_document_changed')
+  expect(f.request).toHaveBeenCalledTimes(1)
+  f.request.mockClear()
+  f.request.mockImplementation(async () => {
+    skill.clear()
+    return new Response(JSON.stringify({ error: 'remote_image_unavailable' }))
+  })
+  await expect(
+    skill.importUrls(['https://example.com/a.png', 'https://example.com/b.png']),
+  ).rejects.toThrow('upload_cancelled')
+  expect(f.request).toHaveBeenCalledTimes(1)
+})
+it('reports exhausted image candidates after recoverable failures', async () => {
+  const f = setup()
+  f.request.mockImplementation(async () => new Response(JSON.stringify({ error: 'remote_image_unavailable' })))
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    remoteImagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  await expect(
+    skill.importUrls(['https://example.com/a.png', 'https://example.com/b.png']),
+  ).rejects.toThrow('presentation_image_candidates_exhausted')
+  expect(f.request).toHaveBeenCalledTimes(2)
+})
 it('uploads chunks and reads durable sources after reconnect', async () => {
   const f = setup()
   await f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))

@@ -187,10 +187,13 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
     presentation_image_too_large: '图片每个文件最多 10 MB。',
     presentation_remote_image_unavailable:
       '图片网址无法安全下载或图片格式不受支持，请检查网址后重试。',
+    presentation_image_candidates_exhausted:
+      '这些候选图片都无法安全下载或解码，请换一组网址后重试。',
+    invalid_tool_input: '请输入 1 到 4 个不同的 HTTP(S) 图片网址，每行一个。',
     presentation_remote_image_source_conflict:
       '相同图片内容已从另一来源加入当前文档。请使用已有素材，或手动上传本地文件。',
     presentation_aborted: '图片下载超时或已取消，请重试。',
-    presentation_parse_failed: '图片无法解码为受支持的 PNG 或 JPEG。',
+    presentation_parse_failed: '图片无法解码为受支持的 PNG、JPEG、静态 GIF 或 WebP。',
     presentation_assets_unavailable: '请更新并连接支持图片素材的 PC 端后重试。',
     presentation_attachment_failed: '资料解析未完成，请检查文件或重新上传。',
     presentation_not_found: '这份 PC 资料已不存在，请刷新附件列表。',
@@ -242,7 +245,7 @@ export interface OfficeWorkspaceUi {
   readonly rightsAvailable?: () => boolean
   readonly listDurableAttachments?: () => Promise<PresentationAttachmentMetadata[]>
   readonly deleteDurableAttachment?: (attachmentId: string) => Promise<void>
-  readonly importPresentationImageUrl?: (url: string) => Promise<void>
+  readonly importPresentationImageUrl?: (url: string | string[]) => Promise<void>
   readonly attestPresentationImageLicense?: (
     imageId: string,
     license: 'owned' | 'licensed' | 'public_domain',
@@ -863,7 +866,7 @@ export function AgentWorkspace(props: {
               {ui.durableImagesAvailable?.() && (
                 <>
                   <p>
-                    PNG、JPEG 图片每个最多 10 MB，上传后在 PC
+                    PNG、JPEG、静态 GIF、WebP 图片每个最多 10 MB，上传后在 PC
                     校验并缓存；可直接用于制作，无需将图片编码发给 Agent。
                   </p>
                   {ui.remoteImagesAvailable?.() && (
@@ -871,11 +874,19 @@ export function AgentWorkspace(props: {
                       onSubmit={(event) => {
                         event.preventDefault()
                         if (uploadPending || state.busy || !imageUrl.trim()) return
+                        const urls = imageUrl
+                          .split(/\r?\n/)
+                          .map((url) => url.trim())
+                          .filter(Boolean)
+                        if (urls.length > 4) {
+                          setUploadError('候选图片网址最多 4 个。')
+                          return
+                        }
                         setUploadPending(true)
                         setUploadError('')
                         setUploadStatus('正在由 PC 下载并校验图片…')
                         void ui
-                          .importPresentationImageUrl?.(imageUrl.trim())
+                          .importPresentationImageUrl?.(urls.length === 1 ? urls[0]! : urls)
                           .then(async () => {
                             if (!mounted.current) return
                             setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
@@ -895,13 +906,17 @@ export function AgentWorkspace(props: {
                           })
                       }}
                     >
-                      <label htmlFor="presentation-image-url">图片网址</label>
-                      <input
+                      <label htmlFor="presentation-image-url">
+                        图片网址（每行一个，最多 4 个，按顺序尝试）
+                      </label>
+                      <textarea
                         id="presentation-image-url"
-                        type="url"
                         value={imageUrl}
                         onChange={(event) => setImageUrl(event.currentTarget.value)}
-                        placeholder="https://example.com/image.png"
+                        placeholder={
+                          'https://example.com/image.png\nhttps://backup.example.com/image.webp'
+                        }
+                        rows={3}
                         required
                       />
                       <button

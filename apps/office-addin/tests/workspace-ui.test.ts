@@ -160,9 +160,9 @@ describe('Office Agent workspace UI', () => {
     confirm.mockReturnValue(true)
     await act(async () => button.click())
     expect(remove).toHaveBeenCalledWith(id)
-    const input = container.querySelector<HTMLInputElement>('#presentation-image-url')!
+    const input = container.querySelector<HTMLTextAreaElement>('#presentation-image-url')!
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
         input,
         'https://example.com/image.png',
       )
@@ -174,6 +174,22 @@ describe('Office Agent workspace UI', () => {
         .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
     )
     expect(importUrl).toHaveBeenCalledWith('https://example.com/image.png')
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        input,
+        'https://example.com/failed.png\nhttps://example.org/backup.webp',
+      )
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () =>
+      input
+        .closest('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    )
+    expect(importUrl).toHaveBeenCalledWith([
+      'https://example.com/failed.png',
+      'https://example.org/backup.webp',
+    ])
     await act(async () => root.unmount())
     container.remove()
     confirm.mockRestore()
