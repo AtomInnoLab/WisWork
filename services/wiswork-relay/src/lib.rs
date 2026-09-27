@@ -883,7 +883,7 @@ async fn claim(
     let max = app.inner.config.max_claim_attempts;
     let p = s.pairings.get_mut(&id).ok_or("invalid_code")?;
     if p.version != protocol {
-        return Err("invalid_frame");
+        return Err("protocol_version_mismatch");
     }
     if p.pc.is_some() {
         return Err("already_claimed");

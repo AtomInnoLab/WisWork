@@ -799,6 +799,43 @@ async fn unknown_only_claim_does_not_mutate_or_notify_the_pairing() {
 }
 
 #[tokio::test]
+async fn old_pc_claim_gets_explicit_version_error_without_touching_v2_pairing() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["agent.v1"]}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    let code = created["verification_code"].clone();
+
+    let mut old_pc = pc_socket(&url).await;
+    send(
+        &mut old_pc,
+        json!({"version":1,"type":"pc.claim","verification_code":code}),
+    )
+    .await;
+    assert_eq!(
+        recv(&mut old_pc).await,
+        json!({"version":1,"type":"relay.error","code":"protocol_version_mismatch"})
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), recv(&mut office))
+            .await
+            .is_err()
+    );
+
+    let mut new_pc = pc_socket(&url).await;
+    send(
+        &mut new_pc,
+        json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1"]}),
+    )
+    .await;
+    assert_eq!(recv(&mut new_pc).await["type"], "pc.claimed");
+}
+
+#[tokio::test]
 async fn pc_response_activity_cannot_revive_an_idle_expired_session() {
     let url =
         server_with_session_ttls(Some((Duration::from_millis(100), Duration::from_secs(1)))).await;
