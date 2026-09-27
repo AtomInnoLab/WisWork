@@ -301,6 +301,22 @@ const planRequest = (value = plan(), expectedRevision = 0) => ({
   plan: value,
 })
 describe('durable presentation planning', () => {
+  it('persists a brand palette and rejects off-brand SlideIR before compilation', async () => {
+    const compile = vi.fn(async () => result())
+    const service = createPresentationService({ userDataPath: root(), compile })
+    const branded = { ...plan(), brandKit: {
+      id: 'company', revision: 1, name: '公司品牌',
+      allowedColors: ['FFFFFF', '111111', '3366FF'],
+    } }
+    expect(decode(await service(planRequest(branded), signal()))).toMatchObject({ revision: 1, plan: branded })
+    const offBrand = { ...input, planRevision: 1, deck: { ...input.deck, slides: [{
+      ...input.deck.slides[0]!, elements: [{ ...input.deck.slides[0]!.elements[0]!, color: 'FF0000' }],
+    }] } }
+    expect(decode(await service(offBrand, signal()))).toEqual({ error: 'plan_mismatch' })
+    expect(compile).not.toHaveBeenCalled()
+    expect(decode(await service({ ...input, planRevision: 1 }, signal()))).toMatchObject({ status: 'compiled' })
+    expect(compile).toHaveBeenCalledTimes(1)
+  })
   it('saves and reloads a plan before any compile and exposes a planned project', async () => {
     const userDataPath = root()
     const service = createPresentationService({ userDataPath, compile: vi.fn() })

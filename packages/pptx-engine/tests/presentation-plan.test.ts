@@ -9,6 +9,33 @@ import { benchmarkPlan } from './fixtures/presentation-plan'
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
 describe('durable presentation plan', () => {
+  it('enforces an optional brand palette and required cover logo in the compiled deck', () => {
+    const plan = benchmarkPlan()
+    plan.brandKit = {
+      id: 'research-brand', revision: 1, name: '研究品牌',
+      allowedColors: ['FFFFFF', '172033', '2255AA'],
+      logo: { assetId: 'pixel', placement: 'cover' },
+    }
+    plan.slides[0]!.layout = 'cover'
+    const deck = benchmarkDeck()
+    deck.slides[0]!.elements.push({ kind: 'image', id: 'brand-logo', x: 11, y: 0.3, w: 1, h: 1, assetId: 'pixel' })
+    expect(parsePresentationPlan(plan).brandKit).toEqual(plan.brandKit)
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).not.toThrow()
+    deck.slides[0]!.elements.pop()
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow('presentation_plan_mismatch:brand_logo')
+    deck.slides[0]!.elements.push({ kind: 'image', id: 'brand-logo', x: 11, y: 0.3, w: 1, h: 1, assetId: 'pixel' })
+    deck.slides[0]!.elements[0] = { ...deck.slides[0]!.elements[0]!, kind: 'text', text: '标题', color: 'FF0000' }
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow('presentation_plan_mismatch:brand_color')
+    deck.slides[0]!.elements[0] = { ...deck.slides[0]!.elements[0]!, kind: 'text', text: '标题', color: '172033' }
+    plan.brandKit.allowedColors = ['FFFFFF', 'FFFFFF', '2255AA']
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:brand_kit')
+    plan.brandKit.allowedColors = ['FFFFFF', '172033', '2255AA']
+    plan.slides[0]!.layout = 'content'
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:brand_kit_logo_scope')
+    plan.brandKit.logo!.placement = 'all'
+    expect(() => parsePresentationPlan(plan)).not.toThrow()
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow('presentation_plan_mismatch:brand_logo')
+  })
   it('clones a valid plan and maps the benchmark deck exactly', () => {
     const plan = benchmarkPlan()
     expect(parsePresentationPlan(plan)).toEqual(plan)

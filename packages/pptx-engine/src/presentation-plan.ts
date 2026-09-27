@@ -1,6 +1,6 @@
 import type { PresentationClaim, PresentationDeck, PresentationStyle } from './presentation'
 import { PRESENTATION_DECK_SCHEMA, PRESENTATION_TEXT_BUDGET } from './presentation'
-import { type Schema, text, number, choice, array, object, id, valid } from './presentation-schema'
+import { type Schema, text, number, choice, array, object, id, color, valid } from './presentation-schema'
 
 /** Mandatory deck JSON may consume 192 KiB of the 256 KiB compile transport.
  * The remaining 64 KiB accommodates content/geometry and the request envelope;
@@ -50,6 +50,13 @@ export interface PresentationPlan {
     }
   }[]
   style: PresentationStyle
+  brandKit?: {
+    id: string
+    revision: number
+    name: string
+    allowedColors: string[]
+    logo?: { assetId: string; placement: 'cover' | 'all' }
+  }
   slides: {
     id: string
     title: string
@@ -127,6 +134,13 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object({
     256,
   ),
   style: PRESENTATION_DECK_SCHEMA.properties!.style!,
+  brandKit: object({
+    id,
+    revision: number(1, 1_000_000),
+    name: text(160, 1),
+    allowedColors: array(color, 32, 1),
+    logo: object({ assetId: id, placement: choice('cover', 'all') }),
+  }, ['id', 'revision', 'name', 'allowedColors']),
   slides: array(
     object({
       id,
@@ -140,7 +154,7 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object({
     32,
     1,
   ),
-})
+}, ['version', 'projectId', 'title', 'brief', 'sources', 'claims', 'style', 'slides'])
 
 function reject(reason: string): never {
   throw new Error(`presentation_plan_invalid:${reason}`)
@@ -152,6 +166,14 @@ function unique(values: string[], label: string): void {
 export function parsePresentationPlan(input: unknown): PresentationPlan {
   if (!valid(input, PRESENTATION_PLAN_SCHEMA)) reject('schema')
   const plan = input as PresentationPlan
+  if (plan.brandKit) {
+    const colors = plan.brandKit.allowedColors.map((value) => value.toUpperCase())
+    if (!Number.isSafeInteger(plan.brandKit.revision) || new Set(colors).size !== colors.length ||
+      [plan.style.background, plan.style.textColor, plan.style.accentColor].some((value) => !colors.includes(value.toUpperCase())))
+      reject('brand_kit')
+    if (plan.brandKit.logo?.placement === 'cover' && !plan.slides.some((slide) => slide.layout === 'cover'))
+      reject('brand_kit_logo_scope')
+  }
   if (new TextEncoder().encode(JSON.stringify(plan)).byteLength > 192 * 1024) reject('size_budget')
   unique(
     plan.sources.map((source) => source.id),
@@ -261,6 +283,20 @@ export function assertDeckMatchesPresentationPlan(
   if (deck.id !== plan.projectId || deck.title !== plan.title) mismatch('project')
   for (const key of ['fontFace', 'background', 'textColor', 'accentColor'] as const)
     if (deck.style[key] !== plan.style[key]) mismatch('style')
+  if (plan.brandKit) {
+    const colors = new Set(plan.brandKit.allowedColors.map((value) => value.toUpperCase()))
+    for (const slide of deck.slides)
+      for (const element of slide.elements) {
+        const used = element.kind === 'text' ? [element.color] : element.kind === 'shape' ? [element.fill, element.lineColor] : []
+        if (used.some((value) => value && !colors.has(value.toUpperCase()))) mismatch('brand_color')
+      }
+    if (plan.brandKit.logo) {
+      if (!deck.assets.some((asset) => asset.id === plan.brandKit!.logo!.assetId)) mismatch('brand_logo_asset')
+      for (const [index, slide] of deck.slides.entries())
+        if ((plan.brandKit.logo.placement === 'all' || plan.slides[index]!.layout === 'cover') &&
+          !slide.elements.some((element) => element.kind === 'image' && element.assetId === plan.brandKit!.logo!.assetId)) mismatch('brand_logo')
+    }
+  }
   if (deck.slides.length !== plan.slides.length) mismatch('slides')
   for (const [index, slide] of deck.slides.entries()) {
     const planned = plan.slides[index]!
