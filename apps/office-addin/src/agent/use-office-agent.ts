@@ -35,6 +35,7 @@ export interface OfficeAgentSnapshot {
   error?: string
   errorMessage?: string
   retryable: boolean
+  recoveryAvailable?: boolean
   proposal?: OfficeProposal | StructuredProposal
   timeline: OfficePresentationTimeline
 }
@@ -48,6 +49,7 @@ export interface OfficeAgentSession {
   reject(): void
   newTask(): void
   retry(): void
+  resumeInterrupted?(): Promise<void>
   logout(): void
   authenticationLost(): void
   dispose(): void
@@ -185,7 +187,14 @@ export function createOfficeAgentSession(dependencies: {
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
   runCheckpoint?: {
     interrupted: boolean
-    begin(runId: string): Promise<void>
+    recovery?: {
+      instruction: string
+      phase: 'running' | 'tool_pending' | 'tool_completed'
+      toolName?: string
+    }
+    validateDocument?(): Promise<boolean>
+    begin(runId: string, instruction: string): Promise<void>
+    tool?(runId: string, phase: 'tool_pending' | 'tool_completed', toolName: string): Promise<void>
     finish(runId: string): Promise<void>
   }
 }): OfficeAgentSession {
@@ -209,11 +218,14 @@ export function createOfficeAgentSession(dependencies: {
     applying: false,
     status: 'idle',
     retryable: false,
+    recoveryAvailable:
+      dependencies.runCheckpoint?.recovery?.phase === 'running' &&
+      Boolean(dependencies.runCheckpoint.recovery.instruction),
     timeline: dependencies.runCheckpoint?.interrupted
       ? appendPresentationEvent(emptyPresentationTimeline(), {
           id: 'event-1',
           kind: 'system',
-          text: '上次前台 Agent 运行在面板关闭时中断。请先核对下方项目、页面和写入记录，再决定是否继续；未自动重放写入。',
+          text: `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}请先核对项目、页面和写入记录；未自动重放写入。恢复信息保存在本演示文稿设置中。`,
         })
       : emptyPresentationTimeline(),
   }
@@ -358,7 +370,24 @@ export function createOfficeAgentSession(dependencies: {
           stopToolBatch: true,
         }
       }
+      if (activeRunId && dependencies.runCheckpoint?.tool) {
+        try {
+          await dependencies.runCheckpoint.tool(activeRunId, 'tool_pending', call.name)
+        } catch {
+          return {
+            output: JSON.stringify({ error: 'presentation_run_checkpoint_unavailable' }),
+            isError: true,
+            mutated: false,
+            summary: 'Run checkpoint unavailable',
+            stopToolBatch: true,
+          }
+        }
+      }
       const outcome = await dependencies.skill.executeTool(call, signal)
+      if (activeRunId && dependencies.runCheckpoint?.tool && !('kind' in outcome))
+        void dependencies.runCheckpoint
+          .tool(activeRunId, 'tool_completed', call.name)
+          .catch(() => undefined)
       if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') return outcome
       const proposal = proposals.pending()
       if (!proposal) return outcome
@@ -377,6 +406,7 @@ export function createOfficeAgentSession(dependencies: {
       error: undefined,
       errorMessage: undefined,
       retryable: false,
+      recoveryAvailable: false,
       timeline: emptyPresentationTimeline(),
     }
   }
@@ -552,6 +582,7 @@ export function createOfficeAgentSession(dependencies: {
       error: undefined,
       errorMessage: undefined,
       retryable: false,
+      recoveryAvailable: false,
     })
     if (!dependencies.runCheckpoint) {
       harness.run(value)
@@ -561,7 +592,7 @@ export function createOfficeAgentSession(dependencies: {
     const epoch = sessionEpoch
     const runId = crypto.randomUUID()
     void dependencies.runCheckpoint
-      .begin(runId)
+      .begin(runId, value.length <= 1000 ? value : '')
       .then(() => {
         pendingStart = false
         if (disposed || epoch !== sessionEpoch) {
@@ -711,6 +742,24 @@ export function createOfficeAgentSession(dependencies: {
         return
       const instruction = lastInstruction
       startRun(instruction)
+    },
+    async resumeInterrupted() {
+      const checkpoint = dependencies.runCheckpoint
+      if (
+        !checkpoint?.recovery?.instruction ||
+        checkpoint.recovery.phase !== 'running' ||
+        state.busy ||
+        state.applying ||
+        disposed ||
+        !checkpoint.validateDocument
+      )
+        return
+      try {
+        if (!(await checkpoint.validateDocument())) return
+      } catch {
+        return
+      }
+      startRun(checkpoint.recovery.instruction)
     },
     logout() {
       if (disposed) return

@@ -72,6 +72,12 @@ const QA_KEY = 'wiswork.presentation.qa.v1'
 const PROJECT_KEY = 'wiswork.presentation.project.v1'
 const SELECTED_PRODUCTION_KEY = 'wiswork.presentation.selected-production.v1'
 const AGENT_RUN_KEY = 'wiswork.presentation.agent-run.v1'
+export interface PresentationAgentRunRecovery {
+  runId: string
+  instruction: string
+  phase: 'running' | 'tool_pending' | 'tool_completed'
+  toolName?: string
+}
 const validId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 
@@ -1377,37 +1383,102 @@ export function createPresentationDocumentBinding(
       const id = settings.get(PROJECT_KEY)
       return validId(id) ? id : undefined
     },
-    interruptedAgentRun(boundDocumentId: string): boolean {
+    agentRunRecovery(boundDocumentId: string): PresentationAgentRunRecovery | undefined {
       const raw = settings.get(AGENT_RUN_KEY)
-      if (typeof raw !== 'string' || raw.length > 4096) return false
+      if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 4096)
+        return undefined
       try {
         const value = JSON.parse(raw) as Record<string, unknown>
-        return (
+        const valid =
           value &&
           !Array.isArray(value) &&
-          Object.keys(value).sort().join(',') === 'documentId,runId,startedAt' &&
           value.documentId === boundDocumentId &&
           validId(value.runId) &&
           typeof value.startedAt === 'number' &&
           Number.isSafeInteger(value.startedAt) &&
           value.startedAt > 0 &&
           value.startedAt <= Date.now()
+        if (!valid) return undefined
+        const keys = Object.keys(value).sort().join(',')
+        if (keys === 'documentId,runId,startedAt')
+          return { runId: value.runId as string, instruction: '', phase: 'tool_pending' }
+        if (
+          keys !== 'documentId,instruction,phase,runId,startedAt' &&
+          keys !== 'documentId,instruction,phase,runId,startedAt,toolName'
         )
+          return undefined
+        if (
+          typeof value.instruction !== 'string' ||
+          value.instruction.length > 1000 ||
+          !['running', 'tool_pending', 'tool_completed'].includes(value.phase as string) ||
+          (value.toolName !== undefined &&
+            (typeof value.toolName !== 'string' || value.toolName.length > 128))
+        )
+          return undefined
+        return {
+          runId: value.runId as string,
+          instruction: value.instruction,
+          phase: value.phase as PresentationAgentRunRecovery['phase'],
+          ...(typeof value.toolName === 'string' ? { toolName: value.toolName } : {}),
+        }
       } catch {
-        return false
+        return undefined
       }
     },
-    async rememberAgentRun(boundDocumentId: string, runId: string) {
+    interruptedAgentRun(boundDocumentId: string): boolean {
+      return Boolean(this.agentRunRecovery(boundDocumentId))
+    },
+    async rememberAgentRun(boundDocumentId: string, runId: string, instruction = '') {
       return queueRunCheckpoint(async () => {
-        if (!validId(runId) || (await documentId()) !== boundDocumentId)
+        if (
+          !validId(runId) ||
+          instruction.length > 1000 ||
+          new TextEncoder().encode(instruction).byteLength > 3000 ||
+          (await documentId()) !== boundDocumentId
+        )
           throw new Error('presentation_document_changed')
         const previous = settings.get(AGENT_RUN_KEY)
-        const raw = JSON.stringify({ documentId: boundDocumentId, runId, startedAt: Date.now() })
+        const raw = JSON.stringify({
+          documentId: boundDocumentId,
+          runId,
+          startedAt: Date.now(),
+          instruction,
+          phase: 'running',
+        })
+        if (new TextEncoder().encode(raw).byteLength > 4096)
+          throw new Error('presentation_run_checkpoint_unavailable')
         settings.set(AGENT_RUN_KEY, raw)
         try {
           await settings.save()
         } catch (error) {
           settings.set(AGENT_RUN_KEY, typeof previous === 'string' ? previous : '')
+          throw error
+        }
+        if ((await documentId()) !== boundDocumentId || settings.get(AGENT_RUN_KEY) !== raw)
+          throw new Error('presentation_document_changed')
+      })
+    },
+    async updateAgentRun(
+      boundDocumentId: string,
+      runId: string,
+      phase: 'tool_pending' | 'tool_completed',
+      toolName: string,
+    ) {
+      return queueRunCheckpoint(async () => {
+        if ((await documentId()) !== boundDocumentId || toolName.length > 128)
+          throw new Error('presentation_document_changed')
+        const previous = settings.get(AGENT_RUN_KEY)
+        const current = this.agentRunRecovery(boundDocumentId)
+        if (!current || current.runId !== runId || typeof previous !== 'string')
+          throw new Error('presentation_run_checkpoint_unavailable')
+        const raw = JSON.stringify({ ...JSON.parse(previous), phase, toolName })
+        if (new TextEncoder().encode(raw).byteLength > 4096)
+          throw new Error('presentation_run_checkpoint_unavailable')
+        settings.set(AGENT_RUN_KEY, raw)
+        try {
+          await settings.save()
+        } catch (error) {
+          settings.set(AGENT_RUN_KEY, previous)
           throw error
         }
         if ((await documentId()) !== boundDocumentId || settings.get(AGENT_RUN_KEY) !== raw)
@@ -1488,15 +1559,20 @@ export function createPresentationDocumentBinding(
 export function createPresentationAgentRunCheckpoint(
   binding: Pick<
     ReturnType<typeof createPresentationDocumentBinding>,
-    'documentId' | 'rememberAgentRun' | 'finishAgentRun'
+    'documentId' | 'rememberAgentRun' | 'updateAgentRun' | 'finishAgentRun'
   >,
 ) {
   const runDocuments = new Map<string, string>()
   return {
-    async begin(runId: string) {
+    async begin(runId: string, instruction = '') {
       const id = await binding.documentId()
-      await binding.rememberAgentRun(id, runId)
+      await binding.rememberAgentRun(id, runId, instruction)
       runDocuments.set(runId, id)
+    },
+    async tool(runId: string, phase: 'tool_pending' | 'tool_completed', toolName: string) {
+      const id = runDocuments.get(runId)
+      if (!id) throw new Error('presentation_run_checkpoint_unavailable')
+      await binding.updateAgentRun(id, runId, phase, toolName)
     },
     async finish(runId: string) {
       const id = runDocuments.get(runId)

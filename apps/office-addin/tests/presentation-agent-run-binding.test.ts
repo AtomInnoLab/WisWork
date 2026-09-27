@@ -75,4 +75,63 @@ describe('presentation AgentRun checkpoint', () => {
     await expect(binding.rememberAgentRun(id, 'run-1')).rejects.toThrow('save failed')
     expect(binding.interruptedAgentRun(id)).toBe(false)
   })
+
+  it('recovers a bounded request and tool boundary only in the bound document', async () => {
+    const values = new Map<string, string>()
+    let location = 'file:///original.pptx'
+    const create = () =>
+      createPresentationDocumentBinding(
+        {
+          get: (key) => values.get(key),
+          set: (key, value) => {
+            values.set(key, value)
+          },
+          save: async () => undefined,
+          location: () => location,
+        },
+        () => 'doc-id',
+      )
+    const binding = create()
+    const id = await binding.documentId()
+    await binding.rememberAgentRun(id, 'run-1', 'Create a sales deck')
+    await binding.updateAgentRun(id, 'run-1', 'tool_pending', 'write_presentation_page')
+    expect(create().agentRunRecovery(id)).toMatchObject({
+      instruction: 'Create a sales deck',
+      phase: 'tool_pending',
+      toolName: 'write_presentation_page',
+    })
+    location = 'file:///copy.pptx'
+    expect(create().agentRunRecovery(await create().documentId())).toBeUndefined()
+    location = 'file:///original.pptx'
+    await binding.updateAgentRun(id, 'run-1', 'tool_completed', 'write_presentation_page')
+    expect(create().agentRunRecovery(id)?.phase).toBe('tool_completed')
+  })
+
+  it('rejects malformed or oversized run records', async () => {
+    const values = new Map<string, string>()
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => 'file:///deck.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    const key = 'wiswork.presentation.agent-run.v1'
+    const base = {
+      documentId: id,
+      runId: 'run-1',
+      startedAt: Date.now(),
+      instruction: 'Create deck',
+      phase: 'running',
+    }
+    values.set(key, JSON.stringify({ ...base, unexpected: true }))
+    expect(binding.agentRunRecovery(id)).toBeUndefined()
+    values.set(key, JSON.stringify({ ...base, instruction: '界'.repeat(1500) }))
+    expect(binding.agentRunRecovery(id)).toBeUndefined()
+  })
 })

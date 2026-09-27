@@ -712,6 +712,16 @@ export function AgentWorkspace(props: {
             reject={() => session.reject()}
           />
         ))}
+        {state.recoveryAvailable && (
+          <button
+            type="button"
+            className="secondary"
+            disabled={state.busy || state.applying || projectPhase !== 'idle'}
+            onClick={() => void session.resumeInterrupted?.()}
+          >
+            继续上次请求
+          </button>
+        )}
         {proposal &&
           !state.timeline.some(
             (event) => event.kind === 'proposal' && event.proposal.id === proposal.id,
@@ -1468,7 +1478,11 @@ function ConfiguredApp() {
                       interrupted: presentationBinding.interruptedAgentRun(
                         boundPresentationDocumentId,
                       ),
+                      recovery: presentationBinding.agentRunRecovery(boundPresentationDocumentId),
+                      validateDocument: async () =>
+                        (await presentationBinding.documentId()) === boundPresentationDocumentId,
                       begin: runCheckpoint!.begin,
+                      tool: runCheckpoint!.tool,
                       finish: runCheckpoint!.finish,
                     },
                   }

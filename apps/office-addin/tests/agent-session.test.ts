@@ -76,6 +76,47 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it('resumes a pre-tool run only on explicit action after document validation', async () => {
+    const harness = transportHarness()
+    const validateDocument = vi.fn(async () => true)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: { instruction: 'Create deck', phase: 'running' },
+        validateDocument,
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    expect(session.snapshot().recoveryAvailable).toBe(true)
+    expect(harness.stream).not.toHaveBeenCalled()
+    await session.resumeInterrupted?.()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    expect(validateDocument).toHaveBeenCalledOnce()
+  })
+
+  it('does not resume a run after a tool boundary', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: { instruction: 'Create deck', phase: 'tool_pending', toolName: 'write_page' },
+        validateDocument: vi.fn(async () => true),
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    expect(session.snapshot().recoveryAvailable).toBe(false)
+    await session.resumeInterrupted?.()
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+
   it('saves a checkpoint before starting and clears it after completion', async () => {
     const harness = transportHarness()
     const begin = vi.fn(async (_runId: string) => undefined)
