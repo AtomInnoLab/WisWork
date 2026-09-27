@@ -23,6 +23,15 @@ beforeAll(async () => {
 }, 30_000) // A production Vite build can exceed the default hook budget alongside other test workers.
 
 describe('configured Office build output', () => {
+  it('emits version metadata matching the compiled task pane', async () => {
+    const metadata = JSON.parse(await readFile(resolve(dist, 'version.json'), 'utf8')) as { buildId: string }
+    expect(metadata.buildId).toMatch(/^[A-Za-z0-9_.-]{3,96}$/)
+    const taskpane = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
+    const scriptPath = taskpane.match(/src="(\/assets\/taskpane-[^"]+\.js)"/)?.[1]
+    expect(scriptPath).toBeDefined()
+    const script = await readFile(resolve(dist, scriptPath!.slice(1)), 'utf8')
+    expect(script).toContain(metadata.buildId)
+  })
   it('emits only configured origins in the deployment manifest', async () => {
     const manifest = await readFile(resolve(dist, 'manifest.xml'), 'utf8')
     expect(manifest).toContain('<Version>0.3.3.0</Version>')

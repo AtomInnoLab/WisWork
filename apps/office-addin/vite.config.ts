@@ -50,6 +50,11 @@ export default defineConfig(async ({ command, mode }) => {
       return html.replaceAll('__WISWORK_CONNECT_ORIGINS__', allowedConnectOrigins)
     },
     generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: JSON.stringify({ buildId }),
+      })
       if (deployment) {
         this.emitFile({
           type: 'asset',
