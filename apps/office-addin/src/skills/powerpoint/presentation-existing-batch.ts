@@ -382,6 +382,13 @@ export function validExistingBatchTransition(
       })
     return (
       stableCore(before) === stableCore(after) &&
+      before.backups.filter((backup, index) => {
+        const next = after.backups![index]!
+        return (
+          backup.backupId !== next.backupId &&
+          (backup.sha256 !== next.sha256 || backup.sizeBytes !== next.sizeBytes)
+        )
+      }).length === 1 &&
       before.backups.filter(
         (backup, index) => JSON.stringify(backup) !== JSON.stringify(after.backups![index]),
       ).length === 1

@@ -944,8 +944,33 @@ export function createPresentationDocumentBinding(
             undo_pending: 'undone',
             undone: undefined,
           }
+          const backupRejournal =
+            prior.state === 'pending' &&
+            snapshot.state === 'pending' &&
+            prior.backup !== undefined &&
+            snapshot.backup !== undefined &&
+            prior.backup.backupId !== snapshot.backup.backupId &&
+            (prior.backup.sha256 !== snapshot.backup.sha256 ||
+              prior.backup.sizeBytes !== snapshot.backup.sizeBytes) &&
+            prior.backupReleasedAt === undefined &&
+            snapshot.backupReleasedAt === undefined &&
+            JSON.stringify(prior.review) === JSON.stringify(snapshot.review) &&
+            JSON.stringify({
+              ...prior,
+              backup: {
+                hostSlideId: prior.backup.hostSlideId,
+                packageDigest: prior.backup.packageDigest,
+              },
+            }) ===
+              JSON.stringify({
+                ...snapshot,
+                backup: {
+                  hostSlideId: snapshot.backup.hostSlideId,
+                  packageDigest: snapshot.backup.packageDigest,
+                },
+              })
           if (
-            core(prior) !== core(snapshot) ||
+            (core(prior) !== core(snapshot) && !backupRejournal) ||
             (prior.backupReleasedAt !== snapshot.backupReleasedAt &&
               !(
                 prior.state === 'undone' &&

@@ -84,6 +84,12 @@ it('allows one equivalent missing backup to be re-journaled only before any host
   const after = structuredClone(before)
   after.backups![1] = { ...after.backups![1]!, backupId: 'b3', sha256: '3'.repeat(64) }
   expect(validExistingBatchTransition(before, after)).toBe(true)
+  expect(
+    validExistingBatchTransition(before, {
+      ...after,
+      backups: [after.backups![0]!, { ...after.backups![1]!, backupId: 'b2' }],
+    }),
+  ).toBe(false)
   await f.binding.writeExistingBatch(before, undefined)
   await f.binding.writeExistingBatch(after, before)
   expect(f.reopen().readExistingBatch('batch')?.backups?.[1]?.backupId).toBe('b3')

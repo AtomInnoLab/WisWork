@@ -118,10 +118,41 @@ it('binds a bounded original page package to the exact existing-change slide', a
       backed,
     ),
   ).rejects.toThrow('state_invalid')
-  const applied = { ...backed, state: 'applied' as const }
-  const undoPending = { ...backed, state: 'undo_pending' as const }
-  const undone = { ...backed, state: 'undone' as const }
-  await f.binding.writeExistingChange(applied, backed)
+  const rebacked = {
+    ...backed,
+    backup: { ...backed.backup, backupId: 'backup2', sha256: 'f'.repeat(64) },
+  }
+  await f.binding.writeExistingChange(rebacked, backed)
+  await expect(
+    f.binding.writeExistingChange(
+      {
+        ...rebacked,
+        backup: {
+          ...rebacked.backup,
+          packageDigest: 'c'.repeat(64),
+          backupId: 'backup3',
+        },
+      },
+      rebacked,
+    ),
+  ).rejects.toThrow('state_invalid')
+  const applied = { ...rebacked, state: 'applied' as const }
+  const undoPending = { ...rebacked, state: 'undo_pending' as const }
+  const undone = { ...rebacked, state: 'undone' as const }
+  await f.binding.writeExistingChange(applied, rebacked)
+  await expect(
+    f.binding.writeExistingChange(
+      {
+        ...applied,
+        backup: {
+          ...applied.backup,
+          backupId: 'backup3',
+          sha256: 'e'.repeat(64),
+        },
+      },
+      applied,
+    ),
+  ).rejects.toThrow('state_invalid')
   await f.binding.writeExistingChange(undoPending, applied)
   await f.binding.writeExistingChange(undone, undoPending)
   const released = { ...undone, backupReleasedAt: '2026-09-28T00:00:00.000Z' }

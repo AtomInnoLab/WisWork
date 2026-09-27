@@ -750,8 +750,10 @@ it('does not write a single existing-page edit when the PC backup quota is full'
   expect(f.editGeometry).not.toHaveBeenCalled()
   expect(f.geometry().left).toBe(1)
   expect(f.records()[0]?.record.state).toBe('pending')
+  const previousBackup = f.records()[0]!.record.backup!
   f.setBackupQuota(8)
   f.reopen()
+  f.setPackageComment('equivalent ZIP with changed metadata')
   const resumed = await f.call('resume_existing_presentation_change', {
     change_id: f.records()[0]!.record.changeId,
   })
@@ -759,6 +761,9 @@ it('does not write a single existing-page edit when the PC backup quota is full'
   await f.confirm()
   expect(f.geometry().left).toBe(30)
   expect(f.readyBackups()).toBe(1)
+  const finalBackup = f.records()[0]!.record.backup!
+  expect(finalBackup.packageDigest).toBe(previousBackup.packageDigest)
+  expect(finalBackup.sha256).not.toBe(previousBackup.sha256)
 })
 it('rejects a single edit if the original page package changes after proposal', async () => {
   const f = await fixture()

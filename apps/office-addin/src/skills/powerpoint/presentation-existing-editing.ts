@@ -651,7 +651,7 @@ export function createPresentationExistingEditingSkill(
         }
         const initial = await value(signal)
         const ensureBackup = async (s?: AbortSignal, receiptOnly = false) => {
-          const backup = record!.backup
+          let backup = record!.backup
           if (!backup || !record!.beforeSlideIds) return // Legacy savepoints predate page packages.
           if (!options.adapter.exportPresentationPagePackage)
             throw new Error('office_api_unsupported')
@@ -687,12 +687,25 @@ export function createPresentationExistingEditingSkill(
               throw new Error('presentation_baseline_changed')
             const base64 = proposalPackage ?? exported.base64
             const metadata = await describePagePackageBackup(base64, s)
-            if (
-              metadata.packageDigest !== backup.packageDigest ||
-              metadata.sha256 !== backup.sha256 ||
-              metadata.sizeBytes !== backup.sizeBytes
-            )
+            if (metadata.packageDigest !== backup.packageDigest)
               throw new Error('presentation_existing_backup_missing')
+            if (metadata.sha256 !== backup.sha256 || metadata.sizeBytes !== backup.sizeBytes) {
+              const status = await options.request(
+                {
+                  operation: 'existing_page_backup_status',
+                  documentId,
+                  backupId: backup.backupId,
+                },
+                s,
+              )
+              await current(s)
+              const result = (await status.json()) as Record<string, unknown>
+              if (status.ok || result.error !== 'not_found' || record!.state !== 'pending')
+                throw new Error('presentation_existing_backup_missing')
+              const replacement = { ...backup, ...metadata, backupId: crypto.randomUUID() }
+              await store({ ...record!, backup: replacement }, s)
+              backup = replacement
+            }
             const stored = await saveChartPackageBackup(
               { ...scope, base64, backupId: backup.backupId },
               s,
