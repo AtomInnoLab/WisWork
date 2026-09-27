@@ -35,6 +35,51 @@ class FakeSocket implements RelayWebSocket {
 const frame = (socket: FakeSocket, index: number) => JSON.parse(socket.sent[index]!)
 
 describe('Office cloud relay session', () => {
+  it('classifies only the exact legacy invalid_frame during a v2 handshake as incompatible', async () => {
+    for (const legacyFrame of [
+      { version: 1, type: 'relay.error', code: 'invalid_frame' },
+      { version: 1, type: 'relay.error', code: 'invalid_frame', extra: true },
+      { version: 1, type: 'relay.error', code: 'other' },
+    ]) {
+      const socket = new FakeSocket()
+      const session = createOfficeRelaySession({
+        createSocket: () => socket,
+        capabilities: ['agent.v1'],
+      })
+      const connecting = session.connect('word')
+      socket.open()
+      expect(frame(socket, 0).version).toBe(2)
+      socket.receive(JSON.stringify(legacyFrame))
+      await connecting
+      expect(session.snapshot().status).toBe(
+        Object.keys(legacyFrame).length === 3 && legacyFrame.code === 'invalid_frame'
+          ? 'incompatible'
+          : 'offline',
+      )
+      expect(socket.sent).toHaveLength(1)
+    }
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1'],
+    })
+    const connecting = session.connect('word')
+    socket.open()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_1',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    expect(session.snapshot().status).toBe('pending')
+    socket.receive(JSON.stringify({ version: 1, type: 'relay.error', code: 'invalid_frame' }))
+    await connecting
+    expect(session.snapshot().status).toBe('offline')
+  })
+
   const diagnostic: OfficeDiagnosticEvent = {
     event_id: '00000000-0000-4000-8000-000000000001',
     trace_id: '00000000-0000-4000-8000-000000000002',

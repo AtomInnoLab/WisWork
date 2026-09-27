@@ -38,7 +38,14 @@ export interface RelayWebSocket {
 }
 
 export type OfficeRelayStatus =
-  'offline' | 'connecting' | 'pending' | 'waiting_for_pc' | 'rejected' | 'expired' | 'connected'
+  | 'offline'
+  | 'connecting'
+  | 'incompatible'
+  | 'pending'
+  | 'waiting_for_pc'
+  | 'rejected'
+  | 'expired'
+  | 'connected'
 
 export interface OfficeRelaySnapshot {
   status: OfficeRelayStatus
@@ -201,6 +208,15 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     } catch {
       return protocolFailure()
     }
+    if (
+      protocolVersion === 2 &&
+      state.status === 'connecting' &&
+      frame.version === 1 &&
+      frame.type === 'relay.error' &&
+      frame.code === 'invalid_frame' &&
+      exactKeys(frame, ['version', 'type', 'code'])
+    )
+      return revoke('incompatible')
     if (frame.version !== protocolVersion || typeof frame.type !== 'string')
       return protocolFailure()
 

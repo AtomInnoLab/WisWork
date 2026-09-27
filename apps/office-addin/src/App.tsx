@@ -1514,6 +1514,8 @@ function ConfiguredApp() {
     const detail = {
       offline: 'Connect again to create a new secure pairing with WisWork PC.',
       connecting: 'Connecting securely to the WisWork Office Relay…',
+      incompatible:
+        'Upgrade Office Relay to a version that supports this Office add-in, then try again.',
       signed_out: 'Sign in to WisWork PC first.',
       pending: bridgeState.verificationCode
         ? `Enter code ${bridgeState.verificationCode} in WisWork PC, then approve the matching request.`
