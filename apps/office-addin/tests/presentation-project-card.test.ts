@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PresentationProjectCard } from '../src/agent/presentation-project-card.js'
 import type { PresentationProjectController } from '../src/skills/powerpoint/presentation-project.js'
+import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan.js'
 
 type Snapshot = ReturnType<PresentationProjectController['snapshot']>
 const pending: Snapshot = {
@@ -73,6 +74,19 @@ async function mount(snapshot: Snapshot, disabled = false) {
   }
 }
 describe('presentation project recovery card', () => {
+  it('shows local review comments and marks old-plan notes as historical', async () => {
+    const view = await mount({ phase: 'idle', project: { ...pending.project!,
+      plan: { revision: 2, value: benchmarkPlan() },
+      reviewComments: { revision: 1, openCount: 1, resolvedCount: 0, recent: [{
+        id: 'comment-1', targetKind: 'source', targetId: 'source-1', authorLabel: '审阅人甲',
+        text: '请复核来源', state: 'open', planRevision: 1, createdAt: '2026-09-28T00:00:00.000Z',
+      }] },
+    } })
+    expect(view.container.textContent).toContain('待处理 1')
+    expect(view.container.textContent).toContain('旧计划第 1 版')
+    expect(view.container.textContent).toContain('请复核来源')
+    expect(view.container.textContent).toContain('未验证的显示标签')
+  })
   it('shows saved pending state and resumes only the explicit latest request', async () => {
     const view = await mount(pending)
     expect(view.container.textContent).toContain('已保存，待编译')

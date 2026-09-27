@@ -42,6 +42,16 @@ function fixture() {
     selectedProduction, rememberSelectedProduction }
 }
 describe('presentation project controls', () => {
+  it('keeps bounded review comment summaries separate from QA status', async () => {
+    const f = fixture()
+    f.request.mockResolvedValue(new Response(JSON.stringify({ ...project, reviewComments: {
+      revision: 2, openCount: 1, resolvedCount: 1,
+      recent: [{ id: 'comment-1', targetKind: 'source', targetId: 'source-1', authorLabel: '审阅人甲', text: '请复核来源', state: 'open', planRevision: 1, createdAt: '2026-09-28T00:00:00.000Z' }],
+    } })))
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.reviewComments).toMatchObject({ openCount: 1, recent: [{ id: 'comment-1' }] })
+    expect(f.controller.snapshot().project?.checks).toBeUndefined()
+  })
   it('loads persisted page inventory/history and restores or resumes through the generation skill', async () => {
     const f = fixture()
     await f.controller.refresh()
@@ -112,6 +122,7 @@ describe('presentation project controls', () => {
       { ...project, projectId: 'other' },
       { ...project, slideCount: 2 },
       { ...project, checks: { render: 'passed' } },
+      { ...project, reviewComments: null },
     ]) {
       const f = fixture()
       f.request.mockResolvedValue(new Response(JSON.stringify(value)))

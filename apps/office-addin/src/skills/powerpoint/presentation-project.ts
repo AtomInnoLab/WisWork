@@ -27,6 +27,11 @@ export interface PresentationProductionTask {
   jobState?: PresentationProductionJob['state']
 }
 export interface PresentationProjectStatus {
+  reviewComments?: { revision: number; openCount: number; resolvedCount: number; recent: {
+    id: string; targetKind: 'slide' | 'claim' | 'source'; targetId: string; authorLabel: string;
+    text: string; state: 'open' | 'resolved'; planRevision: number; createdAt: string
+  }[] }
+  commentsUnavailable?: boolean
   productionTasks?: PresentationProductionTask[]
   productionJob?: PresentationProductionJob | null
   jobsUnavailable?: boolean
@@ -206,6 +211,34 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
     productionTasks = structuredClone(tasks)
   }
   const planned = p?.status === 'planned'
+  const comments = p?.reviewComments
+  if (p?.commentsUnavailable !== undefined && p.commentsUnavailable !== true)
+    throw new Error('presentation_response_invalid')
+  if (comments !== undefined && (!comments || typeof comments !== 'object' || Array.isArray(comments)))
+    throw new Error('presentation_response_invalid')
+  if (comments !== undefined) {
+    if (
+    p?.commentsUnavailable ||
+    !Number.isSafeInteger(comments.revision) || comments.revision < 0 || comments.revision > 256 ||
+    !Number.isSafeInteger(comments.openCount) || comments.openCount < 0 || comments.openCount > 128 ||
+    !Number.isSafeInteger(comments.resolvedCount) || comments.resolvedCount < 0 || comments.resolvedCount > 128 ||
+    comments.openCount + comments.resolvedCount > 128 ||
+    !Array.isArray(comments.recent) || comments.recent.length > 8 ||
+    comments.recent.length > comments.openCount + comments.resolvedCount ||
+    comments.recent.some((comment) => !comment || typeof comment !== 'object' ||
+      Object.keys(comment).sort().join(',') !== 'authorLabel,createdAt,id,planRevision,state,targetId,targetKind,text' ||
+      !validId(comment.id) || !validId(comment.targetId) ||
+      !['slide', 'claim', 'source'].includes(comment.targetKind) ||
+      typeof comment.authorLabel !== 'string' || !comment.authorLabel || comment.authorLabel.length > 80 ||
+      typeof comment.text !== 'string' || !comment.text || comment.text.length > 400 ||
+      !['open', 'resolved'].includes(comment.state) ||
+      !Number.isSafeInteger(comment.planRevision) || comment.planRevision < 1 ||
+      (plan && comment.planRevision > plan.revision) ||
+      typeof comment.createdAt !== 'string' || !Number.isFinite(Date.parse(comment.createdAt)) ||
+      new Date(comment.createdAt).toISOString() !== comment.createdAt) ||
+    new Set(comments.recent.map((comment) => comment.id)).size !== comments.recent.length
+    ) throw new Error('presentation_response_invalid')
+  }
   if (
     !p ||
     p.projectId !== projectId ||
@@ -259,6 +292,8 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
     throw new Error('presentation_response_invalid')
   // Copy only the bounded public projection; never retain arbitrary server fields or binary data.
   return {
+    ...(comments ? { reviewComments: structuredClone(comments) } : {}),
+    ...(p.commentsUnavailable ? { commentsUnavailable: true } : {}),
     ...(production ? { production } : {}),
     ...(productionTasks ? { productionTasks } : {}),
     projectId: p.projectId,

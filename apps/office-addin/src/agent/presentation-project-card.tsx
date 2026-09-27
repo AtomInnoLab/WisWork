@@ -37,6 +37,24 @@ export function PresentationProjectCard(props: {
           {error}
         </p>
       )}
+      {project?.commentsUnavailable && <p>本机审阅评论暂不可读取；项目与页面状态不受影响。</p>}
+      {project?.reviewComments && (
+        <details aria-label="本机审阅评论">
+          <summary>本机审阅评论 · 待处理 {project.reviewComments.openCount} · 已解决 {project.reviewComments.resolvedCount}</summary>
+          <p>作者名称是未验证的显示标签；评论不代表来源、内容或视觉 QA 通过。</p>
+          {project.reviewComments.recent.length < project.reviewComments.openCount + project.reviewComments.resolvedCount &&
+            <p>只显示最近 8 条；可请 Agent 读取完整列表。</p>}
+          <ol>
+            {project.reviewComments.recent.map((comment) => (
+              <li key={comment.id}>
+                {comment.state === 'open' ? '待处理' : '已解决'} · {comment.targetKind === 'slide' ? '页面' : comment.targetKind === 'claim' ? '主张' : '来源'} {comment.targetId}
+                {project.plan && comment.planRevision !== project.plan.revision ? ` · 旧计划第 ${comment.planRevision} 版` : ''}
+                {' · '}{comment.authorLabel}：{comment.text}
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
       <div className="presentation-project-actions">
         <button type="button" disabled={disabled} onClick={() => void controller.refresh()}>
           刷新

@@ -477,6 +477,25 @@ export function createPresentationService(options: {
           })
         }
         if (request.operation === 'status') {
+          let reviewComments: { revision: number; openCount: number; resolvedCount: number;
+            recent: { id: string; targetKind: string; targetId: string; authorLabel: string;
+              text: string; state: string; planRevision: number; createdAt: string }[] } | undefined
+          let commentsUnavailable = false
+          try {
+            const ledger = commentLibrary.list(documentId, projectId)
+            reviewComments = {
+              revision: ledger.revision,
+              openCount: ledger.comments.filter((comment) => comment.state === 'open').length,
+              resolvedCount: ledger.comments.filter((comment) => comment.state === 'resolved').length,
+              recent: ledger.comments.slice(-8).map((comment) => ({
+                id: comment.id, targetKind: comment.targetKind, targetId: comment.targetId,
+                authorLabel: comment.authorLabel, text: comment.text.slice(0, 400),
+                state: comment.state, planRevision: comment.planRevision, createdAt: comment.createdAt,
+              })),
+            }
+          } catch { commentsUnavailable = true }
+          const commentStatus = commentsUnavailable ? { commentsUnavailable: true } :
+            reviewComments && reviewComments.openCount + reviewComments.resolvedCount > 0 ? { reviewComments } : {}
           const productionRecord = store.production(
             projectId,
             documentId,
@@ -522,6 +541,7 @@ export function createPresentationService(options: {
               slides: plan.value.slides.map(({ id, title }) => ({ id, title })),
               history: [],
               plan,
+              ...commentStatus,
             })
           }
           const latestDeck = savedDeck(latest.deck)
@@ -547,6 +567,7 @@ export function createPresentationService(options: {
               status: record.status,
               slideCount: savedDeck(record.deck).slides.length,
             })),
+            ...commentStatus,
             ...(checks
               ? {
                   checks: {

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
@@ -16,6 +16,7 @@ it('pins local review comments to a plan revision and requires optimistic update
     expect(await call(first, { operation: 'comment_list' })).toMatchObject({ revision: 0, comments: [] })
     const comment = { id: 'comment-1', targetKind: 'slide', targetId: plan.slides[0]!.id, authorLabel: '审阅人甲', text: '请核对结论' }
     expect(await call(first, { operation: 'comment_add', expectedRevision: 0, planRevision: 1, comment })).toMatchObject({ revision: 1, comments: [{ ...comment, planRevision: 1, state: 'open' }] })
+    expect(await call(first, { operation: 'status' })).toMatchObject({ reviewComments: { revision: 1, openCount: 1, resolvedCount: 0, recent: [{ id: 'comment-1', planRevision: 1 }] } })
     const reopened = createPresentationService({ userDataPath: root })
     expect(await call(reopened, { operation: 'comment_list' })).toMatchObject({ revision: 1, comments: [{ id: 'comment-1' }] })
     expect(await call(reopened, { operation: 'comment_add', expectedRevision: 0, planRevision: 1, comment: { ...comment, id: 'comment-2' } })).toEqual({ error: 'revision_conflict' })
@@ -28,5 +29,9 @@ it('pins local review comments to a plan revision and requires optimistic update
     expect(await call(reopened, { operation: 'comment_list' })).toMatchObject({ revision: 2, comments: [{ planRevision: 1, state: 'resolved' }] })
     expect(await call(reopened, { operation: 'comment_add', expectedRevision: 2, planRevision: 2,
       comment: { ...comment, id: 'comment-3', targetKind: 'source', targetId: changed.sources[0]!.id } })).toMatchObject({ revision: 3, comments: [expect.any(Object), { targetKind: 'source', planRevision: 2, state: 'open' }] })
+    const directory = join(root, 'presentation-comments')
+    writeFileSync(join(directory, readdirSync(directory)[0]!), '{broken')
+    expect(await call(reopened, { operation: 'status' })).toMatchObject({ commentsUnavailable: true, status: 'planned' })
+    expect(await call(reopened, { operation: 'comment_list' })).toEqual({ error: 'invalid_state' })
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
