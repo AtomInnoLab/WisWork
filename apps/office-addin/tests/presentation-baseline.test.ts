@@ -507,6 +507,113 @@ it('reads large decks in explicit bounded windows with an honest coverage marker
     ).unchanged,
   ).toBe(true)
 })
+it('retains deck windows and verifies complete coverage without calling them atomic', async () => {
+  const f = fixture()
+  const slideIds = Array.from({ length: 43 }, (_, i) => `s${i}`)
+  for (const id of slideIds) f.pages.set(id, page(id))
+  f.setContext({ ...f.getContext(), slideIds })
+  const windows: string[] = []
+  for (const page_offset of [0, 20, 40]) {
+    const result = await f.call('read_presentation_baseline', { scope: 'deck', page_offset })
+    expect(result.isError, result.output).not.toBe(true)
+    windows.push(JSON.parse(result.output).baselineId)
+  }
+  expect(f.skill.snapshot(windows[0]!)).toBeDefined()
+  const complete = await f.call('check_presentation_baseline_windows', { baseline_ids: windows })
+  expect(complete.isError, complete.output).not.toBe(true)
+  expect(JSON.parse(complete.output)).toMatchObject({
+    coveredPages: 43,
+    totalPages: 43,
+    complete: true,
+    unchanged: true,
+    atomicSnapshot: false,
+    qaPassed: false,
+  })
+  const partial = JSON.parse(
+    (
+      await f.call('check_presentation_baseline_windows', {
+        baseline_ids: windows.slice(1),
+      })
+    ).output,
+  )
+  expect(partial).toMatchObject({
+    coveredPages: 23,
+    totalPages: 43,
+    complete: false,
+    unchanged: true,
+    atomicSnapshot: false,
+  })
+  f.pages.set('s1', page('s1', 'manual edit'))
+  const changed = JSON.parse(
+    (
+      await f.call('check_presentation_baseline_windows', {
+        baseline_ids: windows,
+      })
+    ).output,
+  )
+  expect(changed).toMatchObject({ complete: true, unchanged: false })
+  expect(changed.changedSlideIds).toContain('s1')
+})
+it('rejects overlapping windows and windows captured with different global context', async () => {
+  const f = fixture()
+  const slideIds = Array.from({ length: 25 }, (_, i) => `s${i}`)
+  for (const id of slideIds) f.pages.set(id, page(id))
+  f.setContext({ ...f.getContext(), slideIds })
+  const first = JSON.parse(
+    (
+      await f.call('read_presentation_baseline', {
+        scope: 'deck',
+        page_offset: 0,
+      })
+    ).output,
+  )
+  const overlap = JSON.parse(
+    (
+      await f.call('read_presentation_baseline', {
+        scope: 'deck',
+        page_offset: 10,
+      })
+    ).output,
+  )
+  expect(
+    (
+      await f.call('check_presentation_baseline_windows', {
+        baseline_ids: [first.baselineId, overlap.baselineId],
+      })
+    ).output,
+  ).toBe('presentation_baseline_windows_inconsistent')
+  f.setContext({ ...f.getContext(), selectedSlideIds: ['s1'], selectedShapeIds: [] })
+  const next = JSON.parse(
+    (
+      await f.call('read_presentation_baseline', {
+        scope: 'deck',
+        page_offset: 20,
+      })
+    ).output,
+  )
+  expect(
+    (
+      await f.call('check_presentation_baseline_windows', {
+        baseline_ids: [first.baselineId, next.baselineId],
+      })
+    ).output,
+  ).toBe('presentation_baseline_windows_inconsistent')
+})
+it('clears retained windows on Save As and session reset', async () => {
+  const f = fixture()
+  const first = JSON.parse((await f.read()).output).baselineId as string
+  const second = JSON.parse((await f.read('deck')).output).baselineId as string
+  expect(f.skill.snapshot(first)).toBeDefined()
+  expect(f.skill.snapshot(second)).toBeDefined()
+  f.setDocument('save-as')
+  expect((await f.call('check_presentation_baseline', { baseline_id: first })).output).toBe(
+    'presentation_document_changed',
+  )
+  expect(f.skill.snapshot(first)).toBeUndefined()
+  expect(f.skill.snapshot(second)).toBeUndefined()
+  f.skill.clear()
+  expect(f.skill.snapshot(first)).toBeUndefined()
+})
 it('rejects empty current selection, invalid deck windows, forged IDs and unsupported input', async () => {
   const f = fixture()
   f.setContext({ ...f.getContext(), selectedSlideIds: [], selectedShapeIds: [] })

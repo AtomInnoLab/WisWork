@@ -51,6 +51,7 @@ const inventories = {
     'bash',
     'add_slide_ir_objects',
     'check_presentation_baseline',
+    'check_presentation_baseline_windows',
     'duplicate_slide',
     'edit_slide_chart',
     'edit_slide_master_xml',
