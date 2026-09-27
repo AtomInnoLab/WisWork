@@ -52,6 +52,7 @@ const errorCodes = new Set([
   'quota_exceeded',
   'digest_mismatch',
   'parse_failed',
+  'animated_image_unsupported',
   'remote_image_unavailable',
   'remote_image_source_conflict',
   'attachment_in_use',

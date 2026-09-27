@@ -155,7 +155,7 @@ it('imports a URL image through the PC asset endpoint without exposing an Agent 
   )
   expect(skill.tools.map((tool) => tool.name)).not.toContain('import_presentation_image_url')
 })
-it('tries bounded image URL candidates only for recoverable download failures', async () => {
+it('tries bounded image URL candidates after a rejected animated image', async () => {
   const f = setup()
   const first = 'https://example.com/failed.webp'
   const second = 'https://example.org/usable.webp'
@@ -164,7 +164,7 @@ it('tries bounded image URL candidates only for recoverable download failures', 
       new Response(
         JSON.stringify(
           body.url === first
-            ? { error: 'remote_image_unavailable' }
+            ? { error: 'animated_image_unsupported' }
             : {
                 attachmentId: f.attachmentId,
                 sha256: f.attachmentId,
@@ -280,6 +280,21 @@ it('resumes after a lost chunk acknowledgement', async () => {
   expect(
     f.request.mock.calls.filter(([b]) => b.operation === 'attachment_chunk').map(([b]) => b.offset),
   ).toEqual([0, 131072, 262144])
+})
+it('surfaces animated upload rejection instead of a generic attachment failure', async () => {
+  const bytes = new Uint8Array([71, 73, 70, 56, 57, 97])
+  const attachmentId = createHash('sha256').update(bytes).digest('hex')
+  const request = vi.fn(async (body: Record<string, unknown>) => new Response(JSON.stringify({
+    attachmentId, sha256: attachmentId, name: 'animated.gif', sizeBytes: bytes.length,
+    receivedBytes: body.operation === 'attachment_begin' ? 0 : bytes.length,
+    status: body.operation === 'attachment_finish' ? 'failed' : 'uploading',
+    ...(body.operation === 'attachment_finish' ? { error: 'animated_image_unsupported' } : {}),
+  })))
+  const skill = createPresentationAttachmentSkill({
+    available: () => true, imagesAvailable: () => true, request,
+    documentId: async () => 'doc', vfs: new InMemoryVfs(),
+  })
+  await expect(skill.upload('animated.gif', Promise.resolve(bytes.buffer))).rejects.toThrow('presentation_animated_image_unsupported')
 })
 it('aborts and prevents late publication after clear', async () => {
   const f = setup()

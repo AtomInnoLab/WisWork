@@ -44,8 +44,20 @@ describe('image admission before native decoding', () => {
       width: 2,
       height: 3,
     })
-    expect(() => inspectPresentationImage(fixture('animated.gif'))).toThrow('parse_failed')
-    expect(() => inspectPresentationImage(fixture('animated.webp'))).toThrow('parse_failed')
+    expect(() => inspectPresentationImage(fixture('animated.gif'))).toThrow('animated_image_unsupported')
+    expect(() => inspectPresentationImage(fixture('animated.webp'))).toThrow('animated_image_unsupported')
+    const animationChunk = Buffer.alloc(20)
+    animationChunk.writeUInt32BE(8, 0)
+    animationChunk.write('acTL', 4, 'ascii')
+    animationChunk.writeUInt32BE(2, 8)
+    let crc = 0xffffffff
+    for (const byte of animationChunk.subarray(4, 16)) {
+      crc ^= byte
+      for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1
+    }
+    animationChunk.writeUInt32BE((crc ^ 0xffffffff) >>> 0, 16)
+    const apng = Buffer.concat([png.subarray(0, 33), animationChunk, png.subarray(33)])
+    expect(() => inspectPresentationImage(apng)).toThrow('animated_image_unsupported')
     const huge = fixture('static.gif')
     huge.writeUInt16LE(8193, 6)
     expect(() => inspectPresentationImage(huge)).toThrow('parse_failed')

@@ -257,7 +257,7 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
       fail('invalid_state')
   }
   if (m.status !== 'ready' && m.licenseDeclaration !== undefined) fail('invalid_state')
-  if (m.status === 'failed' && m.error !== 'parse_failed') fail('invalid_state')
+  if (m.status === 'failed' && !['parse_failed', 'animated_image_unsupported'].includes(m.error ?? '')) fail('invalid_state')
   return m
 }
 const publicMetadata = (m: Metadata, receivedBytes: number) => ({
@@ -776,7 +776,7 @@ export function createPresentationAttachmentService(options: {
                 textDigest: hash(parsed.text),
               }
             }
-          } catch {
+          } catch (error) {
             checkAbort(signal)
             m = {
               attachmentId: id,
@@ -784,7 +784,7 @@ export function createPresentationAttachmentService(options: {
               name: m.name,
               sizeBytes: m.sizeBytes,
               status: 'failed',
-              error: 'parse_failed',
+              error: error instanceof Error && error.message === 'animated_image_unsupported' ? 'animated_image_unsupported' : 'parse_failed',
             }
           }
           await atomic(join(dir, 'metadata.json'), JSON.stringify(m))
@@ -873,6 +873,7 @@ export function createPresentationAttachmentService(options: {
           'quota_exceeded',
           'digest_mismatch',
           'parse_failed',
+          'animated_image_unsupported',
           'remote_image_unavailable',
           'remote_image_source_conflict',
           'attachment_in_use',

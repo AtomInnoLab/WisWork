@@ -294,6 +294,7 @@ export function createPresentationAttachmentSkill(
             ![
               'presentation_remote_image_unavailable',
               'presentation_parse_failed',
+              'presentation_animated_image_unsupported',
               'presentation_aborted',
             ].includes(code)
           )
@@ -487,7 +488,9 @@ export function createPresentationAttachmentSkill(
         }
         if (result.status !== 'ready')
           result = validate(await request({ operation: 'attachment_finish', attachmentId }))
-        if (result.status !== 'ready') throw new Error('presentation_attachment_failed')
+        if (result.status !== 'ready')
+          throw new Error(result.status === 'failed' && result.error === 'animated_image_unsupported'
+            ? 'presentation_animated_image_unsupported' : 'presentation_attachment_failed')
         await check()
         checkImage()
         if (bytes.length <= MAX_VFS_FILE_BYTES) {

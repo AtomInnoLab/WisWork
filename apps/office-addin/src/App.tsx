@@ -194,6 +194,7 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
       '相同图片内容已从另一来源加入当前文档。请使用已有素材，或手动上传本地文件。',
     presentation_aborted: '图片下载超时或已取消，请重试。',
     presentation_parse_failed: '图片无法解码为受支持的 PNG、JPEG、静态 GIF 或 WebP。',
+    presentation_animated_image_unsupported: '暂不支持动画图片。请上传静态 PNG、JPEG，或将 GIF/WebP 导出为单帧图片后重试。',
     presentation_assets_unavailable: '请更新并连接支持图片素材的 PC 端后重试。',
     presentation_attachment_failed: '资料解析未完成，请检查文件或重新上传。',
     presentation_not_found: '这份 PC 资料已不存在，请刷新附件列表。',

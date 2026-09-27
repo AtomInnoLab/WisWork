@@ -65,6 +65,24 @@ describe('durable presentation image assets', () => {
       ).resolves.toMatchObject({ mime: 'image/png', width: 2, height: 3 })
     }
   })
+  it('records animation as a distinct unsupported input for uploads and remote images', async () => {
+    const { call } = await setup()
+    for (const name of ['animated.gif', 'animated.webp']) {
+      const id = await upload(call, fixture(name), name)
+      await expect(call({ operation: 'attachment_finish', attachmentId: id })).resolves.toMatchObject({
+        status: 'failed', error: 'animated_image_unsupported',
+      })
+      const listed = await call({ operation: 'attachment_list_assets' }) as { attachments: { attachmentId: string; status: string; error?: string }[] }
+      expect(listed.attachments.find((item) => item.attachmentId === id)).toMatchObject({ status: 'failed', error: 'animated_image_unsupported' })
+    }
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-animated-url-'))
+    dirs.push(userDataPath)
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      fetchImage: async () => new Response(fixture('animated.webp'), { headers: { 'content-type': 'image/webp' } }),
+    })
+    await expect(service({ documentId: 'doc', operation: 'attachment_import_url', url: 'https://93.184.216.34/animated.webp' }, new AbortController().signal)).rejects.toThrow('animated_image_unsupported')
+  })
   it('imports a static WebP URL and serves the converted asset after a restart', async () => {
     const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-webp-url-'))
     dirs.push(userDataPath)

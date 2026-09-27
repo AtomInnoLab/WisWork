@@ -11,6 +11,9 @@ let decodeQueue: Promise<void> = Promise.resolve()
 function invalid(): never {
   throw new Error('parse_failed')
 }
+function animated(): never {
+  throw new Error('animated_image_unsupported')
+}
 /** Header admission only. Electron must subsequently validate the full image. */
 export function inspectPresentationImage(input: Uint8Array): {
   mime: ImageMime
@@ -35,6 +38,16 @@ export function inspectPresentationImage(input: Uint8Array): {
       invalid()
     width = bytes.readUInt32BE(16)
     height = bytes.readUInt32BE(20)
+    let offset = 8
+    while (offset + 12 <= bytes.length) {
+      const size = bytes.readUInt32BE(offset)
+      const end = offset + 12 + size
+      if (end > bytes.length) invalid()
+      const kind = bytes.toString('ascii', offset + 4, offset + 8)
+      if (kind === 'acTL') animated()
+      offset = end
+    }
+    if (offset !== bytes.length) invalid()
   } else if (
     bytes.length >= 4 &&
     bytes[0] === 255 &&
@@ -81,7 +94,8 @@ export function inspectPresentationImage(input: Uint8Array): {
         break
       }
       if (tag === 0x2c) {
-        if (++frames > 1 || offset + 9 > bytes.length) invalid()
+        if (++frames > 1) animated()
+        if (offset + 9 > bytes.length) invalid()
         const flags = bytes[offset + 8]!
         offset += 9
         if (flags & 0x80) offset += 3 * (1 << ((flags & 7) + 1))
@@ -91,7 +105,7 @@ export function inspectPresentationImage(input: Uint8Array): {
         if (offset >= bytes.length) invalid()
         const label = bytes[offset++]!
         if (label === 0xff && bytes.toString('ascii', offset + 1, offset + 12) === 'NETSCAPE2.0')
-          invalid()
+          animated()
       } else invalid()
       while (true) {
         if (offset >= bytes.length) invalid()
@@ -118,7 +132,9 @@ export function inspectPresentationImage(input: Uint8Array): {
       const end = offset + 8 + size + (size & 1)
       if (end > bytes.length) invalid()
       if (kind === 'VP8X') {
-        if (size !== 10 || offset !== 12 || extended || bytes[offset + 8]! & 0xc3) invalid()
+        if (size !== 10 || offset !== 12 || extended) invalid()
+        if (bytes[offset + 8]! & 0x02) animated()
+        if (bytes[offset + 8]! & 0xc1) invalid()
         extended = true
         width = 1 + bytes.readUIntLE(offset + 12, 3)
         height = 1 + bytes.readUIntLE(offset + 15, 3)
@@ -146,7 +162,8 @@ export function inspectPresentationImage(input: Uint8Array): {
           width = w
           height = h
         }
-      } else if (kind === 'ANIM' || kind === 'ANMF' || !extended) invalid()
+      } else if (kind === 'ANIM' || kind === 'ANMF') animated()
+      else if (!extended) invalid()
       offset = end
     }
     if (offset !== bytes.length || imageChunks !== 1) invalid()
