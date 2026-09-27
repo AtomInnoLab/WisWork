@@ -73,6 +73,17 @@ export function officeOperationsForSlideIR(
         lineColor: element.lineColor ?? element.fill ?? style.accentColor,
       }
     }
+    if (element.kind === 'table') {
+      const rows = element.rows
+      const width = rows?.[0]?.length
+      if (!Array.isArray(rows) || rows.length < 1 || rows.length > 20 || !width || width > 12 ||
+        rows.length * width > 128 || rows.some((row) => !Array.isArray(row) || row.length !== width || row.some((cell) => typeof cell !== 'string' || cell.length > 256)) ||
+        JSON.stringify(rows).length > 12_000 ||
+        (element.fontSize !== undefined && (!Number.isFinite(element.fontSize) || element.fontSize < 6 || element.fontSize > 48)))
+        throw new Error('invalid_tool_input')
+      return { op: 'add_native_table', ...box, rows, fontFace: style.fontFace,
+        fontSize: element.fontSize ?? 12, color: style.textColor }
+    }
     throw new Error('office_api_unsupported')
   })
 }

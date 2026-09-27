@@ -214,6 +214,7 @@ export interface PowerPointAdapter {
   ): Promise<{ base64: string; mime: 'image/png' }>
   listSlideShapes(slideIndex: number, signal?: AbortSignal): Promise<SlideShapesResult>
   readSlideText(slideIndex: number, shapeId: string, signal?: AbortSignal): Promise<SlideTextResult>
+  readSlideTable(slideIndex: number, shapeId: string, signal?: AbortSignal): Promise<string[][]>
   verifySlides(signal?: AbortSignal): Promise<VerifySlidesResult>
   snapshotSlide(
     slideIndex: number,
@@ -267,6 +268,19 @@ export type PowerPointDeclarativeOperation =
       height: number
       fill: string
       lineColor: string
+    }
+  | {
+      op: 'add_native_table'
+      slide_index: number
+      name: string
+      rows: string[][]
+      left: number
+      top: number
+      width: number
+      height: number
+      fontFace: string
+      fontSize: number
+      color: string
     }
   | {
       op: 'add_text_box'
@@ -1126,6 +1140,30 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     })
   }
 
+  async readSlideTable(slideIndex: number, shapeId: string, signal?: AbortSignal): Promise<string[][]> {
+    cancelled(signal)
+    return this.run('1.8', async (context) => {
+      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+      const slide = await getSlide(context, slides, slideIndex, signal)
+      const shapes = slide.shapes as RuntimeRecord
+      if (typeof shapes.getItem !== 'function') throw new Error('office_api_unsupported')
+      const shape = (shapes.getItem as (id: string) => RuntimeRecord)(shapeId)
+      if (typeof shape.getTable !== 'function') throw new Error('office_api_unsupported')
+      const table = (shape.getTable as () => RuntimeRecord)()
+      if (typeof table.load !== 'function') throw new Error('office_api_unsupported')
+      ;(table.load as (properties: string) => void)('values,rowCount,columnCount')
+      await sync(context, signal)
+      const columnCount = table.columnCount
+      if (!Array.isArray(table.values) || table.values.length < 1 || table.values.length !== table.rowCount ||
+        table.values.length > 20 || typeof columnCount !== 'number' || !Number.isSafeInteger(columnCount) ||
+        columnCount < 1 || columnCount > 12 ||
+        table.values.some((row: unknown) => !Array.isArray(row) || row.length !== columnCount ||
+          row.some((cell: unknown) => typeof cell !== 'string' || cell.length > 256)))
+        throw new Error('office_read_failed')
+      return table.values as string[][]
+    })
+  }
+
   async inspectPresentationPage(
     slideId: string,
     signal?: AbortSignal,
@@ -1790,6 +1828,18 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           operation.height <= 0)
       )
         throw new Error('invalid_tool_input')
+      if (operation.op === 'add_native_table' && (
+        !operation.name || operation.name.length > 256 || !Array.isArray(operation.rows) ||
+        operation.rows.length < 1 || operation.rows.length > 20 ||
+        !operation.rows[0]?.length || operation.rows[0].length > 12 ||
+        operation.rows.length * operation.rows[0].length > 128 ||
+        operation.rows.some((row) => !Array.isArray(row) || row.length !== operation.rows[0].length ||
+          row.some((cell) => typeof cell !== 'string' || cell.length > 256)) ||
+        JSON.stringify(operation.rows).length > 12_000 ||
+        [operation.left, operation.top, operation.width, operation.height, operation.fontSize].some((value) => !Number.isFinite(value)) ||
+        operation.width <= 0 || operation.height <= 0 || operation.fontSize < 6 || operation.fontSize > 48 ||
+        !operation.fontFace || operation.fontFace.length > 128 || !/^[0-9A-Fa-f]{6}$/.test(operation.color)
+      )) throw new Error('invalid_tool_input')
       if (operation.op !== 'set_shape_text' && operation.op !== 'set_shape_geometry') continue
       const key = `${operation.slide_index}/${operation.shape_id}/${operation.op}`
       if (repeatedTargets.has(key)) throw new Error('invalid_tool_input')
@@ -1920,6 +1970,21 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               `#${operation.fill}`,
             )
             ;(created.lineFormat as RuntimeRecord).color = `#${operation.lineColor}`
+            if (typeof created.load !== 'function') throw new Error('office_api_unsupported')
+            ;(created.load as (properties: string) => void)('id')
+            createdShapes.push(created)
+          })
+          hasUnrecoverableMutation = true
+        } else if (operation.op === 'add_native_table') {
+          const shapes = slide.shapes as RuntimeRecord
+          if (typeof shapes.addTable !== 'function') throw new Error('office_api_unsupported')
+          queued.push(() => {
+            const created = (shapes.addTable as (rows: number, columns: number, options: Record<string, unknown>) => RuntimeRecord)(
+              operation.rows.length, operation.rows[0]!.length,
+              { left: operation.left, top: operation.top, width: operation.width, height: operation.height,
+                values: operation.rows, uniformCellProperties: { font: { name: operation.fontFace, size: operation.fontSize, color: `#${operation.color}` } } },
+            )
+            created.name = operation.name
             if (typeof created.load !== 'function') throw new Error('office_api_unsupported')
             ;(created.load as (properties: string) => void)('id')
             createdShapes.push(created)

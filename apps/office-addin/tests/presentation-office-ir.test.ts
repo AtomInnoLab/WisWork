@@ -41,3 +41,11 @@ it('rejects an unsupported page before emitting a partial native write plan', ()
   }
   expect(() => officeOperationsForSlideIR(duplicate, deck.style, 0)).toThrow('invalid_tool_input')
 })
+
+it('maps a shared SlideIR table to a native Office table operation', () => {
+  const deck = benchmarkDeck()
+  expect(officeOperationsForSlideIR(deck.slides[5]!, deck.style, 0)[1]).toMatchObject({
+    op: 'add_native_table', name: 'table', left: 72, top: 180,
+    fontFace: 'Microsoft YaHei', color: '172033', rows: expect.arrayContaining([expect.arrayContaining(['120'])]),
+  })
+})

@@ -46,6 +46,7 @@ function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter 
       text: 'Hello',
       paragraphs: ['Hello'],
     }),
+    readSlideTable: vi.fn().mockResolvedValue([['方案', '结果'], ['甲', '120']]),
     verifySlides: vi.fn().mockResolvedValue({
       slideWidth: 960,
       slideHeight: 540,
@@ -1401,6 +1402,47 @@ describe('browser PowerPoint adapter', () => {
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
     await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
     expect(fake.executeDeclarative).toHaveBeenCalledWith([operation], expect.any(AbortSignal))
+  })
+
+  it('creates and verifies a native table with exact cell values', async () => {
+    const created = { id: 'new-table', name: '', load: vi.fn() }
+    const addTable = vi.fn(() => created)
+    const slide = { id: 's1', load: vi.fn(), shapes: { addTable } }
+    const slides = { getCount: vi.fn(() => ({ value: 1 })), getItemAt: vi.fn(() => slide) }
+    Object.assign(globalThis, {
+      Office: { context: { host: 'PowerPoint', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } } },
+      PowerPoint: { run: (callback: (context: unknown) => unknown) => callback({ presentation: { slides }, sync: vi.fn().mockResolvedValue(undefined) }) },
+    })
+    const operation = { op: 'add_native_table' as const, slide_index: 0, name: 'table', rows: [['方案', '结果'], ['甲', '120']],
+      left: 72, top: 180, width: 576, height: 144, fontFace: 'Microsoft YaHei', fontSize: 12, color: '172033' }
+    await expect(new BrowserPowerPointAdapter().executeDeclarative([operation])).resolves.toEqual({ createdShapeIds: ['new-table'] })
+    expect(addTable).toHaveBeenCalledWith(2, 2, expect.objectContaining({ values: operation.rows, width: 576 }))
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['new-table'] }),
+      listSlideShapes: vi.fn().mockResolvedValue({ slideId: 'slide-1', slideIndex: 0,
+        shapes: [{ id: 'new-table', name: 'table', type: 'Table', left: 72, top: 180, width: 576, height: 144 }] }),
+      readSlideTable: vi.fn().mockResolvedValue(operation.rows),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(call('execute_office_js', { code: JSON.stringify({ version: 1, operations: [operation] }) }))
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(fake.readSlideTable).toHaveBeenCalledWith(0, 'new-table', expect.any(AbortSignal))
+  })
+
+  it('reads native table values with bounded dimensions', async () => {
+    const table = { values: [['方案', '结果'], ['甲', '120']], rowCount: 2, columnCount: 2, load: vi.fn() }
+    const shape = { getTable: vi.fn(() => table) }
+    const slide = { id: 's1', load: vi.fn(), shapes: { getItem: vi.fn(() => shape) } }
+    const slides = { getCount: vi.fn(() => ({ value: 1 })), getItemAt: vi.fn(() => slide) }
+    Object.assign(globalThis, {
+      Office: { context: { host: 'PowerPoint', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } } },
+      PowerPoint: { run: (callback: (context: unknown) => unknown) => callback({ presentation: { slides }, sync: vi.fn().mockResolvedValue(undefined) }) },
+    })
+    const subject = new BrowserPowerPointAdapter()
+    await expect(subject.readSlideTable(0, 'table')).resolves.toEqual(table.values)
+    table.values = [['bad']]
+    await expect(subject.readSlideTable(0, 'table')).rejects.toThrow('office_read_failed')
   })
 
   it('returns stable IDs/geometry and verifies negative, overflow, and overlap geometry', async () => {
