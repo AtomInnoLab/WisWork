@@ -47,6 +47,57 @@ it('detects changed native text in an exported host page package', async () => {
   expect(result.content).toMatchObject({ status: 'warning', changed: ['title'] })
 })
 
+it('reports changed and unverified native slide backgrounds', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const background = xml.match(/<p:bg>[\s\S]*?<\/p:bg>/)?.[0]
+  expect(background).toContain('val="FFFFFF"')
+  const inspection = {
+    slideId: 'host',
+    slideWidth: 960,
+    slideHeight: 540,
+    shapes,
+    shapesTruncated: false,
+    overflows: [],
+    overlaps: [],
+    overlapsTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: '' },
+  }
+  for (const [changed, expected] of [
+    [
+      xml.replace(background!, background!.replace('val="FFFFFF"', 'val="112233"')),
+      { status: 'warning', backgroundChanged: true, backgroundUnchecked: false },
+    ],
+    [
+      xml.replace(background!, ''),
+      { status: 'incomplete', backgroundChanged: false, backgroundUnchecked: true },
+    ],
+  ] as const) {
+    const host = await JSZip.loadAsync(bytes)
+    host.file('ppt/slides/slide1.xml', changed)
+    const result = await comparePresentationPageStructure(
+      Buffer.from(bytes).toString('base64'),
+      0,
+      inspection,
+      await host.generateAsync({ type: 'base64' }),
+    )
+    expect(result.content).toMatchObject(expected)
+  }
+})
+
 it('detects native text font and size drift while text content remains unchanged', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[0]!]

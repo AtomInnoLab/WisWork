@@ -1,4 +1,4 @@
-import { XMLParser } from 'fast-xml-parser'
+import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import type { PowerPointPageInspection } from './browser-powerpoint-adapter.js'
 import {
   inspectPowerPointPictureMediaBatch,
@@ -64,8 +64,8 @@ function textStyles(element: Xml): Array<[string, string, string, string]> {
   )
 }
 
-function sourceObjects(xml: string): SourceObject[] {
-  const tree = parser.parse(xml)?.['p:sld']?.['p:cSld']?.['p:spTree'] as Xml | undefined
+function sourceObjects(root: Xml): SourceObject[] {
+  const tree = root?.['p:sld']?.['p:cSld']?.['p:spTree'] as Xml | undefined
   if (!tree) throw new Error('presentation_qa_structure_unavailable')
   if (['p:grpSp', 'p:cxnSp', 'p:contentPart', 'mc:AlternateContent'].some((tag) => tree[tag]))
     throw new Error('presentation_qa_structure_unavailable')
@@ -132,11 +132,11 @@ function sourceObjects(xml: string): SourceObject[] {
   return result
 }
 
-async function readObjects(
+async function readPage(
   base64: string,
   index: number,
   maxBytes: number,
-): Promise<SourceObject[]> {
+): Promise<{ objects: SourceObject[]; backgroundColor?: string }> {
   try {
     const zip = await loadBoundedZip(base64, undefined, true, maxBytes)
     const file = zip.file(`ppt/slides/slide${index + 1}.xml`)
@@ -144,12 +144,18 @@ async function readObjects(
     const xml = await file.async('string')
     if (
       new TextEncoder().encode(xml).byteLength > MAX_PPTX_XML_BYTES ||
-      /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml)
+      /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) ||
+      XMLValidator.validate(xml) !== true
     )
       throw new Error('invalid slide XML')
-    const objects = sourceObjects(xml)
+    const root = parser.parse(xml) as Xml
+    const objects = sourceObjects(root)
     if (!objects.length || objects.length > 100) throw new Error('invalid slide objects')
-    return objects
+    const solid =
+      root['p:sld']?.['p:cSld']?.['p:bg']?.['p:bgPr']?.['a:solidFill']?.['a:srgbClr']?.['@_val']
+    const backgroundColor =
+      typeof solid === 'string' && /^[0-9A-Fa-f]{6}$/.test(solid) ? solid.toUpperCase() : undefined
+    return { objects, ...(backgroundColor ? { backgroundColor } : {}) }
   } catch {
     throw new Error('presentation_qa_structure_unavailable')
   }
@@ -174,6 +180,8 @@ export async function comparePresentationPageStructure(
     cacheChanged: string[]
     chartTypeChanged: string[]
     workbookBytesChanged: string[]
+    backgroundChanged: boolean
+    backgroundUnchecked: boolean
     mediaChanged: string[]
     mediaChecked: string[]
     mediaUnchecked: string[]
@@ -195,7 +203,8 @@ export async function comparePresentationPageStructure(
     host.shapes.length > 100
   )
     throw new Error('presentation_qa_structure_unavailable')
-  const source = await readObjects(sourceBase64, sourceIndex, 10 * 1024 * 1024)
+  const sourcePage = await readPage(sourceBase64, sourceIndex, 10 * 1024 * 1024)
+  const source = sourcePage.objects
   const issues: Issue[] = []
   const hostByName = new Map<string, PowerPointPageInspection['shapes']>()
   for (const shape of host.shapes) {
@@ -239,7 +248,8 @@ export async function comparePresentationPageStructure(
   }
   for (const name of hostByName.keys())
     if (!sourceNames.has(name)) issues.push({ name, kind: 'extra' })
-  const exported = hostBase64 ? await readObjects(hostBase64, 0, 8 * 1024 * 1024) : []
+  const exportedPage = hostBase64 ? await readPage(hostBase64, 0, 8 * 1024 * 1024) : undefined
+  const exported = exportedPage?.objects ?? []
   const readbackConsistent =
     !hostBase64 ||
     (exported.length === host.shapes.length &&
@@ -252,6 +262,13 @@ export async function comparePresentationPageStructure(
         )
       }))
   const exportedByName = new Map(exported.map((element) => [element.name, element]))
+  const backgroundUnchecked =
+    !hostBase64 ||
+    !readbackConsistent ||
+    !sourcePage.backgroundColor ||
+    !exportedPage?.backgroundColor
+  const backgroundChanged =
+    !backgroundUnchecked && sourcePage.backgroundColor !== exportedPage?.backgroundColor
   if (hostBase64 && readbackConsistent)
     for (const element of source) {
       const actual = exportedByName.get(element.name)
@@ -414,6 +431,7 @@ export async function comparePresentationPageStructure(
   const content = {
     status: (changed.length ||
     cacheChanged.length ||
+    backgroundChanged ||
     chartTypeChanged.length ||
     workbookBytesChanged.length ||
     mediaChanged.length ||
@@ -422,10 +440,12 @@ export async function comparePresentationPageStructure(
     appearanceChanged.length ||
     textStyleChanged.length
       ? 'warning'
-      : unchecked.length
+      : unchecked.length || backgroundUnchecked
         ? 'incomplete'
         : 'passed') as 'passed' | 'warning' | 'incomplete',
     changed,
+    backgroundChanged,
+    backgroundUnchecked,
     cacheChanged,
     chartTypeChanged,
     workbookBytesChanged,
