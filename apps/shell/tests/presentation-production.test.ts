@@ -93,6 +93,21 @@ it('persists eight separate native pages, continues after one failure, and resum
     error: 'document_mismatch',
   })
 })
+it('refuses to compile a page whose planned brand logo bytes do not match', async () => {
+  const f = await setup()
+  f.plan.slides[2]!.layout = 'cover'
+  f.plan.brandKit = {
+    id: 'research', revision: 1, name: '研究品牌',
+    allowedColors: [f.plan.style.background, f.plan.style.textColor, f.plan.style.accentColor],
+    logo: { assetId: 'pixel', assetDigest: '0'.repeat(64), placement: 'cover' },
+  }
+  expect((await f.call('save_plan', { expectedRevision: 1, plan: f.plan })).revision).toBe(2)
+  expect(await f.call('production_begin', { requestId: 'branded', planRevision: 2, deck: f.deck })).toMatchObject({ status: 'pending' })
+  const run = await f.call('production_run', { requestId: 'branded' })
+  expect(run).toMatchObject({ status: 'partial', compiledCount: 7 })
+  expect(run.pages[2]).toMatchObject({ state: 'failed', error: 'invalid_deck' })
+  expect(f.compile).toHaveBeenCalledTimes(7)
+})
 it('requires a matching saved plan and preserves an old job snapshot after plan edits', async () => {
   const f = await setup()
   expect(

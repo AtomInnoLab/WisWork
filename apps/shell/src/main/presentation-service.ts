@@ -27,6 +27,7 @@ import {
   type PresentationInlineAsset,
 } from '@wiswork/pptx-engine/presentation'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { assertBrandLogoAsset } from './presentation-brand'
 
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
@@ -555,6 +556,7 @@ export function createPresentationService(options: {
           assets.push(resolved)
         }
         checkAbort(signal)
+        if (record.plan) assertBrandLogoAsset(parsePresentationPlan(record.plan.plan), assets)
         // Only attachment_asset can add evidence after document-bound digest validation.
         const compiled = await compile({ ...inputDeck, assets }, { trustedAssetEvidence: true })
         checkAbort(signal)

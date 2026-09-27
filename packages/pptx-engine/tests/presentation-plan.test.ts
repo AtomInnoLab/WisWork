@@ -14,7 +14,7 @@ describe('durable presentation plan', () => {
     plan.brandKit = {
       id: 'research-brand', revision: 1, name: '研究品牌',
       allowedColors: ['FFFFFF', '172033', '2255AA'],
-      logo: { assetId: 'pixel', placement: 'cover' },
+      logo: { assetId: 'pixel', assetDigest: 'a'.repeat(64), placement: 'cover' },
     }
     plan.slides[0]!.layout = 'cover'
     const deck = benchmarkDeck()

@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type { PresentationCompileReport } from '@wiswork/pptx-engine/presentation'
 import { PresentationStore } from '@wiswork/project-store'
@@ -301,6 +302,29 @@ const planRequest = (value = plan(), expectedRevision = 0) => ({
   plan: value,
 })
 describe('durable presentation planning', () => {
+  it('binds a planned brand logo to the bytes passed to the compiler', async () => {
+    const compile = vi.fn(async () => result())
+    const service = createPresentationService({ userDataPath: root(), compile })
+    const base64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jB1sAAAAASUVORK5CYII='
+    const digest = createHash('sha256').update(Buffer.from(base64, 'base64')).digest('hex')
+    const brandedPlan = { ...plan(), slides: [{ ...plan().slides[0]!, layout: 'cover' }], brandKit: {
+      id: 'company', revision: 1, name: '公司品牌', allowedColors: ['FFFFFF', '111111', '3366FF'],
+      logo: { assetId: 'logo', assetDigest: digest, placement: 'cover' },
+    } }
+    expect(decode(await service(planRequest(brandedPlan), signal()))).toMatchObject({ revision: 1 })
+    const logo = { id: 'logo', mime: 'image/png', base64, width: 1, height: 1 }
+    const deck = { ...input.deck, assets: [logo], slides: [{ ...input.deck.slides[0]!, elements: [
+      ...input.deck.slides[0]!.elements,
+      { id: 'brand-logo', kind: 'image', assetId: 'logo', x: 5, y: 1, w: 1, h: 1 },
+    ] }] }
+    expect(decode(await service({ ...input, deck, planRevision: 1 }, signal()))).toMatchObject({ status: 'compiled' })
+    expect(compile).toHaveBeenCalledTimes(1)
+    const corrupted = Buffer.from(base64, 'base64')
+    corrupted[corrupted.length - 10] ^= 1
+    const changedDeck = { ...deck, assets: [{ ...logo, base64: corrupted.toString('base64') }] }
+    expect(decode(await service({ ...input, requestId: 'second', deck: changedDeck, planRevision: 1 }, signal()))).toEqual({ error: 'plan_mismatch' })
+    expect(compile).toHaveBeenCalledTimes(1)
+  })
   it('persists a brand palette and rejects off-brand SlideIR before compilation', async () => {
     const compile = vi.fn(async () => result())
     const service = createPresentationService({ userDataPath: root(), compile })

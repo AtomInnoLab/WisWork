@@ -55,7 +55,7 @@ export interface PresentationPlan {
     revision: number
     name: string
     allowedColors: string[]
-    logo?: { assetId: string; placement: 'cover' | 'all' }
+    logo?: { assetId: string; assetDigest: string; placement: 'cover' | 'all' }
   }
   slides: {
     id: string
@@ -139,7 +139,7 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object({
     revision: number(1, 1_000_000),
     name: text(160, 1),
     allowedColors: array(color, 32, 1),
-    logo: object({ assetId: id, placement: choice('cover', 'all') }),
+    logo: object({ assetId: id, assetDigest: { ...text(64, 64), pattern: '^[a-f0-9]{64}$' }, placement: choice('cover', 'all') }),
   }, ['id', 'revision', 'name', 'allowedColors']),
   slides: array(
     object({

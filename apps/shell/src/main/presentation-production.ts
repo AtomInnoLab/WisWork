@@ -23,6 +23,7 @@ import {
 } from '@wiswork/pptx-engine/presentation-plan'
 import { checkPresentationPageContent } from '@wiswork/pptx-engine/presentation-content-check'
 import type { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { assertBrandLogoAsset } from './presentation-brand'
 
 const check = (signal: AbortSignal) => {
   if (signal.aborted) throw new Error('aborted')
@@ -390,6 +391,8 @@ export async function handlePresentationProduction(
         assets.push(resolved)
       }
       check(signal)
+      if (plan.brandKit?.logo && assets.some((asset) => asset.id === plan.brandKit!.logo!.assetId))
+        assertBrandLogoAsset(plan, assets)
       const onePage = {
         ...deck,
         assets,
@@ -404,7 +407,7 @@ export async function handlePresentationProduction(
         ? 'aborted'
         : ['output_too_large', 'asset_unavailable'].includes(code)
           ? code
-          : code.startsWith('presentation_invalid:') || code.startsWith('presentation_geometry:')
+          : code === 'plan_mismatch' || code.startsWith('presentation_invalid:') || code.startsWith('presentation_geometry:')
             ? 'invalid_deck'
             : 'compile_failed'
     }
