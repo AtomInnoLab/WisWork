@@ -82,6 +82,7 @@ export interface PresentationProjectController {
   prepareProduction(): Promise<void>
   cancel(): void
   clear(): void
+  prepareReconnect(): void
 }
 const validId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
@@ -374,7 +375,7 @@ export function createPresentationProjectController(
     const controller = new AbortController()
     active = controller
     const captured = ++epoch
-    const previous = state.project
+    const previous = state.project?.projectId === projectId ? state.project : undefined
     let boundDocument: string | undefined
     publish({ phase, ...(previous ? { project: previous } : {}) })
     const check = () => {
@@ -648,5 +649,6 @@ export function createPresentationProjectController(
     runProduction: (requestId) => run('producing', requestId),
     cancel: () => stop(message(new Error('cancelled'))),
     clear: () => stop(undefined, true),
+    prepareReconnect: () => { ignoreStoredSelection = false },
   }
 }

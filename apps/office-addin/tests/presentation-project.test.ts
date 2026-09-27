@@ -71,6 +71,20 @@ describe('presentation project controls', () => {
     expect(f.request).not.toHaveBeenCalled()
     expect(f.documentId).not.toHaveBeenCalled()
   })
+  it('does not expose a previous project while recovering a different saved project', async () => {
+    const f = fixture()
+    await f.controller.refresh()
+    f.lastProject.mockReturnValue('project-2')
+    let resolve!: (response: Response) => void
+    f.request.mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    const pending = f.controller.refresh()
+    expect(f.controller.snapshot()).toEqual({ phase: 'loading' })
+    await vi.waitFor(() => expect(f.request).toHaveBeenCalledTimes(2))
+    resolve(new Response(JSON.stringify({ error: 'unavailable' })))
+    await pending
+    expect(f.controller.snapshot().project).toBeUndefined()
+    expect(f.controller.snapshot().error).toBeTruthy()
+  })
   it.each(['clear', 'cancel'] as const)(
     'invalidates a late status response after %s',
     async (action) => {
@@ -467,6 +481,15 @@ describe('saved production task selection', () => {
     f.controller.clear()
     await f.controller.refresh()
     expect(f.controller.snapshot().project?.production?.requestId).toBe('new')
+  })
+  it('restores the persisted task choice after a bridge reconnection', async () => {
+    const f = tasksFixture()
+    await f.controller.refresh()
+    await f.controller.selectProduction('old')
+    f.controller.clear()
+    f.controller.prepareReconnect()
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.production?.requestId).toBe('old')
   })
   it.each(['clear', 'document'] as const)('resets selected task after %s', async (action) => {
     const f = tasksFixture()

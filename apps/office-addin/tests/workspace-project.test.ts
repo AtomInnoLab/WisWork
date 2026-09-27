@@ -71,6 +71,7 @@ describe('workspace project integration', () => {
       prepareProduction: vi.fn(async () => {}),
       cancel: vi.fn(),
       clear: vi.fn(),
+      prepareReconnect: vi.fn(),
     }
     const changes: PresentationChangesController = {
       snapshot: () => ({

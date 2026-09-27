@@ -1501,6 +1501,7 @@ function ConfiguredApp() {
     if (bridgeState.status !== 'connected' && workspace) {
       workspace.session.authenticationLost()
       workspace.runtime.clearSession()
+      workspace.runtime.presentation?.prepareReconnect()
     }
   }, [bridgeState.status, workspace])
 

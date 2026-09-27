@@ -52,6 +52,7 @@ async function mount(snapshot: Snapshot, disabled = false) {
     prepareProduction: vi.fn(async () => {}),
     cancel: vi.fn(),
     clear: vi.fn(),
+    prepareReconnect: vi.fn(),
   }
   const container = document.createElement('div')
   const root = createRoot(container)
