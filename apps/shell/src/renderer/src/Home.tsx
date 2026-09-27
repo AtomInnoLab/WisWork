@@ -876,7 +876,12 @@ function AccountEntry() {
                   Connect
                 </button>
               </div>
-              <div role="status">Office relay: {officeRelayStatus}</div>
+              <div role="status">
+                Office relay:{' '}
+                {officeRelayStatus === 'disconnected:protocol_version_mismatch'
+                  ? 'This PowerPoint add-in requires a newer WisWork PC. Update WisWork PC, then pair again.'
+                  : officeRelayStatus}
+              </div>
               {officeRelayError && <div role="alert">Could not claim code: {officeRelayError}</div>}
             </div>
           )}

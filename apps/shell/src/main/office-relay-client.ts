@@ -35,6 +35,7 @@ const RELAY_ERROR_CODES = new Set([
   'invalid_sequence',
   'pairing_limit',
   'peer_unavailable',
+  'protocol_version_mismatch',
   'relay_busy',
   'request_active',
   'request_limit',
@@ -520,7 +521,14 @@ export function createOfficeRelayClient(options: {
       typeof typed.code === 'string' &&
       RELAY_ERROR_CODES.has(typed.code)
     )
-      return clear(typed.code === 'session_expired' ? 'session_expired' : 'relay_error', true)
+      return clear(
+        typed.code === 'session_expired'
+          ? 'session_expired'
+          : typed.code === 'protocol_version_mismatch' && diagnostic === 'claiming'
+            ? 'protocol_version_mismatch'
+            : 'relay_error',
+        true,
+      )
     clear('protocol_violation', true)
   }
 

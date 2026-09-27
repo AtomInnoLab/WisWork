@@ -391,6 +391,16 @@ describe('Office relay PC client', () => {
     expect(client.status()).toBe('disconnected:session_expired')
   })
 
+  it('reports a legacy pairing protocol mismatch without calling it a malformed frame', async () => {
+    const { client, socket } = setup()
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claiming
+    socket.message({ version: 1, type: 'relay.error', code: 'protocol_version_mismatch' })
+    expect(client.status()).toBe('disconnected:protocol_version_mismatch')
+  })
+
   it.each([100, 199, 204, 205, 304])(
     'returns request_failed without ending the session for non-streaming status %i',
     async (status) => {
