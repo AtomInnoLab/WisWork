@@ -46,6 +46,51 @@ it('detects changed native text in an exported host page package', async () => {
   expect(result.content).toMatchObject({ status: 'warning', changed: ['title'] })
 })
 
+it('detects native text font and size drift while text content remains unchanged', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const title = xml.match(/<p:sp>[^]*?<\/p:sp>/g)?.find((item) => item.includes('name="title"'))
+  expect(title).toBeTruthy()
+  const altered = title!
+    .replace('sz="3200"', 'sz="2800"')
+    .replace('typeface="Microsoft YaHei"', 'typeface="Arial"')
+  zip.file('ppt/slides/slide1.xml', xml.replace(title!, altered))
+  const result = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(result.content).toMatchObject({
+    status: 'warning',
+    changed: [],
+    textStyleChanged: ['title'],
+  })
+})
+
 it('detects changed table cells and leaves chart data explicitly unchecked', async () => {
   for (const [pageIndex, original, replacement, nativeType] of [
     [5, '120', '999', 'Table'],
@@ -303,6 +348,50 @@ it('detects changed picture alternative text and crop independently of media byt
     altTextChanged: ['image'],
     cropChanged: ['image'],
   })
+})
+
+it('detects native shape preset, fill and rotation drift after host export', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[3]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: 'GeometricShape',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const shape = xml.match(/<p:sp>[^]*?<\/p:sp>/g)?.find((item) => item.includes('name="step"'))
+  expect(shape).toBeTruthy()
+  const altered = shape!
+    .replace('prst="roundRect"', 'prst="rect"')
+    .replace('val="2255AA"', 'val="AA5522"')
+    .replace(/<a:xfrm(?=[ >])/, '<a:xfrm rot="5400000"')
+  expect(altered).not.toBe(shape)
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape!, altered))
+  const result = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(result.content).toMatchObject({ status: 'warning', appearanceChanged: ['step'] })
+  expect(result.issues).toContainEqual({ name: 'step', kind: 'rotation_changed' })
 })
 
 it('compares a selected picture from a multi-page source deck', async () => {

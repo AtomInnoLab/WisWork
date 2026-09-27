@@ -12,6 +12,7 @@ type Issue =
   | { name: string; kind: 'missing' | 'extra' | 'duplicate' }
   | { name: string; kind: 'type_changed'; sourceType: string; hostType: string }
   | { name: string; kind: 'geometry_changed' }
+  | { name: string; kind: 'rotation_changed' }
 type Xml = Record<string, any>
 type SourceObject = {
   name: string
@@ -19,8 +20,11 @@ type SourceObject = {
   type: string
   box: [number, number, number, number]
   text: string[]
+  textStyles?: Array<[string, string, string, string]>
   altText?: string
   crop?: [number, number, number, number]
+  appearance?: [string, string, string]
+  rotation: number
 }
 const POINTS_PER_EMU = 72 / 914400
 const types: Record<string, string[]> = {
@@ -43,6 +47,20 @@ function textRuns(value: unknown): string[] {
   if (!value || typeof value !== 'object') return []
   return Object.entries(value).flatMap(([tag, child]) =>
     tag === 'a:t' ? [String(child)] : tag.startsWith('@_') ? [] : textRuns(child),
+  )
+}
+
+function textStyles(element: Xml): Array<[string, string, string, string]> {
+  return many(element['p:txBody']?.['a:p']).flatMap((paragraph) =>
+    many(paragraph['a:r']).map((run) => {
+      const style = run['a:rPr']
+      return [
+        String(style?.['@_sz'] ?? ''),
+        String(style?.['@_b'] ?? ''),
+        String(style?.['a:latin']?.['@_typeface'] ?? ''),
+        String(style?.['a:solidFill']?.['a:srgbClr']?.['@_val'] ?? '').toUpperCase(),
+      ] as [string, string, string, string]
+    }),
   )
 }
 
@@ -85,12 +103,23 @@ function sourceObjects(xml: string): SourceObject[] {
           : undefined
       if (crop?.some((value) => !Number.isFinite(value)))
         throw new Error('presentation_qa_structure_unavailable')
+      const rotation = Number(xfrm?.['@_rot'] ?? 0)
+      if (!Number.isFinite(rotation)) throw new Error('presentation_qa_structure_unavailable')
+      const properties = element['p:spPr']
+      const appearance: [string, string, string] = [
+        String(properties?.['a:prstGeom']?.['@_prst'] ?? ''),
+        String(properties?.['a:solidFill']?.['a:srgbClr']?.['@_val'] ?? '').toUpperCase(),
+        String(properties?.['a:ln']?.['a:solidFill']?.['a:srgbClr']?.['@_val'] ?? '').toUpperCase(),
+      ]
       result.push({
         name,
         shapeId,
         type,
         box: box as SourceObject['box'],
         text: textRuns(element),
+        ...(tag === 'p:sp' ? { textStyles: textStyles(element) } : {}),
+        rotation,
+        ...(tag === 'p:sp' ? { appearance } : {}),
         ...(tag === 'p:pic'
           ? {
               altText: String(element[nonVisual]?.['p:cNvPr']?.['@_descr'] ?? ''),
@@ -147,6 +176,8 @@ export async function comparePresentationPageStructure(
     mediaChanged: string[]
     altTextChanged: string[]
     cropChanged: string[]
+    appearanceChanged: string[]
+    textStyleChanged: string[]
     unchecked: string[]
   }
 }> {
@@ -218,14 +249,36 @@ export async function comparePresentationPageStructure(
         )
       }))
   const exportedByName = new Map(exported.map((element) => [element.name, element]))
+  if (hostBase64 && readbackConsistent)
+    for (const element of source) {
+      const actual = exportedByName.get(element.name)
+      if (actual?.type === element.type && actual.rotation !== element.rotation)
+        issues.push({ name: element.name, kind: 'rotation_changed' })
+    }
   const changed: string[] = [],
     cacheChanged: string[] = [],
     workbookBytesChanged: string[] = [],
     mediaChanged: string[] = [],
     altTextChanged: string[] = [],
     cropChanged: string[] = [],
+    appearanceChanged: string[] = [],
+    textStyleChanged: string[] = [],
     unchecked: string[] = []
   if (hostBase64 && readbackConsistent) {
+    for (const element of source.filter((item) => item.type === 'shape')) {
+      const actual = exportedByName.get(element.name)
+      if (
+        actual?.type === 'shape' &&
+        JSON.stringify(actual.appearance) !== JSON.stringify(element.appearance)
+      )
+        appearanceChanged.push(element.name)
+      if (
+        actual?.type === 'shape' &&
+        element.textStyles?.length &&
+        JSON.stringify(actual.textStyles) !== JSON.stringify(element.textStyles)
+      )
+        textStyleChanged.push(element.name)
+    }
     const pictures = source.filter((element) => element.type === 'picture')
     for (const element of pictures) {
       const actual = exportedByName.get(element.name)
@@ -334,7 +387,9 @@ export async function comparePresentationPageStructure(
     workbookBytesChanged.length ||
     mediaChanged.length ||
     altTextChanged.length ||
-    cropChanged.length
+    cropChanged.length ||
+    appearanceChanged.length ||
+    textStyleChanged.length
       ? 'warning'
       : unchecked.length
         ? 'incomplete'
@@ -345,6 +400,8 @@ export async function comparePresentationPageStructure(
     mediaChanged,
     altTextChanged,
     cropChanged,
+    appearanceChanged,
+    textStyleChanged,
     unchecked,
   }
   const structureStatus =
