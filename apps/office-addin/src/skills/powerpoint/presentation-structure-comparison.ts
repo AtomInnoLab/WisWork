@@ -19,6 +19,8 @@ type SourceObject = {
   type: string
   box: [number, number, number, number]
   text: string[]
+  altText?: string
+  crop?: [number, number, number, number]
 }
 const POINTS_PER_EMU = 72 / 914400
 const types: Record<string, string[]> = {
@@ -76,7 +78,26 @@ function sourceObjects(xml: string): SourceObject[] {
         box.some((value) => !Number.isFinite(value))
       )
         throw new Error('presentation_qa_structure_unavailable')
-      result.push({ name, shapeId, type, box: box as SourceObject['box'], text: textRuns(element) })
+      const rect = tag === 'p:pic' ? element['p:blipFill']?.['a:srcRect'] : undefined
+      const crop =
+        tag === 'p:pic'
+          ? ['l', 't', 'r', 'b'].map((side) => Number(rect?.[`@_${side}`] ?? 0))
+          : undefined
+      if (crop?.some((value) => !Number.isFinite(value)))
+        throw new Error('presentation_qa_structure_unavailable')
+      result.push({
+        name,
+        shapeId,
+        type,
+        box: box as SourceObject['box'],
+        text: textRuns(element),
+        ...(tag === 'p:pic'
+          ? {
+              altText: String(element[nonVisual]?.['p:cNvPr']?.['@_descr'] ?? ''),
+              crop: crop as [number, number, number, number],
+            }
+          : {}),
+      })
     }
   }
   return result
@@ -124,6 +145,8 @@ export async function comparePresentationPageStructure(
     cacheChanged: string[]
     workbookBytesChanged: string[]
     mediaChanged: string[]
+    altTextChanged: string[]
+    cropChanged: string[]
     unchecked: string[]
   }
 }> {
@@ -199,9 +222,18 @@ export async function comparePresentationPageStructure(
     cacheChanged: string[] = [],
     workbookBytesChanged: string[] = [],
     mediaChanged: string[] = [],
+    altTextChanged: string[] = [],
+    cropChanged: string[] = [],
     unchecked: string[] = []
   if (hostBase64 && readbackConsistent) {
     const pictures = source.filter((element) => element.type === 'picture')
+    for (const element of pictures) {
+      const actual = exportedByName.get(element.name)
+      if (!actual || actual.type !== 'picture') continue
+      if (element.altText !== actual.altText) altTextChanged.push(element.name)
+      if (JSON.stringify(element.crop) !== JSON.stringify(actual.crop))
+        cropChanged.push(element.name)
+    }
     if (pictures.length <= 16)
       for (const element of pictures) {
         const hostElement = exportedByName.get(element.name)
@@ -300,7 +332,9 @@ export async function comparePresentationPageStructure(
     status: (changed.length ||
     cacheChanged.length ||
     workbookBytesChanged.length ||
-    mediaChanged.length
+    mediaChanged.length ||
+    altTextChanged.length ||
+    cropChanged.length
       ? 'warning'
       : unchecked.length
         ? 'incomplete'
@@ -309,6 +343,8 @@ export async function comparePresentationPageStructure(
     cacheChanged,
     workbookBytesChanged,
     mediaChanged,
+    altTextChanged,
+    cropChanged,
     unchecked,
   }
   const structureStatus =

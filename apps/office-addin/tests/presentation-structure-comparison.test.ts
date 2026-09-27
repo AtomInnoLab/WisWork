@@ -258,6 +258,53 @@ it('detects replaced embedded picture media in an exported page', async () => {
   })
 })
 
+it('detects changed picture alternative text and crop independently of media bytes', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.type === 'picture' ? 'Image' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const picture = xml.match(/<p:pic>[^]*?<\/p:pic>/)?.[0]
+  expect(picture).toBeTruthy()
+  const changedPicture = picture!
+    .replace(/(<p:cNvPr\b[^>]*\bdescr=")[^"]*(")/, '$1Changed description$2')
+    .replace(/<p:blipFill>/, '<p:blipFill><a:srcRect l="10000"/>')
+  expect(changedPicture).not.toBe(picture)
+  zip.file('ppt/slides/slide1.xml', xml.replace(picture!, changedPicture))
+  const result = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(result.content).toMatchObject({
+    status: 'warning',
+    mediaChanged: [],
+    altTextChanged: ['image'],
+    cropChanged: ['image'],
+  })
+})
+
 it('compares a selected picture from a multi-page source deck', async () => {
   const full = await compilePresentationDeck(benchmarkDeck())
   const source = (await openPptx(full.bytes)).deck.slides[2]!
