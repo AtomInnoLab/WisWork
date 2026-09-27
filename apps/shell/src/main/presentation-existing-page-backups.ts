@@ -6,6 +6,7 @@ import { assertPresentationId } from '@wiswork/project-store'
 import { validateSinglePageBackupPackage } from './presentation-page-backups'
 
 const LIMIT = 8 * 1024 * 1024
+const MAX_ACTIVE_BACKUPS = 16
 const CHUNK = 128 * 1024
 const locks = new Map<string, Promise<void>>()
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex')
@@ -35,20 +36,12 @@ interface Metadata {
   sizeBytes: number
   status: 'uploading' | 'ready'
 }
-const beginFields = [
-  'backupId',
-  'hostSlideId',
-  'slideIds',
-  'sha256',
-  'sizeBytes',
-]
-const metadataKeys = [
-  ...beginFields,
-  'documentId',
-  'status',
-]
+const beginFields = ['backupId', 'hostSlideId', 'slideIds', 'sha256', 'sizeBytes']
+const metadataKeys = [...beginFields, 'documentId', 'status']
 const sameScope = (request: Record<string, unknown>, stored: Metadata) =>
-  beginFields.every((key) => JSON.stringify(request[key]) === JSON.stringify(stored[key as keyof Metadata]))
+  beginFields.every(
+    (key) => JSON.stringify(request[key]) === JSON.stringify(stored[key as keyof Metadata]),
+  )
 function validBegin(value: Record<string, unknown>) {
   assertPresentationId(value.backupId)
   if (
@@ -165,7 +158,8 @@ export function createPresentationExistingPageBackupService(options: { userDataP
     )
       fail('invalid_request')
     if (op !== 'existing_page_backup_list') assertPresentationId(request.backupId)
-    if (op === 'existing_page_backup_begin' || op === 'existing_page_backup_release') validBegin(request)
+    if (op === 'existing_page_backup_begin' || op === 'existing_page_backup_release')
+      validBegin(request)
     // Snapshot caller-owned arrays before awaiting the document lock.
     const body = structuredClone(request),
       documentId = body.documentId as string,
@@ -189,13 +183,15 @@ export function createPresentationExistingPageBackupService(options: { userDataP
       await directory(join(root, '.released'))
       await directory(receiptDocument)
       const entries = await readdir(document)
-      if (entries.length > 8 || entries.some((entry) => !digest(entry))) fail('invalid_state')
+      if (entries.length > MAX_ACTIVE_BACKUPS || entries.some((entry) => !digest(entry)))
+        fail('invalid_state')
       if (op === 'existing_page_backup_list') {
         const backups = []
         for (const entry of entries) {
           check(signal)
           const stored = await metadata(join(document, entry))
-          if (stored.documentId !== documentId || hash(stored.backupId) !== entry) fail('invalid_state')
+          if (stored.documentId !== documentId || hash(stored.backupId) !== entry)
+            fail('invalid_state')
           backups.push(stored)
         }
         return { documentId, backups }
@@ -216,7 +212,12 @@ export function createPresentationExistingPageBackupService(options: { userDataP
         } catch {
           fail('invalid_state')
         }
-        if (stored.backupId !== backupId || stored.documentId !== documentId || stored.status !== 'ready') fail('invalid_state')
+        if (
+          stored.backupId !== backupId ||
+          stored.documentId !== documentId ||
+          stored.status !== 'ready'
+        )
+          fail('invalid_state')
         if (op === 'existing_page_backup_begin') fail('request_conflict')
         if (op === 'existing_page_backup_release') {
           if (!sameScope(body, stored)) fail('request_conflict')
@@ -232,7 +233,7 @@ export function createPresentationExistingPageBackupService(options: { userDataP
       }
       if (!exists && op !== 'existing_page_backup_begin') fail('not_found')
       if (!exists) {
-        if (entries.length >= 8) fail('quota_exceeded')
+        if (entries.length >= MAX_ACTIVE_BACKUPS) fail('quota_exceeded')
         const m: Metadata = {
           backupId,
           documentId,
@@ -274,8 +275,7 @@ export function createPresentationExistingPageBackupService(options: { userDataP
         return { ...m, status: 'released' }
       }
       if (op === 'existing_page_backup_begin') {
-        if (!sameScope(body, m))
-          fail('request_conflict')
+        if (!sameScope(body, m)) fail('request_conflict')
         return { ...m, receivedBytes: received }
       }
       if (op === 'existing_page_backup_chunk') {

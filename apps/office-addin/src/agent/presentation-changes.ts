@@ -318,7 +318,7 @@ export function createPresentationChangesController(
                                 ? [saved.record.restoredSlideId!]
                                 : [],
                       affectedPageCount: saved.record.state === 'staged' ? 2 : 1,
-                      before: `原页：${saved.record.oldSlideId}\n包摘要：${saved.record.originalPackageDigest}\n${saved.record.backupReleasedAt ? `备份已释放：${saved.record.backupReleasedAt}` : '原页已持久备份'}`,
+                      before: `原页：${saved.record.oldSlideId}\n包摘要：${saved.record.originalPackageDigest}\n${saved.record.backupReleasedAt ? `备份已释放：${saved.record.backupReleasedAt}` : '原页已持久备份'}${saved.record.restores ? `\n原页恢复来源：${saved.record.restores.sourceKind}/${saved.record.restores.sourceChangeId}` : ''}`,
                       after: `新页：${saved.record.newSlideId ?? '尚未记录'}\n包摘要：${saved.record.replacementPackageDigest}${saved.record.restoredSlideId ? `\n恢复页面：${saved.record.restoredSlideId}` : ''}`,
                       actions: [
                         ...pageActions[saved.record.state],
@@ -546,7 +546,7 @@ export function createPresentationChangesController(
           const backups = await options.listExistingPageBackups(boundDocument)
           if (
             !Array.isArray(backups) ||
-            backups.length > 8 ||
+            backups.length > 16 ||
             backups.some(
               (b) =>
                 !b ||

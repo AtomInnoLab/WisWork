@@ -514,6 +514,8 @@ export function createOfficeHostRuntime(
       proposals,
       documentId: localBinding.documentId,
       readExistingPageChange: localBinding.readExistingPageChange,
+      readExistingChange: localBinding.readExistingChange,
+      readExistingBatch: localBinding.readExistingBatch,
       writeExistingPageChange: async (record, expected) => {
         try {
           await localBinding.writeExistingPageChange!(record, expected)

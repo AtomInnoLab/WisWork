@@ -652,6 +652,9 @@ it('exposes existing-page rebuild and routes saved-page inspection through the r
       'stage_existing_presentation_page_change',
     )
     expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
+      'prepare_existing_presentation_original_page_restore',
+    )
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
       'undo_existing_presentation_page_change',
     )
     expect(runtime.changes).toBeDefined()
