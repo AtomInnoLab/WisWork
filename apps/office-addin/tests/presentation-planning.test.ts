@@ -23,6 +23,26 @@ function setup() {
   return { skill, vfs, request, rememberProject, documentId, available }
 }
 describe('saved presentation planning tools', () => {
+  it('saves, lists and reads a pinned PC brand kit revision', async () => {
+    const f = setup()
+    const brandKit = { id: 'research', revision: 1, name: 'Research', allowedColors: ['FFFFFF', '172033'] }
+    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ brandKit })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ brandKits: [brandKit] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ brandKit })))
+    expect((await f.skill.executeTool({ id: 'save-kit', name: 'save_presentation_brand_kit', input: { expected_revision: 0, brand_kit: brandKit } })).isError).not.toBe(true)
+    expect(f.request).toHaveBeenNthCalledWith(1, { operation: 'brand_kit_save', documentId: 'doc-1', expectedRevision: 0, brandKit }, undefined)
+    expect(JSON.parse((await f.skill.executeTool({ id: 'list-kit', name: 'list_presentation_brand_kits', input: {} })).output)).toEqual({ brandKits: [brandKit] })
+    expect(JSON.parse((await f.skill.executeTool({ id: 'read-kit', name: 'read_presentation_brand_kit', input: { brand_kit_id: 'research', revision: 1 } })).output)).toEqual({ brandKit })
+    expect(f.rememberProject).not.toHaveBeenCalled()
+  })
+  it('reports brand revision conflicts and rejects invalid catalog responses', async () => {
+    const f = setup()
+    const brandKit = { id: 'research', revision: 1, name: 'Research', allowedColors: ['FFFFFF'] }
+    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'revision_conflict' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ brandKits: [{ ...brandKit, revision: 0 }] })))
+    expect(await f.skill.executeTool({ id: 'save-kit', name: 'save_presentation_brand_kit', input: { expected_revision: 0, brand_kit: brandKit } })).toMatchObject({ isError: true, output: 'presentation_revision_conflict' })
+    expect(await f.skill.executeTool({ id: 'list-kit', name: 'list_presentation_brand_kits', input: {} })).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+  })
   it('saves a versioned plan and returns exact compile claim mapping', async () => {
     const f = setup()
     const result = await f.skill.executeTool({

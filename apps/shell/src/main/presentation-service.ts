@@ -27,7 +27,7 @@ import {
   type PresentationInlineAsset,
 } from '@wiswork/pptx-engine/presentation'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
-import { assertBrandLogoAsset } from './presentation-brand'
+import { assertBrandLogoAsset, PresentationBrandLibrary } from './presentation-brand'
 
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
@@ -53,6 +53,7 @@ const errorCodes = new Set([
   'digest_mismatch',
   'parse_failed',
   'animated_image_unsupported',
+  'invalid_brand_kit',
   'remote_image_unavailable',
   'remote_image_source_conflict',
   'attachment_in_use',
@@ -87,6 +88,7 @@ export function createPresentationService(options: {
   const existingPageBackups = createPresentationExistingPageBackupService(options)
   const attachments = createPresentationAttachmentService(options)
   const store = new PresentationStore(options.userDataPath)
+  const brandLibrary = new PresentationBrandLibrary(options.userDataPath)
   const compile = options.compile ?? compilePresentationDeck
   return async (body, signal) => {
     try {
@@ -99,6 +101,25 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
+      if (['brand_kit_save', 'brand_kit_get', 'brand_kit_list'].includes(request.operation as string)) {
+        const operation = request.operation
+        const required = operation === 'brand_kit_save' ? ['operation', 'documentId', 'expectedRevision', 'brandKit'] :
+          operation === 'brand_kit_get' ? ['operation', 'documentId', 'brandKitId', 'revision'] : ['operation', 'documentId']
+        if (Object.keys(request).sort().join(',') !== required.sort().join(',') ||
+          typeof request.documentId !== 'string' || !request.documentId || request.documentId.length > 2048)
+          throw new Error('invalid_request')
+        if (operation === 'brand_kit_list') return boundedResponse({ brandKits: brandLibrary.list() })
+        if (operation === 'brand_kit_get') {
+          const kit = brandLibrary.get(request.brandKitId as string, request.revision as number)
+          if (!kit) throw new Error('not_found')
+          return boundedResponse({ brandKit: kit })
+        }
+        try { return boundedResponse({ brandKit: brandLibrary.save(request.expectedRevision as number, request.brandKit) }) }
+        catch (error) {
+          if (error instanceof Error && error.message === 'presentation_brand_kit_invalid') throw new Error('invalid_brand_kit', { cause: error })
+          throw error
+        }
+      }
       if (
         [
           'existing_page_backup_begin',

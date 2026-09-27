@@ -67,6 +67,7 @@ export interface PresentationPlan {
     acceptanceCriteria: string[]
   }[]
 }
+export type PresentationBrandKit = NonNullable<PresentationPlan['brandKit']>
 
 /** Tool discovery and runtime validation share bounded structural rules. */
 export const PRESENTATION_PLAN_SCHEMA: Schema = object({
@@ -156,6 +157,16 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object({
   ),
 }, ['version', 'projectId', 'title', 'brief', 'sources', 'claims', 'style', 'slides'])
 
+export function parsePresentationBrandKit(input: unknown): PresentationBrandKit {
+  if (!valid(input, PRESENTATION_PLAN_SCHEMA.properties!.brandKit!))
+    throw new Error('presentation_brand_kit_invalid')
+  const kit = input as PresentationBrandKit
+  const colors = kit.allowedColors.map((value) => value.toUpperCase())
+  if (!Number.isSafeInteger(kit.revision) || new Set(colors).size !== colors.length)
+    throw new Error('presentation_brand_kit_invalid')
+  return structuredClone(kit)
+}
+
 function reject(reason: string): never {
   throw new Error(`presentation_plan_invalid:${reason}`)
 }
@@ -167,8 +178,8 @@ export function parsePresentationPlan(input: unknown): PresentationPlan {
   if (!valid(input, PRESENTATION_PLAN_SCHEMA)) reject('schema')
   const plan = input as PresentationPlan
   if (plan.brandKit) {
-    const colors = plan.brandKit.allowedColors.map((value) => value.toUpperCase())
-    if (!Number.isSafeInteger(plan.brandKit.revision) || new Set(colors).size !== colors.length ||
+    const colors = parsePresentationBrandKit(plan.brandKit).allowedColors.map((value) => value.toUpperCase())
+    if (
       [plan.style.background, plan.style.textColor, plan.style.accentColor].some((value) => !colors.includes(value.toUpperCase())))
       reject('brand_kit')
     if (plan.brandKit.logo?.placement === 'cover' && !plan.slides.some((slide) => slide.layout === 'cover'))
