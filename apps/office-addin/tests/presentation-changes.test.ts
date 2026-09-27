@@ -5,6 +5,7 @@ import type { PresentationGeometryChange } from '../src/skills/powerpoint/presen
 import type { PresentationExistingPageChange } from '../src/skills/powerpoint/presentation-existing-page.js'
 import type { PresentationExistingChartChange } from '../src/skills/powerpoint/presentation-existing-chart.js'
 import type { PresentationExistingBatch } from '../src/skills/powerpoint/presentation-existing-batch.js'
+import type { PresentationExistingChange } from '../src/skills/powerpoint/presentation-existing-change.js'
 const artifact: CompiledPresentationArtifact = {
   documentId: 'doc',
   projectId: 'project',
@@ -73,6 +74,63 @@ it('reads only current records and clones snapshots; routes undo through the too
     expect.any(AbortSignal),
   )
   expect(JSON.stringify(controller.snapshot())).not.toContain('unsafe')
+})
+it('links a single existing-change page backup and offers release only after undo', async () => {
+  let record: PresentationExistingChange = {
+    version: 1,
+    changeId: 'single',
+    documentId: 'doc',
+    baselineId: 'baseline',
+    baselineDigest: 'a'.repeat(64),
+    scope: { slideIds: ['slide'], shapeIds: ['shape'] },
+    hostSlideId: 'slide',
+    shapeId: 'shape',
+    shapeType: 'TextBox',
+    kind: 'text',
+    before: 'before',
+    after: 'after',
+    state: 'undone',
+    beforeSlideIds: ['slide'],
+    backup: {
+      hostSlideId: 'slide',
+      backupId: 'single-backup',
+      sha256: 'b'.repeat(64),
+      sizeBytes: 120,
+      packageDigest: 'c'.repeat(64),
+    },
+  }
+  const executeTool = vi.fn(async () => ({ output: '{}', mutated: false, summary: 'proposed' }))
+  const controller = createPresentationChangesController({
+    available: () => false,
+    existingAvailable: () => true,
+    artifact: () => undefined,
+    documentId: async () => 'doc',
+    listChangeHistory: () => [
+      { id: 'existing:single', kind: 'existing', sequence: 1, legacy: false, record },
+    ],
+    listExistingPageBackups: async () => [
+      {
+        backupId: 'single-backup',
+        status: 'ready',
+        hostSlideId: 'slide',
+        slideIds: ['slide'],
+        sha256: 'b'.repeat(64),
+        sizeBytes: 120,
+      },
+    ],
+    executeTool,
+  })
+  await controller.refresh()
+  expect(controller.snapshot().backupAudit).toEqual({ active: 1, unmatched: 0 })
+  expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect', 'release'])
+  await controller.run('existing:single', 'release')
+  expect(executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({ name: 'release_existing_presentation_change' }),
+    expect.any(AbortSignal),
+  )
+  record = { ...record, backupReleasedAt: '2026-09-28T00:00:00.000Z' }
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect'])
 })
 it('shows existing-page identity diff offline and routes commit by exact change ID', async () => {
   let record: PresentationExistingPageChange = {

@@ -11,6 +11,15 @@ interface ExistingChangeBase {
   shapeId: string
   shapeType: string
   state: 'pending' | 'applied' | 'undo_pending' | 'undone'
+  beforeSlideIds?: string[]
+  backup?: {
+    hostSlideId: string
+    backupId: string
+    sha256: string
+    sizeBytes: number
+    packageDigest: string
+  }
+  backupReleasedAt?: string
   review?: {
     screenshotDigest: string
     capturedAt: string
@@ -22,7 +31,14 @@ interface ExistingChangeBase {
 export type PresentationExistingChange = ExistingChangeBase &
   (
     | { kind: 'text'; before: string; after: string }
-    | { kind: 'table_cell'; rowIndex: number; columnIndex: number; cellStructureDigest: string; before: string; after: string }
+    | {
+        kind: 'table_cell'
+        rowIndex: number
+        columnIndex: number
+        cellStructureDigest: string
+        before: string
+        after: string
+      }
     | { kind: 'geometry'; before: PresentationPageGeometry; after: PresentationPageGeometry }
   )
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength
@@ -36,6 +52,11 @@ const hostId = (value: unknown): value is string =>
   })
 const id = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 const digest = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+const timestamp = (s: unknown): s is string =>
+  typeof s === 'string' &&
+  s.length <= 40 &&
+  Number.isFinite(Date.parse(s)) &&
+  new Date(s).toISOString() === s
 const ids = (value: unknown): value is string[] =>
   Array.isArray(value) &&
   value.length > 0 &&
@@ -78,6 +99,9 @@ export function validatePresentationExistingChange(
         'before',
         'after',
         'state',
+        'beforeSlideIds',
+        'backup',
+        'backupReleasedAt',
         'review',
       ].includes(key),
     ) ||
@@ -102,6 +126,31 @@ export function validatePresentationExistingChange(
       (!ids(r.scope.shapeIds) || !r.scope.shapeIds.includes(r.shapeId)))
   )
     return false
+  if (
+    r.backupReleasedAt !== undefined &&
+    (!r.backup || r.state !== 'undone' || !timestamp(r.backupReleasedAt))
+  )
+    return false
+  if (
+    (r.beforeSlideIds !== undefined) !== (r.backup !== undefined) ||
+    (r.beforeSlideIds !== undefined && !ids(r.beforeSlideIds)) ||
+    (r.backup !== undefined &&
+      (!r.beforeSlideIds ||
+        !r.beforeSlideIds.includes(r.hostSlideId) ||
+        !r.backup ||
+        typeof r.backup !== 'object' ||
+        Array.isArray(r.backup) ||
+        Object.keys(r.backup).sort().join(',') !==
+          'backupId,hostSlideId,packageDigest,sha256,sizeBytes' ||
+        r.backup.hostSlideId !== r.hostSlideId ||
+        !id(r.backup.backupId) ||
+        !digest(r.backup.sha256) ||
+        !digest(r.backup.packageDigest) ||
+        !Number.isSafeInteger(r.backup.sizeBytes) ||
+        r.backup.sizeBytes < 1 ||
+        r.backup.sizeBytes > 8 * 1024 * 1024))
+  )
+    return false
   const cell = r.kind === 'table_cell'
   if (
     cell &&
@@ -109,9 +158,12 @@ export function validatePresentationExistingChange(
       !digest(r.cellStructureDigest) ||
       !Number.isSafeInteger(r.rowIndex) ||
       !Number.isSafeInteger(r.columnIndex) ||
-      r.rowIndex < 0 || r.rowIndex > 1000 ||
-      r.columnIndex < 0 || r.columnIndex > 1000)
-  ) return false
+      r.rowIndex < 0 ||
+      r.rowIndex > 1000 ||
+      r.columnIndex < 0 ||
+      r.columnIndex > 1000)
+  )
+    return false
   if (
     r.kind === 'text' || cell
       ? typeof r.before !== 'string' ||
@@ -124,11 +176,6 @@ export function validatePresentationExistingChange(
   if (!cell && ('rowIndex' in r || 'columnIndex' in r || 'cellStructureDigest' in r)) return false
   if (r.review !== undefined) {
     const v = r.review
-    const timestamp = (s: unknown): s is string =>
-      typeof s === 'string' &&
-      s.length <= 40 &&
-      Number.isFinite(Date.parse(s)) &&
-      new Date(s).toISOString() === s
     if (
       !['applied', 'undone'].includes(r.state) ||
       !v ||
@@ -153,4 +200,5 @@ export const existingChangeReservedBytes = (record: PresentationExistingChange) 
   record.state.length +
   8192 +
   ',"review":'.length -
-  (record.review === undefined ? 0 : bytes(record.review) + ',"review":'.length)
+  (record.review === undefined ? 0 : bytes(record.review) + ',"review":'.length) +
+  (record.backup && !record.backupReleasedAt ? 68 : 0)

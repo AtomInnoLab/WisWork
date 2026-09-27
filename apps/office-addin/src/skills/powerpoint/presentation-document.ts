@@ -932,7 +932,12 @@ export function createPresentationDocumentBinding(
         if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
         if (prior) {
           const core = (r: PresentationExistingChange) =>
-            JSON.stringify({ ...r, state: undefined, review: undefined })
+            JSON.stringify({
+              ...r,
+              state: undefined,
+              review: undefined,
+              backupReleasedAt: undefined,
+            })
           const transitions = {
             pending: 'applied',
             applied: 'undo_pending',
@@ -941,6 +946,14 @@ export function createPresentationDocumentBinding(
           }
           if (
             core(prior) !== core(snapshot) ||
+            (prior.backupReleasedAt !== snapshot.backupReleasedAt &&
+              !(
+                prior.state === 'undone' &&
+                snapshot.state === 'undone' &&
+                prior.backupReleasedAt === undefined &&
+                snapshot.backupReleasedAt !== undefined &&
+                JSON.stringify(prior.review) === JSON.stringify(snapshot.review)
+              )) ||
             (prior.state !== snapshot.state &&
               (transitions[prior.state] !== snapshot.state || snapshot.review !== undefined))
           )

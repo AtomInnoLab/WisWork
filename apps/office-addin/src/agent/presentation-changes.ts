@@ -401,12 +401,20 @@ export function createPresentationChangesController(
                             kind: saved.record.kind,
                             pageId: saved.record.hostSlideId,
                             state: saved.record.state,
-                            before:
+                            before: [
                               saved.record.kind === 'table_cell'
                                 ? `单元格 (${saved.record.rowIndex}, ${saved.record.columnIndex}): ${saved.record.before}`
                                 : typeof saved.record.before === 'string'
                                   ? saved.record.before
                                   : JSON.stringify(saved.record.before, null, 2),
+                              ...(saved.record.backup
+                                ? [
+                                    saved.record.backupReleasedAt
+                                      ? `原页备份已释放：${saved.record.backupReleasedAt}`
+                                      : '原页包已持久备份',
+                                  ]
+                                : []),
+                            ].join('\n'),
                             after:
                               saved.record.kind === 'table_cell'
                                 ? `单元格 (${saved.record.rowIndex}, ${saved.record.columnIndex}): ${saved.record.after}`
@@ -418,7 +426,9 @@ export function createPresentationChangesController(
                               saved.record.state === 'applied'
                                 ? ['inspect', 'undo']
                                 : saved.record.state === 'undone'
-                                  ? ['inspect']
+                                  ? saved.record.backup && !saved.record.backupReleasedAt
+                                    ? ['inspect', 'release']
+                                    : ['inspect']
                                   : ['inspect', 'resume'],
                           },
                           record: copy(saved.record),
@@ -558,6 +568,17 @@ export function createPresentationChangesController(
             slideIds?: string[]
           }[] = []
           for (const row of rows) {
+            if (row.entry.source === 'existing') {
+              const record = row.record as PresentationExistingChange
+              if (record.backup)
+                known.push({
+                  backupId: record.backup.backupId,
+                  sha256: record.backup.sha256,
+                  sizeBytes: record.backup.sizeBytes,
+                  hostSlideId: record.backup.hostSlideId,
+                  slideIds: record.beforeSlideIds,
+                })
+            }
             if (row.entry.source === 'existing_batch') {
               const record = row.record as PresentationExistingBatch
               known.push(

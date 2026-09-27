@@ -456,6 +456,11 @@ export function createOfficeHostRuntime(
       adapter: powerPointAdapter,
       proposals,
       documentId: localBinding.documentId,
+      request:
+        options.presentation?.request ??
+        (async () => {
+          throw new Error('presentation_page_backup_unavailable')
+        }),
       readExistingChange: localBinding.readExistingChange,
       listChangeHistory: localBinding.listChangeHistory,
       writeExistingChange: async (record, expected) => {

@@ -56,13 +56,77 @@ it('validates exact bounded records and rejects forged scope and reviews on pend
 })
 it('validates a native table cell savepoint with exact bounded coordinates', async () => {
   const { record } = await fixture()
-  const cell = { ...record, shapeType: 'Table', kind: 'table_cell', rowIndex: 1, columnIndex: 2, cellStructureDigest: 'b'.repeat(64) }
+  const cell = {
+    ...record,
+    shapeType: 'Table',
+    kind: 'table_cell',
+    rowIndex: 1,
+    columnIndex: 2,
+    cellStructureDigest: 'b'.repeat(64),
+  }
   expect(validatePresentationExistingChange(cell)).toBe(true)
   expect(validatePresentationExistingChange({ ...cell, rowIndex: -1 })).toBe(false)
   expect(validatePresentationExistingChange({ ...cell, columnIndex: 1.5 })).toBe(false)
   expect(validatePresentationExistingChange({ ...cell, shapeType: 'TextBox' })).toBe(false)
   expect(validatePresentationExistingChange({ ...cell, cellStructureDigest: 'bad' })).toBe(false)
   expect(validatePresentationExistingChange({ ...record, rowIndex: 0 })).toBe(false)
+})
+it('binds a bounded original page package to the exact existing-change slide', async () => {
+  const { record } = await fixture()
+  const backed = {
+    ...record,
+    beforeSlideIds: ['slide'],
+    backup: {
+      hostSlideId: 'slide',
+      backupId: 'backup1',
+      sha256: 'a'.repeat(64),
+      sizeBytes: 1024,
+      packageDigest: 'b'.repeat(64),
+    },
+  }
+  expect(validatePresentationExistingChange(backed)).toBe(true)
+  expect(validatePresentationExistingChange({ ...backed, beforeSlideIds: ['other'] })).toBe(false)
+  expect(
+    validatePresentationExistingChange({
+      ...backed,
+      backup: { ...backed.backup, hostSlideId: 'other' },
+    }),
+  ).toBe(false)
+  expect(
+    validatePresentationExistingChange({
+      ...backed,
+      backup: { ...backed.backup, sizeBytes: 8 * 1024 * 1024 + 1 },
+    }),
+  ).toBe(false)
+  expect(validatePresentationExistingChange({ ...record, beforeSlideIds: ['slide'] })).toBe(false)
+  expect(validatePresentationExistingChange({ ...record, backup: backed.backup })).toBe(false)
+  expect(
+    validatePresentationExistingChange({ ...backed, backupReleasedAt: '2026-09-28T00:00:00.000Z' }),
+  ).toBe(false)
+  expect(
+    validatePresentationExistingChange({
+      ...backed,
+      state: 'undone',
+      backupReleasedAt: '2026-09-28T00:00:00.000Z',
+    }),
+  ).toBe(true)
+  const f = await fixture()
+  await f.binding.writeExistingChange(backed, undefined)
+  await expect(
+    f.binding.writeExistingChange(
+      { ...backed, backup: { ...backed.backup, sha256: 'f'.repeat(64) } },
+      backed,
+    ),
+  ).rejects.toThrow('state_invalid')
+  const applied = { ...backed, state: 'applied' as const }
+  const undoPending = { ...backed, state: 'undo_pending' as const }
+  const undone = { ...backed, state: 'undone' as const }
+  await f.binding.writeExistingChange(applied, backed)
+  await f.binding.writeExistingChange(undoPending, applied)
+  await f.binding.writeExistingChange(undone, undoPending)
+  const released = { ...undone, backupReleasedAt: '2026-09-28T00:00:00.000Z' }
+  await f.binding.writeExistingChange(released, undone)
+  await expect(f.binding.writeExistingChange(undone, released)).rejects.toThrow('state_invalid')
 })
 it('persists exact-ID records across reopen and requires CAS on transitions', async () => {
   const f = await fixture()

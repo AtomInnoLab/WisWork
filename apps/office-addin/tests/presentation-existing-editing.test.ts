@@ -686,6 +686,8 @@ it.each(['text', 'geometry'] as const)(
     await f.confirm()
     const record = f.records()[0]!.record
     expect(record).toMatchObject({ state: 'applied', kind, hostSlideId: 'slide', shapeId: 'shape' })
+    expect(f.readyBackups()).toBe(1)
+    expect(record).toHaveProperty('backup.sha256')
     expect(record).not.toHaveProperty('projectId')
     expect(f.invalidateQa).toHaveBeenCalledWith(['slide'])
     f.reopen()
@@ -697,8 +699,84 @@ it.each(['text', 'geometry'] as const)(
     await f.confirm()
     expect(f.records()[0]!.record.state).toBe('undone')
     expect(kind === 'text' ? f.text() : f.geometry().left).toBe(kind === 'text' ? 'before' : 1)
+    f.setTableText2('unrelated content changed')
+    const unsafeRelease = await f.call('release_existing_presentation_change', {
+      change_id: record.changeId,
+    })
+    expect(unsafeRelease.isError).toBe(true)
+    expect(f.readyBackups()).toBe(1)
+    f.setTableText2('before-2')
+    const release = await f.call('release_existing_presentation_change', {
+      change_id: record.changeId,
+    })
+    expect(release.isError, release.output).not.toBe(true)
+    await f.confirm()
+    expect(f.readyBackups()).toBe(0)
+    expect(f.binding().readExistingChange(record.changeId)?.backupReleasedAt).toBeTruthy()
   },
 )
+it('keeps a single existing-page edit unwritten when its PC package backup is unavailable and resumes it later', async () => {
+  const f = await fixture()
+  await f.propose()
+  f.setBackupOffline(true)
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.text()).toBe('before')
+  expect(f.editText).not.toHaveBeenCalled()
+  const record = f.records()[0]?.record
+  expect(record).toMatchObject({ state: 'pending', backup: { hostSlideId: 'slide' } })
+  f.setBackupOffline(false)
+  f.reopen()
+  const resumed = await f.call('resume_existing_presentation_change', {
+    change_id: record!.changeId,
+  })
+  expect(resumed.isError, resumed.output).not.toBe(true)
+  await f.confirm()
+  expect(f.text()).toBe('after')
+  expect(f.readyBackups()).toBe(1)
+})
+it('does not write a single existing-page edit when the PC backup quota is full', async () => {
+  const f = await fixture()
+  await f.propose('geometry')
+  f.setBackupQuota(0)
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.editGeometry).not.toHaveBeenCalled()
+  expect(f.geometry().left).toBe(1)
+  expect(f.records()[0]?.record.state).toBe('pending')
+  f.setBackupQuota(8)
+  f.reopen()
+  const resumed = await f.call('resume_existing_presentation_change', {
+    change_id: f.records()[0]!.record.changeId,
+  })
+  expect(resumed.isError, resumed.output).not.toBe(true)
+  await f.confirm()
+  expect(f.geometry().left).toBe(30)
+  expect(f.readyBackups()).toBe(1)
+})
+it('rejects a single edit if the original page package changes after proposal', async () => {
+  const f = await fixture()
+  await f.propose()
+  f.setTableText2('concurrent unrelated change')
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.editText).not.toHaveBeenCalled()
+  expect(f.readyBackups()).toBe(0)
+  expect(f.records()[0]?.record.state).toBe('pending')
+})
+it('reuses a ready original page backup after an interrupted single host write', async () => {
+  const f = await fixture()
+  await f.propose()
+  f.editText.mockRejectedValueOnce(new Error('host_unavailable'))
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.text()).toBe('before')
+  expect(f.readyBackups()).toBe(1)
+  f.reopen()
+  const resumed = await f.call('resume_existing_presentation_change', {
+    change_id: f.records()[0]!.record.changeId,
+  })
+  expect(resumed.isError, resumed.output).not.toBe(true)
+  await f.confirm()
+  expect(f.text()).toBe('after')
+  expect(f.readyBackups()).toBe(1)
+})
 it('applies and reverses an ordered text plus geometry batch through one durable savepoint', async () => {
   const f = await fixture()
   const baseline_id = await f.baseline()

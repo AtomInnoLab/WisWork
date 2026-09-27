@@ -23,7 +23,11 @@ import {
 } from './presentation-existing-batch.js'
 import { inspectPowerPointTableCellsPackage } from './presentation-complex-page-package.js'
 import { presentationPackageDigest } from './powerpoint-package.js'
-import { readChartPackageBackup, saveChartPackageBackup } from './presentation-chart-backup.js'
+import {
+  describePagePackageBackup,
+  readChartPackageBackup,
+  saveChartPackageBackup,
+} from './presentation-chart-backup.js'
 
 interface Options {
   baseline: PresentationBaselineSkill
@@ -207,15 +211,6 @@ async function digest(value: string) {
     new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))),
     (b) => b.toString(16).padStart(2, '0'),
   ).join('')
-}
-async function backupMetadata(base64: string, signal?: AbortSignal) {
-  const packageDigest = await presentationPackageDigest(base64, signal)
-  const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
-  if (!bytes.length || bytes.length > 8 * 1024 * 1024) throw new Error('office_api_unsupported')
-  const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('')
-  return { packageDigest, sha256, sizeBytes: bytes.length }
 }
 function preservedFields(page: PresentationBaselinePage, operations: ExistingBatchOperation[]) {
   const targets = new Set(
@@ -540,7 +535,7 @@ export function createPresentationExistingBatchEditingSkill(
               !same(second.slideIds, first.slideIds)
             )
               throw new Error('presentation_baseline_changed')
-            const metadata = await backupMetadata(first.base64, signal)
+            const metadata = await describePagePackageBackup(first.base64, signal)
             if ((await presentationPackageDigest(second.base64, signal)) !== metadata.packageDigest)
               throw new Error('presentation_baseline_changed')
             proposalPackages.set(slideId, first.base64)
@@ -959,7 +954,7 @@ export function createPresentationExistingBatchEditingSkill(
               )
                 throw new Error('presentation_baseline_changed')
               const base64 = proposalPackages.get(backup.hostSlideId) ?? exported.base64
-              const metadata = await backupMetadata(base64, writeSignal)
+              const metadata = await describePagePackageBackup(base64, writeSignal)
               if (
                 metadata.packageDigest !== backup.packageDigest ||
                 metadata.sha256 !== backup.sha256 ||

@@ -45,6 +45,7 @@ const inventories = {
     'inspect_existing_presentation_change',
     'undo_existing_presentation_change',
     'resume_existing_presentation_change',
+    'release_existing_presentation_change',
     'capture_existing_presentation_change',
     'record_existing_presentation_change_review',
     'bash',
