@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { openPptx } from '@wiswork/pptx-engine'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { PresentationStore } from '@wiswork/project-store'
 import { parsePresentationDeck } from '@wiswork/pptx-engine/presentation'
 import {
   benchmarkPlan,
@@ -96,8 +97,20 @@ it('persists eight separate native pages, continues after one failure, and resum
 it('compiles opted-in independent pages concurrently and waits for declared dependencies', async () => {
   const entered = [0, 0]
   const gates = [
-    (() => { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve }); return { promise, release } })(),
-    (() => { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve }); return { promise, release } })(),
+    (() => {
+      let release!: () => void
+      const promise = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return { promise, release }
+    })(),
+    (() => {
+      let release!: () => void
+      const promise = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return { promise, release }
+    })(),
   ]
   const compile = vi.fn(async (input: unknown) => {
     const slideId = parsePresentationDeck(input).slides[0]!.id
@@ -110,7 +123,9 @@ it('compiles opted-in independent pages concurrently and waits for declared depe
   f.plan.slides = f.plan.slides.slice(0, 2)
   f.deck.slides = f.deck.slides.slice(0, 2)
   f.plan.parallelism = 2
-  f.plan.slides.forEach((slide) => { slide.dependsOn = [] })
+  f.plan.slides.forEach((slide) => {
+    slide.dependsOn = []
+  })
   expect((await f.call('save_plan', { expectedRevision: 1, plan: f.plan })).revision).toBe(2)
   await f.call('production_begin', { requestId: 'parallel', planRevision: 2, deck: f.deck })
   const parallel = f.call('production_run', { requestId: 'parallel' })
@@ -122,8 +137,20 @@ it('compiles opted-in independent pages concurrently and waits for declared depe
   dependency.slides[1]!.dependsOn = ['slide-1']
   expect((await f.call('save_plan', { expectedRevision: 2, plan: dependency })).revision).toBe(3)
   const waiting = [
-    (() => { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve }); return { promise, release } })(),
-    (() => { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve }); return { promise, release } })(),
+    (() => {
+      let release!: () => void
+      const promise = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return { promise, release }
+    })(),
+    (() => {
+      let release!: () => void
+      const promise = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return { promise, release }
+    })(),
   ]
   entered.fill(0)
   compile.mockImplementation(async (input: unknown) => {
@@ -142,12 +169,51 @@ it('compiles opted-in independent pages concurrently and waits for declared depe
   waiting[1]!.release()
   expect(await dependent).toMatchObject({ status: 'compiled', compiledCount: 2 })
 })
+it('starts a ready dependent page while an unrelated earlier page is still compiling', async () => {
+  let releaseSlow!: () => void
+  const slow = new Promise<void>((resolve) => {
+    releaseSlow = resolve
+  })
+  const entered: string[] = []
+  const compile = vi.fn(async (input: unknown) => {
+    const pageId = parsePresentationDeck(input).slides[0]!.id
+    entered.push(pageId)
+    if (pageId === 'slide-2') await slow
+    return compilePresentationDeck(input)
+  })
+  const f = await setup(compile)
+  f.plan.slides = f.plan.slides.slice(0, 3)
+  f.deck.slides = f.deck.slides.slice(0, 3)
+  f.plan.parallelism = 2
+  f.plan.slides[0]!.dependsOn = []
+  f.plan.slides[1]!.dependsOn = []
+  f.plan.slides[2]!.dependsOn = ['slide-1']
+  await f.call('save_plan', { expectedRevision: 1, plan: f.plan })
+  await f.call('production_begin', { requestId: 'early-dependent', planRevision: 2, deck: f.deck })
+  const running = f.call('production_run', { requestId: 'early-dependent' })
+  try {
+    await vi.waitFor(() => expect(entered).toContain('slide-2'))
+    await vi.waitFor(() => expect(entered).toContain('slide-3'))
+    const store = new PresentationStore(f.userDataPath)
+    await vi.waitFor(() => {
+      const mid = store.production(f.deck.id, 'doc', 'early-dependent')!
+      expect(mid.pages[1]).toMatchObject({ state: 'building', attempt: 1 })
+      expect(mid.pages[2]).toMatchObject({ state: 'compiled', attempt: 1 })
+    })
+  } finally {
+    releaseSlow()
+  }
+  expect(await running).toMatchObject({ status: 'compiled', compiledCount: 3 })
+  expect(compile).toHaveBeenCalledTimes(3)
+})
 it('keeps native page structure and explicit style identical between serial and parallel production', async () => {
   const f = await setup()
   await f.call('production_begin', { requestId: 'serial-style', planRevision: 1, deck: f.deck })
   expect((await f.call('production_run', { requestId: 'serial-style' })).status).toBe('compiled')
   f.plan.parallelism = 2
-  f.plan.slides.forEach((slide) => { slide.dependsOn = [] })
+  f.plan.slides.forEach((slide) => {
+    slide.dependsOn = []
+  })
   expect((await f.call('save_plan', { expectedRevision: 1, plan: f.plan })).revision).toBe(2)
   await f.call('production_begin', { requestId: 'parallel-style', planRevision: 2, deck: f.deck })
   expect((await f.call('production_run', { requestId: 'parallel-style' })).status).toBe('compiled')
@@ -158,18 +224,22 @@ it('keeps native page structure and explicit style identical between serial and 
       type: element.type,
       name: element.name,
       transform: element.transform,
-      ...(element.type === 'shape' ? {
-        text: element.text,
-        fill: element.fill,
-        line: element.line,
-        presetGeometry: element.presetGeometry,
-      } : {}),
+      ...(element.type === 'shape'
+        ? {
+            text: element.text,
+            fill: element.fill,
+            line: element.line,
+            presetGeometry: element.presetGeometry,
+          }
+        : {}),
       ...(element.type === 'table' ? { rows: element.rows } : {}),
       ...(element.type === 'chart' ? { chart: element.chart } : {}),
     }))
   }
   for (const slide of f.deck.slides)
-    expect(await structure('parallel-style', slide.id)).toEqual(await structure('serial-style', slide.id))
+    expect(await structure('parallel-style', slide.id)).toEqual(
+      await structure('serial-style', slide.id),
+    )
 })
 it('holds a dependent page pending when its predecessor fails, then resumes both safely', async () => {
   let fail = true
@@ -185,7 +255,9 @@ it('holds a dependent page pending when its predecessor fails, then resumes both
   f.plan.slides = f.plan.slides.slice(0, 2)
   f.deck.slides = f.deck.slides.slice(0, 2)
   f.plan.parallelism = 2
-  f.plan.slides.forEach((slide) => { slide.dependsOn = [] })
+  f.plan.slides.forEach((slide) => {
+    slide.dependsOn = []
+  })
   f.plan.slides[1]!.dependsOn = ['slide-1']
   await f.call('save_plan', { expectedRevision: 1, plan: f.plan })
   await f.call('production_begin', { requestId: 'dependent', planRevision: 2, deck: f.deck })
@@ -202,12 +274,16 @@ it('refuses to compile a page whose planned brand logo bytes do not match', asyn
   const f = await setup()
   f.plan.slides[2]!.layout = 'cover'
   f.plan.brandKit = {
-    id: 'research', revision: 1, name: '研究品牌',
+    id: 'research',
+    revision: 1,
+    name: '研究品牌',
     allowedColors: [f.plan.style.background, f.plan.style.textColor, f.plan.style.accentColor],
     logo: { assetId: 'pixel', assetDigest: '0'.repeat(64), placement: 'cover' },
   }
   expect((await f.call('save_plan', { expectedRevision: 1, plan: f.plan })).revision).toBe(2)
-  expect(await f.call('production_begin', { requestId: 'branded', planRevision: 2, deck: f.deck })).toMatchObject({ status: 'pending' })
+  expect(
+    await f.call('production_begin', { requestId: 'branded', planRevision: 2, deck: f.deck }),
+  ).toMatchObject({ status: 'pending' })
   const run = await f.call('production_run', { requestId: 'branded' })
   expect(run).toMatchObject({ status: 'partial', compiledCount: 7 })
   expect(run.pages[2]).toMatchObject({ state: 'failed', error: 'invalid_deck' })

@@ -144,18 +144,90 @@ it('tracks two opted-in pages concurrently and completes when both finish during
   })
   const f = await setup(compile)
   f.plan.parallelism = 2
-  f.plan.slides.forEach((slide) => { slide.dependsOn = [] })
-  expect(await f.call('save_plan', { expectedRevision: 1, plan: f.plan })).toMatchObject({ revision: 2 })
-  expect(await f.call('production_begin', { requestId: 'parallel', planRevision: 2, deck: f.deck })).toMatchObject({ total: 2 })
-  expect(await f.call('production_job_start', { requestId: 'parallel' })).toMatchObject({ job: { state: 'running' } })
+  f.plan.slides.forEach((slide) => {
+    slide.dependsOn = []
+  })
+  expect(await f.call('save_plan', { expectedRevision: 1, plan: f.plan })).toMatchObject({
+    revision: 2,
+  })
+  expect(
+    await f.call('production_begin', { requestId: 'parallel', planRevision: 2, deck: f.deck }),
+  ).toMatchObject({ total: 2 })
+  expect(await f.call('production_job_start', { requestId: 'parallel' })).toMatchObject({
+    job: { state: 'running' },
+  })
   await Promise.all(entered.map((gate) => gate.promise))
-  expect(await f.call('production_job_pause', { requestId: 'parallel' })).toMatchObject({ job: { state: 'pausing' } })
+  expect(await f.call('production_job_pause', { requestId: 'parallel' })).toMatchObject({
+    job: { state: 'pausing' },
+  })
   gates.forEach((gate) => gate.resolve())
-  await vi.waitFor(async () => expect((await f.call('production_job_status', { requestId: 'parallel' })).job.state).toBe('completed'), { timeout: 10000, interval: 100 })
+  await vi.waitFor(
+    async () =>
+      expect((await f.call('production_job_status', { requestId: 'parallel' })).job.state).toBe(
+        'completed',
+      ),
+    { timeout: 10000, interval: 100 },
+  )
   const done = await f.call('production_job_status', { requestId: 'parallel' })
   expect(done.production.compiledCount).toBe(2)
-  expect(done.job.events.filter((event: { type: string }) => event.type === 'page.started')).toHaveLength(2)
-  expect(done.job.events.filter((event: { type: string }) => event.type === 'page.compiled')).toHaveLength(2)
+  expect(
+    done.job.events.filter((event: { type: string }) => event.type === 'page.started'),
+  ).toHaveLength(2)
+  expect(
+    done.job.events.filter((event: { type: string }) => event.type === 'page.compiled'),
+  ).toHaveLength(2)
+})
+it('does not start a newly ready dependent page after pause and resumes without recompiling receipts', async () => {
+  const gates = [deferred(), deferred()]
+  const entered: string[] = []
+  const compile = vi.fn(async (input: unknown) => {
+    const pageId = (input as { slides: { id: string }[] }).slides[0]!.id
+    entered.push(pageId)
+    if (pageId === 'slide-1') await gates[0]!.promise
+    if (pageId === 'slide-2') await gates[1]!.promise
+    return compilePresentationDeck(input)
+  })
+  const f = await setup(compile)
+  f.plan.slides.push(benchmarkPlan().slides[2]!)
+  f.deck.slides.push(benchmarkPlannedDeck().slides[2]!)
+  f.plan.parallelism = 2
+  f.plan.slides[0]!.dependsOn = []
+  f.plan.slides[1]!.dependsOn = []
+  f.plan.slides[2]!.dependsOn = ['slide-1']
+  await f.call('save_plan', { expectedRevision: 1, plan: f.plan })
+  await f.call('production_begin', { requestId: 'pause-dependency', planRevision: 2, deck: f.deck })
+  await f.call('production_job_start', { requestId: 'pause-dependency' })
+  try {
+    await vi.waitFor(() => expect(entered).toEqual(['slide-1', 'slide-2']))
+    expect(await f.call('production_job_pause', { requestId: 'pause-dependency' })).toMatchObject({
+      job: { state: 'pausing' },
+    })
+    gates[0]!.resolve()
+    await vi.waitFor(async () =>
+      expect(
+        (await f.call('production_job_status', { requestId: 'pause-dependency' })).production
+          .compiledCount,
+      ).toBe(1),
+    )
+    expect(entered).toEqual(['slide-1', 'slide-2'])
+  } finally {
+    gates.forEach((gate) => gate.resolve())
+  }
+  await vi.waitFor(async () =>
+    expect(
+      (await f.call('production_job_status', { requestId: 'pause-dependency' })).job.state,
+    ).toBe('paused'),
+  )
+  const paused = await f.call('production_job_status', { requestId: 'pause-dependency' })
+  expect(paused.production.compiledCount).toBe(2)
+  expect(paused.production.pages[2]).toMatchObject({ state: 'pending', attempt: 0 })
+  await f.call('production_job_resume', { requestId: 'pause-dependency' })
+  await vi.waitFor(async () =>
+    expect(
+      (await f.call('production_job_status', { requestId: 'pause-dependency' })).job.state,
+    ).toBe('completed'),
+  )
+  expect(entered).toEqual(['slide-1', 'slide-2', 'slide-3'])
 })
 it('rejects a pre-aborted admission without a durable job', async () => {
   const f = await setup(),

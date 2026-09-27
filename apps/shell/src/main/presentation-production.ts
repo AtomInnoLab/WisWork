@@ -351,12 +351,15 @@ export async function handlePresentationProduction(
   }
   if (request.operation !== 'production_run') return presentationProductionSummary(record)
   let runningRecord: PresentationProductionRecord = record
-  const runPage = async (slide: typeof deck.slides[number]) => {
+  const runPage = async (slide: (typeof deck.slides)[number]) => {
     check(signal)
     const current = runningRecord.pages.find((p) => p.pageId === slide.id)!
     if (current.state === 'compiled') return
     const attempt = current.attempt + 1
-    runningRecord = store.updateProductionPage(runningRecord, slide.id, { state: 'building', attempt })
+    runningRecord = store.updateProductionPage(runningRecord, slide.id, {
+      state: 'building',
+      attempt,
+    })
     options.onPage?.(
       runningRecord,
       runningRecord.pages.find((page) => page.pageId === slide.id)!,
@@ -407,7 +410,9 @@ export async function handlePresentationProduction(
         ? 'aborted'
         : ['output_too_large', 'asset_unavailable'].includes(code)
           ? code
-          : code === 'plan_mismatch' || code.startsWith('presentation_invalid:') || code.startsWith('presentation_geometry:')
+          : code === 'plan_mismatch' ||
+              code.startsWith('presentation_invalid:') ||
+              code.startsWith('presentation_geometry:')
             ? 'invalid_deck'
             : 'compile_failed'
     }
@@ -444,31 +449,34 @@ export async function handlePresentationProduction(
       runningRecord.pages.find((page) => page.pageId === slide.id)!,
     )
   }
-  // The plan is frozen for this task. A page runs only after its declared predecessors compiled.
-  const levels = new Map<string, number>()
-  for (const slide of plan.slides)
-    levels.set(slide.id, Math.max(-1, ...(slide.dependsOn ?? []).map((id) => levels.get(id)!)) + 1)
-  const lastLevel = Math.max(...levels.values())
-  for (let level = 0; level <= lastLevel; level++) {
-    check(signal)
-    if (options.shouldStop?.()) break
-    const ready = deck.slides.filter((slide) =>
-      levels.get(slide.id) === level &&
-      runningRecord.pages.find((page) => page.pageId === slide.id)?.state !== 'compiled' &&
-      (plan.slides.find((page) => page.id === slide.id)?.dependsOn ?? []).every((id) =>
-        runningRecord.pages.find((page) => page.pageId === id)?.state === 'compiled'))
-    let next = 0
-    let fatal: unknown
-    const worker = async () => {
-      while (next < ready.length && !fatal && !options.shouldStop?.()) {
-        const slide = ready[next++]!
-        try { await runPage(slide) }
-        catch (error) { fatal = error }
+  // Release a slot as soon as that page's own predecessors have compiled.
+  const dependencies = new Map(plan.slides.map((slide) => [slide.id, slide.dependsOn ?? []]))
+  const started = new Set<string>()
+  let fatal: unknown
+  const worker = async () => {
+    while (!fatal && !options.shouldStop?.()) {
+      check(signal)
+      const slide = deck.slides.find(
+        (candidate) =>
+          !started.has(candidate.id) &&
+          runningRecord.pages.find((page) => page.pageId === candidate.id)?.state !== 'compiled' &&
+          dependencies
+            .get(candidate.id)!
+            .every(
+              (id) => runningRecord.pages.find((page) => page.pageId === id)?.state === 'compiled',
+            ),
+      )
+      if (!slide) return
+      started.add(slide.id)
+      try {
+        await runPage(slide)
+      } catch (error) {
+        fatal = error
       }
     }
-    await Promise.all(Array.from({ length: Math.min(plan.parallelism ?? 1, ready.length) }, worker))
-    if (fatal) throw fatal
   }
+  await Promise.all(Array.from({ length: plan.parallelism ?? 1 }, worker))
+  if (fatal) throw fatal
   check(signal)
   return presentationProductionSummary(runningRecord)
 }
