@@ -350,7 +350,7 @@ export async function comparePresentationPageStructure(
     } catch {
       // Unsupported chart packages stay unchecked; text and geometry still report.
     }
-    for (const element of source.filter((item) => item.type === 'chart').slice(0, 16)) {
+    for (const element of source.filter((item) => item.type === 'chart')) {
       const hostElement = exportedByName.get(element.name)
       if (!hostElement || hostElement.type !== 'chart') continue
       try {

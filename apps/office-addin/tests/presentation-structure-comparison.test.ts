@@ -312,6 +312,69 @@ it('reports embedded chart workbook bytes changing while cached values stay the 
   })
 })
 
+it('checks embedded workbooks for all seventeen charts', async () => {
+  const deck = benchmarkDeck()
+  const chart = deck.slides[6]!.elements[1]!
+  if (chart.kind !== 'chart') throw new Error('benchmark chart missing')
+  deck.slides = [deck.slides[6]!]
+  deck.slides[0]!.elements = [
+    deck.slides[0]!.elements[0]!,
+    ...Array.from({ length: 17 }, (_, index) => ({
+      ...chart,
+      id: `chart-${index + 1}`,
+      x: 0.2 + (index % 6) * 2,
+      y: 1.7 + Math.floor(index / 6) * 1.5,
+      w: 1.8,
+      h: 1.3,
+    })),
+  ]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.type === 'chart' ? 'Chart' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const workbookPaths = Object.keys(zip.files).filter((path) =>
+    /^ppt\/embeddings\/Microsoft_Excel_Worksheet\d+\.xlsx$/.test(path),
+  )
+  expect(workbookPaths).toHaveLength(17)
+  for (const workbookPath of workbookPaths) {
+    const book = await JSZip.loadAsync(await zip.file(workbookPath)!.async('uint8array'))
+    const sheet = await book.file('xl/worksheets/sheet1.xml')!.async('string')
+    expect(sheet).toContain('<c r="B2"><v>120</v></c>')
+    book.file(
+      'xl/worksheets/sheet1.xml',
+      sheet.replace('<c r="B2"><v>120</v></c>', '<c r="B2"><v>999</v></c>'),
+    )
+    zip.file(workbookPath, await book.generateAsync({ type: 'uint8array' }))
+  }
+  const result = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(result.content.workbookBytesChanged).toEqual(
+    Array.from({ length: 17 }, (_, index) => `chart-${index + 1}`),
+  )
+})
+
 it('detects replaced embedded picture media in an exported page', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[2]!]
