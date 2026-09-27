@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan.js'
 import { createPresentationPlanningSkill } from '../src/skills/powerpoint/presentation-planning.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
+import type { PresentationHistoryEntry } from '../src/skills/powerpoint/presentation-change-history.js'
 const plan = benchmarkPlan()
-function setup() {
+function setup(history?: PresentationHistoryEntry[]) {
   const vfs = new InMemoryVfs()
   const request = vi.fn(
     async (_body: unknown, _signal?: AbortSignal) =>
@@ -19,10 +20,20 @@ function setup() {
     documentId,
     available,
     lastProject: () => plan.projectId,
+    listChangeHistory: history ? () => history : undefined,
   })
   return { skill, vfs, request, rememberProject, documentId, available }
 }
 describe('saved presentation planning tools', () => {
+  it('exposes applied edit candidates without changing the plan or brand kit', async () => {
+    const record = { version: 1 as const, changeId: 'edit1', documentId: 'doc-1', projectId: plan.projectId, requestId: 'request1', artifactDigest: 'a'.repeat(64), pageId: 'page1', hostSlideId: 'slide1', shapeId: 'shape1', before: '长标题', after: '短标题', state: 'applied' as const }
+    const f = setup([{ id: 'text:edit1', sequence: 1, legacy: false, kind: 'text', record }])
+    const result = await f.skill.executeTool({ id: 'preferences', name: 'read_presentation_preference_candidates', input: { project_id: plan.projectId } })
+    expect(result.mutated).toBe(false)
+    expect(JSON.parse(result.output).candidates).toMatchObject([{ changeId: 'edit1', status: 'candidate', after: '短标题' }])
+    expect(f.request).not.toHaveBeenCalled()
+    expect(f.rememberProject).not.toHaveBeenCalled()
+  })
   it('returns five local domain planning skills without claiming source verification', async () => {
     const f = setup()
     for (const domain of ['pitch', 'report', 'training', 'research', 'sales']) {
