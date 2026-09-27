@@ -1,7 +1,7 @@
-import { presentationSlideSourceLabels, type PresentationClaim, type PresentationStyle, type SlideIR } from '@wiswork/pptx-engine/presentation'
+import { presentationSlideSourceLabels, type PresentationClaim, type PresentationInlineAsset, type PresentationStyle, type SlideIR } from '@wiswork/pptx-engine/presentation'
 import type { PowerPointDeclarativeOperation } from './browser-powerpoint-adapter.js'
 
-type AddOperation = Extract<PowerPointDeclarativeOperation, { op: 'add_text_box' | 'add_geometric_shape' | 'add_native_table' }>
+type AddOperation = Extract<PowerPointDeclarativeOperation, { op: 'add_text_box' | 'add_geometric_shape' | 'add_native_table' | 'add_native_image' }>
 
 /** Translate a complete supported SlideIR page into bounded native Office operations. */
 export function officeOperationsForSlideIR(
@@ -9,6 +9,7 @@ export function officeOperationsForSlideIR(
   style: PresentationStyle,
   slideIndex: number,
   claims: PresentationClaim[] = [],
+  assets: PresentationInlineAsset[] = [],
 ): AddOperation[] {
   if (
     !Number.isSafeInteger(slideIndex) ||
@@ -92,6 +93,19 @@ export function officeOperationsForSlideIR(
         throw new Error('invalid_tool_input')
       return { op: 'add_native_table', ...box, rows, fontFace: style.fontFace,
         fontSize: element.fontSize ?? 16, color: style.textColor }
+    }
+    if (element.kind === 'image') {
+      const asset = assets.find((item) => item.id === element.assetId)
+      if (!asset) throw new Error('invalid_tool_input')
+      if (element.fit === 'cover') throw new Error('office_api_unsupported')
+      const scale = Math.min(element.w / asset.width, element.h / asset.height)
+      const width = asset.width * scale
+      const height = asset.height * scale
+      return { op: 'add_native_image', ...box, base64: asset.base64,
+        altText: element.altText ?? 'Image description missing',
+        left: (element.x + (element.w - width) / 2) * 72,
+        top: (element.y + (element.h - height) / 2) * 72,
+        width: width * 72, height: height * 72 }
     }
     throw new Error('office_api_unsupported')
   })

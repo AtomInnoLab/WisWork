@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
+import { PNG } from 'pngjs'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import {
   BrowserPowerPointAdapter,
@@ -8,6 +9,7 @@ import {
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { editPowerPointPackage, presentationPackageDigest } from '../src/skills/powerpoint/powerpoint-package.js'
+import { InMemoryVfs } from '../src/skills/shared/vfs.js'
 
 const png = 'iVBORw0KGgoAAAA='
 
@@ -1467,7 +1469,7 @@ describe('browser PowerPoint adapter', () => {
     })
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
-    const proposed = await skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[3], style: deck.style, claims: deck.claims }))
+    const proposed = await skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[3], style: deck.style, claims: deck.claims, assets: [] }))
     expect(proposed).toMatchObject({ mutated: false, summary: 'Proposed declarative PowerPoint execution' })
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
     await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
@@ -1476,7 +1478,7 @@ describe('browser PowerPoint adapter', () => {
       expect.objectContaining({ op: 'add_geometric_shape', name: 'step' }),
     ]), expect.any(AbortSignal))
     const count = (fake.executeDeclarative as ReturnType<typeof vi.fn>).mock.calls.length
-    await expect(skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[2], style: deck.style, claims: deck.claims }))).resolves.toMatchObject({ isError: true })
+    await expect(skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[6], style: deck.style, claims: deck.claims, assets: [] }))).resolves.toMatchObject({ isError: true })
     expect((fake.executeDeclarative as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(count)
   })
 
@@ -1496,10 +1498,78 @@ describe('browser PowerPoint adapter', () => {
     })
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
-    const proposed = await skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[5], style: deck.style, claims: deck.claims }))
+    const proposed = await skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[5], style: deck.style, claims: deck.claims, assets: [] }))
     expect(proposed.mutated).toBe(false)
     await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
     expect(fake.readSlideTable).toHaveBeenCalledWith(0, 'table-host', expect.any(AbortSignal))
+  })
+
+  it('inserts a prevalidated VFS contain picture from SlideIR and rechecks the asset before confirmation', async () => {
+    const previousDecoder = globalThis.createImageBitmap
+    const imageBytes = new Uint8Array(PNG.sync.write(new PNG({ width: 2, height: 1 })))
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/chart.png', imageBytes)
+    ;(globalThis as Record<string, unknown>).createImageBitmap = vi.fn(async () => ({ width: 2, height: 1, close: vi.fn() }))
+    try {
+      const deck = benchmarkDeck()
+      const image = deck.slides[2]!.elements[1]!
+      if (image.kind !== 'image') throw new Error('benchmark image missing')
+      image.altText = '研究配图'
+      const fake = adapter({
+        executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['title-host', 'image-host', 'source-host'] }),
+        readSlideImageAltText: vi.fn().mockResolvedValue('研究配图'),
+        listSlideShapes: vi.fn().mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
+          .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] }).mockResolvedValue({ slideId: 'slide-1', slideIndex: 0, shapes: [
+          { id: 'title-host', name: 'title', type: 'TextBox', left: 72, top: 72, width: 720, height: 72 },
+          { id: 'image-host', name: 'image', type: 'Image', left: 72, top: 234, width: 216, height: 108 },
+          { id: 'source-host', name: 'source-attribution', type: 'TextBox', left: 36, top: 507.6, width: 885.6, height: 21.6 },
+        ] }),
+        readSlideText: vi.fn().mockImplementation(async (_index, shapeId) => ({ slideId: 'slide-1', shapeId,
+          text: shapeId === 'source-host' ? '[source-1] 研究报告（合成基准） · 第 1 页' : '研究图文', paragraphs: [] })),
+      })
+      const proposals = createStructuredProposalController()
+      const skill = createPowerPointSkill({ adapter: fake, proposals, vfs })
+      const input = { slide_index: 0, slide: deck.slides[2], style: deck.style, claims: deck.claims,
+        assets: [{ id: 'pixel', path: '/home/user/chart.png' }] }
+      const result = await skill.executeTool(call('add_slide_ir_objects', input))
+      expect(result.isError).not.toBe(true)
+      expect(JSON.stringify(result)).not.toContain(Buffer.from(imageBytes).toString('base64'))
+      await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+      expect(fake.executeDeclarative).toHaveBeenCalledWith(expect.arrayContaining([
+        expect.objectContaining({ op: 'add_native_image', name: 'image', altText: '研究配图',
+          left: 72, top: 234, width: 216, height: 108 }),
+      ]), expect.any(AbortSignal))
+      const staleFake = adapter({ listSlideShapes: vi.fn().mockResolvedValue({ slideId: 'slide-1', slideIndex: 0, shapes: [] }) })
+      const staleProposals = createStructuredProposalController()
+      const staleSkill = createPowerPointSkill({ adapter: staleFake, proposals: staleProposals, vfs })
+      await staleSkill.executeTool(call('add_slide_ir_objects', input))
+      const changed = new PNG({ width: 2, height: 1 })
+      changed.data[0] = 255
+      vfs.writeFile('/home/user/chart.png', new Uint8Array(PNG.sync.write(changed)))
+      await expect(staleProposals.confirm(staleProposals.pending()!.id)).rejects.toThrow('proposal_stale')
+      expect(staleFake.executeDeclarative).not.toHaveBeenCalled()
+    } finally {
+      ;(globalThis as Record<string, unknown>).createImageBitmap = previousDecoder
+    }
+  })
+
+  it('creates a named native picture with alternative text through Office.js', async () => {
+    const created = { id: 'new-picture', name: '', altTextDescription: '', load: vi.fn() }
+    const addImage = vi.fn(() => created)
+    const isSetSupported = vi.fn().mockReturnValue(true)
+    const slide = { id: 's1', load: vi.fn(), shapes: { addImage } }
+    const slides = { getCount: vi.fn(() => ({ value: 1 })), getItemAt: vi.fn(() => slide) }
+    Object.assign(globalThis, {
+      Office: { context: { host: 'PowerPoint', requirements: { isSetSupported } } },
+      PowerPoint: { run: (callback: (context: unknown) => unknown) => callback({ presentation: { slides }, sync: vi.fn().mockResolvedValue(undefined) }) },
+    })
+    await expect(new BrowserPowerPointAdapter().executeDeclarative([{
+      op: 'add_native_image', slide_index: 0, name: 'image', base64: 'aGVsbG8=', altText: '研究配图',
+      left: 72, top: 234, width: 216, height: 108,
+    }])).resolves.toEqual({ createdShapeIds: ['new-picture'] })
+    expect(addImage).toHaveBeenCalledWith('aGVsbG8=', { left: 72, top: 234, width: 216, height: 108 })
+    expect(created).toMatchObject({ name: 'image', altTextDescription: '研究配图' })
+    expect(isSetSupported).toHaveBeenCalledWith('PowerPointApi', '1.10')
   })
 
   it('rejects a SlideIR page when the host already has an object with a planned name', async () => {
@@ -1508,7 +1578,7 @@ describe('browser PowerPoint adapter', () => {
       shapes: [{ id: 'old', name: 'title', type: 'TextBox', left: 0, top: 0, width: 100, height: 20 }] }) })
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
-    await expect(skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[3], style: deck.style, claims: deck.claims })))
+    await expect(skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[3], style: deck.style, claims: deck.claims, assets: [] })))
       .resolves.toMatchObject({ isError: true, output: 'office_concurrent_change' })
     expect(proposals.pending()).toBeUndefined()
     expect(fake.executeDeclarative).not.toHaveBeenCalled()

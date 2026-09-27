@@ -409,14 +409,18 @@ const tools = [
   },
   {
     name: 'add_slide_ir_objects',
-    description: 'Propose adding all text, shape and table objects plus a visible source footer from one validated SlideIR and Claim Ledger to an existing PowerPoint slide using native Office.js objects. Source truth is not verified here. Unsupported image/chart pages are rejected before writing. This does not create a slide or provide page-level atomic rollback; review the resulting page.',
+    description: 'Propose adding text, shapes, tables, contain-fit VFS pictures and a visible source footer from one validated SlideIR to an existing PowerPoint slide using Office.js. Cover-fit pictures and charts are rejected before writing. This does not create a slide or provide page-level atomic rollback; review the resulting page.',
     inputSchema: { type: 'object', properties: {
       slide_index: { type: 'integer', minimum: 0, maximum: 31 },
       slide: PRESENTATION_DECK_SCHEMA.properties!.slides.items!,
       style: PRESENTATION_DECK_SCHEMA.properties!.style,
       claims: PRESENTATION_DECK_SCHEMA.properties!.claims,
+      assets: { type: 'array', maxItems: 32, items: { type: 'object', properties: {
+        id: { type: 'string', minLength: 1, maxLength: 80 },
+        path: { type: 'string', minLength: 1, maxLength: 512 },
+      }, required: ['id', 'path'], additionalProperties: false } },
       explanation: { type: 'string', maxLength: 100 },
-    }, required: ['slide_index', 'slide', 'style', 'claims'], additionalProperties: false },
+    }, required: ['slide_index', 'slide', 'style', 'claims', 'assets'], additionalProperties: false },
   },
   {
     name: 'edit_slide_text',
@@ -1639,24 +1643,39 @@ export function createPowerPointSkill(options: {
         }
         if (call.name === 'execute_office_js' || call.name === 'add_slide_ir_objects') {
           let input: { code: string; explanation?: string }
+          let preparedProgram: { version: number; operations: PowerPointDeclarativeOperation[] } | undefined
+          const assetChecks: Array<{ path: string; base64: string }> = []
           if (call.name === 'add_slide_ir_objects') {
-            const value = exactRecord(call.input, ['slide_index', 'slide', 'style', 'claims', 'explanation'])
+            const value = exactRecord(call.input, ['slide_index', 'slide', 'style', 'claims', 'assets', 'explanation'])
             if (!Number.isSafeInteger(value.slide_index) || (value.slide_index as number) < 0 || (value.slide_index as number) > 31 ||
               (value.explanation !== undefined && (typeof value.explanation !== 'string' || value.explanation.length > 100)))
               throw new Error('invalid_tool_input')
             let serialized: string
-            try { serialized = JSON.stringify([value.slide, value.style, value.claims]) } catch { throw new Error('invalid_tool_input') }
+            try { serialized = JSON.stringify([value.slide, value.style, value.claims, value.assets]) } catch { throw new Error('invalid_tool_input') }
             if (!serialized || new TextEncoder().encode(serialized).byteLength > MAX_CODE) throw new Error('invalid_tool_input')
+            if (!Array.isArray(value.assets) || value.assets.length > 32 || (value.assets.length > 0 && !options.vfs)) throw new Error('invalid_tool_input')
+            const assetPaths = new Set<string>()
+            const assets = await Promise.all(value.assets.map(async (item) => {
+              const record = exactRecord(item, ['id', 'path'])
+              if (typeof record.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(record.id) || assetPaths.has(record.id) ||
+                typeof record.path !== 'string' || !record.path || record.path.length > 512) throw new Error('invalid_tool_input')
+              assetPaths.add(record.id)
+              const image = await readBoundedImage(options.vfs!, record.path)
+              assetChecks.push({ path: record.path, base64: image.base64 })
+              return { id: record.id, mime: image.mime, base64: image.base64, width: image.width, height: image.height }
+            }))
             const deck = parsePresentationDeck({ version: 1, id: 'office-ir', title: 'Office IR', style: value.style,
-              assets: [], claims: value.claims, slides: [value.slide] })
-            const operations = officeOperationsForSlideIR(deck.slides[0]!, deck.style, value.slide_index as number, deck.claims)
-            const code = JSON.stringify({ version: 1, operations })
+              assets, claims: value.claims, slides: [value.slide] })
+            const operations = officeOperationsForSlideIR(deck.slides[0]!, deck.style, value.slide_index as number, deck.claims, assets)
+            preparedProgram = { version: 1, operations }
+            const code = JSON.stringify({ version: 1, operations: operations.map((operation) =>
+              operation.op === 'add_native_image' ? { ...operation, base64: '[validated VFS image]' } : operation) })
             if (new TextEncoder().encode(code).byteLength > MAX_CODE) throw new Error('invalid_tool_input')
             input = { code, ...(typeof value.explanation === 'string' ? { explanation: value.explanation } : {}) }
           } else input = declarativeInput(call.input, { slide: false, explanationMax: 100 })
-          let program
+          let program: { version: number; operations: PowerPointDeclarativeOperation[] }
           try {
-            program = parseDeclarativeProgram(input.code, parsePowerPointOperation)
+            program = preparedProgram ?? parseDeclarativeProgram(input.code, parsePowerPointOperation)
           } catch (error) {
             if (error instanceof Error && error.message === 'invalid_tool_input')
               throw invalidToolInput('program.operations')
@@ -1708,11 +1727,13 @@ export function createPowerPointSkill(options: {
           )
           const combined = snapshots.map((item) => item.fingerprint).join('|')
           let declarativeResult: { createdShapeIds: string[]; insertedSlideId?: string } | undefined
+          const publicOperations = program.operations.map((operation) =>
+            operation.op === 'add_native_image' ? { ...operation, base64: '[validated VFS image]' } : operation)
           const proposal = options.proposals.propose({
             operation: call.name,
             toolName: call.name,
             title: input.explanation || 'Execute declarative PowerPoint operations',
-            preview: { version: 1, operations: program.operations },
+            preview: { version: 1, operations: publicOperations },
             impact: {
               host: 'powerpoint',
               targets: program.operations.map((operation) =>
@@ -1735,8 +1756,11 @@ export function createPowerPointSkill(options: {
                 text: item.text,
               })),
             },
-            after: { operations: program.operations },
+            after: { operations: publicOperations },
             validate: async (confirmSignal) => {
+              for (const asset of assetChecks) {
+                if (!options.vfs || (await readBoundedImage(options.vfs, asset.path)).base64 !== asset.base64) return false
+              }
               if (plannedNames) {
                 const current = await options.adapter.listSlideShapes(program.operations[0]!.slide_index, confirmSignal)
                 if (current.shapes.some((shape) => plannedNames.has(shape.name))) return false
@@ -1782,7 +1806,7 @@ export function createPowerPointSkill(options: {
                     return current.text === operation.text
                   }, confirmSignal)
                 } else if (operation.op !== 'duplicate_slide') {
-                  if (operation.op === 'add_text_box' || operation.op === 'add_geometric_shape' || operation.op === 'add_native_table') {
+                  if (operation.op === 'add_text_box' || operation.op === 'add_geometric_shape' || operation.op === 'add_native_table' || operation.op === 'add_native_image') {
                     const createdShapeId = declarativeResult?.createdShapeIds[createdShapeIndex++]
                     await verifyPowerPointReadback(async () => {
                       const current = await options.adapter.listSlideShapes(
@@ -1798,6 +1822,9 @@ export function createPowerPointSkill(options: {
                         sameGeometry(shape.height, operation.height)
                       ) {
                         if (operation.op === 'add_geometric_shape') return shape.type === 'GeometricShape'
+                        if (operation.op === 'add_native_image')
+                          return shape.type === 'Image' && Boolean(options.adapter.readSlideImageAltText) &&
+                            (await options.adapter.readSlideImageAltText!(operation.slide_index, shape.id, confirmSignal)) === operation.altText
                         if (operation.op === 'add_native_table') {
                           if (shape.type !== 'Table') return false
                           const rows = await options.adapter.readSlideTable(operation.slide_index, shape.id, confirmSignal)
