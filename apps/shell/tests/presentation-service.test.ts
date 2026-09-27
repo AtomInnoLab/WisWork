@@ -302,6 +302,15 @@ const planRequest = (value = plan(), expectedRevision = 0) => ({
   plan: value,
 })
 describe('durable presentation planning', () => {
+  it('persists an opted-in domain story only after all required sections are planned', async () => {
+    const service = createPresentationService({ userDataPath: root(), compile: vi.fn(async () => result()) })
+    const incomplete = { ...plan(), domain: 'report' }
+    expect(decode(await service(planRequest(incomplete), signal()))).toEqual({ error: 'invalid_plan' })
+    const sections = ['executive_summary', 'findings', 'supporting_evidence', 'risks', 'actions']
+    const complete = { ...incomplete, slides: sections.map((domainSection, index) => ({ ...plan().slides[0]!, id: `section-${index}`, domainSection })) }
+    expect(decode(await service(planRequest(complete), signal()))).toMatchObject({ revision: 1, plan: complete })
+    expect(decode(await service({ operation: 'get_plan', documentId: input.documentId, projectId: 'deck' }, signal()))).toMatchObject({ plan: complete })
+  })
   it('reuses a catalog layout component across projects and rejects slot drift before compilation', async () => {
     const compile = vi.fn(async () => result())
     const service = createPresentationService({ userDataPath: root(), compile })

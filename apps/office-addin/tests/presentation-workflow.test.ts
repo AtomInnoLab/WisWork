@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest'
 import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan.js'
+import { PRESENTATION_DOMAIN_PROFILES } from '@wiswork/pptx-engine/presentation-plan'
 import { presentationWorkflowSummary } from '../src/agent/presentation-workflow.js'
 import type { PresentationProjectStatus } from '../src/skills/powerpoint/presentation-project.js'
 import type { PresentationImportProgress } from '../src/skills/powerpoint/presentation-page-delivery.js'
@@ -59,6 +60,20 @@ const qa: PresentationQaRecord = {
     visual: { status: 'pass', reviewer: 'agent', reviewedAt: '2026-09-24T00:01:00.000Z' },
   })),
 }
+
+it('shows the chosen domain sections only for the matching plan revision', () => {
+  const domainPlan = benchmarkPlan()
+  domainPlan.domain = 'research'
+  domainPlan.slides.forEach((slide, index) => {
+    slide.domainSection = PRESENTATION_DOMAIN_PROFILES.research.sections[index % 5]
+  })
+  const planned = { ...project, plan: { revision: 2, value: domainPlan } }
+  const current = presentationWorkflowSummary(planned, undefined, undefined)!
+  expect(current.stages[1]!.detail).toContain('研究报告结构')
+  expect(current.pages[0]!.section).toBe('研究问题')
+  const oldTask = presentationWorkflowSummary({ ...planned, production }, undefined, undefined)!
+  expect(oldTask.pages[0]!.section).toBeUndefined()
+})
 
 it('walks the saved plan through production, import and QA without claiming delivery', () => {
   expect(presentationWorkflowSummary(project, undefined, undefined)?.nextAction).toContain(

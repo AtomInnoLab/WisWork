@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parsePresentationDeck } from '../src/presentation'
 import {
   parsePresentationPlan,
+  PRESENTATION_DOMAIN_PROFILES,
   presentationPlanClaims,
   assertDeckMatchesPresentationPlan,
   assertBrandKitRevision,
@@ -10,6 +11,31 @@ import { benchmarkPlan } from './fixtures/presentation-plan'
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
 describe('durable presentation plan', () => {
+  it('requires the selected domain workflow sections while leaving generic plans valid', () => {
+    const plan = benchmarkPlan()
+    expect(() => parsePresentationPlan(plan)).not.toThrow()
+    plan.domain = 'research'
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:domain_section')
+    const sections = ['question', 'method', 'results', 'limitations', 'references'] as const
+    plan.slides = sections.map((section, index) => ({
+      ...plan.slides[0]!, id: `domain-${index}`, domainSection: section,
+    }))
+    expect(() => parsePresentationPlan(plan)).not.toThrow()
+    plan.slides[1]!.domainSection = 'customer_problem'
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:domain_section')
+  })
+  it('accepts each of the five domain workflows and rejects omitted sections', () => {
+    for (const [domain, profile] of Object.entries(PRESENTATION_DOMAIN_PROFILES)) {
+      const plan = benchmarkPlan()
+      plan.domain = domain as keyof typeof PRESENTATION_DOMAIN_PROFILES
+      plan.slides = profile.sections.map((domainSection, index) => ({
+        ...plan.slides[0]!, id: `section-${index}`, domainSection,
+      }))
+      expect(() => parsePresentationPlan(plan)).not.toThrow()
+      plan.slides.pop()
+      expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:domain_section')
+    }
+  })
   it('pins reusable layout slots to native object types and geometry', () => {
     const plan = benchmarkPlan()
     plan.brandKit = {

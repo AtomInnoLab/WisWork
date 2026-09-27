@@ -116,7 +116,7 @@ export function PresentationWorkflowCard({
         <ol>
           {workflow.pages.map((page) => (
             <li key={page.id}>
-              <strong>{page.title}</strong> · {page.id}：{page.production} / {page.imported} /{' '}
+              <strong>{page.title}</strong>{page.section ? ` · ${page.section}` : ''} · {page.id}：{page.production} / {page.imported} /{' '}
               {page.qa} / {page.evidence}；下一步：{page.nextAction}
             </li>
           ))}

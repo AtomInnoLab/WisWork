@@ -2,6 +2,7 @@ import type { PresentationProjectStatus } from '../skills/powerpoint/presentatio
 import type { PresentationImportProgress } from '../skills/powerpoint/presentation-page-delivery.js'
 import type { PresentationQaRecord } from '../skills/powerpoint/presentation-qa.js'
 import type { PresentationDeliveryReport } from '@wiswork/pptx-engine/presentation-delivery-report'
+import { PRESENTATION_DOMAIN_PROFILES } from '@wiswork/pptx-engine/presentation-plan'
 
 export interface PresentationWorkflowSummary {
   stages: { name: string; detail: string }[]
@@ -10,6 +11,7 @@ export interface PresentationWorkflowSummary {
   pages: {
     id: string
     title: string
+    section?: string
     production: string
     imported: string
     qa: string
@@ -29,6 +31,9 @@ export function presentationWorkflowSummary(
 ): PresentationWorkflowSummary | undefined {
   if (!project) return undefined
   const plan = project.plan?.value
+  const domainProfile = plan?.domain ? PRESENTATION_DOMAIN_PROFILES[plan.domain] : undefined
+  const sectionLabels = new Map<string, string>(domainProfile?.sections.map((section, index) =>
+    [section, domainProfile.labels[index]!] as [string, string]) ?? [])
   const production = project.production
   const pageIds = production?.pages.map((page) => page.id)
   const importMatches = Boolean(
@@ -113,6 +118,7 @@ export function presentationWorkflowSummary(
       text: `${openIssues} 项内容证据问题待处理；请查看交付报告。`,
     })
   const pages = (production?.pages ?? project.slides).map((slide) => {
+    const plannedSlide = plan?.slides.find((item) => item.id === slide.id)
     const page = production?.pages.find((item) => item.id === slide.id)
     const index = production?.pages.findIndex((item) => item.id === slide.id) ?? -1
     const importedPage = importMatches && index >= 0 ? imported!.pages[index] : undefined
@@ -180,6 +186,9 @@ export function presentationWorkflowSummary(
     return {
       id: slide.id,
       title: slide.title,
+      ...(!planChangedSinceProduction && plannedSlide?.domainSection
+        ? { section: sectionLabels.get(plannedSlide.domainSection) }
+        : {}),
       production: productionText,
       imported: importText,
       qa: qaText,
@@ -197,7 +206,7 @@ export function presentationWorkflowSummary(
     {
       name: '故事线与样式',
       detail: plan
-        ? `已保存 ${plan.slides.length} 页施工图和样式契约 · 计划第 ${project.plan!.revision} 版`
+        ? `已保存 ${plan.slides.length} 页施工图和样式契约${domainProfile ? ` · ${domainProfile.title}结构` : ''} · 计划第 ${project.plan!.revision} 版`
         : '待保存逐页施工图与样式契约',
     },
     {

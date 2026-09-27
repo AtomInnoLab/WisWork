@@ -23,6 +23,16 @@ function setup() {
   return { skill, vfs, request, rememberProject, documentId, available }
 }
 describe('saved presentation planning tools', () => {
+  it('returns five local domain planning skills without claiming source verification', async () => {
+    const f = setup()
+    for (const domain of ['pitch', 'report', 'training', 'research', 'sales']) {
+      const result = await f.skill.executeTool({ id: domain, name: 'read_presentation_domain_skill', input: { domain } })
+      expect(result.isError).not.toBe(true)
+      expect(JSON.parse(result.output)).toMatchObject({ domain, sections: expect.any(Array), questions: expect.any(Array) })
+    }
+    expect(f.request).not.toHaveBeenCalled()
+    expect(await f.skill.executeTool({ id: 'bad', name: 'read_presentation_domain_skill', input: { domain: 'finance' } })).toMatchObject({ isError: true, output: 'invalid_tool_input' })
+  })
   it('saves, lists and reads a pinned PC brand kit revision', async () => {
     const f = setup()
     const brandKit = { id: 'research', revision: 1, name: 'Research', allowedColors: ['FFFFFF', '172033'] }

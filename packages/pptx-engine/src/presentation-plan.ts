@@ -8,6 +8,19 @@ import { type Schema, text, number, choice, array, object, id, color, valid } fr
  */
 export const PRESENTATION_PLAN_COMPILED_BYTE_BUDGET = 192 * 1024
 
+/** Optional domain story structure; labels guide planning, not factual verification. */
+export const PRESENTATION_DOMAIN_PROFILES = {
+  pitch: { title: '路演', sections: ['audience_problem', 'solution', 'evidence', 'business_case', 'ask'], labels: ['目标用户问题', '方案', '验证证据', '商业论证', '明确请求'], questions: ['问题与目标受众是否清楚？', '关键数字是否有来源或明确标为假设？', '最后是否有明确请求？'] },
+  report: { title: '汇报', sections: ['executive_summary', 'findings', 'supporting_evidence', 'risks', 'actions'], labels: ['执行摘要', '主要发现', '支撑证据', '风险', '行动建议'], questions: ['结论能否回溯到证据？', '风险与限制是否可见？', '行动项是否有负责人和时间？'] },
+  training: { title: '培训', sections: ['objectives', 'concept', 'demonstration', 'practice', 'recap'], labels: ['学习目标', '核心概念', '演示', '练习', '回顾'], questions: ['学习目标是否可检查？', '是否有练习或应用环节？', '总结是否回扣目标？'] },
+  research: { title: '研究报告', sections: ['question', 'method', 'results', 'limitations', 'references'], labels: ['研究问题', '方法', '结果', '局限', '参考来源'], questions: ['方法和样本口径是否可追溯？', '结果与推断是否区分？', '局限与原始来源是否完整？'] },
+  sales: { title: '销售方案', sections: ['customer_problem', 'offer', 'proof', 'value', 'next_step'], labels: ['客户问题', '方案内容', '效果证据', '客户价值', '下一步'], questions: ['客户问题是否来自已知材料？', '产品效果主张是否有证据？', '下一步是否具体？'] },
+} as const
+export type PresentationDomainKind = keyof typeof PRESENTATION_DOMAIN_PROFILES
+export type PresentationDomainSection = typeof PRESENTATION_DOMAIN_PROFILES[PresentationDomainKind]['sections'][number]
+const domainKinds = Object.keys(PRESENTATION_DOMAIN_PROFILES)
+const domainSections = Object.values(PRESENTATION_DOMAIN_PROFILES).flatMap((profile) => [...profile.sections])
+
 /** Durable planning metadata; source URIs are never fetched or treated as verified evidence. */
 export interface PresentationPlan {
   version: 1
@@ -50,6 +63,7 @@ export interface PresentationPlan {
     }
   }[]
   style: PresentationStyle
+  domain?: PresentationDomainKind
   brandKit?: {
     id: string
     revision: number
@@ -69,6 +83,7 @@ export interface PresentationPlan {
     purpose: string
     claimIds: string[]
     layout: 'cover' | 'content' | 'comparison' | 'process' | 'chart' | 'summary'
+    domainSection?: PresentationDomainSection
     layoutComponentId?: string
     requiredAssets: string[]
     acceptanceCriteria: string[]
@@ -142,6 +157,7 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object({
     256,
   ),
   style: PRESENTATION_DECK_SCHEMA.properties!.style!,
+  domain: choice(...domainKinds),
   brandKit: object({
     id,
     revision: number(1, 1_000_000),
@@ -169,6 +185,7 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object({
       purpose: text(2000, 1),
       claimIds: array(id, 32),
       layout: choice('cover', 'content', 'comparison', 'process', 'chart', 'summary'),
+      domainSection: choice(...domainSections),
       layoutComponentId: id,
       requiredAssets: array(text(1000, 1), 32),
       acceptanceCriteria: array(text(2000, 1), 32),
@@ -218,6 +235,12 @@ export function parsePresentationPlan(input: unknown): PresentationPlan {
       reject('brand_kit_logo_scope')
   }
   const components = new Map(plan.brandKit?.layoutComponents?.map((item) => [item.id, item]) ?? [])
+  if (plan.domain) {
+    const sections: readonly string[] = PRESENTATION_DOMAIN_PROFILES[plan.domain].sections
+    if (plan.slides.some((slide) => !slide.domainSection || !sections.includes(slide.domainSection)) ||
+      sections.some((section) => !plan.slides.some((slide) => slide.domainSection === section)))
+      reject('domain_section')
+  } else if (plan.slides.some((slide) => slide.domainSection)) reject('domain_section')
   for (const slide of plan.slides) {
     if (slide.layoutComponentId && components.get(slide.layoutComponentId)?.layout !== slide.layout)
       reject('layout_component')
