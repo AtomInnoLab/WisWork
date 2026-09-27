@@ -31,7 +31,8 @@ export function PresentationChangesCard({
       <strong>修改差异与撤销</strong>
       <p>
         变更历史最多 64 条，达到容量上限后停止新增；旧版本仅有最近保存点，不完整历史的先后顺序未知。
-        每次撤销仍检查当前对象；对象 ID 或内容已变化时可能无法继续撤销。图片或整页恢复后对象 ID 会改变。
+        每次撤销仍检查当前对象；对象 ID 或内容已变化时可能无法继续撤销。图片或整页恢复后对象 ID
+        会改变。
       </p>
       {snapshot.projectId && (
         <p>
@@ -45,7 +46,13 @@ export function PresentationChangesCard({
       {snapshot.phase === 'acting' && <p role="status">正在检查并准备操作…</p>}
       {snapshot.notice && <p role="status">{snapshot.notice}</p>}
       {snapshot.error && <p role="alert">{snapshot.error}</p>}
-      {snapshot.backupAudit && <p role="status">当前文档 PC 活动备份：{snapshot.backupAudit.active}/8；其中 {snapshot.backupAudit.unmatched} 份未在当前保存点历史中找到对应整页或图表记录，需人工核查，暂不自动删除。</p>}
+      {snapshot.backupAudit && (
+        <p role="status">
+          当前文档 PC 活动备份：{snapshot.backupAudit.active}/8；其中{' '}
+          {snapshot.backupAudit.unmatched}{' '}
+          份未在当前保存点历史中找到对应整页或图表记录，需人工核查，暂不自动删除。
+        </p>
+      )}
       {snapshot.phase === 'idle' && !snapshot.entries.length && (
         <p>当前文档或任务暂无可用保存点。</p>
       )}
@@ -56,6 +63,7 @@ export function PresentationChangesCard({
               {
                 {
                   text: '文字差异',
+                  text_range: '局部文字与字体差异',
                   geometry: '几何差异（pt）',
                   table_cell: '表格单元格文字差异',
                   image: '图片身份与摘要差异（非视觉 diff）',
@@ -71,9 +79,9 @@ export function PresentationChangesCard({
                   ? '现稿图片 · '
                   : entry.source === 'existing_page'
                     ? '现稿整页 · '
-                  : entry.source === 'existing'
-                    ? '现稿 · '
-                    : ''}
+                    : entry.source === 'existing'
+                      ? '现稿 · '
+                      : ''}
               页面：{entry.pageId} · 状态：
               {entry.state}
             </p>
@@ -104,15 +112,29 @@ export function PresentationChangesCard({
             {(entry.source === 'existing_image' || entry.source === 'existing_page') && (
               <div>
                 <p>
-                  历史视觉复核：{entry.visualReviews?.length ?? 0}/{entry.visualPageIds?.length ?? 0} 页。历史结果不代表当前页面 QA 通过。
+                  历史视觉复核：{entry.visualReviews?.length ?? 0}/
+                  {entry.visualPageIds?.length ?? 0} 页。历史结果不代表当前页面 QA 通过。
                 </p>
                 {entry.visualPageIds?.map((slideId) => {
                   const review = entry.visualReviews?.find((item) => item.hostSlideId === slideId)
                   const capture = entry.visualCaptures?.find((item) => item.hostSlideId === slideId)
-                  return <p key={slideId}>
-                    {slideId}：{review ? (review.status === 'pass' ? '通过' : '未通过') : capture ? '已采集 · 待判断' : '待采集'}
-                    {review ? ` · ${review.reviewedAt}` : capture ? ` · ${capture.capturedAt}` : ''}
-                  </p>
+                  return (
+                    <p key={slideId}>
+                      {slideId}：
+                      {review
+                        ? review.status === 'pass'
+                          ? '通过'
+                          : '未通过'
+                        : capture
+                          ? '已采集 · 待判断'
+                          : '待采集'}
+                      {review
+                        ? ` · ${review.reviewedAt}`
+                        : capture
+                          ? ` · ${capture.capturedAt}`
+                          : ''}
+                    </p>
+                  )
                 })}
               </div>
             )}

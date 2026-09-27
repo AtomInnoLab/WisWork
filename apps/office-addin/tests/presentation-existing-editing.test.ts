@@ -309,6 +309,14 @@ async function fixture() {
       italic: false as boolean | null,
       underline: 'None' as string | null,
     },
+    rangeFont = {
+      name: 'Arial',
+      size: 20,
+      color: '#000000',
+      bold: false,
+      italic: false,
+      underline: 'None',
+    },
     selection = ['shape'],
     screenshot = png
   const values = new Map<string, string>()
@@ -367,6 +375,24 @@ async function fixture() {
       }
       if (text !== expected) throw new Error('office_concurrent_change')
       text = next
+    })
+  const readTextRange = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'readPresentationPageTextRange')
+    .mockImplementation(async (slideId, shapeId, start, length) => ({
+      slideId,
+      shapeId,
+      start,
+      length,
+      fullText: text,
+      text: text.slice(start, start + length),
+      font: { ...rangeFont },
+    }))
+  const editTextRange = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationPageTextRange')
+    .mockImplementation(async (expected, next) => {
+      if (text !== expected.fullText || JSON.stringify(rangeFont) !== JSON.stringify(expected.font))
+        throw new Error('office_concurrent_change')
+      text = text.slice(0, expected.start) + next + text.slice(expected.start + expected.length)
     })
   const editGeometry = vi
     .spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationPageGeometry')
@@ -545,6 +571,8 @@ async function fixture() {
     values,
     save,
     editText,
+    readTextRange,
+    editTextRange,
     editGeometry,
     editTableCell,
     tableText: () => tableText,
@@ -575,6 +603,9 @@ async function fixture() {
     },
     setFont: (v: typeof font) => {
       font = v
+    },
+    setRangeFont: (v: typeof rangeFont) => {
+      rangeFont = v
     },
     setScreenshot: (v: string) => {
       screenshot = v
@@ -682,6 +713,85 @@ it('rejects text edits when aggregate font data is unavailable', async () => {
   })
   expect(result.output).toContain('presentation_existing_target_unsupported')
   expect(f.editText).not.toHaveBeenCalled()
+})
+it('confirms and undoes a bounded text range in a mixed-font shape', async () => {
+  const f = await fixture()
+  f.setFont({
+    name: null,
+    size: 20,
+    color: '#000000',
+    bold: false,
+    italic: false,
+    underline: 'None',
+  })
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_text_range', {
+    baseline_id,
+    slide_id: 'slide',
+    shape_id: 'shape',
+    range_start: 0,
+    range_length: 3,
+    text: 'new',
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  expect(f.editTextRange).not.toHaveBeenCalled()
+  await f.confirm()
+  expect(f.text()).toBe('newore')
+  expect(f.editText).not.toHaveBeenCalled()
+  expect(f.readyBackups()).toBe(1)
+  const record = f.records()[0]!.record
+  expect(record).toMatchObject({
+    kind: 'text_range',
+    state: 'applied',
+    start: 0,
+    length: 3,
+    before: 'before',
+    after: 'newore',
+  })
+  f.reopen()
+  const undo = await f.call('undo_existing_presentation_change', { change_id: record.changeId })
+  expect(undo.isError, undo.output).not.toBe(true)
+  await f.confirm()
+  expect(f.text()).toBe('before')
+  expect(f.records()[0]!.record.state).toBe('undone')
+  expect(f.editTextRange).toHaveBeenCalledTimes(2)
+})
+it('rejects an invalid range and blocks a stale range font before writing', async () => {
+  const f = await fixture()
+  const baseline_id = await f.baseline()
+  for (const input of [
+    { range_start: 0, range_length: 3, text: 'long' },
+    { range_start: 0, range_length: 1, text: '\n' },
+    { range_start: 0, range_length: 1, text: '\ud800' },
+  ]) {
+    const result = await f.call('edit_existing_presentation_text_range', {
+      baseline_id,
+      slide_id: 'slide',
+      shape_id: 'shape',
+      ...input,
+    })
+    expect(result.output).toBe('invalid_tool_input')
+  }
+  const proposed = await f.call('edit_existing_presentation_text_range', {
+    baseline_id,
+    slide_id: 'slide',
+    shape_id: 'shape',
+    range_start: 0,
+    range_length: 3,
+    text: 'new',
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  f.setRangeFont({
+    name: 'Arial',
+    size: 22,
+    color: '#000000',
+    bold: false,
+    italic: false,
+    underline: 'None',
+  })
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.text()).toBe('before')
+  expect(f.editTextRange).not.toHaveBeenCalled()
 })
 it.each(['text', 'geometry'] as const)(
   'persists a confirmed existing %s change and undoes it after reopening while offline',

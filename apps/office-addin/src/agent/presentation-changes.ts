@@ -46,7 +46,7 @@ export interface PresentationChangeEntry {
   legacy?: boolean
   changeSet?: PresentationChangeSetSummary
   id: string
-  kind: 'text' | 'geometry' | 'table_cell' | 'image' | 'page' | 'chart'
+  kind: 'text' | 'text_range' | 'geometry' | 'table_cell' | 'image' | 'page' | 'chart'
   pageId: string
   state: string
   before: string

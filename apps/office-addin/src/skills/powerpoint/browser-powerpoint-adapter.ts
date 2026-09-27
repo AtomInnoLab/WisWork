@@ -144,6 +144,23 @@ export interface PresentationPageGeometry {
   height: number
 }
 
+export interface PresentationTextRangeSnapshot {
+  slideId: string
+  shapeId: string
+  start: number
+  length: number
+  fullText: string
+  text: string
+  font: {
+    name: string | null
+    size: number | null
+    color: string | null
+    bold: boolean | null
+    italic: boolean | null
+    underline: string | null
+  }
+}
+
 export interface PowerPointAdapter {
   exportPresentationPagePackage?(
     slideId: string,
@@ -175,6 +192,18 @@ export interface PowerPointAdapter {
     shapeId: string,
     text: string,
     expectedText: string,
+    signal?: AbortSignal,
+  ): Promise<void>
+  readPresentationPageTextRange?(
+    slideId: string,
+    shapeId: string,
+    start: number,
+    length: number,
+    signal?: AbortSignal,
+  ): Promise<PresentationTextRangeSnapshot>
+  editPresentationPageTextRange?(
+    expected: PresentationTextRangeSnapshot,
+    after: string,
     signal?: AbortSignal,
   ): Promise<void>
   readPresentationTableCell?(
@@ -525,6 +554,68 @@ async function pageTextRange(
   await sync(context, signal)
   if (shape.id !== shapeId) throw new Error('office_read_failed')
   return range
+}
+function validTextSpan(fullText: string, start: number, length: number): void {
+  if (
+    !Number.isSafeInteger(start) ||
+    start < 0 ||
+    !Number.isSafeInteger(length) ||
+    length < 1 ||
+    length > 128 ||
+    start + length > fullText.length ||
+    /[\uD800-\uDFFF]/.test(fullText) ||
+    /[\r\n]/.test(fullText.slice(start, start + length))
+  )
+    throw new Error('office_api_unsupported')
+}
+async function readTextSpan(
+  context: RuntimeRecord,
+  fullRange: RuntimeRecord,
+  start: number,
+  length: number,
+  signal?: AbortSignal,
+) {
+  ;(fullRange.load as (properties: string) => void)('text')
+  await sync(context, signal)
+  const fullText = boundedPageText(fullRange.text)
+  validTextSpan(fullText, start, length)
+  if (typeof fullRange.getSubstring !== 'function') throw new Error('office_api_unsupported')
+  const range = (fullRange.getSubstring as (start: number, length: number) => RuntimeRecord)(
+    start,
+    length,
+  )
+  const font = range?.font as RuntimeRecord | undefined
+  if (typeof range?.load !== 'function' || typeof font?.load !== 'function')
+    throw new Error('office_api_unsupported')
+  ;(range.load as (properties: string) => void)('text')
+  ;(font.load as (properties: string) => void)('name,size,color,bold,italic,underline')
+  await sync(context, signal)
+  const text = boundedPageText(range.text)
+  if (text !== fullText.slice(start, start + length)) throw new Error('office_read_failed')
+  const fontValue = {
+    name: font.name,
+    size: font.size,
+    color: font.color,
+    bold: font.bold,
+    italic: font.italic,
+    underline: font.underline,
+  }
+  if (
+    (fontValue.name !== null &&
+      (typeof fontValue.name !== 'string' || fontValue.name.length > 256)) ||
+    (fontValue.size !== null &&
+      (typeof fontValue.size !== 'number' ||
+        !Number.isFinite(fontValue.size) ||
+        fontValue.size < 0)) ||
+    (fontValue.color !== null &&
+      (typeof fontValue.color !== 'string' || fontValue.color.length > 256)) ||
+    (fontValue.bold !== null && typeof fontValue.bold !== 'boolean') ||
+    (fontValue.italic !== null && typeof fontValue.italic !== 'boolean') ||
+    (fontValue.underline !== null &&
+      (typeof fontValue.underline !== 'string' || fontValue.underline.length > 64))
+  )
+    throw new Error('office_read_failed')
+  return { range, fullText, text, font: fontValue as PresentationTextRangeSnapshot['font'] }
 }
 async function pageTableCell(
   context: RuntimeRecord,
@@ -1022,6 +1113,83 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const slide = await getPageById(context, slideId, signal)
       const range = await pageTextRange(context, slide, shapeId, signal)
       await writeTextRange(context, range, text, signal, expectedText)
+    })
+  }
+
+  async readPresentationPageTextRange(
+    slideId: string,
+    shapeId: string,
+    start: number,
+    length: number,
+    signal?: AbortSignal,
+  ): Promise<PresentationTextRangeSnapshot> {
+    cancelled(signal)
+    pageId(slideId)
+    pageId(shapeId)
+    return this.run('1.10', async (context) => {
+      const slide = await getPageById(context, slideId, signal)
+      const fullRange = await pageTextRange(context, slide, shapeId, signal)
+      const observed = await readTextSpan(context, fullRange, start, length, signal)
+      return {
+        slideId,
+        shapeId,
+        start,
+        length,
+        fullText: observed.fullText,
+        text: observed.text,
+        font: observed.font,
+      }
+    })
+  }
+
+  async editPresentationPageTextRange(
+    expected: PresentationTextRangeSnapshot,
+    after: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    cancelled(signal)
+    pageId(expected.slideId)
+    pageId(expected.shapeId)
+    if (
+      typeof after !== 'string' ||
+      after.length !== expected.length ||
+      after === expected.text ||
+      /[\r\n\uD800-\uDFFF]/.test(after) ||
+      typeof expected.fullText !== 'string' ||
+      expected.fullText.length > MAX_POWERPOINT_TEXT ||
+      Object.values(expected.font).some((value) => value === null)
+    )
+      throw new Error('invalid_tool_input')
+    validTextSpan(expected.fullText, expected.start, expected.length)
+    if (expected.fullText.slice(expected.start, expected.start + expected.length) !== expected.text)
+      throw new Error('invalid_tool_input')
+    await this.run('1.10', async (context) => {
+      const slide = await getPageById(context, expected.slideId, signal)
+      const fullRange = await pageTextRange(context, slide, expected.shapeId, signal)
+      const before = await readTextSpan(context, fullRange, expected.start, expected.length, signal)
+      if (
+        before.fullText !== expected.fullText ||
+        JSON.stringify(before.font) !== JSON.stringify(expected.font)
+      )
+        throw new Error('office_concurrent_change')
+      await writeTextRange(context, before.range, after, signal, expected.text)
+      const observed = await readTextSpan(
+        context,
+        fullRange,
+        expected.start,
+        expected.length,
+        signal,
+      )
+      const target =
+        expected.fullText.slice(0, expected.start) +
+        after +
+        expected.fullText.slice(expected.start + expected.length)
+      if (
+        observed.fullText !== target ||
+        observed.text !== after ||
+        JSON.stringify(observed.font) !== JSON.stringify(expected.font)
+      )
+        throw new Error('office_verify_failed')
     })
   }
 

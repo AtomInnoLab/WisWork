@@ -4,8 +4,28 @@ afterEach(() => vi.unstubAllGlobals())
 function setup() {
   let text = 'original',
     writes = 0
+  const font = {
+    load: vi.fn(),
+    name: 'Arial',
+    size: 20,
+    color: '#000000',
+    bold: true,
+    italic: false,
+    underline: 'none',
+  }
   const range = {
     load: vi.fn(),
+    getSubstring: vi.fn((start: number, length: number) => ({
+      load: vi.fn(),
+      font,
+      get text() {
+        return text.slice(start, start + length)
+      },
+      set text(value: string) {
+        writes++
+        text = text.slice(0, start) + value + text.slice(start + length)
+      },
+    })),
     get text() {
       return text
     },
@@ -49,6 +69,7 @@ function setup() {
     slides,
     context,
     range,
+    font,
     supports,
     writes: () => writes,
     setText: (value: string) => {
@@ -57,6 +78,35 @@ function setup() {
   }
 }
 describe('stable host-ID text access', () => {
+  it('edits one equal-length native text subrange and checks surrounding text and font', async () => {
+    const f = setup()
+    const before = await f.adapter.readPresentationPageTextRange('host-27', 'shape-id', 0, 4)
+    expect(before).toMatchObject({
+      fullText: 'original',
+      text: 'orig',
+      font: { name: 'Arial', bold: true },
+    })
+    await f.adapter.editPresentationPageTextRange(before, 'edit')
+    expect(f.range.text).toBe('editinal')
+    expect(f.writes()).toBe(1)
+    expect(f.range.getSubstring).toHaveBeenCalledWith(0, 4)
+  })
+  it('rejects stale range font, length changes and ambiguous Unicode offsets before writing', async () => {
+    const f = setup()
+    const before = await f.adapter.readPresentationPageTextRange('host-27', 'shape-id', 0, 4)
+    await expect(f.adapter.editPresentationPageTextRange(before, 'longer')).rejects.toThrow(
+      'invalid_tool_input',
+    )
+    f.font.bold = false
+    await expect(f.adapter.editPresentationPageTextRange(before, 'edit')).rejects.toThrow(
+      'office_concurrent_change',
+    )
+    f.setText('😀text')
+    await expect(
+      f.adapter.readPresentationPageTextRange('host-27', 'shape-id', 0, 2),
+    ).rejects.toThrow('office_api_unsupported')
+    expect(f.writes()).toBe(0)
+  })
   it('reads and edits the same host page directly without consulting slide order', async () => {
     const { adapter, slides, shapes, range, supports } = setup()
     expect(await adapter.listPresentationPageShapes('host-27')).toMatchObject({

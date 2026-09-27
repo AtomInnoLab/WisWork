@@ -1,4 +1,7 @@
-import type { PresentationPageGeometry } from './browser-powerpoint-adapter.js'
+import type {
+  PresentationPageGeometry,
+  PresentationTextRangeSnapshot,
+} from './browser-powerpoint-adapter.js'
 
 interface ExistingChangeBase {
   version: 1
@@ -31,6 +34,14 @@ interface ExistingChangeBase {
 export type PresentationExistingChange = ExistingChangeBase &
   (
     | { kind: 'text'; before: string; after: string }
+    | {
+        kind: 'text_range'
+        start: number
+        length: number
+        font: PresentationTextRangeSnapshot['font']
+        before: string
+        after: string
+      }
     | {
         kind: 'table_cell'
         rowIndex: number
@@ -96,6 +107,9 @@ export function validatePresentationExistingChange(
         'rowIndex',
         'columnIndex',
         'cellStructureDigest',
+        'start',
+        'length',
+        'font',
         'before',
         'after',
         'state',
@@ -165,7 +179,7 @@ export function validatePresentationExistingChange(
   )
     return false
   if (
-    r.kind === 'text' || cell
+    r.kind === 'text' || r.kind === 'text_range' || cell
       ? typeof r.before !== 'string' ||
         r.before.length > 12000 ||
         typeof r.after !== 'string' ||
@@ -174,6 +188,40 @@ export function validatePresentationExistingChange(
   )
     return false
   if (!cell && ('rowIndex' in r || 'columnIndex' in r || 'cellStructureDigest' in r)) return false
+  if (r.kind === 'text_range') {
+    if (
+      !Number.isSafeInteger(r.start) ||
+      r.start < 0 ||
+      !Number.isSafeInteger(r.length) ||
+      r.length < 1 ||
+      r.length > 128 ||
+      r.before.length !== r.after.length ||
+      r.start + r.length > r.before.length ||
+      /[\uD800-\uDFFF]/.test(r.before) ||
+      /[\uD800-\uDFFF]/.test(r.after) ||
+      /[\r\n]/.test(r.before.slice(r.start, r.start + r.length)) ||
+      /[\r\n]/.test(r.after.slice(r.start, r.start + r.length)) ||
+      r.before.slice(0, r.start) !== r.after.slice(0, r.start) ||
+      r.before.slice(r.start + r.length) !== r.after.slice(r.start + r.length) ||
+      r.before.slice(r.start, r.start + r.length) === r.after.slice(r.start, r.start + r.length) ||
+      !r.font ||
+      typeof r.font !== 'object' ||
+      Array.isArray(r.font) ||
+      Object.keys(r.font).sort().join(',') !== 'bold,color,italic,name,size,underline' ||
+      typeof r.font.name !== 'string' ||
+      r.font.name.length > 256 ||
+      typeof r.font.size !== 'number' ||
+      !Number.isFinite(r.font.size) ||
+      r.font.size < 0 ||
+      typeof r.font.color !== 'string' ||
+      r.font.color.length > 256 ||
+      typeof r.font.bold !== 'boolean' ||
+      typeof r.font.italic !== 'boolean' ||
+      typeof r.font.underline !== 'string' ||
+      r.font.underline.length > 64
+    )
+      return false
+  } else if ('start' in r || 'length' in r || 'font' in r) return false
   if (r.review !== undefined) {
     const v = r.review
     if (
