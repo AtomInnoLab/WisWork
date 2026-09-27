@@ -1,7 +1,7 @@
 import { XMLParser } from 'fast-xml-parser'
 import type { PowerPointPageInspection } from './browser-powerpoint-adapter.js'
 import {
-  inspectPowerPointPicturePackage,
+  inspectPowerPointPictureMediaBatch,
   loadBoundedZip,
   MAX_PPTX_XML_BYTES,
 } from './powerpoint-package.js'
@@ -293,25 +293,35 @@ export async function comparePresentationPageStructure(
       if (JSON.stringify(element.crop) !== JSON.stringify(actual.crop))
         cropChanged.push(element.name)
     }
-    for (const element of pictures) {
-      const hostElement = exportedByName.get(element.name)
-      if (!hostElement || hostElement.type !== 'picture') continue
+    if (pictures.length) {
       try {
-        const before = await inspectPowerPointPicturePackage(
-          sourceBase64,
-          element.shapeId,
-          undefined,
-          undefined,
-          {
-            slideIndex: sourceIndex,
-            maxBytes: 10 * 1024 * 1024,
-          },
-        )
-        const after = await inspectPowerPointPicturePackage(hostBase64, hostElement.shapeId)
-        mediaChecked.push(element.name)
-        if (before.mediaDigest !== after.mediaDigest) mediaChanged.push(element.name)
+        const hostPictures = pictures.flatMap((element) => {
+          const hostElement = exportedByName.get(element.name)
+          return hostElement?.type === 'picture' ? [hostElement] : []
+        })
+        const [before, after] = await Promise.all([
+          inspectPowerPointPictureMediaBatch(
+            sourceBase64,
+            pictures.map((element) => element.shapeId),
+            undefined,
+            { slideIndex: sourceIndex, maxBytes: 10 * 1024 * 1024 },
+          ),
+          inspectPowerPointPictureMediaBatch(
+            hostBase64,
+            hostPictures.map((element) => element.shapeId),
+          ),
+        ])
+        for (const element of pictures) {
+          const hostElement = exportedByName.get(element.name)
+          if (!hostElement || hostElement.type !== 'picture') continue
+          const original = before.mediaDigests[element.shapeId]
+          const current = after.mediaDigests[hostElement.shapeId]
+          if (!original || !current) continue
+          mediaChecked.push(element.name)
+          if (original !== current) mediaChanged.push(element.name)
+        }
       } catch {
-        // Unsupported image effects or packages remain unchecked.
+        // Unsupported package structure remains unchecked; no partial pass is claimed.
       }
     }
   }
