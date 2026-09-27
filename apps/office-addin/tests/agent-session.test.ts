@@ -76,6 +76,29 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it('opens after legacy prompt scrub failure but disables recovery and warns', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        scrubFailed: true,
+        validateDocument: vi.fn(async () => true),
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    expect(session.snapshot().recoveryAvailable).toBe(false)
+    expect(session.snapshot().timeline[0]).toMatchObject({
+      kind: 'system',
+      text: expect.stringContaining('请求原文仍保留在本 PPTX'),
+    })
+    await session.resumeInterrupted?.()
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+
   it('resumes a pre-tool run only on explicit action after document validation', async () => {
     const harness = transportHarness()
     const validateDocument = vi.fn(async () => true)

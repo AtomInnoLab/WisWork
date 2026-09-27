@@ -18,6 +18,7 @@ import type { PresentationProjectController } from './skills/powerpoint/presenta
 import {
   createBrowserPresentationDocumentBinding,
   createPresentationAgentRunCheckpoint,
+  preparePresentationAgentRunRecovery,
 } from './skills/powerpoint/presentation-document.js'
 import { downloadSessionFile } from './agent/session-download.js'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
@@ -1382,8 +1383,13 @@ function ConfiguredApp() {
             const boundPresentationDocumentId = presentationBinding
               ? await presentationBinding.documentId()
               : undefined
-            if (presentationBinding && boundPresentationDocumentId)
-              await presentationBinding.scrubAgentRunPrompt(boundPresentationDocumentId)
+            const runRecovery =
+              presentationBinding && boundPresentationDocumentId
+                ? await preparePresentationAgentRunRecovery(
+                    presentationBinding,
+                    boundPresentationDocumentId,
+                  )
+                : undefined
             const runCheckpoint =
               presentationBinding && boundPresentationDocumentId
                 ? createPresentationAgentRunCheckpoint(
@@ -1488,10 +1494,9 @@ function ConfiguredApp() {
               ...(presentationBinding && boundPresentationDocumentId
                 ? {
                     runCheckpoint: {
-                      interrupted: presentationBinding.interruptedAgentRun(
-                        boundPresentationDocumentId,
-                      ),
-                      recovery: runCheckpoint!.recovery(),
+                      interrupted: runRecovery!.interrupted,
+                      scrubFailed: runRecovery!.scrubFailed,
+                      recovery: runRecovery!.scrubFailed ? undefined : runCheckpoint!.recovery(),
                       validateDocument: async () =>
                         (await presentationBinding.documentId()) === boundPresentationDocumentId,
                       begin: runCheckpoint!.begin,

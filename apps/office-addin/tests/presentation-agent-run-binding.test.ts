@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   createPresentationAgentRunCheckpoint,
   createPresentationDocumentBinding,
+  preparePresentationAgentRunRecovery,
 } from '../src/skills/powerpoint/presentation-document.js'
 
 describe('presentation AgentRun checkpoint', () => {
@@ -208,7 +209,10 @@ describe('presentation AgentRun checkpoint', () => {
     })
     values.set('wiswork.presentation.agent-run.v1', raw)
     save.mockRejectedValueOnce(new Error('save failed'))
-    await expect(binding.scrubAgentRunPrompt(id)).rejects.toThrow('save failed')
+    expect(await preparePresentationAgentRunRecovery(binding, id)).toEqual({
+      interrupted: true,
+      scrubFailed: true,
+    })
     expect(values.get('wiswork.presentation.agent-run.v1')).toBe(raw)
   })
 

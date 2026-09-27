@@ -1719,6 +1719,22 @@ export function createPresentationAgentRunCheckpoint(
   }
 }
 
+export async function preparePresentationAgentRunRecovery(
+  binding: Pick<
+    ReturnType<typeof createPresentationDocumentBinding>,
+    'scrubAgentRunPrompt' | 'interruptedAgentRun'
+  >,
+  boundDocumentId: string,
+): Promise<{ interrupted: boolean; scrubFailed: boolean }> {
+  try {
+    await binding.scrubAgentRunPrompt(boundDocumentId)
+    return { interrupted: binding.interruptedAgentRun(boundDocumentId), scrubFailed: false }
+  } catch (error) {
+    if (error instanceof Error && error.message === 'presentation_document_changed') throw error
+    return { interrupted: binding.interruptedAgentRun(boundDocumentId), scrubFailed: true }
+  }
+}
+
 export function createBrowserPresentationDocumentBinding() {
   return createPresentationDocumentBinding({
     get: (key) => Office.context.document.settings.get(key),

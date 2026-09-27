@@ -187,6 +187,7 @@ export function createOfficeAgentSession(dependencies: {
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
   runCheckpoint?: {
     interrupted: boolean
+    scrubFailed?: boolean
     recovery?: {
       instruction: string
       phase: 'running' | 'tool_pending' | 'tool_completed'
@@ -225,7 +226,9 @@ export function createOfficeAgentSession(dependencies: {
       ? appendPresentationEvent(emptyPresentationTimeline(), {
           id: 'event-1',
           kind: 'system',
-          text: `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}请先核对项目、页面和写入记录；未自动重放写入。运行阶段保存在演示文稿设置中，请求仅保存在本机浏览器。`,
+          text: dependencies.runCheckpoint.scrubFailed
+            ? '上次运行已中断。旧版检查点中的请求原文仍保留在本 PPTX：清理保存失败。请先保存可写副本并重新打开，期间不能继续该运行。'
+            : `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}请先核对项目、页面和写入记录；未自动重放写入。运行阶段保存在演示文稿设置中，请求仅保存在本机浏览器。`,
         })
       : emptyPresentationTimeline(),
   }
