@@ -52,10 +52,12 @@ describe('deployedBuildId', () => {
 describe('resolveBuildVersion', () => {
   it('treats sentinel-like build IDs as real deployed versions', () => {
     expect(resolveBuildVersion('checking', 'previous')).toEqual({
-      status: 'stale', buildId: 'checking',
+      status: 'stale',
+      buildId: 'checking',
     })
     expect(resolveBuildVersion('current', 'previous')).toEqual({
-      status: 'stale', buildId: 'current',
+      status: 'stale',
+      buildId: 'current',
     })
     expect(resolveBuildVersion('checking', 'checking')).toEqual({ status: 'current' })
     expect(resolveBuildVersion(undefined, 'current')).toEqual({ status: 'current' })
