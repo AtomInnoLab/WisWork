@@ -21,7 +21,7 @@ import {
 } from './skills/powerpoint/presentation-document.js'
 import { downloadSessionFile } from './agent/session-download.js'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { deployedBuildId } from './build-version.js'
+import { deployedBuildId, resolveBuildVersion, type BuildVersionState } from './build-version.js'
 import { Markdown } from '@wiswork/ui'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
 import type { PresentationAttachmentMetadata } from './skills/powerpoint/presentation-attachments.js'
@@ -1589,21 +1589,20 @@ function StatusScreen(props: {
 }
 
 export function App() {
-  const [versionState, setVersionState] = useState('checking')
+  const [versionState, setVersionState] = useState<BuildVersionState>({ status: 'checking' })
   useEffect(() => {
     let active = true
     void (async () => {
       const deployed = await deployedBuildId()
-      if (active)
-        setVersionState(deployed && deployed !== __WISWORK_OFFICE_BUILD_ID__ ? deployed : 'current')
+      if (active) setVersionState(resolveBuildVersion(deployed, __WISWORK_OFFICE_BUILD_ID__))
     })()
     return () => {
       active = false
     }
   }, [])
-  if (versionState === 'checking')
+  if (versionState.status === 'checking')
     return <StatusScreen title="Checking WisWork version" detail="Checking for updates…" busy />
-  if (versionState !== 'current')
+  if (versionState.status === 'stale')
     return (
       <StatusScreen
         title="WisWork update available"
@@ -1613,7 +1612,7 @@ export function App() {
           type="button"
           onClick={() => {
             const url = new URL(window.location.href)
-            url.searchParams.set('v', versionState)
+            url.searchParams.set('v', versionState.buildId)
             window.location.replace(url.href)
           }}
         >

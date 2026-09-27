@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { deployedBuildId } from '../src/build-version.js'
+import { deployedBuildId, resolveBuildVersion } from '../src/build-version.js'
 
 vi.stubGlobal('location', { origin: 'https://office.example' })
 afterEach(() => vi.useRealTimers())
@@ -46,5 +46,18 @@ describe('deployedBuildId', () => {
     )
     await vi.advanceTimersByTimeAsync(5_000)
     await expect(result).resolves.toBeUndefined()
+  })
+})
+
+describe('resolveBuildVersion', () => {
+  it('treats sentinel-like build IDs as real deployed versions', () => {
+    expect(resolveBuildVersion('checking', 'previous')).toEqual({
+      status: 'stale', buildId: 'checking',
+    })
+    expect(resolveBuildVersion('current', 'previous')).toEqual({
+      status: 'stale', buildId: 'current',
+    })
+    expect(resolveBuildVersion('checking', 'checking')).toEqual({ status: 'current' })
+    expect(resolveBuildVersion(undefined, 'current')).toEqual({ status: 'current' })
   })
 })
