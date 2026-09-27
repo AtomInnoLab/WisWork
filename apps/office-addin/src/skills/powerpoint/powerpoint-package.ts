@@ -167,9 +167,10 @@ export async function loadBoundedZip(
   base64: string,
   signal?: AbortSignal,
   checkCRC32 = true,
+  maxBytes = MAX_PPTX_PACKAGE_BYTES,
 ): Promise<JSZip> {
   if (signal?.aborted) throw new Error('cancelled')
-  if (!base64 || base64.length > Math.ceil(MAX_PPTX_PACKAGE_BYTES / 3) * 4)
+  if (!base64 || base64.length > Math.ceil(maxBytes / 3) * 4)
     throw new Error('invalid_tool_input')
   let zip: JSZip
   try {
@@ -197,7 +198,7 @@ export async function loadBoundedZip(
     )
       throw new Error('invalid_tool_input')
     total += metadata.uncompressed
-    if (total > MAX_PPTX_PACKAGE_BYTES) throw new Error('invalid_tool_input')
+    if (total > maxBytes) throw new Error('invalid_tool_input')
   }
   return zip
 }
