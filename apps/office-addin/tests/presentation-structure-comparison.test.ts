@@ -99,10 +99,66 @@ it('detects changed table cells and leaves chart data explicitly unchecked', asy
       })
     else
       expect(result).toMatchObject({
-        status: 'incomplete',
-        content: { status: 'incomplete', unchecked: ['chart'] },
+        status: 'warning',
+        content: { status: 'warning', cacheChanged: ['chart'], unchecked: ['chart'] },
       })
   }
+})
+
+it('compares a selected chart cache from a multi-page source deck', async () => {
+  const { bytes } = await compilePresentationDeck(benchmarkDeck())
+  const source = (await openPptx(bytes)).deck.slides[6]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.name === 'chart' ? 'Chart' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const one = benchmarkDeck()
+  one.slides = [one.slides[6]!]
+  const host = await compilePresentationDeck(one)
+  const zip = await JSZip.loadAsync(host.bytes)
+  const hostInspection = {
+    slideId: 'host',
+    slideWidth: 960,
+    slideHeight: 540,
+    shapes,
+    shapesTruncated: false,
+    overflows: [],
+    overlaps: [],
+    overlapsTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: '' },
+  }
+  const unchanged = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    6,
+    hostInspection,
+    Buffer.from(host.bytes).toString('base64'),
+  )
+  expect(unchanged.content).toMatchObject({
+    status: 'incomplete',
+    cacheChanged: [],
+    unchecked: ['chart'],
+  })
+  const chartPath = Object.keys(zip.files).find((path) =>
+    /^ppt\/charts\/chart\d+\.xml$/.test(path),
+  )!
+  const chart = await zip.file(chartPath)!.async('string')
+  zip.file(chartPath, chart.replace('<c:v>120</c:v>', '<c:v>999</c:v>'))
+  const result = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    6,
+    hostInspection,
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(result.content).toMatchObject({
+    status: 'warning',
+    cacheChanged: ['chart'],
+    unchecked: ['chart'],
+  })
 })
 
 it('matches text, shapes, images, tables and charts from compiled pages to Office shape readback', async () => {

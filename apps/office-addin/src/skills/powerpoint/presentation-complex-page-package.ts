@@ -50,11 +50,15 @@ export interface ComplexPagePackageSummary {
 export async function inspectPowerPointComplexPagePackage(
   base64: string,
   signal?: AbortSignal,
+  options: { slideIndex?: number; maxBytes?: number } = {},
 ): Promise<ComplexPagePackageSummary> {
-  const zip = await loadBoundedZip(base64, signal)
+  const zip = await loadBoundedZip(base64, signal, true, options.maxBytes)
   const slides = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
-  if (slides.length !== 1) throw new Error('office_api_unsupported')
-  const slidePath = slides[0]!
+  const slidePath = options.slideIndex === undefined
+    ? slides.length === 1 ? slides[0] : undefined
+    : slides.includes(`ppt/slides/slide${options.slideIndex + 1}.xml`)
+      ? `ppt/slides/slide${options.slideIndex + 1}.xml` : undefined
+  if (!slidePath) throw new Error('office_api_unsupported')
   const slide = xmlNodes(await zip.file(slidePath)!.async('string'))
   const frames = elements(slide, 'p:graphicFrame')
   const output: ComplexPagePackageSummary = { tables: [], charts: [], truncated: false }
@@ -79,14 +83,17 @@ export async function inspectPowerPointComplexPagePackage(
     const attrs = relNodes[0]![':@'] as Node
     const target = attrs['@_Target']
     const type = attrs['@_Type']
+    const chartPath = typeof target === 'string' && /^\/ppt\/charts\/chart\d+\.xml$/.test(target)
+      ? target.slice(1)
+      : typeof target === 'string' && /^\.\.\/charts\/chart\d+\.xml$/.test(target)
+        ? `ppt/charts/${target.slice('../charts/'.length)}` : undefined
     if (
       attrs['@_TargetMode'] === 'External' ||
-      typeof target !== 'string' ||
-      !/^\.\.\/charts\/chart\d+\.xml$/.test(target) ||
+      !chartPath ||
       typeof type !== 'string' ||
       !type.endsWith('/chart')
     ) throw new Error('office_api_unsupported')
-    const file = zip.file(`ppt/charts/${target.slice('../charts/'.length)}`)
+    const file = zip.file(chartPath)
     if (!file) throw new Error('office_api_unsupported')
     return xmlNodes(await file.async('string'))
   }

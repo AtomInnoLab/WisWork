@@ -1,6 +1,7 @@
 import { XMLParser } from 'fast-xml-parser'
 import type { PowerPointPageInspection } from './browser-powerpoint-adapter.js'
 import { loadBoundedZip, MAX_PPTX_XML_BYTES } from './powerpoint-package.js'
+import { inspectPowerPointComplexPagePackage } from './presentation-complex-page-package.js'
 
 type Issue =
   | { name: string; kind: 'missing' | 'extra' | 'duplicate' }
@@ -9,6 +10,7 @@ type Issue =
 type Xml = Record<string, any>
 type SourceObject = {
   name: string
+  shapeId: string
   type: string
   box: [number, number, number, number]
   text: string[]
@@ -50,6 +52,7 @@ function sourceObjects(xml: string): SourceObject[] {
   ]) {
     for (const element of many(tree[tag])) {
       const name = element[nonVisual]?.['p:cNvPr']?.['@_name']
+      const shapeId = element[nonVisual]?.['p:cNvPr']?.['@_id']
       const xfrm = tag === 'p:graphicFrame' ? element['p:xfrm'] : element['p:spPr']?.['a:xfrm']
       const box = [
         xfrm?.['a:off']?.['@_x'],
@@ -63,11 +66,12 @@ function sourceObjects(xml: string): SourceObject[] {
       if (
         typeof name !== 'string' ||
         !name ||
+        typeof shapeId !== 'string' ||
         !type ||
         box.some((value) => !Number.isFinite(value))
       )
         throw new Error('presentation_qa_structure_unavailable')
-      result.push({ name, type, box: box as SourceObject['box'], text: textRuns(element) })
+      result.push({ name, shapeId, type, box: box as SourceObject['box'], text: textRuns(element) })
     }
   }
   return result
@@ -109,7 +113,12 @@ export async function comparePresentationPageStructure(
   hostCount: number
   issues: Issue[]
   readbackConsistent: boolean
-  content: { status: 'passed' | 'warning' | 'incomplete'; changed: string[]; unchecked: string[] }
+  content: {
+    status: 'passed' | 'warning' | 'incomplete'
+    changed: string[]
+    cacheChanged: string[]
+    unchecked: string[]
+  }
 }> {
   if (
     typeof sourceBase64 !== 'string' ||
@@ -180,7 +189,35 @@ export async function comparePresentationPageStructure(
       }))
   const exportedByName = new Map(exported.map((element) => [element.name, element]))
   const changed: string[] = [],
+    cacheChanged: string[] = [],
     unchecked: string[] = []
+  if (hostBase64 && readbackConsistent && source.some((element) => element.type === 'chart')) {
+    try {
+      const [before, after] = await Promise.all([
+        inspectPowerPointComplexPagePackage(sourceBase64, undefined, {
+          slideIndex: sourceIndex,
+          maxBytes: 10 * 1024 * 1024,
+        }),
+        inspectPowerPointComplexPagePackage(hostBase64),
+      ])
+      for (const element of source.filter((item) => item.type === 'chart')) {
+        const hostElement = exportedByName.get(element.name)
+        const original = before.charts.find((chart) => chart.shapeId === element.shapeId)
+        const current = after.charts.find((chart) => chart.shapeId === hostElement?.shapeId)
+        if (
+          original?.series.length &&
+          current?.series.length &&
+          original.series.every((series) => series.values.length > 0) &&
+          current.series.every((series) => series.values.length > 0) &&
+          JSON.stringify(original.series.map((series) => series.values)) !==
+            JSON.stringify(current.series.map((series) => series.values))
+        )
+          cacheChanged.push(element.name)
+      }
+    } catch {
+      // Unsupported chart packages stay unchecked; text and geometry still report.
+    }
+  }
   for (const element of source) {
     if (element.type !== 'shape' && element.type !== 'table') {
       unchecked.push(element.name)
@@ -199,9 +236,13 @@ export async function comparePresentationPageStructure(
       changed.push(element.name)
   }
   const content = {
-    status: (changed.length ? 'warning' : unchecked.length ? 'incomplete' : 'passed') as
-      'passed' | 'warning' | 'incomplete',
+    status: (changed.length || cacheChanged.length
+      ? 'warning'
+      : unchecked.length
+        ? 'incomplete'
+        : 'passed') as 'passed' | 'warning' | 'incomplete',
     changed,
+    cacheChanged,
     unchecked,
   }
   const structureStatus =
