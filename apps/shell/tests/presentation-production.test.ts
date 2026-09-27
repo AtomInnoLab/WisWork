@@ -142,6 +142,35 @@ it('compiles opted-in independent pages concurrently and waits for declared depe
   waiting[1]!.release()
   expect(await dependent).toMatchObject({ status: 'compiled', compiledCount: 2 })
 })
+it('keeps native page structure and explicit style identical between serial and parallel production', async () => {
+  const f = await setup()
+  await f.call('production_begin', { requestId: 'serial-style', planRevision: 1, deck: f.deck })
+  expect((await f.call('production_run', { requestId: 'serial-style' })).status).toBe('compiled')
+  f.plan.parallelism = 2
+  f.plan.slides.forEach((slide) => { slide.dependsOn = [] })
+  expect((await f.call('save_plan', { expectedRevision: 1, plan: f.plan })).revision).toBe(2)
+  await f.call('production_begin', { requestId: 'parallel-style', planRevision: 2, deck: f.deck })
+  expect((await f.call('production_run', { requestId: 'parallel-style' })).status).toBe('compiled')
+  const structure = async (requestId: string, pageId: string) => {
+    const page = await f.call('production_page', { requestId, pageId })
+    const opened = await openPptx(Buffer.from(page.pptxBase64, 'base64'))
+    return opened.deck.slides[0]!.elements.map((element) => ({
+      type: element.type,
+      name: element.name,
+      transform: element.transform,
+      ...(element.type === 'shape' ? {
+        text: element.text,
+        fill: element.fill,
+        line: element.line,
+        presetGeometry: element.presetGeometry,
+      } : {}),
+      ...(element.type === 'table' ? { rows: element.rows } : {}),
+      ...(element.type === 'chart' ? { chart: element.chart } : {}),
+    }))
+  }
+  for (const slide of f.deck.slides)
+    expect(await structure('parallel-style', slide.id)).toEqual(await structure('serial-style', slide.id))
+})
 it('holds a dependent page pending when its predecessor fails, then resumes both safely', async () => {
   let fail = true
   const compile = vi.fn(async (input: unknown) => {

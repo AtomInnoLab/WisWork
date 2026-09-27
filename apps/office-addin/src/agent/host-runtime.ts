@@ -47,6 +47,7 @@ import {
   type PresentationAttachmentMetadata,
 } from '../skills/powerpoint/presentation-attachments.js'
 import { createPresentationPlanningSkill } from '../skills/powerpoint/presentation-planning.js'
+import { createPresentationCommentsSkill } from '../skills/powerpoint/presentation-comments.js'
 import {
   createPresentationProjectController,
   type PresentationProjectController,
@@ -242,9 +243,10 @@ export function createOfficeHostRuntime(
     host === 'powerpoint'
       ? {
           beforeWrite: async (proposal) => {
-            // Preference approval writes only the PC's separate local catalog, not the host deck.
-            if (['save_presentation_preference', 'delete_presentation_preference'].includes(proposal.operation) &&
-              proposal.toolName === proposal.operation && proposal.impact.host === 'local_preference') return
+            // Local preference and review writes do not touch the host deck or its QA state.
+            if (proposal.toolName === proposal.operation &&
+              ((['save_presentation_preference', 'delete_presentation_preference'].includes(proposal.operation) && proposal.impact.host === 'local_preference') ||
+                (['add_presentation_review_comment', 'resolve_presentation_review_comment'].includes(proposal.operation) && proposal.impact.host === 'local_review'))) return
             // Only these internally constructed operations resolve a stable host page before
             // proposing. Generic script/index-based impact labels cannot prove their write scope.
             const target = proposal.impact.targets[0]
@@ -558,6 +560,9 @@ export function createOfficeHostRuntime(
     generation && options.presentation
       ? createPresentationPlanningSkill({ ...options.presentation, vfs, proposals })
       : undefined
+  const comments = generation && options.presentation
+    ? createPresentationCommentsSkill({ ...options.presentation, proposals })
+    : undefined
   const production =
     generation && options.presentation
       ? createPresentationProductionSkill({ ...options.presentation, vfs })
@@ -1008,6 +1013,7 @@ export function createOfficeHostRuntime(
             ...base.tools,
             ...generation.tools,
             ...(planning?.tools ?? []),
+            ...(comments?.tools ?? []),
             ...(attachments?.tools ?? []),
             ...(delivery?.tools ?? []),
             ...(productionDelivery?.tools ?? []),
@@ -1022,7 +1028,7 @@ export function createOfficeHostRuntime(
           ]
         },
         get systemPrompt() {
-          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${historySkill?.tools.length ? historySkill.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}\n${productionJobs?.tools.length ? productionJobs.systemPrompt : ''}\n${evidenceDelivery?.tools.length ? evidenceDelivery.systemPrompt : ''}\n${pageBackup?.tools.length ? pageBackup.systemPrompt : ''}\n${pageReplacement?.tools.length ? pageReplacement.systemPrompt : ''}\nQA and stable page editing use the currently selected artifact: a successfully prepared production task or explicitly compiled/restored whole deck. Select the intended source before acting; do not substitute another task with the same IDs.`
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${comments?.tools.length ? comments.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${historySkill?.tools.length ? historySkill.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}\n${productionJobs?.tools.length ? productionJobs.systemPrompt : ''}\n${evidenceDelivery?.tools.length ? evidenceDelivery.systemPrompt : ''}\n${pageBackup?.tools.length ? pageBackup.systemPrompt : ''}\n${pageReplacement?.tools.length ? pageReplacement.systemPrompt : ''}\nQA and stable page editing use the currently selected artifact: a successfully prepared production task or explicitly compiled/restored whole deck. Select the intended source before acting; do not substitute another task with the same IDs.`
         },
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
@@ -1091,9 +1097,9 @@ export function createOfficeHostRuntime(
                                 'read_presentation_attachment',
                               ].includes(call.name) && attachments
                             ? attachments.executeTool(call, signal)
-                            : ['save_presentation_plan', 'read_presentation_plan'].includes(
-                                  call.name,
-                                ) && planning
+                            : comments?.tools.some((tool) => tool.name === call.name)
+                              ? comments.executeTool(call, signal)
+                              : planning?.tools.some((tool) => tool.name === call.name)
                               ? planning.executeTool(call, signal)
                               : [
                                     'import_presentation_production',
@@ -1143,6 +1149,7 @@ export function createOfficeHostRuntime(
         attachments?.clear()
         generation?.clear()
         planning?.clear()
+        comments?.clear()
         presentation?.clear()
         notifyImport()
         notifyQa()

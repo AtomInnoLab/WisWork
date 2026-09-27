@@ -29,6 +29,7 @@ import {
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { assertBrandLogoAsset, PresentationBrandLibrary } from './presentation-brand'
 import { PresentationPreferenceLibrary } from './presentation-preferences'
+import { PresentationCommentLibrary } from './presentation-comments'
 
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
@@ -91,6 +92,7 @@ export function createPresentationService(options: {
   const store = new PresentationStore(options.userDataPath)
   const brandLibrary = new PresentationBrandLibrary(options.userDataPath)
   const preferenceLibrary = new PresentationPreferenceLibrary(options.userDataPath)
+  const commentLibrary = new PresentationCommentLibrary(options.userDataPath)
   const compile = options.compile ?? compilePresentationDeck
   return async (body, signal) => {
     try {
@@ -103,6 +105,27 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
+      if (['comment_list', 'comment_add', 'comment_resolve'].includes(request.operation as string)) {
+        const required = request.operation === 'comment_add' ?
+          ['operation', 'documentId', 'projectId', 'expectedRevision', 'planRevision', 'comment'] :
+          request.operation === 'comment_resolve' ?
+            ['operation', 'documentId', 'projectId', 'expectedRevision', 'commentId'] :
+            ['operation', 'documentId', 'projectId']
+        if (Object.keys(request).sort().join(',') !== required.sort().join(',') ||
+          typeof request.documentId !== 'string' || !request.documentId || request.documentId.length > 2048)
+          throw new Error('invalid_request')
+        assertPresentationId(request.projectId)
+        const record = store.plan(request.projectId, request.documentId)
+        if (!record) throw new Error('not_found')
+        if (request.operation === 'comment_list')
+          return boundedResponse(commentLibrary.list(request.documentId, request.projectId))
+        if (request.operation === 'comment_resolve')
+          return boundedResponse(commentLibrary.resolve(request.documentId, request.projectId,
+            request.expectedRevision as number, request.commentId as string))
+        return boundedResponse(commentLibrary.add(request.documentId, request.projectId,
+          request.expectedRevision as number, request.planRevision as number, request.comment,
+          { revision: record.revision, plan: parsePresentationPlan(record.plan) }))
+      }
       if (request.operation === 'preference_save' || request.operation === 'preference_list' || request.operation === 'preference_delete') {
         const required = request.operation === 'preference_save' ? ['operation', 'documentId', 'preference'] :
           request.operation === 'preference_delete' ? ['operation', 'documentId', 'projectId', 'changeId'] : ['operation', 'documentId', 'projectId']

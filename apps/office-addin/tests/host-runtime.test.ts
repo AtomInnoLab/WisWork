@@ -269,6 +269,28 @@ it('composes saved planning tools and clears their asynchronous state with the s
   expect(runtime.vfs.list('/home/user')).toEqual([])
   runtime.dispose()
 })
+it('routes every advertised planning tool through the planning skill', async () => {
+  const request = vi.fn(async (body: unknown) => new Response(JSON.stringify(
+    (body as { operation: string }).operation === 'brand_kit_list'
+      ? { brandKits: [] }
+      : (body as { operation: string }).operation === 'comment_list'
+        ? { version: 1, documentId: 'doc-1', projectId: 'project-1', revision: 0, comments: [] }
+        : { preferences: [] },
+  )))
+  const runtime = createOfficeHostRuntime('powerpoint', { presentation: {
+    available: () => true, request, documentId: async () => 'doc-1',
+    lastProject: () => 'project-1', rememberProject: async () => {},
+  } })
+  try {
+    expect(JSON.parse((await runtime.skill.executeTool({ id: 'domain', name: 'read_presentation_domain_skill', input: { domain: 'research' } })).output).sections).toContain('method')
+    expect(JSON.parse((await runtime.skill.executeTool({ id: 'brands', name: 'list_presentation_brand_kits', input: {} })).output)).toEqual({ brandKits: [] })
+    expect(JSON.parse((await runtime.skill.executeTool({ id: 'preferences', name: 'list_presentation_preferences', input: { project_id: 'project-1' } })).output)).toEqual({ preferences: [] })
+    expect(JSON.parse((await runtime.skill.executeTool({ id: 'comments', name: 'list_presentation_review_comments', input: { project_id: 'project-1' } })).output).comments).toEqual([])
+    expect(request).toHaveBeenCalledWith({ operation: 'brand_kit_list', documentId: 'doc-1' }, undefined)
+    expect(request).toHaveBeenCalledWith({ operation: 'preference_list', documentId: 'doc-1', projectId: 'project-1' }, undefined)
+    expect(request).toHaveBeenCalledWith({ operation: 'comment_list', documentId: 'doc-1', projectId: 'project-1' }, undefined)
+  } finally { runtime.dispose() }
+})
 it('routes supported attachments to PC and cancels outstanding reads on disposal', async () => {
   const request = vi.fn(
     async (_body: unknown, _signal?: AbortSignal) =>
