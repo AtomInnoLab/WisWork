@@ -477,12 +477,50 @@ it('reports manual edits and selection/order drift without silently replacing th
       .unchanged,
   ).toBe(false)
 })
-it('rejects empty current selection, overlarge scope, forged IDs and unsupported input', async () => {
+it('reads large decks in explicit bounded windows with an honest coverage marker', async () => {
+  const f = fixture()
+  const slideIds = Array.from({ length: 43 }, (_, i) => `s${i}`)
+  for (const id of slideIds) f.pages.set(id, page(id))
+  f.setContext({ ...f.getContext(), slideIds })
+  const first = JSON.parse((await f.read('deck')).output)
+  expect(first.scope.slideIds).toEqual(slideIds.slice(0, 20))
+  expect(first.scope.deckWindow).toEqual({ start: 0, end: 20, total: 43, hasMore: true })
+  const last = JSON.parse(
+    (
+      await f.call('read_presentation_baseline', {
+        scope: 'deck',
+        page_offset: 40,
+        page_limit: 20,
+      })
+    ).output,
+  )
+  expect(last.scope.slideIds).toEqual(slideIds.slice(40))
+  expect(last.scope.deckWindow).toEqual({ start: 40, end: 43, total: 43, hasMore: false })
+  expect(last.pages).toHaveLength(3)
+  expect(
+    JSON.parse(
+      (
+        await f.call('check_presentation_baseline', {
+          baseline_id: last.baselineId,
+        })
+      ).output,
+    ).unchanged,
+  ).toBe(true)
+})
+it('rejects empty current selection, invalid deck windows, forged IDs and unsupported input', async () => {
   const f = fixture()
   f.setContext({ ...f.getContext(), selectedSlideIds: [], selectedShapeIds: [] })
   expect((await f.read()).output).toBe('presentation_selection_empty')
   f.setContext({ ...f.getContext(), slideIds: Array.from({ length: 21 }, (_, i) => `s${i}`) })
-  expect((await f.read('deck')).output).toBe('presentation_baseline_scope_limit')
+  for (const id of f.getContext().slideIds) f.pages.set(id, page(id))
+  for (const input of [
+    { scope: 'deck', page_offset: 21 },
+    { scope: 'deck', page_offset: -1 },
+    { scope: 'deck', page_limit: 21 },
+    { scope: 'deck', page_limit: 0 },
+    { scope: 'current', page_offset: 1 },
+  ])
+    expect((await f.call('read_presentation_baseline', input)).isError).toBe(true)
   expect(
     (await f.call('read_presentation_baseline', { scope: 'current', extra: true })).output,
   ).toBe('invalid_tool_input')

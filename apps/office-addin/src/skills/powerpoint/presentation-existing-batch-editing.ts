@@ -919,7 +919,7 @@ export function createPresentationExistingBatchEditingSkill(
           if (!record.backups || !record.beforeSlideIds) return // Legacy records predate package savepoints.
           if (!options.adapter.exportPresentationPagePackage)
             throw new Error('office_api_unsupported')
-          for (const backup of record.backups) {
+          for (let backup of record.backups) {
             await current()
             saved()
             const scope = {
@@ -955,12 +955,30 @@ export function createPresentationExistingBatchEditingSkill(
                 throw new Error('presentation_baseline_changed')
               const base64 = proposalPackages.get(backup.hostSlideId) ?? exported.base64
               const metadata = await describePagePackageBackup(base64, writeSignal)
-              if (
-                metadata.packageDigest !== backup.packageDigest ||
-                metadata.sha256 !== backup.sha256 ||
-                metadata.sizeBytes !== backup.sizeBytes
-              )
+              if (metadata.packageDigest !== backup.packageDigest)
                 throw new Error('presentation_existing_batch_backup_missing')
+              if (metadata.sha256 !== backup.sha256 || metadata.sizeBytes !== backup.sizeBytes) {
+                const status = await options.request(
+                  {
+                    operation: 'existing_page_backup_status',
+                    documentId,
+                    backupId: backup.backupId,
+                  },
+                  writeSignal,
+                )
+                await current()
+                const result = (await status.json()) as Record<string, unknown>
+                if (status.ok || result.error !== 'not_found')
+                  throw new Error('presentation_existing_batch_backup_missing')
+                const replacement = { ...backup, ...metadata, backupId: crypto.randomUUID() }
+                await store({
+                  ...record,
+                  backups: record.backups.map((item) =>
+                    item.backupId === backup.backupId ? replacement : item,
+                  ),
+                })
+                backup = replacement
+              }
               const stored = await saveChartPackageBackup(
                 { ...scope, base64, backupId: backup.backupId },
                 writeSignal,

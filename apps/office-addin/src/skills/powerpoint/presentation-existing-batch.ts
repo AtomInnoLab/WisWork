@@ -358,7 +358,35 @@ export function validExistingBatchTransition(
       reviews: undefined,
       backupReleasedAt: undefined,
     })
-  if (core(before) !== core(after)) return false
+  if (core(before) !== core(after)) {
+    if (
+      before.state !== 'applying' ||
+      after.state !== 'applying' ||
+      before.cursor !== 0 ||
+      after.cursor !== 0 ||
+      !before.backups ||
+      !after.backups ||
+      before.backups.length !== after.backups.length ||
+      before.backupReleasedAt !== undefined ||
+      after.backupReleasedAt !== undefined ||
+      JSON.stringify(before.reviews) !== JSON.stringify(after.reviews)
+    )
+      return false
+    const stableCore = (r: PresentationExistingBatch) =>
+      JSON.stringify({
+        ...r,
+        backups: r.backups?.map(({ hostSlideId, packageDigest }) => ({
+          hostSlideId,
+          packageDigest,
+        })),
+      })
+    return (
+      stableCore(before) === stableCore(after) &&
+      before.backups.filter(
+        (backup, index) => JSON.stringify(backup) !== JSON.stringify(after.backups![index]),
+      ).length === 1
+    )
+  }
   if (before.backupReleasedAt !== after.backupReleasedAt)
     return (
       before.state === 'undone' &&

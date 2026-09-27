@@ -395,6 +395,7 @@ async function fixture() {
       else tableText2 = next
     })
   const zip = new JSZip()
+  let packageComment = ''
   const tableXml = () =>
     `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="shape" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>${tableText}</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>${tableText2}</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'exportPresentationPagePackage').mockImplementation(
@@ -403,7 +404,7 @@ async function fixture() {
       return {
         slideId,
         slideIds: ['slide', 'other'],
-        base64: await zip.generateAsync({ type: 'base64' }),
+        base64: await zip.generateAsync({ type: 'base64', comment: packageComment }),
       }
     },
   )
@@ -459,7 +460,11 @@ async function fixture() {
         }
         backups.set(id, stored)
       }
-    } else if (!stored) throw new Error('backup_missing')
+    } else if (!stored) {
+      if (input.operation === 'existing_page_backup_status')
+        return new Response(JSON.stringify({ error: 'not_found' }), { status: 404 })
+      throw new Error('backup_missing')
+    }
     if (input.operation === 'existing_page_backup_chunk') {
       const chunk = Uint8Array.from(atob(input.base64 as string), (character) =>
         character.charCodeAt(0),
@@ -579,6 +584,9 @@ async function fixture() {
     },
     setBackupQuota: (value: number) => {
       backupQuota = value
+    },
+    setPackageComment: (value: string) => {
+      packageComment = value
     },
     readyBackups: () => [...backups.values()].filter((backup) => backup.ready).length,
     geometry: () => geometry,
@@ -944,15 +952,21 @@ it('does not begin a multi-page batch when PC backup quota fills partway', async
   expect(f.readyBackups()).toBe(1)
   expect(f.text()).toBe('before')
   expect(f.otherText()).toBe('other-before')
+  const changeId = JSON.parse(proposed.output).changeId as string
+  const missingBackup = f.binding().readExistingBatch(changeId)!.backups![1]!
   f.setBackupQuota(2)
   f.reopen()
+  f.setPackageComment('regenerated ZIP metadata')
   const resumed = await f.call('resume_existing_presentation_batch', {
-    change_id: JSON.parse(proposed.output).changeId,
+    change_id: changeId,
   })
   expect(resumed.isError, resumed.output).not.toBe(true)
   await f.confirm()
   expect(f.readyBackups()).toBe(2)
   expect(f.otherText()).toBe('other-after')
+  expect(f.binding().readExistingBatch(changeId)!.backups![1]!.sha256).not.toBe(
+    missingBackup.sha256,
+  )
 })
 it('stops a batch when a non-target shape changes during a confirmed write', async () => {
   const f = await fixture()

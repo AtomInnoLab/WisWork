@@ -59,6 +59,48 @@ async function fixture() {
   }
 }
 
+it('allows one equivalent missing backup to be re-journaled only before any host write', async () => {
+  const f = await fixture()
+  const before: PresentationExistingBatch = {
+    ...f.batch,
+    beforeSlideIds: ['s1', 's2'],
+    backups: [
+      {
+        hostSlideId: 's1',
+        backupId: 'b1',
+        sha256: '1'.repeat(64),
+        sizeBytes: 100,
+        packageDigest: 'a'.repeat(64),
+      },
+      {
+        hostSlideId: 's2',
+        backupId: 'b2',
+        sha256: '2'.repeat(64),
+        sizeBytes: 100,
+        packageDigest: 'b'.repeat(64),
+      },
+    ],
+  }
+  const after = structuredClone(before)
+  after.backups![1] = { ...after.backups![1]!, backupId: 'b3', sha256: '3'.repeat(64) }
+  expect(validExistingBatchTransition(before, after)).toBe(true)
+  await f.binding.writeExistingBatch(before, undefined)
+  await f.binding.writeExistingBatch(after, before)
+  expect(f.reopen().readExistingBatch('batch')?.backups?.[1]?.backupId).toBe('b3')
+  expect(validExistingBatchTransition({ ...before, cursor: 1 }, { ...after, cursor: 1 })).toBe(
+    false,
+  )
+  expect(
+    validExistingBatchTransition(before, {
+      ...after,
+      backups: [after.backups![0]!, { ...after.backups![1]!, packageDigest: 'c'.repeat(64) }],
+    }),
+  ).toBe(false)
+  expect(validExistingBatchTransition(before, { ...after, scope: { slideIds: ['s1'] } })).toBe(
+    false,
+  )
+})
+
 it('journals ordered forward and reverse progress across reopen', async () => {
   const f = await fixture()
   await f.binding.writeExistingBatch(f.batch, undefined)
