@@ -8,6 +8,7 @@ import { inspectPowerPointPicturePackage } from '../src/skills/powerpoint/powerp
 import { InMemoryVfs } from '../src/skills/shared/vfs'
 import { readBoundedImage } from '../src/skills/shared/import-media'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
+import type { PresentationExistingPageChange } from '../src/skills/powerpoint/presentation-existing-page'
 
 it('prepares a native picture revision for the confirmed page transaction without writing the host', async () => {
   const deck = benchmarkDeck()
@@ -24,6 +25,26 @@ it('prepares a native picture revision for the confirmed page transaction withou
   vi.stubGlobal('createImageBitmap', async () => ({ width: 2, height: 1, close() {} }))
   expect((await readBoundedImage(vfs, '/home/user/new.png')).mime).toBe('image/png')
   let hostWrites = 0
+  let slideIds = ['old']
+  const records = new Map<string, PresentationExistingPageChange>()
+  const backup = { backupId: '', documentId: 'doc', hostSlideId: 'old', slideIds: ['old'], sha256: '', sizeBytes: 0, receivedBytes: 0, status: 'uploading' }
+  let backupBytes = new Uint8Array()
+  const request = async (body: unknown) => {
+    const input = body as Record<string, unknown>
+    if (input.operation === 'existing_page_backup_begin') {
+      Object.assign(backup, input, { receivedBytes: 0, status: 'uploading' })
+      backupBytes = new Uint8Array(backup.sizeBytes)
+    } else if (input.operation === 'existing_page_backup_chunk') {
+      const chunk = Buffer.from(input.base64 as string, 'base64')
+      backupBytes.set(chunk, input.offset as number)
+      backup.receivedBytes += chunk.length
+    } else if (input.operation === 'existing_page_backup_finish') backup.status = 'ready'
+    else if (input.operation === 'existing_page_backup_read') return new Response(JSON.stringify({
+      backupId: backup.backupId, offset: input.offset, sizeBytes: backup.sizeBytes, sha256: backup.sha256,
+      base64: Buffer.from(backupBytes.subarray(input.offset as number, (input.offset as number) + (input.length as number))).toString('base64'),
+    }))
+    return new Response(JSON.stringify(backup))
+  }
   const baseline = {
     baselineId: 'baseline', documentId: 'doc', contentDigest: 'a'.repeat(64),
     scope: { kind: 'current', slideIds: ['old'] },
@@ -32,14 +53,38 @@ it('prepares a native picture revision for the confirmed page transaction withou
   }
   const options = {
     baseline: { snapshot: () => structuredClone(baseline), executeTool: async () => ({ output: '{"unchanged":true}', mutated: false }) },
-    adapter: { stage: async () => { hostWrites++ } },
-    inspectPage: async () => ({ slideId: 'old', shapesTruncated: false }),
+    adapter: {
+      inspect: async () => ({ status: slideIds.length === 2 ? 'staged' : slideIds[0] === 'old' ? 'baseline' : slideIds[0] === 'new' ? 'applied' : 'undone', slideIds: [...slideIds] }),
+      stage: async (_record: unknown, revision: string, onInserted: (id: string) => Promise<void>) => {
+        expect(revision).toBe(changed)
+        expect(backup.status).toBe('ready')
+        hostWrites++
+        slideIds = ['old', 'new']
+        await onInserted('new')
+      },
+      commit: async () => { hostWrites++; slideIds = ['new'] },
+      undo: async (_record: unknown, original: string, onRestored: (id: string) => Promise<void>) => {
+        expect(original).toBe(source)
+        hostWrites++
+        slideIds = ['new', 'restored']
+        await onRestored('restored')
+        slideIds = ['restored']
+      },
+    },
+    inspectPage: async (slideId: string) => ({ slideId, shapesTruncated: false, screenshot: {
+      mime: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII=',
+    } }),
     exportAdapter: { exportPresentationPagePackage: async () => ({ slideId: 'old', slideIds: ['old'], base64: source }) },
-    vfs, request: async () => new Response('{}'), proposals: createStructuredProposalController(),
-    documentId: async () => 'doc', readExistingPageChange: () => undefined,
-    writeExistingPageChange: async () => { hostWrites++ }, available: () => true,
+    vfs, request, proposals: createStructuredProposalController(),
+    documentId: async () => 'doc', readExistingPageChange: (id: string) => records.get(id),
+    writeExistingPageChange: async (record: PresentationExistingPageChange) => { records.set(record.changeId, structuredClone(record)) }, available: () => true,
   } as unknown as Parameters<typeof createPresentationExistingPageEditingSkill>[0]
   const skill = createPresentationExistingPageEditingSkill(options)
+  const missing = await skill.executeTool({ id: 'missing', name: 'prepare_existing_presentation_image_revision', input: {
+    baseline_id: 'baseline', slide_id: 'old', shape_id: '999999', path: '/home/user/new.png',
+  } })
+  expect(missing.isError).toBe(true)
+  expect(hostWrites).toBe(0)
   const result = await skill.executeTool({ id: 'prepare', name: 'prepare_existing_presentation_image_revision', input: {
     baseline_id: 'baseline', slide_id: 'old', shape_id: shapeId, path: '/home/user/new.png',
   } })
@@ -56,5 +101,26 @@ it('prepares a native picture revision for the confirmed page transaction withou
   expect(staged.isError, staged.output).not.toBe(true)
   expect(JSON.parse(staged.output)).toMatchObject({ status: 'awaiting_confirmation' })
   expect(hostWrites).toBe(0)
+  const proposals = options.proposals
+  const confirm = async () => {
+    const proposalId = proposals.pending()!.id
+    const decision = proposals.waitForDecision(proposalId)
+    await proposals.confirm(proposalId)
+    return decision
+  }
+  expect((await confirm()).status).toBe('confirmed')
+  expect(hostWrites).toBe(1)
+  expect(Buffer.from(backupBytes).toString('base64')).toBe(source)
+  const changeId = [...records.keys()][0]!
+  expect(records.get(changeId)?.state).toBe('staged')
+  const commit = await skill.executeTool({ id: 'commit', name: 'commit_existing_presentation_page_change', input: { change_id: changeId } })
+  expect(commit.isError, commit.output).not.toBe(true)
+  expect((await confirm()).status).toBe('confirmed')
+  expect(records.get(changeId)?.state).toBe('applied')
+  const undo = await skill.executeTool({ id: 'undo', name: 'undo_existing_presentation_page_change', input: { change_id: changeId } })
+  expect(undo.isError, undo.output).not.toBe(true)
+  expect((await confirm()).status).toBe('confirmed')
+  expect(records.get(changeId)?.state).toBe('undone')
+  expect(hostWrites).toBe(3)
   vi.unstubAllGlobals()
 })
