@@ -223,6 +223,71 @@ describe('presentation project controls', () => {
 })
 
 describe('plan-only project status', () => {
+  it('runs a document-bound literal source audit and drops it after plan refresh', async () => {
+    const { benchmarkPlan } =
+      await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
+    const plan = benchmarkPlan()
+    const attachmentId = 'a'.repeat(64)
+    plan.sources[0]!.uri = `attachment:${attachmentId}`
+    const status = {
+      projectId: plan.projectId,
+      title: plan.title,
+      status: 'planned',
+      slideCount: plan.slides.length,
+      slides: plan.slides.map(({ id, title }) => ({ id, title })),
+      history: [],
+      plan: { revision: 1, value: plan },
+    }
+    const f = fixture()
+    f.lastProject.mockReturnValue(plan.projectId)
+    f.request.mockResolvedValue(new Response(JSON.stringify(status)))
+    await f.controller.refresh()
+    f.executeTool.mockResolvedValue({
+      output: JSON.stringify({
+        projectId: plan.projectId,
+        planRevision: 1,
+        sources: [{ sourceId: plan.sources[0]!.id, attachmentId, status: 'found', offset: 5 }],
+        checks: {
+          support: 'not_verified',
+          sourceAuthority: 'not_verified',
+          timeliness: 'not_verified',
+        },
+      }),
+      mutated: false,
+      summary: '已核对',
+    })
+    await f.controller.auditSources()
+    expect(f.executeTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'audit_presentation_sources',
+        input: { project_id: plan.projectId },
+      }),
+      expect.any(AbortSignal),
+    )
+    expect(f.controller.snapshot().sourceAudit?.sources[0]).toMatchObject({
+      status: 'found',
+      offset: 5,
+    })
+    await f.controller.refresh()
+    expect(f.controller.snapshot().sourceAudit).toBeUndefined()
+    f.executeTool.mockResolvedValue({
+      output: JSON.stringify({
+        projectId: plan.projectId,
+        planRevision: 0,
+        sources: [{ sourceId: plan.sources[0]!.id, attachmentId, status: 'found', offset: 5 }],
+        checks: {
+          support: 'not_verified',
+          sourceAuthority: 'not_verified',
+          timeliness: 'not_verified',
+        },
+      }),
+      mutated: false,
+      summary: '已核对',
+    })
+    await f.controller.auditSources()
+    expect(f.controller.snapshot().sourceAudit).toBeUndefined()
+    expect(f.controller.snapshot().error).toBeTruthy()
+  })
   it('accepts document source preparation and rejects forged attachment mappings', async () => {
     const { benchmarkPlan } =
       await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')

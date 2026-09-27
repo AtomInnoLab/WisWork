@@ -208,6 +208,7 @@ export function createPresentationPlanningSkill(
             error?: unknown
           }
           if (result.error === 'not_found') throw new Error('presentation_not_found')
+          if (result.error === 'invalid_request') throw new Error('presentation_invalid_request')
           if (
             result.projectId !== call.input.project_id ||
             !Number.isSafeInteger(result.planRevision) ||

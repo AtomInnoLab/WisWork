@@ -7,11 +7,12 @@ export function PresentationProjectCard(props: {
   disabled: boolean
 }) {
   const { controller } = props
-  const { phase, project, error, deliveryReport, deliveryNotice } = useSyncExternalStore(
-    (listener) => controller.subscribe(listener),
-    () => controller.snapshot(),
-    () => controller.snapshot(),
-  )
+  const { phase, project, error, deliveryReport, deliveryNotice, sourceAudit } =
+    useSyncExternalStore(
+      (listener) => controller.subscribe(listener),
+      () => controller.snapshot(),
+      () => controller.snapshot(),
+    )
   const job = project?.productionJob
   const active = phase !== 'idle'
   const disabled = props.disabled || active
@@ -25,6 +26,7 @@ export function PresentationProjectCard(props: {
               restoring: '正在恢复最近完成版本',
               resuming: '正在编译已保存版本',
               producing: '正在处理页任务',
+              auditing: '正在核对计划引文与原文',
             }[phase]
           : project
             ? `${project.slideCount} 页 · ${project.status === 'planned' ? '计划已保存，尚未编译' : project.status === 'pending' ? '已保存，待编译' : '已编译，尚未完成视觉验证'}`
@@ -40,16 +42,30 @@ export function PresentationProjectCard(props: {
       {project?.commentsUnavailable && <p>本机审阅评论暂不可读取；项目与页面状态不受影响。</p>}
       {project?.reviewComments && (
         <details aria-label="本机审阅评论">
-          <summary>本机审阅评论 · 待处理 {project.reviewComments.openCount} · 已解决 {project.reviewComments.resolvedCount}</summary>
+          <summary>
+            本机审阅评论 · 待处理 {project.reviewComments.openCount} · 已解决{' '}
+            {project.reviewComments.resolvedCount}
+          </summary>
           <p>作者名称是未验证的显示标签；评论不代表来源、内容或视觉 QA 通过。</p>
-          {project.reviewComments.recent.length < project.reviewComments.openCount + project.reviewComments.resolvedCount &&
-            <p>只显示最近 8 条；可请 Agent 读取完整列表。</p>}
+          {project.reviewComments.recent.length <
+            project.reviewComments.openCount + project.reviewComments.resolvedCount && (
+            <p>只显示最近 8 条；可请 Agent 读取完整列表。</p>
+          )}
           <ol>
             {project.reviewComments.recent.map((comment) => (
               <li key={comment.id}>
-                {comment.state === 'open' ? '待处理' : '已解决'} · {comment.targetKind === 'slide' ? '页面' : comment.targetKind === 'claim' ? '主张' : '来源'} {comment.targetId}
-                {project.plan && comment.planRevision !== project.plan.revision ? ` · 旧计划第 ${comment.planRevision} 版` : ''}
-                {' · '}{comment.authorLabel}：{comment.text}
+                {comment.state === 'open' ? '待处理' : '已解决'} ·{' '}
+                {comment.targetKind === 'slide'
+                  ? '页面'
+                  : comment.targetKind === 'claim'
+                    ? '主张'
+                    : '来源'}{' '}
+                {comment.targetId}
+                {project.plan && comment.planRevision !== project.plan.revision
+                  ? ` · 旧计划第 ${comment.planRevision} 版`
+                  : ''}
+                {' · '}
+                {comment.authorLabel}：{comment.text}
               </li>
             ))}
           </ol>
@@ -317,6 +333,49 @@ export function PresentationProjectCard(props: {
       {project?.plan && (
         <details>
           <summary>制作计划 · 第 {project.plan.revision} 版</summary>
+          {project.plan.value.sources.some((source) =>
+            /^attachment:[a-f0-9]{64}$/.test(source.uri),
+          ) && (
+            <section aria-label="计划来源原文核对">
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => void controller.auditSources()}
+              >
+                核对计划引文与附件原文
+              </button>
+              <p>只检查引文是否逐字出现在当前文档附件中，不核验事实、适用范围或时效。</p>
+              {sourceAudit?.planRevision === project.plan.revision && (
+                <div role="status">
+                  <p>
+                    第 {sourceAudit.planRevision} 版来源原文核对：
+                    {sourceAudit.sources.filter((source) => source.status === 'found').length}/
+                    {sourceAudit.sources.length} 份找到字面匹配。
+                  </p>
+                  <ul>
+                    {sourceAudit.sources.map((source) => (
+                      <li key={source.sourceId}>
+                        {project.plan!.value.sources.find((item) => item.id === source.sourceId)
+                          ?.title ?? source.sourceId}
+                        ：
+                        {
+                          {
+                            found: '原文中找到引文',
+                            not_found: '未在完整原文中找到引文',
+                            empty_excerpt: '计划未填写引文',
+                            not_ready: '附件尚未解析就绪',
+                            unsupported: '附件不是可读文本',
+                            missing: '当前文档缺少附件',
+                          }[source.status]
+                        }
+                        {source.status === 'found' ? ` · UTF-16 位置 ${source.offset}` : ''}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </section>
+          )}
           <p>{project.plan.value.title}</p>
           <p>目标：{project.plan.value.brief.objective}</p>
           <p>

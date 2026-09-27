@@ -30,6 +30,7 @@ afterEach(async () => {
 async function mount(snapshot: Snapshot, disabled = false) {
   const listeners = new Set<() => void>()
   const controller: PresentationProjectController = {
+    auditSources: vi.fn(async () => {}),
     snapshot: () => snapshot,
     subscribe: (listener) => {
       listeners.add(listener)
@@ -74,14 +75,57 @@ async function mount(snapshot: Snapshot, disabled = false) {
   }
 }
 describe('presentation project recovery card', () => {
+  it('shows literal source audit findings without claiming factual verification', async () => {
+    const plan = benchmarkPlan()
+    const attachmentId = 'a'.repeat(64)
+    plan.sources[0]!.uri = `attachment:${attachmentId}`
+    const view = await mount({
+      phase: 'idle',
+      project: { ...pending.project!, plan: { revision: 2, value: plan } },
+      sourceAudit: {
+        planRevision: 2,
+        sources: [{ sourceId: plan.sources[0]!.id, attachmentId, status: 'not_found' }],
+      },
+    })
+    expect(view.container.textContent).toContain('未在完整原文中找到引文')
+    expect(view.container.textContent).toContain('不核验事实')
+    await act(async () => view.button('核对计划引文与附件原文').click())
+    expect(view.controller.auditSources).toHaveBeenCalledOnce()
+    await view.update({
+      phase: 'idle',
+      project: { ...pending.project!, plan: { revision: 3, value: plan } },
+      sourceAudit: {
+        planRevision: 2,
+        sources: [{ sourceId: plan.sources[0]!.id, attachmentId, status: 'not_found' }],
+      },
+    })
+    expect(view.container.textContent).not.toContain('未在完整原文中找到引文')
+  })
   it('shows local review comments and marks old-plan notes as historical', async () => {
-    const view = await mount({ phase: 'idle', project: { ...pending.project!,
-      plan: { revision: 2, value: benchmarkPlan() },
-      reviewComments: { revision: 1, openCount: 1, resolvedCount: 0, recent: [{
-        id: 'comment-1', targetKind: 'source', targetId: 'source-1', authorLabel: '审阅人甲',
-        text: '请复核来源', state: 'open', planRevision: 1, createdAt: '2026-09-28T00:00:00.000Z',
-      }] },
-    } })
+    const view = await mount({
+      phase: 'idle',
+      project: {
+        ...pending.project!,
+        plan: { revision: 2, value: benchmarkPlan() },
+        reviewComments: {
+          revision: 1,
+          openCount: 1,
+          resolvedCount: 0,
+          recent: [
+            {
+              id: 'comment-1',
+              targetKind: 'source',
+              targetId: 'source-1',
+              authorLabel: '审阅人甲',
+              text: '请复核来源',
+              state: 'open',
+              planRevision: 1,
+              createdAt: '2026-09-28T00:00:00.000Z',
+            },
+          ],
+        },
+      },
+    })
     expect(view.container.textContent).toContain('待处理 1')
     expect(view.container.textContent).toContain('旧计划第 1 版')
     expect(view.container.textContent).toContain('请复核来源')

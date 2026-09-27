@@ -48,6 +48,7 @@ describe('workspace project integration', () => {
     let projectSnapshot: ReturnType<PresentationProjectController['snapshot']> = { phase: 'idle' }
     const projectListeners = new Set<() => void>()
     const project: PresentationProjectController = {
+      auditSources: vi.fn(async () => {}),
       snapshot: () => projectSnapshot,
       subscribe: (fn) => {
         projectListeners.add(fn)

@@ -86,13 +86,23 @@ export interface PresentationProjectStatus {
   }
 }
 export interface PresentationProjectSnapshot {
+  sourceAudit?: {
+    planRevision: number
+    sources: {
+      sourceId: string
+      attachmentId: string
+      status: 'found' | 'not_found' | 'empty_excerpt' | 'not_ready' | 'unsupported' | 'missing'
+      offset?: number
+    }[]
+  }
   deliveryReport?: PresentationDeliveryReport
   deliveryNotice?: string
-  phase: 'idle' | 'loading' | 'restoring' | 'resuming' | 'producing'
+  phase: 'idle' | 'loading' | 'restoring' | 'resuming' | 'producing' | 'auditing'
   project?: PresentationProjectStatus
   error?: string
 }
 export interface PresentationProjectController {
+  auditSources(): Promise<void>
   readDeliveryReport(): Promise<void>
   exportDeliveryReport(): Promise<void>
   recordIssueAction(action: PresentationIssueActionInput): Promise<void>
@@ -806,7 +816,116 @@ export function createPresentationProjectController(
       return Promise.resolve()
     return run('producing', production.requestId, tool, pageId)
   }
+  const auditSources = async () => {
+    if (active || !state.project?.plan || !projectDocument) return
+    const project = state.project
+    const plan = project.plan!
+    const documentId = projectDocument
+    const expected = plan.value.sources.flatMap((source) => {
+      const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
+      return match ? [{ sourceId: source.id, attachmentId: match[1] }] : []
+    })
+    if (!expected.length) return
+    stopPolling()
+    const controller = new AbortController()
+    active = controller
+    const captured = ++epoch
+    publish({ phase: 'auditing', project })
+    try {
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      const result = await options.executeTool(
+        {
+          id: `presentation-source-audit-${captured}`,
+          name: 'audit_presentation_sources',
+          input: { project_id: project.projectId },
+        },
+        controller.signal,
+      )
+      if (captured !== epoch || controller.signal.aborted) return
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      if (result.isError) throw new Error(result.output)
+      if (new TextEncoder().encode(result.output).byteLength > 128 * 1024)
+        throw new Error('presentation_response_invalid')
+      const value = JSON.parse(result.output) as {
+        projectId?: unknown
+        planRevision?: unknown
+        sources?: {
+          sourceId?: unknown
+          attachmentId?: unknown
+          status?: unknown
+          offset?: unknown
+        }[]
+        checks?: unknown
+      }
+      if (
+        value.projectId !== project.projectId ||
+        value.planRevision !== plan.revision ||
+        !Array.isArray(value.sources) ||
+        value.sources.length !== expected.length ||
+        JSON.stringify(value.checks) !==
+          JSON.stringify({
+            support: 'not_verified',
+            sourceAuthority: 'not_verified',
+            timeliness: 'not_verified',
+          }) ||
+        value.sources.some(
+          (source, index) =>
+            !source ||
+            source.sourceId !== expected[index]!.sourceId ||
+            source.attachmentId !== expected[index]!.attachmentId ||
+            ![
+              'found',
+              'not_found',
+              'empty_excerpt',
+              'not_ready',
+              'unsupported',
+              'missing',
+            ].includes(String(source.status)) ||
+            (source.status === 'found'
+              ? !Number.isSafeInteger(source.offset) ||
+                Number(source.offset) < 0 ||
+                Number(source.offset) > 1_000_000
+              : source.offset !== undefined),
+        )
+      )
+        throw new Error('presentation_response_invalid')
+      publish({
+        phase: 'idle',
+        project,
+        sourceAudit: {
+          planRevision: plan.revision,
+          sources: value.sources as NonNullable<
+            PresentationProjectSnapshot['sourceAudit']
+          >['sources'],
+        },
+      })
+    } catch (error) {
+      if (captured !== epoch) return
+      if (
+        await options.documentId().then(
+          (id) => id !== documentId,
+          () => true,
+        )
+      )
+        stop(message(new Error('presentation_document_changed')))
+      else publish({ phase: 'idle', project, error: message(error) })
+    } finally {
+      if (captured === epoch) {
+        active = undefined
+        if (
+          state.project?.productionJob &&
+          ['running', 'pausing', 'cancelling'].includes(state.project.productionJob.state)
+        )
+          poll = setTimeout(() => {
+            void run('loading')
+          }, 1500)
+      }
+    }
+  }
   return {
+    auditSources,
     readDeliveryReport: () => deliveryAction('read_presentation_delivery_report'),
     exportDeliveryReport: () => deliveryAction('export_presentation_delivery_report'),
     recordIssueAction: (action) => deliveryAction('record_presentation_issue_action', action),
