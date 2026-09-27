@@ -6,7 +6,14 @@ export type ExistingBatchOperation = {
   shapeType: string
 } & (
   | { kind: 'text'; before: string; after: string }
-  | { kind: 'table_cell'; rowIndex: number; columnIndex: number; tableStructureDigest: string; before: string; after: string }
+  | {
+      kind: 'table_cell'
+      rowIndex: number
+      columnIndex: number
+      tableStructureDigest: string
+      before: string
+      after: string
+    }
   | { kind: 'geometry'; before: PresentationPageGeometry; after: PresentationPageGeometry }
 )
 
@@ -20,6 +27,10 @@ export interface PresentationExistingBatch {
   intent: string
   preserved: string[]
   validation: string[]
+  /** Captured baseline fields of non-target shapes on affected pages. */
+  preservedPageDigests?: Record<string, string>
+  /** Captured fields of target shapes outside the planned operation kinds. */
+  preservedTargetDigests?: Record<string, string>
   risk: 'medium' | 'high'
   operations: ExistingBatchOperation[]
   state: 'applying' | 'applied' | 'undoing' | 'undone'
@@ -84,6 +95,8 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
           'intent',
           'preserved',
           'validation',
+          'preservedPageDigests',
+          'preservedTargetDigests',
           'risk',
           'operations',
           'state',
@@ -111,6 +124,23 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
     r.intent.length > 300 ||
     !labels(r.preserved, 20) ||
     !labels(r.validation, 20) ||
+    (r.preservedPageDigests !== undefined &&
+      (typeof r.preservedPageDigests !== 'object' ||
+        Array.isArray(r.preservedPageDigests) ||
+        Object.keys(r.preservedPageDigests).length > 20 ||
+        Object.entries(r.preservedPageDigests).some(
+          ([slideId, value]) =>
+            !r.scope.slideIds.includes(slideId) ||
+            typeof value !== 'string' ||
+            !/^[a-f0-9]{64}$/.test(value),
+        ))) ||
+    (r.preservedTargetDigests !== undefined &&
+      (typeof r.preservedTargetDigests !== 'object' ||
+        Array.isArray(r.preservedTargetDigests) ||
+        Object.keys(r.preservedTargetDigests).length > 8 ||
+        Object.entries(r.preservedTargetDigests).some(
+          ([, value]) => typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value),
+        ))) ||
     !['medium', 'high'].includes(r.risk) ||
     !Array.isArray(r.operations) ||
     r.operations.length < 2 ||
@@ -133,7 +163,18 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
       typeof op !== 'object' ||
       Array.isArray(op) ||
       Object.keys(op).some(
-        (k) => !['hostSlideId', 'shapeId', 'shapeType', 'kind', 'rowIndex', 'columnIndex', 'tableStructureDigest', 'before', 'after'].includes(k),
+        (k) =>
+          ![
+            'hostSlideId',
+            'shapeId',
+            'shapeType',
+            'kind',
+            'rowIndex',
+            'columnIndex',
+            'tableStructureDigest',
+            'before',
+            'after',
+          ].includes(k),
       ) ||
       !hostId(op.hostSlideId) ||
       !hostId(op.shapeId) ||
@@ -153,18 +194,57 @@ export function validatePresentationExistingBatch(v: unknown): v is Presentation
     )
       return false
     if (op.kind === 'table_cell') {
-      if (op.shapeType !== 'Table' || !Number.isSafeInteger(op.rowIndex) || !Number.isSafeInteger(op.columnIndex) ||
-        op.rowIndex < 0 || op.rowIndex > 19 || op.columnIndex < 0 || op.columnIndex > 11 ||
-        !/^[a-f0-9]{64}$/.test(op.tableStructureDigest)) return false
+      if (
+        op.shapeType !== 'Table' ||
+        !Number.isSafeInteger(op.rowIndex) ||
+        !Number.isSafeInteger(op.columnIndex) ||
+        op.rowIndex < 0 ||
+        op.rowIndex > 19 ||
+        op.columnIndex < 0 ||
+        op.columnIndex > 11 ||
+        !/^[a-f0-9]{64}$/.test(op.tableStructureDigest)
+      )
+        return false
     } else if ('rowIndex' in op || 'columnIndex' in op || 'tableStructureDigest' in op) return false
-    const key = JSON.stringify([op.hostSlideId, op.shapeId, op.kind, ...(op.kind === 'table_cell' ? [op.rowIndex, op.columnIndex] : [])])
+    const key = JSON.stringify([
+      op.hostSlideId,
+      op.shapeId,
+      op.kind,
+      ...(op.kind === 'table_cell' ? [op.rowIndex, op.columnIndex] : []),
+    ])
     if (keys.has(key)) return false
     keys.add(key)
   }
-  const tableOps = r.operations.filter((op): op is Extract<ExistingBatchOperation, { kind: 'table_cell' }> => op.kind === 'table_cell')
-  if (tableOps.length && (tableOps.length !== r.operations.length || tableOps.some((op) =>
-    op.hostSlideId !== tableOps[0]!.hostSlideId || op.shapeId !== tableOps[0]!.shapeId ||
-    op.tableStructureDigest !== tableOps[0]!.tableStructureDigest))) return false
+  const tableOps = r.operations.filter(
+    (op): op is Extract<ExistingBatchOperation, { kind: 'table_cell' }> => op.kind === 'table_cell',
+  )
+  if (r.preservedPageDigests) {
+    const affected = new Set(r.operations.map((op) => op.hostSlideId))
+    if (
+      Object.keys(r.preservedPageDigests).length !== affected.size ||
+      ![...affected].every((slideId) => Object.hasOwn(r.preservedPageDigests!, slideId))
+    )
+      return false
+  }
+  if (r.preservedTargetDigests) {
+    const targets = new Set(r.operations.map((op) => JSON.stringify([op.hostSlideId, op.shapeId])))
+    if (
+      Object.keys(r.preservedTargetDigests).length !== targets.size ||
+      ![...targets].every((key) => Object.hasOwn(r.preservedTargetDigests!, key))
+    )
+      return false
+  }
+  if (
+    tableOps.length &&
+    (tableOps.length !== r.operations.length ||
+      tableOps.some(
+        (op) =>
+          op.hostSlideId !== tableOps[0]!.hostSlideId ||
+          op.shapeId !== tableOps[0]!.shapeId ||
+          op.tableStructureDigest !== tableOps[0]!.tableStructureDigest,
+      ))
+  )
+    return false
   if (r.reviews !== undefined) {
     const affected = new Set(r.operations.map((op) => op.hostSlideId))
     if (

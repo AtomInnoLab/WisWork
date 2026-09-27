@@ -5,7 +5,11 @@ import type {
 } from '../../agent/proposal-controller.js'
 import { selectionFingerprint } from '../../agent/proposal-controller.js'
 import type { PresentationBaselineSkill } from './presentation-baseline.js'
-import { nativePlainTextEditable, type PresentationBaselineAdapter } from './browser-presentation-baseline-adapter.js'
+import {
+  nativePlainTextEditable,
+  type PresentationBaselineAdapter,
+} from './browser-presentation-baseline-adapter.js'
+import type { PresentationBaselinePage } from './browser-presentation-baseline-adapter.js'
 import {
   nativeGeometryEditable,
   validatePowerPointPageScreenshot,
@@ -85,17 +89,28 @@ const tools: AgentToolDef[] = [
   },
   {
     name: 'edit_existing_presentation_table_batch',
-    description: 'Propose 2–8 ordered native text cell edits in one existing table. Requires a fresh scoped baseline and confirmation; saves each verified step for recovery and undo.',
+    description:
+      'Propose 2–8 ordered native text cell edits in one existing table. Requires a fresh scoped baseline and confirmation; saves each verified step for recovery and undo.',
     inputSchema: {
       type: 'object',
       properties: {
         baseline_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
         intent: { type: 'string', minLength: 1, maxLength: 300 },
-        preserved: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 300 } },
-        validation: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 300 } },
+        preserved: {
+          type: 'array',
+          maxItems: 20,
+          items: { type: 'string', minLength: 1, maxLength: 300 },
+        },
+        validation: {
+          type: 'array',
+          maxItems: 20,
+          items: { type: 'string', minLength: 1, maxLength: 300 },
+        },
         risk: { type: 'string', enum: ['medium', 'high'] },
         operations: {
-          type: 'array', minItems: 2, maxItems: 8,
+          type: 'array',
+          minItems: 2,
+          maxItems: 8,
           items: {
             type: 'object',
             properties: {
@@ -188,6 +203,31 @@ async function digest(value: string) {
     new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))),
     (b) => b.toString(16).padStart(2, '0'),
   ).join('')
+}
+function preservedFields(page: PresentationBaselinePage, operations: ExistingBatchOperation[]) {
+  const targets = new Set(
+    operations.filter((op) => op.hostSlideId === page.slideId).map((op) => op.shapeId),
+  )
+  return JSON.stringify({
+    slideId: page.slideId,
+    masterId: page.masterId,
+    layoutId: page.layoutId,
+    shapes: page.shapes.filter((shape) => !targets.has(shape.id)),
+  })
+}
+const targetKey = (slideId: string, shapeId: string) => JSON.stringify([slideId, shapeId])
+function preservedTargetFields(
+  shape: PresentationBaselinePage['shapes'][number],
+  slideId: string,
+  operations: ExistingBatchOperation[],
+) {
+  const planned = operations.filter((op) => op.hostSlideId === slideId && op.shapeId === shape.id)
+  const value: Record<string, unknown> = { ...shape }
+  if (planned.some((op) => op.kind === 'text' || op.kind === 'table_cell')) delete value.text
+  if (planned.some((op) => op.kind === 'table_cell')) delete value.font
+  if (planned.some((op) => op.kind === 'geometry'))
+    for (const key of ['left', 'top', 'width', 'height']) delete value[key]
+  return JSON.stringify(value)
 }
 async function pngDigest(base64: string) {
   const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
@@ -292,93 +332,186 @@ export function createPresentationExistingBatchEditingSkill(
           const tableOperations = async (): Promise<ExistingBatchOperation[]> => {
             const raw = i.operations as unknown[]
             const first = raw[0] as Record<string, unknown>
-            if (!first || typeof first.slide_id !== 'string' || typeof first.shape_id !== 'string' ||
-              !baseline.scope.slideIds.includes(first.slide_id) ||
-              (baseline.scope.shapeIds && !baseline.scope.shapeIds.includes(first.shape_id)))
-              throw new Error('presentation_existing_scope_mismatch')
-            const shape = baseline.pages.find((page) => page.slideId === first.slide_id)?.shapes.find((item) => item.id === first.shape_id)
-            if (!shape || shape.type !== 'Table') throw new Error('presentation_existing_target_unsupported')
-            const targets = raw.map((item) => {
-              if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('invalid_tool_input')
-              const op = item as Record<string, unknown>
-              if (Object.keys(op).some((key) => !['slide_id', 'shape_id', 'row_index', 'column_index', 'text'].includes(key)) ||
-                op.slide_id !== first.slide_id || op.shape_id !== first.shape_id ||
-                !Number.isSafeInteger(op.row_index) || !Number.isSafeInteger(op.column_index) ||
-                (op.row_index as number) < 0 || (op.row_index as number) > 19 ||
-                (op.column_index as number) < 0 || (op.column_index as number) > 11 ||
-                typeof op.text !== 'string' || op.text.length > 128)
-                throw new Error('invalid_tool_input')
-              return { rowIndex: op.row_index as number, columnIndex: op.column_index as number, after: op.text }
-            })
-            if (!options.adapter.exportPresentationPagePackage || !options.adapter.readPresentationTableCell || !options.adapter.editPresentationTableCell)
-              throw new Error('office_api_unsupported')
-            const exported = await options.adapter.exportPresentationPagePackage(first.slide_id, signal)
-            if (exported.slideId !== first.slide_id || !same(exported.slideIds, baseline.context.slideIds))
-              throw new Error('presentation_baseline_changed')
-            const evidence = await inspectPowerPointTableCellsPackage(exported.base64, first.shape_id, targets, signal)
-            const digest = await presentationPackageDigest(exported.base64, signal)
-            const repeated = await options.adapter.exportPresentationPagePackage(first.slide_id, signal)
-            if (repeated.slideId !== first.slide_id || !same(repeated.slideIds, exported.slideIds) ||
-              await presentationPackageDigest(repeated.base64, signal) !== digest)
-              throw new Error('presentation_baseline_changed')
-            const operations: ExistingBatchOperation[] = []
-            for (const [index, target] of targets.entries()) {
-              const host = await options.adapter.readPresentationTableCell(first.slide_id, first.shape_id, target.rowIndex, target.columnIndex, signal)
-              if (host.slideId !== first.slide_id || host.shapeId !== first.shape_id ||
-                host.rowIndex !== target.rowIndex || host.columnIndex !== target.columnIndex ||
-                host.text !== evidence.cells[index]?.text)
-                throw new Error('presentation_baseline_changed')
-              operations.push({ hostSlideId: first.slide_id, shapeId: first.shape_id, shapeType: 'Table', kind: 'table_cell',
-                rowIndex: target.rowIndex, columnIndex: target.columnIndex, tableStructureDigest: evidence.structureDigest,
-                before: host.text, after: target.after })
-            }
-            return operations
-          }
-          const operations: ExistingBatchOperation[] = tableBatch ? await tableOperations() : i.operations.map((raw: unknown) => {
-            if (!raw || typeof raw !== 'object' || Array.isArray(raw))
-              throw new Error('invalid_tool_input')
-            const op = raw as Record<string, unknown>
             if (
-              Object.keys(op).some(
-                (k) => !['slide_id', 'shape_id', 'kind', 'text', 'geometry'].includes(k),
-              ) ||
-              typeof op.slide_id !== 'string' ||
-              typeof op.shape_id !== 'string' ||
-              !baseline.scope.slideIds.includes(op.slide_id) ||
-              (baseline.scope.shapeIds && !baseline.scope.shapeIds.includes(op.shape_id))
+              !first ||
+              typeof first.slide_id !== 'string' ||
+              typeof first.shape_id !== 'string' ||
+              !baseline.scope.slideIds.includes(first.slide_id) ||
+              (baseline.scope.shapeIds && !baseline.scope.shapeIds.includes(first.shape_id))
             )
               throw new Error('presentation_existing_scope_mismatch')
             const shape = baseline.pages
-              .find((p) => p.slideId === op.slide_id)
-              ?.shapes.find((s) => s.id === op.shape_id)
-            if (!shape) throw new Error('presentation_existing_target_unsupported')
-            if (op.kind === 'geometry' && !nativeGeometryEditable(shape.type))
+              .find((page) => page.slideId === first.slide_id)
+              ?.shapes.find((item) => item.id === first.shape_id)
+            if (!shape || shape.type !== 'Table')
               throw new Error('presentation_existing_target_unsupported')
-            if (op.kind === 'text' && !nativePlainTextEditable(shape))
-              throw new Error('presentation_existing_target_unsupported')
-            const base = { hostSlideId: op.slide_id, shapeId: op.shape_id, shapeType: shape.type }
-            if (
-              op.kind === 'text' &&
-              typeof op.text === 'string' &&
-              nativePlainTextEditable(shape) &&
-              shape.text !== undefined &&
-              op.geometry === undefined
-            )
-              return { ...base, kind: 'text', before: shape.text, after: op.text }
-            if (
-              op.kind === 'geometry' &&
-              op.text === undefined &&
-              op.geometry &&
-              typeof op.geometry === 'object'
-            )
+            const targets = raw.map((item) => {
+              if (!item || typeof item !== 'object' || Array.isArray(item))
+                throw new Error('invalid_tool_input')
+              const op = item as Record<string, unknown>
+              if (
+                Object.keys(op).some(
+                  (key) =>
+                    !['slide_id', 'shape_id', 'row_index', 'column_index', 'text'].includes(key),
+                ) ||
+                op.slide_id !== first.slide_id ||
+                op.shape_id !== first.shape_id ||
+                !Number.isSafeInteger(op.row_index) ||
+                !Number.isSafeInteger(op.column_index) ||
+                (op.row_index as number) < 0 ||
+                (op.row_index as number) > 19 ||
+                (op.column_index as number) < 0 ||
+                (op.column_index as number) > 11 ||
+                typeof op.text !== 'string' ||
+                op.text.length > 128
+              )
+                throw new Error('invalid_tool_input')
               return {
-                ...base,
-                kind: 'geometry',
-                before: geometry(shape),
-                after: op.geometry as PresentationPageGeometry,
+                rowIndex: op.row_index as number,
+                columnIndex: op.column_index as number,
+                after: op.text,
               }
-            throw new Error('invalid_tool_input')
-          })
+            })
+            if (
+              !options.adapter.exportPresentationPagePackage ||
+              !options.adapter.readPresentationTableCell ||
+              !options.adapter.editPresentationTableCell
+            )
+              throw new Error('office_api_unsupported')
+            const exported = await options.adapter.exportPresentationPagePackage(
+              first.slide_id,
+              signal,
+            )
+            if (
+              exported.slideId !== first.slide_id ||
+              !same(exported.slideIds, baseline.context.slideIds)
+            )
+              throw new Error('presentation_baseline_changed')
+            const evidence = await inspectPowerPointTableCellsPackage(
+              exported.base64,
+              first.shape_id,
+              targets,
+              signal,
+            )
+            const digest = await presentationPackageDigest(exported.base64, signal)
+            const repeated = await options.adapter.exportPresentationPagePackage(
+              first.slide_id,
+              signal,
+            )
+            if (
+              repeated.slideId !== first.slide_id ||
+              !same(repeated.slideIds, exported.slideIds) ||
+              (await presentationPackageDigest(repeated.base64, signal)) !== digest
+            )
+              throw new Error('presentation_baseline_changed')
+            const operations: ExistingBatchOperation[] = []
+            for (const [index, target] of targets.entries()) {
+              const host = await options.adapter.readPresentationTableCell(
+                first.slide_id,
+                first.shape_id,
+                target.rowIndex,
+                target.columnIndex,
+                signal,
+              )
+              if (
+                host.slideId !== first.slide_id ||
+                host.shapeId !== first.shape_id ||
+                host.rowIndex !== target.rowIndex ||
+                host.columnIndex !== target.columnIndex ||
+                host.text !== evidence.cells[index]?.text
+              )
+                throw new Error('presentation_baseline_changed')
+              operations.push({
+                hostSlideId: first.slide_id,
+                shapeId: first.shape_id,
+                shapeType: 'Table',
+                kind: 'table_cell',
+                rowIndex: target.rowIndex,
+                columnIndex: target.columnIndex,
+                tableStructureDigest: evidence.structureDigest,
+                before: host.text,
+                after: target.after,
+              })
+            }
+            return operations
+          }
+          const operations: ExistingBatchOperation[] = tableBatch
+            ? await tableOperations()
+            : i.operations.map((raw: unknown) => {
+                if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+                  throw new Error('invalid_tool_input')
+                const op = raw as Record<string, unknown>
+                if (
+                  Object.keys(op).some(
+                    (k) => !['slide_id', 'shape_id', 'kind', 'text', 'geometry'].includes(k),
+                  ) ||
+                  typeof op.slide_id !== 'string' ||
+                  typeof op.shape_id !== 'string' ||
+                  !baseline.scope.slideIds.includes(op.slide_id) ||
+                  (baseline.scope.shapeIds && !baseline.scope.shapeIds.includes(op.shape_id))
+                )
+                  throw new Error('presentation_existing_scope_mismatch')
+                const shape = baseline.pages
+                  .find((p) => p.slideId === op.slide_id)
+                  ?.shapes.find((s) => s.id === op.shape_id)
+                if (!shape) throw new Error('presentation_existing_target_unsupported')
+                if (op.kind === 'geometry' && !nativeGeometryEditable(shape.type))
+                  throw new Error('presentation_existing_target_unsupported')
+                if (op.kind === 'text' && !nativePlainTextEditable(shape))
+                  throw new Error('presentation_existing_target_unsupported')
+                const base = {
+                  hostSlideId: op.slide_id,
+                  shapeId: op.shape_id,
+                  shapeType: shape.type,
+                }
+                if (
+                  op.kind === 'text' &&
+                  typeof op.text === 'string' &&
+                  nativePlainTextEditable(shape) &&
+                  shape.text !== undefined &&
+                  op.geometry === undefined
+                )
+                  return { ...base, kind: 'text', before: shape.text, after: op.text }
+                if (
+                  op.kind === 'geometry' &&
+                  op.text === undefined &&
+                  op.geometry &&
+                  typeof op.geometry === 'object'
+                )
+                  return {
+                    ...base,
+                    kind: 'geometry',
+                    before: geometry(shape),
+                    after: op.geometry as PresentationPageGeometry,
+                  }
+                throw new Error('invalid_tool_input')
+              })
+          const preservedPageDigests = Object.fromEntries(
+            await Promise.all(
+              [...new Set(operations.map((op) => op.hostSlideId))].map(async (slideId) => {
+                const page = baseline.pages.find((item) => item.slideId === slideId)
+                if (!page) throw new Error('presentation_baseline_changed')
+                return [slideId, await digest(preservedFields(page, operations))] as const
+              }),
+            ),
+          )
+          const preservedTargetDigests = Object.fromEntries(
+            await Promise.all(
+              [...new Set(operations.map((op) => targetKey(op.hostSlideId, op.shapeId)))].map(
+                async (key) => {
+                  const [slideId, shapeId] = JSON.parse(key) as [string, string]
+                  const shape = baseline.pages
+                    .find((page) => page.slideId === slideId)
+                    ?.shapes.find((item) => item.id === shapeId)
+                  if (!shape) throw new Error('presentation_baseline_changed')
+                  return [
+                    key,
+                    await digest(preservedTargetFields(shape, slideId, operations)),
+                  ] as const
+                },
+              ),
+            ),
+          )
           record = {
             version: 1,
             changeId: crypto.randomUUID(),
@@ -391,6 +524,8 @@ export function createPresentationExistingBatchEditingSkill(
             },
             intent: i.intent,
             preserved: i.preserved,
+            preservedPageDigests,
+            preservedTargetDigests,
             validation: i.validation,
             risk: i.risk,
             operations,
@@ -428,27 +563,73 @@ export function createPresentationExistingBatchEditingSkill(
           const shape = page.shapes.find((s) => s.id === op.shapeId)
           if (page.slideId !== op.hostSlideId || !shape || shape.type !== op.shapeType)
             throw new Error('presentation_existing_target_changed')
+          const preservedDigest = record.preservedPageDigests?.[op.hostSlideId]
+          if (
+            preservedDigest &&
+            (await digest(preservedFields(page, record.operations))) !== preservedDigest
+          )
+            throw new Error('presentation_existing_preserved_changed')
+          const targetDigest =
+            record.preservedTargetDigests?.[targetKey(op.hostSlideId, op.shapeId)]
+          if (
+            targetDigest &&
+            (await digest(preservedTargetFields(shape, op.hostSlideId, record.operations))) !==
+              targetDigest
+          )
+            throw new Error('presentation_existing_preserved_changed')
           if (op.kind === 'table_cell') {
-            if (!options.adapter.readPresentationTableCell || !options.adapter.exportPresentationPagePackage)
+            if (
+              !options.adapter.readPresentationTableCell ||
+              !options.adapter.exportPresentationPagePackage
+            )
               throw new Error('office_api_unsupported')
-            const positions = record.operations.filter((item): item is Extract<ExistingBatchOperation, { kind: 'table_cell' }> => item.kind === 'table_cell')
+            const positions = record.operations
+              .filter(
+                (item): item is Extract<ExistingBatchOperation, { kind: 'table_cell' }> =>
+                  item.kind === 'table_cell',
+              )
               .map((item) => ({ rowIndex: item.rowIndex, columnIndex: item.columnIndex }))
-            const native = await options.adapter.readPresentationTableCell(op.hostSlideId, op.shapeId, op.rowIndex, op.columnIndex, signal)
-            const first = await options.adapter.exportPresentationPagePackage(op.hostSlideId, signal)
-            if (first.slideId !== op.hostSlideId) throw new Error('presentation_existing_target_changed')
-            const evidence = await inspectPowerPointTableCellsPackage(first.base64, op.shapeId, positions, signal)
+            const native = await options.adapter.readPresentationTableCell(
+              op.hostSlideId,
+              op.shapeId,
+              op.rowIndex,
+              op.columnIndex,
+              signal,
+            )
+            const first = await options.adapter.exportPresentationPagePackage(
+              op.hostSlideId,
+              signal,
+            )
+            if (first.slideId !== op.hostSlideId)
+              throw new Error('presentation_existing_target_changed')
+            const evidence = await inspectPowerPointTableCellsPackage(
+              first.base64,
+              op.shapeId,
+              positions,
+              signal,
+            )
             if (evidence.structureDigest !== op.tableStructureDigest)
               throw new Error('presentation_existing_target_changed')
-            const currentCell = evidence.cells.find((cell) => cell.rowIndex === op.rowIndex && cell.columnIndex === op.columnIndex)
+            const currentCell = evidence.cells.find(
+              (cell) => cell.rowIndex === op.rowIndex && cell.columnIndex === op.columnIndex,
+            )
             const packageDigest = await presentationPackageDigest(first.base64, signal)
-            const repeated = await options.adapter.exportPresentationPagePackage(op.hostSlideId, signal)
+            const repeated = await options.adapter.exportPresentationPagePackage(
+              op.hostSlideId,
+              signal,
+            )
             await current()
             saved()
-            if (repeated.slideId !== op.hostSlideId || !same(repeated.slideIds, first.slideIds) ||
-              await presentationPackageDigest(repeated.base64, signal) !== packageDigest ||
-              native.slideId !== op.hostSlideId || native.shapeId !== op.shapeId ||
-              native.rowIndex !== op.rowIndex || native.columnIndex !== op.columnIndex ||
-              native.text !== currentCell?.text)
+            if (
+              repeated.slideId !== op.hostSlideId ||
+              !same(repeated.slideIds, first.slideIds) ||
+              (await presentationPackageDigest(repeated.base64, signal)) !== packageDigest ||
+              native.slideId !== op.hostSlideId ||
+              native.shapeId !== op.shapeId ||
+              native.rowIndex !== op.rowIndex ||
+              native.columnIndex !== op.columnIndex ||
+              native.text !== currentCell?.text
+            )
               throw new Error('presentation_existing_target_changed')
             return native.text
           }
@@ -639,11 +820,14 @@ export function createPresentationExistingBatchEditingSkill(
               slideId: op.hostSlideId,
               shapeId: op.shapeId,
               kind: op.kind,
-              ...(op.kind === 'table_cell' ? { rowIndex: op.rowIndex, columnIndex: op.columnIndex } : {}),
+              ...(op.kind === 'table_cell'
+                ? { rowIndex: op.rowIndex, columnIndex: op.columnIndex }
+                : {}),
             })),
             cursor: record.cursor,
             risk: record.risk,
             preserved: record.preserved,
+            preservedFields: '已读取的受影响页非目标形状字段和目标形状未计划修改字段自动对照',
             validation: record.validation,
             atomic: false,
             textFormatting: '文字与表格单元格撤销仅恢复内容，不恢复全部富文本格式',
@@ -682,8 +866,13 @@ export function createPresentationExistingBatchEditingSkill(
                 if (!matches(v, source)) throw new Error('presentation_existing_batch_conflict')
                 if (op.kind === 'table_cell')
                   await options.adapter.editPresentationTableCell!(
-                    op.hostSlideId, op.shapeId, op.rowIndex, op.columnIndex,
-                    target as string, source as string, signal,
+                    op.hostSlideId,
+                    op.shapeId,
+                    op.rowIndex,
+                    op.columnIndex,
+                    target as string,
+                    source as string,
+                    signal,
                   )
                 else if (op.kind === 'text')
                   await options.adapter.editPresentationPageText!(
@@ -738,7 +927,10 @@ export function createPresentationExistingBatchEditingSkill(
             await check()
             if (!options.adapter.inspectPresentationPage)
               return { status: 'unavailable', reason: 'capture_unavailable' }
-            const pages: Extract<ProposalPostWriteEvidence, { status: 'captured' }>['pages'][number][] = []
+            const pages: Extract<
+              ProposalPostWriteEvidence,
+              { status: 'captured' }
+            >['pages'][number][] = []
             for (const slideId of new Set(record.operations.map((op) => op.hostSlideId))) {
               const shot = await options.adapter.inspectPresentationPage(slideId)
               if (

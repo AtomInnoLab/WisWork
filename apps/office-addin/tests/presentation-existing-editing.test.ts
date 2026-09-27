@@ -18,14 +18,24 @@ it('confirms a simple native table cell edit with a durable savepoint and reopen
   f.setShapeType('Table')
   const baseline_id = await f.baseline()
   const proposed = await f.call('edit_existing_presentation_table_cell', {
-    baseline_id, slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after',
+    baseline_id,
+    slide_id: 'slide',
+    shape_id: 'shape',
+    row_index: 0,
+    column_index: 0,
+    text: 'after',
   })
   expect(proposed.isError, proposed.output).not.toBe(true)
   expect(f.tableText()).toBe('before')
   await f.confirm()
   expect(f.tableText()).toBe('after')
   expect(f.records()[0]!.record).toMatchObject({
-    kind: 'table_cell', rowIndex: 0, columnIndex: 0, before: 'before', after: 'after', state: 'applied',
+    kind: 'table_cell',
+    rowIndex: 0,
+    columnIndex: 0,
+    before: 'before',
+    after: 'after',
+    state: 'applied',
   })
   f.reopen()
   const change_id = f.records()[0]!.record.changeId
@@ -43,7 +53,11 @@ it('applies and reverses two ordered native table cells with one durable batch',
   f.setShapeType('Table')
   const baseline_id = await f.baseline()
   const proposed = await f.call('edit_existing_presentation_table_batch', {
-    baseline_id, intent: 'Update two figures', preserved: ['Other cells'], validation: ['Readback'], risk: 'medium',
+    baseline_id,
+    intent: 'Update two figures',
+    preserved: ['Other cells'],
+    validation: ['Readback'],
+    risk: 'medium',
     operations: [
       { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
       { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
@@ -56,13 +70,22 @@ it('applies and reverses two ordered native table cells with one durable batch',
   expect([f.tableText(), f.tableText2()]).toEqual(['after', 'after-2'])
   const history = f.binding().listChangeHistory()
   const batch = history.find((entry) => entry.kind === 'existing_batch')
-  expect(batch?.record).toMatchObject({ state: 'applied', cursor: 2, operations: [{ kind: 'table_cell' }, { kind: 'table_cell' }] })
+  expect(batch?.record).toMatchObject({
+    state: 'applied',
+    cursor: 2,
+    operations: [{ kind: 'table_cell' }, { kind: 'table_cell' }],
+  })
   f.reopen()
   await f.getRuntime().changes!.refresh()
-  const workbench = f.getRuntime().changes!.snapshot().entries.find((entry) => entry.id === `existing_batch:${batch!.record.changeId}`)
+  const workbench = f
+    .getRuntime()
+    .changes!.snapshot()
+    .entries.find((entry) => entry.id === `existing_batch:${batch!.record.changeId}`)
   expect(workbench?.before).toContain('shape[0,0]')
   expect(workbench?.before).toContain('shape[0,1]')
-  const undo = await f.call('undo_existing_presentation_batch', { change_id: batch!.record.changeId })
+  const undo = await f.call('undo_existing_presentation_batch', {
+    change_id: batch!.record.changeId,
+  })
   expect(undo.isError, undo.output).not.toBe(true)
   await f.confirm()
   expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
@@ -73,7 +96,11 @@ it('resumes a table batch after one cell was durably written and the next write 
   f.setShapeType('Table')
   const baseline_id = await f.baseline()
   const proposed = await f.call('edit_existing_presentation_table_batch', {
-    baseline_id, intent: 'Update two figures', preserved: [], validation: [], risk: 'medium',
+    baseline_id,
+    intent: 'Update two figures',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
     operations: [
       { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
       { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
@@ -82,7 +109,9 @@ it('resumes a table batch after one cell was durably written and the next write 
   expect(proposed.isError, proposed.output).not.toBe(true)
   const change_id = JSON.parse(proposed.output).changeId as string
   const write = f.editTableCell.getMockImplementation()!
-  f.editTableCell.mockImplementationOnce(write).mockRejectedValueOnce(new Error('office_write_failed'))
+  f.editTableCell
+    .mockImplementationOnce(write)
+    .mockRejectedValueOnce(new Error('office_write_failed'))
   await expect(f.confirm()).rejects.toThrow()
   expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applying', cursor: 1 })
   expect([f.tableText(), f.tableText2()]).toEqual(['after', 'before-2'])
@@ -100,7 +129,11 @@ it('finalizes an already written table cell after a lost receipt without replayi
   f.setShapeType('Table')
   const baseline_id = await f.baseline()
   const proposed = await f.call('edit_existing_presentation_table_batch', {
-    baseline_id, intent: 'Update two figures', preserved: [], validation: [], risk: 'medium',
+    baseline_id,
+    intent: 'Update two figures',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
     operations: [
       { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
       { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
@@ -128,7 +161,11 @@ it('rejects a table batch if a target cell changes to a third value before confi
   f.setShapeType('Table')
   const baseline_id = await f.baseline()
   const proposed = await f.call('edit_existing_presentation_table_batch', {
-    baseline_id, intent: 'Update two figures', preserved: [], validation: [], risk: 'medium',
+    baseline_id,
+    intent: 'Update two figures',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
     operations: [
       { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
       { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
@@ -145,11 +182,21 @@ it('rejects a table cell target changed after its baseline package read', async 
   f.setShapeType('Table')
   const baseline_id = await f.baseline()
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'readPresentationTableCell').mockResolvedValue({
-    slideId: 'slide', shapeId: 'shape', rowIndex: 0, columnIndex: 0,
-    text: 'manual', rowCount: 1, columnCount: 1,
+    slideId: 'slide',
+    shapeId: 'shape',
+    rowIndex: 0,
+    columnIndex: 0,
+    text: 'manual',
+    rowCount: 1,
+    columnCount: 1,
   })
   const result = await f.call('edit_existing_presentation_table_cell', {
-    baseline_id, slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after',
+    baseline_id,
+    slide_id: 'slide',
+    shape_id: 'shape',
+    row_index: 0,
+    column_index: 0,
+    text: 'after',
   })
   expect(result.output).toBe('presentation_baseline_changed')
   expect(f.records()).toHaveLength(0)
@@ -159,15 +206,25 @@ it('refuses table cell undo when the host cell becomes multi-run with the same t
   f.setShapeType('Table')
   const baseline_id = await f.baseline()
   const proposed = await f.call('edit_existing_presentation_table_cell', {
-    baseline_id, slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after',
+    baseline_id,
+    slide_id: 'slide',
+    shape_id: 'shape',
+    row_index: 0,
+    column_index: 0,
+    text: 'after',
   })
   expect(proposed.isError, proposed.output).not.toBe(true)
   await f.confirm()
   const zip = new JSZip()
-  zip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="shape" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>af</a:t></a:r><a:r><a:t>ter</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>')
+  zip.file(
+    'ppt/slides/slide1.xml',
+    '<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="shape" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>af</a:t></a:r><a:r><a:t>ter</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>',
+  )
   const base64 = await zip.generateAsync({ type: 'base64' })
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'exportPresentationPagePackage').mockResolvedValue({
-    slideId: 'slide', slideIds: ['slide', 'other'], base64,
+    slideId: 'slide',
+    slideIds: ['slide', 'other'],
+    base64,
   })
   const change_id = f.records()[0]!.record.changeId
   const undo = await f.call('undo_existing_presentation_change', { change_id })
@@ -196,7 +253,10 @@ it('keeps a verified text write successful when the post-write screenshot fails'
   const proposal = f.getRuntime().proposals as StructuredProposalController
   const decision = proposal.waitForDecision(proposal.pending()!.id)
   await f.confirm()
-  expect(await decision).toMatchObject({ status: 'confirmed', postWrite: { status: 'unavailable' } })
+  expect(await decision).toMatchObject({
+    status: 'confirmed',
+    postWrite: { status: 'unavailable' },
+  })
   expect(f.records()[0]!.record).toMatchObject({ state: 'applied' })
   expect(f.text()).toBe('after')
 })
@@ -225,7 +285,10 @@ it('captures each exact affected native page after a verified batch', async () =
     status: 'confirmed',
     postWrite: {
       status: 'captured',
-      pages: [{ slideId: 'slide', pngBase64: png }, { slideId: 'other', pngBase64: png }],
+      pages: [
+        { slideId: 'slide', pngBase64: png },
+        { slideId: 'other', pngBase64: png },
+      ],
     },
   })
 })
@@ -238,7 +301,14 @@ async function fixture() {
     otherText = 'other-before',
     geometry = { left: 1, top: 2, width: 100, height: 40 },
     shapeType = 'TextBox',
-    font = { name: 'Arial' as string | null, size: 20 as number | null, color: '#000000' as string | null, bold: false as boolean | null, italic: false as boolean | null, underline: 'None' as string | null },
+    font = {
+      name: 'Arial' as string | null,
+      size: 20 as number | null,
+      color: '#000000' as string | null,
+      bold: false as boolean | null,
+      italic: false as boolean | null,
+      underline: 'None' as string | null,
+    },
     selection = ['shape'],
     screenshot = png
   const values = new Map<string, string>()
@@ -307,23 +377,34 @@ async function fixture() {
     })
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'readPresentationTableCell').mockImplementation(
     async (slideId, shapeId, rowIndex, columnIndex) => ({
-      slideId, shapeId, rowIndex, columnIndex, text: columnIndex === 0 ? tableText : tableText2, rowCount: 1, columnCount: 2,
+      slideId,
+      shapeId,
+      rowIndex,
+      columnIndex,
+      text: columnIndex === 0 ? tableText : tableText2,
+      rowCount: 1,
+      columnCount: 2,
     }),
   )
-  const editTableCell = vi.spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationTableCell').mockImplementation(
-    async (_slideId, _shapeId, _rowIndex, _columnIndex, next, expected) => {
+  const editTableCell = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationTableCell')
+    .mockImplementation(async (_slideId, _shapeId, _rowIndex, _columnIndex, next, expected) => {
       const actual = _columnIndex === 0 ? tableText : tableText2
       if (actual !== expected) throw new Error('office_concurrent_change')
       if (_columnIndex === 0) tableText = next
       else tableText2 = next
-    },
-  )
+    })
   const zip = new JSZip()
-  const tableXml = () => `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="shape" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>${tableText}</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>${tableText2}</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`
+  const tableXml = () =>
+    `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="shape" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>${tableText}</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>${tableText2}</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'exportPresentationPagePackage').mockImplementation(
     async (slideId) => {
       zip.file('ppt/slides/slide1.xml', tableXml())
-      return { slideId, slideIds: ['slide', 'other'], base64: await zip.generateAsync({ type: 'base64' }) }
+      return {
+        slideId,
+        slideIds: ['slide', 'other'],
+        base64: await zip.generateAsync({ type: 'base64' }),
+      }
     },
   )
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'inspectPresentationPage').mockImplementation(
@@ -391,7 +472,9 @@ async function fixture() {
     editTableCell,
     tableText: () => tableText,
     tableText2: () => tableText2,
-    setTableText2: (value: string) => { tableText2 = value },
+    setTableText2: (value: string) => {
+      tableText2 = value
+    },
     invalidateQa,
     binding: bind,
     getRuntime: () => runtime,
@@ -422,54 +505,93 @@ async function fixture() {
     geometry: () => geometry,
   }
 }
-it.each(['Chart', 'Table', 'Group', 'SmartArt', 'Placeholder'])('does not offer native geometry for complex %s shapes', async (type) => {
-  const f = await fixture()
-  f.setShapeType(type)
-  const baseline_id = await f.baseline()
-  const single = await f.call('edit_existing_presentation_geometry', {
-    baseline_id, slide_id: 'slide', shape_id: 'shape', geometry: { ...f.geometry(), left: 30 },
-  })
-  expect(single.isError).toBe(true)
-  expect(single.output).toContain('presentation_existing_target_unsupported')
-  const batch = await f.call('edit_existing_presentation_batch', {
-    baseline_id, intent: 'Move chart and update caption', preserved: [], validation: [], risk: 'medium',
-    operations: [
-      { slide_id: 'slide', shape_id: 'shape', kind: 'geometry', geometry: { ...f.geometry(), left: 30 } },
-      { slide_id: 'other', shape_id: 'other-shape', kind: 'text', text: 'other-after' },
-    ],
-  })
-  expect(batch.isError).toBe(true)
-  expect(batch.output).toContain('presentation_existing_target_unsupported')
-  expect(f.editGeometry).not.toHaveBeenCalled()
-  expect(f.getRuntime().proposals.pending()).toBeUndefined()
-})
-it.each(['name', 'size', 'color', 'bold', 'italic', 'underline'] as const)('rejects whole-range text edits when %s formatting is indeterminate', async (field) => {
-  const f = await fixture()
-  f.setFont({ name: 'Arial', size: 20, color: '#000000', bold: false, italic: false, underline: 'None', [field]: null })
-  const baseline_id = await f.baseline()
-  const single = await f.call('edit_existing_presentation_text', {
-    baseline_id, slide_id: 'slide', shape_id: 'shape', text: 'after',
-  })
-  expect(single.output).toContain('presentation_existing_target_unsupported')
-  const batch = await f.call('edit_existing_presentation_batch', {
-    baseline_id, intent: 'Update two labels', preserved: [], validation: [], risk: 'medium',
-    operations: [
-      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
-      { slide_id: 'other', shape_id: 'other-shape', kind: 'text', text: 'other-after' },
-    ],
-  })
-  expect(batch.isError).toBe(true)
-  expect(f.editText).not.toHaveBeenCalled()
-  expect(f.getRuntime().proposals.pending()).toBeUndefined()
-})
+it.each(['Chart', 'Table', 'Group', 'SmartArt', 'Placeholder'])(
+  'does not offer native geometry for complex %s shapes',
+  async (type) => {
+    const f = await fixture()
+    f.setShapeType(type)
+    const baseline_id = await f.baseline()
+    const single = await f.call('edit_existing_presentation_geometry', {
+      baseline_id,
+      slide_id: 'slide',
+      shape_id: 'shape',
+      geometry: { ...f.geometry(), left: 30 },
+    })
+    expect(single.isError).toBe(true)
+    expect(single.output).toContain('presentation_existing_target_unsupported')
+    const batch = await f.call('edit_existing_presentation_batch', {
+      baseline_id,
+      intent: 'Move chart and update caption',
+      preserved: [],
+      validation: [],
+      risk: 'medium',
+      operations: [
+        {
+          slide_id: 'slide',
+          shape_id: 'shape',
+          kind: 'geometry',
+          geometry: { ...f.geometry(), left: 30 },
+        },
+        { slide_id: 'other', shape_id: 'other-shape', kind: 'text', text: 'other-after' },
+      ],
+    })
+    expect(batch.isError).toBe(true)
+    expect(batch.output).toContain('presentation_existing_target_unsupported')
+    expect(f.editGeometry).not.toHaveBeenCalled()
+    expect(f.getRuntime().proposals.pending()).toBeUndefined()
+  },
+)
+it.each(['name', 'size', 'color', 'bold', 'italic', 'underline'] as const)(
+  'rejects whole-range text edits when %s formatting is indeterminate',
+  async (field) => {
+    const f = await fixture()
+    f.setFont({
+      name: 'Arial',
+      size: 20,
+      color: '#000000',
+      bold: false,
+      italic: false,
+      underline: 'None',
+      [field]: null,
+    })
+    const baseline_id = await f.baseline()
+    const single = await f.call('edit_existing_presentation_text', {
+      baseline_id,
+      slide_id: 'slide',
+      shape_id: 'shape',
+      text: 'after',
+    })
+    expect(single.output).toContain('presentation_existing_target_unsupported')
+    const batch = await f.call('edit_existing_presentation_batch', {
+      baseline_id,
+      intent: 'Update two labels',
+      preserved: [],
+      validation: [],
+      risk: 'medium',
+      operations: [
+        { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+        { slide_id: 'other', shape_id: 'other-shape', kind: 'text', text: 'other-after' },
+      ],
+    })
+    expect(batch.isError).toBe(true)
+    expect(f.editText).not.toHaveBeenCalled()
+    expect(f.getRuntime().proposals.pending()).toBeUndefined()
+  },
+)
 it('rejects text edits when aggregate font data is unavailable', async () => {
   const f = await fixture()
-  vi.spyOn(BrowserPresentationBaselineAdapter.prototype, 'readPage').mockImplementation(async (slideId) => ({
-    slideId, shapes: [{ id: 'shape', name: 'Title', type: 'TextBox', ...f.geometry(), text: 'before' }],
-  }))
+  vi.spyOn(BrowserPresentationBaselineAdapter.prototype, 'readPage').mockImplementation(
+    async (slideId) => ({
+      slideId,
+      shapes: [{ id: 'shape', name: 'Title', type: 'TextBox', ...f.geometry(), text: 'before' }],
+    }),
+  )
   const baseline_id = await f.baseline()
   const result = await f.call('edit_existing_presentation_text', {
-    baseline_id, slide_id: 'slide', shape_id: 'shape', text: 'after',
+    baseline_id,
+    slide_id: 'slide',
+    shape_id: 'shape',
+    text: 'after',
   })
   expect(result.output).toContain('presentation_existing_target_unsupported')
   expect(f.editText).not.toHaveBeenCalled()
@@ -565,6 +687,90 @@ it('applies and reverses an ordered text plus geometry batch through one durable
   expect(f.geometry().left).toBe(1)
   expect(f.binding().listChangeHistory()[0].record).toMatchObject({ state: 'undone', cursor: 0 })
   expect(f.binding().readExistingBatch(changeId)?.reviews).toBeUndefined()
+})
+it('stops a batch when a non-target shape changes during a confirmed write', async () => {
+  const f = await fixture()
+  const original = vi
+    .mocked(BrowserPresentationBaselineAdapter.prototype.readPage)
+    .getMockImplementation()!
+  let untouched = 'keep'
+  vi.spyOn(BrowserPresentationBaselineAdapter.prototype, 'readPage').mockImplementation(
+    async (slideId, signal) => {
+      const page = await original(slideId, signal)
+      if (slideId === 'slide')
+        page.shapes.push({ ...page.shapes[0]!, id: 'untouched', name: 'Keep', text: untouched })
+      return page
+    },
+  )
+  const baseline = await f.call('read_presentation_baseline', { scope: 'deck' })
+  const baseline_id = JSON.parse(baseline.output).baselineId as string
+  const proposed = await f.call('edit_existing_presentation_batch', {
+    baseline_id,
+    intent: 'Update both titles',
+    preserved: ['Other objects'],
+    validation: ['Read back both pages'],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      { slide_id: 'other', shape_id: 'other-shape', kind: 'text', text: 'other-after' },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  f.editText.mockImplementationOnce(async () => {
+    f.setText('after')
+    untouched = 'changed'
+  })
+  await expect(f.confirm()).rejects.toThrow('presentation_existing_preserved_changed')
+  expect(f.otherText()).toBe('other-before')
+  const saved = f.binding().readExistingBatch(JSON.parse(proposed.output).changeId)
+  expect(saved).toMatchObject({ state: 'applying', cursor: 0 })
+  expect(saved?.preservedPageDigests).toHaveProperty('slide')
+  expect(saved?.preservedPageDigests).toHaveProperty('other')
+  f.reopen()
+  expect(
+    (
+      await f.call('inspect_existing_presentation_batch', {
+        change_id: JSON.parse(proposed.output).changeId,
+      })
+    ).output,
+  ).toBe('presentation_existing_preserved_changed')
+})
+it('stops a batch when a text edit also changes an unplanned target font', async () => {
+  const f = await fixture()
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_batch', {
+    baseline_id,
+    intent: 'Update title and position',
+    preserved: ['Title font'],
+    validation: ['Read back title and position'],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      {
+        slide_id: 'slide',
+        shape_id: 'shape',
+        kind: 'geometry',
+        geometry: { ...f.geometry(), left: 30 },
+      },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  f.editText.mockImplementationOnce(async () => {
+    f.setText('after')
+    f.setFont({
+      name: 'Other',
+      size: 20,
+      color: '#000000',
+      bold: false,
+      italic: false,
+      underline: 'None',
+    })
+  })
+  await expect(f.confirm()).rejects.toThrow('presentation_existing_preserved_changed')
+  expect(f.geometry().left).toBe(1)
+  expect(
+    f.binding().readExistingBatch(JSON.parse(proposed.output).changeId)?.preservedTargetDigests,
+  ).toHaveProperty(JSON.stringify(['slide', 'shape']))
 })
 it('edits two native objects on two pages and invalidates both QA page scopes', async () => {
   const f = await fixture()

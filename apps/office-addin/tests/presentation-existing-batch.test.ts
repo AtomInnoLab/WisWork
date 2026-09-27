@@ -93,14 +93,63 @@ it('journals ordered forward and reverse progress across reopen', async () => {
 it('accepts two distinct cells in one table and rejects duplicate or mixed targets', async () => {
   const f = await fixture()
   const cell = (columnIndex: number) => ({
-    kind: 'table_cell', hostSlideId: 's1', shapeId: 'a', shapeType: 'Table',
-    rowIndex: 0, columnIndex, tableStructureDigest: 'c'.repeat(64), before: 'old', after: 'new',
+    kind: 'table_cell',
+    hostSlideId: 's1',
+    shapeId: 'a',
+    shapeType: 'Table',
+    rowIndex: 0,
+    columnIndex,
+    tableStructureDigest: 'c'.repeat(64),
+    before: 'old',
+    after: 'new',
   })
   const record = { ...f.batch, operations: [cell(0), cell(1)] }
   expect(validatePresentationExistingBatch(record)).toBe(true)
-  expect(validatePresentationExistingBatch({ ...record, operations: [cell(0), cell(0)] })).toBe(false)
-  expect(validatePresentationExistingBatch({ ...record, operations: [cell(0), { ...cell(1), tableStructureDigest: 'd'.repeat(64) }] })).toBe(false)
-  expect(validatePresentationExistingBatch({ ...record, operations: [cell(0), f.batch.operations[1]] })).toBe(false)
+  expect(validatePresentationExistingBatch({ ...record, operations: [cell(0), cell(0)] })).toBe(
+    false,
+  )
+  expect(
+    validatePresentationExistingBatch({
+      ...record,
+      operations: [cell(0), { ...cell(1), tableStructureDigest: 'd'.repeat(64) }],
+    }),
+  ).toBe(false)
+  expect(
+    validatePresentationExistingBatch({ ...record, operations: [cell(0), f.batch.operations[1]] }),
+  ).toBe(false)
+})
+it('validates persisted non-target shape digests for exactly the affected pages', async () => {
+  const f = await fixture()
+  const hashes = { s1: 'c'.repeat(64), s2: 'd'.repeat(64) }
+  expect(validatePresentationExistingBatch({ ...f.batch, preservedPageDigests: hashes })).toBe(true)
+  expect(
+    validatePresentationExistingBatch({ ...f.batch, preservedPageDigests: { s1: hashes.s1 } }),
+  ).toBe(false)
+  expect(
+    validatePresentationExistingBatch({
+      ...f.batch,
+      preservedPageDigests: { ...hashes, other: hashes.s1 },
+    }),
+  ).toBe(false)
+  expect(
+    validatePresentationExistingBatch({
+      ...f.batch,
+      preservedPageDigests: { s1: 5, s2: hashes.s2 },
+    }),
+  ).toBe(false)
+  const targetHashes = {
+    [JSON.stringify(['s1', 'a'])]: hashes.s1,
+    [JSON.stringify(['s2', 'b'])]: hashes.s2,
+  }
+  expect(
+    validatePresentationExistingBatch({ ...f.batch, preservedTargetDigests: targetHashes }),
+  ).toBe(true)
+  expect(
+    validatePresentationExistingBatch({
+      ...f.batch,
+      preservedTargetDigests: { [JSON.stringify(['s1', 'a'])]: hashes.s1 },
+    }),
+  ).toBe(false)
 })
 
 it('accepts only bounded terminal reviews on affected pages and clears them before undo', async () => {
