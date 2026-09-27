@@ -1382,6 +1382,8 @@ function ConfiguredApp() {
             const boundPresentationDocumentId = presentationBinding
               ? await presentationBinding.documentId()
               : undefined
+            if (presentationBinding && boundPresentationDocumentId)
+              await presentationBinding.scrubAgentRunPrompt(boundPresentationDocumentId)
             const runCheckpoint =
               presentationBinding && boundPresentationDocumentId
                 ? createPresentationAgentRunCheckpoint(

@@ -1430,6 +1430,27 @@ export function createPresentationDocumentBinding(
     interruptedAgentRun(boundDocumentId: string): boolean {
       return Boolean(this.agentRunRecovery(boundDocumentId))
     },
+    async scrubAgentRunPrompt(boundDocumentId: string) {
+      return queueRunCheckpoint(async () => {
+        if ((await documentId()) !== boundDocumentId)
+          throw new Error('presentation_document_changed')
+        const previous = settings.get(AGENT_RUN_KEY)
+        if (typeof previous !== 'string' || !this.agentRunRecovery(boundDocumentId)) return
+        const record = JSON.parse(previous) as Record<string, unknown>
+        if (!Object.hasOwn(record, 'instruction')) return
+        delete record.instruction
+        const raw = JSON.stringify(record)
+        settings.set(AGENT_RUN_KEY, raw)
+        try {
+          await settings.save()
+        } catch (error) {
+          settings.set(AGENT_RUN_KEY, previous)
+          throw error
+        }
+        if ((await documentId()) !== boundDocumentId || settings.get(AGENT_RUN_KEY) !== raw)
+          throw new Error('presentation_document_changed')
+      })
+    },
     async rememberAgentRun(boundDocumentId: string, runId: string) {
       return queueRunCheckpoint(async () => {
         if (!validId(runId) || (await documentId()) !== boundDocumentId)
@@ -1560,10 +1581,41 @@ export function createPresentationAgentRunCheckpoint(
     'documentId' | 'agentRunRecovery' | 'rememberAgentRun' | 'updateAgentRun' | 'finishAgentRun'
   >,
   boundDocumentId: string,
-  storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>,
+  storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> &
+    Partial<Pick<Storage, 'key' | 'length'>>,
 ) {
   const runDocuments = new Map<string, string>()
   const localKey = (runId: string) => `${AGENT_RUN_LOCAL_PREFIX}${runId}`
+  const sweepExpiredPrompts = () => {
+    if (!storage?.key || typeof storage.length !== 'number') return
+    try {
+      const now = Date.now()
+      for (let index = Math.min(storage.length, 4096) - 1; index >= 0; index -= 1) {
+        const key = storage.key(index)
+        if (!key?.startsWith(AGENT_RUN_LOCAL_PREFIX)) continue
+        const raw = storage.getItem(key)
+        let expiresAt: unknown
+        try {
+          expiresAt =
+            raw && new TextEncoder().encode(raw).byteLength <= 4096
+              ? (JSON.parse(raw) as Record<string, unknown>).expiresAt
+              : undefined
+        } catch {
+          /* malformed local entry */
+        }
+        if (
+          typeof expiresAt !== 'number' ||
+          !Number.isSafeInteger(expiresAt) ||
+          expiresAt <= now ||
+          expiresAt > now + AGENT_RUN_LOCAL_TTL_MS
+        )
+          storage.removeItem(key)
+      }
+    } catch {
+      /* local storage may be disabled */
+    }
+  }
+  sweepExpiredPrompts()
   const recovery = (): PresentationAgentRunRecovery | undefined => {
     const record = binding.agentRunRecovery(boundDocumentId)
     if (!record) return undefined
@@ -1601,6 +1653,7 @@ export function createPresentationAgentRunCheckpoint(
   return {
     recovery,
     async begin(runId: string, instruction = '') {
+      sweepExpiredPrompts()
       if ((await binding.documentId()) !== boundDocumentId)
         throw new Error('presentation_document_changed')
       const recoverableInstruction =

@@ -61,6 +61,10 @@ describe('presentation AgentRun checkpoint', () => {
     const values = new Map<string, string>()
     const local = new Map<string, string>()
     const storage = {
+      get length() {
+        return local.size
+      },
+      key: (index: number) => [...local.keys()][index] ?? null,
       getItem: (key: string) => local.get(key) ?? null,
       setItem: (key: string, value: string) => {
         local.set(key, value)
@@ -99,6 +103,113 @@ describe('presentation AgentRun checkpoint', () => {
     expect(local.size).toBe(0)
     await checkpoint.finish('run-1')
     expect(local.size).toBe(0)
+  })
+
+  it('sweeps expired orphan prompts when a different deck initializes', async () => {
+    const values = new Map<string, string>()
+    const local = new Map<string, string>([
+      [
+        'wiswork.presentation.agent-run.prompt.v1.orphan',
+        JSON.stringify({
+          documentId: 'old',
+          runId: 'orphan',
+          instruction: 'Secret',
+          expiresAt: Date.now() - 1,
+        }),
+      ],
+      ['unrelated', 'preserve'],
+    ])
+    const storage = {
+      get length() {
+        return local.size
+      },
+      key: (index: number) => [...local.keys()][index] ?? null,
+      getItem: (key: string) => local.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        local.set(key, value)
+      },
+      removeItem: (key: string) => {
+        local.delete(key)
+      },
+    }
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => 'file:///new.pptx',
+      },
+      () => 'doc-id',
+    )
+    createPresentationAgentRunCheckpoint(binding, await binding.documentId(), storage)
+    expect(local.has('wiswork.presentation.agent-run.prompt.v1.orphan')).toBe(false)
+    expect(local.get('unrelated')).toBe('preserve')
+  })
+
+  it('scrubs a legacy embedded prompt on load while retaining the running checkpoint', async () => {
+    const values = new Map<string, string>()
+    const save = vi.fn(async () => undefined)
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save,
+        location: () => 'file:///old.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    values.set(
+      'wiswork.presentation.agent-run.v1',
+      JSON.stringify({
+        documentId: id,
+        runId: 'run-1',
+        startedAt: Date.now(),
+        instruction: 'Old secret',
+        phase: 'tool_pending',
+        toolName: 'write_page',
+      }),
+    )
+    await binding.scrubAgentRunPrompt(id)
+    expect(values.get('wiswork.presentation.agent-run.v1')).not.toContain('Old secret')
+    expect(binding.agentRunRecovery(id)).toMatchObject({
+      runId: 'run-1',
+      phase: 'tool_pending',
+      toolName: 'write_page',
+    })
+    expect(save).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not treat a failed legacy-prompt scrub as successful', async () => {
+    const values = new Map<string, string>()
+    const save = vi.fn(async () => undefined)
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save,
+        location: () => 'file:///old.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    const raw = JSON.stringify({
+      documentId: id,
+      runId: 'run-1',
+      startedAt: Date.now(),
+      instruction: 'Old secret',
+      phase: 'running',
+    })
+    values.set('wiswork.presentation.agent-run.v1', raw)
+    save.mockRejectedValueOnce(new Error('save failed'))
+    await expect(binding.scrubAgentRunPrompt(id)).rejects.toThrow('save failed')
+    expect(values.get('wiswork.presentation.agent-run.v1')).toBe(raw)
   })
 
   it('detects a foreground run after reopen, but not in a Save As copy', async () => {
