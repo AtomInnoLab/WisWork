@@ -1,12 +1,15 @@
-import type { PresentationStyle, SlideIR } from '@wiswork/pptx-engine/presentation'
+import { presentationSlideSourceLabels, type PresentationClaim, type PresentationStyle, type SlideIR } from '@wiswork/pptx-engine/presentation'
 import type { PowerPointDeclarativeOperation } from './browser-powerpoint-adapter.js'
+
+type AddOperation = Extract<PowerPointDeclarativeOperation, { op: 'add_text_box' | 'add_geometric_shape' | 'add_native_table' }>
 
 /** Translate a complete supported SlideIR page into bounded native Office operations. */
 export function officeOperationsForSlideIR(
   slide: SlideIR,
   style: PresentationStyle,
   slideIndex: number,
-): PowerPointDeclarativeOperation[] {
+  claims: PresentationClaim[] = [],
+): AddOperation[] {
   if (
     !Number.isSafeInteger(slideIndex) ||
     slideIndex < 0 ||
@@ -21,7 +24,10 @@ export function officeOperationsForSlideIR(
   )
     throw new Error('invalid_tool_input')
   const names = new Set<string>()
-  return slide.elements.map((element) => {
+  const labels = presentationSlideSourceLabels(slide, claims)
+  if (slide.elements.length + Number(labels.length > 0) > 32 ||
+    slide.elements.some((element) => element.id === 'source-attribution')) throw new Error('invalid_tool_input')
+  const operations: AddOperation[] = slide.elements.map((element): AddOperation => {
     if (!element.id || element.id.length > 256 || names.has(element.id))
       throw new Error('invalid_tool_input')
     names.add(element.id)
@@ -87,4 +93,10 @@ export function officeOperationsForSlideIR(
     }
     throw new Error('office_api_unsupported')
   })
+  if (labels.length) operations.push({
+    op: 'add_text_box', slide_index: slideIndex, name: 'source-attribution',
+    text: labels.join('；').slice(0, 500), left: 36, top: 507.6, width: 885.6, height: 21.6,
+    fontFace: style.fontFace, fontSize: 8, color: style.textColor, bold: false, align: 'left',
+  })
+  return operations
 }

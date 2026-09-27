@@ -6,6 +6,7 @@ import {
   parsePresentationDeck,
   PRESENTATION_HEIGHT,
   PRESENTATION_WIDTH,
+  presentationSlideSourceLabels,
   type PresentationInlineAsset,
   type PresentationCompileReport,
 } from './presentation'
@@ -173,9 +174,7 @@ export async function compilePresentationDeck(
         )
     }
     const claims = (ir.claimIds ?? []).map((id) => deck.claims.find((claim) => claim.id === id)!)
-    const sources = claims.map(
-      (claim) => `[${claim.id}] ${claim.source}${claim.locator ? ` · ${claim.locator}` : ''}`,
-    )
+    const sources = presentationSlideSourceLabels(ir, deck.claims)
     if (sources.length)
       slide.addText(sources.join('；').slice(0, 500), {
         x: 0.5,

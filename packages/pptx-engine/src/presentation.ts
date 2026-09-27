@@ -83,6 +83,16 @@ export interface PresentationDeck {
   claims: PresentationClaim[]
   slides: SlideIR[]
 }
+
+/** Visible source labels shared by file and host compilers; source truth is checked separately. */
+export function presentationSlideSourceLabels(slide: SlideIR, claims: PresentationClaim[]): string[] {
+  const byId = new Map(claims.map((claim) => [claim.id, claim]))
+  return (slide.claimIds ?? []).map((id) => {
+    const claim = byId.get(id)
+    if (!claim) throw new Error('presentation_invalid:claim_reference')
+    return `[${claim.id}] ${claim.source}${claim.locator ? ` · ${claim.locator}` : ''}`
+  })
+}
 export interface GeometryIssue {
   kind: 'out_of_bounds' | 'overlap'
   slideId: string

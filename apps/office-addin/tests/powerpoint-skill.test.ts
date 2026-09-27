@@ -1455,17 +1455,18 @@ describe('browser PowerPoint adapter', () => {
   it('confirms a complete supported SlideIR page and rejects unsupported pages before writing', async () => {
     const deck = benchmarkDeck()
     const fake = adapter({
-      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['title-host', 'shape-host'] }),
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['title-host', 'shape-host', 'source-host'] }),
       listSlideShapes: vi.fn().mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
         .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] }).mockResolvedValue({ slideId: 'slide-1', slideIndex: 0, shapes: [
         { id: 'title-host', name: 'title', type: 'TextBox', left: 72, top: 72, width: 720, height: 72 },
         { id: 'shape-host', name: 'step', type: 'GeometricShape', left: 72, top: 180, width: 216, height: 144 },
+        { id: 'source-host', name: 'source-attribution', type: 'TextBox', left: 36, top: 507.6, width: 885.6, height: 21.6 },
       ] }),
-      readSlideText: vi.fn().mockResolvedValue({ slideId: 'slide-1', shapeId: 'title-host', text: '研究流程', paragraphs: ['研究流程'] }),
+      readSlideText: vi.fn().mockImplementation(async (_index, shapeId) => ({ slideId: 'slide-1', shapeId, text: shapeId === 'source-host' ? '[source-1] 研究报告（合成基准） · 第 1 页' : '研究流程', paragraphs: [shapeId === 'source-host' ? '[source-1] 研究报告（合成基准） · 第 1 页' : '研究流程'] })),
     })
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
-    const proposed = await skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[3], style: deck.style }))
+    const proposed = await skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[3], style: deck.style, claims: deck.claims }))
     expect(proposed).toMatchObject({ mutated: false, summary: 'Proposed declarative PowerPoint execution' })
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
     await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
@@ -1474,7 +1475,7 @@ describe('browser PowerPoint adapter', () => {
       expect.objectContaining({ op: 'add_geometric_shape', name: 'step' }),
     ]), expect.any(AbortSignal))
     const count = (fake.executeDeclarative as ReturnType<typeof vi.fn>).mock.calls.length
-    await expect(skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[2], style: deck.style }))).resolves.toMatchObject({ isError: true })
+    await expect(skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[2], style: deck.style, claims: deck.claims }))).resolves.toMatchObject({ isError: true })
     expect((fake.executeDeclarative as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(count)
   })
 
@@ -1482,18 +1483,19 @@ describe('browser PowerPoint adapter', () => {
     const deck = benchmarkDeck()
     const rows = (deck.slides[5]!.elements[1] as { rows: string[][] }).rows
     const fake = adapter({
-      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['title-host', 'table-host'] }),
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['title-host', 'table-host', 'source-host'] }),
       listSlideShapes: vi.fn().mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
         .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] }).mockResolvedValue({ slideId: 'slide-1', slideIndex: 0, shapes: [
         { id: 'title-host', name: 'title', type: 'TextBox', left: 72, top: 72, width: 720, height: 72 },
         { id: 'table-host', name: 'table', type: 'Table', left: 72, top: 180, width: 576, height: 144 },
+        { id: 'source-host', name: 'source-attribution', type: 'TextBox', left: 36, top: 507.6, width: 885.6, height: 21.6 },
       ] }),
-      readSlideText: vi.fn().mockResolvedValue({ slideId: 'slide-1', shapeId: 'title-host', text: '实验表格', paragraphs: ['实验表格'] }),
+      readSlideText: vi.fn().mockImplementation(async (_index, shapeId) => ({ slideId: 'slide-1', shapeId, text: shapeId === 'source-host' ? '[source-1] 研究报告（合成基准） · 第 1 页' : '实验表格', paragraphs: [shapeId === 'source-host' ? '[source-1] 研究报告（合成基准） · 第 1 页' : '实验表格'] })),
       readSlideTable: vi.fn().mockResolvedValue(rows),
     })
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
-    const proposed = await skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[5], style: deck.style }))
+    const proposed = await skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[5], style: deck.style, claims: deck.claims }))
     expect(proposed.mutated).toBe(false)
     await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
     expect(fake.readSlideTable).toHaveBeenCalledWith(0, 'table-host', expect.any(AbortSignal))
@@ -1505,7 +1507,7 @@ describe('browser PowerPoint adapter', () => {
       shapes: [{ id: 'old', name: 'title', type: 'TextBox', left: 0, top: 0, width: 100, height: 20 }] }) })
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
-    await expect(skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[3], style: deck.style })))
+    await expect(skill.executeTool(call('add_slide_ir_objects', { slide_index: 0, slide: deck.slides[3], style: deck.style, claims: deck.claims })))
       .resolves.toMatchObject({ isError: true, output: 'office_concurrent_change' })
     expect(proposals.pending()).toBeUndefined()
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
