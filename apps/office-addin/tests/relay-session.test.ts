@@ -228,6 +228,46 @@ describe('Office cloud relay session', () => {
     await expect(pending).rejects.toThrow('relay_disconnected')
   })
 
+  it('keeps Agent usable when an older PC offers no presentation capability', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1', 'presentation.v1', 'presentation-assets.v1'],
+      randomUUID: () => 'request_12345678',
+    })
+    const connecting = session.connect('powerpoint')
+    socket.open()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_12345678',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_12345678',
+        capability: 'capability_12345678',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await connecting
+    expect(session.snapshot()).toEqual({ status: 'connected', capabilities: ['agent.v1'] })
+    await expect(
+      session.capabilityFetch('presentation.v1', { operation: 'status' }),
+    ).rejects.toThrow('relay_capability_unavailable')
+    expect(socket.sent).toHaveLength(1)
+    const pending = session.capabilityFetch('agent.v1', { messages: [] })
+    expect(frame(socket, 1).capability_name).toBe('agent.v1')
+    session.disconnect()
+    await expect(pending).rejects.toThrow('relay_disconnected')
+  })
+
   it('sends bounded diagnostics only over an approved v2 session', async () => {
     const socket = new FakeSocket()
     const session = createOfficeRelaySession({
