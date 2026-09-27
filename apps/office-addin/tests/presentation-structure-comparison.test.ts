@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest'
 import { createHash } from 'node:crypto'
 import JSZip from 'jszip'
+import { PNG } from 'pngjs'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { openPptx } from '@wiswork/pptx-engine'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
@@ -355,8 +356,74 @@ it('detects replaced embedded picture media in an exported page', async () => {
   expect(result.content).toMatchObject({
     status: 'warning',
     mediaChanged: ['image'],
+    mediaChecked: ['image'],
+    mediaUnchecked: [],
     unchecked: ['image'],
   })
+})
+
+it('checks media on every image when a page contains more than sixteen pictures', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  deck.assets = Array.from({ length: 17 }, (_, index) => {
+    const png = new PNG({ width: 1, height: 1 })
+    png.data = Buffer.from([index + 1, 0, 0, 255])
+    return {
+      id: `pixel-${index + 1}`,
+      mime: 'image/png' as const,
+      width: 1,
+      height: 1,
+      base64: PNG.sync.write(png).toString('base64'),
+      source: 'Synthetic fixture',
+    }
+  })
+  deck.slides[0]!.elements = [
+    deck.slides[0]!.elements[0]!,
+    ...deck.assets.map((asset, index) => ({
+      kind: 'image' as const,
+      id: `image-${index + 1}`,
+      assetId: asset.id,
+      x: 0.4 + (index % 6) * 2,
+      y: 1.8 + Math.floor(index / 6) * 1.6,
+      w: 1,
+      h: 1,
+      fit: 'contain' as const,
+    })),
+  ]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.type === 'picture' ? 'Image' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const media = Object.keys(zip.files).filter((path) => /^ppt\/media\/image[^/]+\.png$/.test(path))
+  expect(media).toHaveLength(17)
+  zip.file(media[16]!, Buffer.from(deck.assets[0]!.base64, 'base64'))
+  const result = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(result.content.mediaChecked).toHaveLength(17)
+  expect(result.content.mediaUnchecked).toEqual([])
+  expect(result.content.mediaChanged).toEqual(['image-17'])
 })
 
 it('detects changed picture alternative text and crop independently of media bytes', async () => {
@@ -401,6 +468,8 @@ it('detects changed picture alternative text and crop independently of media byt
   expect(result.content).toMatchObject({
     status: 'warning',
     mediaChanged: [],
+    mediaChecked: [],
+    mediaUnchecked: ['image'],
     altTextChanged: ['image'],
     cropChanged: ['image'],
   })

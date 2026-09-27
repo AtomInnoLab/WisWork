@@ -175,6 +175,8 @@ export async function comparePresentationPageStructure(
     chartTypeChanged: string[]
     workbookBytesChanged: string[]
     mediaChanged: string[]
+    mediaChecked: string[]
+    mediaUnchecked: string[]
     altTextChanged: string[]
     cropChanged: string[]
     appearanceChanged: string[]
@@ -261,6 +263,8 @@ export async function comparePresentationPageStructure(
     chartTypeChanged: string[] = [],
     workbookBytesChanged: string[] = [],
     mediaChanged: string[] = [],
+    mediaChecked: string[] = [],
+    mediaUnchecked: string[] = [],
     altTextChanged: string[] = [],
     cropChanged: string[] = [],
     appearanceChanged: string[] = [],
@@ -289,27 +293,27 @@ export async function comparePresentationPageStructure(
       if (JSON.stringify(element.crop) !== JSON.stringify(actual.crop))
         cropChanged.push(element.name)
     }
-    if (pictures.length <= 16)
-      for (const element of pictures) {
-        const hostElement = exportedByName.get(element.name)
-        if (!hostElement || hostElement.type !== 'picture') continue
-        try {
-          const before = await inspectPowerPointPicturePackage(
-            sourceBase64,
-            element.shapeId,
-            undefined,
-            undefined,
-            {
-              slideIndex: sourceIndex,
-              maxBytes: 10 * 1024 * 1024,
-            },
-          )
-          const after = await inspectPowerPointPicturePackage(hostBase64, hostElement.shapeId)
-          if (before.mediaDigest !== after.mediaDigest) mediaChanged.push(element.name)
-        } catch {
-          // Unsupported image effects or packages remain unchecked.
-        }
+    for (const element of pictures) {
+      const hostElement = exportedByName.get(element.name)
+      if (!hostElement || hostElement.type !== 'picture') continue
+      try {
+        const before = await inspectPowerPointPicturePackage(
+          sourceBase64,
+          element.shapeId,
+          undefined,
+          undefined,
+          {
+            slideIndex: sourceIndex,
+            maxBytes: 10 * 1024 * 1024,
+          },
+        )
+        const after = await inspectPowerPointPicturePackage(hostBase64, hostElement.shapeId)
+        mediaChecked.push(element.name)
+        if (before.mediaDigest !== after.mediaDigest) mediaChanged.push(element.name)
+      } catch {
+        // Unsupported image effects or packages remain unchecked.
       }
+    }
   }
   if (hostBase64 && readbackConsistent && source.some((element) => element.type === 'chart')) {
     try {
@@ -366,6 +370,8 @@ export async function comparePresentationPageStructure(
     }
   }
   for (const element of source) {
+    if (element.type === 'picture' && !mediaChecked.includes(element.name))
+      mediaUnchecked.push(element.name)
     if (element.type !== 'shape' && element.type !== 'table') {
       unchecked.push(element.name)
       continue
@@ -401,6 +407,8 @@ export async function comparePresentationPageStructure(
     chartTypeChanged,
     workbookBytesChanged,
     mediaChanged,
+    mediaChecked,
+    mediaUnchecked,
     altTextChanged,
     cropChanged,
     appearanceChanged,
