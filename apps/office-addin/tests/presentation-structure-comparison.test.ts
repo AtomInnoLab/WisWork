@@ -161,6 +161,55 @@ it('compares a selected chart cache from a multi-page source deck', async () => 
   })
 })
 
+it('reports embedded chart workbook bytes changing while cached values stay the same', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.type === 'chart' ? 'Chart' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const workbookPath = Object.keys(zip.files).find((path) =>
+    /^ppt\/embeddings\/[^/]+\.xlsx$/.test(path),
+  )!
+  const book = await JSZip.loadAsync(await zip.file(workbookPath)!.async('uint8array'))
+  const sheet = await book.file('xl/worksheets/sheet1.xml')!.async('string')
+  book.file(
+    'xl/worksheets/sheet1.xml',
+    sheet.replace('<c r="B2"><v>120</v></c>', '<c r="B2"><v>999</v></c>'),
+  )
+  zip.file(workbookPath, await book.generateAsync({ type: 'uint8array' }))
+  const result = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(result.content).toMatchObject({
+    status: 'warning',
+    cacheChanged: [],
+    workbookBytesChanged: ['chart'],
+    unchecked: ['chart'],
+  })
+})
+
 it('detects replaced embedded picture media in an exported page', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[2]!]

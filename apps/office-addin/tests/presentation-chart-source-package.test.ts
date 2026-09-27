@@ -44,6 +44,13 @@ describe('PowerPoint chart source inspection', () => {
     await expect(inspectPowerPointChartSourcePackage(await pptx({target:'../../evil.xlsx'}),'8')).rejects.toThrow('office_api_unsupported')
     await expect(inspectPowerPointChartSourcePackage(await pptx({slideRels:'<Relationships><Relationship Id="rId5" Type="x/chart" Target="../../evil.xml"/></Relationships>'}),'8')).rejects.toThrow('office_api_unsupported')
   })
+  it('allows an exact package-absolute chart target only for read-only inspection', async () => {
+    const absolute = slideRels.replace('../charts/chart1.xml', '/ppt/charts/chart1.xml')
+    const source = await pptx({ slideRels: absolute })
+    await expect(inspectPowerPointChartSourcePackage(source, '8')).rejects.toThrow('office_api_unsupported')
+    expect(await inspectPowerPointChartSourcePackage(source, '8', undefined, { allowAbsoluteChartTarget: true }))
+      .toMatchObject({ sourceKind: 'embedded_xlsx', verification: 'matches' })
+  })
   it('keeps unsupported formulas unverified and cache-only charts separate', async () => {
     expect(await inspectPowerPointChartSourcePackage(await pptx({chart:chart('Other!A2:A3')}),'8')).toMatchObject({sourceKind:'embedded_xlsx',verification:'not_verified',reason:'unsupported_formula_or_cache'})
     expect(await inspectPowerPointChartSourcePackage(await pptx({chart:chart(undefined,undefined,false)}),'8')).toMatchObject({sourceKind:'cache_only',verification:'not_verified'})

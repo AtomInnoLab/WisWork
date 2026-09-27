@@ -80,15 +80,19 @@ export interface ChartSourceReport {
   verification: 'matches' | 'mismatch' | 'not_verified'
   reason?: string
   sourceDigest?: string
+  workbookContentDigest?: string
   series: Array<{ categories: string[]; values: string[] }>
 }
 /** Read a single chart's bounded cache and embedded workbook; external targets are classified, never fetched. */
-export async function inspectPowerPointChartSourcePackage(base64: string, shapeId: string, signal?: AbortSignal): Promise<ChartSourceReport> {
+export async function inspectPowerPointChartSourcePackage(base64: string, shapeId: string, signal?: AbortSignal, options: { slideIndex?: number; maxBytes?: number; allowAbsoluteChartTarget?: boolean; includeWorkbookContentDigest?: boolean } = {}): Promise<ChartSourceReport> {
   if (!/^[1-9]\d{0,9}$/.test(shapeId)) throw new Error('invalid_tool_input')
-  const zip = await loadBoundedZip(base64, signal)
+  const zip = await loadBoundedZip(base64, signal, true, options.maxBytes)
   const slides = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
-  if (slides.length !== 1) throw new Error('office_api_unsupported')
-  const slidePath = slides[0]!
+  const slidePath = options.slideIndex === undefined
+    ? slides.length === 1 ? slides[0] : undefined
+    : slides.includes(`ppt/slides/slide${options.slideIndex + 1}.xml`)
+      ? `ppt/slides/slide${options.slideIndex + 1}.xml` : undefined
+  if (!slidePath) throw new Error('office_api_unsupported')
   const slide = await read(zip, slidePath, signal)
   const frames = children(slide, 'p:graphicFrame').filter((frame) => tags(frame, 'p:cNvPr').some((node) => attr(node, 'id') === shapeId))
   if (frames.length !== 1) throw new Error('office_api_unsupported')
@@ -98,8 +102,12 @@ export async function inspectPowerPointChartSourcePackage(base64: string, shapeI
   if (!chartId) throw new Error('office_api_unsupported')
   const slideRels = await read(zip, slidePath.replace('/slides/', '/slides/_rels/') + '.rels', signal)
   const chartRel = relation(slideRels, chartId, 'chart')
-  if (attr(chartRel, 'TargetMode') !== undefined || !/^\.\.\/charts\/chart\d+\.xml$/.test(attr(chartRel, 'Target') ?? '')) throw new Error('office_api_unsupported')
-  const chartPath = `ppt/charts/${attr(chartRel, 'Target')!.slice('../charts/'.length)}`
+  const chartTarget = attr(chartRel, 'Target') ?? ''
+  const chartPath = /^\.\.\/charts\/chart\d+\.xml$/.test(chartTarget)
+    ? `ppt/charts/${chartTarget.slice('../charts/'.length)}`
+    : options.allowAbsoluteChartTarget && /^\/ppt\/charts\/chart\d+\.xml$/.test(chartTarget)
+      ? chartTarget.slice(1) : undefined
+  if (attr(chartRel, 'TargetMode') !== undefined || !chartPath) throw new Error('office_api_unsupported')
   const chart = await read(zip, chartPath, signal)
   const allSeries = children(chart, 'c:ser')
   if (allSeries.length > 8) throw new Error('office_api_unsupported')
@@ -121,6 +129,22 @@ export async function inspectPowerPointChartSourcePackage(base64: string, shapeI
   const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes))
   const sourceDigest = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
   const embedded: ChartSourceReport = { ...result, sourceKind: 'embedded_xlsx', sourceDigest }
+  if (options.includeWorkbookContentDigest) {
+    const book = await loadBoundedZip(btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')), signal)
+    const paths = Object.keys(book.files).filter((path) => path.startsWith('xl/') && !book.files[path]!.dir).sort()
+    if (!paths.length) throw new Error('office_api_unsupported')
+    const parts: Uint8Array[] = []
+    for (const path of paths) {
+      const content = await book.file(path)!.async('uint8array')
+      parts.push(new TextEncoder().encode(`${path}:${content.byteLength}:`), content)
+    }
+    const total = parts.reduce((size, part) => size + part.byteLength, 0)
+    const combined = new Uint8Array(total)
+    let offset = 0
+    for (const part of parts) { combined.set(part, offset); offset += part.byteLength }
+    const contentDigest = await crypto.subtle.digest('SHA-256', combined)
+    embedded.workbookContentDigest = Array.from(new Uint8Array(contentDigest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
   const formulaPairs = allSeries.map((item) => [formula(item, 'c:cat'), formula(item, 'c:val')] as const)
   const ranges = formulaPairs.map(([cat, val]) => [cat ? range(cat) : undefined, val ? range(val) : undefined] as const)
   if (!series.length || ranges.some(([cat, val]) => !cat || !val) || series.some((item) => !item.categories.length || !item.values.length))

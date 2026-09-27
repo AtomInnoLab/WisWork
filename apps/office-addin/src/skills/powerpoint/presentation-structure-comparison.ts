@@ -6,6 +6,7 @@ import {
   MAX_PPTX_XML_BYTES,
 } from './powerpoint-package.js'
 import { inspectPowerPointComplexPagePackage } from './presentation-complex-page-package.js'
+import { inspectPowerPointChartSourcePackage } from './presentation-chart-source-package.js'
 
 type Issue =
   | { name: string; kind: 'missing' | 'extra' | 'duplicate' }
@@ -121,6 +122,7 @@ export async function comparePresentationPageStructure(
     status: 'passed' | 'warning' | 'incomplete'
     changed: string[]
     cacheChanged: string[]
+    workbookBytesChanged: string[]
     mediaChanged: string[]
     unchecked: string[]
   }
@@ -195,6 +197,7 @@ export async function comparePresentationPageStructure(
   const exportedByName = new Map(exported.map((element) => [element.name, element]))
   const changed: string[] = [],
     cacheChanged: string[] = [],
+    workbookBytesChanged: string[] = [],
     mediaChanged: string[] = [],
     unchecked: string[] = []
   if (hostBase64 && readbackConsistent) {
@@ -247,6 +250,34 @@ export async function comparePresentationPageStructure(
     } catch {
       // Unsupported chart packages stay unchecked; text and geometry still report.
     }
+    for (const element of source.filter((item) => item.type === 'chart').slice(0, 16)) {
+      const hostElement = exportedByName.get(element.name)
+      if (!hostElement || hostElement.type !== 'chart') continue
+      try {
+        const [before, after] = await Promise.all([
+          inspectPowerPointChartSourcePackage(sourceBase64, element.shapeId, undefined, {
+            slideIndex: sourceIndex,
+            maxBytes: 10 * 1024 * 1024,
+            allowAbsoluteChartTarget: true,
+            includeWorkbookContentDigest: true,
+          }),
+          inspectPowerPointChartSourcePackage(hostBase64, hostElement.shapeId, undefined, {
+            allowAbsoluteChartTarget: true,
+            includeWorkbookContentDigest: true,
+          }),
+        ])
+        if (
+          before.sourceKind === 'embedded_xlsx' &&
+          after.sourceKind === 'embedded_xlsx' &&
+          before.workbookContentDigest &&
+          after.workbookContentDigest &&
+          before.workbookContentDigest !== after.workbookContentDigest
+        )
+          workbookBytesChanged.push(element.name)
+      } catch {
+        // Unsupported workbooks remain unchecked; cache evidence still reports.
+      }
+    }
   }
   for (const element of source) {
     if (element.type !== 'shape' && element.type !== 'table') {
@@ -266,13 +297,17 @@ export async function comparePresentationPageStructure(
       changed.push(element.name)
   }
   const content = {
-    status: (changed.length || cacheChanged.length || mediaChanged.length
+    status: (changed.length ||
+    cacheChanged.length ||
+    workbookBytesChanged.length ||
+    mediaChanged.length
       ? 'warning'
       : unchecked.length
         ? 'incomplete'
         : 'passed') as 'passed' | 'warning' | 'incomplete',
     changed,
     cacheChanged,
+    workbookBytesChanged,
     mediaChanged,
     unchecked,
   }
