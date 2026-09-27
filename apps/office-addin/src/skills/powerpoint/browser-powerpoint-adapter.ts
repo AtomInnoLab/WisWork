@@ -214,7 +214,6 @@ export interface PowerPointAdapter {
   ): Promise<{ base64: string; mime: 'image/png' }>
   listSlideShapes(slideIndex: number, signal?: AbortSignal): Promise<SlideShapesResult>
   readSlideText(slideIndex: number, shapeId: string, signal?: AbortSignal): Promise<SlideTextResult>
-  readSlideImageAltText?(slideIndex: number, shapeId: string, signal?: AbortSignal): Promise<string>
   readSlideTable(slideIndex: number, shapeId: string, signal?: AbortSignal): Promise<string[][]>
   verifySlides(signal?: AbortSignal): Promise<VerifySlidesResult>
   snapshotSlide(
@@ -282,17 +281,6 @@ export type PowerPointDeclarativeOperation =
       fontFace: string
       fontSize: number
       color: string
-    }
-  | {
-      op: 'add_native_image'
-      slide_index: number
-      name: string
-      base64: string
-      altText: string
-      left: number
-      top: number
-      width: number
-      height: number
     }
   | {
       op: 'add_text_box'
@@ -1155,22 +1143,6 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     })
   }
 
-  async readSlideImageAltText(slideIndex: number, shapeId: string, signal?: AbortSignal): Promise<string> {
-    cancelled(signal)
-    return this.run('1.10', async (context) => {
-      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-      const slide = await getSlide(context, slides, slideIndex, signal)
-      const shapes = slide.shapes as RuntimeRecord
-      if (typeof shapes.getItem !== 'function') throw new Error('office_api_unsupported')
-      const shape = (shapes.getItem as (id: string) => RuntimeRecord)(shapeId)
-      if (typeof shape.load !== 'function') throw new Error('office_api_unsupported')
-      ;(shape.load as (properties: string) => void)('type,altTextDescription')
-      await sync(context, signal)
-      if (shape.type !== 'Image') throw new Error('office_read_failed')
-      return string(shape.altTextDescription, 500)
-    })
-  }
-
   async readSlideTable(slideIndex: number, shapeId: string, signal?: AbortSignal): Promise<string[][]> {
     cancelled(signal)
     return this.run('1.8', async (context) => {
@@ -1871,20 +1843,12 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         operation.width <= 0 || operation.height <= 0 || operation.fontSize < 6 || operation.fontSize > 48 ||
         !operation.fontFace || operation.fontFace.length > 128 || !/^[0-9A-Fa-f]{6}$/.test(operation.color)
       )) throw new Error('invalid_tool_input')
-      if (operation.op === 'add_native_image' && (
-        !operation.name || operation.name.length > 256 ||
-        !operation.base64 || operation.base64.length > 2_800_000 ||
-        !/^[A-Za-z0-9+/]*={0,2}$/.test(operation.base64) ||
-        !operation.altText || operation.altText.length > 500 ||
-        [operation.left, operation.top, operation.width, operation.height].some((value) => !Number.isFinite(value)) ||
-        operation.width <= 0 || operation.height <= 0
-      )) throw new Error('invalid_tool_input')
       if (operation.op !== 'set_shape_text' && operation.op !== 'set_shape_geometry') continue
       const key = `${operation.slide_index}/${operation.shape_id}/${operation.op}`
       if (repeatedTargets.has(key)) throw new Error('invalid_tool_input')
       repeatedTargets.add(key)
     }
-    return this.run(operations.some((operation) => operation.op === 'add_native_image') ? '1.10' : '1.8', async (context) => {
+    return this.run('1.8', async (context) => {
       const presentation = context.presentation as RuntimeRecord
       const slides = presentation.slides as RuntimeRecord
       const queued: Array<() => void> = []
@@ -2024,21 +1988,6 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               `#${operation.fill}`,
             )
             ;(created.lineFormat as RuntimeRecord).color = `#${operation.lineColor}`
-            if (typeof created.load !== 'function') throw new Error('office_api_unsupported')
-            ;(created.load as (properties: string) => void)('id')
-            createdShapes.push(created)
-          })
-          hasUnrecoverableMutation = true
-        } else if (operation.op === 'add_native_image') {
-          const shapes = slide.shapes as RuntimeRecord
-          if (typeof shapes.addImage !== 'function') throw new Error('office_api_unsupported')
-          queued.push(() => {
-            const created = (shapes.addImage as (base64: string, options: Record<string, number>) => RuntimeRecord)(
-              operation.base64,
-              { left: operation.left, top: operation.top, width: operation.width, height: operation.height },
-            )
-            created.name = operation.name
-            created.altTextDescription = operation.altText
             if (typeof created.load !== 'function') throw new Error('office_api_unsupported')
             ;(created.load as (properties: string) => void)('id')
             createdShapes.push(created)

@@ -111,7 +111,7 @@ describe('host capability advertisement', () => {
     ) => name === 'PowerPointApi' && version === '1.8'
     ;(globalThis as Record<string, unknown>).PowerPoint = { run: vi.fn() }
     const powerpoint = createOfficeHostRuntime('powerpoint').skill.tools.map((item) => item.name)
-    expect(powerpoint).toContain('insert-image')
+    expect(powerpoint).not.toContain('insert-image')
     expect(powerpoint).not.toContain('csv-to-sheet')
   })
 })

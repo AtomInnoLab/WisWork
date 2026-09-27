@@ -49,7 +49,7 @@ it('preserves explicit SlideIR text alignment in the Office operation', () => {
 
 it('rejects an unsupported page before emitting a partial native write plan', () => {
   const deck = benchmarkDeck()
-  expect(() => officeOperationsForSlideIR(deck.slides[6]!, deck.style, 0, deck.claims)).toThrow(
+  expect(() => officeOperationsForSlideIR(deck.slides[2]!, deck.style, 0, deck.claims)).toThrow(
     'office_api_unsupported',
   )
   const duplicate = {
@@ -65,27 +65,6 @@ it('maps a shared SlideIR table to a native Office table operation', () => {
     op: 'add_native_table', name: 'table', left: 72, top: 180,
     fontFace: 'Microsoft YaHei', fontSize: 16, color: '172033', rows: expect.arrayContaining([expect.arrayContaining(['120'])]),
   })
-})
-
-it('maps a validated contain image to native picture geometry without embedding it in the visible plan', async () => {
-  const deck = benchmarkDeck()
-  const image = deck.slides[2]!.elements[1]!
-  if (image.kind !== 'image') throw new Error('benchmark image missing')
-  image.altText = '研究配图'
-  const operations = officeOperationsForSlideIR(deck.slides[2]!, deck.style, 2, deck.claims, deck.assets)
-  const operation = operations[1]
-  expect(operation).toMatchObject({ op: 'add_native_image', name: 'image', left: 72, top: 180,
-    width: 216, height: 216, altText: '研究配图' })
-  const compiled = (await openPptx((await compilePresentationDeck(deck)).bytes)).deck.slides[2]!
-  const picture = compiled.elements.find((item) => item.name === 'image')!
-  expect(picture.type).toBe('picture')
-  expect(Math.abs((picture.transform.offset.x * 72) / 914400 - operation.left)).toBeLessThan(1.5)
-  expect(Math.abs((picture.transform.offset.y * 72) / 914400 - operation.top)).toBeLessThan(1.5)
-  expect(Math.abs((picture.transform.offset.cx * 72) / 914400 - operation.width)).toBeLessThan(1.5)
-  expect(Math.abs((picture.transform.offset.cy * 72) / 914400 - operation.height)).toBeLessThan(1.5)
-  image.fit = 'cover'
-  expect(() => officeOperationsForSlideIR(deck.slides[2]!, deck.style, 2, deck.claims, deck.assets))
-    .toThrow('office_api_unsupported')
 })
 
 it('keeps supported Office operation structure aligned with the PptxGenJS benchmark output', async () => {

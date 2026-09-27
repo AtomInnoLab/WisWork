@@ -205,6 +205,8 @@ export function createOfficeHostRuntime(
     enableConversions?: boolean
     enableSkillPackages?: boolean
     enableImportMedia?: boolean
+    /** Internal test seam for the legacy image adapter; production callers leave this unset. */
+    imageAdapterOverrideForTests?: boolean
     platform?: string
     diagnostics?: Pick<OfficeDiagnostics, 'setTool' | 'record'>
   } = {},
@@ -453,6 +455,7 @@ export function createOfficeHostRuntime(
     baselineSkill &&
     powerPointAdapter &&
     imageBackup &&
+    import.meta.env.MODE === 'test' && options.imageAdapterOverrideForTests === true &&
     localBinding?.readExistingImageChange &&
     localBinding.writeExistingImageChange
   )
@@ -795,7 +798,8 @@ export function createOfficeHostRuntime(
           readReceipt: options.presentation.readReceipt,
           adapter: powerPointAdapter,
           vfs,
-          imageAdapter: new BrowserPresentationImageAdapter(),
+          imageAdapter: import.meta.env.MODE === 'test' && options.imageAdapterOverrideForTests === true
+            ? new BrowserPresentationImageAdapter() : undefined,
           imageBackup,
           readTextChange: options.presentation.readTextChange,
           writeTextChange: options.presentation.writeTextChange

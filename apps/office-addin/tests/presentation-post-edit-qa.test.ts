@@ -102,6 +102,7 @@ async function fixture(withSecondPage = false, withImageBackup = false) {
   let imageService = imageRoot ? createImageService() : undefined
   const createRuntime = () =>
     createOfficeHostRuntime('powerpoint', {
+      imageAdapterOverrideForTests: true,
       presentation: {
         ...createPresentationDocumentBinding(settings, () => 'doc'),
         available: () => true,
