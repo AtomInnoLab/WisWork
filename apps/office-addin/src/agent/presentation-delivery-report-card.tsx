@@ -85,7 +85,15 @@ function IssueList({
             <p>
               {issue.code} · 主张 {issue.claimId}：
               {report.plan.claims.find((claim) => claim.id === issue.claimId)?.statement}
-              {issue.sourceId ? ` · 来源 ${issue.sourceId}` : ''} · {issue.disposition.state}
+              {issue.sourceId && (
+                <>
+                  {' · 来源 '}
+                  <a href={`#evidence-source-${report.requestId}-${issue.sourceId}`}>
+                    {issue.sourceId}
+                  </a>
+                </>
+              )}{' '}
+              · {issue.disposition.state}
               {issue.disposition.stale ? ' · 原处置已过期，当前待处理' : ''}
             </p>
             <IssueForm
@@ -156,6 +164,20 @@ export function PresentationDeliveryReportCard({
           })}
         </section>
       ))}
+      <details>
+        <summary>来源目录 · {report.plan.sources.length} 条</summary>
+        {report.plan.sources.map((source) => (
+          <section key={source.id} id={`evidence-source-${report.requestId}-${source.id}`}>
+            <h4>
+              {source.title} · {source.id}
+            </h4>
+            <p>来源：{source.uri}</p>
+            <p>原文位置：{source.locator?.trim() || '未提供'}</p>
+            <p>资料时点：{source.asOf?.trim() || '未提供'}</p>
+            <p>原文片段：{source.excerpt.trim() || '未提供'}</p>
+          </section>
+        ))}
+      </details>
       <details>
         <summary>完整处置历史 · {report.issueLedger.actions.length} 条</summary>
         <ul>

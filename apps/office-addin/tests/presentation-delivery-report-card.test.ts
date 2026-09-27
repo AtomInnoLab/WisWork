@@ -11,6 +11,7 @@ it('lets the reviewer reach and record issues after the first 20', async () => {
     id: `issue-${index}`,
     code: 'source_review_missing',
     claimId: 'claim',
+    sourceId: 'source',
     digest: 'a'.repeat(64),
     category: 'unverifiable' as const,
     disposition: { state: 'open' as const, stale: false },
@@ -18,7 +19,19 @@ it('lets the reviewer reach and record issues after the first 20', async () => {
   const report = {
     requestId: 'request',
     planRevision: 1,
-    plan: { claims: [{ id: 'claim', statement: 'Claim' }] },
+    plan: {
+      claims: [{ id: 'claim', statement: 'Claim' }],
+      sources: [
+        {
+          id: 'source',
+          title: '审计报告',
+          uri: 'attachment:abc',
+          locator: '第 12 页',
+          asOf: '2025-12-31',
+          excerpt: '<script>不可执行的原文</script>',
+        },
+      ],
+    },
     issueLedger: { revision: 0, actions: [] },
     pages: [
       { pageId: 'page', title: 'Page', productionState: 'compiled', calculations: [], issues },
@@ -40,6 +53,11 @@ it('lets the reviewer reach and record issues after the first 20', async () => {
     )
     expect(container.querySelector('[aria-label="处置状态 issue-24"]')).toBeNull()
     expect(container.textContent).toContain('显示更多问题 · 剩余 5 项')
+    expect(container.querySelector('a[href="#evidence-source-request-source"]')).not.toBeNull()
+    expect(container.querySelector('#evidence-source-request-source')?.textContent).toContain(
+      '第 12 页',
+    )
+    expect(container.querySelector('#evidence-source-request-source script')).toBeNull()
     await act(async () =>
       Array.from(container.querySelectorAll('button'))
         .find((button) => button.textContent?.includes('显示更多问题'))!
