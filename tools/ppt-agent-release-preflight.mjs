@@ -1,5 +1,5 @@
 import { readFile, readdir } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID, randomBytes } from 'node:crypto'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
@@ -301,6 +301,83 @@ export async function inspectRelayPairing(relayOrigin, pcToken, options = {}) {
       approved.capability === pcApproved.capability
     )
       throw new Error('relay session capability credentials invalid')
+
+    // Use the two smoke sockets to verify Relay forwarding without invoking a PC operation.
+    const requestId = randomUUID()
+    const challenge = randomBytes(16).toString('hex')
+    const body = { operation: 'release_preflight', challenge }
+    const forwardedFrame = waitForFrame(pc, 'relay.request', timeoutMs)
+    office.send(
+      JSON.stringify({
+        version: 2,
+        type: 'office.request',
+        session_id: approved.session_id,
+        capability: approved.capability,
+        request_id: requestId,
+        capability_name: PAIRING_CAPABILITY,
+        body,
+      }),
+    )
+    const forwarded = await forwardedFrame
+    if (
+      forwarded.session_id !== approved.session_id ||
+      forwarded.request_id !== requestId ||
+      forwarded.capability_name !== PAIRING_CAPABILITY ||
+      !forwarded.body ||
+      typeof forwarded.body !== 'object' ||
+      Array.isArray(forwarded.body) ||
+      Object.keys(forwarded.body).length !== 2 ||
+      forwarded.body.operation !== body.operation ||
+      forwarded.body.challenge !== body.challenge
+    )
+      throw new Error('relay request forwarding mismatch')
+
+    const response = Buffer.from(challenge)
+    const common = {
+      version: 2,
+      session_id: approved.session_id,
+      capability: pcApproved.capability,
+      request_id: requestId,
+    }
+    const startedFrame = waitForFrame(office, 'relay.start', timeoutMs)
+    pc.send(
+      JSON.stringify({
+        ...common,
+        type: 'pc.start',
+        status: 200,
+        content_type: 'application/octet-stream',
+      }),
+    )
+    const started = await startedFrame
+    if (
+      started.session_id !== approved.session_id ||
+      started.request_id !== requestId ||
+      started.status !== 200 ||
+      started.content_type !== 'application/octet-stream'
+    )
+      throw new Error('relay response start mismatch')
+    const chunkFrame = waitForFrame(office, 'relay.chunk', timeoutMs)
+    pc.send(
+      JSON.stringify({
+        ...common,
+        type: 'pc.chunk',
+        sequence: 0,
+        data: response.toString('base64'),
+      }),
+    )
+    const chunk = await chunkFrame
+    if (
+      chunk.session_id !== approved.session_id ||
+      chunk.request_id !== requestId ||
+      chunk.sequence !== 0 ||
+      chunk.data !== response.toString('base64')
+    )
+      throw new Error('relay response chunk mismatch')
+    const doneFrame = waitForFrame(office, 'relay.done', timeoutMs)
+    pc.send(JSON.stringify({ ...common, type: 'pc.done' }))
+    const done = await doneFrame
+    if (done.session_id !== approved.session_id || done.request_id !== requestId)
+      throw new Error('relay response completion mismatch')
   } finally {
     office.terminate()
     pc?.terminate()
@@ -339,7 +416,7 @@ async function main(args) {
     await inspectRelayPairing(options['--relay-origin'], process.env.PPT_AGENT_RELEASE_PC_TOKEN)
   }
   process.stdout.write(
-    `PPT Agent release preflight passed: build ${build.buildId}, ${build.script}, Relay healthy${options['--pairing'] ? ', v2 pairing verified' : ''}\n`,
+    `PPT Agent release preflight passed: build ${build.buildId}, ${build.script}, Relay healthy${options['--pairing'] ? ', v2 pairing and transport verified' : ''}\n`,
   )
 }
 

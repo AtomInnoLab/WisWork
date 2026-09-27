@@ -53,6 +53,7 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
   await new Promise((resolveReady) => server.once('listening', resolveReady))
   let office
   let pc
+  let corruptChunk = false
   const seen = []
   ws.on('connection', (socket, request) => {
     if (request.headers.origin) {
@@ -65,7 +66,7 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
     socket.on('message', (bytes) => {
       const frame = JSON.parse(bytes.toString())
       seen.push(frame.type)
-      assert.deepEqual(frame.capabilities, ['presentation.v1'])
+      if (frame.capabilities) assert.deepEqual(frame.capabilities, ['presentation.v1'])
       if (frame.type === 'office.create')
         socket.send(
           JSON.stringify({
@@ -113,12 +114,58 @@ test('v2 pairing smoke negotiates and approves one presentation capability', asy
           }),
         )
       }
+      if (frame.type === 'office.request') {
+        assert.equal(frame.capability, 'officeCredential')
+        assert.equal(frame.capability_name, 'presentation.v1')
+        assert.equal(frame.body.operation, 'release_preflight')
+        pc.send(
+          JSON.stringify({
+            version: 2,
+            type: 'relay.request',
+            session_id: frame.session_id,
+            request_id: frame.request_id,
+            capability_name: frame.capability_name,
+            body: frame.body,
+          }),
+        )
+      }
+      if (frame.type === 'pc.start' || frame.type === 'pc.chunk' || frame.type === 'pc.done') {
+        assert.equal(frame.capability, 'pcCredential')
+        office.send(
+          JSON.stringify({
+            version: 2,
+            type: `relay.${frame.type.slice(3)}`,
+            session_id: frame.session_id,
+            request_id: frame.request_id,
+            ...(frame.type === 'pc.start'
+              ? { status: frame.status, content_type: frame.content_type }
+              : {}),
+            ...(frame.type === 'pc.chunk'
+              ? { sequence: corruptChunk ? 1 : frame.sequence, data: frame.data }
+              : {}),
+          }),
+        )
+      }
     })
   })
   await inspectRelayPairing(`http://127.0.0.1:${server.address().port}`, 'test-secret')
   assert.ok(office)
   assert.ok(pc)
-  assert.deepEqual(seen, ['office.create', 'pc.negotiate', 'pc.claim', 'pc.approve'])
+  assert.deepEqual(seen, [
+    'office.create',
+    'pc.negotiate',
+    'pc.claim',
+    'pc.approve',
+    'office.request',
+    'pc.start',
+    'pc.chunk',
+    'pc.done',
+  ])
+  corruptChunk = true
+  await assert.rejects(
+    inspectRelayPairing(`http://127.0.0.1:${server.address().port}`, 'test-secret'),
+    /relay response chunk mismatch/,
+  )
 })
 
 test('pairing smoke fails closed on invalid destination and missing credential', async () => {
