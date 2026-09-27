@@ -113,3 +113,55 @@ test('reads JSON attempt arrays from a records directory', async () => {
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('reports latest-attempt quality measurements only when all 20 cases have evidence', () => {
+  const measurements = (minutes, corrections = 0) => ({
+    started_at: '2026-09-25T00:00:00.000Z',
+    first_real_page_at: '2026-09-25T00:01:00.000Z',
+    finished_at: `2026-09-25T00:${String(minutes).padStart(2, '0')}:00.000Z`,
+    manual_correction_pages: corrections,
+    duplicate_writes: 0,
+    screenshot_failures: 0,
+    image_failures: 0,
+  })
+  const partial = summarizePresentationAcceptance([
+    { ...passed(CASE_IDS[0]), measurements: measurements(3, 2) },
+  ])
+  assert.deepEqual(partial.measurements.manual_correction_pages, {
+    observed: 1,
+    total: 'not_measured',
+  })
+  assert.equal(partial.measurements.durations.p95_ms, 'not_measured')
+  const records = CASE_IDS.map((id, index) => ({
+    ...passed(id),
+    measurements: measurements(index + 2, index === 0 ? 2 : 0),
+  }))
+  records.push({ ...passed(CASE_IDS[0], 2), measurements: measurements(22, 1) })
+  const complete = summarizePresentationAcceptance(records)
+  assert.equal(complete.measurements.manual_correction_pages.total, 1)
+  assert.equal(complete.measurements.duplicate_writes.total, 0)
+  assert.equal(complete.measurements.durations.observed, 20)
+  assert.equal(complete.measurements.durations.p95_ms, 21 * 60_000)
+  const missing = summarizePresentationAcceptance(
+    records.map((record) =>
+      record.case_id === CASE_IDS[1] ? { ...record, measurements: undefined } : record,
+    ),
+  )
+  assert.equal(missing.measurements.manual_correction_pages.total, 'not_measured')
+  assert.equal(missing.measurements.durations.p95_ms, 'not_measured')
+})
+
+test('rejects impossible or unbounded measurement records', () => {
+  for (const measurements of [
+    { started_at: '2026-09-25T00:00:00.000Z', finished_at: '2026-09-24T00:00:00.000Z' },
+    { first_real_page_at: '2026-09-25T00:00:00.000Z' },
+    { started_at: '2026-09-25', manual_correction_pages: 0 },
+    { duplicate_writes: -1 },
+    { screenshot_failures: 0.5 },
+    { image_failures: 0, extra: true },
+  ])
+    assert.throws(
+      () => summarizePresentationAcceptance([{ ...passed(CASE_IDS[0]), measurements }]),
+      /measurements_invalid/,
+    )
+})

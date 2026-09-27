@@ -67,6 +67,15 @@
     "reviewer_and_date": "审阅人及日期",
     "restart_required": false,
     "p0_defects": 0,
+    "measurements": {
+      "started_at": "2026-09-25T00:00:00.000Z",
+      "first_real_page_at": "2026-09-25T00:03:00.000Z",
+      "finished_at": "2026-09-25T00:20:00.000Z",
+      "manual_correction_pages": 0,
+      "duplicate_writes": 0,
+      "screenshot_failures": 0,
+      "image_failures": 0
+    },
     "artifacts": {
       "pptx_sha256": "填写真实文件的 64 位小写 SHA256",
       "powerpoint_reopened": true,
@@ -75,6 +84,8 @@
   }
 ]
 ```
+
+`measurements` 为可选的现场测量记录。时间使用 UTC ISO 毫秒格式，计数为非负整数；首次真实页面和完成时间不得早于开始时间。缺失字段代表未测量，**不能用 0 代替缺失**。统计工具对每项只使用最新一次尝试，分别报告每种测量的样本覆盖数；仅当固定 20 项均已执行、且该测量均已填写时，才输出总计或完成耗时 P95，否则输出 `not_measured`。这些数值是记录汇总，不验证现场录屏或诊断的真实性；需将原始时间线和故障回执一并归档。
 
 每项任务单独创建记录，未执行字段填“待执行”，不能填推测值：
 

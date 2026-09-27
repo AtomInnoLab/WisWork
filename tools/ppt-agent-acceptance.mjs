@@ -8,6 +8,76 @@ export const CASE_IDS = Array.from(
 )
 const digest = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const nonempty = (value) => typeof value === 'string' && value.trim().length > 0
+const nonnegative = (value) => Number.isSafeInteger(value) && value >= 0
+const timestamp = (value) =>
+  typeof value === 'string' &&
+  /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) &&
+  !Number.isNaN(Date.parse(value)) &&
+  new Date(value).toISOString() === value
+
+function validateMeasurements(value) {
+  if (value === undefined) return
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('acceptance_measurements_invalid')
+  const keys = [
+    'started_at',
+    'first_real_page_at',
+    'finished_at',
+    'manual_correction_pages',
+    'duplicate_writes',
+    'screenshot_failures',
+    'image_failures',
+  ]
+  if (Object.keys(value).some((key) => !keys.includes(key)))
+    throw new Error('acceptance_measurements_invalid')
+  for (const key of keys.slice(0, 3))
+    if (value[key] !== undefined && !timestamp(value[key]))
+      throw new Error('acceptance_measurements_invalid')
+  for (const key of keys.slice(3))
+    if (value[key] !== undefined && !nonnegative(value[key]))
+      throw new Error('acceptance_measurements_invalid')
+  const { started_at: start, first_real_page_at: first, finished_at: finish } = value
+  if ((first || finish) && !start) throw new Error('acceptance_measurements_invalid')
+  if (first && first < start) throw new Error('acceptance_measurements_invalid')
+  if (finish && (finish < start || (first && finish < first)))
+    throw new Error('acceptance_measurements_invalid')
+}
+
+function measurementSummary(latest) {
+  const completed = latest.filter(Boolean)
+  const ready = completed.length === CASE_IDS.length
+  const counters = {}
+  for (const key of [
+    'manual_correction_pages',
+    'duplicate_writes',
+    'screenshot_failures',
+    'image_failures',
+  ]) {
+    const values = completed.map((record) => record.measurements?.[key])
+    counters[key] = {
+      observed: values.filter((value) => value !== undefined).length,
+      total:
+        ready && values.every((value) => value !== undefined)
+          ? values.reduce((sum, value) => sum + value, 0)
+          : 'not_measured',
+    }
+  }
+  const durations = completed
+    .map((record) => record.measurements)
+    .filter((value) => value?.started_at && value?.finished_at)
+    .map((value) => Date.parse(value.finished_at) - Date.parse(value.started_at))
+    .sort((a, b) => a - b)
+  return {
+    durations: {
+      observed: durations.length,
+      p95_ms:
+        ready && durations.length === CASE_IDS.length
+          ? durations[Math.ceil(0.95 * durations.length) - 1]
+          : 'not_measured',
+    },
+    ...counters,
+  }
+}
 
 export function summarizePresentationAcceptance(records) {
   if (!Array.isArray(records)) throw new Error('acceptance_records_invalid')
@@ -30,6 +100,7 @@ export function summarizePresentationAcceptance(records) {
     attempts.add(key)
     if (!['passed', 'failed', 'blocked'].includes(record.outcome))
       throw new Error('acceptance_outcome_invalid')
+    validateMeasurements(record.measurements)
     if (record.outcome === 'passed') {
       if (
         record.material_status !== 'ready' ||
@@ -50,9 +121,11 @@ export function summarizePresentationAcceptance(records) {
   let executed = 0
   let passed = 0
   let blocked = 0
+  const latestAttempts = []
   const cases = CASE_IDS.map((id) => {
     const entries = byCase.get(id).sort((a, b) => a.attempt_no - b.attempt_no)
     const latest = entries.at(-1)
+    latestAttempts.push(latest)
     if (latest) executed += 1
     if (latest?.outcome === 'passed') passed += 1
     if (latest?.outcome === 'blocked') blocked += 1
@@ -68,6 +141,7 @@ export function summarizePresentationAcceptance(records) {
     attempts: records.length,
     completionRate: executed === 20 ? `${Math.round((passed / 20) * 100)}%` : 'not_measured',
     rateThresholdMet: executed === 20 && passed >= 16,
+    measurements: measurementSummary(latestAttempts),
     cases,
   }
 }
