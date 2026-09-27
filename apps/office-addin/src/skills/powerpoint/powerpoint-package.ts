@@ -476,6 +476,12 @@ export interface PowerPointPicturePackageInspection {
   mediaDigest: string
   shapeIds: string[]
 }
+type PictureNode = Record<string, unknown>
+type PictureBatchCache = {
+  slide?: { path: string; shapes: PictureNode[]; ids: string[] }
+  relationships?: { path: string; rels: PictureNode[] }
+  mediaDigests: Map<string, string>
+}
 /** Resolve an ordinary top-level picture by its exact OOXML name or ID. */
 export async function resolvePowerPointPictureIdentity(
   base64: string,
@@ -514,6 +520,7 @@ async function inspectPictureFromZip(
   signal?: AbortSignal,
   original?: (base64: string) => void,
   options: { slideIndex?: number; maxBytes?: number } = {},
+  cache?: PictureBatchCache,
 ): Promise<PowerPointPicturePackageInspection> {
   const unsupported = (): never => {
     throw new Error('office_api_unsupported')
@@ -528,28 +535,13 @@ async function inspectPictureFromZip(
         ? `ppt/slides/slide${options.slideIndex + 1}.xml`
         : undefined
   if (!path) return unsupported()
-  const xml = await zip.file(path)!.async('string')
-  if (
-    xml.length > MAX_PPTX_XML_BYTES ||
-    /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) ||
-    XMLValidator.validate(xml) !== true
-  )
-    unsupported()
-  type Node = Record<string, unknown>
+  type Node = PictureNode
   const children = (node: Node, tag: string): Node[] =>
     Array.isArray(node[tag]) ? (node[tag] as Node[]) : []
   const child = (nodes: Node[], tag: string): Node =>
     nodes.find((node) => Object.hasOwn(node, tag)) ?? {}
-  const root = xmlParser.parse(xml) as Node[]
-  const slide = children(child(root, 'p:sld'), 'p:sld')
-  // A slide animation can target the picture indirectly through nested timing nodes.
-  if (slide.some((node) => Object.hasOwn(node, 'p:timing'))) unsupported()
-  const tree = children(child(children(child(slide, 'p:cSld'), 'p:cSld'), 'p:spTree'), 'p:spTree')
-  const shapes = tree.filter((node) =>
-    ['p:sp', 'p:pic', 'p:graphicFrame', 'p:cxnSp', 'p:grpSp'].some((tag) =>
-      Object.hasOwn(node, tag),
-    ),
-  )
+  let shapes = cache?.slide?.path === path ? cache.slide.shapes : undefined
+  let ids = cache?.slide?.path === path ? cache.slide.ids : undefined
   const findNv = (node: Node): Node | undefined => {
     if (Object.hasOwn(node, 'p:cNvPr')) return node
     for (const value of Object.values(node))
@@ -560,13 +552,34 @@ async function inspectPictureFromZip(
         }
     return undefined
   }
-  const ids = shapes.map((node) => (findNv(node)?.[':@'] as Node | undefined)?.['@_id'])
-  if (
-    ids.length > 100 ||
-    ids.some((id) => typeof id !== 'string' || !id.length || id.length > 256) ||
-    new Set(ids).size !== ids.length
-  )
-    unsupported()
+  if (!shapes || !ids) {
+    const xml = await zip.file(path)!.async('string')
+    if (
+      xml.length > MAX_PPTX_XML_BYTES ||
+      /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) ||
+      XMLValidator.validate(xml) !== true
+    )
+      unsupported()
+    const root = xmlParser.parse(xml) as Node[]
+    const slide = children(child(root, 'p:sld'), 'p:sld')
+    // A slide animation can target the picture indirectly through nested timing nodes.
+    if (slide.some((node) => Object.hasOwn(node, 'p:timing'))) unsupported()
+    const tree = children(child(children(child(slide, 'p:cSld'), 'p:cSld'), 'p:spTree'), 'p:spTree')
+    shapes = tree.filter((node) =>
+      ['p:sp', 'p:pic', 'p:graphicFrame', 'p:cxnSp', 'p:grpSp'].some((tag) =>
+        Object.hasOwn(node, tag),
+      ),
+    )
+    const rawIds = shapes.map((node) => (findNv(node)?.[':@'] as Node | undefined)?.['@_id'])
+    if (
+      rawIds.length > 100 ||
+      rawIds.some((id) => typeof id !== 'string' || !id.length || id.length > 256) ||
+      new Set(rawIds).size !== rawIds.length
+    )
+      unsupported()
+    ids = rawIds as string[]
+    if (cache) cache.slide = { path, shapes, ids }
+  }
   const picture = shapes[ids.indexOf(shapeId)]
   if (!picture || !Object.hasOwn(picture, 'p:pic')) unsupported()
   const allowed: Record<string, string[]> = {
@@ -623,19 +636,23 @@ async function inspectPictureFromZip(
   inspect(picture!)
   if (!embed) unsupported()
   const relPath = path.replace('/slides/', '/slides/_rels/') + '.rels'
-  const relFile = zip.file(relPath)
-  if (!relFile) unsupported()
-  const relXml = await relFile!.async('string')
-  if (
-    relXml.length > MAX_PPTX_XML_BYTES ||
-    /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(relXml) ||
-    XMLValidator.validate(relXml) !== true
-  )
-    unsupported()
-  const rels = children(child(xmlParser.parse(relXml) as Node[], 'Relationships'), 'Relationships')
-    .filter((node) => Object.hasOwn(node, 'Relationship'))
-    .map((node) => (node[':@'] ?? {}) as Node)
-  if (new Set(rels.map((rel) => rel['@_Id'])).size !== rels.length) unsupported()
+  let rels = cache?.relationships?.path === relPath ? cache.relationships.rels : undefined
+  if (!rels) {
+    const relFile = zip.file(relPath)
+    if (!relFile) unsupported()
+    const relXml = await relFile!.async('string')
+    if (
+      relXml.length > MAX_PPTX_XML_BYTES ||
+      /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(relXml) ||
+      XMLValidator.validate(relXml) !== true
+    )
+      unsupported()
+    rels = children(child(xmlParser.parse(relXml) as Node[], 'Relationships'), 'Relationships')
+      .filter((node) => Object.hasOwn(node, 'Relationship'))
+      .map((node) => (node[':@'] ?? {}) as Node)
+    if (new Set(rels.map((rel) => rel['@_Id'])).size !== rels.length) unsupported()
+    if (cache) cache.relationships = { path: relPath, rels }
+  }
   const rel = rels.find((item) => item['@_Id'] === embed)
   if (
     !rel ||
@@ -645,26 +662,33 @@ async function inspectPictureFromZip(
     !/^\.\.\/media\/[A-Za-z0-9_.-]+\.(?:png|jpe?g)$/i.test(rel['@_Target'])
   )
     unsupported()
-  const media = zip.file('ppt/' + (rel!['@_Target'] as string).slice(3))
-  if (!media) unsupported()
-  const bytes = await media!.async('uint8array')
-  if (
-    !bytes.length ||
-    bytes.length > 2 * 1024 * 1024 ||
-    (!(bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71) &&
-      !(bytes[0] === 255 && bytes[1] === 216))
-  )
-    unsupported()
+  const mediaPath = 'ppt/' + (rel!['@_Target'] as string).slice(3)
   const sha = async (value: Uint8Array) =>
     Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(value))))
       .map((byte) => byte.toString(16).padStart(2, '0'))
       .join('')
-  const mediaDigest = await sha(bytes)
+  let mediaDigest = cache?.mediaDigests.get(mediaPath)
+  let bytes: Uint8Array | undefined
+  if (!mediaDigest || original) {
+    const media = zip.file(mediaPath)
+    if (!media) unsupported()
+    bytes = await media!.async('uint8array')
+    if (
+      !bytes.length ||
+      bytes.length > 2 * 1024 * 1024 ||
+      (!(bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71) &&
+        !(bytes[0] === 255 && bytes[1] === 216))
+    )
+      unsupported()
+    mediaDigest = await sha(bytes)
+    cache?.mediaDigests.set(mediaPath, mediaDigest)
+  }
   const pictureFingerprint = await sha(
     new TextEncoder().encode(JSON.stringify([stableValue(picture), mediaDigest])),
   )
   if (signal?.aborted) throw new Error('cancelled')
-  if (original) original(btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')))
+  if (original && bytes)
+    original(btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')))
   return { pictureFingerprint, mediaDigest, shapeIds: ids as string[] }
 }
 
@@ -696,11 +720,12 @@ export async function inspectPowerPointPictureMediaBatch(
   const zip = await loadBoundedZip(base64, signal, true, options.maxBytes)
   const mediaDigests: Record<string, string> = Object.create(null)
   const unsupported: string[] = []
+  const cache: PictureBatchCache = { mediaDigests: new Map() }
   for (const shapeId of shapeIds) {
     if (signal?.aborted) throw new Error('cancelled')
     try {
       mediaDigests[shapeId] = (
-        await inspectPictureFromZip(zip, shapeId, signal, undefined, options)
+        await inspectPictureFromZip(zip, shapeId, signal, undefined, options, cache)
       ).mediaDigest
     } catch (error) {
       if (!(error instanceof Error) || error.message !== 'office_api_unsupported') throw error
