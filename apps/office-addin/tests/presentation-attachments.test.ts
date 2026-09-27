@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
-import { createPresentationAttachmentSkill } from '../src/skills/powerpoint/presentation-attachments.js'
+import {
+  createPresentationAttachmentSkill,
+  isPresentationImage,
+  supportsPresentationAttachment,
+} from '../src/skills/powerpoint/presentation-attachments.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
 function setup() {
   const bytes = new Uint8Array(300000)
@@ -363,6 +367,17 @@ function imageFixture(overrides: Record<string, unknown> = {}) {
     })
   return { bytes, value, imagesAvailable, request, vfs, skill, documentId }
 }
+it('accepts normalized GIF/WebP assets returned by the PC and offers them for upload', async () => {
+  for (const extension of ['gif', 'webp']) {
+    const name = `figure.${extension}`
+    expect(isPresentationImage(name)).toBe(true)
+    expect(supportsPresentationAttachment(name, true)).toBe(true)
+    const f = imageFixture({ name })
+    await expect(f.skill.list()).resolves.toMatchObject([
+      { name, kind: 'image', mime: 'image/png' },
+    ])
+  }
+})
 it('uploads image originals and lists validated compact asset metadata on the negotiated channel', async () => {
   const f = imageFixture()
   await f.skill.upload('photo.jpg', Promise.resolve(f.bytes.buffer))

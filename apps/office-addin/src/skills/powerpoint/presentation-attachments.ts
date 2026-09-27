@@ -3,7 +3,7 @@ import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import type { PresentationGenerationOptions } from './presentation-generation.js'
 export const MAX_PRESENTATION_ATTACHMENT_BYTES = 50 * 1024 * 1024
 export const MAX_PRESENTATION_IMAGE_BYTES = 10 * 1024 * 1024
-export const isPresentationImage = (name: string) => /\.(png|jpe?g)$/i.test(name)
+export const isPresentationImage = (name: string) => /\.(png|jpe?g|gif|webp)$/i.test(name)
 const CHUNK_BYTES = 128 * 1024
 const idValid = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
