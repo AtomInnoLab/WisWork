@@ -1,6 +1,10 @@
 import { XMLParser } from 'fast-xml-parser'
 import type { PowerPointPageInspection } from './browser-powerpoint-adapter.js'
-import { loadBoundedZip, MAX_PPTX_XML_BYTES } from './powerpoint-package.js'
+import {
+  inspectPowerPointPicturePackage,
+  loadBoundedZip,
+  MAX_PPTX_XML_BYTES,
+} from './powerpoint-package.js'
 import { inspectPowerPointComplexPagePackage } from './presentation-complex-page-package.js'
 
 type Issue =
@@ -117,6 +121,7 @@ export async function comparePresentationPageStructure(
     status: 'passed' | 'warning' | 'incomplete'
     changed: string[]
     cacheChanged: string[]
+    mediaChanged: string[]
     unchecked: string[]
   }
 }> {
@@ -190,7 +195,32 @@ export async function comparePresentationPageStructure(
   const exportedByName = new Map(exported.map((element) => [element.name, element]))
   const changed: string[] = [],
     cacheChanged: string[] = [],
+    mediaChanged: string[] = [],
     unchecked: string[] = []
+  if (hostBase64 && readbackConsistent) {
+    const pictures = source.filter((element) => element.type === 'picture')
+    if (pictures.length <= 16)
+      for (const element of pictures) {
+        const hostElement = exportedByName.get(element.name)
+        if (!hostElement || hostElement.type !== 'picture') continue
+        try {
+          const before = await inspectPowerPointPicturePackage(
+            sourceBase64,
+            element.shapeId,
+            undefined,
+            undefined,
+            {
+              slideIndex: sourceIndex,
+              maxBytes: 10 * 1024 * 1024,
+            },
+          )
+          const after = await inspectPowerPointPicturePackage(hostBase64, hostElement.shapeId)
+          if (before.mediaDigest !== after.mediaDigest) mediaChanged.push(element.name)
+        } catch {
+          // Unsupported image effects or packages remain unchecked.
+        }
+      }
+  }
   if (hostBase64 && readbackConsistent && source.some((element) => element.type === 'chart')) {
     try {
       const [before, after] = await Promise.all([
@@ -236,13 +266,14 @@ export async function comparePresentationPageStructure(
       changed.push(element.name)
   }
   const content = {
-    status: (changed.length || cacheChanged.length
+    status: (changed.length || cacheChanged.length || mediaChanged.length
       ? 'warning'
       : unchecked.length
         ? 'incomplete'
         : 'passed') as 'passed' | 'warning' | 'incomplete',
     changed,
     cacheChanged,
+    mediaChanged,
     unchecked,
   }
   const structureStatus =

@@ -161,6 +161,92 @@ it('compares a selected chart cache from a multi-page source deck', async () => 
   })
 })
 
+it('detects replaced embedded picture media in an exported page', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.type === 'picture' ? 'Image' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const mediaPath = Object.keys(zip.files).find((path) =>
+    /^ppt\/media\/image[^/]+\.png$/.test(path),
+  )!
+  zip.file(
+    mediaPath,
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  )
+  const result = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(result.content).toMatchObject({
+    status: 'warning',
+    mediaChanged: ['image'],
+    unchecked: ['image'],
+  })
+})
+
+it('compares a selected picture from a multi-page source deck', async () => {
+  const full = await compilePresentationDeck(benchmarkDeck())
+  const source = (await openPptx(full.bytes)).deck.slides[2]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.type === 'picture' ? 'Image' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const one = benchmarkDeck()
+  one.slides = [one.slides[2]!]
+  const host = await compilePresentationDeck(one)
+  const result = await comparePresentationPageStructure(
+    Buffer.from(full.bytes).toString('base64'),
+    2,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    Buffer.from(host.bytes).toString('base64'),
+  )
+  expect(result.content).toMatchObject({
+    status: 'incomplete',
+    mediaChanged: [],
+    unchecked: ['image'],
+  })
+})
+
 it('matches text, shapes, images, tables and charts from compiled pages to Office shape readback', async () => {
   const { bytes } = await compilePresentationDeck(benchmarkDeck())
   const opened = await openPptx(bytes)

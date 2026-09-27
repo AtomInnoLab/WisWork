@@ -438,14 +438,18 @@ export async function inspectPowerPointPicturePackage(
   shapeId: string,
   signal?: AbortSignal,
   original?: (base64: string) => void,
+  options: { slideIndex?: number; maxBytes?: number } = {},
 ): Promise<PowerPointPicturePackageInspection> {
   const unsupported = (): never => {
     throw new Error('office_api_unsupported')
   }
-  const zip = await loadBoundedZip(base64, signal)
+  const zip = await loadBoundedZip(base64, signal, true, options.maxBytes)
   const paths = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
-  if (paths.length !== 1) unsupported()
-  const path = paths[0]!
+  const path = options.slideIndex === undefined
+    ? paths.length === 1 ? paths[0] : undefined
+    : paths.includes(`ppt/slides/slide${options.slideIndex + 1}.xml`)
+      ? `ppt/slides/slide${options.slideIndex + 1}.xml` : undefined
+  if (!path) return unsupported()
   const xml = await zip.file(path)!.async('string')
   if (
     xml.length > MAX_PPTX_XML_BYTES ||
