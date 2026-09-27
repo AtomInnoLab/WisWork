@@ -1,9 +1,11 @@
 import JSZip from 'jszip'
+import PptxGenJS from 'pptxgenjs'
 import { expect, it, vi } from 'vitest'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { createPresentationBaselineSkill } from '../src/skills/powerpoint/presentation-baseline'
 import { inspectPowerPointPageNotes } from '../src/skills/powerpoint/presentation-notes-package'
+import { inspectPowerPointSourceLinks } from '../src/skills/powerpoint/presentation-source-links-package'
 const page = (slideId = 's1', text = 'original') => ({
   slideId,
   masterId: 'm',
@@ -132,6 +134,112 @@ async function notesPagePackage(
   )
   return zip.generateAsync({ type: 'base64' })
 }
+async function sourceLinksPackage(target = 'https://example.org/paper?x=1&amp;y=2') {
+  const zip = new JSZip()
+  zip.file(
+    'ppt/slides/slide1.xml',
+    `<p:sld xmlns:p="urn:p" xmlns:a="urn:a" xmlns:r="urn:r"><p:cSld><p:spTree>
+      <p:sp><p:nvSpPr><p:cNvPr id="7" name="Citation"><a:hlinkClick r:id="rId2"/></p:cNvPr></p:nvSpPr>
+      <p:txBody><a:p><a:r><a:rPr><a:hlinkClick r:id="rId1"/></a:rPr><a:t>Original paper</a:t></a:r></a:p></p:txBody></p:sp>
+    </p:spTree></p:cSld></p:sld>`,
+  )
+  zip.file(
+    'ppt/slides/_rels/slide1.xml.rels',
+    `<Relationships>
+      <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" TargetMode="External" Target="${target}"/>
+      <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" TargetMode="External" Target="https://example.org/home"/>
+    </Relationships>`,
+  )
+  return zip.generateAsync({ type: 'base64' })
+}
+it('reads slide source links with labels and package IDs without verifying targets', async () => {
+  const f = fixture()
+  f.setPackage(await sourceLinksPackage())
+  const baseline = JSON.parse((await f.read()).output)
+  const result = await f.call('read_presentation_baseline_source_links', {
+    baseline_id: baseline.baselineId,
+    slide_id: 's2',
+  })
+  expect(result.isError, result.output).not.toBe(true)
+  expect(JSON.parse(result.output)).toMatchObject({
+    status: 'read',
+    sourceVerified: false,
+    links: [
+      {
+        packageShapeId: '7',
+        target: 'https://example.org/paper?x=1&y=2',
+        label: 'Original paper',
+        location: 'text_run',
+        sourceVerified: false,
+      },
+      { packageShapeId: '7', location: 'shape_action', sourceVerified: false },
+    ],
+  })
+  expect(f.exportPagePackage).toHaveBeenCalledTimes(2)
+  expect(
+    (
+      await f.call('read_presentation_baseline_source_links', {
+        baseline_id: baseline.baselineId,
+        slide_id: 's1',
+      })
+    ).output,
+  ).toBe('presentation_baseline_scope_mismatch')
+})
+it('ignores non-web links and rejects duplicate relationship IDs or changing exports', async () => {
+  expect(
+    await inspectPowerPointSourceLinks(await sourceLinksPackage('javascript:alert(1)')),
+  ).toMatchObject({
+    status: 'read',
+    links: [{ target: 'https://example.org/home' }],
+  })
+  const duplicate = await sourceLinksPackage()
+  const zip = await JSZip.loadAsync(duplicate, { base64: true })
+  const path = 'ppt/slides/_rels/slide1.xml.rels'
+  zip.file(path, (await zip.file(path)!.async('string')).replace('Id="rId2"', 'Id="rId1"'))
+  await expect(
+    inspectPowerPointSourceLinks(await zip.generateAsync({ type: 'base64' })),
+  ).rejects.toThrow('office_api_unsupported')
+  const f = fixture()
+  const before = await sourceLinksPackage()
+  const after = await sourceLinksPackage('https://example.org/changed')
+  f.setPackage(before)
+  const baseline = JSON.parse((await f.read()).output)
+  f.exportPagePackage.mockImplementationOnce(async (slideId) => ({
+    slideId,
+    slideIds: ['s1', 's2'],
+    base64: before,
+  }))
+  f.exportPagePackage.mockImplementationOnce(async (slideId) => ({
+    slideId,
+    slideIds: ['s1', 's2'],
+    base64: after,
+  }))
+  expect(
+    (
+      await f.call('read_presentation_baseline_source_links', {
+        baseline_id: baseline.baselineId,
+        slide_id: 's2',
+      })
+    ).output,
+  ).toBe('presentation_baseline_changed')
+})
+it('reads a PptxGenJS-authored hyperlink from a real slide package', async () => {
+  const deck = new PptxGenJS()
+  deck.addSlide().addText('Read the source', {
+    x: 1,
+    y: 1,
+    w: 3,
+    h: 0.5,
+    hyperlink: { url: 'https://example.org/research' },
+  })
+  const bytes = await deck.write({ outputType: 'nodebuffer' })
+  const report = await inspectPowerPointSourceLinks(
+    Buffer.from(bytes as Uint8Array).toString('base64'),
+  )
+  expect(report.links).toEqual([
+    expect.objectContaining({ target: 'https://example.org/research', sourceVerified: false }),
+  ])
+})
 it('captures arbitrary current/selected/deck scopes without a generation artifact or a host write', async () => {
   const f = fixture()
   const result = await f.read()

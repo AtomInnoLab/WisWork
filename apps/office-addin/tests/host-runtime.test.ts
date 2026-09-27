@@ -61,6 +61,7 @@ const inventories = {
     'read_presentation_baseline_chart_source',
     'read_presentation_baseline_complex_page',
     'read_presentation_baseline_notes',
+    'read_presentation_baseline_source_links',
     'read_presentation_baseline_page',
     'read_slide_text',
     'screenshot_slide',
