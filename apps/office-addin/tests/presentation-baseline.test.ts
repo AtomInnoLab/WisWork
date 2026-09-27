@@ -410,6 +410,53 @@ it('reads mixed direct run formatting and paragraph alignment on a stable baseli
     ).output,
   ).toBe('presentation_baseline_scope_mismatch')
 })
+it('merges local list, paragraph and run font evidence without claiming master inheritance', async () => {
+  const zip = new JSZip()
+  zip.file(
+    'ppt/slides/slide1.xml',
+    `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree>
+    <p:sp><p:nvSpPr><p:cNvPr id="7" name="Styled"/></p:nvSpPr><p:txBody>
+      <a:lstStyle><a:defPPr algn="r"><a:defRPr><a:latin typeface="Arial"/></a:defRPr></a:defPPr><a:lvl1pPr><a:defRPr sz="1200" b="1"><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:defRPr></a:lvl1pPr></a:lstStyle>
+      <a:p><a:pPr lvl="0"><a:defRPr sz="1400"/></a:pPr>
+        <a:r><a:t>Inherited</a:t></a:r>
+        <a:r><a:rPr i="1"><a:solidFill><a:srgbClr val="ff0000"/></a:solidFill></a:rPr><a:t>Direct</a:t></a:r>
+        <a:br><a:rPr u="sng"/></a:br>
+      </a:p>
+    </p:txBody></p:sp>
+  </p:spTree></p:cSld></p:sld>`,
+  )
+  const report = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  expect(report.inheritanceResolved).toBe(false)
+  expect(report.shapes[0]?.paragraphs[0]).toMatchObject({
+    knownAlignment: 'r',
+    listStyleFont: { sizePt: 12, bold: true, themeColor: 'accent1', typeface: 'Arial' },
+    paragraphDefaultFont: { sizePt: 14 },
+    runs: [
+      {
+        text: 'Inherited',
+        directFont: {},
+        knownFont: { sizePt: 14, bold: true, themeColor: 'accent1', typeface: 'Arial' },
+      },
+      {
+        text: 'Direct',
+        directFont: { italic: true, color: '#FF0000' },
+        knownFont: { sizePt: 14, bold: true, italic: true, color: '#FF0000', typeface: 'Arial' },
+      },
+      {
+        text: '\n',
+        directFont: { underline: 'sng' },
+        knownFont: {
+          sizePt: 14,
+          bold: true,
+          underline: 'sng',
+          themeColor: 'accent1',
+          typeface: 'Arial',
+        },
+      },
+    ],
+  })
+  expect(report.shapes[0]?.paragraphs[0]?.runs[1]?.knownFont).not.toHaveProperty('themeColor')
+})
 it('reads formatted runs from a real PptxGenJS slide without claiming inherited style', async () => {
   const deck = new PptxGenJS()
   deck.addSlide().addText(

@@ -67,23 +67,36 @@ function directFont(run: Node[]): Record<string, string | number | boolean> {
     ...(attr(properties, 'u') ? { underline: attr(properties, 'u')! } : {}),
   }
 }
+function knownFont(...layers: Array<Record<string, string | number | boolean>>) {
+  const result: Record<string, string | number | boolean> = {}
+  for (const layer of layers) {
+    if ('color' in layer) delete result.themeColor
+    if ('themeColor' in layer) delete result.color
+    Object.assign(result, layer)
+  }
+  return result
+}
 
 export interface RichTextRun {
   text: string
   directFont: Record<string, string | number | boolean>
+  /** Known local formatting only; theme and master/layout inheritance remain unresolved. */
+  knownFont: Record<string, string | number | boolean>
 }
 export interface RichTextShape {
   packageShapeId: string
   name: string
   paragraphs: Array<{
     alignment?: string
+    knownAlignment?: string
+    listStyleFont?: Record<string, string | number | boolean>
     paragraphDefaultFont?: Record<string, string | number | boolean>
     endParagraphFont?: Record<string, string | number | boolean>
     runs: RichTextRun[]
   }>
 }
 
-/** Direct formatting only; theme, layout and master inheritance remain unresolved. */
+/** Local list, paragraph and run formatting; theme, layout and master inheritance remain unresolved. */
 export async function inspectPowerPointRichText(
   base64: string,
   signal?: AbortSignal,
@@ -101,10 +114,26 @@ export async function inspectPowerPointRichText(
     const identity = tags(shape['p:sp'] as Node[], 'p:cNvPr')[0]
     const packageShapeId = attr(identity, 'id')
     if (!packageShapeId || !/^\d+$/.test(packageShapeId)) throw new Error('office_api_unsupported')
+    const listStyle = tags(body['p:txBody'] as Node[], 'a:lstStyle')[0]
+    const listChildren = (listStyle?.['a:lstStyle'] as Node[] | undefined) ?? []
     const paragraphs = tags(body['p:txBody'] as Node[], 'a:p').map((paragraph) => {
       const children = paragraph['a:p'] as Node[]
       const paragraphProperties = tags(children, 'a:pPr')[0]
       const alignment = attr(paragraphProperties, 'algn')
+      const levelValue = attr(paragraphProperties, 'lvl') ?? '0'
+      const level = /^[0-8]$/.test(levelValue) ? Number(levelValue) : undefined
+      const defaultProperties = tags(listChildren, 'a:defPPr')[0]
+      const levelProperties =
+        level === undefined ? undefined : tags(listChildren, `a:lvl${level + 1}pPr`)[0]
+      const defaultFont = defaultProperties
+        ? directFont(defaultProperties['a:defPPr'] as Node[])
+        : {}
+      const levelFont = levelProperties
+        ? directFont(levelProperties[`a:lvl${level! + 1}pPr`] as Node[])
+        : {}
+      const listStyleFont = knownFont(defaultFont, levelFont)
+      const knownAlignment =
+        alignment ?? attr(levelProperties, 'algn') ?? attr(defaultProperties, 'algn')
       const paragraphDefaultFont = paragraphProperties
         ? directFont(paragraphProperties['a:pPr'] as Node[])
         : {}
@@ -116,17 +145,33 @@ export async function inspectPowerPointRichText(
           const text = tags(entry as Node[], 'a:t')
             .map((node) => contents(node['a:t'] as Node[]))
             .join('')
-          runs.push({ text, directFont: directFont(entry as Node[]) })
+          const font = directFont(entry as Node[])
+          runs.push({
+            text,
+            directFont: font,
+            knownFont: knownFont(listStyleFont, paragraphDefaultFont, font),
+          })
         } else if (Array.isArray(child['a:br'])) {
-          runs.push({ text: '\n', directFont: {} })
+          const font = directFont(child['a:br'] as Node[])
+          runs.push({
+            text: '\n',
+            directFont: font,
+            knownFont: knownFont(listStyleFont, paragraphDefaultFont, font),
+          })
         } else if (Array.isArray(child['a:tab'])) {
-          runs.push({ text: '\t', directFont: {} })
+          runs.push({
+            text: '\t',
+            directFont: {},
+            knownFont: knownFont(listStyleFont, paragraphDefaultFont),
+          })
         }
       }
       runCount += runs.length
       textLength += runs.reduce((total, run) => total + run.text.length, 0)
       return {
         ...(alignment ? { alignment } : {}),
+        ...(knownAlignment ? { knownAlignment } : {}),
+        ...(Object.keys(listStyleFont).length ? { listStyleFont } : {}),
         ...(Object.keys(paragraphDefaultFont).length ? { paragraphDefaultFont } : {}),
         ...(Object.keys(endParagraphFont).length ? { endParagraphFont } : {}),
         runs,
