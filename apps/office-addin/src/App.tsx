@@ -196,6 +196,7 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
       : '动画网址未保存。请先下载并上传原件，再在附件列表中选择“生成静态首帧”。'
   const attachmentErrors: Record<string, string> = {
     presentation_attachment_too_large: '制作资料每个文件最多 50 MiB。',
+    presentation_text_too_long: '粘贴资料最多 100 万字符。请拆分后分别保存。',
     presentation_image_too_large: '图片每个文件最多 10 MiB。',
     presentation_remote_image_unavailable:
       '图片网址无法安全下载或图片格式不受支持，请检查网址后重试。',
@@ -379,6 +380,12 @@ export function uploadSessionFile(runtime: OfficeHostRuntime, file: SessionFile)
   return runtime.uploadFile(file.name, file.arrayBuffer())
 }
 
+export function createPastedSourceFile(text: string, now = Date.now()): File {
+  if (!text.trim() || text.length > 1_000_000) throw new Error('presentation_text_too_long')
+  const name = `粘贴资料-${new Date(now).toISOString().replace(/[:.]/g, '-')}.txt`
+  return new File([text], name, { type: 'text/plain;charset=utf-8' })
+}
+
 export type WorkspacePanelName = 'attachments' | 'skills'
 
 export function composerKeyAction(event: {
@@ -551,6 +558,7 @@ export function AgentWorkspace(props: {
   const [uploadStatus, setUploadStatus] = useState('')
   const [imageUrl, setImageUrl] = useState('')
   const [webpageUrl, setWebpageUrl] = useState('')
+  const [pastedSource, setPastedSource] = useState('')
   const uploadEpoch = useRef(0)
   const [diagnosticStatus, setDiagnosticStatus] = useState('')
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
@@ -900,6 +908,71 @@ export function AgentWorkspace(props: {
                   ? 'PDF、Word（DOCX）、HTML、TXT、MD、CSV、JSON 资料每个最多 50 MiB，保存于 PC 并绑定当前文档；退出登录不会删除。重连后可让 Agent 列出和读取，重新选择同一文件可续传。'
                   : `Files are limited to ${displayMebibytes(MAX_VFS_FILE_BYTES)} MiB each and ${displayMebibytes(MAX_VFS_TOTAL_BYTES)} MiB per session, then cleared on logout.`}
               </p>
+              {ui.durableAttachmentsAvailable?.() && (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (uploadPending || state.busy || state.applying || projectPhase !== 'idle')
+                      return
+                    let file: File
+                    try {
+                      file = createPastedSourceFile(pastedSource)
+                    } catch (error) {
+                      setUploadError(safeUploadError(error))
+                      return
+                    }
+                    const captured = ++uploadEpoch.current
+                    const current = () => mounted.current && captured === uploadEpoch.current
+                    setUploadPending(true)
+                    setUploadError('')
+                    setUploadStatus('正在保存粘贴资料到 PC…')
+                    void ui
+                      .upload(file)
+                      .then(() => {
+                        if (!current()) return
+                        setPastedSource('')
+                        setUploadStatus('粘贴资料已保存到当前文档，可让 Agent 读取。')
+                        void ui
+                          .listDurableAttachments?.()
+                          .then((items) => {
+                            if (current()) setDurableFiles(items)
+                          })
+                          .catch(() => undefined)
+                      })
+                      .catch((error: unknown) => {
+                        if (current()) {
+                          setUploadStatus('')
+                          setUploadError(safeUploadError(error, file))
+                        }
+                      })
+                      .finally(() => {
+                        if (current()) setUploadPending(false)
+                      })
+                  }}
+                >
+                  <label htmlFor="presentation-pasted-source">粘贴资料原文</label>
+                  <textarea
+                    id="presentation-pasted-source"
+                    value={pastedSource}
+                    onChange={(event) => setPastedSource(event.currentTarget.value)}
+                    rows={5}
+                    maxLength={1_000_000}
+                    required
+                  />
+                  <button
+                    type="submit"
+                    disabled={
+                      uploadPending ||
+                      state.busy ||
+                      state.applying ||
+                      projectPhase !== 'idle' ||
+                      !pastedSource.trim()
+                    }
+                  >
+                    保存粘贴资料
+                  </button>
+                </form>
+              )}
               {ui.webpagesAvailable?.() && (
                 <form
                   onSubmit={(event) => {
@@ -910,11 +983,16 @@ export function AgentWorkspace(props: {
                     setUploadStatus('正在由 PC 抓取网页并保存原文…')
                     void ui
                       .importPresentationWebpageUrl?.(webpageUrl.trim())
-                      .then(async () => {
+                      .then(() => {
                         if (!mounted.current) return
-                        setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
                         setUploadStatus('网页原文及正文已保存到当前文档的 PC 资料。')
                         setWebpageUrl('')
+                        void ui
+                          .listDurableAttachments?.()
+                          .then((items) => {
+                            if (mounted.current) setDurableFiles(items)
+                          })
+                          .catch(() => undefined)
                       })
                       .catch((error: unknown) => {
                         if (mounted.current) {

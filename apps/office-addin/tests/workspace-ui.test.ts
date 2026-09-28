@@ -109,6 +109,7 @@ describe('Office Agent workspace UI', () => {
     ])
     const remove = vi.fn().mockResolvedValue(undefined)
     const importUrl = vi.fn().mockResolvedValue(undefined)
+    const upload = vi.fn().mockResolvedValue(undefined)
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const snapshot = {
       assistantText: '',
@@ -127,7 +128,7 @@ describe('Office Agent workspace UI', () => {
       attachments: () => [],
       skills: () => [],
       skillPackagesEnabled: true,
-      upload: vi.fn(),
+      upload,
       clear: vi.fn(),
       durableAttachmentsAvailable: () => true,
       durableImagesAvailable: () => true,
@@ -190,6 +191,24 @@ describe('Office Agent workspace UI', () => {
       'https://example.com/failed.png',
       'https://example.org/backup.webp',
     ])
+    const pasted = container.querySelector<HTMLTextAreaElement>('#presentation-pasted-source')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        pasted,
+        '用户提供的原文资料',
+      )
+      pasted.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    list.mockRejectedValueOnce(new Error('refresh unavailable'))
+    await act(async () =>
+      pasted
+        .closest('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    )
+    expect(upload).toHaveBeenCalledWith(
+      expect.objectContaining({ name: expect.stringMatching(/^粘贴资料-.*\.txt$/) }),
+    )
+    expect(container.textContent).toContain('粘贴资料已保存到当前文档')
     await act(async () => root.unmount())
     container.remove()
     confirm.mockRestore()

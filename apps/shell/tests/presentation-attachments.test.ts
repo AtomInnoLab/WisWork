@@ -121,6 +121,34 @@ describe('durable presentation attachments', () => {
     })
     await expect(call('https://8.8.8.8/page')).rejects.toThrow('quota_exceeded')
   })
+  it('uses the HTTP charset for a fetched non-UTF-8 page', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-webpage-charset-'))
+    dirs.push(userDataPath)
+    const raw = Buffer.concat([
+      Buffer.from('<html><body><p>'),
+      Buffer.from('d6d0cec4', 'hex'),
+      Buffer.from('</p></body></html>'),
+    ])
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      fetchPage: async () =>
+        new Response(raw, { headers: { 'content-type': 'text/html; charset=gbk' } }),
+    })
+    const call = (body: Record<string, unknown>) =>
+      service({ documentId: 'doc-1', ...body }, new AbortController().signal)
+    const imported = (await call({
+      operation: 'attachment_import_webpage',
+      url: 'https://8.8.8.8/gbk',
+    })) as { attachmentId: string }
+    expect(
+      await call({
+        operation: 'attachment_read',
+        attachmentId: imported.attachmentId,
+        offset: 0,
+        maxChars: 20,
+      }),
+    ).toMatchObject({ text: '中文' })
+  })
   it('resumes after a lost acknowledgement and restart, and reads bounded durable text', async () => {
     const { call, userDataPath } = await setup()
     const bytes = Buffer.from('资料 evidence')

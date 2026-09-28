@@ -3,7 +3,7 @@ import { constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, rename, rm } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
-import { htmlToText, parseFileToText } from '@wiswork/file-parse'
+import { decodeHtmlBytes, htmlToText, parseFileToText } from '@wiswork/file-parse'
 import { fetchRemoteImage, fetchWithSsrfGuard, isSafeRemoteUrl } from '@wiswork/electron-utils'
 import {
   inspectPresentationImage,
@@ -569,7 +569,7 @@ export function createPresentationAttachmentService(options: {
         )
         let text: string
         try {
-          text = htmlToText(new TextDecoder('utf-8', { fatal: true }).decode(raw))
+          text = htmlToText(decodeHtmlBytes(raw, response.headers.get('content-type') ?? undefined))
         } catch {
           fail('parse_failed')
         }

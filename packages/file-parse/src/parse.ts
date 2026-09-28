@@ -4,7 +4,7 @@ import { docxToText } from './docx'
 import { pdfToText } from './pdf'
 import { pptxToText } from './pptx'
 import { xlsxToText } from './xlsx'
-import { htmlToText } from './html'
+import { decodeHtmlBytes, htmlToText } from './html'
 
 export type ParsedFileKind = 'text' | 'image' | 'unsupported'
 
@@ -34,7 +34,7 @@ export async function parseFileToText(filePath: string): Promise<ParsedFile> {
   if (imageMime) return { ok: true, kind: 'image', mime: imageMime }
   try {
     if (ext === 'html' || ext === 'htm') {
-      return { ok: true, kind: 'text', text: htmlToText(await readFile(filePath, 'utf-8')) }
+      return { ok: true, kind: 'text', text: htmlToText(decodeHtmlBytes(await readFile(filePath))) }
     }
     if (TEXT_EXTS.has(ext)) {
       return { ok: true, kind: 'text', text: await readFile(filePath, 'utf-8') }

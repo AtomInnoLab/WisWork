@@ -1,9 +1,23 @@
 import { describe, expect, it, vi } from 'vitest'
-import { proposalPresentation, safeUploadError, uploadSessionFile } from '../src/App.js'
+import {
+  createPastedSourceFile,
+  proposalPresentation,
+  safeUploadError,
+  uploadSessionFile,
+} from '../src/App.js'
 import type { OfficeHostRuntime } from '../src/agent/host-runtime.js'
 import { MAX_VFS_FILE_BYTES } from '../src/skills/shared/vfs.js'
 
 describe('generic proposal presentation', () => {
+  it('turns pasted source text into a UTF-8 attachment with a readable name', async () => {
+    const file = createPastedSourceFile('中文 evidence\n', Date.UTC(2026, 8, 28, 10, 0, 0))
+    expect(file.name).toBe('粘贴资料-2026-09-28T10-00-00-000Z.txt')
+    expect(await file.text()).toBe('中文 evidence\n')
+    expect(() => createPastedSourceFile('  ')).toThrow('presentation_text_too_long')
+    expect(() => createPastedSourceFile('a'.repeat(1_000_001))).toThrow(
+      'presentation_text_too_long',
+    )
+  })
   it('presents structured impact as a readable comparison without protocol JSON or code', () => {
     expect(
       proposalPresentation({

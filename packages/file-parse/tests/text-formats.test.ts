@@ -33,6 +33,16 @@ describe('parseFileToText: plain-text formats', () => {
     })
   })
 
+  it('reads a saved GBK webpage using its declared charset', async () => {
+    const bytes = Buffer.concat([
+      Buffer.from('<html><head><meta charset="gbk"></head><body><p>'),
+      Buffer.from('d6d0cec4', 'hex'),
+      Buffer.from('</p></body></html>'),
+    ])
+    const result = await parseFileToText(writeFixture('chinese.html', bytes))
+    expect(result).toEqual({ ok: true, kind: 'text', text: '中文' })
+  })
+
   it('is case-insensitive on the extension', async () => {
     const path = writeFixture('UPPER.TXT', 'upper')
     const result = await parseFileToText(path)

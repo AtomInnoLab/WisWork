@@ -3,6 +3,32 @@ import type { DefaultTreeAdapterMap } from 'parse5'
 
 type Node = DefaultTreeAdapterMap['node']
 
+/** Decode saved page bytes using an HTTP charset, HTML meta declaration, or UTF-8. */
+export function decodeHtmlBytes(bytes: Uint8Array, contentType?: string): string {
+  const httpCharset = /(?:^|;)\s*charset\s*=\s*(?:"([^"]+)"|'([^']+)'|([^;\s]+))/i.exec(
+    contentType ?? '',
+  )
+  const prefix = Buffer.from(bytes.subarray(0, 1024)).toString('latin1')
+  const metaCharset = /<meta\b[^>]*\bcharset\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s/>;]+))/i.exec(
+    prefix,
+  )
+  const encoding =
+    bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+      ? 'utf-8'
+      : bytes[0] === 0xff && bytes[1] === 0xfe
+        ? 'utf-16le'
+        : bytes[0] === 0xfe && bytes[1] === 0xff
+          ? 'utf-16be'
+          : (httpCharset?.[1] ??
+            httpCharset?.[2] ??
+            httpCharset?.[3] ??
+            metaCharset?.[1] ??
+            metaCharset?.[2] ??
+            metaCharset?.[3] ??
+            'utf-8')
+  return new TextDecoder(encoding, { fatal: true }).decode(bytes)
+}
+
 const SKIP = new Set([
   'head',
   'script',
