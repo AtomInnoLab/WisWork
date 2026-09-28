@@ -8,6 +8,7 @@ import {
   officeBridgePorts,
   officeBuildId,
   officeCapabilityFlags,
+  officeDiagnosticSamplePercent,
   officeRemoteDiagnosticsEnabled,
   officePresentationRolloutPercent,
   presentationRolloutEnabled,
@@ -150,6 +151,24 @@ describe('Office Add-in manifest and routes', () => {
     expect(
       Array.from({ length: 200 }, (_, index) => presentationRolloutEnabled(`deck-${index}`, 25)),
     ).toContain(false)
+  })
+
+  it('validates the remote diagnostic sample rate at build time', () => {
+    expect(officeDiagnosticSamplePercent({})).toBe(100)
+    expect(
+      officeDiagnosticSamplePercent({ VITE_WISWORK_OFFICE_DIAGNOSTIC_SAMPLE_PERCENT: '0' }),
+    ).toBe(0)
+    expect(
+      officeDiagnosticSamplePercent({ VITE_WISWORK_OFFICE_DIAGNOSTIC_SAMPLE_PERCENT: '25' }),
+    ).toBe(25)
+    for (const invalid of ['-1', '01', '1.5', '101', 'all']) {
+      expect(() =>
+        officeDiagnosticSamplePercent({ VITE_WISWORK_OFFICE_DIAGNOSTIC_SAMPLE_PERCENT: invalid }),
+      ).toThrow('invalid_office_diagnostic_sample_percent')
+      expect(
+        deploymentConfig({ ...validEnv, VITE_WISWORK_OFFICE_DIAGNOSTIC_SAMPLE_PERCENT: invalid }),
+      ).toBeUndefined()
+    }
   })
 
   it('uses a validated deploy build identifier instead of an uncorrelated unknown value', async () => {

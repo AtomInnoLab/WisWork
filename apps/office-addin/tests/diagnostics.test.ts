@@ -5,6 +5,47 @@ import {
 } from '../src/diagnostics/office-diagnostics.js'
 
 describe('Office safe diagnostics', () => {
+  it('samples remote events per trace while retaining every local event', () => {
+    const sent: string[] = []
+    let sequence = 0
+    const diagnostics = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'build-123',
+      remoteEnabled: true,
+      remoteSamplePercent: 25,
+      send: (event) => {
+        sent.push(event.trace_id)
+      },
+      randomUUID: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`,
+    })
+    for (let index = 0; index < 100; index += 1) {
+      diagnostics.startTrace()
+      diagnostics.record({ phase: 'write', errorCode: 'office_write_failed' })
+      diagnostics.record({ phase: 'verify', errorCode: 'office_verify_failed' })
+    }
+    expect(diagnostics.snapshot().events).toHaveLength(200)
+    expect(sent.length).toBeGreaterThan(0)
+    expect(sent.length).toBeLessThan(200)
+    expect(sent.length % 2).toBe(0)
+    for (let index = 0; index < sent.length; index += 2) expect(sent[index]).toBe(sent[index + 1])
+    const sampledCount = sent.length
+    const off = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'build-123',
+      remoteEnabled: true,
+      remoteSamplePercent: 0,
+      send: (event) => {
+        sent.push(event.trace_id)
+      },
+      randomUUID: () => '00000000-0000-4000-8000-000000000001',
+    })
+    off.record({ phase: 'write', errorCode: 'office_write_failed' })
+    expect(off.snapshot().events).toHaveLength(1)
+    expect(sent).toHaveLength(sampledCount)
+    expect(() =>
+      createOfficeDiagnostics({ host: 'powerpoint', build: 'x', remoteSamplePercent: 101 }),
+    ).toThrow('invalid_office_diagnostic_sample_percent')
+  })
   it('normalizes Office platform and exposes only the active known requirement set', () => {
     const isSetSupported = vi.fn(
       (name: string, version: string) => name === 'WordApi' && version === '1.3',

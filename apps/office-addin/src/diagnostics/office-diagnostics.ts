@@ -74,6 +74,7 @@ interface DiagnosticOptions {
   build: string
   requirementSets?: Readonly<Record<string, boolean>>
   remoteEnabled?: boolean
+  remoteSamplePercent?: number
   send?: (event: OfficeDiagnosticEvent) => void | Promise<void>
   randomUUID?: () => string
   now?: () => number
@@ -205,6 +206,9 @@ function freezeEvent(event: OfficeDiagnosticEvent): OfficeDiagnosticEvent {
 }
 
 export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagnostics {
+  const samplePercent = options.remoteSamplePercent ?? 100
+  if (!Number.isInteger(samplePercent) || samplePercent < 0 || samplePercent > 100)
+    throw new Error('invalid_office_diagnostic_sample_percent')
   const randomUUID = options.randomUUID ?? (() => crypto.randomUUID())
   const now = options.now ?? (() => Date.now())
   const requirements = requirementSets(options.requirementSets)
@@ -239,6 +243,11 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
   const upload = (event: OfficeDiagnosticEvent) => {
     if (!options.remoteEnabled || !options.send || event.error_code === 'diagnostic_upload_failed')
       return
+    if (samplePercent !== 100) {
+      let hash = 2_166_136_261
+      for (const char of event.trace_id) hash = Math.imul(hash ^ char.charCodeAt(0), 16_777_619)
+      if ((hash >>> 0) % 100 >= samplePercent) return
+    }
     const generation = traceGeneration
     try {
       const result = options.send(event)

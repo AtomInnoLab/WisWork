@@ -50,6 +50,14 @@ export function officeRemoteDiagnosticsEnabled(env: BuildEnv): boolean {
   throw new Error('invalid_office_remote_diagnostics')
 }
 
+export function officeDiagnosticSamplePercent(env: BuildEnv): number {
+  const value = env.VITE_WISWORK_OFFICE_DIAGNOSTIC_SAMPLE_PERCENT
+  if (value === undefined || value === '') return 100
+  if (!/^(?:0|[1-9]\d?|100)$/.test(value))
+    throw new Error('invalid_office_diagnostic_sample_percent')
+  return Number(value)
+}
+
 export function officePresentationRolloutPercent(env: BuildEnv): number {
   const value = env.VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT
   if (value === undefined || value === '') return 100
@@ -109,6 +117,7 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
     void officeWorkspaceMode(env)
     void officeCapabilityFlags(env)
     void officeRemoteDiagnosticsEnabled(env)
+    void officeDiagnosticSamplePercent(env)
     void officePresentationRolloutPercent(env)
     void officeBuildId(env, 'development')
   } catch {

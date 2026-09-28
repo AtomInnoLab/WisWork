@@ -28,6 +28,7 @@ import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-ru
 import type { PresentationAttachmentMetadata } from './skills/powerpoint/presentation-attachments.js'
 import {
   officeCapabilityFlags,
+  officeDiagnosticSamplePercent,
   officeRemoteDiagnosticsEnabled,
   officePresentationRolloutPercent,
   officeWorkspaceMode,
@@ -1355,6 +1356,7 @@ function ConfiguredApp() {
     () => transportMode === 'relay' && officeRemoteDiagnosticsEnabled(import.meta.env),
     [transportMode],
   )
+  const diagnosticSamplePercent = useMemo(() => officeDiagnosticSamplePercent(import.meta.env), [])
   const bridge = useMemo(
     () =>
       transportMode === 'loopback'
@@ -1460,6 +1462,7 @@ function ConfiguredApp() {
               build: __WISWORK_OFFICE_BUILD_ID__,
               requirementSets: environment.requirementSets,
               remoteEnabled: remoteDiagnosticsEnabled,
+              remoteSamplePercent: diagnosticSamplePercent,
               send: (event) => {
                 if (!('sendDiagnostic' in bridge)) throw new Error('diagnostic_upload_failed')
                 return bridge.sendDiagnostic(event)
@@ -1576,7 +1579,14 @@ function ConfiguredApp() {
       created?.runtime.dispose()
       bridge.disconnect()
     }
-  }, [bridge, capabilityFlags, document, presentationRolloutPercent, remoteDiagnosticsEnabled])
+  }, [
+    bridge,
+    capabilityFlags,
+    diagnosticSamplePercent,
+    document,
+    presentationRolloutPercent,
+    remoteDiagnosticsEnabled,
+  ])
 
   useEffect(() => {
     if (bridgeState.status !== 'connected' && workspace) {
