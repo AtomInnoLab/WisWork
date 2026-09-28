@@ -142,6 +142,7 @@ async function oneSlide(bytesValue: Uint8Array, signal?: AbortSignal) {
 }
 const names = [
   'stage',
+  'reapply',
   'inspect',
   'reconcile',
   'resume',
@@ -155,25 +156,27 @@ const names = [
 const tools: AgentToolDef[] = names.map((action) => ({
   name: `${action}_existing_presentation_page_change`,
   description:
-    action === 'stage'
-      ? 'Confirm backup and stage a one-slide PPTX after an existing native page; original remains.'
-      : action === 'inspect'
-        ? 'Inspect current native page order and content against a saved change.'
-        : action === 'reconcile'
-          ? 'Read-only recovery for a pending page insertion: identify one exact inserted page and journal its host ID without replaying a write.'
-          : action === 'resume'
-            ? 'Finish journal for a known inserted page without replaying insertion.'
-            : action === 'commit'
-              ? 'Confirm replacing the original with the verified staged page.'
-              : action === 'discard'
-                ? 'Confirm deleting the verified staged page while keeping the original.'
-                : action === 'undo'
-                  ? 'Confirm restoring the backed-up original page and removing the replacement.'
-                  : action === 'release'
-                    ? 'Confirm releasing the PC backup of a discarded or undone page change.'
-                    : action === 'capture'
-                      ? 'Capture one affected page for visual judgment; does not pass QA.'
-                      : 'Persist a visual judgment for one unchanged captured page.',
+    action === 'reapply'
+      ? 'Confirm staging the durable source of an undone page as a new independent change; separately inspect and commit.'
+      : action === 'stage'
+        ? 'Confirm backup and stage a one-slide PPTX after an existing native page; original remains.'
+        : action === 'inspect'
+          ? 'Inspect current native page order and content against a saved change.'
+          : action === 'reconcile'
+            ? 'Read-only recovery for a pending page insertion: identify one exact inserted page and journal its host ID without replaying a write.'
+            : action === 'resume'
+              ? 'Finish journal for a known inserted page without replaying insertion.'
+              : action === 'commit'
+                ? 'Confirm replacing the original with the verified staged page.'
+                : action === 'discard'
+                  ? 'Confirm deleting the verified staged page while keeping the original.'
+                  : action === 'undo'
+                    ? 'Confirm restoring the backed-up original page and removing the replacement.'
+                    : action === 'release'
+                      ? 'Confirm releasing the PC backup of a discarded or undone page change.'
+                      : action === 'capture'
+                        ? 'Capture one affected page for visual judgment; does not pass QA.'
+                        : 'Persist a visual judgment for one unchanged captured page.',
   inputSchema: {
     type: 'object',
     properties:
@@ -326,7 +329,7 @@ export function createPresentationExistingPageEditingSkill(
           )
     },
     systemPrompt:
-      'For one text, one geometry, and one ordinary embedded picture change on the same existing page, prepare_existing_presentation_composite_revision creates a single native page revision. Stage its returned path with picture_shape_id through the confirmed existing-page change flow so the three objects share one durable backup, commit, and undo record. A length-changing text replacement is supported only within one native text run. ' +
+      'For an undone page with retained sourceBackup, reapply_existing_presentation_page_change creates a new independent staged change with fresh original and source backups. Inspect and separately confirm commit; reapply never commits automatically and never recreates missing historical backups. For one text, one geometry, and one ordinary embedded picture change on the same existing page, prepare_existing_presentation_composite_revision creates a single native page revision. Stage its returned path with picture_shape_id through the confirmed existing-page change flow so the three objects share one durable backup, commit, and undo record. A length-changing text replacement is supported only within one native text run. ' +
       'Existing page rebuild uses a validated one-slide VFS PPTX. For an ordinary embedded native picture, prepare_existing_presentation_image_revision creates a one-slide revision in VFS; then stage the returned path with picture_shape_id through the existing page change flow so post-write media can be read back. For equal-length text spanning multiple formatting runs, prepare_existing_presentation_text_revision preserves each run and produces a one-slide VFS revision; stage that path through the same confirmed page change flow. To restore a whole page from a completed single or batch existing-edit savepoint, call prepare_existing_presentation_original_page_restore for its exact change and slide; read a fresh page baseline, then stage using the returned path and restore_source_kind/restore_source_change_id, inspect both pages, and separately confirm commit. The edited page is backed up before stage and remains until commit; the restored page receives a new host slide ID. Preparation does not modify PowerPoint. An unverified image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. A pending insertion with unknown host ID must use reconcile_pending_existing_presentation_page_change before any retry; it only accepts an exact page/order/package match and does not replay a write. Inspect and resume recorded interrupted insertions before further action. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
     clear() {
       epoch++
@@ -356,7 +359,8 @@ export function createPresentationExistingPageEditingSkill(
           schema.required.some((k) => !(k in call.input))
         )
           throw new Error('invalid_tool_input')
-        const action = call.name.split('_')[0]
+        const reapplying = call.name === 'reapply_existing_presentation_page_change'
+        const action = reapplying ? 'stage' : call.name.split('_')[0]
         if (!['inspect', 'capture', 'record'].includes(action) && !options.available())
           throw new Error('presentation_page_backup_unavailable')
         const documentId = await options.documentId()
@@ -717,12 +721,125 @@ export function createPresentationExistingPageEditingSkill(
             summary: '已准备原生图片修订稿，尚未修改演示文稿',
           }
         }
+        const loadRetainedPackage = async (
+          owner: PresentationExistingPageChange,
+          metadata: PresentationExistingPageChange['backup'],
+          expectedDigest: string,
+        ) => {
+          const status = await request('existing_page_backup_status', {
+            backupId: metadata.backupId,
+          })
+          if (
+            status.status !== 'ready' ||
+            status.backupId !== metadata.backupId ||
+            status.documentId !== documentId ||
+            status.hostSlideId !== owner.oldSlideId ||
+            !same(status.slideIds, owner.beforeSlideIds) ||
+            status.sha256 !== metadata.sha256 ||
+            status.sizeBytes !== metadata.sizeBytes ||
+            status.receivedBytes !== status.sizeBytes
+          )
+            throw new Error('presentation_page_backup_invalid')
+          const content = new Uint8Array(metadata.sizeBytes)
+          for (let offset = 0; offset < content.length; offset += CHUNK) {
+            const length = Math.min(CHUNK, content.length - offset)
+            const part = await request('existing_page_backup_read', {
+              backupId: metadata.backupId,
+              offset,
+              length,
+            })
+            if (
+              part.backupId !== metadata.backupId ||
+              part.offset !== offset ||
+              part.sizeBytes !== content.length ||
+              part.sha256 !== metadata.sha256 ||
+              typeof part.base64 !== 'string'
+            )
+              throw new Error('presentation_page_backup_invalid')
+            const chunk = bytes(part.base64)
+            if (chunk.length !== length || b64(chunk) !== part.base64)
+              throw new Error('presentation_page_backup_invalid')
+            content.set(chunk, offset)
+          }
+          if (
+            (await sha(content)) !== metadata.sha256 ||
+            (await presentationPackageDigest(b64(content), signal)) !== expectedDigest
+          )
+            throw new Error('presentation_page_backup_invalid')
+          await current()
+          return b64(content)
+        }
+        const savePackage = async (
+          owner: PresentationExistingPageChange,
+          metadata: PresentationExistingPageChange['backup'],
+          content: Uint8Array,
+          packageDigest: string,
+        ) => {
+          const match = (value: Record<string, unknown>) =>
+            value.backupId === metadata.backupId &&
+            value.documentId === documentId &&
+            value.hostSlideId === owner.oldSlideId &&
+            same(value.slideIds, owner.beforeSlideIds) &&
+            value.sha256 === metadata.sha256 &&
+            value.sizeBytes === content.length
+          let meta = await request('existing_page_backup_begin', {
+            backupId: metadata.backupId,
+            hostSlideId: owner.oldSlideId,
+            slideIds: owner.beforeSlideIds,
+            sha256: metadata.sha256,
+            sizeBytes: content.length,
+          })
+          if (!match(meta)) throw new Error('presentation_page_backup_invalid')
+          while (meta.status !== 'ready' && Number(meta.receivedBytes) < content.length) {
+            const offset = Number(meta.receivedBytes)
+            if (!Number.isSafeInteger(offset) || offset < 0)
+              throw new Error('presentation_page_backup_invalid')
+            const chunk = content.subarray(offset, Math.min(offset + CHUNK, content.length))
+            meta = await request('existing_page_backup_chunk', {
+              backupId: metadata.backupId,
+              offset,
+              base64: b64(chunk),
+            })
+            if (!match(meta) || meta.receivedBytes !== offset + chunk.length)
+              throw new Error('presentation_page_backup_invalid')
+          }
+          if (meta.status !== 'ready')
+            meta = await request('existing_page_backup_finish', { backupId: metadata.backupId })
+          if (!match(meta) || meta.status !== 'ready' || meta.receivedBytes !== content.length)
+            throw new Error('presentation_page_backup_invalid')
+          if ((await loadRetainedPackage(owner, metadata, packageDigest)) !== b64(content))
+            throw new Error('presentation_page_backup_invalid')
+        }
+        const releasePackage = async (
+          owner: PresentationExistingPageChange,
+          metadata: PresentationExistingPageChange['backup'],
+        ) => {
+          const receipt = await request('existing_page_backup_release', {
+            backupId: metadata.backupId,
+            hostSlideId: owner.oldSlideId,
+            slideIds: owner.beforeSlideIds,
+            sha256: metadata.sha256,
+            sizeBytes: metadata.sizeBytes,
+          })
+          if (
+            receipt.status !== 'released' ||
+            receipt.backupId !== metadata.backupId ||
+            receipt.documentId !== documentId ||
+            receipt.hostSlideId !== owner.oldSlideId ||
+            !same(receipt.slideIds, owner.beforeSlideIds) ||
+            receipt.sha256 !== metadata.sha256 ||
+            receipt.sizeBytes !== metadata.sizeBytes
+          )
+            throw new Error('presentation_page_backup_invalid')
+        }
+        let reappliedRecord: PresentationExistingPageChange | undefined
+        let restoredObservation: { slideId: string; slideIds: string[]; base64: string } | undefined
         let record: PresentationExistingPageChange
         let source: Awaited<ReturnType<typeof oneSlide>> | undefined
         let sourcePath: string | undefined
         let restoreProof: Awaited<ReturnType<typeof restoreSource>> | undefined
         let baseline = undefined as ReturnType<PresentationBaselineSkill['snapshot']>
-        if (action === 'stage') {
+        if (action === 'stage' && !reapplying) {
           const input = call.input
           if (
             !id(input.baseline_id) ||
@@ -848,9 +965,98 @@ export function createPresentationExistingPageEditingSkill(
           )
             throw new Error('presentation_existing_page_missing')
           record = structuredClone(saved)
+          if (reapplying) {
+            if (record.state !== 'undone' || record.backupReleasedAt || !record.sourceBackup)
+              throw new Error('presentation_existing_page_state_invalid')
+            reappliedRecord = structuredClone(record)
+            const original = await loadRetainedPackage(
+              record,
+              record.backup,
+              record.originalPackageDigest,
+            )
+            source = await oneSlide(
+              bytes(
+                await loadRetainedPackage(
+                  record,
+                  record.sourceBackup,
+                  record.replacementPackageDigest,
+                ),
+              ),
+              signal,
+            )
+            if (source.sourceSlideId !== record.sourceSlideId)
+              throw new Error('presentation_page_backup_invalid')
+            restoredObservation = await options.exportAdapter.exportPresentationPagePackage(
+              record.restoredSlideId!,
+              signal,
+            )
+            await current()
+            if (
+              restoredObservation.slideId !== record.restoredSlideId ||
+              !same(
+                restoredObservation.slideIds,
+                record.beforeSlideIds.map((slideId) =>
+                  slideId === record.oldSlideId ? record.restoredSlideId! : slideId,
+                ),
+              ) ||
+              (await presentationPackageDigest(restoredObservation.base64, signal)) !==
+                record.originalPackageDigest
+            )
+              throw new Error('presentation_existing_page_conflict')
+            if (record.pictureTarget) {
+              const target = record.pictureTarget
+              const before = await resolvePowerPointPictureIdentity(
+                original,
+                { shapeId: target.shapeId, name: target.name },
+                signal,
+              )
+              const after = await resolvePowerPointPictureIdentity(
+                source.base64,
+                { shapeId: target.shapeId, name: target.name },
+                signal,
+              )
+              if (
+                before.mediaDigest !== target.beforeDigest ||
+                after.mediaDigest !== target.afterDigest ||
+                before.name !== target.name ||
+                after.name !== target.name
+              )
+                throw new Error('presentation_page_backup_invalid')
+            }
+            record = {
+              version: 1,
+              changeId: crypto.randomUUID(),
+              documentId,
+              baselineId: crypto.randomUUID(),
+              baselineDigest: await sha(
+                new TextEncoder().encode(JSON.stringify(restoredObservation)),
+              ),
+              scope: { slideIds: [record.restoredSlideId!] },
+              oldSlideId: record.restoredSlideId!,
+              beforeSlideIds: [...restoredObservation.slideIds],
+              originalPackageDigest: record.originalPackageDigest,
+              replacementPackageDigest: record.replacementPackageDigest,
+              sourceSlideId: record.sourceSlideId,
+              ...(record.pictureTarget ? { pictureTarget: record.pictureTarget } : {}),
+              ...(record.restores ? { restores: { ...record.restores } } : {}),
+              backup: { backupId: crypto.randomUUID(), sha256: '0'.repeat(64), sizeBytes: 1 },
+              sourceBackup: {
+                backupId: crypto.randomUUID(),
+                sha256: source.sha256,
+                sizeBytes: source.sizeBytes,
+              },
+              reapplies: record.changeId,
+              state: 'pending',
+            }
+          }
         }
         let expected = action === 'stage' ? undefined : structuredClone(record)
         const saved = () => {
+          if (
+            reappliedRecord &&
+            !same(options.readExistingPageChange(reappliedRecord.changeId), reappliedRecord)
+          )
+            throw new Error('presentation_existing_page_stale')
           if (!same(options.readExistingPageChange(record.changeId), expected))
             throw new Error('presentation_existing_page_stale')
         }
@@ -908,14 +1114,24 @@ export function createPresentationExistingPageEditingSkill(
           const proposal = options.proposals.propose({
             operation: call.name,
             toolName: call.name,
-            title: '释放已结束整页变更的原页备份',
+            title: record.sourceBackup
+              ? '释放已结束整页变更的原页与替换源备份'
+              : '释放已结束整页变更的原页备份',
             preview: {
               changeId: record.changeId,
               state: record.state,
               backupId: record.backup.backupId,
-              sizeBytes: record.backup.sizeBytes,
+              sizeBytes: record.backup.sizeBytes + (record.sourceBackup?.sizeBytes ?? 0),
+              sourceBackupId: record.sourceBackup?.backupId,
+              backupCount: record.sourceBackup ? 2 : 1,
             },
-            impact: { host: 'powerpoint', targets: [`backup:${record.backup.backupId}`], count: 1 },
+            impact: {
+              host: 'powerpoint',
+              targets: [record.backup, ...(record.sourceBackup ? [record.sourceBackup] : [])].map(
+                (backup) => `backup:${backup.backupId}`,
+              ),
+              count: record.sourceBackup ? 2 : 1,
+            },
             fingerprint: selectionFingerprint(output(record)),
             validate: async () => {
               try {
@@ -927,23 +1143,8 @@ export function createPresentationExistingPageEditingSkill(
             },
             execute: async () => {
               await assertCurrent()
-              const receipt = await request('existing_page_backup_release', {
-                backupId: record.backup.backupId,
-                hostSlideId: record.oldSlideId,
-                slideIds: record.beforeSlideIds,
-                sha256: record.backup.sha256,
-                sizeBytes: record.backup.sizeBytes,
-              })
-              if (
-                receipt.status !== 'released' ||
-                receipt.backupId !== record.backup.backupId ||
-                receipt.documentId !== documentId ||
-                receipt.hostSlideId !== record.oldSlideId ||
-                !same(receipt.slideIds, record.beforeSlideIds) ||
-                receipt.sha256 !== record.backup.sha256 ||
-                receipt.sizeBytes !== record.backup.sizeBytes
-              )
-                throw new Error('presentation_page_backup_invalid')
+              await releasePackage(record, record.backup)
+              if (record.sourceBackup) await releasePackage(record, record.sourceBackup)
               await store({ ...record, backupReleasedAt: new Date().toISOString() })
             },
             verify: async () => {
@@ -962,6 +1163,21 @@ export function createPresentationExistingPageEditingSkill(
           }
         }
         const baselineFresh = async () => {
+          if (reapplying) {
+            await assertCurrent()
+            const observation = await options.exportAdapter.exportPresentationPagePackage(
+              record.oldSlideId,
+              signal,
+            )
+            await assertCurrent()
+            return (
+              !!restoredObservation &&
+              observation.slideId === restoredObservation.slideId &&
+              same(observation.slideIds, restoredObservation.slideIds) &&
+              (await presentationPackageDigest(observation.base64, signal)) ===
+                record.originalPackageDigest
+            )
+          }
           if (!baseline || !same(options.baseline.snapshot(baseline.baselineId), baseline))
             return false
           const result = await options.baseline.executeTool(
@@ -980,6 +1196,31 @@ export function createPresentationExistingPageEditingSkill(
           )
         }
         const sourceFresh = async () => {
+          if (reappliedRecord) {
+            await assertCurrent()
+            await loadRetainedPackage(
+              reappliedRecord,
+              reappliedRecord.backup,
+              reappliedRecord.originalPackageDigest,
+            )
+            const retained = await oneSlide(
+              bytes(
+                await loadRetainedPackage(
+                  reappliedRecord,
+                  reappliedRecord.sourceBackup!,
+                  reappliedRecord.replacementPackageDigest,
+                ),
+              ),
+              signal,
+            )
+            if (
+              retained.sha256 !== source!.sha256 ||
+              retained.sourceSlideId !== record.sourceSlideId
+            )
+              throw new Error('presentation_page_backup_invalid')
+            await assertCurrent()
+            return
+          }
           if (!source || !sourcePath) return
           const value = options.vfs.readBytes(sourcePath, { maxBytes: MAX_PPTX_PACKAGE_BYTES + 1 })
           if ((await sha(value)) !== source.sha256 || value.length !== source.sizeBytes)
@@ -1216,55 +1457,14 @@ export function createPresentationExistingPageEditingSkill(
         )
           throw new Error('presentation_existing_page_conflict')
         const initial = observed?.status
-        const loadBackup = async () => {
-          const status = await request('existing_page_backup_status', {
-            backupId: record.backup.backupId,
-          })
-          if (
-            status.status !== 'ready' ||
-            status.backupId !== record.backup.backupId ||
-            status.documentId !== documentId ||
-            status.hostSlideId !== record.oldSlideId ||
-            !same(status.slideIds, record.beforeSlideIds) ||
-            status.sha256 !== record.backup.sha256 ||
-            status.sizeBytes !== record.backup.sizeBytes ||
-            status.receivedBytes !== status.sizeBytes
-          )
-            throw new Error('presentation_page_backup_invalid')
-          const content = new Uint8Array(record.backup.sizeBytes)
-          for (let offset = 0; offset < content.length; offset += CHUNK) {
-            const length = Math.min(CHUNK, content.length - offset)
-            const part = await request('existing_page_backup_read', {
-              backupId: record.backup.backupId,
-              offset,
-              length,
-            })
-            if (
-              part.backupId !== record.backup.backupId ||
-              part.offset !== offset ||
-              part.sizeBytes !== content.length ||
-              part.sha256 !== record.backup.sha256 ||
-              typeof part.base64 !== 'string'
-            )
-              throw new Error('presentation_page_backup_invalid')
-            const chunk = bytes(part.base64)
-            if (chunk.length !== length || b64(chunk) !== part.base64)
-              throw new Error('presentation_page_backup_invalid')
-            content.set(chunk, offset)
-          }
-          if (
-            (await sha(content)) !== record.backup.sha256 ||
-            (await presentationPackageDigest(b64(content), signal)) !== record.originalPackageDigest
-          )
-            throw new Error('presentation_page_backup_invalid')
-          await current()
-          return b64(content)
-        }
+        const loadBackup = () =>
+          loadRetainedPackage(record, record.backup, record.originalPackageDigest)
         const proposal = options.proposals.propose({
           operation: call.name,
           toolName: call.name,
-          title:
-            action === 'stage'
+          title: reapplying
+            ? '重新应用现稿单页重建（暂存）'
+            : action === 'stage'
               ? (call.input.explanation as string) || '暂存现稿单页重建'
               : `${action} 现稿单页重建`,
           preview: {
@@ -1274,6 +1474,7 @@ export function createPresentationExistingPageEditingSkill(
             replacementDigest: record.replacementPackageDigest,
             stageKeepsOriginal: action === 'stage',
             restores: record.restores,
+            ...(record.reapplies ? { reapplies: record.reapplies } : {}),
             restoredSlideGetsNewId: !!record.restores,
             qaPassed: false,
           },
@@ -1319,88 +1520,58 @@ export function createPresentationExistingPageEditingSkill(
               const originalPackageDigest = await presentationPackageDigest(exported.base64, signal)
               if (originalPackageDigest !== record.originalPackageDigest)
                 throw new Error('proposal_stale')
-              const backupSha = await sha(originalBytes)
-              const match = (value: Record<string, unknown>) =>
-                value.backupId === record.backup.backupId &&
-                value.documentId === documentId &&
-                value.hostSlideId === record.oldSlideId &&
-                same(value.slideIds, record.beforeSlideIds) &&
-                value.sha256 === backupSha &&
-                value.sizeBytes === originalBytes.length
-              let meta = await request('existing_page_backup_begin', {
-                backupId: record.backup.backupId,
-                hostSlideId: record.oldSlideId,
-                slideIds: record.beforeSlideIds,
-                sha256: backupSha,
-                sizeBytes: originalBytes.length,
-              })
-              if (!match(meta)) throw new Error('presentation_page_backup_invalid')
-              while (meta.status !== 'ready' && Number(meta.receivedBytes) < originalBytes.length) {
-                const offset = Number(meta.receivedBytes)
-                if (!Number.isSafeInteger(offset) || offset < 0)
-                  throw new Error('presentation_page_backup_invalid')
-                const chunk = originalBytes.subarray(
-                  offset,
-                  Math.min(offset + CHUNK, originalBytes.length),
-                )
-                meta = await request('existing_page_backup_chunk', {
-                  backupId: record.backup.backupId,
-                  offset,
-                  base64: b64(chunk),
-                })
-                if (!match(meta) || Number(meta.receivedBytes) !== offset + chunk.length)
-                  throw new Error('presentation_page_backup_invalid')
-              }
-              if (meta.status !== 'ready')
-                meta = await request('existing_page_backup_finish', {
-                  backupId: record.backup.backupId,
-                })
-              if (
-                !match(meta) ||
-                meta.status !== 'ready' ||
-                meta.receivedBytes !== originalBytes.length
-              )
-                throw new Error('presentation_page_backup_invalid')
-              await sourceFresh()
-              if (!(await baselineFresh())) throw new Error('proposal_stale')
-              const beforeWrite = await options.exportAdapter.exportPresentationPagePackage(
-                record.oldSlideId,
-                signal,
-              )
-              if (
-                beforeWrite.slideId !== record.oldSlideId ||
-                !same(beforeWrite.slideIds, record.beforeSlideIds) ||
-                (await presentationPackageDigest(beforeWrite.base64, signal)) !==
-                  originalPackageDigest
-              )
-                throw new Error('proposal_stale')
               record = {
                 ...record,
-                originalPackageDigest,
                 backup: {
                   backupId: record.backup.backupId,
-                  sha256: backupSha,
+                  sha256: await sha(originalBytes),
                   sizeBytes: originalBytes.length,
+                },
+                sourceBackup: {
+                  backupId: record.sourceBackup?.backupId ?? crypto.randomUUID(),
+                  sha256: source!.sha256,
+                  sizeBytes: source!.sizeBytes,
                 },
               }
               try {
+                await savePackage(
+                  record,
+                  record.backup,
+                  originalBytes,
+                  record.originalPackageDigest,
+                )
+                await savePackage(
+                  record,
+                  record.sourceBackup!,
+                  bytes(source!.base64),
+                  record.replacementPackageDigest,
+                )
+                await sourceFresh()
+                if (!(await baselineFresh())) throw new Error('proposal_stale')
+                const beforeWrite = await options.exportAdapter.exportPresentationPagePackage(
+                  record.oldSlideId,
+                  signal,
+                )
+                if (
+                  beforeWrite.slideId !== record.oldSlideId ||
+                  !same(beforeWrite.slideIds, record.beforeSlideIds) ||
+                  (await presentationPackageDigest(beforeWrite.base64, signal)) !==
+                    record.originalPackageDigest
+                )
+                  throw new Error('proposal_stale')
                 await store(record)
               } catch (error) {
-                // A missing first journal entry means the backup has no owner and no page write began.
-                try {
-                  if (
-                    (await options.documentId()) === documentId &&
-                    !options.readExistingPageChange(record.changeId)
-                  )
-                    await request('existing_page_backup_release', {
-                      backupId: record.backup.backupId,
-                      hostSlideId: record.oldSlideId,
-                      slideIds: record.beforeSlideIds,
-                      sha256: record.backup.sha256,
-                      sizeBytes: record.backup.sizeBytes,
-                    })
-                } catch {
-                  /* An uncertain savepoint must remain available for manual recovery. */
+                if (
+                  (await options.documentId()) === documentId &&
+                  !options.readExistingPageChange(record.changeId)
+                ) {
+                  for (const metadata of [record.backup, record.sourceBackup!]) {
+                    try {
+                      await releasePackage(record, metadata)
+                    } catch {
+                      /* Preserve uncertain backup receipts for manual recovery. */
+                    }
+                  }
                 }
                 throw error
               }
@@ -1578,6 +1749,9 @@ export function createPresentationExistingPageEditingSkill(
             proposalId: proposal.id,
             status: 'awaiting_confirmation',
             changeId: record.changeId,
+            ...(record.reapplies
+              ? { reapplies: record.reapplies, sourceChangeId: record.reapplies }
+              : {}),
             state: record.state,
             oldSlideId: record.oldSlideId,
             newSlideId: record.newSlideId,

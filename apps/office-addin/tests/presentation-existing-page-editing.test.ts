@@ -214,7 +214,7 @@ async function fixture() {
       },
     ],
   }
-  const meta = {
+  const defaultMeta = {
     backupId: '',
     documentId: 'doc',
     hostSlideId: 'old',
@@ -224,12 +224,19 @@ async function fixture() {
     receivedBytes: 0,
     status: 'uploading',
   }
-  let data = new Uint8Array()
+  const backupStore = new Map<string, { meta: typeof defaultMeta; data: Uint8Array }>()
   let failCurrentBackup = false
   let onSourceRead: (() => void) | undefined
   const request = vi.fn(async (body: unknown) => {
     const input = body as Record<string, unknown>
     const op = input.operation
+    const entry = backupStore.get(String(input.backupId)) ?? {
+      meta: { ...defaultMeta },
+      data: new Uint8Array(),
+    }
+    backupStore.set(String(input.backupId), entry)
+    const meta = entry.meta
+    const data = entry.data
     if (input.backupId === 'source-backup') {
       if (op === 'existing_page_backup_status') {
         onSourceRead?.()
@@ -265,14 +272,14 @@ async function fixture() {
     if (op === 'existing_page_backup_begin' && failCurrentBackup) throw new Error('quota_exceeded')
     if (op === 'existing_page_backup_begin') {
       Object.assign(meta, input, { receivedBytes: 0, status: 'uploading' })
-      data = new Uint8Array(meta.sizeBytes)
+      entry.data = new Uint8Array(meta.sizeBytes)
     } else if (op === 'existing_page_backup_chunk') {
       const part = binary(input.base64 as string)
       data.set(part, input.offset as number)
       meta.receivedBytes += part.length
     } else if (op === 'existing_page_backup_finish') meta.status = 'ready'
     else if (op === 'existing_page_backup_release') {
-      data = new Uint8Array()
+      entry.data = new Uint8Array()
       return new Response(JSON.stringify({ ...input, status: 'released' }))
     } else if (op === 'existing_page_backup_read')
       return new Response(
@@ -298,34 +305,52 @@ async function fixture() {
         ? ({ status: 'inserted', newSlideId: 'new' } as const)
         : ({ status: 'baseline' } as const),
     ),
-    inspect: vi.fn(async (): Promise<PresentationPageReplacementInspection> => ({
-      status:
-        slideIds.length === 2
-          ? 'staged'
-          : slideIds[0] === 'old'
-            ? 'baseline'
-            : slideIds[0] === 'new'
-              ? 'applied'
-              : 'undone',
-      slideIds: [...slideIds],
-    })),
+    inspect: vi.fn(
+      async (record: {
+        oldSlideId: string
+        newSlideId?: string
+        restoredSlideId?: string
+      }): Promise<PresentationPageReplacementInspection> => ({
+        status:
+          slideIds.length === 2
+            ? 'staged'
+            : slideIds[0] === record.oldSlideId
+              ? 'baseline'
+              : slideIds[0] === record.newSlideId
+                ? 'applied'
+                : 'undone',
+        slideIds: [...slideIds],
+      }),
+    ),
     stage: vi.fn(
-      async (_record: unknown, _base64: string, onInserted: (id: string) => Promise<void>) => {
-        slideIds = ['old', 'new']
-        await onInserted('new')
+      async (
+        record: { oldSlideId: string; beforeSlideIds: string[] },
+        _base64: string,
+        onInserted: (id: string) => Promise<void>,
+      ) => {
+        const inserted = record.oldSlideId === 'old' ? 'new' : `${record.oldSlideId}-new`
+        slideIds = record.beforeSlideIds.flatMap((id) =>
+          id === record.oldSlideId ? [id, inserted] : [id],
+        )
+        await onInserted(inserted)
       },
     ),
-    commit: vi.fn(async () => {
-      slideIds = ['new']
+    commit: vi.fn(async (record: { oldSlideId: string; newSlideId?: string }) => {
+      slideIds = slideIds.filter((id) => id !== record.oldSlideId)
     }),
     discard: vi.fn(async () => {
       slideIds = ['old']
     }),
     undo: vi.fn(
-      async (_record: unknown, _base64: string, onRestored: (id: string) => Promise<void>) => {
-        slideIds = ['new', 'restored']
-        await onRestored('restored')
-        slideIds = ['restored']
+      async (
+        record: { oldSlideId: string; newSlideId?: string },
+        _base64: string,
+        onRestored: (id: string) => Promise<void>,
+      ) => {
+        const restored = record.oldSlideId === 'old' ? 'restored' : `${record.oldSlideId}-restored`
+        slideIds = [record.newSlideId!, restored]
+        await onRestored(restored)
+        slideIds = [restored]
       },
     ),
   }
@@ -339,38 +364,40 @@ async function fixture() {
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII=',
     },
   }))
-  const skill = createPresentationExistingPageEditingSkill({
-    baseline,
-    adapter,
-    inspectPage,
-    exportAdapter: {
-      exportPresentationPagePackage: async () => ({
-        slideId: 'old',
-        slideIds: ['old'],
-        base64: base64(currentPageBytes),
-      }),
-    },
-    vfs: {
-      readBytes: (path: string) => preparedFiles.get(path) ?? source,
-      writeFile: (path: string, value: Uint8Array) => {
-        preparedFiles.set(path, value)
+  const create = () =>
+    createPresentationExistingPageEditingSkill({
+      baseline,
+      adapter,
+      inspectPage,
+      exportAdapter: {
+        exportPresentationPagePackage: async (slideId: string) => ({
+          slideId,
+          slideIds: [...slideIds],
+          base64: base64(currentPageBytes),
+        }),
       },
-    } as unknown as InMemoryVfs,
-    request,
-    proposals,
-    documentId: async () => 'doc',
-    available: () => true,
-    readExistingChange: () => originalSourceRecord,
-    readExistingBatch: () => batchSourceRecord,
-    readExistingPageChange: (id) => records.get(id),
-    writeExistingPageChange: async (record, expected) => {
-      if (failWrite) throw new Error('settings_save_failed')
-      expect(records.get(record.changeId)).toEqual(expected)
-      expect(validExistingPageTransition(expected, record)).toBe(true)
-      records.set(record.changeId, structuredClone(record))
-      if (failAfterWrite) throw new Error('journal_ack_lost')
-    },
-  })
+      vfs: {
+        readBytes: (path: string) => preparedFiles.get(path) ?? source,
+        writeFile: (path: string, value: Uint8Array) => {
+          preparedFiles.set(path, value)
+        },
+      } as unknown as InMemoryVfs,
+      request,
+      proposals,
+      documentId: async () => 'doc',
+      available: () => true,
+      readExistingChange: () => originalSourceRecord,
+      readExistingBatch: () => batchSourceRecord,
+      readExistingPageChange: (id) => records.get(id),
+      writeExistingPageChange: async (record, expected) => {
+        if (failWrite) throw new Error('settings_save_failed')
+        expect(records.get(record.changeId)).toEqual(expected)
+        expect(validExistingPageTransition(expected, record)).toBe(true)
+        records.set(record.changeId, structuredClone(record))
+        if (failAfterWrite) throw new Error('journal_ack_lost')
+      },
+    })
+  let skill = create()
   const call = (action: string, input: Record<string, unknown>) =>
     skill.executeTool({ id: 'tool', name: `${action}_existing_presentation_page_change`, input })
   const confirm = async () => {
@@ -381,6 +408,13 @@ async function fixture() {
   }
   return {
     skill,
+    reopen: () => {
+      skill.clear()
+      skill = create()
+    },
+    setOrder: (ids: string[]) => {
+      slideIds = ids
+    },
     call,
     confirm,
     records,
@@ -420,7 +454,9 @@ async function fixture() {
     batchSourceRecord,
     preparedFiles,
     digest,
-    data: () => data,
+    backupStore,
+    data: () =>
+      [...backupStore.values()].find((entry) => entry.meta.backupId)?.data ?? new Uint8Array(),
   }
 }
 
@@ -894,4 +930,217 @@ it('does not report a staged page as verified after that page disappears', async
     currentHostVerified: false,
     manualReview: true,
   })
+})
+
+it('retains a durable replacement source and reapplies to a fresh staged journal', async () => {
+  const f = await fixture()
+  const proposed = await f.call('stage', {
+    baseline_id: 'baseline',
+    slide_id: 'old',
+    path: '/rebuilt.pptx',
+  })
+  await f.confirm()
+  const oldId = JSON.parse(proposed.output).changeId
+  expect(f.records.get(oldId)?.sourceBackup).toBeDefined()
+})
+
+async function undonePageFixture() {
+  const f = await fixture()
+  const proposed = await f.call('stage', {
+    baseline_id: 'baseline',
+    slide_id: 'old',
+    path: '/rebuilt.pptx',
+  })
+  await f.confirm()
+  const oldId = JSON.parse(proposed.output).changeId as string
+  await f.call('commit', { change_id: oldId })
+  await f.confirm()
+  await f.call('undo', { change_id: oldId })
+  await f.confirm()
+  f.reopen()
+  return { f, oldId }
+}
+
+it('reopens and reapplies using independent original/source backups and a separate commit', async () => {
+  const { f, oldId } = await undonePageFixture()
+  const oldRecord = structuredClone(f.records.get(oldId)!)
+  f.changeSource(new Uint8Array())
+  const proposal = await f.call('reapply', { change_id: oldId })
+  expect(proposal.isError, proposal.output).not.toBe(true)
+  const newId = JSON.parse(proposal.output).changeId
+  expect(newId).not.toBe(oldId)
+  expect(JSON.parse(proposal.output).reapplies).toBe(oldId)
+  await f.confirm()
+  const newRecord = f.records.get(newId)!
+  expect(newRecord).toMatchObject({
+    state: 'staged',
+    oldSlideId: oldRecord.restoredSlideId,
+    reapplies: oldId,
+  })
+  expect(newRecord.backup.backupId).not.toBe(oldRecord.backup.backupId)
+  expect(newRecord.sourceBackup!.backupId).not.toBe(oldRecord.sourceBackup!.backupId)
+  expect(f.records.get(oldId)).toEqual(oldRecord)
+  await f.call('release', { change_id: oldId })
+  await f.confirm()
+  expect(f.backupStore.get(newRecord.sourceBackup!.backupId)!.data.length).toBeGreaterThan(0)
+  await f.call('commit', { change_id: newId })
+  await f.confirm()
+  await f.call('undo', { change_id: newId })
+  await f.confirm()
+  expect(f.records.get(newId)?.state).toBe('undone')
+  await f.call('reapply', { change_id: newId })
+  await f.confirm()
+})
+
+it.each(['backup', 'sourceBackup'] as const)(
+  'rejects missing/tampered/released %s without rebuilding old backups',
+  async (field) => {
+    const { f, oldId } = await undonePageFixture()
+    const record = f.records.get(oldId)!
+    const backup = f.backupStore.get(record[field]!.backupId)!
+    const begins = f.request.mock.calls.filter(
+      ([body]) => (body as Record<string, unknown>).operation === 'existing_page_backup_begin',
+    ).length
+    backup.data[0] ^= 1
+    expect((await f.call('reapply', { change_id: oldId })).isError).toBe(true)
+    backup.meta.status = 'released'
+    expect(await f.call('reapply', { change_id: oldId })).toMatchObject({
+      isError: true,
+      output: 'presentation_page_backup_invalid',
+    })
+    f.backupStore.delete(record[field]!.backupId)
+    expect((await f.call('reapply', { change_id: oldId })).isError).toBe(true)
+    expect(
+      f.request.mock.calls.filter(
+        ([body]) => (body as Record<string, unknown>).operation === 'existing_page_backup_begin',
+      ),
+    ).toHaveLength(begins)
+  },
+)
+
+it('rejects legacy and released page records and current package/order conflicts', async () => {
+  const { f, oldId } = await undonePageFixture()
+  const record = structuredClone(f.records.get(oldId)!)
+  f.records.set(oldId, { ...record, sourceBackup: undefined })
+  expect((await f.call('reapply', { change_id: oldId })).isError).toBe(true)
+  f.records.set(oldId, { ...record, backupReleasedAt: new Date().toISOString() })
+  expect((await f.call('reapply', { change_id: oldId })).isError).toBe(true)
+  f.records.set(oldId, record)
+  f.setOrder(['extra', record.restoredSlideId!])
+  expect(await f.call('reapply', { change_id: oldId })).toMatchObject({
+    isError: true,
+    output: 'presentation_existing_page_conflict',
+  })
+  f.setOrder([record.restoredSlideId!])
+  f.setCurrentPage(f.source())
+  expect(await f.call('reapply', { change_id: oldId })).toMatchObject({
+    isError: true,
+    output: 'presentation_existing_page_conflict',
+  })
+})
+
+it.each(['history', 'package', 'order', 'backup', 'sourceBackup'])(
+  'rejects stale %s after proposal before copying backups or insertion',
+  async (field) => {
+    const { f, oldId } = await undonePageFixture()
+    const record = f.records.get(oldId)!
+    const proposed = await f.call('reapply', { change_id: oldId })
+    if (field === 'history') f.records.set(oldId, { ...record, captures: undefined })
+    else if (field === 'package') f.setCurrentPage(f.source())
+    else if (field === 'order') f.setOrder(['extra', record.restoredSlideId!])
+    else f.backupStore.get(record[field as 'backup' | 'sourceBackup']!.backupId)!.data[0] ^= 1
+    await expect(f.confirm()).rejects.toThrow('proposal_stale')
+    expect(f.records.has(JSON.parse(proposed.output).changeId)).toBe(false)
+    expect(f.adapter.stage).toHaveBeenCalledTimes(1)
+  },
+)
+
+it('keeps a lost reapply insertion receipt pending without replaying the host write', async () => {
+  const { f, oldId } = await undonePageFixture()
+  const old = structuredClone(f.records.get(oldId)!)
+  const proposed = await f.call('reapply', { change_id: oldId })
+  f.adapter.stage.mockImplementationOnce(async () => {
+    f.setOrder(['restored', 'unknown'])
+    throw new Error('office_state_uncertain')
+  })
+  await expect(f.confirm()).rejects.toThrow('office_state_uncertain')
+  const newId = JSON.parse(proposed.output).changeId
+  expect(f.records.get(newId)).toMatchObject({ state: 'pending', reapplies: oldId })
+  expect(f.records.get(oldId)).toEqual(old)
+  f.reopen()
+  expect((await f.call('resume', { change_id: newId })).isError).toBe(true)
+  expect(f.adapter.stage).toHaveBeenCalledTimes(2)
+})
+
+it('retries release after the original receipt succeeded and the source release failed', async () => {
+  const { f, oldId } = await undonePageFixture()
+  const record = f.records.get(oldId)!
+  const request = f.request.getMockImplementation()!
+  let fail = true
+  f.request.mockImplementation(async (body) => {
+    const input = body as Record<string, unknown>
+    if (
+      input.operation === 'existing_page_backup_release' &&
+      input.backupId === record.sourceBackup!.backupId &&
+      fail
+    )
+      throw new Error('office_state_uncertain')
+    return request(body)
+  })
+  await f.call('release', { change_id: oldId })
+  await expect(f.confirm()).rejects.toThrow('office_state_uncertain')
+  expect(f.records.get(oldId)?.backupReleasedAt).toBeUndefined()
+  expect(f.backupStore.get(record.backup.backupId)!.data.length).toBe(0)
+  expect(f.backupStore.get(record.sourceBackup!.backupId)!.data.length).toBeGreaterThan(0)
+  fail = false
+  await f.call('release', { change_id: oldId })
+  await f.confirm()
+  expect(f.records.get(oldId)?.backupReleasedAt).toBeDefined()
+  expect(f.backupStore.get(record.sourceBackup!.backupId)!.data.length).toBe(0)
+})
+
+it('retains actual historical restores source identity when targeting a restored native page', async () => {
+  const f = await fixture()
+  f.setCurrentPage(f.source())
+  const prepared = await f.skill.executeTool({
+    id: 'prepare',
+    name: 'prepare_existing_presentation_original_page_restore',
+    input: { source_kind: 'single', change_id: 'single', slide_id: 'old' },
+  })
+  const preparedInput = JSON.parse(prepared.output).nextInput
+  const proposed = await f.call('stage', { baseline_id: 'baseline', ...preparedInput })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  await f.confirm()
+  const oldId = JSON.parse(proposed.output).changeId
+  await f.call('commit', { change_id: oldId })
+  await f.confirm()
+  await f.call('undo', { change_id: oldId })
+  await f.confirm()
+  const originalProvenance = f.records.get(oldId)!.restores
+  const reapply = await f.call('reapply', { change_id: oldId })
+  expect(reapply.isError, reapply.output).not.toBe(true)
+  await f.confirm()
+  const newRecord = f.records.get(JSON.parse(reapply.output).changeId)!
+  expect(newRecord.oldSlideId).toBe('restored')
+  expect(newRecord.restores).toEqual(originalProvenance)
+  expect(newRecord.restores?.sourceHostSlideId).toBe('old')
+})
+
+it('fails safely on source-backup quota without host insertion or an ownerless ready original', async () => {
+  const f = await fixture()
+  const request = f.request.getMockImplementation()!
+  let begins = 0
+  f.request.mockImplementation(async (body) => {
+    if (
+      (body as Record<string, unknown>).operation === 'existing_page_backup_begin' &&
+      ++begins === 2
+    )
+      throw new Error('quota_exceeded')
+    return request(body)
+  })
+  await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/rebuilt.pptx' })
+  await expect(f.confirm()).rejects.toThrow('quota_exceeded')
+  expect(f.adapter.stage).not.toHaveBeenCalled()
+  expect(f.records.size).toBe(0)
+  expect(f.data().length).toBe(0)
 })

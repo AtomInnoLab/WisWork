@@ -236,3 +236,66 @@ it('stores each staged page review and invalidates both at commit', async () => 
   await f.binding.writeExistingPageChange(pending, both)
   expect(f.reopen().readExistingPageChange('page1')?.reviews).toBeUndefined()
 })
+
+it('bounds durable source metadata and protects both backup identities and provenance after reopen', async () => {
+  const f = await fixture()
+  const sourceBackup = { backupId: 'source1', sha256: 'e'.repeat(64), sizeBytes: 123 }
+  const record = { ...f.record, sourceBackup, reapplies: 'previous' }
+  expect(validatePresentationExistingPageChange(record)).toBe(true)
+  for (const invalid of [
+    { ...record, sourceBackup: { ...sourceBackup, extra: true } },
+    { ...record, sourceBackup: { ...sourceBackup, sizeBytes: 104857601 } },
+    { ...record, sourceBackup: { ...sourceBackup, sha256: 'bad' } },
+    { ...record, sourceBackup: { ...sourceBackup, backupId: record.backup.backupId } },
+    { ...record, sourceBackup: undefined },
+    { ...record, reapplies: record.changeId },
+    { ...record, reapplies: 'a'.repeat(129) },
+  ])
+    expect(validatePresentationExistingPageChange(invalid)).toBe(false)
+  await f.binding.writeExistingPageChange(record, undefined)
+  expect(f.reopen().readExistingPageChange(record.changeId)).toEqual(record)
+  for (const changed of [
+    { ...record, sourceBackup: { ...sourceBackup, sizeBytes: 124 } },
+    { ...record, sourceBackup: { ...sourceBackup, backupId: 'another' } },
+    { ...record, sourceSlideId: '257#' },
+    { ...record, reapplies: 'another' },
+    { ...record, reapplies: undefined },
+  ])
+    await expect(
+      f
+        .reopen()
+        .writeExistingPageChange({ ...changed, state: 'inserted', newSlideId: 's3' }, record),
+    ).rejects.toThrow('state_invalid')
+})
+
+it('permits historical restore source host identity only on a source-backed reapply record', async () => {
+  const f = await fixture()
+  const restores = {
+    sourceKind: 'single' as const,
+    sourceChangeId: 'original',
+    sourceHostSlideId: 'historical',
+    originalBackupId: 'historical-backup',
+    originalPackageDigest: f.record.replacementPackageDigest,
+  }
+  expect(validatePresentationExistingPageChange({ ...f.record, restores })).toBe(false)
+  const record = {
+    ...f.record,
+    restores,
+    reapplies: 'previous',
+    sourceBackup: { backupId: 'source1', sha256: 'e'.repeat(64), sizeBytes: 123 },
+  }
+  expect(validatePresentationExistingPageChange(record)).toBe(true)
+  await f.binding.writeExistingPageChange(record, undefined)
+  expect(f.reopen().readExistingPageChange(record.changeId)?.restores).toEqual(restores)
+  await expect(
+    f.binding.writeExistingPageChange(
+      {
+        ...record,
+        restores: { ...restores, sourceHostSlideId: f.record.oldSlideId },
+        state: 'inserted',
+        newSlideId: 's3',
+      },
+      record,
+    ),
+  ).rejects.toThrow('state_invalid')
+})

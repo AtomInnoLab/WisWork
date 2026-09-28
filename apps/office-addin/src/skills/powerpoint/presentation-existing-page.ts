@@ -26,6 +26,8 @@ export interface PresentationExistingPageChange {
     originalBackupId: string
     originalPackageDigest: string
   }
+  sourceBackup?: { backupId: string; sha256: string; sizeBytes: number }
+  reapplies?: string
   backup: { backupId: string; sha256: string; sizeBytes: number }
   state:
     | 'pending'
@@ -74,6 +76,22 @@ export const existingPageReservedBytes = (r: PresentationExistingPageChange) =>
   Math.max(0, 2 * 8202 + 12 - (r.reviews ? bytes(r.reviews) + ',"reviews":'.length : 0)) +
   Math.max(0, 2 * 524 + 13 - (r.captures ? bytes(r.captures) + ',"captures":'.length : 0))
 
+export function validExistingPageBackupMetadata(
+  value: unknown,
+): value is PresentationExistingPageChange['backup'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const backup = value as PresentationExistingPageChange['backup']
+  return (
+    Object.keys(backup).length === 3 &&
+    Object.keys(backup).every((key) => ['backupId', 'sha256', 'sizeBytes'].includes(key)) &&
+    id(backup.backupId) &&
+    digest(backup.sha256) &&
+    Number.isSafeInteger(backup.sizeBytes) &&
+    backup.sizeBytes > 0 &&
+    backup.sizeBytes <= 100 * 1024 * 1024
+  )
+}
+
 export function validatePresentationExistingPageChange(
   value: unknown,
 ): value is PresentationExistingPageChange {
@@ -94,6 +112,8 @@ export function validatePresentationExistingPageChange(
     'pictureTarget',
     'restores',
     'backup',
+    'sourceBackup',
+    'reapplies',
     'state',
     'newSlideId',
     'restoredSlideId',
@@ -123,15 +143,7 @@ export function validatePresentationExistingPageChange(
     !ids(r.scope.slideIds) ||
     !r.scope.slideIds.includes(r.oldSlideId) ||
     !r.scope.slideIds.every((slideId) => r.beforeSlideIds.includes(slideId)) ||
-    !r.backup ||
-    typeof r.backup !== 'object' ||
-    Array.isArray(r.backup) ||
-    Object.keys(r.backup).length !== 3 ||
-    !id(r.backup.backupId) ||
-    !digest(r.backup.sha256) ||
-    !Number.isSafeInteger(r.backup.sizeBytes) ||
-    r.backup.sizeBytes < 1 ||
-    r.backup.sizeBytes > 100 * 1024 * 1024 ||
+    !validExistingPageBackupMetadata(r.backup) ||
     ![
       'pending',
       'inserted',
@@ -144,6 +156,17 @@ export function validatePresentationExistingPageChange(
       'restore_inserted',
       'undone',
     ].includes(r.state)
+  )
+    return false
+  if (
+    r.sourceBackup !== undefined &&
+    (!validExistingPageBackupMetadata(r.sourceBackup) ||
+      r.sourceBackup.backupId === r.backup.backupId)
+  )
+    return false
+  if (
+    r.reapplies !== undefined &&
+    (!id(r.reapplies) || r.reapplies === r.changeId || !r.sourceBackup)
   )
     return false
   if (
@@ -170,7 +193,7 @@ export function validatePresentationExistingPageChange(
       !id(r.restores.sourceChangeId) ||
       !id(r.restores.originalBackupId) ||
       !hostId(r.restores.sourceHostSlideId) ||
-      r.restores.sourceHostSlideId !== r.oldSlideId ||
+      (r.restores.sourceHostSlideId !== r.oldSlideId && r.reapplies === undefined) ||
       !digest(r.restores.originalPackageDigest) ||
       r.restores.originalPackageDigest !== r.replacementPackageDigest ||
       r.pictureTarget !== undefined)
