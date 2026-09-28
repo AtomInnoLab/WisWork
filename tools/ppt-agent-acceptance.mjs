@@ -9,6 +9,31 @@ export const CASE_IDS = Array.from(
 const digest = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const nonempty = (value) => typeof value === 'string' && value.trim().length > 0
 const nonnegative = (value) => Number.isSafeInteger(value) && value >= 0
+const RATIO_KEYS = [
+  'first_two_pages_style_revisions',
+  'first_round_visual_passes',
+  'native_editable_objects',
+  'critical_facts_sourced',
+  'critical_claims_traced',
+  'citations_accurate',
+  'unsupported_factual_claims',
+  'timely_numeric_claims',
+  'reproducible_calculations',
+  'successful_recoveries',
+  'prepared_images',
+  'user_interruptions',
+  'taskpane_recoveries',
+  'pairing_first_try',
+  'manual_changes_preserved',
+]
+const COUNTER_KEYS = [
+  'manual_correction_pages',
+  'duplicate_writes',
+  'screenshot_failures',
+  'image_failures',
+  'confidentiality_violations',
+  'cross_document_writes',
+]
 const timestamp = (value) =>
   typeof value === 'string' &&
   /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) &&
@@ -19,23 +44,32 @@ function validateMeasurements(value) {
   if (value === undefined) return
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('acceptance_measurements_invalid')
-  const keys = [
-    'started_at',
-    'first_real_page_at',
-    'finished_at',
-    'manual_correction_pages',
-    'duplicate_writes',
-    'screenshot_failures',
-    'image_failures',
-  ]
+  const keys = ['started_at', 'first_real_page_at', 'finished_at', ...COUNTER_KEYS, 'ratios']
   if (Object.keys(value).some((key) => !keys.includes(key)))
     throw new Error('acceptance_measurements_invalid')
   for (const key of keys.slice(0, 3))
     if (value[key] !== undefined && !timestamp(value[key]))
       throw new Error('acceptance_measurements_invalid')
-  for (const key of keys.slice(3))
-    if (value[key] !== undefined && !nonnegative(value[key]))
+  for (const key of COUNTER_KEYS)
+    if (value[key] !== undefined && (!nonnegative(value[key]) || value[key] > 1_000_000))
       throw new Error('acceptance_measurements_invalid')
+  if (value.ratios !== undefined) {
+    if (!value.ratios || typeof value.ratios !== 'object' || Array.isArray(value.ratios))
+      throw new Error('acceptance_measurements_invalid')
+    for (const [key, ratio] of Object.entries(value.ratios))
+      if (
+        !RATIO_KEYS.includes(key) ||
+        !ratio ||
+        typeof ratio !== 'object' ||
+        Array.isArray(ratio) ||
+        Object.keys(ratio).sort().join(',') !== 'denominator,numerator' ||
+        !nonnegative(ratio.numerator) ||
+        !nonnegative(ratio.denominator) ||
+        ratio.numerator > ratio.denominator ||
+        ratio.denominator > 1_000_000
+      )
+        throw new Error('acceptance_measurements_invalid')
+  }
   const { started_at: start, first_real_page_at: first, finished_at: finish } = value
   if ((first || finish) && !start) throw new Error('acceptance_measurements_invalid')
   if (first && first < start) throw new Error('acceptance_measurements_invalid')
@@ -47,12 +81,7 @@ function measurementSummary(latest) {
   const completed = latest.filter(Boolean)
   const ready = completed.length === CASE_IDS.length
   const counters = {}
-  for (const key of [
-    'manual_correction_pages',
-    'duplicate_writes',
-    'screenshot_failures',
-    'image_failures',
-  ]) {
+  for (const key of COUNTER_KEYS) {
     const values = completed.map((record) => record.measurements?.[key])
     counters[key] = {
       observed: values.filter((value) => value !== undefined).length,
@@ -62,19 +91,45 @@ function measurementSummary(latest) {
           : 'not_measured',
     }
   }
-  const durations = completed
-    .map((record) => record.measurements)
-    .filter((value) => value?.started_at && value?.finished_at)
-    .map((value) => Date.parse(value.finished_at) - Date.parse(value.started_at))
-    .sort((a, b) => a - b)
-  return {
-    durations: {
-      observed: durations.length,
+  const latency = (end) => {
+    const values = completed
+      .map((record) => record.measurements)
+      .filter((value) => value?.started_at && value?.[end])
+      .map((value) => Date.parse(value[end]) - Date.parse(value.started_at))
+      .sort((a, b) => a - b)
+    return {
+      observed: values.length,
       p95_ms:
-        ready && durations.length === CASE_IDS.length
-          ? durations[Math.ceil(0.95 * durations.length) - 1]
+        ready && values.length === CASE_IDS.length
+          ? values[Math.ceil(0.95 * values.length) - 1]
           : 'not_measured',
-    },
+    }
+  }
+  const ratios = {}
+  for (const key of RATIO_KEYS) {
+    const values = completed.map((record) => record.measurements?.ratios?.[key])
+    const observed = values.filter(Boolean).length
+    const complete = ready && observed === CASE_IDS.length
+    const numerator = complete
+      ? values.reduce((sum, value) => sum + value.numerator, 0)
+      : 'not_measured'
+    const denominator = complete
+      ? values.reduce((sum, value) => sum + value.denominator, 0)
+      : 'not_measured'
+    ratios[key] = {
+      observed,
+      numerator,
+      denominator,
+      rate:
+        complete && denominator > 0
+          ? `${Math.round((numerator / denominator) * 10_000) / 100}%`
+          : 'not_measured',
+    }
+  }
+  return {
+    durations: latency('finished_at'),
+    first_page_latency: latency('first_real_page_at'),
+    ratios,
     ...counters,
   }
 }
@@ -112,7 +167,9 @@ export function summarizePresentationAcceptance(records) {
         record.artifacts?.powerpoint_reopened !== true ||
         record.artifacts?.editable_after_reopen !== true ||
         record.restart_required !== false ||
-        record.p0_defects !== 0
+        record.p0_defects !== 0 ||
+        record.measurements?.confidentiality_violations !== 0 ||
+        record.measurements?.cross_document_writes !== 0
       )
         throw new Error('acceptance_pass_evidence_missing')
     }
@@ -124,6 +181,8 @@ export function summarizePresentationAcceptance(records) {
   const latestAttempts = []
   const cases = CASE_IDS.map((id) => {
     const entries = byCase.get(id).sort((a, b) => a.attempt_no - b.attempt_no)
+    if (entries.some((entry, index) => entry.attempt_no !== index + 1))
+      throw new Error('acceptance_attempt_gap')
     const latest = entries.at(-1)
     latestAttempts.push(latest)
     if (latest) executed += 1

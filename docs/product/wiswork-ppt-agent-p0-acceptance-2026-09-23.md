@@ -49,7 +49,7 @@
 
 ## 5. 结果记录模板与指标
 
-验收统计可使用 `node tools/ppt-agent-acceptance.mjs <records-directory>`。目录中每个 `.json` 文件必须是尝试记录数组；同一任务的 `attempt_no` 递增，先前失败记录保留。程序固定 20 项分母，只按每项最新尝试汇总；不足 20 项时完成率输出 `not_measured`，绝不将未执行等同失败。`passed` 记录需包含真实材料状态与清单、版本、身份、审阅人、PPTX SHA256、PowerPoint 保存重开及可编辑证据标记，且不能重启任务或留有 P0 缺陷。`rateThresholdMet` 只表示 16/20 数量门槛，不表示 P0 所有质量与功能条件均通过。程序只检查记录完整性，不替代审阅人对材料、截图、重开或事实的核验；测试中的合成记录也不计入真实任务结果。
+验收统计可使用 `node tools/ppt-agent-acceptance.mjs <records-directory>`。目录中每个 `.json` 文件必须是尝试记录数组；同一任务的 `attempt_no` 必须从 1 连续递增，先前失败记录保留，缺号会被拒绝。程序固定 20 项分母，只按每项最新尝试汇总；不足 20 项时完成率输出 `not_measured`，绝不将未执行等同失败。`passed` 记录需包含真实材料状态与清单、版本、身份、审阅人、PPTX SHA256、PowerPoint 保存重开及可编辑证据标记，且不能重启任务或留有 P0 缺陷。`rateThresholdMet` 只表示 16/20 数量门槛，不表示 P0 所有质量与功能条件均通过。程序只检查记录完整性，不替代审阅人对材料、截图、重开或事实的核验；测试中的合成记录也不计入真实任务结果。
 
 统计输入示例：`records/01.json` 内容为数组，失败/阻塞记录也用相同的 `case_id`、`attempt_id`、`attempt_no`、`outcome` 字段，`outcome` 取 `passed`、`failed` 或 `blocked`。通过记录还须填写以下字段；示例值只说明格式，不是验收证据：
 
@@ -74,7 +74,13 @@
       "manual_correction_pages": 0,
       "duplicate_writes": 0,
       "screenshot_failures": 0,
-      "image_failures": 0
+      "image_failures": 0,
+      "confidentiality_violations": 0,
+      "cross_document_writes": 0,
+      "ratios": {
+        "native_editable_objects": { "numerator": 42, "denominator": 44 },
+        "critical_claims_traced": { "numerator": 7, "denominator": 8 }
+      }
     },
     "artifacts": {
       "pptx_sha256": "填写真实文件的 64 位小写 SHA256",
@@ -85,7 +91,29 @@
 ]
 ```
 
-`measurements` 为可选的现场测量记录。时间使用 UTC ISO 毫秒格式，计数为非负整数；首次真实页面和完成时间不得早于开始时间。缺失字段代表未测量，**不能用 0 代替缺失**。统计工具对每项只使用最新一次尝试，分别报告每种测量的样本覆盖数；仅当固定 20 项均已执行、且该测量均已填写时，才输出总计或完成耗时 P95，否则输出 `not_measured`。这些数值是记录汇总，不验证现场录屏或诊断的真实性；需将原始时间线和故障回执一并归档。
+`measurements` 为可选的现场测量记录，但 `passed` 必须明确记录 `confidentiality_violations: 0` 与 `cross_document_writes: 0`；缺失不等于零。时间使用 UTC ISO 毫秒格式，计数为不超过 1,000,000 的非负整数；首次真实页面和完成时间不得早于开始时间。缺失字段代表未测量，**不能用 0 代替缺失**。统计工具对每项只使用最新一次尝试，分别报告每种测量的样本覆盖数；仅当固定 20 项均已执行、且该测量均已填写时，才输出总计、完成耗时或首张真实页耗时 P95，否则输出 `not_measured`。这些数值是记录汇总，不验证现场录屏或诊断的真实性；需将原始时间线和故障回执一并归档。
+
+§17 质量指标可写入 `measurements.ratios`，每项填 `{ "numerator": 已观察到的符合/发生数, "denominator": 已检查的机会数 }`。允许 `0/0` 表示该任务确实没有适用对象；缺项表示没有测量。汇总仅在 20 项最新尝试全部填写该指标且总分母大于零时给出比例，同时保留原始分子、分母与覆盖数。可用键如下：
+
+| 键                                | 分子 / 分母                                       |
+| --------------------------------- | ------------------------------------------------- |
+| `first_two_pages_style_revisions` | 前两页触发样式修订的任务 / 已检查任务             |
+| `first_round_visual_passes`       | 首轮视觉通过页 / 已审查页                         |
+| `native_editable_objects`         | 原生可编辑目标对象 / 已检查目标对象               |
+| `critical_facts_sourced`          | 有来源的关键事实 / 已检查关键事实                 |
+| `critical_claims_traced`          | 可定位原文、版本和页面的关键主张 / 已检查关键主张 |
+| `citations_accurate`              | 与原文、页码及归因一致的引用 / 已检查引用         |
+| `unsupported_factual_claims`      | 未标注且缺充分证据的事实主张 / 已检查事实主张     |
+| `timely_numeric_claims`           | 满足 as-of 与报告期的数值 / 已检查数值            |
+| `reproducible_calculations`       | 公式、输入、单位和币种可复算的计算 / 已检查计算   |
+| `successful_recoveries`           | 中断后成功恢复并完成的任务 / 已检查中断任务       |
+| `prepared_images`                 | 写页前可用的图片 / 已计划使用的图片               |
+| `user_interruptions`              | 因理解或信任问题停止的任务 / 已检查任务           |
+| `taskpane_recoveries`             | 重开或断线后恢复原任务 / 已检查恢复尝试           |
+| `pairing_first_try`               | 正确验证码首次配对成功 / 已检查配对尝试           |
+| `manual_changes_preserved`        | 续跑后保留的用户修改 / 已检查用户修改             |
+
+其中样式修订、无依据主张和用户中断率以越低越好；其余以越高越好。填写比例前应保留审阅清单和诊断证据，统计工具不替代事实核验。
 
 每项任务单独创建记录，未执行字段填“待执行”，不能填推测值：
 
