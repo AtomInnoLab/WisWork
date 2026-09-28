@@ -148,24 +148,36 @@ export function createOfficeMessagesProxy(options: {
   })
   return async ({ body, signal }) => {
     const outboundBody = JSON.stringify(body)
-    const auditId = await options.audit?.begin(outboundBody, WISWORK_MESSAGES_URL)
-    let completionAttempted = false
     try {
-      const upstream = await options.fetchWithAuth((accessToken) =>
-        doFetch(WISWORK_MESSAGES_URL, {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${accessToken}`,
-            'content-type': 'application/json',
-            'x-req-location': 'sg',
-          },
-          body: outboundBody,
-          signal,
-        }),
-      )
+      const upstream = await options.fetchWithAuth(async (accessToken) => {
+        const auditId = await options.audit?.begin(outboundBody, WISWORK_MESSAGES_URL)
+        let completionAttempted = false
+        try {
+          const response = await doFetch(WISWORK_MESSAGES_URL, {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${accessToken}`,
+              'content-type': 'application/json',
+              'x-req-location': 'sg',
+            },
+            body: outboundBody,
+            signal,
+          })
+          completionAttempted = true
+          if (auditId)
+            await options.audit!.finish(
+              auditId,
+              response.status === 401 ? 'auth_required' : 'response_received',
+              response.status === 401 ? undefined : response.status,
+            )
+          return response
+        } catch (error) {
+          if (auditId && !completionAttempted)
+            await options.audit!.finish(auditId, signal.aborted ? 'aborted' : 'failed')
+          throw error
+        }
+      })
       if (upstream.status === 401) throw new Error('auth_required')
-      completionAttempted = true
-      if (auditId) await options.audit!.finish(auditId, 'response_received', upstream.status)
       return {
         status: upstream.status,
         contentType: upstream.headers.get('content-type') ?? undefined,
@@ -174,15 +186,6 @@ export function createOfficeMessagesProxy(options: {
     } catch (error) {
       if (error instanceof Error && error.message === 'auth_required')
         options.onTerminalAuthLoss?.()
-      if (auditId && !completionAttempted)
-        await options.audit!.finish(
-          auditId,
-          error instanceof Error && error.message === 'auth_required'
-            ? 'auth_required'
-            : signal.aborted
-              ? 'aborted'
-              : 'failed',
-        )
       throw error
     }
   }

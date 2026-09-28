@@ -13,7 +13,7 @@
 
 诊断回归覆盖正文、工具额外字段和错误文本不会进入默认复制内容或远程事件。默认“复制诊断信息”也会移除全部文档、会话、项目、页面和 Tool Call 关联 ID；内存快照仍保留定位 ID，用户可单独选择“复制含定位 ID 的诊断”用于本机故障对照，并在分享前检查。**含 ID 的显式导出仍可能包含被误放入 ID 字段的机密值**；正式保密边界验收还须核查实际 ID 来源、所有导出通道及模型/Relay 的实际发送记录，不能把本回归视为“诊断绝不泄漏”的证明。
 
-PC 模型代理现将不含正文的发送回执写入 `userDataPath/office-outbound-audit.json`。本机可运行 `node scripts/office-outbound-audit-report.mjs <PC userDataPath>` 查看最近 50 条回执及各状态计数；`attempted` 表示发送前已落盘，`response_received` 仅表示收到 HTTP 响应，不能解释成模型流已完成。回执记录固定目标、时间、请求字节数和 SHA256，不保存正文、令牌、项目 ID 或附件。该文件仍须按项目权限管理；无项目关联或对照原请求时，摘要和发送时点**不能证明某个禁止字段没有进入模型请求**。
+PC 模型代理现将不含正文的发送回执写入 `userDataPath/office-outbound-audit.json`。本机可运行 `node scripts/office-outbound-audit-report.mjs <PC userDataPath>` 查看最近 50 条回执及各状态计数；每次实际 HTTP 尝试单独记录，令牌刷新产生第二次请求时会有第二条。`attempted` 表示发送前已落盘，`response_received` 仅表示收到 HTTP 响应，不能解释成模型流已完成。回执记录固定目标、时间、请求字节数和 SHA256，不保存正文、令牌、项目 ID 或附件。该文件仍须按项目权限管理；无项目关联或对照原请求时，摘要和发送时点**不能证明某个禁止字段没有进入模型请求**。
 
 ## 固定任务提示
 

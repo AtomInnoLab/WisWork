@@ -82,7 +82,11 @@ it('records terminal authentication loss and revokes the bridge capability', asy
   roots.push(userDataPath)
   const revoked = vi.fn()
   const proxy = createOfficeMessagesProxy({
-    fetchWithAuth: async () => new Response('', { status: 401 }),
+    fetchWithAuth: async (request) => {
+      await request('expired-token')
+      return request('refreshed-token')
+    },
+    fetch: async () => new Response('', { status: 401 }),
     onTerminalAuthLoss: revoked,
     audit: createOfficeOutboundAudit({ userDataPath }),
   })
@@ -92,6 +96,30 @@ it('records terminal authentication loss and revokes the bridge capability', asy
   expect(revoked).toHaveBeenCalledOnce()
   expect(await createOfficeOutboundAudit({ userDataPath }).list()).toMatchObject([
     { state: 'auth_required', destination: WISWORK_MESSAGES_URL },
+    { state: 'auth_required', destination: WISWORK_MESSAGES_URL },
+  ])
+})
+
+it('records both actual HTTP attempts when token refresh retries a 401', async () => {
+  const userDataPath = await mkdtemp(join(tmpdir(), 'office-outbound-audit-'))
+  roots.push(userDataPath)
+  let attempts = 0
+  const proxy = createOfficeMessagesProxy({
+    fetchWithAuth: async (request) => {
+      let response = await request('expired-token')
+      if (response.status === 401) response = await request('fresh-token')
+      return response
+    },
+    fetch: async () => new Response('', { status: ++attempts === 1 ? 401 : 200 }),
+    audit: createOfficeOutboundAudit({ userDataPath }),
+  })
+  expect(
+    (await proxy({ body: { messages: [] }, signal: new AbortController().signal })).status,
+  ).toBe(200)
+  expect(attempts).toBe(2)
+  expect(await createOfficeOutboundAudit({ userDataPath }).list()).toMatchObject([
+    { state: 'auth_required' },
+    { state: 'response_received', status: 200 },
   ])
 })
 
