@@ -1,6 +1,8 @@
 import PptxGenJS from 'pptxgenjs'
 import JSZip from 'jszip'
-import { XMLParser } from 'fast-xml-parser'
+import { XMLParser, XMLValidator } from 'fast-xml-parser'
+import { relsPathFor, resolveTarget } from './zip'
+import { parseChartXml } from './chart'
 import {
   inspectPresentationGeometry,
   parsePresentationDeck,
@@ -9,7 +11,221 @@ import {
   presentationSlideSourceLabels,
   type PresentationInlineAsset,
   type PresentationCompileReport,
+  type PresentationDeck,
 } from './presentation'
+
+type XmlNode = Record<string, any>
+const xmlItems = (value: unknown): XmlNode[] =>
+  value === undefined ? [] : Array.isArray(value) ? value : [value as XmlNode]
+
+function xmlText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return value.map(xmlText).join('')
+  if (!value || typeof value !== 'object') return ''
+  return Object.entries(value)
+    .map(([key, child]) =>
+      key === 'a:t' ? xmlText(child) : key.startsWith('@_') ? '' : xmlText(child),
+    )
+    .join('')
+}
+
+/** Verify the generated OOXML has the promised native objects before reporting structure passed. */
+export async function verifyCompiledPresentationStructure(
+  zip: JSZip,
+  deck: PresentationDeck,
+): Promise<void> {
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    parseTagValue: false,
+    trimValues: false,
+  })
+  const verifiedImages = new Set<string>()
+  for (const [index, ir] of deck.slides.entries()) {
+    const slidePath = `ppt/slides/slide${index + 1}.xml`
+    const file = zip.file(slidePath)
+    if (!file) throw new Error('presentation_compile:structure_mismatch')
+    const xml = await file.async('string')
+    if (
+      new TextEncoder().encode(xml).byteLength > 8 * 1024 * 1024 ||
+      XMLValidator.validate(xml) !== true
+    )
+      throw new Error('presentation_compile:structure_mismatch')
+    const root = parser.parse(xml) as XmlNode
+    const tree = root['p:sld']?.['p:cSld']?.['p:spTree'] as XmlNode | undefined
+    if (!tree || tree['p:grpSp'] || tree['p:cxnSp'])
+      throw new Error('presentation_compile:structure_mismatch')
+    const expected = new Map(ir.elements.map((element) => [element.id, element]))
+    const sourceLabels = presentationSlideSourceLabels(ir, deck.claims)
+    if (sourceLabels.length)
+      expected.set('source-attribution', {
+        kind: 'text',
+        id: 'source-attribution',
+        x: 0.5,
+        y: 7.05,
+        w: 12.3,
+        h: 0.3,
+        text: sourceLabels.join('；').slice(0, 500),
+      })
+    const seen = new Set<string>()
+    let relationships:
+      Map<string, { type: string; target: string; targetMode?: string }> | undefined
+    const linkedPart = async (id: string, kind: 'image' | 'chart') => {
+      if (!relationships) {
+        const rels = zip.file(relsPathFor(slidePath))
+        if (!rels) throw new Error('presentation_compile:structure_mismatch')
+        const relsXml = await rels.async('string')
+        if (relsXml.length > 1024 * 1024 || XMLValidator.validate(relsXml) !== true)
+          throw new Error('presentation_compile:structure_mismatch')
+        const nodes = xmlItems((parser.parse(relsXml) as XmlNode).Relationships?.Relationship)
+        relationships = new Map(
+          nodes.map((node) => [
+            node['@_Id'],
+            {
+              type: node['@_Type'],
+              target: node['@_Target'],
+              targetMode: node['@_TargetMode'],
+            },
+          ]),
+        )
+        if (relationships.size !== nodes.length)
+          throw new Error('presentation_compile:structure_mismatch')
+      }
+      const relation = relationships.get(id)
+      if (
+        !relation ||
+        typeof relation.type !== 'string' ||
+        !relation.type.endsWith(`/${kind}`) ||
+        typeof relation.target !== 'string' ||
+        relation.targetMode !== undefined
+      )
+        throw new Error('presentation_compile:structure_mismatch')
+      const target = resolveTarget(slidePath, relation.target)
+      if (!zip.file(target)) throw new Error('presentation_compile:structure_mismatch')
+      return target
+    }
+    for (const [tag, nv] of [
+      ['p:sp', 'p:nvSpPr'],
+      ['p:pic', 'p:nvPicPr'],
+      ['p:graphicFrame', 'p:nvGraphicFramePr'],
+    ] as const)
+      for (const object of xmlItems(tree[tag])) {
+        const name = object[nv]?.['p:cNvPr']?.['@_name']
+        const element = expected.get(name)
+        if (!element || seen.has(name)) throw new Error('presentation_compile:structure_mismatch')
+        seen.add(name)
+        const actualKind =
+          tag === 'p:pic'
+            ? 'image'
+            : tag === 'p:sp'
+              ? element.kind === 'text' && object['p:txBody']
+                ? 'text'
+                : 'shape'
+              : object['a:graphic']?.['a:graphicData']?.['a:tbl']
+                ? 'table'
+                : object['a:graphic']?.['a:graphicData']?.['c:chart']
+                  ? 'chart'
+                  : 'unknown'
+        if (actualKind !== element.kind) throw new Error('presentation_compile:structure_mismatch')
+        {
+          const transform =
+            tag === 'p:graphicFrame' ? object['p:xfrm'] : object['p:spPr']?.['a:xfrm']
+          const actual = [
+            transform?.['a:off']?.['@_x'],
+            transform?.['a:off']?.['@_y'],
+            transform?.['a:ext']?.['@_cx'],
+            transform?.['a:ext']?.['@_cy'],
+          ].map(Number)
+          let box = [element.x, element.y, element.w, element.h]
+          if (element.kind === 'image' && element.fit !== 'cover') {
+            const asset = deck.assets.find((item) => item.id === element.assetId)
+            if (!asset || !('base64' in asset))
+              throw new Error('presentation_compile:structure_mismatch')
+            const scale = Math.min(element.w / asset.width, element.h / asset.height)
+            const w = asset.width * scale
+            const h = asset.height * scale
+            box = [element.x + (element.w - w) / 2, element.y + (element.h - h) / 2, w, h]
+          }
+          const expectedBox = box.map((value) => value * 914400)
+          if (
+            actual.some(
+              (value, coordinate) =>
+                !Number.isFinite(value) || Math.abs(value - expectedBox[coordinate]!) > 19050,
+            )
+          )
+            throw new Error('presentation_compile:structure_mismatch')
+        }
+        if (
+          element.kind === 'shape' &&
+          object['p:spPr']?.['a:prstGeom']?.['@_prst'] !== element.shape
+        )
+          throw new Error('presentation_compile:structure_mismatch')
+        if (element.kind === 'text' && xmlText(object['p:txBody']) !== element.text)
+          throw new Error('presentation_compile:structure_mismatch')
+        if (element.kind === 'table') {
+          const rows = xmlItems(object['a:graphic']['a:graphicData']['a:tbl']['a:tr']).map((row) =>
+            xmlItems(row['a:tc']).map((cell) => xmlText(cell['a:txBody'])),
+          )
+          if (JSON.stringify(rows) !== JSON.stringify(element.rows))
+            throw new Error('presentation_compile:structure_mismatch')
+        }
+        if (element.kind === 'image') {
+          const id = object['p:blipFill']?.['a:blip']?.['@_r:embed']
+          if (typeof id !== 'string') throw new Error('presentation_compile:structure_mismatch')
+          const path = await linkedPart(id, 'image')
+          const asset = deck.assets.find((item) => item.id === element.assetId)
+          if (!asset || !('base64' in asset))
+            throw new Error('presentation_compile:structure_mismatch')
+          const key = `${asset.id}/${path}`
+          if (!verifiedImages.has(key)) {
+            if (
+              !Buffer.from(await zip.file(path)!.async('uint8array')).equals(
+                Buffer.from(asset.base64, 'base64'),
+              )
+            )
+              throw new Error('presentation_compile:structure_mismatch')
+            verifiedImages.add(key)
+          }
+        }
+        if (element.kind === 'chart') {
+          const id = object['a:graphic']['a:graphicData']['c:chart']?.['@_r:id']
+          if (typeof id !== 'string') throw new Error('presentation_compile:structure_mismatch')
+          const chartXml = await zip.file(await linkedPart(id, 'chart'))!.async('string')
+          if (chartXml.length > 2 * 1024 * 1024 || XMLValidator.validate(chartXml) !== true)
+            throw new Error('presentation_compile:structure_mismatch')
+          const chart = parseChartXml(chartXml)
+          const chartRoot = parser.parse(chartXml) as XmlNode
+          const plotArea = chartRoot['c:chartSpace']?.['c:chart']?.['c:plotArea'] as
+            XmlNode | undefined
+          const plotTag = `${element.chartType === 'bar' ? 'bar' : element.chartType}Chart`
+          const plots = xmlItems(plotArea?.[`c:${plotTag}`])
+          const seriesNodes = plots.flatMap((plot) => xmlItems(plot['c:ser']))
+          const categoriesMatch =
+            seriesNodes.length === element.series.length &&
+            seriesNodes.every((series) => {
+              const cat = series['c:cat'] as XmlNode | undefined
+              const cache =
+                cat?.['c:multiLvlStrRef']?.['c:multiLvlStrCache'] ??
+                cat?.['c:strRef']?.['c:strCache'] ??
+                cat?.['c:numRef']?.['c:numCache']
+              const points = xmlItems(cache?.['c:lvl']?.['c:pt'] ?? cache?.['c:pt'])
+              const actual = points.map((point) => String(point['c:v'] ?? ''))
+              return JSON.stringify(actual) === JSON.stringify(element.categories)
+            })
+          if (
+            chart?.kind !== element.chartType ||
+            !categoriesMatch ||
+            JSON.stringify(chart.categories) !== JSON.stringify(element.categories) ||
+            JSON.stringify(
+              chart.series.map((series) => ({ name: series.name, values: series.values })),
+            ) !== JSON.stringify(element.series)
+          )
+            throw new Error('presentation_compile:structure_mismatch')
+        }
+      }
+    if (seen.size !== expected.size) throw new Error('presentation_compile:structure_mismatch')
+  }
+}
 
 /** Validate encoded raster dimensions before passing bytes to the PPTX writer. No external I/O. */
 function imageData(asset: PresentationInlineAsset): string {
@@ -238,6 +454,7 @@ export async function compilePresentationDeck(
   })
   if (new Set(sourceSlideIds).size !== sourceSlideIds.length)
     throw new Error('presentation_compile:invalid_slide_ids')
+  await verifyCompiledPresentationStructure(zip, deck)
   return {
     bytes: output,
     sourceSlideIds,

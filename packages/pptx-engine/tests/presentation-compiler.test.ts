@@ -1,11 +1,129 @@
 import { describe, expect, it } from 'vitest'
 import JSZip from 'jszip'
+import { XMLParser } from 'fast-xml-parser'
+import { resolveTarget } from '../src/zip'
 import { openPptx } from '../src/index'
 import { parsePresentationDeck, inspectPresentationGeometry } from '../src/presentation'
-import { compilePresentationDeck } from '../src/presentation-compiler'
+import {
+  compilePresentationDeck,
+  verifyCompiledPresentationStructure,
+} from '../src/presentation-compiler'
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
 describe('presentation contract and compiler', () => {
+  it.each(['bar', 'line', 'pie'] as const)(
+    'postflights native %s chart caches from the shared SlideIR',
+    async (chartType) => {
+      const deck = benchmarkDeck()
+      const chart = deck.slides[6]!.elements[1]!
+      if (chart.kind !== 'chart') throw new Error('invalid fixture')
+      chart.chartType = chartType
+      await expect(compilePresentationDeck(deck)).resolves.toMatchObject({
+        report: { checks: { structure: 'passed' } },
+      })
+    },
+  )
+  it('rejects compiled packages with missing or changed native page objects', async () => {
+    const deck = benchmarkDeck()
+    const { bytes } = await compilePresentationDeck(deck)
+    const mutations: Array<{ slide: number; change: (xml: string) => string }> = [
+      { slide: 1, change: (xml) => xml.replace('<a:t>科研汇报</a:t>', '<a:t>标题被修改</a:t>') },
+      { slide: 6, change: (xml) => xml.replace('<a:t>120</a:t>', '<a:t>121</a:t>') },
+      { slide: 7, change: (xml) => xml.replace('<c:chart ', '<c:broken ') },
+      { slide: 1, change: (xml) => xml.replaceAll('x="914400"', 'x="1900000"') },
+      {
+        slide: 3,
+        change: (xml) =>
+          xml.replace(/(<p:pic[\s\S]*?<a:off x=")\d+/, (_, prefix: string) => `${prefix}1900000`),
+      },
+      { slide: 4, change: (xml) => xml.replace('prst="roundRect"', 'prst="ellipse"') },
+    ]
+    for (const { slide, change } of mutations) {
+      const zip = await JSZip.loadAsync(bytes)
+      const path = `ppt/slides/slide${slide}.xml`
+      const original = await zip.file(path)!.async('string')
+      const changed = change(original)
+      expect(changed).not.toBe(original)
+      zip.file(path, changed)
+      await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+        'presentation_compile:structure_mismatch',
+      )
+    }
+    const missing = await JSZip.loadAsync(bytes)
+    missing.remove('ppt/slides/slide3.xml')
+    await expect(verifyCompiledPresentationStructure(missing, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+    for (const [slide, kind] of [
+      [3, 'image'],
+      [7, 'chart'],
+    ] as const) {
+      const zip = await JSZip.loadAsync(bytes)
+      const path = `ppt/slides/_rels/slide${slide}.xml.rels`
+      const original = await zip.file(path)!.async('string')
+      const rels = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' }).parse(
+        original,
+      ).Relationships.Relationship
+      const relation = (Array.isArray(rels) ? rels : [rels]).find((entry) =>
+        entry['@_Type']?.endsWith(`/${kind}`),
+      )
+      expect(relation).toBeDefined()
+      const changed = original.replace(
+        `Target="${relation['@_Target']}"`,
+        'Target="../missing.bin"',
+      )
+      expect(changed).not.toBe(original)
+      zip.file(path, changed)
+      await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+        'presentation_compile:structure_mismatch',
+      )
+    }
+    const wrongChart = await JSZip.loadAsync(bytes)
+    const chartPath = Object.keys(wrongChart.files).find((name) =>
+      /^ppt\/charts\/chart\d+\.xml$/.test(name),
+    )!
+    const chartXml = await wrongChart.file(chartPath)!.async('string')
+    const alteredChart = chartXml.replace('<c:v>120</c:v>', '<c:v>121</c:v>')
+    expect(alteredChart).not.toBe(chartXml)
+    wrongChart.file(chartPath, alteredChart)
+    await expect(verifyCompiledPresentationStructure(wrongChart, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+    const wrongImage = await JSZip.loadAsync(bytes)
+    const imageRelsXml = await wrongImage.file('ppt/slides/_rels/slide3.xml.rels')!.async('string')
+    const imageRelations = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: '@_',
+    }).parse(imageRelsXml).Relationships.Relationship
+    const imageRelation = (Array.isArray(imageRelations) ? imageRelations : [imageRelations]).find(
+      (entry) => entry['@_Type']?.endsWith('/image'),
+    )
+    const imagePath = resolveTarget('ppt/slides/slide3.xml', imageRelation['@_Target'])
+    wrongImage.file(imagePath, new Uint8Array([1, 2, 3]))
+    await expect(verifyCompiledPresentationStructure(wrongImage, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+  })
+  it('checks category caches for every chart series', async () => {
+    const deck = benchmarkDeck()
+    const chart = deck.slides[6]!.elements[1]!
+    if (chart.kind !== 'chart') throw new Error('invalid fixture')
+    chart.series.push({ name: '第二组', values: [100, 80] })
+    const { bytes } = await compilePresentationDeck(deck)
+    const zip = await JSZip.loadAsync(bytes)
+    const path = Object.keys(zip.files).find((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name))!
+    const xml = await zip.file(path)!.async('string')
+    let cacheNumber = 0
+    const changed = xml.replace(/<c:multiLvlStrCache>[\s\S]*?<\/c:multiLvlStrCache>/g, (cache) =>
+      ++cacheNumber === 2 ? cache.replace('<c:v>甲</c:v>', '<c:v>错误分类</c:v>') : cache,
+    )
+    expect(cacheNumber).toBe(2)
+    expect(changed).not.toBe(xml)
+    zip.file(path, changed)
+    await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+  })
   it('compiles eight Chinese slides to native editable objects and preserves attribution', async () => {
     const { bytes, report } = await compilePresentationDeck(benchmarkDeck())
     const opened = await openPptx(bytes)
@@ -17,7 +135,9 @@ describe('presentation contract and compiler', () => {
     expect(await zip.file('ppt/slides/slide1.xml')!.async('string')).toContain('科研汇报')
     expect(await zip.file('ppt/notesSlides/notesSlide1.xml')!.async('string')).toContain('研究报告')
     expect(await zip.file('ppt/slides/slide6.xml')!.async('string')).toContain('<a:tbl>')
-    expect(await zip.file('ppt/charts/chart1.xml')!.async('string')).toContain('120')
+    const chart = Object.keys(zip.files).find((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name))
+    expect(chart).toBeDefined()
+    expect(await zip.file(chart!)!.async('string')).toContain('120')
     expect(Object.keys(zip.files).some((name) => name.startsWith('ppt/media/image'))).toBe(true)
     expect(report.geometry).toEqual([])
     expect(opened.deck.slides[2]!.elements.some((el) => el.type === 'picture')).toBe(true)

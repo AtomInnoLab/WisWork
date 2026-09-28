@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import JSZip from 'jszip'
+import { openPptx } from '../src/index'
 import { compilePresentationDeck } from '../src/presentation-compiler'
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
@@ -56,6 +57,25 @@ it.skipIf(!sofficeAvailable)(
       expect(
         Object.keys(reopened.files).some((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name)),
       ).toBe(true)
+      const original = benchmarkDeck()
+      const parsed = (await openPptx(readFileSync(join(outputDirectory, 'benchmark.pptx')))).deck
+      expect(parsed.slides).toHaveLength(original.slides.length)
+      for (const [index, slide] of parsed.slides.entries()) {
+        expect(slide.background).toEqual({ type: 'solid', color: `#${original.style.background}` })
+        const title = slide.elements.find(
+          (element) =>
+            element.type === 'shape' &&
+            element.text?.paragraphs.some((paragraph) =>
+              paragraph.runs.some((run) => run.text === original.slides[index]!.title),
+            ),
+        )
+        expect(title?.type).toBe('shape')
+        if (title?.type !== 'shape') continue
+        const run = title.text?.paragraphs[0]?.runs[0]
+        expect(run?.fontFamily).toBe(original.style.fontFace)
+        expect(run?.fontSize).toBe(32)
+        expect(run?.color?.toUpperCase()).toBe(`#${original.style.textColor}`)
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
