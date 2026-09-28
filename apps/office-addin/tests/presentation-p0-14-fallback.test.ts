@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createServer } from 'node:http'
 import { afterEach, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
 import { createPresentationAttachmentSkill } from '../src/skills/powerpoint/presentation-attachments.js'
@@ -14,6 +15,75 @@ import type { PresentationDeck } from '../../../packages/pptx-engine/src/present
 const roots: string[] = []
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+})
+
+it('recovers from a real controlled HTTP timeout through the second image source', async () => {
+  const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-p0-14-http-'))
+  roots.push(userDataPath)
+  const image = readFileSync(
+    new URL(
+      '../../../docs/product/ppt-benchmark-materials/PPT-P0-13/images/schematic-07.png',
+      import.meta.url,
+    ),
+  )
+  const paths: string[] = []
+  const server = createServer((request, response) => {
+    paths.push(request.url ?? '')
+    if (request.url === '/timeout.png') return
+    response.writeHead(200, { 'Content-Type': 'image/png' })
+    response.end(image)
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('test_server_unavailable')
+  const originalTimeout = AbortSignal.timeout
+  const timeout = vi
+    .spyOn(AbortSignal, 'timeout')
+    .mockImplementation((ms) => originalTimeout(Math.min(ms, 250)))
+  try {
+    const failed = 'https://93.184.216.34/timeout.png'
+    const healthy = 'https://93.184.216.34/owned-illustration.png'
+    const fetchImage = vi.fn((url: string, signal: AbortSignal) =>
+      fetch(`http://127.0.0.1:${address.port}${new URL(url).pathname}`, { signal }),
+    )
+    const attachments = createPresentationAttachmentService({
+      userDataPath,
+      fetchImage,
+      normalizeImage: async () => ({ bytes: image, width: 960, height: 540 }),
+    })
+    const skill = createPresentationAttachmentSkill({
+      available: () => true,
+      remoteImagesAvailable: () => true,
+      request: async (body, signal) => {
+        try {
+          return new Response(
+            JSON.stringify(
+              await attachments(
+                body as Record<string, unknown>,
+                signal ?? new AbortController().signal,
+              ),
+            ),
+          )
+        } catch (error) {
+          return new Response(JSON.stringify({ error: (error as Error).message }))
+        }
+      },
+      documentId: async () => 'p0-14-http-document',
+      vfs: new InMemoryVfs(),
+    })
+    const imported = await skill.importUrls([failed, healthy])
+    expect(imported).toMatchObject({ status: 'ready', kind: 'image', source: healthy })
+    expect(paths).toEqual(['/timeout.png', '/owned-illustration.png'])
+    expect(fetchImage).toHaveBeenCalledTimes(2)
+    expect((await skill.importUrls([healthy])).attachmentId).toBe(imported.attachmentId)
+    expect(fetchImage).toHaveBeenCalledTimes(2)
+  } finally {
+    timeout.mockRestore()
+    server.closeAllConnections()
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    )
+  }
 })
 
 it('falls back after an image fetch failure, reuses the durable cache, and compiles eight pages', async () => {
