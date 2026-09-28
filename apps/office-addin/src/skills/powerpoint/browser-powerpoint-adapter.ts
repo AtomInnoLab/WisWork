@@ -1304,30 +1304,51 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     signal?: AbortSignal,
   ): Promise<{ slideId: string; base64: string; mime: 'image/png' }> {
     cancelled(signal)
-    return this.runScreenshot(
-      '1.8',
-      async (context) => {
-        const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-        const slide = await getSlide(context, slides, slideIndex, signal)
-        if (typeof slide.getImageAsBase64 !== 'function')
-          throw Object.assign(new Error('office_api_unsupported'), {
-            code: 'office_screenshot_unavailable',
+    let targetSlideId: string | undefined
+    try {
+      return await this.runScreenshot(
+        '1.8',
+        async (context) => {
+          const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+          const slide = await getSlide(context, slides, slideIndex, signal)
+          const slideId = string(slide.id)
+          if (targetSlideId && targetSlideId !== slideId)
+            throw new Error('office_concurrent_change')
+          targetSlideId = slideId
+          if (typeof slide.getImageAsBase64 !== 'function')
+            throw Object.assign(new Error('office_api_unsupported'), {
+              code: 'office_screenshot_unavailable',
+            })
+          const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
+            width: 960,
           })
-        const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
-          width: 960,
-        })
-        await sync(context, signal)
-        if (
-          typeof image.value !== 'string' ||
-          typeof slide.id !== 'string' ||
-          !slide.id ||
-          slide.id.length > 256
-        )
-          throw new Error('office_read_failed')
-        return { slideId: slide.id, base64: image.value, mime: 'image/png' }
-      },
-      signal,
-    )
+          await sync(context, signal)
+          if (slide.id !== slideId) throw new Error('office_concurrent_change')
+          if (
+            typeof image.value !== 'string' ||
+            typeof slide.id !== 'string' ||
+            !slide.id ||
+            slide.id.length > 256
+          )
+            throw new Error('office_read_failed')
+          return { slideId, base64: image.value, mime: 'image/png' }
+        },
+        signal,
+      )
+    } catch (error) {
+      const code =
+        error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+      if (
+        !targetSlideId ||
+        !['office_screenshot_unavailable', 'ActivityLimitReached', 'Timeout'].includes(String(code))
+      )
+        throw error
+      const failure = error instanceof Error ? error : new Error(String(error))
+      throw Object.assign(new Error(failure.message, { cause: failure }), {
+        code,
+        targetSlideId,
+      })
+    }
   }
 
   async readSlideText(

@@ -403,7 +403,26 @@ describe('PowerPoint compatibility skill', () => {
       renderer: 'libreoffice',
       visualAvailableToModel: true,
     })
-    expect(screenshotFallback).toHaveBeenCalledWith(0, undefined)
+    expect(screenshotFallback).toHaveBeenCalledWith(0, undefined, undefined)
+    const boundFailure = Object.assign(new Error('busy'), {
+      code: 'Timeout',
+      targetSlideId: 'host-slide-1',
+    })
+    ;(fake.screenshotSlide as ReturnType<typeof vi.fn>).mockRejectedValueOnce(boundFailure)
+    await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    expect(screenshotFallback).toHaveBeenLastCalledWith(0, undefined, 'host-slide-1')
+    screenshotFallback.mockResolvedValueOnce({
+      slideId: 'different-page',
+      mime: 'image/png',
+      base64: png,
+    })
+    ;(fake.screenshotSlide as ReturnType<typeof vi.fn>).mockRejectedValueOnce(boundFailure)
+    await expect(
+      skill.executeTool(call('screenshot_slide', { slide_index: 0 })),
+    ).resolves.toMatchObject({
+      isError: true,
+      output: 'office_concurrent_change',
+    })
     screenshotFallback.mockRejectedValue(new Error('renderer_unavailable'))
     const waiting = await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
     expect(JSON.parse(waiting.output)).toEqual({ status: 'waiting_screenshot', slideIndex: 0 })

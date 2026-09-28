@@ -132,6 +132,37 @@ describe('exact imported PowerPoint page inspection', () => {
     expect(slides.getItemAt).toHaveBeenCalledTimes(2)
     expect(context.sync).toHaveBeenCalledTimes(5)
   })
+  it('binds an exhausted ordinary screenshot to its first page and rejects index drift', async () => {
+    const { adapter, context, slides, slide } = setup()
+    Object.assign(slides, { getCount: vi.fn(() => ({ value: 1 })) })
+    slides.getItemAt.mockImplementation(() => slide)
+    slide.getImageAsBase64.mockImplementation(() => {
+      throw Object.assign(new Error('busy'), { code: 'Timeout' })
+    })
+    await expect(adapter.screenshotSlide(0)).rejects.toMatchObject({
+      code: 'Timeout',
+      targetSlideId: 'host-page-25',
+    })
+    slide.getImageAsBase64.mockReset().mockImplementationOnce(() => {
+      slide.id = 'different-page'
+      throw Object.assign(new Error('busy'), { code: 'Timeout' })
+    })
+    await expect(adapter.screenshotSlide(0)).rejects.toThrow('office_concurrent_change')
+    slide.id = 'host-page-25'
+    ;(slide as { getImageAsBase64?: unknown }).getImageAsBase64 = undefined
+    await expect(adapter.screenshotSlide(0)).rejects.toMatchObject({
+      code: 'office_screenshot_unavailable',
+      targetSlideId: 'host-page-25',
+    })
+    slide.getImageAsBase64 = vi.fn(() => ({ value: png }))
+    context.sync
+      .mockImplementationOnce(async () => {})
+      .mockImplementationOnce(async () => {})
+      .mockImplementationOnce(async () => {
+        slide.id = 'different-page'
+      })
+    await expect(adapter.screenshotSlide(0)).rejects.toThrow('office_concurrent_change')
+  })
   it('reduces dense screenshots to the model image budget and rejects unbounded output', async () => {
     const { adapter, slide } = setup()
     const dense = new PNG({ width: 400, height: 200 })

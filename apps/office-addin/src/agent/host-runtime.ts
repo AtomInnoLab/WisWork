@@ -397,8 +397,10 @@ export function createOfficeHostRuntime(
         platform: options.platform ?? currentOfficePlatform(),
         screenshotFallback:
           powerPointAdapter && inspectQaPage
-            ? async (index, signal) => {
+            ? async (index, signal, expectedSlideId) => {
                 const before = await powerPointAdapter.exportSlidePackage(index, signal)
+                if (expectedSlideId && before.slideId !== expectedSlideId)
+                  throw new Error('office_concurrent_change')
                 const inspected = await inspectQaPage(before.slideId, signal)
                 const after = await powerPointAdapter.exportSlidePackage(index, signal)
                 if (

@@ -1385,6 +1385,7 @@ export function createPowerPointSkill(options: {
   screenshotFallback?(
     slideIndex: number,
     signal?: AbortSignal,
+    expectedSlideId?: string,
   ): Promise<{ slideId: string; base64: string; mime: 'image/png'; renderer?: 'libreoffice' }>
   chartSavepoint?: {
     documentId(): Promise<string>
@@ -1983,7 +1984,17 @@ export function createPowerPointSkill(options: {
             )
               throw error
             try {
-              result = await options.screenshotFallback(input.slide_index, signal)
+              const expectedSlideId =
+                error && typeof error === 'object'
+                  ? (error as { targetSlideId?: unknown }).targetSlideId
+                  : undefined
+              result = await options.screenshotFallback(
+                input.slide_index,
+                signal,
+                typeof expectedSlideId === 'string' ? expectedSlideId : undefined,
+              )
+              if (typeof expectedSlideId === 'string' && result.slideId !== expectedSlideId)
+                throw new Error('office_concurrent_change', { cause: error })
             } catch (fallbackError) {
               if (
                 signal?.aborted ||
