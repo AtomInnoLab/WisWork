@@ -128,6 +128,12 @@ The local HTTP bridge is rollback-only. It is never selected automatically. A co
 build must set `VITE_WISWORK_OFFICE_TRANSPORT=loopback` and configure the same bounded port list on
 Office and PC. Remove that flag to return to Relay mode.
 
+For a presentation cohort rollout, build with `VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT=0..100`
+(default `100`). The add-in consistently buckets each PowerPoint document identity; documents
+outside the cohort show an unavailable status before the Agent runtime starts. A new build changes
+the rollout percentage. Keep the old build and manifest for rollback. This controls only the
+PowerPoint Agent entry point; it does not certify a host or protocol combination.
+
 The new host/shared registries are enabled by default. Build with
 `VITE_WISWORK_OFFICE_HOST_SKILLS=0` to roll back to the legacy selection-only skill without
 changing the PC bridge, identity, manifest, or stored user data.

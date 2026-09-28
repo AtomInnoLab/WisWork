@@ -12,6 +12,8 @@
 
 构建版本探测、Manifest、能力协商分别解决静态资源、协议能力和会话入口的问题；三者不能互相替代。发布时应先部署支持 v2 的 Relay 和 PC，再发布 v2 Taskpane，并保留旧 Taskpane 的回滚包。`version.json`、`taskpane.html` 与其哈希资源需原子发布；真实 Win/Mac/Web 混合版本与端到端冒烟仍待执行。
 
+灰度构建可设置 `VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT=0..100`（默认 100）。Taskpane 按文稿身份稳定分桶；未命中的 PowerPoint 文稿在启动 Agent 前显示不可用状态。比例随新构建发布，回滚需要保留并切回旧构建及 Manifest。该开关只控制 PPT Agent 入口，不能代表健康采样、真实宿主兼容或部署后全链路冒烟已完成。
+
 发布预检命令（部署前先用构建产物执行，部署后再加 `--deployed 1`）：
 
 ```bash

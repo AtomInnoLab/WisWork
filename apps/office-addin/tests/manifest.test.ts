@@ -9,6 +9,8 @@ import {
   officeBuildId,
   officeCapabilityFlags,
   officeRemoteDiagnosticsEnabled,
+  officePresentationRolloutPercent,
+  presentationRolloutEnabled,
   renderDeploymentManifest,
 } from '../build-config.js'
 
@@ -119,6 +121,35 @@ describe('Office Add-in manifest and routes', () => {
     expect(
       deploymentConfig({ ...validEnv, VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS: 'true' }),
     ).toBeUndefined()
+  })
+
+  it('uses a validated, stable presentation rollout cohort', () => {
+    expect(officePresentationRolloutPercent({})).toBe(100)
+    expect(
+      officePresentationRolloutPercent({ VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT: '0' }),
+    ).toBe(0)
+    expect(
+      officePresentationRolloutPercent({ VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT: '25' }),
+    ).toBe(25)
+    for (const invalid of ['-1', '01', '100.0', '101', 'all']) {
+      expect(() =>
+        officePresentationRolloutPercent({ VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT: invalid }),
+      ).toThrow('invalid_presentation_rollout_percent')
+      expect(
+        deploymentConfig({ ...validEnv, VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT: invalid }),
+      ).toBeUndefined()
+    }
+    expect(presentationRolloutEnabled(undefined, 25)).toBe(false)
+    expect(presentationRolloutEnabled('deck-a', 0)).toBe(false)
+    expect(presentationRolloutEnabled('deck-a', 100)).toBe(true)
+    const first = presentationRolloutEnabled('deck-a', 25)
+    expect(presentationRolloutEnabled('deck-a', 25)).toBe(first)
+    expect(
+      Array.from({ length: 200 }, (_, index) => presentationRolloutEnabled(`deck-${index}`, 25)),
+    ).toContain(true)
+    expect(
+      Array.from({ length: 200 }, (_, index) => presentationRolloutEnabled(`deck-${index}`, 25)),
+    ).toContain(false)
   })
 
   it('uses a validated deploy build identifier instead of an uncorrelated unknown value', async () => {

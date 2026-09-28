@@ -50,6 +50,25 @@ export function officeRemoteDiagnosticsEnabled(env: BuildEnv): boolean {
   throw new Error('invalid_office_remote_diagnostics')
 }
 
+export function officePresentationRolloutPercent(env: BuildEnv): number {
+  const value = env.VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT
+  if (value === undefined || value === '') return 100
+  if (!/^(?:0|[1-9]\d?|100)$/.test(value)) throw new Error('invalid_presentation_rollout_percent')
+  return Number(value)
+}
+
+export function presentationRolloutEnabled(
+  documentId: string | undefined,
+  percent: number,
+): boolean {
+  if (percent === 100) return true
+  if (!documentId || percent === 0) return false
+  // Stable per presentation across reloads; no identifier is sent to the release server.
+  let hash = 2_166_136_261
+  for (const char of documentId) hash = Math.imul(hash ^ char.charCodeAt(0), 16_777_619)
+  return (hash >>> 0) % 100 < percent
+}
+
 export function officeBuildId(env: BuildEnv, fallback: string): string {
   const value = env.VITE_WISWORK_OFFICE_BUILD_ID || fallback
   if (!/^[A-Za-z0-9_.-]{3,96}$/.test(value)) throw new Error('invalid_office_build_id')
@@ -90,6 +109,7 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
     void officeWorkspaceMode(env)
     void officeCapabilityFlags(env)
     void officeRemoteDiagnosticsEnabled(env)
+    void officePresentationRolloutPercent(env)
     void officeBuildId(env, 'development')
   } catch {
     return undefined
