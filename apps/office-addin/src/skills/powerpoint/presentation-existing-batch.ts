@@ -439,5 +439,14 @@ export function validExistingBatchTransition(
       (after.state === 'undoing' && after.cursor === before.cursor - 1 && after.cursor > 0) ||
       (after.state === 'undone' && after.cursor === 0 && before.cursor === 1)
     )
+  if (before.state === 'undone')
+    return (
+      after.state === 'applying' &&
+      after.cursor === 0 &&
+      before.cursor === 0 &&
+      !!before.backups?.length &&
+      before.backupReleasedAt === undefined &&
+      after.reviews === undefined
+    )
   return false
 }

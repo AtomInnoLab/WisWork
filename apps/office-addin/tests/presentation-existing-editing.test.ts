@@ -91,6 +91,167 @@ it('applies and reverses two ordered native table cells with one durable batch',
   expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
   expect(f.binding().readExistingBatch(batch!.record.changeId)?.state).toBe('undone')
 })
+it('confirms reapplication of an undone batch and can undo it again after reopening', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_table_batch', {
+    baseline_id,
+    intent: 'Update two figures',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
+    ],
+  })
+  const change_id = JSON.parse(proposed.output).changeId as string
+  await f.confirm()
+  await f.call('undo_existing_presentation_batch', { change_id })
+  await f.confirm()
+  f.reopen()
+  const replay = await f.call('reapply_existing_presentation_batch', { change_id })
+  expect(replay.isError, replay.output).not.toBe(true)
+  expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
+  await f.confirm()
+  expect([f.tableText(), f.tableText2()]).toEqual(['after', 'after-2'])
+  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applied', cursor: 2 })
+  f.reopen()
+  const undo = await f.call('undo_existing_presentation_batch', { change_id })
+  expect(undo.isError, undo.output).not.toBe(true)
+  await f.confirm()
+  expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
+})
+it('refuses reapplication while its original page backup is unreadable or released', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_table_batch', {
+    baseline_id,
+    intent: 'Update two figures',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
+    ],
+  })
+  const change_id = JSON.parse(proposed.output).changeId as string
+  await f.confirm()
+  await f.call('undo_existing_presentation_batch', { change_id })
+  await f.confirm()
+  f.setBackupOffline(true)
+  const pending = await f.call('reapply_existing_presentation_batch', { change_id })
+  expect(pending.isError, pending.output).not.toBe(true)
+  await expect(f.confirm()).rejects.toThrow('presentation_existing_batch_backup_missing')
+  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'undone', cursor: 0 })
+  expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
+  f.setBackupOffline(false)
+  f.reopen()
+  const release = await f.call('release_existing_presentation_batch', { change_id })
+  expect(release.isError, release.output).not.toBe(true)
+  await f.confirm()
+  const rejected = await f.call('reapply_existing_presentation_batch', { change_id })
+  expect(rejected.output).toBe('presentation_existing_batch_state_invalid')
+})
+it('refuses reapplication after a target is changed to a third value', async () => {
+  const f = await fixture()
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_batch', {
+    baseline_id,
+    intent: 'Update title and placement',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      {
+        slide_id: 'slide',
+        shape_id: 'shape',
+        kind: 'geometry',
+        geometry: { ...f.geometry(), left: 30 },
+      },
+    ],
+  })
+  const change_id = JSON.parse(proposed.output).changeId as string
+  await f.confirm()
+  await f.call('undo_existing_presentation_batch', { change_id })
+  await f.confirm()
+  f.setText('manual')
+  const rejected = await f.call('reapply_existing_presentation_batch', { change_id })
+  expect(rejected.output).toBe('presentation_existing_batch_conflict')
+  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'undone', cursor: 0 })
+})
+it('does not reconstruct an accidentally missing original backup during reapplication', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_table_batch', {
+    baseline_id,
+    intent: 'Update two figures',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
+    ],
+  })
+  const change_id = JSON.parse(proposed.output).changeId as string
+  await f.confirm()
+  await f.call('undo_existing_presentation_batch', { change_id })
+  await f.confirm()
+  const backup_id = f.binding().readExistingBatch(change_id)!.backups![0]!.backupId
+  f.deleteBackup(backup_id)
+  const pending = await f.call('reapply_existing_presentation_batch', { change_id })
+  expect(pending.isError, pending.output).not.toBe(true)
+  await expect(f.confirm()).rejects.toThrow('presentation_existing_batch_backup_missing')
+  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'undone', cursor: 0 })
+  expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
+})
+it('recovers a reapplication whose first Office write succeeded but its receipt was lost', async () => {
+  const f = await fixture()
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_batch', {
+    baseline_id,
+    intent: 'Update title and placement',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      {
+        slide_id: 'slide',
+        shape_id: 'shape',
+        kind: 'geometry',
+        geometry: { ...f.geometry(), left: 30 },
+      },
+    ],
+  })
+  const change_id = JSON.parse(proposed.output).changeId as string
+  await f.confirm()
+  await f.call('undo_existing_presentation_batch', { change_id })
+  await f.confirm()
+  let failed = false
+  f.save.mockImplementation(async () => {
+    if (!failed && f.editText.mock.calls.length === 3) {
+      failed = true
+      throw new Error('receipt_failed')
+    }
+  })
+  await f.call('reapply_existing_presentation_batch', { change_id })
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applying', cursor: 0 })
+  expect(f.text()).toBe('after')
+  f.reopen()
+  const resumed = await f.call('resume_existing_presentation_batch', { change_id })
+  expect(resumed.isError, resumed.output).not.toBe(true)
+  await f.confirm()
+  expect(f.editText).toHaveBeenCalledTimes(3)
+  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applied', cursor: 2 })
+})
 it('resumes a table batch after one cell was durably written and the next write failed', async () => {
   const f = await fixture()
   f.setShapeType('Table')
@@ -816,6 +977,9 @@ async function fixture() {
     setBackupOffline: (value: boolean) => {
       backupOffline = value
     },
+    deleteBackup: (id: string) => {
+      backups.delete(id)
+    },
     setBackupQuota: (value: number) => {
       backupQuota = value
     },
@@ -1248,7 +1412,7 @@ it('applies and reverses an ordered text plus geometry batch through one durable
   const undoneRow = workbench
     .snapshot()
     .entries.find((entry) => entry.id === `existing_batch:${changeId}`)
-  expect(undoneRow?.actions).toEqual(['inspect', 'release'])
+  expect(undoneRow?.actions).toEqual(['inspect', 'reapply', 'release'])
   f.setTableText2('unrelated page content changed')
   const blockedRelease = await f.call('release_existing_presentation_batch', {
     change_id: changeId,

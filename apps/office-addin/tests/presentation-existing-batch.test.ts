@@ -107,6 +107,69 @@ it('allows one equivalent missing backup to be re-journaled only before any host
   )
 })
 
+it('reapplies an undone batch only with unchanged operation and backup identity', async () => {
+  const f = await fixture()
+  const backups = [
+    {
+      hostSlideId: 's1',
+      backupId: 'b1',
+      sha256: '1'.repeat(64),
+      sizeBytes: 100,
+      packageDigest: 'a'.repeat(64),
+    },
+    {
+      hostSlideId: 's2',
+      backupId: 'b2',
+      sha256: '2'.repeat(64),
+      sizeBytes: 100,
+      packageDigest: 'b'.repeat(64),
+    },
+  ]
+  const undone: PresentationExistingBatch = {
+    ...f.batch,
+    beforeSlideIds: ['s1', 's2'],
+    backups,
+    state: 'undone',
+    cursor: 0,
+    reviews: [
+      {
+        hostSlideId: 's1',
+        screenshotDigest: 'c'.repeat(64),
+        capturedAt: '2026-09-24T00:00:00.000Z',
+        reviewedAt: '2026-09-24T00:01:00.000Z',
+        status: 'pass',
+        notes: 'Checked',
+      },
+    ],
+  }
+  const replay: PresentationExistingBatch = { ...undone, state: 'applying', reviews: undefined }
+  expect(validExistingBatchTransition(undone, replay)).toBe(true)
+  expect(
+    validExistingBatchTransition(undone, {
+      ...replay,
+      backups: [{ ...backups[0]!, backupId: 'new' }, backups[1]!],
+    }),
+  ).toBe(false)
+  expect(
+    validExistingBatchTransition(undone, {
+      ...replay,
+      operations: [{ ...replay.operations[0]!, shapeId: 'changed' }, replay.operations[1]!],
+    }),
+  ).toBe(false)
+  expect(
+    validExistingBatchTransition(
+      { ...undone, backupReleasedAt: '2026-09-24T00:02:00.000Z' },
+      replay,
+    ),
+  ).toBe(false)
+  expect(
+    validExistingBatchTransition(
+      { ...undone, backups: undefined },
+      { ...replay, backups: undefined },
+    ),
+  ).toBe(false)
+})
+
 it('journals ordered forward and reverse progress across reopen', async () => {
   const f = await fixture()
   await f.binding.writeExistingBatch(f.batch, undefined)

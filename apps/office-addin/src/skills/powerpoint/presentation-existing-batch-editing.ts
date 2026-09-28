@@ -135,16 +135,18 @@ const tools: AgentToolDef[] = [
       additionalProperties: false,
     },
   },
-  ...(['inspect', 'resume', 'undo', 'release'] as const).map((action): AgentToolDef => ({
+  ...(['inspect', 'resume', 'undo', 'reapply', 'release'] as const).map((action): AgentToolDef => ({
     name: `${action}_existing_presentation_batch`,
     description:
       action === 'inspect'
         ? 'Read every saved target and classify batch recovery without writing.'
         : action === 'release'
           ? 'After a batch has been fully undone, propose releasing its original page package backups from the paired PC. Requires separate confirmation.'
-          : action === 'undo'
-            ? 'Propose confirmed undo of an applied or partially applied batch. Restore only verified written steps; ambiguous host values stop without replay.'
-            : 'Propose confirmed, stepwise batch recovery. Exact host values are checked before each write; ambiguous values stop without replay.',
+          : action === 'reapply'
+            ? 'Propose confirmed reapplication of an undone batch with readable original page backups. Recheck every target before stepwise writes.'
+            : action === 'undo'
+              ? 'Propose confirmed undo of an applied or partially applied batch. Restore only verified written steps; ambiguous host values stop without replay.'
+              : 'Propose confirmed, stepwise batch recovery. Exact host values are checked before each write; ambiguous values stop without replay.',
     inputSchema: {
       type: 'object',
       properties: { change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' } },
@@ -1044,6 +1046,11 @@ export function createPresentationExistingBatchEditingSkill(
           !['applying', 'undoing'].includes(record.state)
         )
           throw new Error('presentation_existing_batch_state_invalid')
+        if (
+          call.name === 'reapply_existing_presentation_batch' &&
+          (record.state !== 'undone' || !record.backups?.length || record.backupReleasedAt)
+        )
+          throw new Error('presentation_existing_batch_state_invalid')
         const reverse =
           call.name === 'undo_existing_presentation_batch' || record.state === 'undoing'
         const allowed = record.operations.every(
@@ -1103,6 +1110,10 @@ export function createPresentationExistingBatchEditingSkill(
             if (writeSignal?.aborted) throw new Error('cancelled')
             if (creating) await store(record)
             await ensureBackups(writeSignal)
+            if (call.name === 'reapply_existing_presentation_batch') {
+              const { reviews: _reviews, ...r } = record
+              await store({ ...r, state: 'applying' })
+            }
             if (call.name === 'undo_existing_presentation_batch') {
               // A completed Office write can lose its durable receipt. Include that
               // target in the reverse prefix before switching direction.
