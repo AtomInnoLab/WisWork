@@ -326,6 +326,28 @@ export async function verifyCompiledPresentationStructure(
           const plotTag = `${element.chartType === 'bar' ? 'bar' : element.chartType}Chart`
           const plots = xmlItems(plotArea?.[`c:${plotTag}`])
           const seriesNodes = plots.flatMap((plot) => xmlItems(plot['c:ser']))
+          const chartBody = chartRoot['c:chartSpace']?.['c:chart'] as XmlNode | undefined
+          const labels = [
+            plots[0]?.['c:dLbls'],
+            ...seriesNodes.map((series) => series['c:dLbls']),
+          ].filter((value) => value !== undefined)
+          const labelsMatch =
+            element.chartType === 'pie'
+              ? labels.length === 1 &&
+                xmlItems(labels[0]?.['c:dLbl']).length === element.categories.length &&
+                xmlItems(labels[0]?.['c:dLbl']).every(
+                  (label) => Number(label['c:showVal']?.['@_val']) === 1,
+                ) &&
+                Number(labels[0]?.['c:showCatName']?.['@_val']) === 1 &&
+                Number(labels[0]?.['c:showPercent']?.['@_val']) === 1
+              : labels.length > 0 &&
+                labels.every((value) => Number(value?.['c:showVal']?.['@_val']) === 1)
+          if (
+            (chartBody?.['c:legend'] !== undefined) !== element.series.length > 1 ||
+            plots.length !== 1 ||
+            !labelsMatch
+          )
+            throw new Error('presentation_compile:structure_mismatch')
           const categoriesMatch =
             seriesNodes.length === element.series.length &&
             seriesNodes.every((series) => {

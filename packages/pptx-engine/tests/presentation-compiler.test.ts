@@ -124,6 +124,54 @@ describe('presentation contract and compiler', () => {
       'presentation_compile:structure_mismatch',
     )
   })
+  it('rejects charts with missing visible values or an unexpected legend', async () => {
+    const deck = benchmarkDeck()
+    const { bytes } = await compilePresentationDeck(deck)
+    const zip = await JSZip.loadAsync(bytes)
+    const path = Object.keys(zip.files).find((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name))!
+    const original = await zip.file(path)!.async('string')
+    expect(original).toContain('<c:showVal val="1"')
+    zip.file(path, original.replace('<c:showVal val="1"', '<c:showVal val="0"'))
+    await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+    expect(original).not.toContain('<c:legend>')
+    zip.file(path, original.replace('</c:chart>', '<c:legend/></c:chart>'))
+    await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+    const chart = deck.slides[6]!.elements[1]!
+    if (chart.kind !== 'chart') throw new Error('invalid fixture')
+    chart.series.push({ name: '第二组', values: [100, 80] })
+    const multi = await compilePresentationDeck(deck)
+    const multiZip = await JSZip.loadAsync(multi.bytes)
+    const multiPath = Object.keys(multiZip.files).find((name) =>
+      /^ppt\/charts\/chart\d+\.xml$/.test(name),
+    )!
+    const multiXml = await multiZip.file(multiPath)!.async('string')
+    expect(multiXml).toContain('<c:legend>')
+    multiZip.file(multiPath, multiXml.replace(/<c:legend>[\s\S]*?<\/c:legend>/, ''))
+    await expect(verifyCompiledPresentationStructure(multiZip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+    chart.series.pop()
+    chart.chartType = 'pie'
+    const pie = await compilePresentationDeck(deck)
+    const pieZip = await JSZip.loadAsync(pie.bytes)
+    const piePath = Object.keys(pieZip.files).find((name) =>
+      /^ppt\/charts\/chart\d+\.xml$/.test(name),
+    )!
+    const pieXml = await pieZip.file(piePath)!.async('string')
+    const alteredPie = pieXml.replace(
+      /(<c:dLbl>[\s\S]*?<c:showVal val=")1"/,
+      (_, prefix: string) => `${prefix}0"`,
+    )
+    expect(alteredPie).not.toBe(pieXml)
+    pieZip.file(piePath, alteredPie)
+    await expect(verifyCompiledPresentationStructure(pieZip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+  })
   it('rejects changed image alt text and removed cover crop', async () => {
     const deck = benchmarkDeck()
     const image = deck.slides[2]!.elements.find((element) => element.kind === 'image')
