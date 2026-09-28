@@ -44,6 +44,32 @@ const PRESENTATION_STAGES: ReadonlyArray<readonly [RegExp, string]> = [
   [/^(?:edit|replace|restore|resume)_.*presentation_.*$|^list_presentation_changes$/, '页面修改'],
 ]
 
+export type PresentationStage =
+  | 'project_recovery'
+  | 'planning'
+  | 'production'
+  | 'import'
+  | 'review'
+  | 'evidence'
+  | 'sources'
+  | 'editing'
+
+const PRESENTATION_STAGE_KEYS: readonly PresentationStage[] = [
+  'project_recovery',
+  'planning',
+  'production',
+  'import',
+  'review',
+  'evidence',
+  'sources',
+  'editing',
+]
+
+export function acpPresentationStage(name: string): PresentationStage | undefined {
+  const index = PRESENTATION_STAGES.findIndex(([pattern]) => pattern.test(name))
+  return index < 0 ? undefined : PRESENTATION_STAGE_KEYS[index]
+}
+
 /** User-facing activity only. Project completion still comes from persisted receipts. */
 export function acpToolActivity(name: string, state: 'running' | 'complete' | 'error'): string {
   const stage = PRESENTATION_STAGES.find(([pattern]) => pattern.test(name))?.[1]

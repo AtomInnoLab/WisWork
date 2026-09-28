@@ -6,6 +6,7 @@ import {
 } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
 import { bindAuthLoss, createOfficeAgentSession } from '../src/agent/use-office-agent.js'
+import { createOfficeDiagnostics } from '../src/diagnostics/office-diagnostics.js'
 import type { ProposalDecision, StructuredProposal } from '../src/agent/proposal-controller.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 
@@ -1357,6 +1358,35 @@ describe('Office agent session', () => {
     })
     expect(JSON.stringify(session.snapshot())).not.toContain('alice')
     expect(JSON.stringify(session.snapshot())).not.toContain('secret')
+  })
+
+  it('attributes a run transport failure to the run rather than the last presentation page', async () => {
+    const harness = transportHarness()
+    const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+
+    session.send('Produce a deck')
+    await Promise.resolve()
+    diagnostics.setTool('run_presentation_production', {
+      project_id: 'project-1',
+      request_id: 'run-1',
+      page_id: 'page-3',
+    })
+    harness.callbacks().onError('transport_timeout')
+
+    const event = diagnostics.snapshot().events.at(-1)
+    expect(event).toMatchObject({
+      tool: 'agent_run',
+      phase: 'transport',
+      error_code: 'request_timeout',
+    })
+    expect(event).not.toHaveProperty('presentation_context')
+    expect(event).not.toHaveProperty('presentation_stage')
   })
 
   it('reports the bounded transport deadline as a retryable request timeout', async () => {

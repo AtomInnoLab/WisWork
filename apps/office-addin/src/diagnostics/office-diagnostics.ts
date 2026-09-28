@@ -1,4 +1,5 @@
 import type { OfficeHost } from '../office-document.js'
+import { acpPresentationStage, type PresentationStage } from '@wiswork/agent-harness'
 
 export const MAX_LOCAL_DIAGNOSTIC_EVENTS = 200
 export const MAX_DIAGNOSTIC_EVENT_BYTES = 4 * 1024
@@ -52,6 +53,7 @@ export interface OfficeDiagnosticEvent {
   office_error_name?: string
   office_error_location?: string
   verification_stage?: VerificationStage
+  presentation_stage?: PresentationStage
   duration_ms: number
   requirement_sets: Readonly<Record<string, boolean>>
   presentation_context?: Readonly<PresentationDiagnosticContext>
@@ -319,6 +321,7 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
         traceId = randomUUID()
       }
       const errorCode = stableError(input.errorCode)
+      const presentationStage = acpPresentationStage(tool)
       const event = freezeEvent({
         event_id: randomUUID(),
         trace_id: traceId,
@@ -331,6 +334,7 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
         outcome: outcome(errorCode),
         error_code: errorCode,
         ...officeIdentifiers(input.error),
+        ...(presentationStage ? { presentation_stage: presentationStage } : {}),
         duration_ms:
           Number.isFinite(input.durationMs) && input.durationMs! >= 0
             ? Math.min(600_000, Math.trunc(input.durationMs!))

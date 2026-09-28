@@ -577,13 +577,14 @@ export function createOfficeAgentSession(dependencies: {
         if (error === 'presentation_run_checkpoint_unavailable') activeRunId = undefined
         else finishCheckpoint()
         const safeError = safeRunError(error)
-        diagnose((diagnostics) =>
+        diagnose((diagnostics) => {
+          diagnostics.setTool('agent_run')
           diagnostics.record({
             phase: 'transport',
             errorCode: safeError.code,
             durationMs: Math.max(0, Date.now() - runStartedAt),
-          }),
-        )
+          })
+        })
         activeAssistantId = undefined
         append({
           id: eventId(),

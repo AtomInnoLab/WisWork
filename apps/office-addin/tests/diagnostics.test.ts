@@ -25,6 +25,7 @@ describe('Office safe diagnostics', () => {
       extra: 'private brief',
     } as never)
     expect(diagnostics.record({ phase: 'tool', errorCode: 'office_write_failed' })).toMatchObject({
+      presentation_stage: 'production',
       presentation_context: {
         project_id: 'project-1',
         request_id: 'run-1',
@@ -35,6 +36,7 @@ describe('Office safe diagnostics', () => {
     expect(diagnostics.exportJson()).toContain('"page_id": "page-3"')
     expect(JSON.stringify(sent)).not.toContain('presentation_context')
     expect(JSON.stringify(sent)).not.toContain('private brief')
+    expect(sent[0]).toMatchObject({ presentation_stage: 'production' })
     diagnostics.setTool('read_document', { page_id: 'secret page title' })
     expect(
       diagnostics.record({ phase: 'tool', errorCode: 'office_read_failed' }),
@@ -43,6 +45,7 @@ describe('Office safe diagnostics', () => {
     expect(
       diagnostics.record({ phase: 'run', errorCode: 'agent_run_completed' }),
     ).not.toHaveProperty('presentation_context')
+    expect(diagnostics.snapshot().events.at(-1)).not.toHaveProperty('presentation_stage')
   })
   it('records a bounded run completion without document content', () => {
     const sent: unknown[] = []
