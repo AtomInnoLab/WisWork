@@ -133,12 +133,25 @@ export function createPresentationEvidenceDeliverySkill(
           throw new Error('presentation_document_changed')
         check()
         if (call.name === names[2]) {
-          const prefix = `/home/user/presentation-evidence-${crypto.randomUUID()}`
-          const paths = [`${prefix}.json`, `${prefix}.md`]
+          const json = JSON.stringify(report, null, 2)
           const markdown = presentationDeliveryMarkdown(report)
+          const digest = Array.from(
+            new Uint8Array(
+              await crypto.subtle.digest(
+                'SHA-256',
+                new TextEncoder().encode(JSON.stringify([json, markdown])),
+              ),
+            ),
+            (byte) => byte.toString(16).padStart(2, '0'),
+          ).join('')
           check()
+          if ((await options.documentId()) !== documentId)
+            throw new Error('presentation_document_changed')
+          check()
+          const prefix = `/home/user/generated/${report.projectId}/${report.requestId}/evidence-${digest}`
+          const paths = [`${prefix}.json`, `${prefix}.md`]
           options.vfs.writeBatch([
-            [paths[0]!, JSON.stringify(report, null, 2)],
+            [paths[0]!, json],
             [paths[1]!, markdown],
           ])
           return {

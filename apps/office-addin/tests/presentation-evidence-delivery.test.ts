@@ -66,8 +66,33 @@ it('reads full evidence, validates identity, and atomically exports complete JSO
   const exported = await f.call('export_presentation_delivery_report', input)
   expect(exported.isError).toBeFalsy()
   const { paths } = JSON.parse(exported.output)
+  expect(paths).toEqual([
+    expect.stringMatching(
+      new RegExp(
+        `^/home/user/generated/${report.projectId}/${report.requestId}/evidence-[a-f0-9]{64}\\.json$`,
+      ),
+    ),
+    expect.stringMatching(
+      new RegExp(
+        `^/home/user/generated/${report.projectId}/${report.requestId}/evidence-[a-f0-9]{64}\\.md$`,
+      ),
+    ),
+  ])
   expect(JSON.parse(f.vfs.readText(paths[0]))).toEqual(report)
   expect(f.vfs.readText(paths[1])).toContain(report.requestId)
+  expect(
+    JSON.parse((await f.call('export_presentation_delivery_report', input)).output).paths,
+  ).toEqual(paths)
+  expect(f.vfs.list('/home/user')).toHaveLength(2)
+  const updated = structuredClone(report)
+  updated.pages[0]!.productionState = 'compiled'
+  f.request.mockResolvedValueOnce(new Response(JSON.stringify(updated)))
+  const changed = JSON.parse((await f.call('export_presentation_delivery_report', input)).output)
+    .paths as string[]
+  expect(changed[0]).not.toBe(paths[0])
+  expect(f.vfs.list('/home/user')).toHaveLength(4)
+  expect(JSON.parse(f.vfs.readText(paths[0]))).toEqual(report)
+  expect(JSON.parse(f.vfs.readText(changed[0]!))).toEqual(updated)
   expect((await f.call()).isError).toBe(true)
   f.documentId.mockResolvedValueOnce('d').mockResolvedValue('other')
   expect((await f.call(undefined, input)).output).toBe('presentation_document_changed')
