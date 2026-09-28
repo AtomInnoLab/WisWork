@@ -27,7 +27,7 @@ const roots: ReturnType<typeof createRoot>[] = []
 afterEach(async () => {
   for (const root of roots.splice(0)) await act(async () => root.unmount())
 })
-async function mount(snapshot: Snapshot, disabled = false) {
+async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () => void) {
   const listeners = new Set<() => void>()
   const controller: PresentationProjectController = {
     pdfAvailable: vi.fn(() => false),
@@ -62,7 +62,9 @@ async function mount(snapshot: Snapshot, disabled = false) {
   const root = createRoot(container)
   roots.push(root)
   await act(async () =>
-    root.render(React.createElement(PresentationProjectCard, { controller, disabled })),
+    root.render(
+      React.createElement(PresentationProjectCard, { controller, disabled, onEndFrontend }),
+    ),
   )
   const button = (label: string) =>
     Array.from(container.querySelectorAll('button')).find((item) => item.textContent === label)!
@@ -110,18 +112,34 @@ describe('presentation project recovery card', () => {
     })
     expect(view.container.textContent).toContain('附件不可读或来源摘录未匹配')
     expect(view.container.textContent).toContain('修订计划摘录后启动新任务')
-    await view.update({ phase: 'idle', project: { ...project, sourcePreparation: [{ sourceId: plan.sources[0]!.id, attachmentId, status: 'excerpt_mismatch' }] } })
+    await view.update({
+      phase: 'idle',
+      project: {
+        ...project,
+        sourcePreparation: [
+          { sourceId: plan.sources[0]!.id, attachmentId, status: 'excerpt_mismatch' },
+        ],
+      },
+    })
     expect(view.container.textContent).toContain('合成基准：摘录不在附件原文中')
     await view.update({
       phase: 'idle',
       project: {
         ...project,
-        sourcePreparation: [{ sourceId: plan.sources[0]!.id, attachmentId, status: 'excerpt_matched' }],
+        sourcePreparation: [
+          { sourceId: plan.sources[0]!.id, attachmentId, status: 'excerpt_matched' },
+        ],
       },
     })
     expect(view.container.textContent).toContain('附件来源 1 / 1 已就绪')
     expect(view.container.textContent).toContain('合成基准：摘录已匹配，编译前仍会复核')
-    await view.update({ phase: 'idle', project: { ...project, sourcePreparation: [{ sourceId: plan.sources[0]!.id, attachmentId, status: 'ready' }] } })
+    await view.update({
+      phase: 'idle',
+      project: {
+        ...project,
+        sourcePreparation: [{ sourceId: plan.sources[0]!.id, attachmentId, status: 'ready' }],
+      },
+    })
     expect(view.container.textContent).toContain('合成基准：旧版 PC 仅确认已解析')
   })
   it('shows the PDF preview action only for a completed task with the PC capability', async () => {
@@ -213,7 +231,7 @@ describe('presentation project recovery card', () => {
     const view = await mount(pending)
     expect(view.container.textContent).toContain('已保存，待编译')
     expect(view.container.textContent).toContain('目标')
-    expect(view.container.querySelectorAll('details')).toHaveLength(1)
+    expect(view.container.textContent).toContain('页面、版本与检查')
     await act(async () => view.button('继续编译').click())
     expect(view.controller.resume).toHaveBeenCalledWith('latest')
     await act(async () => view.button('恢复最近完成版本').click())
@@ -511,4 +529,181 @@ it('shows evidence warnings, explicit issue disposition inputs, and export actio
   )
   await act(async () => view.button('导出证据 JSON + Markdown 到附件').click())
   expect(view.controller.exportDeliveryReport).toHaveBeenCalledOnce()
+})
+
+function completionSnapshot(state?: string | null): Snapshot {
+  return {
+    ...pending,
+    project: {
+      ...pending.project!,
+      production: {
+        projectId: 'p1',
+        requestId: 'pages',
+        planRevision: 1,
+        status: 'partial',
+        compiledCount: 1,
+        total: 2,
+        pages: [
+          { id: 'a', title: 'A', state: 'compiled', attempt: 1 },
+          { id: 'b', title: 'B', state: 'pending', attempt: 0 },
+        ],
+      },
+      productionJob:
+        state === null
+          ? null
+          : state === undefined
+            ? undefined
+            : ({
+                version: 1,
+                projectId: 'p1',
+                documentId: 'd',
+                requestId: 'pages',
+                inputDigest: 'a'.repeat(64),
+                planDigest: 'b'.repeat(64),
+                planRevision: 1,
+                revision: 1,
+                state,
+                events: [],
+              } as NonNullable<Snapshot['project']>['productionJob']),
+    },
+  }
+}
+
+it.each(['idle', 'loading', 'producing'] as const)(
+  'opens completion during %s and ends only frontend while retaining results',
+  async (phase) => {
+    const end = vi.fn()
+    const view = await mount(
+      { ...completionSnapshot('running'), phase, error: '暂不可读取' },
+      true,
+      end,
+    )
+    const details = view.container.querySelector(
+      'details[aria-label="完成操作"]',
+    ) as HTMLDetailsElement
+    expect(details).not.toBeNull()
+    await act(async () => (details.querySelector('summary') as HTMLElement).click())
+    expect(details.open).toBe(true)
+    const button = view.button('保留成果并结束前台')
+    expect(button.disabled).toBe(false)
+    await act(async () => button.click())
+    expect(end).toHaveBeenCalledOnce()
+    expect(view.controller.cancel).toHaveBeenCalledTimes(phase === 'idle' ? 0 : 1)
+    expect(view.controller.clear).not.toHaveBeenCalled()
+    expect(view.controller.startProductionJob).not.toHaveBeenCalled()
+    expect(view.controller.cancelProductionJob).not.toHaveBeenCalled()
+    expect(view.container.textContent).toContain('正在提交的修改请核对恢复记录')
+  },
+)
+
+it('ends frontend waiting for a running job without restarting it even while busy', async () => {
+  const end = vi.fn()
+  const view = await mount({ ...completionSnapshot('running'), phase: 'producing' }, true, end)
+  await act(async () => view.button('继续后台制作并结束前台').click())
+  expect(end).toHaveBeenCalledOnce()
+  expect(view.controller.cancel).toHaveBeenCalledOnce()
+  expect(view.controller.startProductionJob).not.toHaveBeenCalled()
+  expect(view.controller.resumeProductionJob).not.toHaveBeenCalled()
+})
+
+it.each(['paused', 'interrupted', 'failed'])(
+  'resumes exact %s task and ends frontend',
+  async (state) => {
+    const end = vi.fn()
+    const view = await mount(completionSnapshot(state), false, end)
+    await act(async () => view.button('继续后台制作并结束前台').click())
+    expect(view.controller.resumeProductionJob).toHaveBeenCalledWith('pages')
+    expect(view.controller.startProductionJob).not.toHaveBeenCalled()
+    expect(end).toHaveBeenCalledOnce()
+  },
+)
+
+it('starts only a known absent unfinished job', async () => {
+  const end = vi.fn()
+  const view = await mount(completionSnapshot(null), false, end)
+  await act(async () => view.button('继续后台制作并结束前台').click())
+  expect(view.controller.startProductionJob).toHaveBeenCalledWith('pages')
+  expect(view.controller.resumeProductionJob).not.toHaveBeenCalled()
+  expect(end).toHaveBeenCalledOnce()
+})
+
+it.each(['pausing', 'cancelling', 'completed', 'cancelled', 'unknown', undefined])(
+  'fails closed for non-continuable or unknown %s job',
+  async (state) => {
+    const view = await mount(completionSnapshot(state), false, vi.fn())
+    expect(view.button('继续后台制作并结束前台')).toBeUndefined()
+    expect(view.controller.startProductionJob).not.toHaveBeenCalled()
+    expect(view.controller.resumeProductionJob).not.toHaveBeenCalled()
+  },
+)
+
+it.each(['busy', 'applying', 'loading'])(
+  'cannot resume or cancel background during %s frontend/project work',
+  async (mode) => {
+    const view = await mount(
+      { ...completionSnapshot('paused'), phase: mode === 'loading' ? 'loading' : 'idle' },
+      mode !== 'loading',
+      vi.fn(),
+    )
+    expect(view.button('继续后台制作并结束前台').disabled).toBe(true)
+    expect(view.button('取消剩余后台页面').disabled).toBe(true)
+    await act(async () => {
+      view.button('继续后台制作并结束前台').click()
+      view.button('取消剩余后台页面').click()
+    })
+    expect(view.controller.resumeProductionJob).not.toHaveBeenCalled()
+    expect(view.controller.cancelProductionJob).not.toHaveBeenCalled()
+  },
+)
+
+it('explicit cancellation binds the current task without clearing or restarting it', async () => {
+  const view = await mount(completionSnapshot('paused'), false, vi.fn())
+  expect(view.container.textContent).toContain('当前编译页结束后生效，已完成成果保留')
+  await act(async () => view.button('取消剩余后台页面').click())
+  expect(view.controller.cancelProductionJob).toHaveBeenCalledWith('pages')
+  expect(view.controller.clear).not.toHaveBeenCalled()
+  expect(view.controller.startProductionJob).not.toHaveBeenCalled()
+})
+
+it('does not invent continuation when PC lacks support or current job identity differs', async () => {
+  const snapshot = completionSnapshot('running')
+  const view = await mount(
+    { ...snapshot, project: { ...snapshot.project!, jobsUnavailable: true } },
+    false,
+    vi.fn(),
+  )
+  expect(view.button('继续后台制作并结束前台')).toBeUndefined()
+  expect(view.button('取消剩余后台页面')).toBeUndefined()
+  await view.update({
+    ...snapshot,
+    project: {
+      ...snapshot.project!,
+      productionJob: { ...snapshot.project!.productionJob!, requestId: 'other' },
+    },
+  })
+  expect(view.button('继续后台制作并结束前台')).toBeUndefined()
+  expect(view.button('取消剩余后台页面')).toBeUndefined()
+})
+
+it('shows an openable completion menu without a project or optional callback', async () => {
+  const view = await mount({ phase: 'loading', error: '读取失败' }, true)
+  const details = view.container.querySelector(
+    'details[aria-label="完成操作"]',
+  ) as HTMLDetailsElement
+  await act(async () => (details.querySelector('summary') as HTMLElement).click())
+  expect(details.open).toBe(true)
+  expect(view.button('保留成果并结束前台').disabled).toBe(true)
+  expect(view.button('继续后台制作并结束前台')).toBeUndefined()
+  expect(view.container.textContent).toContain('当前没有可确认继续的后台任务')
+})
+
+it('fails closed at both completion and existing background entries for unknown or unavailable jobs', async () => {
+  const view = await mount(completionSnapshot(undefined), false, vi.fn())
+  expect(view.button('后台制作剩余页面')).toBeUndefined()
+  await view.update(completionSnapshot('unknown'))
+  expect(view.button('取消后台任务')).toBeUndefined()
+  const snapshot = completionSnapshot('paused')
+  await view.update({ ...snapshot, project: { ...snapshot.project!, jobsUnavailable: true } })
+  expect(view.button('继续后台任务')).toBeUndefined()
+  expect(view.button('取消后台任务')).toBeUndefined()
 })

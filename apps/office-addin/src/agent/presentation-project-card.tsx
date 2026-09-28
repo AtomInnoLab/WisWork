@@ -5,6 +5,7 @@ import type { PresentationProjectController } from '../skills/powerpoint/present
 export function PresentationProjectCard(props: {
   controller: PresentationProjectController
   disabled: boolean
+  onEndFrontend?: () => void
 }) {
   const { controller } = props
   const { phase, project, error, deliveryReport, deliveryNotice, sourceAudit } =
@@ -16,9 +17,79 @@ export function PresentationProjectCard(props: {
   const job = project?.productionJob
   const active = phase !== 'idle'
   const disabled = props.disabled || active
+  const production = project?.production
+  const knownJob =
+    !project?.jobsUnavailable &&
+    !!job &&
+    !!production &&
+    [
+      'running',
+      'pausing',
+      'paused',
+      'cancelling',
+      'cancelled',
+      'interrupted',
+      'completed',
+      'failed',
+    ].includes(job.state) &&
+    job.requestId === production.requestId &&
+    job.projectId === project?.projectId &&
+    production.projectId === project.projectId
+  const running = knownJob && job.state === 'running'
+  const resumable = knownJob && ['paused', 'interrupted', 'failed'].includes(job.state)
+  const startable =
+    !project?.jobsUnavailable &&
+    job === null &&
+    !!production &&
+    production.projectId === project?.projectId &&
+    ['pending', 'partial'].includes(production.status)
+  const cancellable =
+    knownJob && ['running', 'pausing', 'paused', 'interrupted', 'failed'].includes(job.state)
+  const endFrontend = () => {
+    if (!props.onEndFrontend) return
+    if (active) controller.cancel()
+    props.onEndFrontend()
+  }
   return (
     <section className="presentation-project" aria-label="演示文稿项目" aria-busy={active}>
       <strong>{project?.title ?? '演示文稿项目'}</strong>
+      <details aria-label="完成操作">
+        <summary>完成</summary>
+        <p>结束前台执行与等待；已保存项目和页面保留。正在提交的修改请核对恢复记录。</p>
+        <div className="presentation-project-actions">
+          <button type="button" disabled={!props.onEndFrontend} onClick={endFrontend}>
+            保留成果并结束前台
+          </button>
+          {(running || resumable || startable) && (
+            <button
+              type="button"
+              disabled={!props.onEndFrontend || (!running && disabled)}
+              onClick={() => {
+                endFrontend()
+                if (running || disabled) return
+                if (resumable) void controller.resumeProductionJob(job!.requestId)
+                else if (startable) void controller.startProductionJob(production!.requestId)
+              }}
+            >
+              继续后台制作并结束前台
+            </button>
+          )}
+          {cancellable && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => void controller.cancelProductionJob(job!.requestId)}
+            >
+              取消剩余后台页面
+            </button>
+          )}
+        </div>
+        {running && <p>当前任务已在后台运行；结束前台不会重新启动任务。</p>}
+        {cancellable && <p>取消剩余后台页面在当前编译页结束后生效，已完成成果保留。</p>}
+        {!running && !resumable && !startable && (
+          <p>此处仅结束前台；当前没有可确认继续的后台任务。</p>
+        )}
+      </details>
       <p role="status">
         {active
           ? {
@@ -105,18 +176,15 @@ export function PresentationProjectCard(props: {
           </button>
         )}
       </div>
-      {project?.production &&
-        !project.jobsUnavailable &&
-        !job &&
-        project.production.status !== 'compiled' && (
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => void controller.startProductionJob(project.production!.requestId)}
-          >
-            后台制作剩余页面
-          </button>
-        )}
+      {startable && (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => void controller.startProductionJob(project.production!.requestId)}
+        >
+          后台制作剩余页面
+        </button>
+      )}
       {project?.productionTasks && project.productionTasks.length > 0 && (
         <label>
           选择页生产任务
@@ -153,7 +221,7 @@ export function PresentationProjectCard(props: {
         </label>
       )}
       {project?.jobsUnavailable && <p>当前 PC 不支持后台任务，请升级；仍可使用继续页任务。</p>}
-      {job && project?.production && (
+      {knownJob && job && project?.production && (
         <section aria-label="后台生产任务">
           <p role="status">
             后台页编译 ·{' '}
