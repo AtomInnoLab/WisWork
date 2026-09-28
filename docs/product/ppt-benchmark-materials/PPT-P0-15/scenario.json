@@ -1,0 +1,51 @@
+{
+  "caseId": "PPT-P0-15",
+  "materialStatus": "candidate_pending_scientific_review",
+  "source": "deardorff-2020-article.pdf",
+  "existingDeck": "wiswork-image-dense-research-draft.pptx",
+  "pageCount": 8,
+  "targetPageNumber": 4,
+  "existingDeckEdits": [
+    {
+      "kind": "text",
+      "target": "第 4 页标题原生文字",
+      "before": "参与者与证据路径",
+      "after": "参与者与研究证据"
+    },
+    {
+      "kind": "geometry",
+      "target": "第 4 页左图下的原生说明文字",
+      "deltaTopInches": 0.08,
+      "preserve": ["left", "width", "height", "font", "text"]
+    }
+  ],
+  "forbiddenPages": [1, 2, 3, 5, 6, 7, 8],
+  "boundGeneration": {
+    "mustGenerateAndImportWithWisWork": true,
+    "candidateFile": "wiswork-generated-candidate.pptx",
+    "source": "deardorff-2020-article.pdf",
+    "expectedTitles": [
+      "计算可复现性工作坊：研究汇报",
+      "研究问题与汇报范围",
+      "研究方法与时间点",
+      "参与者与证据路径",
+      "六项清单均值",
+      "开源软件使用：不同分母",
+      "解释边界与局限",
+      "结论与后续审阅"
+    ],
+    "requireParentArtifactAndHostImportReceipt": true
+  },
+  "staleConflict": {
+    "afterProposalBeforeConfirmation": "由用户手动将目标说明文字再下移 0.04 英寸",
+    "expected": "拒绝陈旧提案；重新读取基线后再提出修改，不覆盖手工位移"
+  },
+  "requiredEvidence": [
+    "任意现稿与生成绑定稿两种独立文档身份",
+    "目标页实际宿主对象 ID、文字和坐标前后值",
+    "写前原页保存点及确认式变更记录",
+    "手工移动后的陈旧提案拒绝和重新读取记录",
+    "目标页与其余七页的局部 QA 状态对照",
+    "原稿、交付稿、八页截图和 PowerPoint 保存关闭重开可编辑证据"
+  ]
+}
