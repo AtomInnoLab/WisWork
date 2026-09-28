@@ -42,11 +42,20 @@ export function validPresentationImportRecord(value: unknown): value is Presenta
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const r = value as PresentationImportRecord
   if (
-    Object.keys(r).some((k) => !['state', 'documentId', 'slideIds', 'checkpoint'].includes(k)) ||
+    Object.keys(r).some(
+      (k) =>
+        !['state', 'documentId', 'toolCallId', 'agentRunId', 'slideIds', 'checkpoint'].includes(k),
+    ) ||
     !['pending', 'complete'].includes(r.state) ||
     typeof r.documentId !== 'string' ||
     !r.documentId ||
     r.documentId.length > 4096 ||
+    (r.toolCallId !== undefined &&
+      (typeof r.toolCallId !== 'string' || r.toolCallId.length < 1 || r.toolCallId.length > 256)) ||
+    (r.agentRunId !== undefined &&
+      (typeof r.agentRunId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(r.agentRunId) ||
+        !r.toolCallId)) ||
     (r.slideIds !== undefined && !hostIds(r.slideIds, 100)) ||
     (r.state === 'complete' && !r.slideIds)
   )
@@ -96,10 +105,13 @@ export function validPresentationImportRecord(value: unknown): value is Presenta
       typeof page.slideId !== 'string' ||
       !page.slideId ||
       page.slideId.length > 256 ||
-      (index > 0 && Boolean(c.completed[index - 1]?.completedAt) && page.completedAt === undefined) ||
+      (index > 0 &&
+        Boolean(c.completed[index - 1]?.completedAt) &&
+        page.completedAt === undefined) ||
       (page.completedAt !== undefined &&
         (!validTimestamp(page.completedAt) ||
-          (index > 0 && c.completed[index - 1]?.completedAt &&
+          (index > 0 &&
+            c.completed[index - 1]?.completedAt &&
             page.completedAt < c.completed[index - 1]!.completedAt!)))
     )
       return false
@@ -114,7 +126,8 @@ export function validPresentationImportRecord(value: unknown): value is Presenta
       c.inFlight.sourceSlideId !== c.sourceSlideIds[c.completed.length] ||
       (c.inFlight.startedAt !== undefined &&
         (!validTimestamp(c.inFlight.startedAt) ||
-          (c.completed.at(-1)?.completedAt && c.inFlight.startedAt < c.completed.at(-1)!.completedAt!))))
+          (c.completed.at(-1)?.completedAt &&
+            c.inFlight.startedAt < c.completed.at(-1)!.completedAt!))))
   )
     return false
   if (
@@ -202,7 +215,9 @@ export function presentationPageMapping(
   if (!record?.checkpoint || !summarizePresentationImport(artifact, record)) return undefined
   const index = artifact.pages!.findIndex((page) => page.id === pageId)
   const completed = index < 0 ? undefined : record.checkpoint.completed[index]
-  return completed ? { sourceSlideId: completed.sourceSlideId, slideId: completed.slideId } : undefined
+  return completed
+    ? { sourceSlideId: completed.sourceSlideId, slideId: completed.slideId }
+    : undefined
 }
 export function presentationImportKey(artifact: CompiledPresentationArtifact): string {
   if (
@@ -488,13 +503,14 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
               const record: PresentationImportRecord = {
                 state,
                 documentId,
+                toolCallId: call.id,
                 checkpoint: c,
                 ...(state === 'complete' ? { slideIds: c.completed.map((p) => p.slideId) } : {}),
               }
               await current()
               await options.writeReceipt(key, record)
               await current()
-              last = record
+              last = options.readReceipt(key)
             }
             if (!previous) await save(checkpoint)
             while (checkpoint.completed.length < checkpoint.sourceSlideIds.length) {
@@ -507,9 +523,18 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
               if (!same(actual.slideIds, slideIds) || actual.fingerprint !== baseline.fingerprint)
                 throw new Error('proposal_stale')
               const sourceSlideId = checkpoint.sourceSlideIds[checkpoint.completed.length]!
-              await save({ ...checkpoint, inFlight: { sourceSlideId, startedAt: new Date(Math.max(
-                Date.now(), Date.parse(checkpoint.completed.at(-1)?.completedAt ?? '') || 0,
-              )).toISOString() } })
+              await save({
+                ...checkpoint,
+                inFlight: {
+                  sourceSlideId,
+                  startedAt: new Date(
+                    Math.max(
+                      Date.now(),
+                      Date.parse(checkpoint.completed.at(-1)?.completedAt ?? '') || 0,
+                    ),
+                  ).toISOString(),
+                },
+              })
               let receipt
               try {
                 await current(s)
@@ -547,9 +572,16 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
                 ...checkpoint,
                 completed: [
                   ...checkpoint.completed,
-                  { sourceSlideId, slideId: receipt.slideIds[0]!, completedAt: new Date(Math.max(
-                    Date.now(), Date.parse(checkpoint.completed.at(-1)?.completedAt ?? '') || 0,
-                  )).toISOString() },
+                  {
+                    sourceSlideId,
+                    slideId: receipt.slideIds[0]!,
+                    completedAt: new Date(
+                      Math.max(
+                        Date.now(),
+                        Date.parse(checkpoint.completed.at(-1)?.completedAt ?? '') || 0,
+                      ),
+                    ).toISOString(),
+                  },
                 ],
               }
               await save(

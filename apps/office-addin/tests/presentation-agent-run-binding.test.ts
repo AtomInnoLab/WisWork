@@ -317,6 +317,56 @@ describe('presentation AgentRun checkpoint', () => {
     },
   )
 
+  it('correlates an interrupted import call with its durable receipt', async () => {
+    const values = new Map<string, string>()
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => 'file:///deck.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    const checkpoint = createPresentationAgentRunCheckpoint(binding, id)
+    await checkpoint.begin('run-1')
+    await checkpoint.tool('run-1', 'tool_pending', 'import_generated_presentation', false, 'call-1')
+    expect(checkpoint.recovery()?.importReceipt).toBeUndefined()
+    await binding.writeReceipt('project/request', {
+      state: 'pending',
+      documentId: id,
+      toolCallId: 'call-1',
+    })
+    expect(createPresentationAgentRunCheckpoint(binding, id).recovery()?.importReceipt).toEqual({
+      state: 'uncertain',
+      completed: 0,
+    })
+    expect(binding.readReceipt('project/request')?.agentRunId).toBe('run-1')
+    expect(binding.agentImportReceipt('another-document', 'run-1', 'call-1')).toBeUndefined()
+    expect(binding.agentImportReceipt(id, 'other-run', 'call-1')).toBeUndefined()
+    expect(binding.agentImportReceipt(id, 'run-1', 'other-call')).toBeUndefined()
+    expect(binding.agentImportReceipt(id, 'run-1', 'call-1')).toEqual({
+      state: 'uncertain',
+      completed: 0,
+    })
+    await binding.writeReceipt('project/request', {
+      state: 'complete',
+      documentId: id,
+      toolCallId: 'call-1',
+      slideIds: ['slide-1'],
+    })
+    expect(checkpoint.recovery()?.importReceipt).toEqual({ state: 'complete', completed: 1 })
+    expect(binding.readReceipt('project/request')?.agentRunId).toBe('run-1')
+    await checkpoint.finish('run-1')
+    expect(checkpoint.recovery()).toBeUndefined()
+    await checkpoint.begin('run-2')
+    await checkpoint.tool('run-2', 'tool_pending', 'import_generated_presentation', false, 'call-1')
+    expect(checkpoint.recovery()?.importReceipt).toBeUndefined()
+  })
+
   it('sweeps expired orphan prompts when a different deck initializes', async () => {
     const values = new Map<string, string>()
     const local = new Map<string, string>([

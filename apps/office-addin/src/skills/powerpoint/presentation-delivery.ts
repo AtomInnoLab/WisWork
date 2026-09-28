@@ -23,6 +23,8 @@ export interface CompiledPresentationArtifact {
 export interface PresentationImportRecord {
   state: 'pending' | 'complete'
   documentId: string
+  toolCallId?: string
+  agentRunId?: string
   slideIds?: string[]
   checkpoint?: PresentationImportCheckpoint
 }
@@ -144,7 +146,7 @@ export function createPresentationDeliverySkill(options: PresentationDeliveryOpt
             )
               throw new Error('proposal_stale')
             // Reserve durably before Office can commit. An uncertain write must never be replayed.
-            await options.writeReceipt(key, { state: 'pending', documentId })
+            await options.writeReceipt(key, { state: 'pending', documentId, toolCallId: call.id })
             try {
               if (writeSignal?.aborted) throw new Error('cancelled')
               if ((await options.documentId()) !== documentId) throw new Error('proposal_stale')
@@ -181,6 +183,7 @@ export function createPresentationDeliverySkill(options: PresentationDeliveryOpt
             await options.writeReceipt(key, {
               state: 'complete',
               documentId,
+              toolCallId: call.id,
               slideIds: receipt.slideIds,
             })
           },

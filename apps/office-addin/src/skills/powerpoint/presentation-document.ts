@@ -79,6 +79,7 @@ export interface PresentationAgentRunRecovery {
   toolName?: string
   toolCallId?: string
   restartSafe?: boolean
+  importReceipt?: { state: 'complete' | 'partial' | 'uncertain'; completed: number; total?: number }
 }
 // Only audited reads may restart the original instruction after a Taskpane interruption.
 // A write or an unknown tool permanently closes this path for the run.
@@ -1288,8 +1289,33 @@ export function createPresentationDocumentBinding(
         const imports = readImports()
         const previousRaw = settings.get(IMPORT_KEY)
         const location = settings.location()
-        if (record) imports[key] = record
-        else delete imports[key]
+        if (record) {
+          const storedRecord = { ...record }
+          delete storedRecord.agentRunId
+          if (record.toolCallId) {
+            let activeRun: Record<string, unknown> | undefined
+            try {
+              const raw = settings.get(AGENT_RUN_KEY)
+              if (typeof raw === 'string') activeRun = JSON.parse(raw) as Record<string, unknown>
+            } catch {
+              /* An unreadable checkpoint cannot establish the originating run. */
+            }
+            const runId =
+              activeRun?.documentId === record.documentId &&
+              activeRun?.phase === 'tool_pending' &&
+              activeRun?.toolCallId === record.toolCallId &&
+              ['import_generated_presentation', 'import_presentation_production'].includes(
+                String(activeRun?.toolName),
+              ) &&
+              validId(activeRun?.runId)
+                ? activeRun.runId
+                : imports[key]?.toolCallId === record.toolCallId
+                  ? imports[key]?.agentRunId
+                  : undefined
+            if (runId) storedRecord.agentRunId = runId
+          }
+          imports[key] = storedRecord
+        } else delete imports[key]
         const serialized = JSON.stringify(imports)
         if (Object.keys(imports).length > 32 || serialized.length > 100_000)
           throw new Error('presentation_import_history_full')
@@ -1523,6 +1549,34 @@ export function createPresentationDocumentBinding(
         return undefined
       }
     },
+    agentImportReceipt(boundDocumentId: string, runId: string, toolCallId: string) {
+      if (
+        !validId(runId) ||
+        typeof toolCallId !== 'string' ||
+        toolCallId.length < 1 ||
+        toolCallId.length > 256
+      )
+        return undefined
+      const matching = Object.values(readImports()).filter(
+        (record) =>
+          record.documentId === boundDocumentId &&
+          record.agentRunId === runId &&
+          record.toolCallId === toolCallId,
+      )
+      if (matching.length !== 1) return undefined
+      const record = matching[0]!
+      const completed = record.checkpoint?.completed.length ?? record.slideIds?.length ?? 0
+      return {
+        state:
+          record.state === 'complete'
+            ? ('complete' as const)
+            : !record.checkpoint || record.checkpoint.inFlight
+              ? ('uncertain' as const)
+              : ('partial' as const),
+        completed,
+        ...(record.checkpoint ? { total: record.checkpoint.sourceSlideIds.length } : {}),
+      }
+    },
     interruptedAgentRun(boundDocumentId: string): boolean {
       return Boolean(this.agentRunRecovery(boundDocumentId))
     },
@@ -1696,7 +1750,12 @@ export function createPresentationDocumentBinding(
 export function createPresentationAgentRunCheckpoint(
   binding: Pick<
     ReturnType<typeof createPresentationDocumentBinding>,
-    'documentId' | 'agentRunRecovery' | 'rememberAgentRun' | 'updateAgentRun' | 'finishAgentRun'
+    | 'documentId'
+    | 'agentRunRecovery'
+    | 'agentImportReceipt'
+    | 'rememberAgentRun'
+    | 'updateAgentRun'
+    | 'finishAgentRun'
   >,
   boundDocumentId: string,
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> &
@@ -1736,8 +1795,21 @@ export function createPresentationAgentRunCheckpoint(
   }
   sweepExpiredPrompts()
   const recovery = (): PresentationAgentRunRecovery | undefined => {
-    const record = binding.agentRunRecovery(boundDocumentId)
-    if (!record) return undefined
+    const saved = binding.agentRunRecovery(boundDocumentId)
+    if (!saved) return undefined
+    let importReceipt: PresentationAgentRunRecovery['importReceipt']
+    if (
+      saved.toolCallId &&
+      ['import_generated_presentation', 'import_presentation_production'].includes(
+        saved.toolName ?? '',
+      )
+    )
+      try {
+        importReceipt = binding.agentImportReceipt(boundDocumentId, saved.runId, saved.toolCallId)
+      } catch {
+        /* A damaged import journal cannot justify resuming a write. */
+      }
+    const record = importReceipt ? { ...saved, importReceipt } : saved
     if (!storage) return record
     try {
       const raw = storage.getItem(localKey(record.runId))

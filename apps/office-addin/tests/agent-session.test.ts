@@ -170,6 +170,41 @@ describe('Office agent session', () => {
     expect(harness.stream).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['complete', '导入回执：2 页完成'],
+    ['partial', '导入回执：1/2 页完成'],
+    ['uncertain', '下一页结果不确定'],
+  ] as const)(
+    'shows the matched %s import receipt without replaying the tool',
+    (status, detail) => {
+      const harness = transportHarness()
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+        proposals: proposalsHarness().controller,
+        runCheckpoint: {
+          interrupted: true,
+          recovery: {
+            instruction: '',
+            phase: 'tool_pending',
+            toolName: 'import_presentation_production',
+            toolCallId: 'call-1',
+            restartSafe: false,
+            importReceipt: { state: status, completed: status === 'complete' ? 2 : 1, total: 2 },
+          },
+          begin: vi.fn(async () => undefined),
+          finish: vi.fn(async () => undefined),
+        },
+      })
+      expect(session.snapshot().recoveryAvailable).toBe(false)
+      expect(session.snapshot().timeline[0]).toMatchObject({
+        kind: 'system',
+        text: expect.stringContaining(detail),
+      })
+      expect(harness.stream).not.toHaveBeenCalled()
+    },
+  )
+
   it('restarts an interrupted read-only run only on explicit action after document validation', async () => {
     const harness = transportHarness()
     const validateDocument = vi.fn(async () => true)

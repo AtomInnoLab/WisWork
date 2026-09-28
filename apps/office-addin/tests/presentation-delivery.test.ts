@@ -51,10 +51,15 @@ describe('generated deck delivery', () => {
     expect(f.adapter.insert).not.toHaveBeenCalled()
     f.adapter.insert.mockImplementation(async () => {
       expect([...f.receipts.values()][0]?.state).toBe('pending')
+      expect([...f.receipts.values()][0]?.toolCallId).toBe('import')
       return { slideIds: ['new-1'] }
     })
     await f.proposals.confirm(f.proposals.pending()!.id)
-    expect([...f.receipts.values()][0]).toMatchObject({ state: 'complete', slideIds: ['new-1'] })
+    expect([...f.receipts.values()][0]).toMatchObject({
+      state: 'complete',
+      toolCallId: 'import',
+      slideIds: ['new-1'],
+    })
     expect(await f.skill.executeTool(f.call)).toMatchObject({
       mutated: false,
       output: expect.stringContaining('already_imported'),

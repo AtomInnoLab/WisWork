@@ -1,6 +1,9 @@
 import { expect, it, vi } from 'vitest'
 import { createStructuredProposalController } from '../src/agent/proposal-controller'
-import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
+import {
+  createPresentationAgentRunCheckpoint,
+  createPresentationDocumentBinding,
+} from '../src/skills/powerpoint/presentation-document'
 import {
   createPresentationDeliverySkill,
   type CompiledPresentationArtifact,
@@ -63,6 +66,45 @@ function fixture() {
   }
   return { artifact, host, receipts, proposals, adapter, options, skill, call, confirm }
 }
+it('correlates a real page import receipt with the interrupted AgentRun without replay', async () => {
+  const f = fixture()
+  const values = new Map<string, string>()
+  const binding = createPresentationDocumentBinding(
+    {
+      get: (key) => values.get(key),
+      set: (key, value) => {
+        values.set(key, value)
+      },
+      save: async () => undefined,
+      location: () => 'file:///deck.pptx',
+    },
+    () => 'doc-id',
+  )
+  const documentId = await binding.documentId()
+  f.artifact.documentId = documentId
+  const checkpoint = createPresentationAgentRunCheckpoint(binding, documentId)
+  await checkpoint.begin('run-1')
+  await checkpoint.tool('run-1', 'tool_pending', f.call.name, false, f.call.id)
+  const skill = createPresentationProductionDeliverySkill({
+    ...f.options,
+    documentId: async () => documentId,
+    readReceipt: binding.readReceipt,
+    writeReceipt: binding.writeReceipt,
+  })
+  expect((await skill.executeTool(f.call)).isError).not.toBe(true)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(f.adapter.insertPage).toHaveBeenCalledTimes(3)
+  expect(checkpoint.recovery()?.importReceipt).toEqual({
+    state: 'complete',
+    completed: 3,
+    total: 3,
+  })
+  expect(binding.readReceipt('production/project/request')).toMatchObject({
+    toolCallId: f.call.id,
+    agentRunId: 'run-1',
+    state: 'complete',
+  })
+})
 it('imports separate PPTX files with duplicate source IDs and isolates their checkpoint namespace', async () => {
   const f = fixture()
   f.receipts.set('project/request', { state: 'complete', documentId: 'doc', slideIds: ['legacy'] })
@@ -74,14 +116,18 @@ it('imports separate PPTX files with duplicate source IDs and isolates their che
   expect(presentationImportKey(f.artifact)).toBe('production/project/request')
   expect(f.receipts.get('production/project/request')).toMatchObject({
     state: 'complete',
+    toolCallId: 'import',
     checkpoint: {
       version: 2,
       pageIds: ['page0', 'page1', 'page2'],
       sourceSlideIds: ['256#', '256#', '256#'],
     },
   })
-  expect(f.receipts.get('production/project/request')?.checkpoint?.completed.every((page) =>
-    typeof page.completedAt === 'string')).toBe(true)
+  expect(
+    f.receipts
+      .get('production/project/request')
+      ?.checkpoint?.completed.every((page) => typeof page.completedAt === 'string'),
+  ).toBe(true)
   expect(f.receipts.get('project/request')!.slideIds).toEqual(['legacy'])
   expect(await f.skill.executeTool(f.call)).toMatchObject({
     output: expect.stringContaining('already_imported'),
