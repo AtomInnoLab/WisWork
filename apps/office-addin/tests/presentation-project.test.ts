@@ -21,6 +21,7 @@ function fixture() {
   const executeTool = vi.fn(async () => ({ output: '{}', mutated: false, summary: '已恢复' }))
   const documentId = vi.fn(async () => 'document-1')
   const available = vi.fn(() => true)
+  const pdfAvailable = vi.fn(() => true)
   const lastProject = vi.fn((): string | undefined => 'project-1')
   let saved: { projectId: string; documentId: string; requestId: string } | undefined
   const selectedProduction = vi.fn((projectId: string, boundDocumentId: string) =>
@@ -39,6 +40,7 @@ function fixture() {
       executeTool,
       documentId,
       available,
+      pdfAvailable,
       lastProject,
       selectedProduction,
       rememberSelectedProduction,
@@ -51,12 +53,52 @@ function fixture() {
     executeTool,
     documentId,
     available,
+    pdfAvailable,
     lastProject,
     selectedProduction,
     rememberSelectedProduction,
   }
 }
 describe('presentation project controls', () => {
+  it('exports only a completed selected production task as a PDF preview', async () => {
+    const f = fixture()
+    const production = {
+      projectId: 'project-1',
+      requestId: 'pages',
+      planRevision: 1,
+      status: 'compiled',
+      compiledCount: 1,
+      total: 1,
+      pages: [{ id: 'slide-1', title: '研究结论', state: 'compiled', attempt: 1 }],
+    }
+    f.request.mockImplementation(
+      async (body) =>
+        new Response(
+          JSON.stringify(
+            (body as { operation: string }).operation === 'status'
+              ? { ...project, production }
+              : { error: 'invalid_request' },
+          ),
+        ),
+    )
+    await f.controller.refresh()
+    expect(f.controller.snapshot().error).toBeUndefined()
+    expect(f.controller.snapshot().project?.production).toMatchObject({ status: 'compiled' })
+    await f.controller.exportProductionPdf?.()
+    expect(f.executeTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'export_presentation_pdf',
+        input: { project_id: 'project-1', request_id: 'pages', source: 'production' },
+      }),
+      expect.any(AbortSignal),
+    )
+    expect(f.controller.snapshot().deliveryNotice).toContain('PDF 预览已保存')
+    f.executeTool.mockClear()
+    f.pdfAvailable.mockReturnValue(false)
+    await f.controller.exportProductionPdf?.()
+    expect(f.executeTool).not.toHaveBeenCalled()
+  })
+
   it('keeps bounded review comment summaries separate from QA status', async () => {
     const f = fixture()
     f.request.mockResolvedValue(

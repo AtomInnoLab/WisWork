@@ -273,6 +273,17 @@ export function PresentationProjectCard(props: {
               准备完整成果导入
             </button>
           )}
+          {project.production.status === 'compiled' &&
+            controller.pdfAvailable?.() &&
+            controller.exportProductionPdf && (
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => void controller.exportProductionPdf?.()}
+              >
+                导出 PDF 预览
+              </button>
+            )}
           <ol>
             {project.production.pages.map((page) => (
               <li key={page.id}>

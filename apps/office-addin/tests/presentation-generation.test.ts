@@ -74,6 +74,7 @@ describe('PowerPoint presentation generation', () => {
       new Response(
         JSON.stringify({
           status: 'exported',
+          source: 'compiled',
           projectId: deck.id,
           requestId: 'request-1',
           slideCount: 1,
@@ -98,6 +99,40 @@ describe('PowerPoint presentation generation', () => {
     )
     expect(f.vfs.list('/home/user')).toContain('/home/user/generated/research-1.pdf')
     expect(result.output).not.toContain('JVBER')
+  })
+
+  it('exports the exact completed page-production request as one PDF', async () => {
+    const f = fixture()
+    f.pdfRequest.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'exported',
+          source: 'production',
+          projectId: deck.id,
+          requestId: 'request-1',
+          slideCount: 8,
+          pdfBase64: btoa('%PDF-1.4\n%%EOF\n'),
+        }),
+      ),
+    )
+    const result = await f.skill.executeTool({
+      id: 'production-pdf-call',
+      name: 'export_presentation_pdf',
+      input: { project_id: deck.id, request_id: 'request-1', source: 'production' },
+    })
+    expect(result.isError).not.toBe(true)
+    expect(f.pdfRequest).toHaveBeenCalledWith(
+      {
+        operation: 'export_pdf',
+        documentId: 'document-1',
+        projectId: deck.id,
+        requestId: 'request-1',
+        source: 'production',
+      },
+      undefined,
+    )
+    expect(result.output).toContain('"source":"production"')
+    expect(f.vfs.list('/home/user')).toContain('/home/user/generated/research-1.pdf')
   })
 
   it('hides PDF export on an older PC without its negotiated capability', async () => {

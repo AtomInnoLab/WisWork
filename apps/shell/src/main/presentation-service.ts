@@ -118,26 +118,67 @@ export function createPresentationService(options: {
       const request = body as Record<string, unknown>
       if (request.operation === 'export_pdf') {
         if (
-          Object.keys(request).sort().join(',') !==
-            ['operation', 'documentId', 'projectId', 'requestId'].sort().join(',') ||
+          Object.keys(request).some(
+            (key) => !['operation', 'documentId', 'projectId', 'requestId', 'source'].includes(key),
+          ) ||
+          ['documentId', 'projectId', 'requestId'].some((key) => !Object.hasOwn(request, key)) ||
           typeof request.documentId !== 'string' ||
           !request.documentId.trim() ||
-          request.documentId.length > 2048
+          request.documentId.length > 2048 ||
+          (request.source !== undefined &&
+            request.source !== 'compiled' &&
+            request.source !== 'production')
         )
           throw new Error('invalid_request')
         assertPresentationId(request.projectId)
         assertPresentationId(request.requestId)
-        const record = store.request(
-          request.projectId as string,
-          request.documentId,
-          request.requestId as string,
-        )
-        if (record?.status !== 'compiled') throw new Error('not_found')
-        const compiled = record.result as {
-          pptxBase64: string
-          report: PresentationCompileReport
+        const source = request.source ?? 'compiled'
+        let pdf: Buffer
+        let slideCount: number
+        if (source === 'production') {
+          const production = store.production(
+            request.projectId as string,
+            request.documentId,
+            request.requestId as string,
+          )
+          if (!production) throw new Error('not_found')
+          if (production.pages.some((page) => page.state !== 'compiled' || !page.result))
+            throw new Error('page_not_ready')
+          const merged = await PDFDocument.create()
+          let inputBytes = 0
+          for (const page of production.pages) {
+            checkAbort(signal)
+            const pptx = Buffer.from(page.result!.pptxBase64, 'base64')
+            inputBytes += pptx.length
+            if (inputBytes > 10 * 1024 * 1024) throw new Error('output_too_large')
+            const rendered = await renderPdf(pptx, signal)
+            checkAbort(signal)
+            let onePage: PDFDocument
+            try {
+              onePage = await PDFDocument.load(rendered)
+            } catch {
+              throw new Error('renderer_unavailable')
+            }
+            if (onePage.getPageCount() !== 1) throw new Error('renderer_unavailable')
+            const [copied] = await merged.copyPages(onePage, [0])
+            merged.addPage(copied)
+          }
+          slideCount = production.pages.length
+          pdf = Buffer.from(await merged.save())
+        } else {
+          const record = store.request(
+            request.projectId as string,
+            request.documentId,
+            request.requestId as string,
+          )
+          if (record?.status !== 'compiled') throw new Error('not_found')
+          const compiled = record.result as {
+            pptxBase64: string
+            report: PresentationCompileReport
+          }
+          pdf = Buffer.from(await renderPdf(Buffer.from(compiled.pptxBase64, 'base64'), signal))
+          slideCount = compiled.report.slideCount
         }
-        const pdf = Buffer.from(await renderPdf(Buffer.from(compiled.pptxBase64, 'base64'), signal))
         checkAbort(signal)
         if (
           pdf.length < 16 ||
@@ -152,9 +193,10 @@ export function createPresentationService(options: {
         } catch {
           throw new Error('renderer_unavailable')
         }
-        if (pageCount !== compiled.report.slideCount) throw new Error('renderer_unavailable')
+        if (pageCount !== slideCount) throw new Error('renderer_unavailable')
         return boundedResponse({
           status: 'exported',
+          source,
           projectId: request.projectId,
           requestId: request.requestId,
           slideCount: pageCount,

@@ -48,12 +48,13 @@ const tools: AgentToolDef[] = [
   {
     name: 'export_presentation_pdf',
     description:
-      'Export an exact completed PC compilation request as a downloadable PDF using local LibreOffice. This is a preview of the compiled PPTX, not the current PowerPoint document or proof of host fidelity. Requires a known project_id and request_id.',
+      'Export an exact completed PC request as a downloadable PDF using local LibreOffice. Set source=production for a fully compiled page-production request; omit it for a whole-deck compilation. Unfinished pages are rejected. This previews the compiled content, not the current PowerPoint document or host fidelity. Requires a known project_id and request_id.',
     inputSchema: {
       type: 'object',
       properties: {
         project_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
         request_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+        source: { type: 'string', enum: ['compiled', 'production'] },
       },
       required: ['project_id', 'request_id'],
       additionalProperties: false,
@@ -102,7 +103,7 @@ export function createPresentationGenerationSkill(
       artifacts.clear()
     },
     id: 'office-presentation-generation',
-    systemPrompt: `For a new presentation, read user materials first, establish evidence and the per-page story, then choose a consistent visual style. When presentation compilation is available, use compile_deck_with_pptxgenjs with validated SlideIR to create a downloadable native PPTX. Prefer native charts/tables for factual data. Assets can be prepared inline PNG/JPEG images, never paths or external URLs. When presentation-assets.v1 is available, prefer compact attachment references from list_presentation_attachments; the PC resolves cached image data. Do not invent sources. Preserve project ID and request ID on unchanged retries. Compiled is not visually reviewed: explain checks marked not_run or not_verified and use existing Office tools for subsequent editing and host verification. The PPTX and report are available in Session attachments. On request, export_presentation_pdf adds a local LibreOffice PDF preview of an exact completed compilation; it is not a PDF export of the current host document. Restore a prior compiled result with restore_presentation_project.`,
+    systemPrompt: `For a new presentation, read user materials first, establish evidence and the per-page story, then choose a consistent visual style. When presentation compilation is available, use compile_deck_with_pptxgenjs with validated SlideIR to create a downloadable native PPTX. Prefer native charts/tables for factual data. Assets can be prepared inline PNG/JPEG images, never paths or external URLs. When presentation-assets.v1 is available, prefer compact attachment references from list_presentation_attachments; the PC resolves cached image data. Do not invent sources. Preserve project ID and request ID on unchanged retries. Compiled is not visually reviewed: explain checks marked not_run or not_verified and use existing Office tools for subsequent editing and host verification. The PPTX and report are available in Session attachments. On request, export_presentation_pdf adds a local LibreOffice PDF preview of an exact completed compilation; use source=production for a completed page-production request. It is not a PDF export of the current host document. Restore a prior compiled result with restore_presentation_project.`,
     get tools() {
       return options.available()
         ? tools.filter(
@@ -133,9 +134,14 @@ export function createPresentationGenerationSkill(
           if (!options.pdfAvailable?.() || !options.pdfRequest)
             throw new Error('presentation_pdf_unavailable')
           if (
-            Object.keys(value).some((key) => !['project_id', 'request_id'].includes(key)) ||
+            Object.keys(value).some(
+              (key) => !['project_id', 'request_id', 'source'].includes(key),
+            ) ||
             !validId(value.project_id) ||
-            !validId(value.request_id)
+            !validId(value.request_id) ||
+            (value.source !== undefined &&
+              value.source !== 'compiled' &&
+              value.source !== 'production')
           )
             throw new Error('invalid_tool_input')
           const documentId = await options.documentId()
@@ -147,6 +153,7 @@ export function createPresentationGenerationSkill(
               documentId,
               projectId: value.project_id,
               requestId: value.request_id,
+              ...(value.source === 'production' ? { source: 'production' } : {}),
             },
             signal,
           )
@@ -163,6 +170,7 @@ export function createPresentationGenerationSkill(
                 'renderer_unavailable',
                 'output_too_large',
                 'aborted',
+                'page_not_ready',
               ].includes(result.error)
             )
               throw new Error(`presentation_${result.error}`)
@@ -170,6 +178,7 @@ export function createPresentationGenerationSkill(
           }
           if (
             result?.status !== 'exported' ||
+            result.source !== (value.source ?? 'compiled') ||
             result.projectId !== value.project_id ||
             result.requestId !== value.request_id ||
             !Number.isSafeInteger(result.slideCount) ||
@@ -198,6 +207,7 @@ export function createPresentationGenerationSkill(
               projectId: value.project_id,
               requestId: value.request_id,
               status: 'exported',
+              source: result.source,
               path,
               slideCount: result.slideCount,
               renderer: 'libreoffice',

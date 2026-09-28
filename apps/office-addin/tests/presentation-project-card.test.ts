@@ -30,6 +30,8 @@ afterEach(async () => {
 async function mount(snapshot: Snapshot, disabled = false) {
   const listeners = new Set<() => void>()
   const controller: PresentationProjectController = {
+    pdfAvailable: vi.fn(() => false),
+    exportProductionPdf: vi.fn(async () => {}),
     auditSources: vi.fn(async () => {}),
     snapshot: () => snapshot,
     subscribe: (listener) => {
@@ -75,6 +77,35 @@ async function mount(snapshot: Snapshot, disabled = false) {
   }
 }
 describe('presentation project recovery card', () => {
+  it('shows the PDF preview action only for a completed task with the PC capability', async () => {
+    const project = {
+      ...pending.project!,
+      production: {
+        projectId: 'p1',
+        requestId: 'pages',
+        planRevision: 1,
+        status: 'compiled' as const,
+        compiledCount: 1,
+        total: 1,
+        pages: [{ id: 's1', title: '目标', state: 'compiled' as const, attempt: 1 }],
+      },
+    }
+    const view = await mount({ phase: 'idle', project })
+    expect(view.button('导出 PDF 预览')).toBeUndefined()
+    vi.mocked(view.controller.pdfAvailable!).mockReturnValue(true)
+    await view.update({ phase: 'idle', project })
+    await act(async () => view.button('导出 PDF 预览').click())
+    expect(view.controller.exportProductionPdf).toHaveBeenCalledOnce()
+    await view.update({
+      phase: 'idle',
+      project: {
+        ...project,
+        production: { ...project.production, status: 'partial', compiledCount: 0 },
+      },
+    })
+    expect(view.button('导出 PDF 预览')).toBeUndefined()
+  })
+
   it('shows literal source audit findings without claiming factual verification', async () => {
     const plan = benchmarkPlan()
     const attachmentId = 'a'.repeat(64)

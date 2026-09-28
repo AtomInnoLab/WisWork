@@ -107,6 +107,8 @@ export interface PresentationProjectSnapshot {
   error?: string
 }
 export interface PresentationProjectController {
+  pdfAvailable?(): boolean
+  exportProductionPdf?(): Promise<void>
   auditSources(): Promise<void>
   readDeliveryReport(): Promise<void>
   exportDeliveryReport(): Promise<void>
@@ -502,6 +504,7 @@ export function createPresentationProjectController(
     PresentationGenerationOptions,
     | 'request'
     | 'available'
+    | 'pdfAvailable'
     | 'documentId'
     | 'lastProject'
     | 'selectedProduction'
@@ -765,6 +768,11 @@ export function createPresentationProjectController(
   const deliveryAction = async (tool: string, action?: PresentationIssueActionInput) => {
     if (active || !state.project?.production || !projectDocument) return
     const project = state.project
+    if (
+      tool === 'export_presentation_pdf' &&
+      (project.production!.status !== 'compiled' || !options.pdfAvailable?.())
+    )
+      return
     const requestId = project.production!.requestId
     const documentId = projectDocument
     const report = state.deliveryReport
@@ -785,6 +793,7 @@ export function createPresentationProjectController(
           input: {
             project_id: project.projectId,
             request_id: requestId,
+            ...(tool === 'export_presentation_pdf' ? { source: 'production' } : {}),
             ...(action ? { expected_revision: report!.issueLedger.revision, action } : {}),
           },
         },
@@ -795,12 +804,15 @@ export function createPresentationProjectController(
         throw new Error('presentation_document_changed')
       if (captured !== epoch || controller.signal.aborted) return
       if (result.isError) throw new Error(result.output)
-      if (tool === 'export_presentation_delivery_report') {
+      if (tool === 'export_presentation_delivery_report' || tool === 'export_presentation_pdf') {
         publish({
           phase: 'idle',
           project,
           ...(report ? { deliveryReport: report } : {}),
-          deliveryNotice: 'JSON 和 Markdown 已保存到会话附件，可在附件区下载。',
+          deliveryNotice:
+            tool === 'export_presentation_pdf'
+              ? 'PDF 预览已保存到会话附件，可在下方下载；它对应编译成果，不代表当前 PowerPoint 文档。'
+              : 'JSON 和 Markdown 已保存到会话附件，可在附件区下载。',
         })
       } else {
         if (new TextEncoder().encode(result.output).byteLength > 8 * 1024 * 1024)
@@ -959,6 +971,8 @@ export function createPresentationProjectController(
     }
   }
   return {
+    pdfAvailable: () => options.available() && options.pdfAvailable?.() === true,
+    exportProductionPdf: () => deliveryAction('export_presentation_pdf'),
     auditSources,
     readDeliveryReport: () => deliveryAction('read_presentation_delivery_report'),
     exportDeliveryReport: () => deliveryAction('export_presentation_delivery_report'),

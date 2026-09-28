@@ -7,6 +7,11 @@ import { PDFDocument } from 'pdf-lib'
 import { createPresentationService } from '../src/main/presentation-service'
 import { libreOfficeCommands } from '../src/main/presentation-page-render'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
+import {
+  benchmarkPlan,
+  benchmarkPlannedDeck,
+} from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
+import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 
 const sofficeAvailable = libreOfficeCommands().some(
   (command) => spawnSync(command, ['--version'], { timeout: 5_000 }).status === 0,
@@ -64,6 +69,7 @@ it('exports PDF only for an exact compiled request bound to the same document', 
   await service({ ...request, operation: 'compile', deck }, signal())
   expect(decode(await service(request, signal()))).toEqual({
     status: 'exported',
+    source: 'compiled',
     projectId: 'deck',
     requestId: 'first',
     slideCount: 1,
@@ -122,4 +128,115 @@ it.skipIf(!sofficeAvailable)(
     )
   },
   75_000,
+)
+
+it('exports all completed production pages in order and rejects incomplete production', async () => {
+  const userDataPath = mkdtempSync(join(tmpdir(), 'presentation-pdf-production-'))
+  const onePage = await PDFDocument.create()
+  onePage.addPage([960, 540])
+  const rendered = await onePage.save()
+  const renderPdf = vi.fn(async () => rendered)
+  const service = createPresentationService({
+    userDataPath,
+    compile: compilePresentationDeck,
+    renderPdf,
+  })
+  const deck = benchmarkPlannedDeck()
+  const request = {
+    documentId: 'office:/production',
+    projectId: deck.id,
+    requestId: 'pages',
+    source: 'production',
+  }
+  expect(
+    decode(
+      await service(
+        {
+          operation: 'save_plan',
+          documentId: request.documentId,
+          projectId: deck.id,
+          expectedRevision: 0,
+          plan: benchmarkPlan(),
+        },
+        signal(),
+      ),
+    ).revision,
+  ).toBe(1)
+  expect(
+    decode(
+      await service(
+        {
+          operation: 'production_begin',
+          documentId: request.documentId,
+          projectId: deck.id,
+          requestId: 'pages',
+          planRevision: 1,
+          deck,
+        },
+        signal(),
+      ),
+    ).status,
+  ).toBe('pending')
+  expect(decode(await service({ operation: 'export_pdf', ...request }, signal()))).toEqual({
+    error: 'page_not_ready',
+  })
+  expect(
+    decode(
+      await service(
+        {
+          operation: 'production_run',
+          documentId: request.documentId,
+          projectId: deck.id,
+          requestId: 'pages',
+        },
+        signal(),
+      ),
+    ).status,
+  ).toBe('compiled')
+  const exported = decode(await service({ operation: 'export_pdf', ...request }, signal()))
+  expect(exported.status).toBe('exported')
+  expect(exported.slideCount).toBe(8)
+  expect((await PDFDocument.load(Buffer.from(exported.pdfBase64, 'base64'))).getPageCount()).toBe(8)
+  expect(renderPdf).toHaveBeenCalledTimes(8)
+})
+
+it.skipIf(!sofficeAvailable)(
+  'renders and merges real production pages into one PDF',
+  async () => {
+    const service = createPresentationService({
+      userDataPath: mkdtempSync(join(tmpdir(), 'presentation-pdf-production-')),
+    })
+    const plan = benchmarkPlan()
+    const deck = benchmarkPlannedDeck()
+    plan.slides = plan.slides.slice(0, 2)
+    deck.slides = deck.slides.slice(0, 2)
+    const common = { documentId: 'office:/two-pages', projectId: deck.id, requestId: 'pages' }
+    expect(
+      decode(
+        await service(
+          {
+            operation: 'save_plan',
+            documentId: common.documentId,
+            projectId: deck.id,
+            expectedRevision: 0,
+            plan,
+          },
+          signal(),
+        ),
+      ).revision,
+    ).toBe(1)
+    await service({ operation: 'production_begin', ...common, planRevision: 1, deck }, signal())
+    expect(decode(await service({ operation: 'production_run', ...common }, signal())).status).toBe(
+      'compiled',
+    )
+    const exported = decode(
+      await service({ operation: 'export_pdf', ...common, source: 'production' }, signal()),
+    )
+    expect(exported.status).toBe('exported')
+    expect(exported.source).toBe('production')
+    expect((await PDFDocument.load(Buffer.from(exported.pdfBase64, 'base64'))).getPageCount()).toBe(
+      2,
+    )
+  },
+  120_000,
 )
