@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "assetId": "P0-13-IMG-01",
+      "file": "images/schematic-01.png",
+      "sha256": "7d38aa598d1ba91551d70307e3c9c91abffd5b39d1b9f9844f479204bdd9fe10",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 1; not research measurement data"
+    },
+    {
+      "assetId": "P0-13-IMG-02",
+      "file": "images/schematic-02.png",
+      "sha256": "0a9461ecbb0bc493e2c2abae3d6e2dc061d845c27440874994b0cd264628854f",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 2; not research measurement data"
+    },
+    {
+      "assetId": "P0-13-IMG-03",
+      "file": "images/schematic-03.png",
+      "sha256": "5ee48219ef82660dc167a5625cfc2c3adea7ca6e2dc40452a18294f6d9e55efb",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 3; not research measurement data"
+    },
+    {
+      "assetId": "P0-13-IMG-04",
+      "file": "images/schematic-04.png",
+      "sha256": "87c423a1df59392b1f9b57cd4a441581eea79c1f235dbcb2e7fb62caa5cc3419",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 4; not research measurement data"
+    },
+    {
+      "assetId": "P0-13-IMG-05",
+      "file": "images/schematic-05.png",
+      "sha256": "0928eb6058cfcfe39cdcc948fa681087409eba1143905c34a6e9e72aecac3575",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 5; not research measurement data"
+    },
+    {
+      "assetId": "P0-13-IMG-06",
+      "file": "images/schematic-06.png",
+      "sha256": "1da31e481bed0673628daef1a29ca0cd0eaf845788fb4b87328dd016c7132977",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 6; not research measurement data"
+    },
+    {
+      "assetId": "P0-13-IMG-07",
+      "file": "images/schematic-07.png",
+      "sha256": "4772b5f6ff4767049b2fe56128be8c776ea0fac52d31336ceca011005c6f7812",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 7; not research measurement data"
+    },
+    {
+      "assetId": "P0-13-IMG-08",
+      "file": "images/schematic-08.png",
+      "sha256": "2a32776d0fb6d11018b5a323e68b64488ae361e03f1ca1c793a4cf93dcb003ab",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 8; not research measurement data"
+    },
+    {
+      "assetId": "P0-13-IMG-09",
+      "file": "images/schematic-09.png",
+      "sha256": "dc78b4db769a42a8cb6c0bca68390b313a88a95aa1e2e67894d3f887d363dd77",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 9; not research measurement data"
+    },
+    {
+      "assetId": "P0-13-IMG-10",
+      "file": "images/schematic-10.png",
+      "sha256": "dbc97bcad4f78069941784040743756cc9780bae5e07be555916c29e25457cd5",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 10; not research measurement data"
+    },
+    {
+      "assetId": "P0-13-IMG-11",
+      "file": "images/schematic-11.png",
+      "sha256": "e91d5529ae52f579bfbfa205b1464bb0c2434dd29451ced61d73951ec97b8a9c",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 11; not research measurement data"
+    },
+    {
+      "assetId": "P0-13-IMG-12",
+      "file": "images/schematic-12.png",
+      "sha256": "3c0d1e4b09842edd33bb1519a4fcfd7226bf4281b3677cce0bfb9812a6fc2134",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark and image replacement testing",
+      "attribution": "WisWork self-authored schematic 12; not research measurement data"
+    }
+  ]
+}
