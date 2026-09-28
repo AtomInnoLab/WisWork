@@ -360,7 +360,10 @@ test('fails closed on mismatched metadata, origin and unhashed entry', async (t)
     /manifest origin mismatch/,
   )
   await writeFile(resolve(dist, 'taskpane.html'), '<script src="/assets/taskpane.js"></script>')
-  await assert.rejects(inspectOfficeBuild(dist, 'https://office.example'), /missing hashed/)
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /invalid Office script reference/,
+  )
 })
 
 test('fails on source maps and unresolved connect policy', async (t) => {
@@ -378,12 +381,36 @@ test('fails on source maps and unresolved connect policy', async (t) => {
   await assert.rejects(inspectOfficeBuild(dist, 'https://office.example'), /source map/)
 })
 
+test('requires hashed runtime assets and rejects extra remote HTML scripts', async (t) => {
+  const dist = await artifact(t)
+  await writeFile(resolve(dist, 'assets/runtime.js'), 'self.onmessage=()=>{}')
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /unhashed Office runtime asset/,
+  )
+  await rm(resolve(dist, 'assets/runtime.js'))
+  await writeFile(resolve(dist, 'assets/theme.css'), 'body{color:red}')
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /unhashed Office runtime asset/,
+  )
+  await rm(resolve(dist, 'assets/theme.css'))
+  await writeFile(
+    resolve(dist, 'taskpane.html'),
+    '<script src="/assets/taskpane-AbC_123.js"></script><script src="https://other.example/extra.js"></script>',
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /invalid Office script reference/,
+  )
+})
+
 test('rejects unlisted and symlinked release files', async (t) => {
   const dist = await artifact(t)
   await writeFile(resolve(dist, 'assets/unexpected.map'), '{}')
   await assert.rejects(inspectOfficeBuild(dist, 'https://office.example'), /source map/)
   await rm(resolve(dist, 'assets/unexpected.map'))
-  await symlink('../version.json', resolve(dist, 'assets/linked.js'))
+  await symlink('../version.json', resolve(dist, 'assets/linked-AbC_123.js'))
   await assert.rejects(
     inspectOfficeBuild(dist, 'https://office.example'),
     /invalid Office release file/,

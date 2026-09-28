@@ -56,6 +56,35 @@ function referencedStylesheets(html) {
   return referenced
 }
 
+function taskpaneScript(html) {
+  const scripts = [...html.matchAll(/<script\b[^>]*>/g)].map(
+    ([element]) => element.match(/\bsrc=["']([^"']+)["']/)?.[1],
+  )
+  const entries = scripts.filter((src) =>
+    /^\/assets\/taskpane-[A-Za-z0-9_-]{7,}\.js$/.test(src || ''),
+  )
+  if (
+    entries.length !== 1 ||
+    scripts.some(
+      (src) =>
+        src !== entries[0] && src !== 'https://appsforoffice.microsoft.com/lib/1/hosted/office.js',
+    ) ||
+    scripts.filter((src) => src === 'https://appsforoffice.microsoft.com/lib/1/hosted/office.js')
+      .length > 1
+  )
+    throw new Error('invalid Office script reference')
+  return entries[0].slice(1)
+}
+
+function releaseAsset(path) {
+  return (
+    path === 'assets/icon.png' ||
+    /^assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{7,}\.(?:js|mjs|css|png|jpe?g|gif|svg|webp|woff2?)$/.test(
+      path,
+    )
+  )
+}
+
 export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
   const origin = new URL(expectedOrigin)
   if (origin.protocol !== 'https:' || origin.origin !== expectedOrigin)
@@ -75,12 +104,8 @@ export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
   const manifest = await readFile(resolve(dist, 'manifest.xml'), 'utf8')
   const referenced = [...checkManifest(manifest, expectedOrigin), ...referencedStylesheets(html)]
   if (html.includes('__WISWORK_CONNECT_ORIGINS__')) throw new Error('unresolved connect policy')
-  const scripts = [...html.matchAll(/<script\b[^>]*\bsrc="(\/assets\/[^"?]+\.js)"/g)].map((match) =>
-    match[1].slice(1),
-  )
-  if (scripts.length !== 1 || !/^assets\/taskpane-[A-Za-z0-9_-]+\.js$/.test(scripts[0]))
-    throw new Error('missing hashed taskpane entry')
-  const script = await readFile(resolve(dist, scripts[0]))
+  const entry = taskpaneScript(html)
+  const script = await readFile(resolve(dist, entry))
   if (!script.toString('utf8').includes(metadata.buildId))
     throw new Error('buildId differs from compiled taskpane')
   const files = []
@@ -89,6 +114,8 @@ export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
     const stat = await lstat(resolve(dist, path))
     if (stat.isDirectory()) continue
     if (path.endsWith('.map')) throw new Error('source map in release artifact')
+    if (path.startsWith('assets/') && !releaseAsset(path))
+      throw new Error(`unhashed Office runtime asset: ${path}`)
     if (
       !stat.isFile() ||
       (!['version.json', 'taskpane.html', 'manifest.xml'].includes(path) &&
@@ -109,7 +136,7 @@ export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
     buildId: metadata.buildId,
     presentationRolloutPercent: metadata.presentationRolloutPercent,
     diagnosticSamplePercent: metadata.diagnosticSamplePercent,
-    script: scripts[0],
+    script: entry,
     scriptSha256: sha256(script),
     htmlSha256: sha256(htmlBytes),
     files,
