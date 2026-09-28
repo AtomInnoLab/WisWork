@@ -386,15 +386,17 @@ export function createOfficeAgentSession(dependencies: {
           }
         }
       }
+      const runId = activeRunId
       const outcome = await dependencies.skill.executeTool(call, signal)
-      if (activeRunId && dependencies.runCheckpoint?.tool && !('kind' in outcome))
-        void dependencies.runCheckpoint
-          .tool(activeRunId, 'tool_completed', call.name)
-          .catch(() => undefined)
       if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') return outcome
       const proposal = proposals.pending()
-      if (!proposal) return outcome
-      return suspendToolExecution(finalProposalExecution(proposal.id, outcome, call.name))
+      if (proposal)
+        return suspendToolExecution(finalProposalExecution(proposal.id, outcome, call.name))
+      if (runId && dependencies.runCheckpoint?.tool)
+        await dependencies.runCheckpoint
+          .tool(runId, 'tool_completed', call.name)
+          .catch(() => undefined)
+      return outcome
     },
   }
   const clearConversation = () => {

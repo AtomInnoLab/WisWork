@@ -185,6 +185,53 @@ describe('Office agent session', () => {
     expect(finish.mock.calls[0]?.[0]).toBe(begin.mock.calls[0]?.[0])
   })
 
+  it('waits for an ordinary tool completion checkpoint before the next request', async () => {
+    const harness = transportHarness()
+    let savePending!: () => void
+    let saveCompleted!: () => void
+    const executeTool = vi.fn(async () => ({ output: 'read', summary: 'Read document' }))
+    const begin = vi.fn(async (_runId: string) => undefined)
+    const tool = vi.fn(
+      (_runId: string, phase: 'tool_pending' | 'tool_completed') =>
+        new Promise<void>((resolve) => {
+          if (phase === 'tool_pending') savePending = resolve
+          else saveCompleted = resolve
+        }),
+    )
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'read_document', description: 'read', inputSchema: { type: 'object' } }],
+        executeTool,
+      },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: { interrupted: false, begin, tool, finish: vi.fn(async () => undefined) },
+    })
+
+    session.send('read')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'read-1', name: 'read_document', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_pending', 'read_document'),
+    )
+    expect(executeTool).not.toHaveBeenCalled()
+
+    savePending()
+    await vi.waitFor(() =>
+      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'read_document'),
+    )
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(tool.mock.calls[0]?.[0]).toBe(begin.mock.calls[0]?.[0])
+    expect(tool.mock.calls[1]?.[0]).toBe(begin.mock.calls[0]?.[0])
+    expect(harness.stream).toHaveBeenCalledOnce()
+
+    saveCompleted()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+  })
+
   it('does not start a run when its checkpoint cannot be saved', async () => {
     const harness = transportHarness()
     const session = createOfficeAgentSession({
