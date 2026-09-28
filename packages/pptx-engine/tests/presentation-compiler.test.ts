@@ -124,6 +124,48 @@ describe('presentation contract and compiler', () => {
       'presentation_compile:structure_mismatch',
     )
   })
+  it('rejects changed image alt text and removed cover crop', async () => {
+    const deck = benchmarkDeck()
+    const image = deck.slides[2]!.elements.find((element) => element.kind === 'image')
+    if (!image || image.kind !== 'image') throw new Error('invalid fixture')
+    image.altText = '实验装置照片'
+    image.fit = 'cover'
+    image.w = 4
+    image.h = 2
+    const { bytes } = await compilePresentationDeck(deck)
+    const zip = await JSZip.loadAsync(bytes)
+    const path = 'ppt/slides/slide3.xml'
+    const original = await zip.file(path)!.async('string')
+    expect(original).toContain('descr="实验装置照片"')
+    expect(original).toContain('<a:srcRect')
+    zip.file(path, original.replace('descr="实验装置照片"', 'descr="错误说明"'))
+    await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+    zip.file(path, original.replace(/<a:srcRect[^>]*\/>/, ''))
+    await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+    const alteredCrop = original.replace(
+      /(<a:srcRect[^>]*\bt=")\d+/,
+      (_, prefix: string) => `${prefix}5000`,
+    )
+    expect(alteredCrop).not.toBe(original)
+    zip.file(path, alteredCrop)
+    await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+    image.fit = 'contain'
+    const contained = await compilePresentationDeck(deck)
+    const containZip = await JSZip.loadAsync(contained.bytes)
+    const containXml = await containZip.file(path)!.async('string')
+    const alteredContain = containXml.replace('<p:blipFill>', '<p:blipFill><a:srcRect t="25000"/>')
+    expect(alteredContain).not.toBe(containXml)
+    containZip.file(path, alteredContain)
+    await expect(verifyCompiledPresentationStructure(containZip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+  })
   it('rejects changed native background, text, shape and table styles', async () => {
     const deck = benchmarkDeck()
     const { bytes } = await compilePresentationDeck(deck)

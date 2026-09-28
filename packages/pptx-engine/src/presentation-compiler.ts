@@ -260,12 +260,48 @@ export async function verifyCompiledPresentationStructure(
             throw new Error('presentation_compile:structure_mismatch')
         }
         if (element.kind === 'image') {
-          const id = object['p:blipFill']?.['a:blip']?.['@_r:embed']
-          if (typeof id !== 'string') throw new Error('presentation_compile:structure_mismatch')
-          const path = await linkedPart(id, 'image')
+          if (
+            object[nv]?.['p:cNvPr']?.['@_descr'] !==
+            (element.altText ?? 'Image description missing')
+          )
+            throw new Error('presentation_compile:structure_mismatch')
           const asset = deck.assets.find((item) => item.id === element.assetId)
           if (!asset || !('base64' in asset))
             throw new Error('presentation_compile:structure_mismatch')
+          const crop = object['p:blipFill']?.['a:srcRect'] as XmlNode | undefined
+          if (element.fit === 'cover') {
+            if (!crop) throw new Error('presentation_compile:structure_mismatch')
+            const sourceAspect = asset.width / asset.height
+            const targetAspect = element.w / element.h
+            const expectedCrop =
+              sourceAspect > targetAspect
+                ? {
+                    l: (1 - targetAspect / sourceAspect) * 50000,
+                    r: (1 - targetAspect / sourceAspect) * 50000,
+                    t: 0,
+                    b: 0,
+                  }
+                : {
+                    l: 0,
+                    r: 0,
+                    t: (1 - sourceAspect / targetAspect) * 50000,
+                    b: (1 - sourceAspect / targetAspect) * 50000,
+                  }
+            if (
+              Object.entries(expectedCrop).some(([side, expected]) => {
+                const actual = Number(crop[`@_${side}`] ?? 0)
+                return !Number.isFinite(actual) || Math.abs(actual - expected) > 100
+              })
+            )
+              throw new Error('presentation_compile:structure_mismatch')
+          } else if (
+            crop &&
+            ['l', 'r', 't', 'b'].some((side) => Number(crop[`@_${side}`] ?? 0) !== 0)
+          )
+            throw new Error('presentation_compile:structure_mismatch')
+          const id = object['p:blipFill']?.['a:blip']?.['@_r:embed']
+          if (typeof id !== 'string') throw new Error('presentation_compile:structure_mismatch')
+          const path = await linkedPart(id, 'image')
           const key = `${asset.id}/${path}`
           if (!verifiedImages.has(key)) {
             if (
