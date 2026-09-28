@@ -509,7 +509,9 @@ export function presentationWorkflowSummary(
     : !production
       ? sourceProblems.length
         ? '检查并补齐计划引用的资料，再决定是否开始生产'
-        : '按已保存计划启动逐页生产'
+        : project.sourcePreparationUnavailable
+          ? '资料状态暂不可读取；先刷新项目状态并核对计划引用资料'
+          : '按已保存计划启动逐页生产'
       : planChangedSinceProduction
         ? '核对已保存的新计划，选择继续旧任务或按新计划重新生产'
         : production.revision

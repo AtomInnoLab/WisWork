@@ -83,6 +83,9 @@ it('shows document-bound source preparation without claiming source truth', () =
   expect(presentationWorkflowSummary(withSource, undefined, undefined)?.attention).toContainEqual(
     expect.objectContaining({ id: 'source-preparation-unavailable' }),
   )
+  expect(presentationWorkflowSummary(withSource, undefined, undefined)?.nextAction).toContain(
+    '资料状态',
+  )
 })
 
 it('shows the chosen domain sections only for the matching plan revision', () => {
