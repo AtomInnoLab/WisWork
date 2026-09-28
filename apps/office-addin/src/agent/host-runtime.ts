@@ -1051,6 +1051,7 @@ export function createOfficeHostRuntime(
     const isProduction = [
       'import_presentation_production',
       'read_presentation_production_import_status',
+      'reconcile_presentation_production_import',
     ].includes(call.name)
     const result = await (isProduction ? productionDelivery! : delivery!).executeTool(call, signal)
     if (captured !== productionEpoch || signal?.aborted)
@@ -1101,14 +1102,7 @@ export function createOfficeHostRuntime(
               ? executeEvidenceDelivery(call, signal)
               : productionJobs?.tools.some((tool) => tool.name === call.name)
                 ? executeProductionJob(call, signal)
-                : [
-                      'stage_presentation_page_replacement',
-                      'inspect_presentation_page_replacement',
-                      'resume_presentation_page_replacement',
-                      'discard_presentation_page_replacement',
-                      'commit_presentation_page_replacement',
-                      'undo_presentation_page_replacement',
-                    ].includes(call.name) && pageReplacement
+                : pageReplacement?.tools.some((tool) => tool.name === call.name)
                   ? executeChangeTool(call, signal)
                   : ['save_presentation_page_backup', 'read_presentation_page_backup'].includes(
                         call.name,
@@ -1128,25 +1122,7 @@ export function createOfficeHostRuntime(
                           'prepare_presentation_production_import',
                         ].includes(call.name) && production
                       ? executeProduction(call, signal)
-                      : [
-                            'read_presentation_page',
-                            'read_presentation_text_change',
-                            'inspect_presentation_text_change',
-                            'undo_presentation_text_change',
-                            'resume_presentation_text_change',
-                            'edit_presentation_page_text',
-                            'read_presentation_page_geometry',
-                            'read_presentation_geometry_change',
-                            'inspect_presentation_geometry_change',
-                            'resume_presentation_geometry_change',
-                            'undo_presentation_geometry_change',
-                            'edit_presentation_page_geometry',
-                            'undo_presentation_image_replacement',
-                            'replace_presentation_page_image',
-                            'read_presentation_image_replacement',
-                            'inspect_presentation_image_replacement',
-                            'resume_presentation_image_replacement',
-                          ].includes(call.name) && pageEditing
+                      : pageEditing?.tools.some((tool) => tool.name === call.name)
                         ? executeChangeTool(call, signal)
                         : [
                               'capture_presentation_page_qa',
@@ -1166,6 +1142,7 @@ export function createOfficeHostRuntime(
                                 : [
                                       'import_presentation_production',
                                       'read_presentation_production_import_status',
+                                      'reconcile_presentation_production_import',
                                     ].includes(call.name) && productionDelivery
                                   ? executeDelivery(call, signal)
                                   : [

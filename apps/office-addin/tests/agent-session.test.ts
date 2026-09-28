@@ -201,6 +201,10 @@ describe('Office agent session', () => {
         kind: 'system',
         text: expect.stringContaining(detail),
       })
+      if (status === 'uncertain')
+        expect(session.snapshot().timeline[0]).toMatchObject({
+          text: expect.stringContaining('reconcile_presentation_production_import'),
+        })
       expect(harness.stream).not.toHaveBeenCalled()
     },
   )

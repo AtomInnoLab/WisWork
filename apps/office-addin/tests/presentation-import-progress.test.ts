@@ -15,8 +15,18 @@ it('shows completed, pending and uncertain pages as saved records without claimi
           completed: 1,
           status: 'uncertain',
           pages: [
-            { id: 'one', title: '第一页', state: 'complete', completedAt: '2026-09-24T00:00:00.000Z' },
-            { id: 'two', title: '第二页', state: 'uncertain', startedAt: '2026-09-24T00:01:00.000Z' },
+            {
+              id: 'one',
+              title: '第一页',
+              state: 'complete',
+              completedAt: '2026-09-24T00:00:00.000Z',
+            },
+            {
+              id: 'two',
+              title: '第二页',
+              state: 'uncertain',
+              startedAt: '2026-09-24T00:01:00.000Z',
+            },
             { id: 'three', title: '第三页', state: 'pending' },
           ],
         }),
@@ -43,4 +53,23 @@ it('shows invalid persisted state as an actionable error', () => {
     }),
   )
   expect(markup).toContain('避免重复插页')
+})
+it('offers read-only page reconciliation for an uncertain production import', () => {
+  const markup = renderToStaticMarkup(
+    createElement(PresentationImportProgressCard, {
+      controller: {
+        revision: () => 1,
+        subscribe: () => () => undefined,
+        read: (): PresentationImportProgress => ({
+          source: 'production',
+          total: 1,
+          completed: 0,
+          status: 'uncertain',
+          pages: [{ id: 'one', title: '第一页', state: 'uncertain' }],
+        }),
+      },
+    }),
+  )
+  expect(markup).toContain('核对宿主页与已准备的单页文件')
+  expect(markup).toContain('只有内容完全一致才会恢复进度')
 })

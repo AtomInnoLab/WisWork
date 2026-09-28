@@ -35,7 +35,9 @@ export function PresentationImportProgressCard({
       </p>
       <p>
         {progress.status === 'uncertain'
-          ? '有页面的写入结果不确定，已停止自动重试，请先检查文档。'
+          ? progress.source === 'production'
+            ? '有页面的写入结果不确定，已停止自动重试。可让 Agent 核对宿主页与已准备的单页文件；只有内容完全一致才会恢复进度。'
+            : '有页面的写入结果不确定，已停止自动重试，请先检查文档。'
           : progress.status === 'complete'
             ? '全部页面已有导入记录；尚未完成视觉与保存重开验证。'
             : progress.status === 'partial'
@@ -49,11 +51,14 @@ export function PresentationImportProgressCard({
             <li key={page.id}>
               {page.title} ·{' '}
               {{ pending: '待导入', complete: '已记录完成', uncertain: '结果不确定' }[page.state]}
-              {(page.completedAt ?? page.startedAt) && <>
-                {' · '}<time dateTime={page.completedAt ?? page.startedAt}>
-                  {page.completedAt ?? page.startedAt}
-                </time>
-              </>}
+              {(page.completedAt ?? page.startedAt) && (
+                <>
+                  {' · '}
+                  <time dateTime={page.completedAt ?? page.startedAt}>
+                    {page.completedAt ?? page.startedAt}
+                  </time>
+                </>
+              )}
             </li>
           ))}
         </ol>

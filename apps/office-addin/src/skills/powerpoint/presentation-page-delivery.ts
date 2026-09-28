@@ -348,7 +348,7 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
         : [readTool]
     },
     systemPrompt:
-      'Read saved page import progress after interruption. Resume only the remaining pages after the confirmed completed prefix, and only when there is no uncertain page. Never repeat completed pages. Never delete or replay an uncertain page automatically.',
+      'Read saved page import progress after interruption. For an uncertain production page, try reconcile_presentation_production_import to read the appended host page and compare its complete PPTX package with the prepared source; if it cannot prove equality, leave the page uncertain for human inspection. Resume only the remaining pages after the confirmed completed prefix, and only when there is no uncertain page. Never repeat completed pages. Never delete or replay an uncertain page automatically.',
     async executeTool(call, signal) {
       try {
         const read = call.name === readTool.name

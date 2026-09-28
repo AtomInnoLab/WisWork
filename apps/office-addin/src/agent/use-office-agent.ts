@@ -237,7 +237,7 @@ export function createOfficeAgentSession(dependencies: {
     ? importReceipt.state === 'complete'
       ? `已找到对应导入回执：${importReceipt.completed} 页完成。请核对宿主页面，勿重复导入。`
       : importReceipt.state === 'uncertain'
-        ? `已找到对应导入回执：${importReceipt.completed} 页完成，下一页结果不确定。请先核对宿主页面，勿直接重试。`
+        ? `已找到对应导入回执：${importReceipt.completed} 页完成，下一页结果不确定。${dependencies.runCheckpoint?.recovery?.toolName === 'import_presentation_production' ? '可让 Agent 调用 reconcile_presentation_production_import 核对该页；核对失败时请人工检查。' : '请先核对宿主页面。'}勿直接重试。`
         : `已找到对应导入回执：${importReceipt.completed}/${importReceipt.total ?? '?'} 页完成。可核对后从剩余页面继续。`
     : ''
   const changeReceipt = dependencies.runCheckpoint?.recovery?.changeReceipt

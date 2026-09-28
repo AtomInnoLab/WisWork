@@ -183,6 +183,50 @@ describe('host runtime composition', () => {
 })
 
 describe('presentation capability composition', () => {
+  it('routes the advertised production import reconciliation tool to its owner', async () => {
+    vi.stubGlobal('Office', {
+      context: { host: 'PowerPoint', requirements: { isSetSupported: () => true } },
+    })
+    vi.stubGlobal('PowerPoint', { run: vi.fn() })
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request: vi.fn(),
+        documentId: async () => 'doc',
+        lastProject: () => undefined,
+        rememberProject: async () => undefined,
+        readReceipt: () => undefined,
+        writeReceipt: async () => undefined,
+        readPageReplacement: () => undefined,
+        writePageReplacement: async () => undefined,
+      },
+    })
+    try {
+      expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
+        'reconcile_presentation_production_import',
+      )
+      expect(
+        await runtime.skill.executeTool({
+          id: 'reconcile',
+          name: 'reconcile_presentation_production_import',
+          input: {},
+        }),
+      ).toMatchObject({ isError: true, output: 'presentation_restore_required' })
+      expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
+        'reconcile_presentation_page_replacement',
+      )
+      expect(
+        await runtime.skill.executeTool({
+          id: 'replace-reconcile',
+          name: 'reconcile_presentation_page_replacement',
+          input: { project_id: 'project', change_id: 'change' },
+        }),
+      ).toMatchObject({ isError: true, output: 'presentation_restore_required' })
+    } finally {
+      runtime.dispose()
+      vi.unstubAllGlobals()
+    }
+  })
   it('exposes generation only after negotiation and removes it after disconnect', async () => {
     let connected = false
     const runtime = createOfficeHostRuntime('powerpoint', {
