@@ -35,7 +35,15 @@ export interface PresentationProjectStatus {
   sourcePreparation?: {
     sourceId: string
     attachmentId: string
-    status: 'ready' | 'uploading' | 'failed' | 'missing' | 'unsupported'
+    status:
+      | 'ready'
+      | 'excerpt_matched'
+      | 'uploading'
+      | 'failed'
+      | 'missing'
+      | 'unsupported'
+      | 'excerpt_mismatch'
+      | 'excerpt_missing'
   }[]
   sourcePreparationUnavailable?: boolean
   reviewComments?: {
@@ -382,7 +390,16 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
           Object.keys(item).sort().join(',') !== 'attachmentId,sourceId,status' ||
           item.sourceId !== expected[index]!.sourceId ||
           item.attachmentId !== expected[index]!.attachmentId ||
-          !['ready', 'uploading', 'failed', 'missing', 'unsupported'].includes(item.status),
+          ![
+            'ready',
+            'excerpt_matched',
+            'uploading',
+            'failed',
+            'missing',
+            'unsupported',
+            'excerpt_mismatch',
+            'excerpt_missing',
+          ].includes(item.status),
       )
     )
       throw new Error('presentation_response_invalid')

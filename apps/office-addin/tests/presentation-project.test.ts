@@ -354,6 +354,12 @@ describe('plan-only project status', () => {
     f.request.mockResolvedValueOnce(new Response(JSON.stringify(value)))
     await f.controller.refresh()
     expect(f.controller.snapshot().project?.sourcePreparation).toEqual(value.sourcePreparation)
+    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ ...value, sourcePreparation: [{ ...value.sourcePreparation[0], status: 'excerpt_matched' }] })))
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.sourcePreparation?.[0]?.status).toBe('excerpt_matched')
+    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ ...value, sourcePreparation: [{ ...value.sourcePreparation[0], status: 'excerpt_mismatch' }] })))
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.sourcePreparation?.[0]?.status).toBe('excerpt_mismatch')
     f.request.mockResolvedValueOnce(
       new Response(
         JSON.stringify({

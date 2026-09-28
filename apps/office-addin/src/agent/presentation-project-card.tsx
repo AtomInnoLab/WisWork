@@ -348,11 +348,14 @@ export function PresentationProjectCard(props: {
         <section aria-label="附件来源准备状态">
           <p role="status">
             附件来源{' '}
-            {project.sourcePreparation.filter((source) => source.status === 'ready').length} /{' '}
-            {project.sourcePreparation.length} 已就绪
+            {
+              project.sourcePreparation.filter((source) => source.status === 'excerpt_matched')
+                .length
+            }{' '}
+            / {project.sourcePreparation.length} 已就绪
           </p>
-          {project.sourcePreparation.some((source) => source.status !== 'ready') && (
-            <p>未就绪来源会阻止引用它的页面编译；请补齐资料后继续该页任务。</p>
+          {project.sourcePreparation.some((source) => source.status !== 'excerpt_matched') && (
+            <p>请处理未确认的来源：补齐资料、修订计划摘录，或升级旧版 PC 后核对。</p>
           )}
           {project.production?.pages.some((page) => page.error === 'source_unavailable') && (
             <p>附件已就绪但摘录未匹配时，请核对附件原文，修订计划摘录后启动新任务。</p>
@@ -365,17 +368,22 @@ export function PresentationProjectCard(props: {
                 ：
                 {
                   {
-                    ready: '已解析，编译前仍会复核',
+                    ready: '旧版 PC 仅确认已解析，摘录未核对',
+                    excerpt_matched: '摘录已匹配，编译前仍会复核',
                     uploading: '上传中',
                     failed: '解析失败',
                     missing: '附件缺失',
                     unsupported: '不是可读文本',
+                    excerpt_mismatch: '摘录不在附件原文中',
+                    excerpt_missing: '计划摘录为空',
                   }[source.status]
                 }
               </li>
             ))}
           </ul>
-          <p>就绪来自保存的解析状态；编译前会复核实际内容。它不代表引文准确、事实可靠或信息仍然有效。</p>
+          <p>
+            就绪表示当前附件的计划摘录逐字匹配原文；编译前会复核。它不代表引文准确、事实可靠或信息仍然有效。
+          </p>
         </section>
       )}
       {project?.plan && (

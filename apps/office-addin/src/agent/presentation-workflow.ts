@@ -50,9 +50,10 @@ export function presentationWorkflowSummary(
   if (!project) return undefined
   const plan = project.plan?.value
   const preparedSources = project.sourcePreparation
-  const sourceProblems = preparedSources?.filter((source) => source.status !== 'ready') ?? []
+  const sourceProblems =
+    preparedSources?.filter((source) => source.status !== 'excerpt_matched') ?? []
   const sourceStatus = preparedSources
-    ? `；当前文档引用附件 ${preparedSources.filter((source) => source.status === 'ready').length}/${preparedSources.length} 份已解析为文本${sourceProblems.length ? `，${sourceProblems.length} 份需处理` : ''}`
+    ? `；当前文档引用附件 ${preparedSources.filter((source) => source.status === 'excerpt_matched').length}/${preparedSources.length} 份摘录已匹配原文${sourceProblems.length ? `，${sourceProblems.length} 份需处理` : ''}`
     : project.sourcePreparationUnavailable
       ? '；当前文档引用附件状态暂不可读取'
       : ''
@@ -171,7 +172,10 @@ export function presentationWorkflowSummary(
               failed: '解析失败',
               missing: '缺失',
               unsupported: '非文本资料',
-              ready: '已就绪',
+              excerpt_mismatch: '摘录不在原文中',
+              excerpt_missing: '计划摘录为空',
+              ready: '旧版 PC 未核对摘录',
+              excerpt_matched: '摘录已匹配',
             }[source.status]
           }）`,
       )
@@ -356,7 +360,7 @@ export function presentationWorkflowSummary(
   if (preparedSources)
     timeline.push({
       id: 'source-preparation',
-      text: `当前文档资料检查点：${preparedSources.filter((source) => source.status === 'ready').length}/${preparedSources.length} 份计划引用附件可读取原文；来源真实性未核验`,
+      text: `当前文档资料检查点：${preparedSources.filter((source) => source.status === 'excerpt_matched').length}/${preparedSources.length} 份计划引用附件的摘录逐字匹配原文；来源真实性未核验`,
     })
   if (plan) {
     const revisions = project.plan!.revisions
@@ -508,7 +512,13 @@ export function presentationWorkflowSummary(
     ? '保存 Brief、资料、故事线与样式规范'
     : !production
       ? sourceProblems.length
-        ? '检查并补齐计划引用的资料，再决定是否开始生产'
+        ? sourceProblems.some((source) =>
+            ['excerpt_mismatch', 'excerpt_missing'].includes(source.status),
+          )
+          ? '核对附件原文并修订计划摘录，再决定是否开始生产'
+          : sourceProblems.some((source) => source.status === 'ready')
+            ? '旧版 PC 尚未核对计划摘录；请升级 PC 或使用来源核对工具后再生产'
+            : '检查并补齐计划引用的资料，再决定是否开始生产'
         : project.sourcePreparationUnavailable
           ? '资料状态暂不可读取；先刷新项目状态并核对计划引用资料'
           : '按已保存计划启动逐页生产'

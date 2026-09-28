@@ -65,7 +65,7 @@ describe('presentation attachment service integration', () => {
     })
     await send({ operation: 'attachment_finish', attachmentId })
     service = createPresentationService({ userDataPath })
-    expect((await send({ operation: 'status' })).sourcePreparation[0].status).toBe('ready')
+    expect((await send({ operation: 'status' })).sourcePreparation[0].status).toBe('excerpt_matched')
     expect(await send({ operation: 'audit_sources' })).toMatchObject({
       projectId: plan.projectId,
       planRevision: 1,
@@ -80,9 +80,11 @@ describe('presentation attachment service integration', () => {
     revised.sources[0]!.excerpt = 'An excerpt absent from the file'
     await send({ operation: 'save_plan', expectedRevision: 1, plan: revised })
     expect((await send({ operation: 'audit_sources' })).sources[0].status).toBe('not_found')
+    expect((await send({ operation: 'status' })).sourcePreparation[0].status).toBe('excerpt_mismatch')
     revised.sources[0]!.excerpt = ''
     await send({ operation: 'save_plan', expectedRevision: 2, plan: revised })
     expect((await send({ operation: 'audit_sources' })).sources[0].status).toBe('empty_excerpt')
+    expect((await send({ operation: 'status' })).sourcePreparation[0].status).toBe('excerpt_missing')
     const docHash = createHash('sha256').update(documentId).digest('hex')
     writeFileSync(
       join(userDataPath, 'presentation-attachments', docHash, attachmentId, 'text.txt'),

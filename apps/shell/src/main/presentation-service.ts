@@ -758,14 +758,23 @@ export function createPresentationService(options: {
             | {
                 sourceId: string
                 attachmentId: string
-                status: 'ready' | 'uploading' | 'failed' | 'missing' | 'unsupported'
+                status:
+                  | 'excerpt_matched'
+                  | 'uploading'
+                  | 'failed'
+                  | 'missing'
+                  | 'unsupported'
+                  | 'excerpt_mismatch'
+                  | 'excerpt_missing'
               }[]
             | undefined
           let sourcePreparationUnavailable = false
           if (plan) {
             const references = plan.value.sources.flatMap((source) => {
               const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
-              return match ? [{ sourceId: source.id, attachmentId: match[1]! }] : []
+              return match
+                ? [{ sourceId: source.id, attachmentId: match[1]!, excerpt: source.excerpt }]
+                : []
             })
             if (references.length) {
               try {
@@ -786,16 +795,41 @@ export function createPresentationService(options: {
                     }
                     if (item.attachmentId !== reference.attachmentId)
                       throw new Error('invalid_state')
+                    let status: NonNullable<typeof sourcePreparation>[number]['status'] =
+                      item.status === 'ready' ? 'unsupported' : item.status
+                    if (item.status === 'ready' && item.kind === 'text') {
+                      const match = (await attachments(
+                        {
+                          operation: 'attachment_match_excerpt',
+                          documentId,
+                          attachmentId: reference.attachmentId,
+                          excerpt: reference.excerpt,
+                        },
+                        signal,
+                      )) as { attachmentId?: unknown; status?: unknown }
+                      if (match.attachmentId !== reference.attachmentId)
+                        throw new Error('invalid_state')
+                      status = {
+                        found: 'excerpt_matched',
+                        not_found: 'excerpt_mismatch',
+                        empty_excerpt: 'excerpt_missing',
+                        not_ready: 'uploading',
+                        unsupported: 'unsupported',
+                      }[String(match.status)] as typeof status
+                      if (!status) throw new Error('invalid_state')
+                    }
                     sourcePreparation.push({
-                      ...reference,
-                      status:
-                        item.status === 'ready' && item.kind !== 'text'
-                          ? 'unsupported'
-                          : item.status,
+                      sourceId: reference.sourceId,
+                      attachmentId: reference.attachmentId,
+                      status,
                     })
                   } catch (error) {
                     if (!(error instanceof Error) || error.message !== 'not_found') throw error
-                    sourcePreparation.push({ ...reference, status: 'missing' })
+                    sourcePreparation.push({
+                      sourceId: reference.sourceId,
+                      attachmentId: reference.attachmentId,
+                      status: 'missing',
+                    })
                   }
                 }
               } catch {

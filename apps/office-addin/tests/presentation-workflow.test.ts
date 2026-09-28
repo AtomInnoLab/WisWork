@@ -69,11 +69,18 @@ it('shows document-bound source preparation without claiming source truth', () =
     { sourceId: withSource.plan!.value.sources[0]!.id, attachmentId, status: 'missing' },
   ]
   const missing = presentationWorkflowSummary(withSource, undefined, undefined)!
-  expect(missing.stages[0]!.detail).toContain('0/1 份已解析为文本')
+  expect(missing.stages[0]!.detail).toContain('0/1 份摘录已匹配原文')
   expect(missing.attention).toContainEqual(expect.objectContaining({ id: 'source-preparation' }))
   expect(missing.nextAction).toContain('补齐计划引用的资料')
   expect(missing.timeline).toContainEqual(expect.objectContaining({ id: 'source-preparation' }))
+  withSource.sourcePreparation[0]!.status = 'excerpt_mismatch'
+  const mismatch = presentationWorkflowSummary(withSource, undefined, undefined)!
+  expect(mismatch.attention.find((item) => item.id === 'source-preparation')?.text).toContain('摘录不在原文中')
+  expect(mismatch.nextAction).toContain('修订计划摘录')
   withSource.sourcePreparation[0]!.status = 'ready'
+  const legacy = presentationWorkflowSummary(withSource, undefined, undefined)!
+  expect(legacy.attention.find((item) => item.id === 'source-preparation')?.text).toContain('旧版 PC 未核对摘录')
+  withSource.sourcePreparation[0]!.status = 'excerpt_matched'
   const ready = presentationWorkflowSummary(withSource, undefined, undefined)!
   expect(ready.attention.some((item) => item.id === 'source-preparation')).toBe(false)
   expect(ready.nextAction).toContain('启动逐页生产')
