@@ -140,6 +140,7 @@ export interface ChartSourceReport {
   reason?: string
   sourceDigest?: string
   workbookContentDigest?: string
+  workbookDataDigest?: string
   series: Array<{ categories: string[]; values: string[] }>
 }
 /** Read a single chart's bounded cache and embedded workbook; external targets are classified, never fetched. */
@@ -279,11 +280,11 @@ async function inspectChartSourceFromZip(
   const ranges = formulaPairs.map(
     ([cat, val]) => [cat ? range(cat) : undefined, val ? range(val) : undefined] as const,
   )
-  if (
+  const unsupportedFormula =
     !series.length ||
     ranges.some(([cat, val]) => !cat || !val) ||
     series.some((item) => !item.categories.length || !item.values.length)
-  )
+  if (unsupportedFormula && !options.includeWorkbookContentDigest)
     return { ...embedded, reason: 'unsupported_formula_or_cache' }
   book ??= await loadBoundedZip(
     btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')),
@@ -314,6 +315,12 @@ async function inspectChartSourceFromZip(
   if (shared.length > 4096 || shared.some((item) => item.length > 128))
     throw new Error('office_api_unsupported')
   const cells = cellValues(sheet, shared)
+  const data = JSON.stringify([...cells].sort(([left], [right]) => left.localeCompare(right)))
+  const dataDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(data))
+  embedded.workbookDataDigest = Array.from(new Uint8Array(dataDigest), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('')
+  if (unsupportedFormula) return { ...embedded, reason: 'unsupported_formula_or_cache' }
   const fromRange = (item: { col: string; start: number; end: number }) =>
     Array.from({ length: item.end - item.start + 1 }, (_, index) =>
       cells.get(`${item.col}${item.start + index}`),

@@ -258,6 +258,7 @@ export async function comparePresentationPageStructure(
     chartTypeChanged: string[]
     chartStyleChanged: string[]
     workbookBytesChanged: string[]
+    workbookDataChanged: string[]
     backgroundChanged: boolean
     backgroundUnchecked: boolean
     mediaChanged: string[]
@@ -359,6 +360,8 @@ export async function comparePresentationPageStructure(
     chartTypeChanged: string[] = [],
     chartStyleChanged: string[] = [],
     workbookBytesChanged: string[] = [],
+    workbookDataChanged: string[] = [],
+    workbookUnverifiedChanged: string[] = [],
     mediaChanged: string[] = [],
     mediaChecked: string[] = [],
     mediaUnchecked: string[] = [],
@@ -493,8 +496,19 @@ export async function comparePresentationPageStructure(
           original.workbookContentDigest &&
           current.workbookContentDigest &&
           original.workbookContentDigest !== current.workbookContentDigest
-        )
+        ) {
           workbookBytesChanged.push(element.name)
+          if (!original.workbookDataDigest || !current.workbookDataDigest)
+            workbookUnverifiedChanged.push(element.name)
+        }
+        if (
+          original?.sourceKind === 'embedded_xlsx' &&
+          current?.sourceKind === 'embedded_xlsx' &&
+          original.workbookDataDigest &&
+          current.workbookDataDigest &&
+          original.workbookDataDigest !== current.workbookDataDigest
+        )
+          workbookDataChanged.push(element.name)
       }
     } catch {
       // Unsupported packages remain unchecked; cache evidence still reports.
@@ -525,7 +539,8 @@ export async function comparePresentationPageStructure(
     backgroundChanged ||
     chartTypeChanged.length ||
     chartStyleChanged.length ||
-    workbookBytesChanged.length ||
+    workbookDataChanged.length ||
+    workbookUnverifiedChanged.length ||
     mediaChanged.length ||
     altTextChanged.length ||
     cropChanged.length ||
@@ -543,6 +558,7 @@ export async function comparePresentationPageStructure(
     chartTypeChanged,
     chartStyleChanged,
     workbookBytesChanged,
+    workbookDataChanged,
     mediaChanged,
     mediaChecked,
     mediaUnchecked,
