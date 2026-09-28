@@ -85,3 +85,17 @@ it('does not treat a previous failed operation as a blocker while the stage cont
   expect(container.querySelector('[role="alert"]')?.textContent).toContain('记录')
   expect(container.textContent).not.toContain('再决定下一步')
 })
+
+it('shows an unreceived result as uncertain after the foreground run stops', async () => {
+  const container = document.createElement('div')
+  const root = createRoot(container)
+  roots.push(root)
+  await act(async () =>
+    root.render(
+      React.createElement(PresentationStageCard, { group: group('running'), runActive: false }),
+    ),
+  )
+  expect(container.querySelector('article')?.getAttribute('aria-busy')).toBe('false')
+  expect(container.textContent).toContain('尚未收到最终回执')
+  expect(container.textContent).not.toContain('当前操作仍在进行')
+})

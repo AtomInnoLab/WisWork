@@ -93,6 +93,36 @@ function workspaceMarkup(
 }
 
 describe('Office Agent workspace UI', () => {
+  it('does not revive an older unreceived result when a new presentation request starts', () => {
+    const timeline: OfficeAgentSnapshot['timeline'] = [
+      { id: 'old-user', kind: 'user', text: 'Old request' },
+      {
+        id: 'old-tool',
+        kind: 'tool',
+        callId: 'old-call',
+        name: 'run_presentation_production',
+        summary: 'Running',
+        state: 'running',
+      },
+      { id: 'new-user', kind: 'user', text: 'New request' },
+      {
+        id: 'new-tool',
+        kind: 'tool',
+        callId: 'new-call',
+        name: 'run_presentation_production',
+        summary: 'Running',
+        state: 'running',
+      },
+    ]
+    const container = document.createElement('div')
+    container.innerHTML = workspaceMarkup({ timeline, busy: true }, undefined, 'powerpoint')
+    const stages = container.querySelectorAll('.stage-event')
+    expect(stages[0]?.getAttribute('aria-busy')).toBe('false')
+    expect(stages[0]?.textContent).toContain('尚未收到最终回执')
+    expect(stages[1]?.getAttribute('aria-busy')).toBe('true')
+    expect(stages[1]?.textContent).toContain('当前操作仍在进行')
+  })
+
   it('folds presentation stages while keeping confirmation outside the stage details', () => {
     const timeline: OfficeAgentSnapshot['timeline'] = [
       { id: 'u1', kind: 'user', text: '制作演示文稿' },

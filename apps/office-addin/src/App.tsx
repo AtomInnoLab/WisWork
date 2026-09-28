@@ -645,6 +645,10 @@ export function AgentWorkspace(props: {
   const hasTimeline = state.timeline.length > 0
   const timelineItems =
     host === 'powerpoint' ? presentationStageTimeline(state.timeline) : state.timeline
+  const latestRequestIndex = timelineItems.reduce(
+    (latest, event, index) => (event.kind === 'user' ? index : latest),
+    -1,
+  )
   const showConversationChrome =
     hasTimeline || state.busy || state.applying || Boolean(state.error) || Boolean(proposal)
   const showStatus =
@@ -792,9 +796,13 @@ export function AgentWorkspace(props: {
             </div>
           </div>
         )}
-        {timelineItems.map((event) =>
+        {timelineItems.map((event, index) =>
           event.kind === 'stage' ? (
-            <PresentationStageCard key={event.id} group={event} />
+            <PresentationStageCard
+              key={event.id}
+              group={event}
+              runActive={(state.busy || state.applying) && index > latestRequestIndex}
+            />
           ) : (
             <TimelineEvent
               key={event.id}
