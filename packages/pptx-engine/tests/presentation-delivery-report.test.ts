@@ -93,6 +93,23 @@ describe('delivery evidence report', () => {
     )
     expect(parsePresentationDeliveryReport(report)).toEqual(report)
   })
+  it('retains a verified PDF page locator in the delivery source audit', async () => {
+    const value = input()
+    value.sourceAudit = [
+      {
+        sourceId: 'source',
+        attachmentId: 'a'.repeat(64),
+        status: 'found',
+        offset: 10,
+        locator: '第 2 页',
+      },
+    ]
+    const report = await buildPresentationDeliveryReport(value)
+    expect(parsePresentationDeliveryReport(report).sourceAudit?.[0]?.locator).toBe('第 2 页')
+    expect(report.pages[0]!.issues).toContainEqual(
+      expect.objectContaining({ code: 'source_locator_mismatch', category: 'unverifiable' }),
+    )
+  })
   it('flags a cited external source without a frozen original text snapshot', async () => {
     const value = input()
     value.plan.sources[0]!.uri = 'https://example.com/research'

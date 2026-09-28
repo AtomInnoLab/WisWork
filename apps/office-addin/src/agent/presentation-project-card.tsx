@@ -377,6 +377,7 @@ export function PresentationProjectCard(props: {
                     excerpt_mismatch: '摘录不在附件原文中',
                     excerpt_missing: '计划摘录为空',
                     source_mismatch: '网页快照与计划网址不匹配',
+                    locator_mismatch: '计划页码与 PDF 实际页码不匹配',
                   }[source.status]
                 }
               </li>

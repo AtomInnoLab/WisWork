@@ -46,6 +46,7 @@ export interface PresentationProjectStatus {
       | 'excerpt_mismatch'
       | 'excerpt_missing'
       | 'source_mismatch'
+      | 'locator_mismatch'
   }[]
   sourcePreparationUnavailable?: boolean
   reviewComments?: {
@@ -402,6 +403,7 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
             'excerpt_mismatch',
             'excerpt_missing',
             'source_mismatch',
+            'locator_mismatch',
           ].includes(item.status),
       )
     )

@@ -3,6 +3,11 @@ import { presentationSourceAttachmentId } from '@wiswork/pptx-engine/presentatio
 import type { PresentationSourceAudit } from '@wiswork/pptx-engine/presentation-delivery-report'
 import { createHash } from 'node:crypto'
 
+export function canonicalPdfPageLocator(value: string | undefined): string | undefined {
+  const match = /^第\s*([1-9]\d{0,5})\s*页$/.exec(value?.trim() ?? '')
+  return match ? `第 ${Number(match[1])} 页` : undefined
+}
+
 /** A fetched snapshot must be attributed to the exact requested URL, including its query. */
 export function matchesFetchedSourceUrl(uri: string, sourceUrlHash: unknown): boolean {
   if (sourceUrlHash === undefined) return true // User-uploaded originals have no observed URL.
@@ -44,17 +49,26 @@ export async function auditPresentationSources(
           documentId,
           attachmentId,
           excerpt: source.excerpt,
+          ...(canonicalPdfPageLocator(source.locator)
+            ? { locator: canonicalPdfPageLocator(source.locator) }
+            : {}),
         },
         signal,
-      )) as { attachmentId: string; status: PresentationSourceAudit['status']; offset?: number }
+      )) as {
+        attachmentId: string
+        status: PresentationSourceAudit['status']
+        offset?: number
+        locator?: string
+      }
       if (
         result.attachmentId !== attachmentId ||
         !['found', 'not_found', 'empty_excerpt', 'not_ready', 'unsupported'].includes(
           result.status,
         ) ||
+        (result.locator !== undefined && !/^第 [1-9]\d{0,5} 页$/.test(result.locator)) ||
         (result.status === 'found'
           ? !Number.isSafeInteger(result.offset) || result.offset! < 0 || result.offset! > 1_000_000
-          : result.offset !== undefined)
+          : result.offset !== undefined || result.locator !== undefined)
       )
         throw new Error('invalid_state')
       sources.push({
@@ -62,6 +76,7 @@ export async function auditPresentationSources(
         attachmentId,
         status: result.status,
         ...(result.status === 'found' ? { offset: result.offset } : {}),
+        ...(result.locator ? { locator: result.locator } : {}),
       })
     } catch (error) {
       if (!(error instanceof Error) || error.message !== 'not_found') throw error

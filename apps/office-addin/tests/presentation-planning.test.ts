@@ -33,7 +33,15 @@ describe('saved presentation planning tools', () => {
     const result = {
       projectId: plan.projectId,
       planRevision: 2,
-      sources: [{ sourceId: 'source', attachmentId: 'a'.repeat(64), status: 'found', offset: 12 }],
+      sources: [
+        {
+          sourceId: 'source',
+          attachmentId: 'a'.repeat(64),
+          status: 'found',
+          offset: 12,
+          locator: '第 2 页',
+        },
+      ],
       checks: {
         support: 'not_verified',
         sourceAuthority: 'not_verified',

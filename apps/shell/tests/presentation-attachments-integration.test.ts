@@ -20,6 +20,58 @@ const signal = () => new AbortController().signal
 const decode = (bytes: Uint8Array) => JSON.parse(Buffer.from(bytes).toString('utf8'))
 
 describe('presentation attachment service integration', () => {
+  it('shows a PDF locator mismatch in project readiness before compilation', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-pdf-locator-'))
+    roots.push(userDataPath)
+    const service = createPresentationService({ userDataPath })
+    const plan = benchmarkPlan()
+    const documentId = 'source-document'
+    const raw = Buffer.from(buildPdfFixture(['Earlier finding', 'Target finding']))
+    const attachmentId = createHash('sha256').update(raw).digest('hex')
+    plan.sources[0]!.uri = `attachment:${attachmentId}`
+    plan.sources[0]!.excerpt = 'Target finding'
+    plan.sources[0]!.locator = '第 1 页'
+    const send = async (body: Record<string, unknown>) =>
+      decode(
+        await service(
+          {
+            documentId,
+            ...(!String(body.operation).startsWith('attachment_')
+              ? { projectId: plan.projectId }
+              : {}),
+            ...body,
+          },
+          signal(),
+        ),
+      )
+    await send({ operation: 'save_plan', expectedRevision: 0, plan })
+    await send({
+      operation: 'attachment_begin',
+      attachmentId,
+      sha256: attachmentId,
+      name: 'study.pdf',
+      sizeBytes: raw.length,
+    })
+    await send({
+      operation: 'attachment_chunk',
+      attachmentId,
+      offset: 0,
+      base64: raw.toString('base64'),
+    })
+    await send({ operation: 'attachment_finish', attachmentId })
+    expect((await send({ operation: 'audit_sources' })).sources[0]).toMatchObject({
+      status: 'found',
+      locator: '第 2 页',
+    })
+    expect((await send({ operation: 'status' })).sourcePreparation[0].status).toBe(
+      'locator_mismatch',
+    )
+    plan.sources[0]!.locator = '第 2 页'
+    await send({ operation: 'save_plan', expectedRevision: 1, plan })
+    expect((await send({ operation: 'status' })).sourcePreparation[0].status).toBe(
+      'excerpt_matched',
+    )
+  })
   it('rejects a fetched webpage snapshot attributed to a different plan URL', async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-url-source-'))
     roots.push(userDataPath)
@@ -112,7 +164,9 @@ describe('presentation attachment service integration', () => {
     expect(await send({ operation: 'audit_sources' })).toMatchObject({
       projectId: plan.projectId,
       planRevision: 1,
-      sources: [{ sourceId: plan.sources[0]!.id, attachmentId, status: 'found' }],
+      sources: [
+        { sourceId: plan.sources[0]!.id, attachmentId, status: 'found', locator: '第 1 页' },
+      ],
       checks: {
         support: 'not_verified',
         sourceAuthority: 'not_verified',

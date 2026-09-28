@@ -25,7 +25,7 @@ import {
 import { checkPresentationPageContent } from '@wiswork/pptx-engine/presentation-content-check'
 import type { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { assertBrandLogoAsset } from './presentation-brand'
-import { matchesFetchedSourceUrl } from './presentation-source-audit'
+import { canonicalPdfPageLocator, matchesFetchedSourceUrl } from './presentation-source-audit'
 
 const check = (signal: AbortSignal) => {
   if (signal.aborted) throw new Error('aborted')
@@ -47,7 +47,7 @@ export async function assertCitedPresentationSourcesReady(
   for (const source of plan.sources.filter((item) => citedIds.has(item.id))) {
     const attachmentId = presentationSourceAttachmentId(source)
     if (!attachmentId) continue
-    const key = JSON.stringify([attachmentId, source.uri, source.excerpt])
+    const key = JSON.stringify([attachmentId, source.uri, source.locator, source.excerpt])
     let ready = cache.get(key)
     if (!ready) {
       ready = (async () => {
@@ -64,14 +64,23 @@ export async function assertCitedPresentationSourcesReady(
               documentId,
               attachmentId,
               excerpt: source.excerpt,
+              ...(canonicalPdfPageLocator(source.locator)
+                ? { locator: canonicalPdfPageLocator(source.locator) }
+                : {}),
             },
             signal,
-          )) as { attachmentId?: unknown; status?: unknown; offset?: unknown }
+          )) as { attachmentId?: unknown; status?: unknown; offset?: unknown; locator?: unknown }
+          const plannedPage = /^第\s*(\d+)\s*页$/.exec(source.locator?.trim() ?? '')?.[1]
+          const observedPage =
+            typeof value.locator === 'string'
+              ? /^第\s*(\d+)\s*页$/.exec(value.locator)?.[1]
+              : undefined
           return (
             value.attachmentId === attachmentId &&
             value.status === 'found' &&
             Number.isSafeInteger(value.offset) &&
-            Number(value.offset) >= 0
+            Number(value.offset) >= 0 &&
+            (!plannedPage || !observedPage || plannedPage === observedPage)
           )
         } catch {
           check(signal)

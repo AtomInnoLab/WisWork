@@ -152,14 +152,21 @@ export async function buildXlsxFixture(): Promise<Uint8Array> {
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
 }
 
-/** minimal single-page pdf with an uncompressed content stream and a correct xref table */
-export function buildPdfFixture(text: string): Uint8Array {
-  const stream = `BT /F1 24 Tf 72 720 Td (${text}) Tj ET`
+/** Minimal PDF with uncompressed page streams and a correct xref table. */
+export function buildPdfFixture(text: string | string[]): Uint8Array {
+  const pages = Array.isArray(text) ? text : [text]
+  const fontId = 3 + pages.length * 2
   const bodies = [
     '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
-    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+    `<< /Type /Pages /Kids [${pages.map((_, index) => `${3 + index} 0 R`).join(' ')}] /Count ${pages.length} >>`,
+    ...pages.map(
+      (_, index) =>
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${3 + pages.length + index} 0 R >>`,
+    ),
+    ...pages.map((page) => {
+      const stream = `BT /F1 24 Tf 72 720 Td (${page}) Tj ET`
+      return `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`
+    }),
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
   ]
   let out = '%PDF-1.4\n'

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import JSZip from 'jszip'
+import { buildPdfFixture } from '../../../packages/file-parse/tests/helpers/fixtures'
 import { createPresentationAttachmentService } from '../src/main/presentation-attachments'
 const dirs: string[] = []
 afterEach(async () => {
@@ -40,6 +41,80 @@ async function upload(
   return attachmentId
 }
 describe('durable presentation attachments', () => {
+  it('returns the PDF page locator for a matched excerpt and verifies the page index', async () => {
+    const { call, userDataPath } = await setup()
+    const id = await upload(
+      call,
+      Buffer.from(buildPdfFixture(['First page evidence', 'Second page finding'])),
+      'study.pdf',
+    )
+    expect(await call({ operation: 'attachment_finish', attachmentId: id })).toMatchObject({
+      status: 'ready',
+      sectionCount: 2,
+    })
+    expect(
+      await call({
+        operation: 'attachment_match_excerpt',
+        attachmentId: id,
+        excerpt: 'Second page finding',
+      }),
+    ).toMatchObject({ status: 'found', locator: '第 2 页' })
+    expect(
+      await call({
+        operation: 'attachment_match_excerpt',
+        attachmentId: id,
+        excerpt: 'evidence\n\nSecond',
+      }),
+    ).toMatchObject({ status: 'not_found' })
+    expect(
+      await call({ operation: 'attachment_read', attachmentId: id, offset: 0, maxChars: 100 }),
+    ).toMatchObject({
+      pageSpans: [
+        { locator: '第 1 页', start: 0, end: 19 },
+        { locator: '第 2 页', start: 21, end: 40 },
+      ],
+    })
+    const sectionPath = join(
+      userDataPath,
+      'presentation-attachments',
+      hash('doc-1'),
+      id,
+      'sections.json',
+    )
+    await writeFile(sectionPath, '[]')
+    await expect(
+      call({
+        operation: 'attachment_match_excerpt',
+        attachmentId: id,
+        excerpt: 'First page evidence',
+      }),
+    ).rejects.toThrow('invalid_state')
+  })
+  it('prefers the cited page when the same PDF excerpt appears more than once', async () => {
+    const { call } = await setup()
+    const id = await upload(
+      call,
+      Buffer.from(buildPdfFixture(['Repeated evidence', 'Repeated evidence'])),
+      'repeat.pdf',
+    )
+    await call({ operation: 'attachment_finish', attachmentId: id })
+    expect(
+      await call({
+        operation: 'attachment_match_excerpt',
+        attachmentId: id,
+        excerpt: 'Repeated evidence',
+        locator: '第 2 页',
+      }),
+    ).toMatchObject({ status: 'found', locator: '第 2 页', offset: 19 })
+    expect(
+      await call({
+        operation: 'attachment_match_excerpt',
+        attachmentId: id,
+        excerpt: 'Repeated evidence',
+        locator: '第 3 页',
+      }),
+    ).toMatchObject({ status: 'found', locator: '第 1 页', offset: 0 })
+  })
   it('fetches an HTML URL into a document-scoped, deduplicated source snapshot', async () => {
     const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-webpage-'))
     dirs.push(userDataPath)

@@ -134,8 +134,8 @@ function installDomMatrixPolyfill(): void {
   g.DOMMatrix = DOMMatrixPolyfill
 }
 
-/** extract text from a pdf with pdfjs-dist (pure JS, no native deps), one section per page */
-export async function pdfToText(bytes: Uint8Array): Promise<string> {
+/** Extract ordered page text from a PDF; page numbers are the array index plus one. */
+export async function pdfToPages(bytes: Uint8Array): Promise<string[]> {
   installDomMatrixPolyfill()
   // Explicitly import the worker module (its top level registers globalThis.pdfjsWorker,
   // which the fake worker prefers) — otherwise pdfjs looks up pdf.worker.mjs by path at
@@ -169,8 +169,12 @@ export async function pdfToText(bytes: Uint8Array): Promise<string> {
       pages.push(text.trim())
       page.cleanup()
     }
-    return pages.join('\n\n')
+    return pages
   } finally {
     await loadingTask.destroy()
   }
+}
+
+export async function pdfToText(bytes: Uint8Array): Promise<string> {
+  return (await pdfToPages(bytes)).join('\n\n')
 }

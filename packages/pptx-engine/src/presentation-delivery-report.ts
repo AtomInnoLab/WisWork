@@ -43,6 +43,7 @@ export interface PresentationSourceAudit {
     | 'missing'
     | 'source_mismatch'
   offset?: number
+  locator?: string
 }
 export interface PresentationDeliveryReport {
   version: 1
@@ -140,6 +141,7 @@ function seeds(
         'source_attachment_not_ready',
         'source_attachment_unsupported',
         'source_url_mismatch',
+        'source_locator_mismatch',
         'source_original_not_frozen',
         'source_locator_missing',
         'source_review_missing',
@@ -167,6 +169,10 @@ function seeds(
       if (audit?.status === 'not_ready') add('source_attachment_not_ready', sourceId)
       if (audit?.status === 'unsupported') add('source_attachment_unsupported', sourceId)
       if (audit?.status === 'source_mismatch') add('source_url_mismatch', sourceId)
+      const plannedPage = /^第\s*(\d+)\s*页$/.exec(source.locator?.trim() ?? '')?.[1]
+      const observedPage = audit?.locator ? /^第\s*(\d+)\s*页$/.exec(audit.locator)?.[1] : undefined
+      if (plannedPage && observedPage && plannedPage !== observedPage)
+        add('source_locator_mismatch', sourceId)
       const excerpt = normalize(source.excerpt)
       if (!excerpt) add('source_excerpt_missing', sourceId)
       if (!source.locator?.trim()) add('source_locator_missing', sourceId)
@@ -259,7 +265,7 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
     if (!Array.isArray(report.sourceAudit) || report.sourceAudit.length !== expected.length)
       invalid()
     for (const [index, audit] of report.sourceAudit.entries()) {
-      exact(audit, ['sourceId', 'attachmentId', 'status', 'offset'])
+      exact(audit, ['sourceId', 'attachmentId', 'status', 'offset', 'locator'])
       if (
         audit.sourceId !== expected[index]!.sourceId ||
         audit.attachmentId !== expected[index]!.attachmentId ||
@@ -274,7 +280,8 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
         ].includes(audit.status) ||
         (audit.status === 'found'
           ? !Number.isSafeInteger(audit.offset) || audit.offset! < 0 || audit.offset! > 1_000_000
-          : audit.offset !== undefined)
+          : audit.offset !== undefined || audit.locator !== undefined) ||
+        (audit.locator !== undefined && !/^第 [1-9]\d{0,5} 页$/.test(audit.locator))
       )
         invalid()
     }

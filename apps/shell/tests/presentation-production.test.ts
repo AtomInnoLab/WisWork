@@ -64,6 +64,39 @@ it('blocks production when a fetched snapshot URL differs from the cited plan UR
     ),
   ).resolves.toBeUndefined()
 })
+it('blocks a cited PDF excerpt whose verified page differs from the plan locator', async () => {
+  const plan = benchmarkPlan()
+  const deck = benchmarkPlannedDeck()
+  const attachmentId = 'a'.repeat(64)
+  plan.sources[0]!.uri = `attachment:${attachmentId}`
+  plan.sources[0]!.locator = '第 1 页'
+  const attachments = vi.fn(async (request: Record<string, unknown>) =>
+    request.operation === 'attachment_metadata'
+      ? { attachmentId }
+      : { attachmentId, status: 'found', offset: 10, locator: '第 2 页' },
+  )
+  await expect(
+    assertCitedPresentationSourcesReady(
+      plan,
+      deck.slides[0]!,
+      'doc',
+      attachments,
+      new AbortController().signal,
+      new Map(),
+    ),
+  ).rejects.toThrow('source_unavailable')
+  plan.sources[0]!.locator = '第 2 页'
+  await expect(
+    assertCitedPresentationSourcesReady(
+      plan,
+      deck.slides[0]!,
+      'doc',
+      attachments,
+      new AbortController().signal,
+      new Map(),
+    ),
+  ).resolves.toBeUndefined()
+})
 async function setup(compile = vi.fn(compilePresentationDeck), documentId = 'doc') {
   const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-page-production-'))
   roots.push(userDataPath)

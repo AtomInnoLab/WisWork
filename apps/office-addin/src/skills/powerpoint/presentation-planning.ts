@@ -205,6 +205,7 @@ export function createPresentationPlanningSkill(
               attachmentId?: unknown
               status?: unknown
               offset?: unknown
+              locator?: unknown
             }[]
             checks?: unknown
             error?: unknown
@@ -236,10 +237,15 @@ export function createPresentationPlanningSkill(
                   ? !Number.isSafeInteger(source.offset) ||
                     Number(source.offset) < 0 ||
                     Number(source.offset) > 1_000_000
-                  : source.offset !== undefined) ||
+                  : source.offset !== undefined || source.locator !== undefined) ||
+                (source.locator !== undefined &&
+                  (typeof source.locator !== 'string' ||
+                    !/^第 [1-9]\d{0,5} 页$/.test(source.locator))) ||
                 Object.keys(source).sort().join(',') !==
                   (source.status === 'found'
-                    ? 'attachmentId,offset,sourceId,status'
+                    ? source.locator !== undefined
+                      ? 'attachmentId,locator,offset,sourceId,status'
+                      : 'attachmentId,offset,sourceId,status'
                     : 'attachmentId,sourceId,status'),
             ) ||
             JSON.stringify(result.checks) !==

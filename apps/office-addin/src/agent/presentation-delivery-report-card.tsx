@@ -87,7 +87,9 @@ function IssueList({
                 ? '项目未保存该来源原文'
                 : issue.code === 'source_url_mismatch'
                   ? '网页快照与计划网址不匹配'
-                  : issue.code}{' '}
+                  : issue.code === 'source_locator_mismatch'
+                    ? '计划页码与原文实际页码不匹配'
+                    : issue.code}{' '}
               · 主张 {issue.claimId}：
               {report.plan.claims.find((claim) => claim.id === issue.claimId)?.statement}
               {issue.sourceId && (
@@ -195,6 +197,8 @@ export function PresentationDeliveryReportCard({
                     source_mismatch: '网页快照与计划网址不匹配',
                   }[report.sourceAudit.find((item) => item.sourceId === source.id)!.status]
                 }
+                {report.sourceAudit.find((item) => item.sourceId === source.id)?.locator &&
+                  `；实际位置：${report.sourceAudit.find((item) => item.sourceId === source.id)!.locator}`}
                 。仅核对字面存在，不核验事实支持、来源权威性或时效。
               </p>
             )}

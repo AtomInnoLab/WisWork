@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { extname } from 'node:path'
 import { docxToText } from './docx'
-import { pdfToText } from './pdf'
+import { pdfToPages } from './pdf'
 import { pptxToText } from './pptx'
 import { xlsxToText } from './xlsx'
 import { decodeHtmlBytes, htmlToText } from './html'
@@ -14,6 +14,7 @@ export interface ParsedFile {
   kind: ParsedFileKind
   mime?: string
   error?: string
+  sections?: { locator: string; start: number; end: number }[]
 }
 
 /** No text extraction for images: callers read raw bytes and go multimodal (see @wiswork/ai-provider images support) */
@@ -46,8 +47,16 @@ export async function parseFileToText(filePath: string): Promise<ParsedFile> {
         return { ok: true, kind: 'text', text: await pptxToText(await readFile(filePath)) }
       case 'xlsx':
         return { ok: true, kind: 'text', text: await xlsxToText(await readFile(filePath)) }
-      case 'pdf':
-        return { ok: true, kind: 'text', text: await pdfToText(await readFile(filePath)) }
+      case 'pdf': {
+        const pages = await pdfToPages(await readFile(filePath))
+        const sections: NonNullable<ParsedFile['sections']> = []
+        let offset = 0
+        for (const [index, page] of pages.entries()) {
+          sections.push({ locator: `第 ${index + 1} 页`, start: offset, end: offset + page.length })
+          offset += page.length + (index < pages.length - 1 ? 2 : 0)
+        }
+        return { ok: true, kind: 'text', text: pages.join('\n\n'), sections }
+      }
     }
   } catch (e) {
     return { ok: false, kind: 'text', error: e instanceof Error ? e.message : String(e) }

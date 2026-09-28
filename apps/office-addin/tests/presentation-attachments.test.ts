@@ -388,6 +388,35 @@ it('uploads chunks and reads durable sources after reconnect', async () => {
     ),
   ).toMatchObject({ text: 'hello', sourceUri: `attachment:${f.attachmentId}` })
 })
+it('preserves bounded PDF page spans while reading source text', async () => {
+  const f = setup()
+  const value = {
+    attachmentId: f.attachmentId,
+    name: 'study.pdf',
+    offset: 0,
+    totalChars: 13,
+    text: 'First\n\nSecond',
+    sourceUri: `attachment:${f.attachmentId}`,
+    pageSpans: [
+      { locator: '第 1 页', start: 0, end: 5 },
+      { locator: '第 2 页', start: 7, end: 13 },
+    ],
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify(value)))
+  const call = () =>
+    f.skill.executeTool({
+      id: 'read',
+      name: 'read_presentation_attachment',
+      input: { attachment_id: f.attachmentId },
+    })
+  expect(JSON.parse((await call()).output)).toMatchObject({ pageSpans: value.pageSpans })
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({ ...value, pageSpans: [{ locator: '第 1 页', start: 20, end: 30 }] }),
+    ),
+  )
+  expect(await call()).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+})
 it('resumes after a lost chunk acknowledgement', async () => {
   const f = setup()
   const original = f.request.getMockImplementation()!

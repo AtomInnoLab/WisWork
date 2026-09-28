@@ -105,6 +105,8 @@ interface Metadata {
   error?: string
   totalChars?: number
   textDigest?: string
+  sectionsDigest?: string
+  sectionCount?: number
 }
 async function directory(path: string, create = true) {
   if (create) {
@@ -272,6 +274,15 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
     )
       fail('invalid_state')
   }
+  if (
+    (m.sectionsDigest !== undefined || m.sectionCount !== undefined) &&
+    (m.status !== 'ready' ||
+      m.kind !== 'text' ||
+      extname(m.name).toLowerCase() !== '.pdf' ||
+      !isId(m.sectionsDigest) ||
+      !integer(m.sectionCount, 1, 4096))
+  )
+    fail('invalid_state')
   if (m.status !== 'ready' && m.licenseDeclaration !== undefined) fail('invalid_state')
   if (m.status !== 'ready' && m.animationHandling !== undefined) fail('invalid_state')
   if (
@@ -291,6 +302,7 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
   ...(m.kind ? { kind: m.kind } : {}),
   ...(m.error ? { error: m.error } : {}),
   ...(m.totalChars !== undefined ? { totalChars: m.totalChars } : {}),
+  ...(m.sectionCount !== undefined ? { sectionCount: m.sectionCount } : {}),
   ...(m.source ? { source: m.source } : {}),
   ...(m.sourceUrlHash ? { sourceUrlHash: m.sourceUrlHash } : {}),
   ...(m.retrievedAt ? { retrievedAt: m.retrievedAt } : {}),
@@ -321,6 +333,40 @@ async function cachedImage(dir: string, m: Metadata): Promise<Buffer> {
   )
     fail('invalid_state')
   return value
+}
+
+async function pdfSections(
+  dir: string,
+  m: Metadata,
+  text: string,
+): Promise<{ locator: string; start: number; end: number }[] | undefined> {
+  if (!m.sectionsDigest) return undefined
+  const raw = await bytes(join(dir, 'sections.json'), 512 * 1024)
+  if (hash(raw) !== m.sectionsDigest) fail('invalid_state')
+  let sections: unknown
+  try {
+    sections = JSON.parse(raw.toString('utf8'))
+  } catch {
+    fail('invalid_state')
+  }
+  if (!Array.isArray(sections) || sections.length !== m.sectionCount) fail('invalid_state')
+  let previous = -2
+  for (const [index, section] of sections.entries()) {
+    if (
+      !section ||
+      typeof section !== 'object' ||
+      Array.isArray(section) ||
+      Object.keys(section).sort().join(',') !== 'end,locator,start' ||
+      section.locator !== `第 ${index + 1} 页` ||
+      !integer(section.start, 0, text.length) ||
+      !integer(section.end, section.start, text.length) ||
+      section.start !== previous + 2
+    )
+      fail('invalid_state')
+    previous = section.end
+  }
+  if (previous !== text.length) fail('invalid_state')
+  return sections as { locator: string; start: number; end: number }[]
 }
 
 // Preflight every ZIP member with bounded inflation, before the DOCX parser allocates XML.
@@ -438,10 +484,13 @@ export function createPresentationAttachmentService(options: {
       ...fields[op]!,
       ...(op === 'attachment_list_assets' ? ['after'] : []),
       ...(op === 'attachment_import_url' ? ['stageAnimated'] : []),
+      ...(op === 'attachment_match_excerpt' ? ['locator'] : []),
     ]
     if (
       Object.keys(body).some((k) => !allowed.includes(k)) ||
-      allowed.some((k) => !['after', 'stageAnimated'].includes(k) && !Object.hasOwn(body, k))
+      allowed.some(
+        (k) => !['after', 'stageAnimated', 'locator'].includes(k) && !Object.hasOwn(body, k),
+      )
     )
       fail('invalid_request')
     if (
@@ -464,6 +513,11 @@ export function createPresentationAttachmentService(options: {
     if (
       op === 'attachment_match_excerpt' &&
       (typeof body.excerpt !== 'string' || body.excerpt.length > 12000)
+    )
+      fail('invalid_request')
+    if (
+      body.locator !== undefined &&
+      (typeof body.locator !== 'string' || !/^第 [1-9]\d{0,5} 页$/.test(body.locator))
     )
       fail('invalid_request')
     if (op === 'attachment_begin') {
@@ -954,10 +1008,25 @@ export function createPresentationAttachmentService(options: {
         if (value.length !== m.totalChars || hash(value) !== m.textDigest) fail('invalid_state')
         checkAbort(signal)
         if (!(body.excerpt as string).trim()) return { attachmentId: id, status: 'empty_excerpt' }
-        const offset = value.indexOf(body.excerpt as string)
-        return offset < 0
+        const sections = await pdfSections(dir, m, value)
+        const excerpt = body.excerpt as string
+        const preferred = sections?.find((item) => item.locator === body.locator)
+        const preferredOffset = preferred ? value.indexOf(excerpt, preferred.start) : -1
+        const offset =
+          preferred && preferredOffset >= 0 && preferredOffset + excerpt.length <= preferred.end
+            ? preferredOffset
+            : value.indexOf(excerpt)
+        const section = sections?.find(
+          (item) => item.start <= offset && offset + excerpt.length <= item.end,
+        )
+        return offset < 0 || (sections && !section)
           ? { attachmentId: id, status: 'not_found' }
-          : { attachmentId: id, status: 'found', offset }
+          : {
+              attachmentId: id,
+              status: 'found',
+              offset,
+              ...(section ? { locator: section.locator } : {}),
+            }
       }
       if (op === 'attachment_begin') {
         if (m.name !== body.name || m.sizeBytes !== body.sizeBytes) fail('attachment_conflict')
@@ -1035,6 +1104,30 @@ export function createPresentationAttachmentService(options: {
                 parsed.text.length > TEXT_LIMIT
               )
                 fail('parse_failed')
+              let sectionsRaw: string | undefined
+              if (parsed.sections) {
+                if (
+                  extname(m.name).toLowerCase() !== '.pdf' ||
+                  parsed.sections.length < 1 ||
+                  parsed.sections.length > 4096
+                )
+                  fail('parse_failed')
+                sectionsRaw = JSON.stringify(parsed.sections)
+                if (Buffer.byteLength(sectionsRaw) > 512 * 1024) fail('parse_failed')
+                let previous = -2
+                for (const [index, section] of parsed.sections.entries()) {
+                  if (
+                    section.locator !== `第 ${index + 1} 页` ||
+                    !integer(section.start, 0, parsed.text.length) ||
+                    !integer(section.end, section.start, parsed.text.length) ||
+                    section.start !== previous + 2
+                  )
+                    fail('parse_failed')
+                  previous = section.end
+                }
+                if (previous !== parsed.text.length) fail('parse_failed')
+                await atomic(join(dir, 'sections.json'), sectionsRaw)
+              }
               await atomic(join(dir, 'text.txt'), parsed.text)
               m = {
                 attachmentId: id,
@@ -1045,6 +1138,9 @@ export function createPresentationAttachmentService(options: {
                 kind: 'text',
                 totalChars: parsed.text.length,
                 textDigest: hash(parsed.text),
+                ...(sectionsRaw
+                  ? { sectionCount: parsed.sections!.length, sectionsDigest: hash(sectionsRaw) }
+                  : {}),
               }
             }
           } catch (error) {
@@ -1131,6 +1227,9 @@ export function createPresentationAttachmentService(options: {
       const text = (await bytes(join(dir, 'text.txt'), TEXT_LIMIT * 4)).toString('utf8')
       if (text.length !== m.totalChars || hash(text) !== m.textDigest || body.offset > text.length)
         fail('invalid_state')
+      const sections = await pdfSections(dir, m, text)
+      const offset = body.offset as number
+      const end = Math.min(text.length, offset + (body.maxChars as number))
       checkAbort(signal)
       return {
         attachmentId: id,
@@ -1139,6 +1238,9 @@ export function createPresentationAttachmentService(options: {
         totalChars: text.length,
         text: text.slice(body.offset, body.offset + body.maxChars),
         sourceUri: `attachment:${id}`,
+        ...(sections
+          ? { pageSpans: sections.filter((section) => section.end > offset && section.start < end) }
+          : {}),
       }
     } catch (e) {
       const code = e instanceof Error ? e.message : ''

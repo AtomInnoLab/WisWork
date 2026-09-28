@@ -15,7 +15,11 @@ import {
   presentationProductionSummary,
 } from './presentation-production'
 import { createPresentationAttachmentService } from './presentation-attachments'
-import { auditPresentationSources, matchesFetchedSourceUrl } from './presentation-source-audit'
+import {
+  auditPresentationSources,
+  canonicalPdfPageLocator,
+  matchesFetchedSourceUrl,
+} from './presentation-source-audit'
 import {
   parsePresentationPlan,
   assertDeckMatchesPresentationPlan,
@@ -778,6 +782,7 @@ export function createPresentationService(options: {
                   | 'excerpt_mismatch'
                   | 'excerpt_missing'
                   | 'source_mismatch'
+                  | 'locator_mismatch'
               }[]
             | undefined
           let sourcePreparationUnavailable = false
@@ -785,7 +790,15 @@ export function createPresentationService(options: {
             const references = plan.value.sources.flatMap((source) => {
               const attachmentId = presentationSourceAttachmentId(source)
               return attachmentId
-                ? [{ sourceId: source.id, attachmentId, excerpt: source.excerpt, uri: source.uri }]
+                ? [
+                    {
+                      sourceId: source.id,
+                      attachmentId,
+                      excerpt: source.excerpt,
+                      uri: source.uri,
+                      locator: source.locator,
+                    },
+                  ]
                 : []
             })
             if (references.length) {
@@ -819,19 +832,31 @@ export function createPresentationService(options: {
                           documentId,
                           attachmentId: reference.attachmentId,
                           excerpt: reference.excerpt,
+                          ...(canonicalPdfPageLocator(reference.locator)
+                            ? { locator: canonicalPdfPageLocator(reference.locator) }
+                            : {}),
                         },
                         signal,
-                      )) as { attachmentId?: unknown; status?: unknown }
+                      )) as { attachmentId?: unknown; status?: unknown; locator?: unknown }
                       if (match.attachmentId !== reference.attachmentId)
                         throw new Error('invalid_state')
-                      status = {
+                      const matchStatus = {
                         found: 'excerpt_matched',
                         not_found: 'excerpt_mismatch',
                         empty_excerpt: 'excerpt_missing',
                         not_ready: 'uploading',
                         unsupported: 'unsupported',
-                      }[String(match.status)] as typeof status
-                      if (!status) throw new Error('invalid_state')
+                      }[String(match.status)] as
+                        NonNullable<typeof sourcePreparation>[number]['status'] | undefined
+                      if (!matchStatus) throw new Error('invalid_state')
+                      status = matchStatus
+                      if (
+                        matchStatus === 'excerpt_matched' &&
+                        canonicalPdfPageLocator(reference.locator) &&
+                        typeof match.locator === 'string' &&
+                        canonicalPdfPageLocator(reference.locator) !== match.locator
+                      )
+                        status = 'locator_mismatch'
                     }
                     sourcePreparation.push({
                       sourceId: reference.sourceId,
