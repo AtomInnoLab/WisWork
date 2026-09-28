@@ -1,0 +1,4 @@
+metric,label,fy2024_usd_millions,fy2023_usd_millions,yoy_percent,evidence_type
+net_sales,净销售额,391035,383285,2.02,independently_calculated
+net_income,净利润,93736,96995,-3.36,independently_calculated
+operating_cash_flow,经营活动现金流,118254,110543,6.98,independently_calculated
