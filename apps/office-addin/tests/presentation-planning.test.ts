@@ -5,8 +5,7 @@ import { InMemoryVfs } from '../src/skills/shared/vfs.js'
 import type { PresentationHistoryEntry } from '../src/skills/powerpoint/presentation-change-history.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 const plan = benchmarkPlan()
-function setup(history?: PresentationHistoryEntry[]) {
-  const vfs = new InMemoryVfs()
+function setup(history?: PresentationHistoryEntry[], vfs = new InMemoryVfs()) {
   const request = vi.fn(
     async (_body: unknown, _signal?: AbortSignal) =>
       new Response(JSON.stringify({ projectId: plan.projectId, revision: 1, plan })),
@@ -322,8 +321,45 @@ describe('saved presentation planning tools', () => {
       plan,
       compileClaims: expect.any(Array),
     })
-    expect(f.vfs.list('/home/user')).toContain(`/home/user/generated/${plan.projectId}.plan.json`)
+    expect(f.vfs.list('/home/user')).toContain(
+      `/home/user/generated/${plan.projectId}/plan-revision-1.json`,
+    )
     expect(f.rememberProject).toHaveBeenCalledWith(plan.projectId)
+  })
+  it('preserves earlier plan revision attachments and explains exhausted session storage', async () => {
+    const f = setup()
+    const first = await f.skill.executeTool({
+      id: 'save-1',
+      name: 'save_presentation_plan',
+      input: { expected_revision: 0, plan },
+    })
+    expect(first.isError).not.toBe(true)
+    f.request.mockResolvedValueOnce(
+      new Response(JSON.stringify({ projectId: plan.projectId, revision: 2, plan })),
+    )
+    const second = await f.skill.executeTool({
+      id: 'save-2',
+      name: 'save_presentation_plan',
+      input: { expected_revision: 1, plan },
+    })
+    expect(second.isError).not.toBe(true)
+    expect(f.vfs.list('/home/user')).toEqual([
+      `/home/user/generated/${plan.projectId}/plan-revision-1.json`,
+      `/home/user/generated/${plan.projectId}/plan-revision-2.json`,
+    ])
+    const full = setup(undefined, new InMemoryVfs({ maxTotalBytes: 4 }))
+    const failed = await full.skill.executeTool({
+      id: 'save-full',
+      name: 'save_presentation_plan',
+      input: { expected_revision: 0, plan },
+    })
+    expect(failed).toMatchObject({
+      isError: true,
+      output: 'presentation_session_storage_full',
+    })
+    expect(failed.summary).toContain('会话附件空间不足')
+    expect(full.request).toHaveBeenCalledOnce()
+    expect(full.vfs.list('/home/user')).toEqual([])
   })
   it('reloads the current saved plan without compiling or importing', async () => {
     const f = setup()

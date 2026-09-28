@@ -725,7 +725,7 @@ export function createPresentationPlanningSkill(
           compileClaims: presentationPlanClaims(plan),
         }
         options.vfs.writeFile(
-          `/home/user/generated/${projectId}.plan.json`,
+          `/home/user/generated/${projectId}/plan-revision-${result.revision}.json`,
           JSON.stringify({ projectId, revision: result.revision, plan }, null, 2),
         )
         return {
@@ -736,11 +736,13 @@ export function createPresentationPlanningSkill(
       } catch (error) {
         const message = error instanceof Error ? error.message : ''
         const code =
-          message === 'cancelled' ||
-          message === 'invalid_tool_input' ||
-          /^presentation_[a-z_]{1,80}$/.test(message)
-            ? message
-            : 'presentation_operation_failed'
+          message === 'vfs_limit'
+            ? 'presentation_session_storage_full'
+            : message === 'cancelled' ||
+                message === 'invalid_tool_input' ||
+                /^presentation_[a-z_]{1,80}$/.test(message)
+              ? message
+              : 'presentation_operation_failed'
         return {
           output: code,
           isError: true,
@@ -748,7 +750,9 @@ export function createPresentationPlanningSkill(
           summary:
             code === 'presentation_revision_conflict'
               ? '计划已有更新，请读取最新计划后再修改'
-              : '计划操作未完成，已有成果已保留',
+              : code === 'presentation_session_storage_full'
+                ? '会话附件空间不足；PC 已保存的计划仍保留。请下载所需文件后开启新会话，再从项目恢复计划。'
+                : '计划操作未完成，已有成果已保留',
         }
       }
     },
