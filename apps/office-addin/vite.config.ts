@@ -9,6 +9,8 @@ import {
   deploymentConfig,
   deploymentConnectOrigins,
   officeBuildId,
+  officeDiagnosticSamplePercent,
+  officePresentationRolloutPercent,
   renderDeploymentManifest,
 } from './build-config.js'
 
@@ -53,7 +55,11 @@ export default defineConfig(async ({ command, mode }) => {
       this.emitFile({
         type: 'asset',
         fileName: 'version.json',
-        source: JSON.stringify({ buildId }),
+        source: JSON.stringify({
+          buildId,
+          presentationRolloutPercent: officePresentationRolloutPercent(env),
+          diagnosticSamplePercent: officeDiagnosticSamplePercent(env),
+        }),
       })
       if (deployment) {
         this.emitFile({

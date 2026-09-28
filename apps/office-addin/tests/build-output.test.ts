@@ -9,6 +9,8 @@ const dist = resolve(appRoot, 'dist')
 beforeAll(async () => {
   const configured = {
     VITE_WISWORK_ADDIN_ORIGIN: 'https://office.example',
+    VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT: '25',
+    VITE_WISWORK_OFFICE_DIAGNOSTIC_SAMPLE_PERCENT: '10',
   }
   const prior = Object.fromEntries(Object.keys(configured).map((key) => [key, process.env[key]]))
   Object.assign(process.env, configured)
@@ -26,8 +28,12 @@ describe('configured Office build output', () => {
   it('emits version metadata matching the compiled task pane', async () => {
     const metadata = JSON.parse(await readFile(resolve(dist, 'version.json'), 'utf8')) as {
       buildId: string
+      presentationRolloutPercent: number
+      diagnosticSamplePercent: number
     }
     expect(metadata.buildId).toMatch(/^[A-Za-z0-9_.-]{3,96}$/)
+    expect(metadata.presentationRolloutPercent).toBe(25)
+    expect(metadata.diagnosticSamplePercent).toBe(10)
     const taskpane = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
     const scriptPath = taskpane.match(/src="(\/assets\/taskpane-[^"]+\.js)"/)?.[1]
     expect(scriptPath).toBeDefined()

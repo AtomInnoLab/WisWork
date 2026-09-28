@@ -56,7 +56,7 @@ function referencedStylesheets(html) {
   return referenced
 }
 
-export async function inspectOfficeBuild(dist, expectedOrigin) {
+export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
   const origin = new URL(expectedOrigin)
   if (origin.protocol !== 'https:' || origin.origin !== expectedOrigin)
     throw new Error('expected origin must be an HTTPS origin without a path')
@@ -64,6 +64,12 @@ export async function inspectOfficeBuild(dist, expectedOrigin) {
   const metadata = JSON.parse(await readFile(resolve(dist, 'version.json'), 'utf8'))
   if (!/^[A-Za-z0-9_.-]{3,96}$/.test(metadata.buildId || ''))
     throw new Error('invalid version.json buildId')
+  for (const key of ['presentationRolloutPercent', 'diagnosticSamplePercent']) {
+    if (!Number.isInteger(metadata[key]) || metadata[key] < 0 || metadata[key] > 100)
+      throw new Error(`invalid version.json ${key}`)
+    if (expectedConfig && metadata[key] !== expectedConfig[key])
+      throw new Error(`release ${key} differs from expected configuration`)
+  }
   const htmlBytes = await readFile(resolve(dist, 'taskpane.html'))
   const html = htmlBytes.toString('utf8')
   const manifest = await readFile(resolve(dist, 'manifest.xml'), 'utf8')
@@ -101,6 +107,8 @@ export async function inspectOfficeBuild(dist, expectedOrigin) {
     if (!present.has(path)) throw new Error(`missing referenced asset: ${path}`)
   return {
     buildId: metadata.buildId,
+    presentationRolloutPercent: metadata.presentationRolloutPercent,
+    diagnosticSamplePercent: metadata.diagnosticSamplePercent,
     script: scripts[0],
     scriptSha256: sha256(script),
     htmlSha256: sha256(htmlBytes),
@@ -170,7 +178,11 @@ export async function inspectDeployedOffice(origin, build, fetcher = fetch) {
       } catch {
         throw new Error('invalid deployed version.json')
       }
-      if (metadata.buildId !== build.buildId)
+      if (
+        metadata.buildId !== build.buildId ||
+        metadata.presentationRolloutPercent !== build.presentationRolloutPercent ||
+        metadata.diagnosticSamplePercent !== build.diagnosticSamplePercent
+      )
         throw new Error('deployed Office assets differ from release artifact')
     }
   }
@@ -466,17 +478,39 @@ async function main(args) {
     !options['--origin'] ||
     !options['--relay-origin'] ||
     Object.keys(options).some(
-      (key) => !['--origin', '--relay-origin', '--dist', '--deployed', '--pairing'].includes(key),
+      (key) =>
+        ![
+          '--origin',
+          '--relay-origin',
+          '--dist',
+          '--deployed',
+          '--pairing',
+          '--rollout-percent',
+          '--diagnostic-sample-percent',
+        ].includes(key),
     ) ||
     (options['--deployed'] && options['--deployed'] !== '1') ||
-    (options['--pairing'] && options['--pairing'] !== '1')
+    (options['--pairing'] && options['--pairing'] !== '1') ||
+    (options['--deployed'] &&
+      (!options['--rollout-percent'] || !options['--diagnostic-sample-percent'])) ||
+    Boolean(options['--rollout-percent']) !== Boolean(options['--diagnostic-sample-percent']) ||
+    [options['--rollout-percent'], options['--diagnostic-sample-percent']].some(
+      (value) => value !== undefined && !/^(?:0|[1-9]\d?|100)$/.test(value),
+    )
   )
     throw new Error(
-      'usage: node tools/ppt-agent-release-preflight.mjs --origin https://office.example --relay-origin https://relay.example [--dist path] [--deployed 1] [--pairing 1]',
+      'usage: node tools/ppt-agent-release-preflight.mjs --origin https://office.example --relay-origin https://relay.example [--dist path] [--deployed 1 --rollout-percent 0..100 --diagnostic-sample-percent 0..100] [--pairing 1]',
     )
   const build = await inspectOfficeBuild(
     resolve(options['--dist'] || defaultDist),
     options['--origin'],
+    options['--rollout-percent'] !== undefined &&
+      options['--diagnostic-sample-percent'] !== undefined
+      ? {
+          presentationRolloutPercent: Number(options['--rollout-percent']),
+          diagnosticSamplePercent: Number(options['--diagnostic-sample-percent']),
+        }
+      : undefined,
   )
   if (options['--deployed']) await inspectDeployedOffice(options['--origin'], build)
   await inspectRelayHealth(options['--relay-origin'])
@@ -485,7 +519,7 @@ async function main(args) {
     await inspectRelayPairing(options['--relay-origin'], process.env.PPT_AGENT_RELEASE_PC_TOKEN)
   }
   process.stdout.write(
-    `PPT Agent release preflight passed: build ${build.buildId}, ${build.files.length} artifact files${options['--deployed'] ? ' matched deployed bytes' : ' checked locally'}, Relay healthy${options['--pairing'] ? ', v2 presentation capability routes verified' : ''}\n`,
+    `PPT Agent release preflight passed: build ${build.buildId}, rollout ${build.presentationRolloutPercent}%, diagnostics ${build.diagnosticSamplePercent}%, ${build.files.length} artifact files${options['--deployed'] ? ' matched deployed bytes' : ' checked locally'}, Relay healthy${options['--pairing'] ? ', v2 presentation capability routes verified' : ''}\n`,
   )
 }
 

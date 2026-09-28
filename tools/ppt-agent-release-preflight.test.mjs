@@ -13,6 +13,9 @@ import {
   inspectRelayPairing,
 } from './ppt-agent-release-preflight.mjs'
 
+const VERSION =
+  '{"buildId":"release_123","presentationRolloutPercent":25,"diagnosticSamplePercent":10}'
+
 const PRESENTATION_CAPABILITIES = [
   'presentation.v1',
   'presentation-attachments.v1',
@@ -25,7 +28,7 @@ async function artifact(t) {
   const dist = await mkdtemp(resolve(tmpdir(), 'ppt-release-'))
   t.after(() => rm(dist, { recursive: true, force: true }))
   await mkdir(resolve(dist, 'assets'))
-  await writeFile(resolve(dist, 'version.json'), '{"buildId":"release_123"}')
+  await writeFile(resolve(dist, 'version.json'), VERSION)
   await writeFile(
     resolve(dist, 'taskpane.html'),
     '<script src="/assets/taskpane-AbC_123.js"></script>',
@@ -45,6 +48,8 @@ test('validates complete release artifact', async (t) => {
   const dist = await artifact(t)
   assert.deepEqual(await inspectOfficeBuild(dist, 'https://office.example'), {
     buildId: 'release_123',
+    presentationRolloutPercent: 25,
+    diagnosticSamplePercent: 10,
     script: 'assets/taskpane-AbC_123.js',
     scriptSha256: createHash('sha256').update('const version="release_123"').digest('hex'),
     htmlSha256: createHash('sha256')
@@ -62,13 +67,37 @@ test('validates complete release artifact', async (t) => {
         ),
       ],
       ['taskpane.html', Buffer.from('<script src="/assets/taskpane-AbC_123.js"></script>')],
-      ['version.json', Buffer.from('{"buildId":"release_123"}')],
+      ['version.json', Buffer.from(VERSION)],
     ].map(([path, bytes]) => ({
       path,
       size: bytes.length,
       sha256: createHash('sha256').update(bytes).digest('hex'),
     })),
   })
+})
+
+test('release configuration must match the operator expectation', async (t) => {
+  const dist = await artifact(t)
+  await inspectOfficeBuild(dist, 'https://office.example', {
+    presentationRolloutPercent: 25,
+    diagnosticSamplePercent: 10,
+  })
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example', {
+      presentationRolloutPercent: 100,
+      diagnosticSamplePercent: 10,
+    }),
+    /presentationRolloutPercent differs/,
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example', {
+      presentationRolloutPercent: 25,
+      diagnosticSamplePercent: 100,
+    }),
+    /diagnosticSamplePercent differs/,
+  )
+  await writeFile(resolve(dist, 'version.json'), '{"buildId":"release_123"}')
+  await assert.rejects(inspectOfficeBuild(dist, 'https://office.example'), /invalid version.json/)
 })
 
 test('v2 pairing smoke negotiates and routes every presentation capability', async (t) => {
@@ -322,9 +351,9 @@ test('pairing smoke rejects capability mismatch without disclosing credentials',
 
 test('fails closed on mismatched metadata, origin and unhashed entry', async (t) => {
   const dist = await artifact(t)
-  await writeFile(resolve(dist, 'version.json'), '{"buildId":"other"}')
+  await writeFile(resolve(dist, 'version.json'), VERSION.replace('release_123', 'other'))
   await assert.rejects(inspectOfficeBuild(dist, 'https://office.example'), /buildId differs/)
-  await writeFile(resolve(dist, 'version.json'), '{"buildId":"release_123"}')
+  await writeFile(resolve(dist, 'version.json'), VERSION)
   await assert.rejects(
     inspectOfficeBuild(dist, 'https://other.example'),
     /manifest origin mismatch/,
@@ -425,7 +454,7 @@ test('requires exact Relay health response and secure remote origin', async () =
 
 test('checks deployed version, HTML and immutable script as one build', async () => {
   const assets = new Map([
-    ['/version.json', '{"buildId":"release_123"}'],
+    ['/version.json', VERSION],
     ['/taskpane.html', '<script src="/assets/taskpane-AbC_123.js"></script>'],
     ['/assets/taskpane-AbC_123.js', 'const version="release_123"'],
     ['/assets/taskpane-AbC_123.css', 'body{color:#123456}'],
@@ -435,6 +464,8 @@ test('checks deployed version, HTML and immutable script as one build', async ()
   ])
   const build = {
     buildId: 'release_123',
+    presentationRolloutPercent: 25,
+    diagnosticSamplePercent: 10,
     script: 'assets/taskpane-AbC_123.js',
     scriptSha256: createHash('sha256').update('const version="release_123"').digest('hex'),
     htmlSha256: createHash('sha256')
@@ -457,7 +488,7 @@ test('checks deployed version, HTML and immutable script as one build', async ()
   assets.set('/taskpane.html', '<script src="/assets/taskpane-AbC_123.js"></script>')
   assets.set('/version.json', '{"buildId":"old"}')
   await assert.rejects(inspectDeployedOffice('https://office.example', build, fetcher), /differ/)
-  assets.set('/version.json', '{"buildId":"release_123"}')
+  assets.set('/version.json', VERSION)
   assets.set('/assets/taskpane-AbC_123.js', 'const version="release_123";tampered=true')
   await assert.rejects(inspectDeployedOffice('https://office.example', build, fetcher), /differ/)
   assets.delete('/assets/taskpane-AbC_123.js')

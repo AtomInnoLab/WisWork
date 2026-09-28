@@ -117,7 +117,8 @@ A valid configured build emits `dist/manifest.xml`; an invalid build emits no de
 The task-pane CSP allows only the fixed WSS Relay. There are no OAuth callback pages, direct
 WisUsage connections, wildcard origins, or source maps in the deployment output.
 
-The build also emits `dist/version.json` with the same build ID compiled into the Taskpane.
+The build also emits `dist/version.json` with the same build ID compiled into the Taskpane,
+plus the configured presentation rollout and remote diagnostic sample percentages.
 Serve `version.json` and `taskpane.html` without stale caches, and deploy them atomically with
 their hashed `assets/` files. On Taskpane startup, a mismatched build ID asks the user to reload
 with a build-specific URL; an older deployment without `version.json` remains usable. The check
