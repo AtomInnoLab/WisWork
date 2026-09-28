@@ -41,8 +41,7 @@ const response = () =>
       report,
     }),
   )
-function fixture() {
-  const vfs = new InMemoryVfs()
+function fixture(vfs = new InMemoryVfs()) {
   const request = vi.fn(async () => response())
   const pdfRequest = vi.fn(async () => response())
   const pdfAvailable = vi.fn(() => true)
@@ -80,6 +79,37 @@ const compileCall = () => ({
 })
 
 describe('PowerPoint presentation generation', () => {
+  it('explains full session attachment storage after a PC result instead of blaming rendering', async () => {
+    const f = fixture(new InMemoryVfs({ maxTotalBytes: 4 }))
+    const compiled = await f.skill.executeTool(compileCall())
+    expect(compiled).toMatchObject({
+      isError: true,
+      output: 'presentation_session_storage_full',
+    })
+    expect(compiled.summary).toContain('会话附件空间不足')
+    expect(f.request).toHaveBeenCalledOnce()
+    f.pdfRequest.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'exported',
+          source: 'compiled',
+          projectId: deck.id,
+          requestId: 'request-1',
+          slideCount: 1,
+          pdfBase64: btoa('%PDF-1.4\n%%EOF\n'),
+        }),
+      ),
+    )
+    const pdf = await f.skill.executeTool({
+      id: 'pdf-full',
+      name: 'export_presentation_pdf',
+      input: { project_id: deck.id, request_id: 'request-1' },
+    })
+    expect(pdf).toMatchObject({ isError: true, output: 'presentation_session_storage_full' })
+    expect(pdf.summary).toContain('会话附件空间不足')
+    expect(f.vfs.list('/home/user')).toEqual([])
+  })
+
   it('keeps distinct requests and PDF sources as separate downloadable artifacts', async () => {
     const f = fixture()
     f.request.mockResolvedValueOnce(response()).mockResolvedValueOnce(

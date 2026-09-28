@@ -408,23 +408,27 @@ export function createPresentationGenerationSkill(
       } catch (error) {
         const message = error instanceof Error ? error.message : ''
         const code =
-          message === 'cancelled' ||
-          message === 'invalid_tool_input' ||
-          /^presentation_[a-z_]{1,80}$/.test(message)
-            ? message
-            : 'presentation_operation_failed'
+          message === 'vfs_limit'
+            ? 'presentation_session_storage_full'
+            : message === 'cancelled' ||
+                message === 'invalid_tool_input' ||
+                /^presentation_[a-z_]{1,80}$/.test(message)
+              ? message
+              : 'presentation_operation_failed'
         return {
           output: code,
           isError: true,
           mutated: false,
           summary:
-            code === 'presentation_assets_unavailable'
-              ? '请更新并连接支持图片素材的 PC 端后重试'
-              : call.name === 'export_presentation_pdf'
-                ? code === 'presentation_pdf_unavailable'
-                  ? '当前 PC 尚不支持 PDF 导出，请更新后重试'
-                  : 'PDF 导出未完成，请检查本机 LibreOffice 或稍后重试'
-                : 'PPT 生成未完成，已有成果已保留',
+            code === 'presentation_session_storage_full'
+              ? '会话附件空间不足；PC 成果仍保留。请下载所需文件后开启新会话，并从项目恢复。'
+              : code === 'presentation_assets_unavailable'
+                ? '请更新并连接支持图片素材的 PC 端后重试'
+                : call.name === 'export_presentation_pdf'
+                  ? code === 'presentation_pdf_unavailable'
+                    ? '当前 PC 尚不支持 PDF 导出，请更新后重试'
+                    : 'PDF 导出未完成，请检查本机 LibreOffice 或稍后重试'
+                  : 'PPT 生成未完成，已有成果已保留',
         }
       }
     },
