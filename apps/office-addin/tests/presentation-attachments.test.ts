@@ -125,9 +125,7 @@ it('shows PDF pages without extracted text and rejects malformed page coverage',
     sectionCount: 3,
     pagesWithoutExtractedText: [2],
   }
-  f.request.mockImplementation(
-    async () => new Response(JSON.stringify({ attachments: [item] })),
-  )
+  f.request.mockImplementation(async () => new Response(JSON.stringify({ attachments: [item] })))
   expect(await f.skill.list()).toMatchObject([item])
   expect(
     JSON.parse(
@@ -137,7 +135,9 @@ it('shows PDF pages without extracted text and rejects malformed page coverage',
   ).toMatchObject({ attachments: [item] })
   for (const pages of [[0], [3, 2], [1, 1], [1, 2, 3]]) {
     f.request.mockResolvedValue(
-      new Response(JSON.stringify({ attachments: [{ ...item, pagesWithoutExtractedText: pages }] })),
+      new Response(
+        JSON.stringify({ attachments: [{ ...item, pagesWithoutExtractedText: pages }] }),
+      ),
     )
     await expect(f.skill.list()).rejects.toThrow('presentation_response_invalid')
   }
@@ -378,6 +378,21 @@ it('does not try another image candidate after a document change or cancellation
   await expect(
     skill.importUrls(['https://example.com/a.png', 'https://example.com/b.png']),
   ).rejects.toThrow('upload_cancelled')
+  expect(f.request).toHaveBeenCalledTimes(1)
+})
+it('does not try another image candidate after the PC reports cancellation', async () => {
+  const f = setup()
+  f.request.mockResolvedValue(new Response(JSON.stringify({ error: 'aborted' })))
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    remoteImagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  await expect(
+    skill.importUrls(['https://example.com/a.png', 'https://example.com/b.png']),
+  ).rejects.toThrow('presentation_aborted')
   expect(f.request).toHaveBeenCalledTimes(1)
 })
 it('reports exhausted image candidates after recoverable failures', async () => {

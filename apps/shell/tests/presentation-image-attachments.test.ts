@@ -400,6 +400,38 @@ describe('durable presentation image assets', () => {
     ).rejects.toThrow('quota_exceeded')
     expect(await call({ operation: 'attachment_list_assets' })).toEqual({ attachments: [] })
   })
+  it('distinguishes a cancelled image import from a remote timeout', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-remote-abort-'))
+    dirs.push(userDataPath)
+    const cancelled = new AbortController()
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      fetchImage: async () => {
+        cancelled.abort()
+        throw new Error('fetch interrupted')
+      },
+    })
+    const body = {
+      documentId: 'doc',
+      operation: 'attachment_import_url',
+      url: 'https://93.184.216.34/image.png',
+    }
+    await expect(service(body, cancelled.signal)).rejects.toThrow('aborted')
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(AbortSignal.abort())
+    try {
+      await expect(service(body, new AbortController().signal)).rejects.toThrow(
+        'remote_image_unavailable',
+      )
+    } finally {
+      timeout.mockRestore()
+    }
+    expect(
+      await service(
+        { documentId: 'doc', operation: 'attachment_list_assets' },
+        new AbortController().signal,
+      ),
+    ).toEqual({ attachments: [] })
+  })
   it('keeps both public sources when distinct URLs return the same image bytes', async () => {
     const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-remote-sources-'))
     dirs.push(userDataPath)

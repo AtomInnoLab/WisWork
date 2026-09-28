@@ -208,7 +208,9 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
   await directory(dir)
   let m: Metadata
   try {
-    m = JSON.parse((await bytes(join(dir, 'metadata.json'), 32 * 1024)).toString('utf8')) as Metadata
+    m = JSON.parse(
+      (await bytes(join(dir, 'metadata.json'), 32 * 1024)).toString('utf8'),
+    ) as Metadata
   } catch {
     return fail('invalid_state')
   }
@@ -742,13 +744,18 @@ export function createPresentationAttachmentService(options: {
         if (!(await isSafeRemoteUrl(url.toString()))) fail('remote_image_unavailable')
         const timeout = AbortSignal.timeout(15_000)
         const combined = AbortSignal.any([signal, timeout])
+        const checkDownloadAbort = () => {
+          if (signal.aborted) fail('aborted')
+          if (timeout.aborted) fail('remote_image_unavailable')
+        }
         let response: Response | null
         try {
           response = await fetchImage(url.toString(), combined)
         } catch {
-          checkAbort(combined)
+          checkDownloadAbort()
           fail('remote_image_unavailable')
         }
+        checkDownloadAbort()
         if (!response?.ok || !response.body) fail('remote_image_unavailable')
         if (Number(response.headers.get('content-length')) > PRESENTATION_IMAGE_INPUT_LIMIT)
           fail('quota_exceeded')
@@ -757,12 +764,12 @@ export function createPresentationAttachmentService(options: {
         let total = 0
         try {
           while (true) {
-            checkAbort(combined)
+            checkDownloadAbort()
             let next: ReadableStreamReadResult<Uint8Array>
             try {
               next = await reader.read()
             } catch {
-              checkAbort(combined)
+              checkDownloadAbort()
               fail('remote_image_unavailable')
             }
             if (next.done) break
@@ -773,7 +780,7 @@ export function createPresentationAttachmentService(options: {
         } finally {
           await reader.cancel().catch(() => undefined)
         }
-        checkAbort(combined)
+        checkDownloadAbort()
         const raw = Buffer.concat(
           chunks.map((chunk) => Buffer.from(chunk)),
           total,
@@ -791,7 +798,7 @@ export function createPresentationAttachmentService(options: {
           animatedInput = true
         }
         const image = animatedInput ? undefined : await normalizeImage(raw)
-        checkAbort(combined)
+        checkDownloadAbort()
         if (image) {
           const normalized = inspectPresentationImage(image.bytes)
           if (

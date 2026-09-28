@@ -350,7 +350,6 @@ export function createPresentationAttachmentSkill(
               'presentation_remote_image_unavailable',
               'presentation_parse_failed',
               'presentation_animated_image_unsupported',
-              'presentation_aborted',
             ].includes(code)
           )
             throw error
