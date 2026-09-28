@@ -33,9 +33,11 @@ export function officeOperationsForSlideIR(
     throw new Error('invalid_tool_input')
   const names = new Set<string>()
   const labels = presentationSlideSourceLabels(slide, claims)
+  const sourceText = labels.join('；')
   if (
     slide.elements.length + Number(labels.length > 0) > 32 ||
-    slide.elements.some((element) => element.id === 'source-attribution')
+    slide.elements.some((element) => element.id === 'source-attribution') ||
+    sourceText.length > 500
   )
     throw new Error('invalid_tool_input')
   const operations: AddOperation[] = slide.elements.map((element): AddOperation => {
@@ -132,7 +134,7 @@ export function officeOperationsForSlideIR(
       op: 'add_text_box',
       slide_index: slideIndex,
       name: 'source-attribution',
-      text: labels.join('；').slice(0, 500),
+      text: sourceText,
       left: 36,
       top: 507.6,
       width: 885.6,

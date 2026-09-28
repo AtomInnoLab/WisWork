@@ -11,6 +11,13 @@ import {
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
 describe('presentation contract and compiler', () => {
+  it('rejects source attribution that cannot fit the visible footer without truncation', async () => {
+    const deck = benchmarkDeck()
+    deck.claims[0]!.source = '来源'.repeat(245)
+    await expect(compilePresentationDeck(deck)).rejects.toThrow(
+      'presentation_invalid:source_footer_overflow',
+    )
+  })
   it.each(['bar', 'line', 'pie'] as const)(
     'postflights native %s chart caches from the shared SlideIR',
     async (chartType) => {

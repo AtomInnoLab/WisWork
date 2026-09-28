@@ -2387,6 +2387,7 @@ export function createPowerPointSkill(options: {
                       const shape = current.shapes.find((item) => item.id === createdShapeId)
                       if (
                         shape &&
+                        shape.name === operation.name &&
                         sameGeometry(shape.left, operation.left) &&
                         sameGeometry(shape.top, operation.top) &&
                         sameGeometry(shape.width, operation.width) &&

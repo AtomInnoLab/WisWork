@@ -68,6 +68,14 @@ it('rejects an unsupported page before emitting a partial native write plan', ()
   )
 })
 
+it('rejects source attribution that would be silently truncated in the Office footer', () => {
+  const deck = benchmarkDeck()
+  deck.claims[0]!.source = '来源'.repeat(245)
+  expect(() => officeOperationsForSlideIR(deck.slides[3]!, deck.style, 0, deck.claims)).toThrow(
+    'invalid_tool_input',
+  )
+})
+
 it('maps a shared SlideIR table to a native Office table operation', () => {
   const deck = benchmarkDeck()
   expect(officeOperationsForSlideIR(deck.slides[5]!, deck.style, 0, deck.claims)[1]).toMatchObject({

@@ -127,7 +127,7 @@ export async function verifyCompiledPresentationStructure(
         y: 7.05,
         w: 12.3,
         h: 0.3,
-        text: sourceLabels.join('；').slice(0, 500),
+        text: sourceLabels.join('；'),
       })
     const seen = new Set<string>()
     let relationships:
@@ -459,6 +459,9 @@ export async function compilePresentationDeck(
   pptx.title = deck.title
   pptx.theme = { headFontFace: deck.style.fontFace, bodyFontFace: deck.style.fontFace }
   for (const ir of deck.slides) {
+    const sources = presentationSlideSourceLabels(ir, deck.claims)
+    const sourceText = sources.join('；')
+    if (sourceText.length > 500) throw new Error('presentation_invalid:source_footer_overflow')
     const slide = pptx.addSlide()
     slide.background = { color: deck.style.background }
     for (const el of ir.elements) {
@@ -548,9 +551,8 @@ export async function compilePresentationDeck(
         )
     }
     const claims = (ir.claimIds ?? []).map((id) => deck.claims.find((claim) => claim.id === id)!)
-    const sources = presentationSlideSourceLabels(ir, deck.claims)
-    if (sources.length)
-      slide.addText(sources.join('；').slice(0, 500), {
+    if (sourceText)
+      slide.addText(sourceText, {
         x: 0.5,
         y: 7.05,
         w: 12.3,

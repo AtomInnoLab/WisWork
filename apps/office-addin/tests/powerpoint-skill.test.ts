@@ -1963,6 +1963,48 @@ describe('browser PowerPoint adapter', () => {
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
   })
 
+  it('does not accept a created SlideIR shape whose host name differs from the planned name', async () => {
+    const deck = benchmarkDeck()
+    const slide = {
+      ...deck.slides[0]!,
+      claimIds: [],
+      elements: [deck.slides[0]!.elements[0]!],
+    }
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['created'] }),
+      listSlideShapes: vi
+        .fn()
+        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
+        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
+        .mockResolvedValue({
+          slideId: 'slide-1',
+          slideIndex: 0,
+          shapes: [
+            {
+              id: 'created',
+              name: 'wrong-name',
+              type: 'TextBox',
+              left: 72,
+              top: 72,
+              width: 720,
+              height: 72,
+            },
+          ],
+        }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('add_slide_ir_objects', {
+        slide_index: 0,
+        slide,
+        style: deck.style,
+        claims: deck.claims,
+      }),
+    )
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_verify_failed')
+  })
+
   it('reads native table values with bounded dimensions', async () => {
     const table = {
       values: [
