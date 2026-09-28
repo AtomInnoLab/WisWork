@@ -256,6 +256,36 @@ describe('Office agent session', () => {
     expect(finish.mock.calls[0]?.[0]).toBe(begin.mock.calls[0]?.[0])
   })
 
+  it('records a content-free run completion after a successful stream', async () => {
+    const harness = transportHarness()
+    const diagnostics = {
+      startTrace: vi.fn(() => 'trace'),
+      setTool: vi.fn(),
+      record: vi.fn(),
+      clear: vi.fn(),
+    }
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+    session.send('private presentation brief')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(diagnostics.record).toHaveBeenCalledWith({
+        phase: 'run',
+        errorCode: 'agent_run_completed',
+        durationMs: expect.any(Number),
+      }),
+    )
+    expect(diagnostics.setTool).toHaveBeenCalledWith('agent_run')
+    expect(JSON.stringify(diagnostics.record.mock.calls)).not.toContain(
+      'private presentation brief',
+    )
+  })
+
   it('waits for an ordinary tool completion checkpoint before the next request', async () => {
     const harness = transportHarness()
     let savePending!: () => void

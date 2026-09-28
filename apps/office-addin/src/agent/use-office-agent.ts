@@ -495,6 +495,14 @@ export function createOfficeAgentSession(dependencies: {
         publish({ activity: 'Thinking…' })
       },
       onDone: (result) => {
+        diagnose((diagnostics) => {
+          diagnostics.setTool('agent_run')
+          diagnostics.record({
+            phase: 'run',
+            errorCode: result.cancelled ? 'cancelled' : 'agent_run_completed',
+            durationMs: Math.max(0, Date.now() - runStartedAt),
+          })
+        })
         finishCheckpoint()
         toolStartedAt.clear()
         if (activeAssistantId) {

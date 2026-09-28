@@ -1105,6 +1105,27 @@ async fn accepts_capability_bound_diagnostic_without_forwarding_or_disturbing_re
             .await
             .is_err()
     );
+    let mut completed = diagnostic(&office_ready, "0c9483ef-720f-4b10-a1d5-143349f0a94b");
+    completed["tool"] = json!("agent_run");
+    completed["phase"] = json!("run");
+    completed["outcome"] = json!("passed");
+    completed["error_code"] = json!("agent_run_completed");
+    for key in [
+        "office_error_code",
+        "office_error_name",
+        "office_error_location",
+    ] {
+        completed.as_object_mut().unwrap().remove(key);
+    }
+    send(&mut office, completed.clone()).await;
+    assert_eq!(
+        recv(&mut office).await["type"],
+        "office.diagnostic.accepted"
+    );
+    completed["event_id"] = json!("a688c4e8-1616-42d0-9712-8d5282578d10");
+    completed["error_code"] = json!("office_write_failed");
+    send(&mut office, completed).await;
+    assert_eq!(recv(&mut office).await["code"], "invalid_frame");
 
     send(
         &mut office,

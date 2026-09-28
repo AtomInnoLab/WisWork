@@ -153,7 +153,9 @@ The audited name-by-name and semantic comparison with `hewliyang/office-agents` 
 [`OFFICE_AGENTS_PARITY.md`](./OFFICE_AGENTS_PARITY.md). Host tool names are covered, but raw
 JavaScript execution remains intentionally unavailable and production web retrieval remains gated.
 
-Safe remote failure diagnostics are enabled by default for Relay builds. They contain only bounded
+Safe remote diagnostics are enabled by default for Relay builds. A run-end event records
+whether the Agent stream completed or was cancelled; this is not a claim that a presentation
+was delivered or passed QA. Failure events remain separate. They contain only bounded
 host/build/tool/phase identifiers, stable error codes, requirement-set support, and allowlisted
 Office error identifiers; prompts, document content, tool inputs, formulas, OOXML, screenshots,
 tokens, raw error messages, and stacks are never sent. Use **复制诊断信息** in the task-pane session

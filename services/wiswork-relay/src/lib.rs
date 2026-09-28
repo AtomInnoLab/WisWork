@@ -1188,6 +1188,7 @@ const DIAGNOSTIC_OPTIONAL_KEYS: &[&str] = &[
     "office_error_location",
 ];
 const DIAGNOSTIC_ERROR_CODES: &[&str] = &[
+    "agent_run_completed",
     "office_api_unsupported",
     "office_read_failed",
     "office_write_failed",
@@ -1299,16 +1300,26 @@ async fn diagnostic(
     let phase = string(&m, "phase")?;
     if !matches!(
         phase,
-        "tool" | "proposal" | "validate" | "write" | "verify" | "recovery" | "transport"
+        "run" | "tool" | "proposal" | "validate" | "write" | "verify" | "recovery" | "transport"
     ) {
         return Err("invalid_frame");
     }
     let outcome = string(&m, "outcome")?;
-    if !matches!(outcome, "failed" | "unsupported" | "cancelled") {
+    if !matches!(outcome, "passed" | "failed" | "unsupported" | "cancelled") {
         return Err("invalid_frame");
     }
     let error_code = string(&m, "error_code")?;
     if !DIAGNOSTIC_ERROR_CODES.contains(&error_code) {
+        return Err("invalid_frame");
+    }
+    if (outcome == "passed") != (phase == "run" && error_code == "agent_run_completed") {
+        return Err("invalid_frame");
+    }
+    if outcome == "passed"
+        && DIAGNOSTIC_OPTIONAL_KEYS
+            .iter()
+            .any(|key| m.contains_key(*key))
+    {
         return Err("invalid_frame");
     }
     let office_error_code = optional_identifier(&m, "office_error_code")?;

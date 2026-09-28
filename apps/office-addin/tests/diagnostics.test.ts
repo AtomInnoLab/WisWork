@@ -5,6 +5,34 @@ import {
 } from '../src/diagnostics/office-diagnostics.js'
 
 describe('Office safe diagnostics', () => {
+  it('records a bounded run completion without document content', () => {
+    const sent: unknown[] = []
+    const diagnostics = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'build-123',
+      remoteEnabled: true,
+      send: (event) => {
+        sent.push(event)
+      },
+      randomUUID: () => '00000000-0000-4000-8000-000000000001',
+    })
+    diagnostics.startTrace()
+    diagnostics.setTool('agent_run')
+    const event = diagnostics.record({
+      phase: 'run',
+      errorCode: 'agent_run_completed',
+      durationMs: 1234,
+    })
+    expect(event).toMatchObject({
+      tool: 'agent_run',
+      phase: 'run',
+      outcome: 'passed',
+      error_code: 'agent_run_completed',
+      duration_ms: 1234,
+    })
+    expect(sent).toHaveLength(1)
+    expect(JSON.stringify(sent)).not.toContain('document')
+  })
   it('samples remote events per trace while retaining every local event', () => {
     const sent: string[] = []
     let sequence = 0

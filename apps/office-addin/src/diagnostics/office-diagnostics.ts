@@ -5,11 +5,12 @@ export const MAX_DIAGNOSTIC_EVENT_BYTES = 4 * 1024
 export const MAX_DIAGNOSTIC_EXPORT_BYTES = 256 * 1024
 
 export type DiagnosticPhase =
-  'tool' | 'proposal' | 'validate' | 'write' | 'verify' | 'recovery' | 'transport'
-export type DiagnosticOutcome = 'failed' | 'unsupported' | 'cancelled'
+  'run' | 'tool' | 'proposal' | 'validate' | 'write' | 'verify' | 'recovery' | 'transport'
+export type DiagnosticOutcome = 'passed' | 'failed' | 'unsupported' | 'cancelled'
 export type VerificationStage = 'text' | 'body_shape' | 'content' | 'boundary'
 
 const ERROR_CODES = new Set([
+  'agent_run_completed',
   'agent_run_failed',
   'auth_required',
   'cancelled',
@@ -140,7 +141,13 @@ const stableError = (value: unknown): string =>
     ? value
     : 'office_write_failed'
 const outcome = (code: string): DiagnosticOutcome =>
-  code === 'office_api_unsupported' ? 'unsupported' : code === 'cancelled' ? 'cancelled' : 'failed'
+  code === 'agent_run_completed'
+    ? 'passed'
+    : code === 'office_api_unsupported'
+      ? 'unsupported'
+      : code === 'cancelled'
+        ? 'cancelled'
+        : 'failed'
 
 type OfficeDiagnosticMetadata = Pick<
   OfficeDiagnosticEvent,
