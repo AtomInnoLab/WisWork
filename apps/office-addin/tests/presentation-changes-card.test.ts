@@ -258,7 +258,8 @@ it('shows partial batch progress and both recovery choices', async () => {
   const root = createRoot(container)
   try {
     await act(async () => root.render(React.createElement(PresentationChangesCard, { controller })))
-    expect(container.textContent).toContain('已应用 1/2 步')
+    expect(container.textContent).toContain('已持久记录 1/2 步')
+    expect(container.textContent).toContain('宿主可能已有未记录的写入')
     for (const [label, action] of [
       ['继续', 'resume'],
       ['撤销', 'undo'],

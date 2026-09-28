@@ -998,6 +998,10 @@ export function createPresentationExistingBatchEditingSkill(
           }
           if (record.state === 'applying' && record.cursor === 0) {
             for (const backup of record.backups) {
+              // The first write may have reached Office while its cursor receipt
+              // was lost. Its page is no longer byte-equivalent to the savepoint.
+              if (values[0] === 'after' && backup.hostSlideId === record.operations[0].hostSlideId)
+                continue
               const exported = await options.adapter.exportPresentationPagePackage(
                 backup.hostSlideId,
                 writeSignal,

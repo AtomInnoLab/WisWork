@@ -112,7 +112,8 @@ export function PresentationChangesCard({
             </p>
             {entry.source === 'existing_batch' && entry.state === 'applying' && (
               <p>
-                已应用 {entry.cursor}/{entry.operationCount} 步；可继续，也可撤销已写入步骤。
+                已持久记录 {entry.cursor}/{entry.operationCount}{' '}
+                步；宿主可能已有未记录的写入。请先检查，再选择继续或撤销。
               </p>
             )}
             {entry.sequence !== undefined && (
