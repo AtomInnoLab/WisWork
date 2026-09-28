@@ -229,6 +229,50 @@ it('shows persisted batch page reviews as historical evidence', async () => {
   }
 })
 
+it('shows partial batch progress and both recovery choices', async () => {
+  const run = vi.fn()
+  const controller: PresentationChangesController = {
+    snapshot: () => ({
+      phase: 'idle',
+      entries: [
+        {
+          id: 'existing_batch:partial',
+          source: 'existing_batch',
+          kind: 'text',
+          pageId: 'slide',
+          state: 'applying',
+          before: 'old',
+          after: 'new',
+          cursor: 1,
+          operationCount: 2,
+          actions: ['inspect', 'resume', 'undo'],
+        },
+      ],
+    }),
+    subscribe: () => () => {},
+    run,
+    refresh: vi.fn(),
+    clear: vi.fn(),
+  }
+  const container = document.createElement('div')
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(React.createElement(PresentationChangesCard, { controller })))
+    expect(container.textContent).toContain('已应用 1/2 步')
+    for (const [label, action] of [
+      ['继续', 'resume'],
+      ['撤销', 'undo'],
+    ]) {
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>(`[aria-label="${label} slide"]`)!.click(),
+      )
+      expect(run).toHaveBeenLastCalledWith('existing_batch:partial', action)
+    }
+  } finally {
+    await act(async () => root.unmount())
+  }
+})
+
 it('separates captured, pending, passed and failed existing-page evidence', async () => {
   const capturedAt = '2026-09-24T00:00:00.000Z'
   const controller: PresentationChangesController = {

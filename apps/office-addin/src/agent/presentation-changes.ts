@@ -43,6 +43,8 @@ export interface PresentationChangeEntry {
   visualCaptures?: PresentationExistingPageChange['captures']
   visualPageIds?: string[]
   affectedPageCount?: number
+  cursor?: number
+  operationCount?: number
   sequence?: number
   legacy?: boolean
   changeSet?: PresentationChangeSetSummary
@@ -366,6 +368,8 @@ export function createPresentationChangesController(
                           kind: saved.record.operations[0].kind,
                           pageId: saved.record.operations[0].hostSlideId,
                           state: saved.record.state,
+                          cursor: saved.record.cursor,
+                          operationCount: saved.record.operations.length,
                           reviews: copy(saved.record.reviews),
                           affectedPageCount: new Set(
                             saved.record.operations.map((op) => op.hostSlideId),
@@ -389,7 +393,9 @@ export function createPresentationChangesController(
                                 ? saved.record.backups?.length && !saved.record.backupReleasedAt
                                   ? ['inspect', 'release']
                                   : ['inspect']
-                                : ['inspect', 'resume'],
+                                : saved.record.state === 'applying'
+                                  ? ['inspect', 'resume', 'undo']
+                                  : ['inspect', 'resume'],
                         },
                         record: copy(saved.record),
                         fingerprint: JSON.stringify(saved),

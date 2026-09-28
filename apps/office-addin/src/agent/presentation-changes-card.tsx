@@ -110,6 +110,11 @@ export function PresentationChangesCard({
               页面：{entry.pageId} · 状态：
               {entry.state}
             </p>
+            {entry.source === 'existing_batch' && entry.state === 'applying' && (
+              <p>
+                已应用 {entry.cursor}/{entry.operationCount} 步；可继续，也可撤销已写入步骤。
+              </p>
+            )}
             {entry.sequence !== undefined && (
               <p>{entry.legacy ? '旧保存点 · 顺序未知' : `记录 #${entry.sequence}`}</p>
             )}

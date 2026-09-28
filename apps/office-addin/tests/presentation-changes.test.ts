@@ -223,7 +223,7 @@ it('shows existing-page identity diff offline and routes commit by exact change 
   expect(controller.snapshot().entries[0]?.actions).toEqual([])
 })
 it('counts batch page savepoints as linked PC backups', async () => {
-  const record: PresentationExistingBatch = {
+  let record: PresentationExistingBatch = {
     version: 1,
     changeId: 'batch',
     documentId: 'doc',
@@ -272,6 +272,7 @@ it('counts batch page savepoints as linked PC backups', async () => {
       },
     ],
   }
+  const executeTool = vi.fn(async () => ({ output: '{}', mutated: false, summary: 'proposed' }))
   const controller = createPresentationChangesController({
     available: () => false,
     existingAvailable: () => true,
@@ -289,10 +290,26 @@ it('counts batch page savepoints as linked PC backups', async () => {
         sha256: backup.sha256,
         sizeBytes: backup.sizeBytes,
       })),
-    executeTool: vi.fn(),
+    executeTool,
   })
   await controller.refresh()
   expect(controller.snapshot().backupAudit).toEqual({ active: 2, unmatched: 0 })
+  record = { ...record, state: 'applying', cursor: 1 }
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]).toMatchObject({
+    state: 'applying',
+    cursor: 1,
+    operationCount: 2,
+    actions: ['inspect', 'resume', 'undo'],
+  })
+  await controller.run('existing_batch:batch', 'undo')
+  expect(executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'undo_existing_presentation_batch',
+      input: { change_id: 'batch' },
+    }),
+    expect.any(AbortSignal),
+  )
 })
 it('offers one chart backup release after cancellation and accepts the receipt update', async () => {
   let record: PresentationExistingChartChange = {

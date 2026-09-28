@@ -142,7 +142,9 @@ const tools: AgentToolDef[] = [
         ? 'Read every saved target and classify batch recovery without writing.'
         : action === 'release'
           ? 'After a batch has been fully undone, propose releasing its original page package backups from the paired PC. Requires separate confirmation.'
-          : 'Propose confirmed, stepwise batch recovery. Exact host values are checked before each write; ambiguous values stop without replay.',
+          : action === 'undo'
+            ? 'Propose confirmed undo of an applied or partially applied batch. Restore only verified written steps; ambiguous host values stop without replay.'
+            : 'Propose confirmed, stepwise batch recovery. Exact host values are checked before each write; ambiguous values stop without replay.',
     inputSchema: {
       type: 'object',
       properties: { change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' } },
