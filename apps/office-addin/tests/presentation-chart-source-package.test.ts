@@ -94,20 +94,20 @@ describe('PowerPoint chart source inspection', () => {
     })
   })
   it('classifies external links without fetching them', async () => {
-    expect(
-      await inspectPowerPointChartSourcePackage(
-        await pptx({
-          target: 'https://example.com/Book.xlsx',
-          mode: 'TargetMode="External"',
-          includeWorkbook: false,
-        }),
-        '8',
-      ),
-    ).toMatchObject({
+    const result = await inspectPowerPointChartSourcePackage(
+      await pptx({
+        target: 'https://example.com/Book.xlsx',
+        mode: 'TargetMode="External"',
+        includeWorkbook: false,
+      }),
+      '8',
+    )
+    expect(result).toMatchObject({
       sourceKind: 'external_link',
       verification: 'not_verified',
       reason: 'external_source_not_fetched',
     })
+    expect(result.externalTargetDigest).toMatch(/^[a-f0-9]{64}$/)
   })
   it('rejects traversal and malformed slide chart relationships', async () => {
     await expect(

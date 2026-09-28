@@ -139,6 +139,7 @@ export interface ChartSourceReport {
   verification: 'matches' | 'mismatch' | 'not_verified'
   reason?: string
   sourceDigest?: string
+  externalTargetDigest?: string
   workbookContentDigest?: string
   workbookDataDigest?: string
   formulaReferences: Array<{ categories?: string; values?: string }>
@@ -237,8 +238,19 @@ async function inspectChartSourceFromZip(
     cache,
   )
   const sourceRel = relation(chartRels, sourceId, 'package')
-  if (attr(sourceRel, 'TargetMode') === 'External')
-    return { ...result, sourceKind: 'external_link', reason: 'external_source_not_fetched' }
+  if (attr(sourceRel, 'TargetMode') === 'External') {
+    const target = attr(sourceRel, 'Target')
+    if (!target || target.length > 2048) throw new Error('office_api_unsupported')
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(target))
+    return {
+      ...result,
+      sourceKind: 'external_link',
+      reason: 'external_source_not_fetched',
+      externalTargetDigest: Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, '0'),
+      ).join(''),
+    }
+  }
   if (
     attr(sourceRel, 'TargetMode') !== undefined ||
     !/^\.\.\/embeddings\/[A-Za-z0-9_.-]+\.xlsx$/.test(attr(sourceRel, 'Target') ?? '')

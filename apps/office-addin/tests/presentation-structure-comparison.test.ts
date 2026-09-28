@@ -632,6 +632,64 @@ it('reports chart formula drift even when visible caches and workbook cells stay
     cacheChanged: [],
     chartSourceChanged: ['chart'],
   })
+  zip.file(chartPath, chart)
+  const relsPath = chartPath.replace('/charts/', '/charts/_rels/') + '.rels'
+  const rels = await zip.file(relsPath)!.async('string')
+  const missing = rels.replace(/\.\.\/embeddings\/[^"']+\.xlsx/, '../embeddings/missing.xlsx')
+  expect(missing).not.toBe(rels)
+  zip.file(relsPath, missing)
+  const brokenResult = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(brokenResult.content).toMatchObject({
+    status: 'warning',
+    cacheChanged: [],
+    chartSourceUnreadable: ['chart'],
+  })
+  const externalA = rels
+    .replace(/\.\.\/embeddings\/[^"']+\.xlsx/, 'https://example.test/a.xlsx')
+    .replace(
+      'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package"',
+      'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" TargetMode="External"',
+    )
+  expect(externalA).not.toBe(rels)
+  zip.file(relsPath, externalA)
+  const sourceExternal = await zip.generateAsync({ type: 'base64' })
+  zip.file(relsPath, externalA.replace('a.xlsx', 'b.xlsx'))
+  const externalResult = await comparePresentationPageStructure(
+    sourceExternal,
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(externalResult.content).toMatchObject({
+    status: 'warning',
+    cacheChanged: [],
+    chartSourceChanged: ['chart'],
+  })
 })
 
 it('checks embedded workbooks for all seventeen charts', async () => {

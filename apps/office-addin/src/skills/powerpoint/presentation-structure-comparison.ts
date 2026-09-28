@@ -260,6 +260,7 @@ export async function comparePresentationPageStructure(
     chartSourceChanged: string[]
     chartFormulaChanged: string[]
     chartSourceVerificationRegressed: string[]
+    chartSourceUnreadable: string[]
     workbookBytesChanged: string[]
     workbookDataChanged: string[]
     backgroundChanged: boolean
@@ -365,6 +366,7 @@ export async function comparePresentationPageStructure(
     chartSourceChanged: string[] = [],
     chartFormulaChanged: string[] = [],
     chartSourceVerificationRegressed: string[] = [],
+    chartSourceUnreadable: string[] = [],
     workbookBytesChanged: string[] = [],
     workbookDataChanged: string[] = [],
     workbookUnverifiedChanged: string[] = [],
@@ -496,8 +498,18 @@ export async function comparePresentationPageStructure(
         if (!hostElement || hostElement.type !== 'chart') continue
         const original = before.reports[element.shapeId]
         const current = after.reports[hostElement.shapeId]
+        if (original && !current) {
+          chartSourceUnreadable.push(element.name)
+          continue
+        }
         if (!original || !current) continue
-        if (original.sourceKind !== current.sourceKind) chartSourceChanged.push(element.name)
+        if (
+          original.sourceKind !== current.sourceKind ||
+          (original.sourceKind === 'external_link' &&
+            current.sourceKind === 'external_link' &&
+            original.externalTargetDigest !== current.externalTargetDigest)
+        )
+          chartSourceChanged.push(element.name)
         if (
           JSON.stringify(original.formulaReferences) !== JSON.stringify(current.formulaReferences)
         )
@@ -556,6 +568,7 @@ export async function comparePresentationPageStructure(
     chartSourceChanged.length ||
     chartFormulaChanged.length ||
     chartSourceVerificationRegressed.length ||
+    chartSourceUnreadable.length ||
     workbookDataChanged.length ||
     workbookUnverifiedChanged.length ||
     mediaChanged.length ||
@@ -577,6 +590,7 @@ export async function comparePresentationPageStructure(
     chartSourceChanged,
     chartFormulaChanged,
     chartSourceVerificationRegressed,
+    chartSourceUnreadable,
     workbookBytesChanged,
     workbookDataChanged,
     mediaChanged,
