@@ -14,6 +14,8 @@ export interface PresentationImportReceipt {
 export interface PresentationImportAdapter {
   available(): boolean
   snapshot(signal?: AbortSignal): Promise<PresentationImportSnapshot>
+  /** Read-only export used to prove an interrupted single-page append. */
+  exportPage?(slideId: string, signal?: AbortSignal): Promise<string>
   insert(
     base64: string,
     expectedSlideCount: number,
@@ -149,6 +151,21 @@ export function createBrowserPresentationImportAdapter(): PresentationImportAdap
   return {
     available,
     snapshot,
+    async exportPage(slideId, signal) {
+      cancelled(signal)
+      requireApi()
+      if (!slideId || slideId.length > 256) throw new Error('invalid_tool_input')
+      const base64 = await PowerPoint.run(async (context) => {
+        const slide = context.presentation.slides.getItem(slideId)
+        if (typeof slide.exportAsBase64 !== 'function') throw new Error('office_api_unsupported')
+        const exported = slide.exportAsBase64()
+        await context.sync()
+        return exported.value
+      })
+      cancelled(signal)
+      if (typeof base64 !== 'string' || !base64) throw new Error('office_state_uncertain')
+      return base64
+    },
     insert,
     insertPage: (base64, sourceSlideId, before, signal) =>
       insert(base64, 1, before, signal, sourceSlideId),

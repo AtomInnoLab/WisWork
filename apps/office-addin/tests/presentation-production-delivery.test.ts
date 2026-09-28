@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest'
+import JSZip from 'jszip'
 import { createStructuredProposalController } from '../src/agent/proposal-controller'
 import {
   createPresentationAgentRunCheckpoint,
@@ -66,6 +67,63 @@ function fixture() {
   }
   return { artifact, host, receipts, proposals, adapter, options, skill, call, confirm }
 }
+it('reconciles an interrupted append only after exact package and host-order proof', async () => {
+  const f = fixture()
+  const zip = new JSZip()
+  zip.file('ppt/slides/slide1.xml', '<page>expected</page>')
+  const source = await zip.generateAsync({ type: 'base64' })
+  f.artifact.pagePptxBase64![0] = source
+  f.adapter.insertPage.mockImplementationOnce(async () => {
+    f.host.push('host1')
+    throw new Error('office_state_uncertain')
+  })
+  await expect(f.confirm()).rejects.toThrow('office_state_uncertain')
+  const skill = createPresentationProductionDeliverySkill({
+    ...f.options,
+    adapter: { ...f.adapter, exportPage: vi.fn(async () => source) },
+  })
+  const result = await skill.executeTool({
+    id: 'reconcile',
+    name: 'reconcile_presentation_production_import',
+    input: {},
+  })
+  expect(result.isError).not.toBe(true)
+  expect(JSON.parse(result.output)).toMatchObject({ completed: 1, status: 'partial' })
+  expect(f.receipts.get('production/project/request')?.checkpoint).toMatchObject({
+    completed: [{ slideId: 'host1', sourceSlideId: '256#' }],
+  })
+  expect(f.receipts.get('production/project/request')?.checkpoint?.inFlight).toBeUndefined()
+  expect(f.adapter.insertPage).toHaveBeenCalledOnce()
+  await f.confirm()
+  expect(f.host).toEqual(['old', 'host1', 'host2', 'host3'])
+})
+it('keeps an interrupted append uncertain when package content differs', async () => {
+  const f = fixture()
+  const sourceZip = new JSZip()
+  sourceZip.file('ppt/slides/slide1.xml', '<page>expected</page>')
+  f.artifact.pagePptxBase64![0] = await sourceZip.generateAsync({ type: 'base64' })
+  const otherZip = new JSZip()
+  otherZip.file('ppt/slides/slide1.xml', '<page>different</page>')
+  const other = await otherZip.generateAsync({ type: 'base64' })
+  f.adapter.insertPage.mockImplementationOnce(async () => {
+    f.host.push('host1')
+    throw new Error('office_state_uncertain')
+  })
+  await expect(f.confirm()).rejects.toThrow('office_state_uncertain')
+  const skill = createPresentationProductionDeliverySkill({
+    ...f.options,
+    adapter: { ...f.adapter, exportPage: vi.fn(async () => other) },
+  })
+  expect(
+    await skill.executeTool({
+      id: 'reconcile',
+      name: 'reconcile_presentation_production_import',
+      input: {},
+    }),
+  ).toMatchObject({ isError: true, output: 'presentation_import_uncertain' })
+  expect(f.receipts.get('production/project/request')?.checkpoint?.inFlight).toBeDefined()
+  expect(f.adapter.insertPage).toHaveBeenCalledOnce()
+})
 it('correlates a real page import receipt with the interrupted AgentRun without replay', async () => {
   const f = fixture()
   const values = new Map<string, string>()

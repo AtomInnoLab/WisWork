@@ -1,5 +1,6 @@
 import type { AgentSkill } from '@wiswork/agent-core'
 import { selectionFingerprint } from '../../agent/proposal-controller.js'
+import { presentationPackageDigest } from './powerpoint-package.js'
 import type {
   CompiledPresentationArtifact,
   PresentationDeliveryOptions,
@@ -317,6 +318,7 @@ export function createPresentationProductionDeliverySkill(
 }
 function createPageDelivery(options: PresentationDeliveryOptions, production: boolean): AgentSkill {
   const importName = production ? 'import_presentation_production' : 'import_generated_presentation'
+  const reconcileName = 'reconcile_presentation_production_import'
   const readTool = {
     ...tool,
     name: production ? 'read_presentation_production_import_status' : tool.name,
@@ -336,6 +338,12 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
                 'Propose appending the prepared ordered single-page PPTX production outputs. Confirm once; interrupted pages use durable checkpoints. Import is not QA.',
             },
             readTool,
+            {
+              ...readTool,
+              name: reconcileName,
+              description:
+                'Read the host page and complete an interrupted production-page checkpoint only when its entire PPTX package matches the prepared page.',
+            },
           ]
         : [readTool]
     },
@@ -344,8 +352,9 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
     async executeTool(call, signal) {
       try {
         const read = call.name === readTool.name
+        const reconcile = production && call.name === reconcileName
         if (
-          (!read && call.name !== importName) ||
+          (!read && !reconcile && call.name !== importName) ||
           call.inputError ||
           call.truncated ||
           Object.keys(call.input).some((k) => k !== 'project_id') ||
@@ -424,6 +433,64 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
           progress = summarizePresentationImport(artifact, previous)
         if (!progress || (previous?.checkpoint && previous.checkpoint.artifactDigest !== digest))
           throw new Error('presentation_import_state_invalid')
+        if (reconcile) {
+          const checkpoint = previous?.checkpoint
+          if (!checkpoint?.inFlight || previous?.state !== 'pending' || !options.adapter.exportPage)
+            throw new Error('presentation_import_uncertain')
+          const expectedIds = [
+            ...checkpoint.baselineSlideIds,
+            ...checkpoint.completed.map((page) => page.slideId),
+          ]
+          const before = await options.adapter.snapshot(signal)
+          await current(signal)
+          if (
+            before.fingerprint !== JSON.stringify(before.slideIds) ||
+            before.slideIds.length !== expectedIds.length + 1 ||
+            expectedIds.some((id, index) => before.slideIds[index] !== id)
+          )
+            throw new Error('presentation_import_uncertain')
+          const candidate = before.slideIds.at(-1)!
+          const source = pageBytes?.[checkpoint.completed.length]
+          if (!source) throw new Error('presentation_import_state_invalid')
+          const exported = await options.adapter.exportPage(candidate, signal)
+          await current(signal)
+          if (
+            (await presentationPackageDigest(source, signal)) !==
+            (await presentationPackageDigest(exported, signal))
+          )
+            throw new Error('presentation_import_uncertain')
+          const after = await options.adapter.snapshot(signal)
+          await current(signal)
+          if (!same(after, before) || !same(options.readReceipt(key), previous))
+            throw new Error('presentation_import_uncertain')
+          const completed = [
+            ...checkpoint.completed,
+            {
+              sourceSlideId: checkpoint.inFlight.sourceSlideId,
+              slideId: candidate,
+              completedAt: new Date(
+                Math.max(Date.now(), Date.parse(checkpoint.inFlight.startedAt ?? '') || 0),
+              ).toISOString(),
+            },
+          ]
+          const next: PresentationImportRecord = {
+            ...previous,
+            state: completed.length === checkpoint.sourceSlideIds.length ? 'complete' : 'pending',
+            checkpoint: { ...checkpoint, completed, inFlight: undefined },
+            ...(completed.length === checkpoint.sourceSlideIds.length
+              ? { slideIds: completed.map((page) => page.slideId) }
+              : {}),
+          }
+          await options.writeReceipt(key, next)
+          await current()
+          if (!same(options.readReceipt(key), next))
+            throw new Error('presentation_import_uncertain')
+          return {
+            output: JSON.stringify(summarizePresentationImport(artifact, next)),
+            mutated: false,
+            summary: `已核对并认领第 ${completed.length} 页导入；未完成视觉验收`,
+          }
+        }
         if (read)
           return {
             output: JSON.stringify(progress),

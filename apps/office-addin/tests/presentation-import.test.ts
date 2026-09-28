@@ -49,6 +49,17 @@ function host(initial: string[] = ['original-1', 'original-2']) {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('PowerPoint generated-deck import', () => {
+  it('exports one existing page without inserting or changing slide order', async () => {
+    const runtime = host()
+    const exported = { value: 'UEs=' }
+    const slide = { exportAsBase64: vi.fn(() => exported) }
+    Object.assign(runtime.context.presentation.slides, { getItem: vi.fn(() => slide) })
+    const adapter = createBrowserPresentationImportAdapter()
+    expect(await adapter.exportPage?.('original-1')).toBe('UEs=')
+    expect(slide.exportAsBase64).toHaveBeenCalledOnce()
+    expect(runtime.ids()).toEqual(['original-1', 'original-2'])
+    expect(runtime.insert).not.toHaveBeenCalled()
+  })
   it.each([{ original: [] }, { original: ['original-1', 'original-2'] }])(
     'appends to $original, preserving original order and verifying the receipt',
     async ({ original }) => {
