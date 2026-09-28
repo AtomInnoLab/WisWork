@@ -15,6 +15,7 @@ import { createPresentationService } from '../src/main/presentation-service'
 import { createOfficeHostRuntime } from '../../office-addin/src/agent/host-runtime'
 import { BrowserPowerPointAdapter } from '../../office-addin/src/skills/powerpoint/browser-powerpoint-adapter'
 import { presentationArtifactContent } from '../../office-addin/src/skills/powerpoint/presentation-page-delivery'
+import { presentationPackageDigest } from '../../office-addin/src/skills/powerpoint/powerpoint-package'
 import type {
   CompiledPresentationArtifact,
   PresentationImportRecord,
@@ -82,6 +83,7 @@ it('backs up, stages and discards a page revision across PC and Taskpane restart
     )
   let runtime: ReturnType<typeof createOfficeHostRuntime> | undefined
   let exported: ReturnType<typeof vi.spyOn> | undefined
+  let capturedDigests: ReturnType<typeof vi.spyOn> | undefined
   try {
     await call('save_plan', { expectedRevision: 0, plan: benchmarkPlan() })
     await call('production_begin', { requestId: 'parent', planRevision: 1, deck })
@@ -116,6 +118,18 @@ it('backs up, stages and discards a page revision across PC and Taskpane restart
       pagePptxBase64: pages.map((p) => p.pptxBase64),
     }
     const hostIds = deck.slides.map((_, i) => `host-${i}`)
+    capturedDigests = vi
+      .spyOn(BrowserPresentationPageReplacementAdapter.prototype, 'captureUnchangedPageDigests')
+      .mockImplementation(async (slideIds, beforeSlideIds) => {
+        expect(beforeSlideIds).toEqual(['existing', ...hostIds])
+        expect(slideIds).toEqual(hostIds.filter((id) => id !== hostIds[1]))
+        return Promise.all(
+          slideIds.map(async (slideId) => ({
+            slideId,
+            digest: await presentationPackageDigest(pages[hostIds.indexOf(slideId)].pptxBase64),
+          })),
+        )
+      })
     const receipt: PresentationImportRecord = {
       state: 'complete',
       documentId,
@@ -273,6 +287,7 @@ it('backs up, stages and discards a page revision across PC and Taskpane restart
   } finally {
     runtime?.dispose()
     exported?.mockRestore()
+    capturedDigests?.mockRestore()
     inspectStage.mockRestore()
     insertStage.mockRestore()
     discardStage.mockRestore()

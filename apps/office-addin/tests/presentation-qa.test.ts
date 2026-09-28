@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { expect, it, vi } from 'vitest'
 import {
   createPresentationQaSkill,
@@ -365,6 +366,35 @@ it('leaves the page waiting for a screenshot after host capture failure without 
     }),
   ).toMatchObject({ output: expect.stringContaining('waiting_screenshot') })
   expect(f.readQa()).toEqual(before)
+})
+it('recovers the P0-20 one-time screenshot fault without inventing a visual pass', async () => {
+  const scenario = JSON.parse(
+    readFileSync(
+      new URL(
+        '../../../docs/product/ppt-benchmark-materials/PPT-P0-20/scenario.json',
+        import.meta.url,
+      ),
+      'utf8',
+    ),
+  )
+  expect(scenario.faultSchedule[1].id).toBe('F2')
+  const f = setup()
+  f.inspectPage.mockRejectedValueOnce(
+    Object.assign(new Error('office_read_failed'), {
+      code: 'office_screenshot_unavailable',
+    }),
+  )
+  const failed = await f.skill.executeTool(f.capture)
+  expect(JSON.parse(failed.output)).toMatchObject({ status: 'waiting_screenshot', retryable: true })
+  expect(failed.modelContent).toBeUndefined()
+  expect(f.readQa()).toBeUndefined()
+  const recovered = await f.skill.executeTool(f.capture)
+  expect(recovered.isError, recovered.output).not.toBe(true)
+  expect(recovered.modelContent).toEqual([
+    { type: 'image', image: { mime: 'image/png', base64: png } },
+  ])
+  expect(f.readQa()?.pages[0]?.visual.status).toBe('needs_review')
+  expect(f.writeQa).toHaveBeenCalledTimes(1)
 })
 it('keeps structural and unsupported API errors distinct from missing screenshots', async () => {
   const f = setup()

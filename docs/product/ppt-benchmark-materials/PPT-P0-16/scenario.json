@@ -1,0 +1,37 @@
+{
+  "caseId": "PPT-P0-16",
+  "materialStatus": "candidate_pending_scientific_review",
+  "documentInputs": ["deardorff-2020-article.pdf", "deardorff-2020-checklist.pdf"],
+  "imageInputs": ["images/schematic-01.png", "images/schematic-03.png"],
+  "pages": [
+    { "number": 1, "purpose": "研究题目与来源" },
+    { "number": 2, "purpose": "研究问题与可重复性背景" },
+    { "number": 3, "purpose": "样本和工作坊流程" },
+    { "number": 4, "purpose": "六项清单与研究设计" },
+    { "number": 5, "purpose": "清单分数与统计显著性" },
+    { "number": 6, "purpose": "Table 1 的原生可编辑图表" },
+    { "number": 7, "purpose": "定性观察及证据边界" },
+    { "number": 8, "purpose": "结论、局限与下一步" }
+  ],
+  "faultSchedule": [
+    {
+      "id": "F1",
+      "when": "论文 PDF 第一个 128 KiB 上传块已被 PC 接收但插件未收到回执",
+      "action": "断开 Relay 并重启 Taskpane，保留同一文稿与项目",
+      "expected": "续传从 PC 已确认偏移继续，材料摘要和解析正文只保存一次"
+    },
+    {
+      "id": "F2",
+      "when": "第 1–3 页均已有宿主导入回执，第 4 页尚未确认写入",
+      "action": "关闭 Taskpane 并断开 Relay，随后重开和重新配对",
+      "expected": "先核对宿主与持久回执，只继续未完成页，不重复插入第 1–3 页"
+    }
+  ],
+  "requiredEvidence": [
+    "上传前后块偏移、SHA256、附件解析状态及原文窗口",
+    "同一 project、request、document、session 和 page 身份的断线前后记录",
+    "第 1–8 页宿主 ID、导入回执和重复写入计数",
+    "中断/重连时间线、阶段进度和人工介入记录",
+    "五层 QA、八页截图、来源 Ledger 与 PowerPoint 保存关闭重开可编辑证据"
+  ]
+}

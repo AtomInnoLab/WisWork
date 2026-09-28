@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -381,6 +381,76 @@ it('recovers a lost acknowledgement then exposes real DOCX text to the Agent aft
   expect(JSON.parse(read.output).text).toContain('hello docx')
   expect(JSON.parse(read.output).sourceUri).toBe(`attachment:${attachment.attachmentId}`)
 })
+
+it('resumes the frozen P0-16 real PDF after a lost first chunk acknowledgement and PC restart', async () => {
+  const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-p0-16-upload-'))
+  roots.push(userDataPath)
+  const bytes = readFileSync(
+    new URL(
+      '../../../docs/product/ppt-benchmark-materials/PPT-P0-16/deardorff-2020-article.pdf',
+      import.meta.url,
+    ),
+  )
+  const expectedId = createHash('sha256').update(bytes).digest('hex')
+  let service = createPresentationService({ userDataPath })
+  let loseAck = true
+  const offsets: number[] = []
+  const options = {
+    available: () => true,
+    documentId: async () => 'p0-16-document',
+    request: async (body: unknown, abort?: AbortSignal) => {
+      const input = body as { operation: string; offset?: number }
+      const result = await service(body, abort ?? signal())
+      if (input.operation === 'attachment_chunk') {
+        offsets.push(input.offset!)
+        if (loseAck) {
+          loseAck = false
+          throw new Error('connection_lost')
+        }
+      }
+      return new Response(Buffer.from(result))
+    },
+    vfs: new InMemoryVfs(),
+  }
+  let client = createPresentationAttachmentSkill(options)
+  await expect(
+    client.upload(
+      'deardorff-2020-article.pdf',
+      Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)),
+    ),
+  ).rejects.toThrow('connection_lost')
+  client.clear()
+  service = createPresentationService({ userDataPath })
+  client = createPresentationAttachmentSkill({ ...options, vfs: new InMemoryVfs() })
+  await client.upload(
+    'deardorff-2020-article.pdf',
+    Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)),
+  )
+  expect(offsets).toEqual([0, 131072, 262144])
+  client.clear()
+  service = createPresentationService({ userDataPath })
+  client = createPresentationAttachmentSkill({ ...options, vfs: new InMemoryVfs() })
+  const listed = await client.executeTool({
+    id: 'list',
+    name: 'list_presentation_attachments',
+    input: {},
+  })
+  expect(listed.isError, listed.output).not.toBe(true)
+  expect(JSON.parse(listed.output).attachments).toEqual([
+    expect.objectContaining({ attachmentId: expectedId, sizeBytes: bytes.length, status: 'ready' }),
+  ])
+  const read = await client.executeTool({
+    id: 'read',
+    name: 'read_presentation_attachment',
+    input: { attachment_id: expectedId },
+  })
+  expect(read.isError, read.output).not.toBe(true)
+  expect(JSON.parse(read.output)).toMatchObject({
+    attachmentId: expectedId,
+    sourceUri: `attachment:${expectedId}`,
+  })
+  expect(JSON.parse(read.output).text.length).toBeGreaterThan(100)
+}, 60_000)
 
 it('streams a 50 MiB PDF through the client beyond the session VFS limit', async () => {
   const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-attachment-large-'))

@@ -5,6 +5,7 @@ import {
   type ToolExecution,
 } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { bindAuthLoss, createOfficeAgentSession } from '../src/agent/use-office-agent.js'
 import { createOfficeDiagnostics } from '../src/diagnostics/office-diagnostics.js'
 import type { ProposalDecision, StructuredProposal } from '../src/agent/proposal-controller.js'
@@ -1132,6 +1133,57 @@ describe('Office agent session', () => {
         .timeline.filter((event) => event.kind === 'user')
         .map((event) => (event.kind === 'user' ? event.text : '')),
     ).toEqual(['Try this', 'Try this'])
+  })
+
+  it('keeps P0-20 transient model error and user cancellation distinct from completion', async () => {
+    const scenario = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../../docs/product/ppt-benchmark-materials/PPT-P0-20/scenario.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    )
+    expect(scenario.faultSchedule.map((fault: { id: string }) => fault.id)).toEqual([
+      'F1',
+      'F2',
+      'F3',
+    ])
+    const harness = transportHarness()
+    const begin = vi.fn(async () => undefined)
+    const finish = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'p0-20', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: { interrupted: false, begin, finish },
+    })
+    const instruction = '继续同一项目的八页制作'
+    session.send(instruction)
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(1))
+    harness.callbacks().onError('provider_unavailable')
+    expect(session.snapshot()).toMatchObject({ status: 'error', retryable: true })
+    expect(
+      session
+        .snapshot()
+        .timeline.some((event) => event.kind === 'system' && event.text.includes('完成')),
+    ).toBe(false)
+    session.retry()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    expect(begin).toHaveBeenCalledTimes(2)
+    expect(
+      session
+        .snapshot()
+        .timeline.filter((event) => event.kind === 'user')
+        .map((event) => (event.kind === 'user' ? event.text : '')),
+    ).toEqual([instruction, instruction])
+    session.stop()
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().status).toBe('cancelled'))
+    expect(session.snapshot()).toMatchObject({ busy: false, retryable: false })
+    expect(harness.cancel).toHaveBeenCalledOnce()
+    expect(finish).toHaveBeenCalled()
   })
 
   it.each([
