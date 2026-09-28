@@ -1,5 +1,7 @@
-import { readdir, readFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
+import { readdir, readFile, realpath, stat } from 'node:fs/promises'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 export const CASE_IDS = Array.from(
@@ -206,14 +208,75 @@ export function summarizePresentationAcceptance(records) {
 }
 
 export async function readPresentationAcceptance(directory) {
+  const root = await realpath(directory)
   const names = (await readdir(directory)).filter((name) => name.endsWith('.json')).sort()
   const records = []
   for (const name of names) {
-    const parsed = JSON.parse(await readFile(resolve(directory, name), 'utf8'))
+    const path = await boundedFile(root, name, 1024 * 1024)
+    const parsed = JSON.parse(await readFile(path, 'utf8'))
     if (!Array.isArray(parsed)) throw new Error(`acceptance_file_invalid:${name}`)
     records.push(...parsed)
   }
-  return summarizePresentationAcceptance(records)
+  const report = summarizePresentationAcceptance(records)
+  for (const record of records) {
+    if (record.outcome !== 'passed') continue
+    if (
+      typeof record.artifacts?.pptx_file !== 'string' ||
+      !record.artifacts.pptx_file.endsWith('.pptx')
+    )
+      throw new Error('acceptance_artifact_invalid:pptx_file')
+    const pptxPath = await verifyArtifact(
+      root,
+      record.artifacts.pptx_file,
+      record.artifacts.pptx_sha256,
+    )
+    const reopenPath = await verifyArtifact(
+      root,
+      record.artifacts.reopen_evidence_file,
+      record.artifacts.reopen_evidence_sha256,
+    )
+    if (pptxPath === reopenPath) throw new Error('acceptance_artifact_invalid:reopen_evidence_file')
+  }
+  return report
+}
+
+async function boundedFile(root, name, maxBytes) {
+  if (typeof name !== 'string' || !name.trim() || isAbsolute(name))
+    throw new Error('acceptance_artifact_invalid:path')
+  const path = resolve(root, name)
+  let actual, details
+  try {
+    actual = await realpath(path)
+    details = await stat(actual)
+  } catch {
+    throw new Error('acceptance_artifact_invalid:path')
+  }
+  const fromRoot = relative(root, actual)
+  if (
+    !fromRoot ||
+    fromRoot === '..' ||
+    fromRoot.startsWith(`..${sep}`) ||
+    isAbsolute(fromRoot) ||
+    !details.isFile() ||
+    details.size < 1 ||
+    details.size > maxBytes
+  )
+    throw new Error('acceptance_artifact_invalid:path')
+  return actual
+}
+
+async function verifyArtifact(root, name, expected) {
+  if (!digest(expected)) throw new Error('acceptance_artifact_invalid:digest')
+  const path = await boundedFile(root, name, 100 * 1024 * 1024)
+  const hash = createHash('sha256')
+  let size = 0
+  for await (const chunk of createReadStream(path)) {
+    size += chunk.length
+    if (size > 100 * 1024 * 1024) throw new Error('acceptance_artifact_invalid:size')
+    hash.update(chunk)
+  }
+  if (hash.digest('hex') !== expected) throw new Error('acceptance_artifact_digest_mismatch')
+  return path
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

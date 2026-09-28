@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -127,6 +128,68 @@ test('reads JSON attempt arrays from a records directory', async () => {
     assert.equal(report.completionRate, 'not_measured')
   } finally {
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('directory acceptance checks the actual PPTX and reopen evidence hashes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ppt-acceptance-'))
+  const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
+  try {
+    const deck = Buffer.from('synthetic deck bytes')
+    const reopen = Buffer.from('synthetic reopen capture')
+    await writeFile(join(directory, 'final.pptx'), deck)
+    await writeFile(join(directory, 'reopen.mp4'), reopen)
+    const record = passed(CASE_IDS[0])
+    record.artifacts = {
+      ...record.artifacts,
+      pptx_file: 'final.pptx',
+      pptx_sha256: sha256(deck),
+      reopen_evidence_file: 'reopen.mp4',
+      reopen_evidence_sha256: sha256(reopen),
+    }
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    assert.equal((await readPresentationAcceptance(directory)).passed, 1)
+    await writeFile(join(directory, 'final.pptx'), 'changed')
+    await assert.rejects(
+      readPresentationAcceptance(directory),
+      /acceptance_artifact_digest_mismatch/,
+    )
+    await writeFile(join(directory, 'final.pptx'), deck)
+    record.artifacts.reopen_evidence_file = 'final.pptx'
+    record.artifacts.reopen_evidence_sha256 = sha256(deck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_artifact_invalid/)
+    record.artifacts.reopen_evidence_file = 'reopen.mp4'
+    record.artifacts.reopen_evidence_sha256 = sha256(reopen)
+    record.artifacts.pptx_file = '../outside.pptx'
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_artifact_invalid/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('directory acceptance rejects a symlink escaping the records directory', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ppt-acceptance-'))
+  const outside = await mkdtemp(join(tmpdir(), 'ppt-acceptance-outside-'))
+  try {
+    const deck = Buffer.from('outside deck bytes')
+    await writeFile(join(outside, 'outside.pptx'), deck)
+    await symlink(join(outside, 'outside.pptx'), join(directory, 'final.pptx'))
+    await writeFile(join(directory, 'reopen.mp4'), 'capture')
+    const record = passed(CASE_IDS[0])
+    record.artifacts = {
+      ...record.artifacts,
+      pptx_file: 'final.pptx',
+      pptx_sha256: createHash('sha256').update(deck).digest('hex'),
+      reopen_evidence_file: 'reopen.mp4',
+      reopen_evidence_sha256: createHash('sha256').update('capture').digest('hex'),
+    }
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_artifact_invalid/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+    await rm(outside, { recursive: true, force: true })
   }
 })
 
