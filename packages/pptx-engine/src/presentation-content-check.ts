@@ -6,6 +6,7 @@ import {
 } from './presentation-plan'
 import { array, choice, id, object, valid } from './presentation-schema'
 import { sourceAsOfFinding } from './presentation-source-time'
+import { reproducePresentationCalculation } from './presentation-calculation'
 
 export interface PresentationPageContentCheck {
   version: 1
@@ -86,7 +87,7 @@ export function parsePresentationPageContentCheck(value: unknown): PresentationP
 
 const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
-/** Literal coverage and evidence completeness only. Never executes formulas or fetches sources. */
+/** Literal coverage, bounded arithmetic, and evidence completeness; never fetches sources. */
 export function checkPresentationPageContent(
   inputPlan: PresentationPlan,
   inputDeck: PresentationDeck,
@@ -135,7 +136,11 @@ export function checkPresentationPageContent(
       if (claim.type === 'quote' && excerpt && (!statement || !excerpt.includes(statement)))
         findings.push({ code: 'quote_not_in_excerpt', claimId, sourceId })
     }
-    if (claim.type === 'calculation') findings.push({ code: 'calculation_not_reproduced', claimId })
+    if (
+      claim.type === 'calculation' &&
+      reproducePresentationCalculation(claim).status !== 'reproduced'
+    )
+      findings.push({ code: 'calculation_not_reproduced', claimId })
   }
   return parsePresentationPageContentCheck({
     version: 1,

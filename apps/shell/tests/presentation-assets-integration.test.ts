@@ -169,6 +169,47 @@ it('compiles an explicitly selected animated first frame into PPTX image media',
   expect(await zip.file(media[0]!)!.async('nodebuffer')).toEqual(firstFrame)
 })
 
+it('keeps an animated URL unusable until explicit conversion, then compiles its source and first frame', async () => {
+  const userDataPath = mkdtempSync(join(tmpdir(), 'presentation-animation-url-'))
+  roots.push(userDataPath)
+  const raw = readFileSync(join(__dirname, 'fixtures/presentation-image/animated.webp'))
+  const firstFrame = readFileSync(join(__dirname, 'fixtures/presentation-image/control.png'))
+  const service = createPresentationService({
+    userDataPath,
+    fetchImage: async () => new Response(raw),
+    normalizeFirstFrame: async () => ({ bytes: firstFrame, width: 2, height: 3 }),
+  })
+  const request = async (body: Record<string, unknown>) =>
+    decode(await service({ documentId: 'document-animation-url', ...body }, signal()))
+  const imported = await request({
+    operation: 'attachment_import_url',
+    url: 'https://93.184.216.34/animated.webp?private=secret',
+    stageAnimated: true,
+  })
+  expect(imported).toMatchObject({ status: 'failed', error: 'animated_image_unsupported' })
+  const deck = benchmarkDeck()
+  deck.assets = [{ id: deck.assets[0]!.id, attachmentId: imported.attachmentId }]
+  expect(
+    await request({ operation: 'compile', requestId: 'url-before-choice', deck }),
+  ).toMatchObject({ error: 'asset_unavailable' })
+  expect(
+    await request({
+      operation: 'attachment_extract_first_frame',
+      attachmentId: imported.attachmentId,
+    }),
+  ).toMatchObject({ status: 'ready', animationHandling: 'first_frame' })
+  const output = await request({ operation: 'compile', requestId: 'url-after-choice', deck })
+  expect(output.status).toBe('compiled')
+  const zip = await JSZip.loadAsync(Buffer.from(output.pptxBase64, 'base64'))
+  const media = Object.keys(zip.files).filter(
+    (path) => path.startsWith('ppt/media/') && !zip.files[path]!.dir,
+  )
+  expect(await zip.file(media[0]!)!.async('nodebuffer')).toEqual(firstFrame)
+  const notes = await zip.file('ppt/notesSlides/notesSlide3.xml')!.async('string')
+  expect(notes).toContain('https://93.184.216.34/animated.webp')
+  expect(notes).not.toContain('private=secret')
+})
+
 it('keeps all PC image URL sources in compiled PowerPoint notes', async () => {
   const userDataPath = mkdtempSync(join(tmpdir(), 'presentation-image-sources-'))
   roots.push(userDataPath)

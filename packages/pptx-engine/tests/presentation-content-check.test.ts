@@ -190,6 +190,32 @@ describe('presentation page content precheck', () => {
     expect(checkPresentationPageContent(plan, deck, pageId).claimIds).toEqual([])
     expect(checkPresentationPageContent(plan, deck, pageId).findings).toEqual([])
   })
+  it('uses the bounded arithmetic result without treating inputs or sources as verified', () => {
+    const { plan, deck, pageId } = fixture()
+    plan.claims[0]!.type = 'calculation'
+    plan.claims[0]!.calculation = {
+      formula: 'revenue / base - 1',
+      inputs: ['revenue', 'base'],
+      reproduction: {
+        bindings: [
+          { name: 'revenue', inputIndex: 0, value: 120, sourceId: 'source' },
+          { name: 'base', inputIndex: 1, value: 100, sourceId: 'source' },
+        ],
+        expected: 0.2,
+      },
+    }
+    deck.claims = presentationPlanClaims(plan)
+    expect(checkPresentationPageContent(plan, deck, pageId)).toMatchObject({
+      findings: [],
+      checks: conservative,
+    })
+    plan.claims[0]!.calculation.reproduction!.expected = 0.3
+    deck.claims = presentationPlanClaims(plan)
+    expect(checkPresentationPageContent(plan, deck, pageId).findings).toContainEqual({
+      code: 'calculation_not_reproduced',
+      claimId: 'source-1',
+    })
+  })
   it('rejects unknown pages, invalid plans/decks and mismatched bindings', () => {
     const { plan, deck, pageId } = fixture()
     expect(() => checkPresentationPageContent(plan, deck, 'missing')).toThrow('not_found')

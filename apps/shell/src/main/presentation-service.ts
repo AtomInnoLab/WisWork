@@ -43,6 +43,7 @@ const errorCodes = new Set([
   'revision_conflict',
   'invalid_deck',
   'invalid_state',
+  'asset_unavailable',
   'document_mismatch',
   'request_conflict',
   'not_found',
@@ -808,16 +809,26 @@ export function createPresentationService(options: {
         let imageBytes = 0
         for (const asset of inputDeck.assets) {
           checkAbort(signal)
-          const resolved =
-            'attachmentId' in asset
-              ? {
-                  ...((await attachments(
-                    { operation: 'attachment_asset', documentId, attachmentId: asset.attachmentId },
-                    signal,
-                  )) as PresentationInlineAsset),
-                  id: asset.id,
-                }
-              : asset
+          let resolved = asset
+          if ('attachmentId' in asset) {
+            try {
+              resolved = {
+                ...((await attachments(
+                  { operation: 'attachment_asset', documentId, attachmentId: asset.attachmentId },
+                  signal,
+                )) as PresentationInlineAsset),
+                id: asset.id,
+              }
+            } catch (error) {
+              checkAbort(signal)
+              if (
+                error instanceof Error &&
+                ['invalid_state', 'digest_mismatch'].includes(error.message)
+              )
+                throw new Error('asset_unavailable', { cause: error })
+              throw error
+            }
+          }
           if (!('base64' in resolved) || typeof resolved.base64 !== 'string')
             throw new Error('invalid_state')
           imageBytes += Buffer.byteLength(resolved.base64, 'base64')

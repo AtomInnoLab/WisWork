@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { PresentationStore } from '@wiswork/project-store'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { presentationPlanClaims } from '@wiswork/pptx-engine/presentation-plan'
 import {
   benchmarkPlan,
   benchmarkPlannedDeck,
@@ -75,6 +76,41 @@ it('checks the explicitly selected frozen production before compilation and acro
   expect(latest.planRevision).toBe(2)
   expect(files(f.userDataPath)).toEqual(updatedFiles)
   expect(f.compile).not.toHaveBeenCalled()
+})
+it('reports configured arithmetic consistently across frozen precheck and delivery report', async () => {
+  const f = await setup()
+  const plan = structuredClone(f.plan)
+  plan.claims[0]!.type = 'calculation'
+  plan.claims[0]!.calculation = {
+    formula: 'revenue / base - 1',
+    inputs: ['revenue', 'base'],
+    reproduction: {
+      bindings: [
+        { name: 'revenue', inputIndex: 0, value: 120, sourceId: 'source' },
+        { name: 'base', inputIndex: 1, value: 100, sourceId: 'source' },
+      ],
+      expected: 0.2,
+    },
+  }
+  const deck = structuredClone(f.deck)
+  deck.claims = presentationPlanClaims(plan)
+  await f.call('save_plan', { expectedRevision: 1, plan })
+  await f.call('production_begin', { requestId: 'calculation-run', planRevision: 2, deck })
+  const precheck = await f.call('production_content_check', {
+    requestId: 'calculation-run',
+    pageId: deck.slides[0]!.id,
+  })
+  expect(precheck.report.findings).not.toContainEqual({
+    code: 'calculation_not_reproduced',
+    claimId: 'source-1',
+  })
+  expect(precheck.report.checks.calculations).toBe('not_verified')
+  const delivery = await f.call('production_delivery_report', { requestId: 'calculation-run' })
+  expect(delivery.pages[0].calculations[0]).toMatchObject({
+    claimId: 'source-1',
+    status: 'reproduced',
+    scope: 'arithmetic_only',
+  })
 })
 it('requires all five fields, rejects unknown fields and enforces page, request and document binding', async () => {
   const f = await setup()
