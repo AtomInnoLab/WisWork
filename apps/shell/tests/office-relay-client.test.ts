@@ -8,6 +8,7 @@ import {
 class FakeSocket implements RelaySocket {
   readyState = 0
   sent: string[] = []
+  closedWith?: { code?: number; reason?: string }
   listeners = new Map<string, Array<(event: any) => void>>()
   addEventListener(name: string, listener: (event: any) => void): void {
     this.listeners.set(name, [...(this.listeners.get(name) ?? []), listener])
@@ -15,7 +16,8 @@ class FakeSocket implements RelaySocket {
   send(data: string): void {
     this.sent.push(data)
   }
-  close(): void {
+  close(code?: number, reason?: string): void {
+    this.closedWith = { code, reason }
     this.readyState = 3
     this.emit('close', {})
   }
@@ -121,6 +123,7 @@ describe('Office relay PC client', () => {
     })
     expect(client.status()).toBe('paired')
     client.revoke('test_complete')
+    expect(second.closedWith).toEqual({ code: 1000, reason: 'session_revoked' })
   })
   it.each(['account', 'token'] as const)(
     'does not connect when revoked while awaiting %s validation',
