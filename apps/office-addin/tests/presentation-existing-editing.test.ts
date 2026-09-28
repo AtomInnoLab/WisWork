@@ -540,6 +540,7 @@ async function fixture() {
   const releasedBackups = new Map<string, Record<string, unknown>>()
   let backupOffline = false
   let backupQuota = 8
+  let afterBackupRelease: (() => void) | undefined
   const request = async (body: unknown) => {
     const input = body as Record<string, unknown>
     if (backupOffline) throw new Error('offline')
@@ -552,6 +553,7 @@ async function fixture() {
       if (!receipt) throw new Error('backup_missing')
       releasedBackups.set(id, receipt)
       backups.delete(id)
+      afterBackupRelease?.()
       return new Response(JSON.stringify(receipt), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -710,6 +712,10 @@ async function fixture() {
     setBackupQuota: (value: number) => {
       backupQuota = value
     },
+    setAfterBackupRelease: (callback: (() => void) | undefined) => {
+      afterBackupRelease = callback
+    },
+    releasedBackups: () => releasedBackups.size,
     setPackageComment: (value: string) => {
       packageComment = value
     },
@@ -1152,6 +1158,46 @@ it('applies and reverses an ordered text plus geometry batch through one durable
     ['inspect'],
   )
 })
+it('stops releasing batch backups after the first receipt and safely retries release', async () => {
+  const f = await fixture()
+  const baseline = await f.call('read_presentation_baseline', { scope: 'deck' })
+  const proposed = await f.call('edit_existing_presentation_batch', {
+    baseline_id: JSON.parse(baseline.output).baselineId,
+    intent: 'Update two pages',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', kind: 'text', text: 'after' },
+      { slide_id: 'other', shape_id: 'other-shape', kind: 'text', text: 'other-after' },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  const changeId = JSON.parse(proposed.output).changeId as string
+  await f.confirm()
+  expect(f.readyBackups()).toBe(2)
+  f.reopen()
+  const undo = await f.call('undo_existing_presentation_batch', { change_id: changeId })
+  expect(undo.isError, undo.output).not.toBe(true)
+  await f.confirm()
+  f.reopen()
+  const release = await f.call('release_existing_presentation_batch', { change_id: changeId })
+  expect(release.isError, release.output).not.toBe(true)
+  f.setAfterBackupRelease(() => f.getRuntime().proposals.logout())
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.readyBackups()).toBe(1)
+  expect(f.releasedBackups()).toBe(1)
+  expect(f.binding().readExistingBatch(changeId)?.backupReleasedAt).toBeUndefined()
+  f.setAfterBackupRelease(undefined)
+  f.reopen()
+  const retry = await f.call('release_existing_presentation_batch', { change_id: changeId })
+  expect(retry.isError, retry.output).not.toBe(true)
+  await f.confirm()
+  expect(f.readyBackups()).toBe(0)
+  expect(f.releasedBackups()).toBe(2)
+  expect(f.binding().readExistingBatch(changeId)?.backupReleasedAt).toBeTruthy()
+})
+
 it('completes all affected page package backups before the first batch host write', async () => {
   const f = await fixture()
   const baseline = await f.call('read_presentation_baseline', { scope: 'deck' })
