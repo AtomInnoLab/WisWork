@@ -220,6 +220,7 @@ export async function readPresentationAcceptance(directory) {
   const report = summarizePresentationAcceptance(records)
   for (const record of records) {
     if (record.outcome !== 'passed') continue
+    await verifyArtifact(root, record.material_manifest, record.material_manifest_sha256)
     if (
       typeof record.artifacts?.pptx_file !== 'string' ||
       !record.artifacts.pptx_file.endsWith('.pptx')

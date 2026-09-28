@@ -137,9 +137,13 @@ test('directory acceptance checks the actual PPTX and reopen evidence hashes', a
   try {
     const deck = Buffer.from('synthetic deck bytes')
     const reopen = Buffer.from('synthetic reopen capture')
+    const material = Buffer.from('source,license,sha256 and reviewer signature')
     await writeFile(join(directory, 'final.pptx'), deck)
     await writeFile(join(directory, 'reopen.mp4'), reopen)
+    await writeFile(join(directory, 'material.md'), material)
     const record = passed(CASE_IDS[0])
+    record.material_manifest = 'material.md'
+    record.material_manifest_sha256 = sha256(material)
     record.artifacts = {
       ...record.artifacts,
       pptx_file: 'final.pptx',
@@ -149,6 +153,25 @@ test('directory acceptance checks the actual PPTX and reopen evidence hashes', a
     }
     await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     assert.equal((await readPresentationAcceptance(directory)).passed, 1)
+    delete record.material_manifest_sha256
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(
+      readPresentationAcceptance(directory),
+      /acceptance_artifact_invalid:digest/,
+    )
+    record.material_manifest_sha256 = sha256(material)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await writeFile(join(directory, 'material.md'), 'changed')
+    await assert.rejects(
+      readPresentationAcceptance(directory),
+      /acceptance_artifact_digest_mismatch/,
+    )
+    await writeFile(join(directory, 'material.md'), material)
+    record.material_manifest = '../outside.md'
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_artifact_invalid/)
+    record.material_manifest = 'material.md'
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     await writeFile(join(directory, 'final.pptx'), 'changed')
     await assert.rejects(
       readPresentationAcceptance(directory),
@@ -177,7 +200,10 @@ test('directory acceptance rejects a symlink escaping the records directory', as
     await writeFile(join(outside, 'outside.pptx'), deck)
     await symlink(join(outside, 'outside.pptx'), join(directory, 'final.pptx'))
     await writeFile(join(directory, 'reopen.mp4'), 'capture')
+    await writeFile(join(directory, 'material.md'), 'manifest')
     const record = passed(CASE_IDS[0])
+    record.material_manifest = 'material.md'
+    record.material_manifest_sha256 = createHash('sha256').update('manifest').digest('hex')
     record.artifacts = {
       ...record.artifacts,
       pptx_file: 'final.pptx',
