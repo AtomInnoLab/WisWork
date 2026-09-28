@@ -1,3 +1,4 @@
+import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from './presentation-source-limits'
 import {
   parsePresentationIssueLedger,
   type PresentationIssueLedger,
@@ -285,7 +286,9 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
           'source_mismatch',
         ].includes(audit.status) ||
         (audit.status === 'found'
-          ? !Number.isSafeInteger(audit.offset) || audit.offset! < 0 || audit.offset! > 1_000_000
+          ? !Number.isSafeInteger(audit.offset) ||
+            audit.offset! < 0 ||
+            audit.offset! > MAX_PRESENTATION_SOURCE_TEXT_CHARS
           : audit.offset !== undefined || audit.locator !== undefined) ||
         (audit.locator !== undefined && !/^第 [1-9]\d{0,5} (页|段)$/.test(audit.locator))
       )

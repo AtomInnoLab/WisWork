@@ -1,3 +1,4 @@
+import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import {
   parsePresentationDeliveryReport,
   type PresentationDeliveryReport,
@@ -955,7 +956,7 @@ export function createPresentationProjectController(
             (source.status === 'found'
               ? !Number.isSafeInteger(source.offset) ||
                 Number(source.offset) < 0 ||
-                Number(source.offset) > 1_000_000
+                Number(source.offset) > MAX_PRESENTATION_SOURCE_TEXT_CHARS
               : source.offset !== undefined),
         )
       )

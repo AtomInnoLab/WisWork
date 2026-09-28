@@ -1,3 +1,4 @@
+import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import { MAX_VFS_FILE_BYTES } from '../shared/vfs.js'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import type { PresentationGenerationOptions } from './presentation-generation.js'
@@ -131,7 +132,7 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
         v.sources.length > 32 ||
         v.source !== v.sources[0] ||
         v.sources.some((source) => !sourceValid(source)))) ||
-    (v.totalChars !== undefined && !integer(v.totalChars, 0, 1_000_000)) ||
+    (v.totalChars !== undefined && !integer(v.totalChars, 0, MAX_PRESENTATION_SOURCE_TEXT_CHARS)) ||
     (v.sectionCount !== undefined &&
       (!integer(v.sectionCount, 1, 4096) ||
         !/\.(pdf|docx|html|htm)$/i.test(v.name) ||
@@ -645,7 +646,7 @@ export function createPresentationAttachmentSkill(
               maxChars = input.max_chars ?? 24000
             if (
               !idValid(attachmentId) ||
-              !integer(offset, 0, 1_000_000) ||
+              !integer(offset, 0, MAX_PRESENTATION_SOURCE_TEXT_CHARS) ||
               !integer(maxChars, 1, 24000)
             )
               throw new Error('invalid_tool_input')
@@ -681,7 +682,7 @@ export function createPresentationAttachmentSkill(
               !nameValid(value.name) ||
               isPresentationImage(value.name) ||
               value.offset !== offset ||
-              !integer(value.totalChars, offset, 1_000_000) ||
+              !integer(value.totalChars, offset, MAX_PRESENTATION_SOURCE_TEXT_CHARS) ||
               typeof value.text !== 'string' ||
               value.text.length !== Math.min(maxChars, value.totalChars - offset) ||
               value.sourceUri !== `attachment:${attachmentId}` ||

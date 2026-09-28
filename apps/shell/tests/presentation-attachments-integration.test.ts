@@ -482,3 +482,52 @@ it('streams a 50 MiB PDF through the client beyond the session VFS limit', async
     status: 'ready',
   })
 }, 60_000)
+
+const realPdfPath = process.env.WISWORK_P0_10_PDF
+if (realPdfPath) {
+  it('uploads and reads a real near-limit PDF beyond the first million characters', async () => {
+    const bytes = readFileSync(realPdfPath)
+    expect(bytes.length).toBeGreaterThan(45 * 1024 * 1024)
+    expect(bytes.length).toBeLessThanOrEqual(50 * 1024 * 1024)
+    const attachmentId = createHash('sha256').update(bytes).digest('hex')
+    expect(attachmentId).toBe('cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2')
+    const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-p0-10-real-'))
+    roots.push(userDataPath)
+    const service = createPresentationService({ userDataPath })
+    const client = createPresentationAttachmentSkill({
+      available: () => true,
+      documentId: async () => 'document-p0-10',
+      vfs: new InMemoryVfs(),
+      request: async (body, abort) =>
+        new Response(Buffer.from(await service(body, abort ?? signal()))),
+    })
+    await client.upload(
+      'SROCC_FullReport_FINAL.pdf',
+      Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)),
+    )
+    const listed = await client.executeTool({
+      id: 'list',
+      name: 'list_presentation_attachments',
+      input: {},
+    })
+    expect(listed.isError, listed.output).not.toBe(true)
+    expect(JSON.parse(listed.output).attachments[0]).toMatchObject({
+      attachmentId,
+      sizeBytes: bytes.length,
+      status: 'ready',
+      totalChars: expect.any(Number),
+    })
+    expect(JSON.parse(listed.output).attachments[0].totalChars).toBeGreaterThan(4_000_000)
+    const read = await client.executeTool({
+      id: 'read',
+      name: 'read_presentation_attachment',
+      input: { attachment_id: attachmentId, offset: 4_000_000, max_chars: 2000 },
+    })
+    expect(read.isError, read.output).not.toBe(true)
+    expect(JSON.parse(read.output)).toMatchObject({
+      offset: 4_000_000,
+      totalChars: expect.any(Number),
+    })
+    expect(JSON.parse(read.output).text.length).toBe(2000)
+  }, 180_000)
+}

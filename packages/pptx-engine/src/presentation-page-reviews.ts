@@ -1,3 +1,4 @@
+import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from './presentation-source-limits'
 import {
   parsePresentationClaimReview,
   type PresentationClaimReview,
@@ -61,7 +62,7 @@ const schema = object({
               outcome: choice(...outcomes),
               evidenceDigest: digest,
               createdAt: text(24, 24),
-              offset: number(0, 1000000),
+              offset: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
               maxChars: number(1, 8000),
             }),
             32,

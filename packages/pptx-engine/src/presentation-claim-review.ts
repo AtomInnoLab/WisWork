@@ -1,3 +1,4 @@
+import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from './presentation-source-limits'
 import { parsePresentationClaimEvidence } from './presentation-claim-evidence'
 import { choice, id, number, object, text, valid } from './presentation-schema'
 
@@ -40,7 +41,7 @@ const schema = object({
   claimId: id,
   sourceId: id,
   attachmentId: digest,
-  offset: number(0, 1000000),
+  offset: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
   maxChars: number(1, 8000),
   evidenceDigest: digest,
   outcome: choice('supported', 'contradicted', 'insufficient_evidence'),

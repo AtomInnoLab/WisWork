@@ -1,3 +1,4 @@
+import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import type { PresentationPlan } from '@wiswork/pptx-engine/presentation-plan'
 import { presentationSourceAttachmentId } from '@wiswork/pptx-engine/presentation-plan'
 import type { PresentationSourceAudit } from '@wiswork/pptx-engine/presentation-delivery-report'
@@ -67,7 +68,9 @@ export async function auditPresentationSources(
         ) ||
         (result.locator !== undefined && !/^第 [1-9]\d{0,5} (页|段)$/.test(result.locator)) ||
         (result.status === 'found'
-          ? !Number.isSafeInteger(result.offset) || result.offset! < 0 || result.offset! > 1_000_000
+          ? !Number.isSafeInteger(result.offset) ||
+            result.offset! < 0 ||
+            result.offset! > MAX_PRESENTATION_SOURCE_TEXT_CHARS
           : result.offset !== undefined || result.locator !== undefined)
       )
         throw new Error('invalid_state')

@@ -1,3 +1,4 @@
+import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, rename, rm } from 'node:fs/promises'
@@ -22,7 +23,8 @@ const FILE_LIMIT = 50 * 1024 * 1024
 const DOCUMENT_LIMIT = 100 * 1024 * 1024
 const FILE_RESERVATION_FLOOR = 64 * 1024
 const CHUNK_LIMIT = 128 * 1024
-const TEXT_LIMIT = 1_000_000
+const TEXT_LIMIT = MAX_PRESENTATION_SOURCE_TEXT_CHARS
+const WEBPAGE_TEXT_LIMIT = 1_000_000
 const WEBPAGE_LIMIT = 5 * 1024 * 1024
 const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const locks = new Map<string, Promise<void>>()
@@ -661,7 +663,7 @@ export function createPresentationAttachmentService(options: {
         } catch {
           fail('parse_failed')
         }
-        if (!text || text.length > TEXT_LIMIT) fail('parse_failed')
+        if (!text || text.length > WEBPAGE_TEXT_LIMIT) fail('parse_failed')
         const sections = paragraphSections(text)
         if (sections.length > 4096) fail('parse_failed')
         const sectionsRaw = JSON.stringify(sections)

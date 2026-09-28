@@ -1,3 +1,4 @@
+import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import { handlePresentationDeliveryReport } from './presentation-delivery-report'
 import { parsePresentationIssueActionInput } from '@wiswork/project-store/presentation-issue'
 import {
@@ -542,7 +543,7 @@ export function createPresentationService(options: {
         if (
           !Number.isSafeInteger(request.offset) ||
           Number(request.offset) < 0 ||
-          Number(request.offset) > 1000000 ||
+          Number(request.offset) > MAX_PRESENTATION_SOURCE_TEXT_CHARS ||
           !Number.isSafeInteger(request.maxChars) ||
           Number(request.maxChars) < 1 ||
           Number(request.maxChars) > 8000

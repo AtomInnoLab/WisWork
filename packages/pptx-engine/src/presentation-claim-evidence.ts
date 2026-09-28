@@ -1,3 +1,4 @@
+import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from './presentation-source-limits'
 import { presentationSourceAttachmentId } from './presentation-plan'
 import { array, choice, id, number, object, text, valid } from './presentation-schema'
 
@@ -94,12 +95,16 @@ const schema = object({
     {
       id: digest,
       name: text(180, 1),
-      offset: number(0, 1000000),
-      totalChars: number(0, 1000000),
+      offset: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
+      totalChars: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
       text: text(8000),
       offsetUnit: choice('utf16_code_unit'),
       locatorSpans: array(
-        object({ locator: text(32, 1), start: number(0, 1000000), end: number(0, 1000000) }),
+        object({
+          locator: text(32, 1),
+          start: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
+          end: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
+        }),
         4096,
       ),
       provenance: {
@@ -116,10 +121,14 @@ const schema = object({
   ),
   excerptMatch: {
     anyOf: [
-      object({ status: choice('found'), offset: number(0, 1000000), locator: text(32, 1) }, [
-        'status',
-        'offset',
-      ]),
+      object(
+        {
+          status: choice('found'),
+          offset: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
+          locator: text(32, 1),
+        },
+        ['status', 'offset'],
+      ),
       object({ status: choice('not_found_in_window', 'empty_excerpt') }),
     ],
   },

@@ -1,3 +1,4 @@
+import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import { parsePresentationPageReviews } from '@wiswork/pptx-engine/presentation-page-reviews'
 import {
   parsePresentationClaimReview,
@@ -241,7 +242,7 @@ const tools: AgentToolDef[] = Object.keys(operations).map((name) => ({
               page_id: idSchema,
               claim_id: idSchema,
               source_id: idSchema,
-              offset: { type: 'integer', minimum: 0, maximum: 1000000 },
+              offset: { type: 'integer', minimum: 0, maximum: MAX_PRESENTATION_SOURCE_TEXT_CHARS },
               max_chars: { type: 'integer', minimum: 1, maximum: 8000 },
               ...(name === 'record_presentation_claim_review'
                 ? {
@@ -440,7 +441,7 @@ export function createPresentationProductionSkill(
             (!id(input.claim_id) ||
               !id(input.source_id) ||
               !integer(input.offset) ||
-              Number(input.offset) > 1000000 ||
+              Number(input.offset) > MAX_PRESENTATION_SOURCE_TEXT_CHARS ||
               !integer(input.max_chars, 1) ||
               Number(input.max_chars) > 8000)) ||
           (rebuild &&

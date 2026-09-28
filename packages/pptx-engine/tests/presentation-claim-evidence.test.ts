@@ -108,10 +108,17 @@ it('rejects missing required fields, nested extras and oversized windows', () =>
     { source: { ...report().source, extra: true } },
     { excerptMatch: { status: 'not_found_in_window', offset: 0 } },
     { attachment: { ...report().attachment, text: 'x'.repeat(8001), totalChars: 10000 } },
-    { attachment: { ...report().attachment, totalChars: 1000001 } },
+    { attachment: { ...report().attachment, totalChars: 8_000_001 } },
     { planRevision: 1.5 },
   ])
     expect(() => parsePresentationClaimEvidence({ ...report(), ...patch })).toThrow()
+})
+it('accepts source offsets beyond one million characters', () => {
+  const value = report()
+  value.attachment.offset = 4_000_000
+  value.attachment.totalChars = 4_338_831
+  value.excerptMatch.offset = 4_000_002
+  expect(parsePresentationClaimEvidence(value).attachment.offset).toBe(4_000_000)
 })
 it('accepts empty excerpts and empty end windows without claiming global absence', () => {
   expect(
