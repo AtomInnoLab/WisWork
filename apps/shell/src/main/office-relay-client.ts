@@ -129,6 +129,7 @@ export function createOfficeRelayClient(options: {
       'presentation-remote-images.v1',
       'presentation-asset-rights.v1',
       'presentation-animation-frame.v1',
+      'presentation-pdf.v1',
     )
   let pending: (OfficePairingRequest & { capabilities?: string[] }) | null = null
   let session: { sessionId: string; capability: string; capabilities: string[] } | null = null
@@ -236,12 +237,16 @@ export function createOfficeRelayClient(options: {
         (jsonObject(frame.body) &&
           frame.body.operation === 'attachment_extract_first_frame' &&
           capabilityName !== 'presentation-animation-frame.v1') ||
+        (jsonObject(frame.body) &&
+          frame.body.operation === 'export_pdf' &&
+          capabilityName !== 'presentation-pdf.v1') ||
         (capabilityName === 'presentation.v1' ||
         capabilityName === 'presentation-attachments.v1' ||
         capabilityName === 'presentation-assets.v1' ||
         capabilityName === 'presentation-remote-images.v1' ||
         capabilityName === 'presentation-asset-rights.v1' ||
-        capabilityName === 'presentation-animation-frame.v1'
+        capabilityName === 'presentation-animation-frame.v1' ||
+        capabilityName === 'presentation-pdf.v1'
           ? !options.presentationProxy
           : capabilityName !== 'agent.v1' && !options.retrievalProxy)
       )
@@ -258,7 +263,8 @@ export function createOfficeRelayClient(options: {
                 capabilityName === 'presentation-assets.v1' ||
                 capabilityName === 'presentation-remote-images.v1' ||
                 capabilityName === 'presentation-asset-rights.v1' ||
-                capabilityName === 'presentation-animation-frame.v1'
+                capabilityName === 'presentation-animation-frame.v1' ||
+                capabilityName === 'presentation-pdf.v1'
                   ? await options.presentationProxy!(frame.body, controller.signal)
                   : await options.retrievalProxy!(capabilityName, frame.body, controller.signal),
             }

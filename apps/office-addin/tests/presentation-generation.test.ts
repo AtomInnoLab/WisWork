@@ -44,18 +44,22 @@ const response = () =>
 function fixture() {
   const vfs = new InMemoryVfs()
   const request = vi.fn(async () => response())
+  const pdfRequest = vi.fn(async () => response())
+  const pdfAvailable = vi.fn(() => true)
   const documentId = vi.fn(async () => 'document-1')
   const rememberProject = vi.fn(async () => undefined)
   const available = vi.fn(() => true)
   const skill = createPresentationGenerationSkill({
     vfs,
     request,
+    pdfRequest,
+    pdfAvailable,
     documentId,
     rememberProject,
     lastProject: () => deck.id,
     available,
   })
-  return { skill, vfs, request, documentId, rememberProject, available }
+  return { skill, vfs, request, pdfRequest, pdfAvailable, documentId, rememberProject, available }
 }
 const compileCall = () => ({
   id: 'call-1',
@@ -64,6 +68,52 @@ const compileCall = () => ({
 })
 
 describe('PowerPoint presentation generation', () => {
+  it('exports a completed project PDF into Session attachments without returning binary to the model', async () => {
+    const f = fixture()
+    f.pdfRequest.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'exported',
+          projectId: deck.id,
+          requestId: 'request-1',
+          slideCount: 1,
+          pdfBase64: btoa('%PDF-1.4\n%%EOF\n'),
+        }),
+      ),
+    )
+    const result = await f.skill.executeTool({
+      id: 'pdf-call',
+      name: 'export_presentation_pdf',
+      input: { project_id: deck.id, request_id: 'request-1' },
+    })
+    expect(result.isError).not.toBe(true)
+    expect(f.pdfRequest).toHaveBeenCalledWith(
+      {
+        operation: 'export_pdf',
+        documentId: 'document-1',
+        projectId: deck.id,
+        requestId: 'request-1',
+      },
+      undefined,
+    )
+    expect(f.vfs.list('/home/user')).toContain('/home/user/generated/research-1.pdf')
+    expect(result.output).not.toContain('JVBER')
+  })
+
+  it('hides PDF export on an older PC without its negotiated capability', async () => {
+    const f = fixture()
+    f.pdfAvailable.mockReturnValue(false)
+    expect(f.skill.tools.map((tool) => tool.name)).not.toContain('export_presentation_pdf')
+    expect(
+      await f.skill.executeTool({
+        id: 'pdf-call',
+        name: 'export_presentation_pdf',
+        input: { project_id: deck.id, request_id: 'request-1' },
+      }),
+    ).toMatchObject({ isError: true, output: 'presentation_pdf_unavailable' })
+    expect(f.pdfRequest).not.toHaveBeenCalled()
+  })
+
   it('compiles through the paired PC and delivers PPTX plus report without sending binary back to the model', async () => {
     const f = fixture()
     const result = await f.skill.executeTool(compileCall())
@@ -210,16 +260,24 @@ describe('presentation document binding', () => {
     const binding = createPresentationDocumentBinding(f.runtime, () => 'document-uuid')
     const documentId = await binding.documentId()
     f.save.mockRejectedValueOnce(new Error('save_failed'))
-    await expect(binding.rememberSelectedProduction('project-1', documentId, 'older-request')).rejects.toThrow('save_failed')
+    await expect(
+      binding.rememberSelectedProduction('project-1', documentId, 'older-request'),
+    ).rejects.toThrow('save_failed')
     expect(binding.selectedProduction('project-1', documentId)).toBeUndefined()
-    await expect(binding.rememberSelectedProduction('project-1', 'wrong-document', 'older-request')).rejects.toThrow('presentation_document_changed')
+    await expect(
+      binding.rememberSelectedProduction('project-1', 'wrong-document', 'older-request'),
+    ).rejects.toThrow('presentation_document_changed')
   })
   it('rejects a selection write if Save As changes the document during settings save', async () => {
     const f = setup()
     const binding = createPresentationDocumentBinding(f.runtime, () => 'document-uuid')
     const documentId = await binding.documentId()
-    f.save.mockImplementationOnce(async () => { f.move('file:///copy.pptx') })
-    await expect(binding.rememberSelectedProduction('project-1', documentId, 'older-request')).rejects.toThrow('presentation_document_changed')
+    f.save.mockImplementationOnce(async () => {
+      f.move('file:///copy.pptx')
+    })
+    await expect(
+      binding.rememberSelectedProduction('project-1', documentId, 'older-request'),
+    ).rejects.toThrow('presentation_document_changed')
     expect(binding.selectedProduction('project-1', await binding.documentId())).toBeUndefined()
   })
   it('serializes simultaneous identity creation', async () => {

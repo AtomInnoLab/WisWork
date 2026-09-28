@@ -5,9 +5,11 @@ export function downloadSessionFile(vfs: InMemoryVfs, path: string): void {
   const bytes = vfs.readBytes(path)
   const mime = path.endsWith('.pptx')
     ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-    : path.endsWith('.json')
-      ? 'application/json'
-      : 'application/octet-stream'
+    : path.endsWith('.pdf')
+      ? 'application/pdf'
+      : path.endsWith('.json')
+        ? 'application/json'
+        : 'application/octet-stream'
   const url = URL.createObjectURL(new Blob([bytes.slice().buffer as ArrayBuffer], { type: mime }))
   const link = document.createElement('a')
   link.href = url

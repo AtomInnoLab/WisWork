@@ -810,6 +810,7 @@ describe('Office relay PC client', () => {
     'presentation-remote-images.v1',
     'presentation-asset-rights.v1',
     'presentation-animation-frame.v1',
+    'presentation-pdf.v1',
   ])(
     'negotiates presentation only when provided and streams recoverable generation requests',
     async (capabilityName) => {
@@ -841,6 +842,7 @@ describe('Office relay PC client', () => {
         'presentation-remote-images.v1',
         'presentation-asset-rights.v1',
         'presentation-animation-frame.v1',
+        'presentation-pdf.v1',
       ]
       expect(JSON.parse(socket.sent[0]!)).toEqual({
         version: 2,
@@ -934,6 +936,17 @@ describe('Office relay PC client', () => {
           request_id: 'wrong_animation_capability',
           capability_name: 'presentation-attachments.v1',
           body: { operation: 'attachment_extract_first_frame', attachmentId: 'a'.repeat(64) },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      if (capabilityName === 'presentation-pdf.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_pdf_capability',
+          capability_name: 'presentation.v1',
+          body: { operation: 'export_pdf', projectId: 'deck', requestId: 'first' },
         })
         await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
       }

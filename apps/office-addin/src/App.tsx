@@ -1303,20 +1303,28 @@ export function AgentWorkspace(props: {
         )}
         {ui.downloadFile &&
           files.some(
-            (file) => file.startsWith('/home/user/generated/') && file.endsWith('.pptx'),
+            (file) =>
+              file.startsWith('/home/user/generated/') &&
+              (file.endsWith('.pptx') || file.endsWith('.pdf')),
           ) && (
             <section aria-label="生成的演示文稿" className="presentation-downloads">
               {files
                 .filter(
                   (file) =>
                     file.startsWith('/home/user/generated/') &&
-                    (file.endsWith('.pptx') || file.endsWith('.report.json')),
+                    (file.endsWith('.pptx') ||
+                      file.endsWith('.pdf') ||
+                      file.endsWith('.report.json')),
                 )
                 .slice(-4)
                 .map((file) => (
                   <button type="button" key={file} onClick={() => ui.downloadFile?.(file)}>
-                    {file.endsWith('.pptx') ? '下载 PPTX' : '下载验收报告'} ·{' '}
-                    {file.split('/').at(-1)}
+                    {file.endsWith('.pptx')
+                      ? '下载 PPTX'
+                      : file.endsWith('.pdf')
+                        ? '下载 PDF 预览'
+                        : '下载验收报告'}{' '}
+                    · {file.split('/').at(-1)}
                   </button>
                 ))}
             </section>
@@ -1546,6 +1554,15 @@ function ConfiguredApp() {
                       },
                       request: (body: unknown, signal?: AbortSignal) =>
                         bridge.capabilityFetch('presentation.v1', body, signal),
+                      pdfAvailable: () => {
+                        const snapshot = bridge.snapshot()
+                        return (
+                          snapshot.status === 'connected' &&
+                          snapshot.capabilities?.includes('presentation-pdf.v1') === true
+                        )
+                      },
+                      pdfRequest: (body: unknown, signal?: AbortSignal) =>
+                        bridge.capabilityFetch('presentation-pdf.v1', body, signal),
                       assetsAvailable: () => {
                         const snapshot = bridge.snapshot()
                         return (

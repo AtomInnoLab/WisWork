@@ -31,6 +31,8 @@ import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compi
 import { assertBrandLogoAsset, PresentationBrandLibrary } from './presentation-brand'
 import { PresentationPreferenceLibrary } from './presentation-preferences'
 import { PresentationCommentLibrary } from './presentation-comments'
+import { convertPresentationToPdf } from './presentation-page-render'
+import { PDFDocument } from 'pdf-lib'
 
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
@@ -92,6 +94,7 @@ export function createPresentationService(options: {
     bytes: Uint8Array,
   ) => Promise<{ bytes: Uint8Array; width: number; height: number }>
   renderPage?: (pptx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>
+  renderPdf?: (pptx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>
 }): (body: unknown, signal: AbortSignal) => Promise<Uint8Array> {
   const pageBackups = createPresentationPageBackupService(options)
   const existingPageBackups = createPresentationExistingPageBackupService(options)
@@ -101,6 +104,7 @@ export function createPresentationService(options: {
   const preferenceLibrary = new PresentationPreferenceLibrary(options.userDataPath)
   const commentLibrary = new PresentationCommentLibrary(options.userDataPath)
   const compile = options.compile ?? compilePresentationDeck
+  const renderPdf = options.renderPdf ?? convertPresentationToPdf
   return async (body, signal) => {
     try {
       checkAbort(signal)
@@ -112,6 +116,51 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
+      if (request.operation === 'export_pdf') {
+        if (
+          Object.keys(request).sort().join(',') !==
+            ['operation', 'documentId', 'projectId', 'requestId'].sort().join(',') ||
+          typeof request.documentId !== 'string' ||
+          !request.documentId.trim() ||
+          request.documentId.length > 2048
+        )
+          throw new Error('invalid_request')
+        assertPresentationId(request.projectId)
+        assertPresentationId(request.requestId)
+        const record = store.request(
+          request.projectId as string,
+          request.documentId,
+          request.requestId as string,
+        )
+        if (record?.status !== 'compiled') throw new Error('not_found')
+        const compiled = record.result as {
+          pptxBase64: string
+          report: PresentationCompileReport
+        }
+        const pdf = Buffer.from(await renderPdf(Buffer.from(compiled.pptxBase64, 'base64'), signal))
+        checkAbort(signal)
+        if (
+          pdf.length < 16 ||
+          pdf.length > 10 * 1024 * 1024 ||
+          !pdf.subarray(0, 5).equals(Buffer.from('%PDF-')) ||
+          !pdf.subarray(Math.max(0, pdf.length - 1024)).includes(Buffer.from('%%EOF'))
+        )
+          throw new Error('renderer_unavailable')
+        let pageCount: number
+        try {
+          pageCount = (await PDFDocument.load(pdf)).getPageCount()
+        } catch {
+          throw new Error('renderer_unavailable')
+        }
+        if (pageCount !== compiled.report.slideCount) throw new Error('renderer_unavailable')
+        return boundedResponse({
+          status: 'exported',
+          projectId: request.projectId,
+          requestId: request.requestId,
+          slideCount: pageCount,
+          pdfBase64: pdf.toString('base64'),
+        })
+      }
       if (
         ['comment_list', 'comment_add', 'comment_resolve'].includes(request.operation as string)
       ) {

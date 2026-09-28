@@ -176,6 +176,14 @@ describe('workspace project integration', () => {
       projectSnapshot = { phase: 'idle' }
       await act(async () => projectListeners.forEach((fn) => fn()))
       expect(container.textContent).toContain('下载 PPTX')
+      files = ['/home/user/generated/recovered.pdf']
+      await act(async () => projectListeners.forEach((fn) => fn()))
+      const pdfButton = Array.from(container.querySelectorAll('button')).find((button) =>
+        button.textContent?.includes('下载 PDF'),
+      )!
+      expect(pdfButton).toBeDefined()
+      await act(async () => pdfButton.click())
+      expect(ui.downloadFile).toHaveBeenCalledWith('/home/user/generated/recovered.pdf')
       await act(async () =>
         container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click(),
       )

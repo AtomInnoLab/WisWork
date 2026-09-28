@@ -45,6 +45,20 @@ const tools: AgentToolDef[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'export_presentation_pdf',
+    description:
+      'Export an exact completed PC compilation request as a downloadable PDF using local LibreOffice. This is a preview of the compiled PPTX, not the current PowerPoint document or proof of host fidelity. Requires a known project_id and request_id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+        request_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+      },
+      required: ['project_id', 'request_id'],
+      additionalProperties: false,
+    },
+  },
 ]
 export interface PresentationGenerationOptions {
   vfs: InMemoryVfs
@@ -56,6 +70,8 @@ export interface PresentationGenerationOptions {
   attachmentsAvailable?(): boolean
   attachmentsRequest?(body: unknown, signal?: AbortSignal): Promise<Response>
   request(body: unknown, signal?: AbortSignal): Promise<Response>
+  pdfAvailable?(): boolean
+  pdfRequest?(body: unknown, signal?: AbortSignal): Promise<Response>
   documentId(): Promise<string>
   lastProject(): string | undefined
   rememberProject(id: string): Promise<void>
@@ -86,9 +102,13 @@ export function createPresentationGenerationSkill(
       artifacts.clear()
     },
     id: 'office-presentation-generation',
-    systemPrompt: `For a new presentation, read user materials first, establish evidence and the per-page story, then choose a consistent visual style. When presentation compilation is available, use compile_deck_with_pptxgenjs with validated SlideIR to create a downloadable native PPTX. Prefer native charts/tables for factual data. Assets can be prepared inline PNG/JPEG images, never paths or external URLs. When presentation-assets.v1 is available, prefer compact attachment references from list_presentation_attachments; the PC resolves cached image data. Do not invent sources. Preserve project ID and request ID on unchanged retries. Compiled is not visually reviewed: explain checks marked not_run or not_verified and use existing Office tools for subsequent editing and host verification. The PPTX and report are available in Session attachments. Restore a prior compiled result with restore_presentation_project.`,
+    systemPrompt: `For a new presentation, read user materials first, establish evidence and the per-page story, then choose a consistent visual style. When presentation compilation is available, use compile_deck_with_pptxgenjs with validated SlideIR to create a downloadable native PPTX. Prefer native charts/tables for factual data. Assets can be prepared inline PNG/JPEG images, never paths or external URLs. When presentation-assets.v1 is available, prefer compact attachment references from list_presentation_attachments; the PC resolves cached image data. Do not invent sources. Preserve project ID and request ID on unchanged retries. Compiled is not visually reviewed: explain checks marked not_run or not_verified and use existing Office tools for subsequent editing and host verification. The PPTX and report are available in Session attachments. On request, export_presentation_pdf adds a local LibreOffice PDF preview of an exact completed compilation; it is not a PDF export of the current host document. Restore a prior compiled result with restore_presentation_project.`,
     get tools() {
-      return options.available() ? tools : []
+      return options.available()
+        ? tools.filter(
+            (tool) => tool.name !== 'export_presentation_pdf' || options.pdfAvailable?.(),
+          )
+        : []
     },
     buildContext: () =>
       options.available()
@@ -109,6 +129,83 @@ export function createPresentationGenerationSkill(
         if (!options.available()) throw new Error('presentation_unavailable')
         if (call.inputError || call.truncated) throw new Error('invalid_tool_input')
         const value = call.input
+        if (call.name === 'export_presentation_pdf') {
+          if (!options.pdfAvailable?.() || !options.pdfRequest)
+            throw new Error('presentation_pdf_unavailable')
+          if (
+            Object.keys(value).some((key) => !['project_id', 'request_id'].includes(key)) ||
+            !validId(value.project_id) ||
+            !validId(value.request_id)
+          )
+            throw new Error('invalid_tool_input')
+          const documentId = await options.documentId()
+          check()
+          if (!options.pdfAvailable()) throw new Error('presentation_pdf_unavailable')
+          const response = await options.pdfRequest(
+            {
+              operation: 'export_pdf',
+              documentId,
+              projectId: value.project_id,
+              requestId: value.request_id,
+            },
+            signal,
+          )
+          check()
+          if (!response.ok) throw new Error('presentation_service_unavailable')
+          const text = await response.text()
+          if (text.length > 16 * 1024 * 1024) throw new Error('presentation_response_invalid')
+          const result = JSON.parse(text)
+          if (result?.error) {
+            if (
+              [
+                'not_found',
+                'document_mismatch',
+                'renderer_unavailable',
+                'output_too_large',
+                'aborted',
+              ].includes(result.error)
+            )
+              throw new Error(`presentation_${result.error}`)
+            throw new Error('presentation_operation_failed')
+          }
+          if (
+            result?.status !== 'exported' ||
+            result.projectId !== value.project_id ||
+            result.requestId !== value.request_id ||
+            !Number.isSafeInteger(result.slideCount) ||
+            result.slideCount < 1 ||
+            result.slideCount > 32 ||
+            typeof result.pdfBase64 !== 'string' ||
+            result.pdfBase64.length > 14 * 1024 * 1024 ||
+            !/^[A-Za-z0-9+/]+={0,2}$/.test(result.pdfBase64)
+          )
+            throw new Error('presentation_response_invalid')
+          const binary = atob(result.pdfBase64)
+          if (!binary.startsWith('%PDF-') || !binary.slice(-1024).includes('%%EOF'))
+            throw new Error('presentation_response_invalid')
+          check()
+          if (!options.pdfAvailable()) throw new Error('presentation_pdf_unavailable')
+          if ((await options.documentId()) !== documentId)
+            throw new Error('presentation_document_changed')
+          check()
+          const path = `/home/user/generated/${value.project_id}.pdf`
+          options.vfs.writeFile(
+            path,
+            Uint8Array.from(binary, (char) => char.charCodeAt(0)),
+          )
+          return {
+            output: JSON.stringify({
+              projectId: value.project_id,
+              requestId: value.request_id,
+              status: 'exported',
+              path,
+              slideCount: result.slideCount,
+              renderer: 'libreoffice',
+            }),
+            mutated: false,
+            summary: `已生成 ${result.slideCount} 页 PDF 预览，可在附件中下载`,
+          }
+        }
         let projectId: string
         let requestId: string | undefined
         let deck: ReturnType<typeof parsePresentationDeck> | undefined
@@ -305,7 +402,11 @@ export function createPresentationGenerationSkill(
           summary:
             code === 'presentation_assets_unavailable'
               ? '请更新并连接支持图片素材的 PC 端后重试'
-              : 'PPT 生成未完成，已有成果已保留',
+              : call.name === 'export_presentation_pdf'
+                ? code === 'presentation_pdf_unavailable'
+                  ? '当前 PC 尚不支持 PDF 导出，请更新后重试'
+                  : 'PDF 导出未完成，请检查本机 LibreOffice 或稍后重试'
+                : 'PPT 生成未完成，已有成果已保留',
         }
       }
     },

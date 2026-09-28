@@ -3,9 +3,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
+import { PDFDocument } from 'pdf-lib'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { benchmarkPlannedDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
 import {
+  convertPresentationToPdf,
   convertSinglePagePackageToPng,
   libreOfficeCommands,
   readBoundedRenderedPng,
@@ -52,12 +54,29 @@ it.skipIf(!sofficeAvailable)(
   },
 )
 
+it.skipIf(!sofficeAvailable)(
+  'exports the real eight-page compiled deck as a bounded PDF',
+  async () => {
+    const deck = benchmarkPlannedDeck()
+    const { bytes } = await compilePresentationDeck(deck)
+    const pdf = Buffer.from(await convertPresentationToPdf(bytes, new AbortController().signal))
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-')
+    expect(pdf.subarray(-1024).toString()).toContain('%%EOF')
+    expect(pdf.length).toBeGreaterThan(1000)
+    expect((await PDFDocument.load(pdf)).getPageCount()).toBe(8)
+  },
+  75_000,
+)
+
 it('rejects cancellation before starting a converter', async () => {
   const controller = new AbortController()
   controller.abort()
   await expect(
     convertSinglePagePackageToPng(new Uint8Array([1]), controller.signal),
   ).rejects.toThrow('aborted')
+  await expect(convertPresentationToPdf(new Uint8Array([1]), controller.signal)).rejects.toThrow(
+    'aborted',
+  )
 })
 
 it.skipIf(!sofficeAvailable)('stops a running converter after cancellation', async () => {

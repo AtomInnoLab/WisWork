@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 
 const MAX_PNG_BYTES = 64 * 1024
 const MAX_RENDERED_PNG_BYTES = 4 * 1024 * 1024
+const MAX_EXPORTED_PDF_BYTES = 10 * 1024 * 1024
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
 
 export function libreOfficeCommands(
@@ -70,6 +71,77 @@ export async function readBoundedRenderedPng(path: string): Promise<Uint8Array> 
     return bytes.subarray(0, length)
   } finally {
     await handle.close()
+  }
+}
+
+/** Export a compiled deck as an optional PDF attachment using the local LibreOffice install. */
+export async function convertPresentationToPdf(
+  pptx: Uint8Array,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  if (signal.aborted) throw new Error('aborted')
+  if (!pptx.length || pptx.length > 10 * 1024 * 1024) throw new Error('output_too_large')
+  const dir = await mkdtemp(join(tmpdir(), 'wiswork-presentation-pdf-'))
+  try {
+    const source = join(dir, 'presentation.pptx')
+    await writeFile(source, pptx, { mode: 0o600 })
+    const command = await libreOfficeCommand()
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        command,
+        [
+          `-env:UserInstallation=${pathToFileURL(join(dir, 'profile')).href}`,
+          '--headless',
+          '--convert-to',
+          'pdf',
+          '--outdir',
+          dir,
+          source,
+        ],
+        { stdio: 'ignore' },
+      )
+      const timeout = setTimeout(() => child.kill('SIGKILL'), 60_000)
+      const abort = () => child.kill('SIGKILL')
+      signal.addEventListener('abort', abort, { once: true })
+      child.once('error', () => reject(new Error('renderer_unavailable')))
+      child.once('close', (code) =>
+        code === 0 && !signal.aborted
+          ? resolve()
+          : reject(new Error(signal.aborted ? 'aborted' : 'renderer_unavailable')),
+      )
+      child.once('close', () => {
+        clearTimeout(timeout)
+        signal.removeEventListener('abort', abort)
+      })
+    })
+    if (signal.aborted) throw new Error('aborted')
+    const file = await open(join(dir, 'presentation.pdf'), 'r')
+    try {
+      const buffer = Buffer.alloc(MAX_EXPORTED_PDF_BYTES + 1)
+      let length = 0
+      while (length < buffer.length) {
+        const part = await file.read(buffer, length, buffer.length - length, length)
+        if (!part.bytesRead) break
+        length += part.bytesRead
+      }
+      const pdf = buffer.subarray(0, length)
+      if (
+        length < 16 ||
+        length > MAX_EXPORTED_PDF_BYTES ||
+        !pdf.subarray(0, 5).equals(Buffer.from('%PDF-')) ||
+        !pdf.subarray(Math.max(0, length - 1024)).includes(Buffer.from('%%EOF'))
+      )
+        throw new Error('renderer_unavailable')
+      return pdf
+    } finally {
+      await file.close()
+    }
+  } catch (error) {
+    if (error instanceof Error && ['aborted', 'output_too_large'].includes(error.message))
+      throw error
+    throw new Error('renderer_unavailable', { cause: error })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
   }
 }
 
