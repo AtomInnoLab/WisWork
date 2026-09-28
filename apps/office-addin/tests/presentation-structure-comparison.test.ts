@@ -10,6 +10,81 @@ import { createPresentationQaSkill } from '../src/skills/powerpoint/presentation
 import { presentationArtifactContent } from '../src/skills/powerpoint/presentation-page-delivery'
 import { InMemoryVfs } from '../src/skills/shared/vfs'
 
+it('flags speaker notes changed by a host export', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  deck.slides[0]!.notes = 'Speaker baseline note'
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const inspection = {
+    slideId: 'host',
+    slideWidth: 960,
+    slideHeight: 540,
+    shapes,
+    shapesTruncated: false,
+    overflows: [],
+    overlaps: [],
+    overlapsTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: '' },
+  }
+  const original = Buffer.from(bytes).toString('base64')
+  const unchanged = await comparePresentationPageStructure(original, 0, inspection, original)
+  expect(unchanged.content.notesChanged).toBe(false)
+  const host = await JSZip.loadAsync(bytes)
+  const path = 'ppt/notesSlides/notesSlide1.xml'
+  const xml = await host.file(path)!.async('string')
+  expect(xml).toContain('Speaker baseline note')
+  host.file(path, xml.replace('Speaker baseline note', 'Speaker changed note'))
+  const changed = await comparePresentationPageStructure(
+    original,
+    0,
+    inspection,
+    await host.generateAsync({ type: 'base64' }),
+  )
+  expect(changed.content).toMatchObject({
+    status: 'warning',
+    notesChanged: true,
+    notesUnchecked: false,
+  })
+  const missing = await JSZip.loadAsync(bytes)
+  const relsPath = 'ppt/slides/_rels/slide1.xml.rels'
+  const rels = await missing.file(relsPath)!.async('string')
+  missing.file(relsPath, rels.replace(/<Relationship\b[^>]*\/notesSlide"[^>]*\/>/, ''))
+  const lost = await comparePresentationPageStructure(
+    original,
+    0,
+    inspection,
+    await missing.generateAsync({ type: 'base64' }),
+  )
+  expect(lost.content).toMatchObject({
+    status: 'warning',
+    notesChanged: true,
+    notesUnchecked: false,
+  })
+  const broken = await JSZip.loadAsync(bytes)
+  broken.remove(path)
+  const unreadable = await comparePresentationPageStructure(
+    original,
+    0,
+    inspection,
+    await broken.generateAsync({ type: 'base64' }),
+  )
+  expect(unreadable.content).toMatchObject({
+    status: 'incomplete',
+    notesChanged: false,
+    notesUnchecked: true,
+  })
+})
+
 it('detects changed native text in an exported host page package', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[0]!]

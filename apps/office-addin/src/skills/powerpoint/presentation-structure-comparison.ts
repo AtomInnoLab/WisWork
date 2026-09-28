@@ -109,6 +109,36 @@ async function resolvedBackground(
   const master = await readXml(zip, masterPath)
   return master ? (directBackground(master, 'p:sldMaster') ?? undefined) : undefined
 }
+
+async function pageNotes(zip: JSZip, slidePath: string): Promise<string | undefined> {
+  const slash = slidePath.lastIndexOf('/')
+  const relsPath = `${slidePath.slice(0, slash)}/_rels/${slidePath.slice(slash + 1)}.rels`
+  if (!zip.file(relsPath)) return ''
+  const rels = await readXml(zip, relsPath)
+  if (!rels) return undefined
+  const matches = many(rels.Relationships?.Relationship).filter(
+    (item) => item['@_Type'] === `${RELATIONSHIP_BASE}notesSlide`,
+  )
+  if (!matches.length) return ''
+  if (matches.length !== 1 || matches[0]?.['@_TargetMode'] !== undefined) return undefined
+  const target = matches[0]?.['@_Target']
+  const match =
+    typeof target === 'string' &&
+    /^(?:\.\.\/notesSlides\/|\/ppt\/notesSlides\/)(notesSlide\d+\.xml)$/.exec(target)
+  if (!match) return undefined
+  const root = await readXml(zip, `ppt/notesSlides/${match[1]}`)
+  if (!root) return undefined
+  const shapes = many(root['p:notes']?.['p:cSld']?.['p:spTree']?.['p:sp']).filter(
+    (shape) => shape['p:nvSpPr']?.['p:nvPr']?.['p:ph']?.['@_type'] === 'body',
+  )
+  if (shapes.length !== 1) return undefined
+  const paragraphs = many(shapes[0]?.['p:txBody']?.['a:p']).map((paragraph) =>
+    textRuns(paragraph).join(''),
+  )
+  while (paragraphs.length && paragraphs.at(-1) === '') paragraphs.pop()
+  const notes = paragraphs.join('\n')
+  return notes.length <= 12_000 ? notes : undefined
+}
 const many = (value: unknown): Xml[] =>
   value === undefined ? [] : Array.isArray(value) ? value : [value as Xml]
 
@@ -223,7 +253,7 @@ async function readPage(
   base64: string,
   index: number,
   maxBytes: number,
-): Promise<{ objects: SourceObject[]; backgroundColor?: string }> {
+): Promise<{ objects: SourceObject[]; backgroundColor?: string; notesText?: string }> {
   try {
     const zip = await loadBoundedZip(base64, undefined, true, maxBytes)
     const slidePath = `ppt/slides/slide${index + 1}.xml`
@@ -232,7 +262,12 @@ async function readPage(
     const objects = sourceObjects(root)
     if (!objects.length || objects.length > 100) throw new Error('invalid slide objects')
     const backgroundColor = await resolvedBackground(zip, slidePath, root)
-    return { objects, ...(backgroundColor ? { backgroundColor } : {}) }
+    const notesText = await pageNotes(zip, slidePath)
+    return {
+      objects,
+      ...(backgroundColor ? { backgroundColor } : {}),
+      ...(notesText !== undefined ? { notesText } : {}),
+    }
   } catch {
     throw new Error('presentation_qa_structure_unavailable')
   }
@@ -265,6 +300,8 @@ export async function comparePresentationPageStructure(
     workbookDataChanged: string[]
     backgroundChanged: boolean
     backgroundUnchecked: boolean
+    notesChanged: boolean
+    notesUnchecked: boolean
     mediaChanged: string[]
     mediaChecked: string[]
     mediaUnchecked: string[]
@@ -353,6 +390,12 @@ export async function comparePresentationPageStructure(
     !exportedPage?.backgroundColor
   const backgroundChanged =
     !backgroundUnchecked && sourcePage.backgroundColor !== exportedPage?.backgroundColor
+  const notesUnchecked =
+    !hostBase64 ||
+    !readbackConsistent ||
+    sourcePage.notesText === undefined ||
+    exportedPage?.notesText === undefined
+  const notesChanged = !notesUnchecked && sourcePage.notesText !== exportedPage?.notesText
   if (hostBase64 && readbackConsistent)
     for (const element of source) {
       const actual = exportedByName.get(element.name)
@@ -563,6 +606,7 @@ export async function comparePresentationPageStructure(
     status: (changed.length ||
     cacheChanged.length ||
     backgroundChanged ||
+    notesChanged ||
     chartTypeChanged.length ||
     chartStyleChanged.length ||
     chartSourceChanged.length ||
@@ -578,12 +622,14 @@ export async function comparePresentationPageStructure(
     textStyleChanged.length ||
     tableStyleChanged.length
       ? 'warning'
-      : unchecked.length || backgroundUnchecked
+      : unchecked.length || backgroundUnchecked || notesUnchecked
         ? 'incomplete'
         : 'passed') as 'passed' | 'warning' | 'incomplete',
     changed,
     backgroundChanged,
     backgroundUnchecked,
+    notesChanged,
+    notesUnchecked,
     cacheChanged,
     chartTypeChanged,
     chartStyleChanged,
