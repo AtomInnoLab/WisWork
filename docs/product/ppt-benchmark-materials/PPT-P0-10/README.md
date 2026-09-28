@@ -2,7 +2,7 @@
 
 来源：[IPCC Special Report on the Ocean and Cryosphere in a Changing Climate 完整报告](https://www.ipcc.ch/site/assets/uploads/sites/3/2022/03/SROCC_FullReport_FINAL.pdf)。本机于 2026-09-28 下载并核对：**51,870,607 字节（49.47 MiB）**、766 页、SHA256 `cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2`。生产 PDF 解析器提取 4,338,831 个 UTF-16 字符、766 个页面段落，其中末页无可提取文本。本机原件位于 `/tmp/wiswork-p0-10-srocc-full-report.pdf`，仓库不保存全文；重新下载后须先核对字节数和 SHA256。使用与再分发边界见 [IPCC 版权说明](https://www.ipcc.ch/copyright/)。
 
-运行真实原件回归：`WISWORK_P0_10_PDF=/tmp/wiswork-p0-10-srocc-full-report.pdf node_modules/.bin/vitest run apps/shell/tests/presentation-attachments-integration.test.ts -t 'real near-limit PDF'`。此测试从 Office 插件客户端分块发送给 PC 服务，完成生产解析、附件元数据验证，并读取第 4,000,000 字符处的 2,000 字符窗口。2026-09-28 实测通过；此前 100 万字符边界下在 `attachment_finish` 失败。单次读取窗口保持 24,000 字符上限，网页快照仍保持 100 万字符上限。
+运行真实原件回归：`WISWORK_P0_10_PDF=/tmp/wiswork-p0-10-srocc-full-report.pdf node_modules/.bin/vitest run apps/shell/tests/presentation-attachments-integration.test.ts -t 'real near-limit PDF'`。此测试从 Office 插件客户端分块发送给 PC 服务，完成生产解析、附件元数据验证，读取第 4,000,000 字符处的 2,000 字符窗口，并把该窗口中的原文摘录存入计划，验证来源审计在高位偏移返回 `found` 且页码与读取窗口一致。2026-09-28 实测通过；此前 100 万字符边界下在 `attachment_finish` 失败。单次读取窗口保持 24,000 字符上限，网页快照仍保持 100 万字符上限。
 
 ## 固定 8 页摘要范围草案
 

@@ -529,5 +529,32 @@ if (realPdfPath) {
       totalChars: expect.any(Number),
     })
     expect(JSON.parse(read.output).text.length).toBe(2000)
+    const window = JSON.parse(read.output) as {
+      text: string
+      pageSpans: { locator: string; start: number; end: number }[]
+    }
+    const excerpt = window.text.slice(100, 180).trim()
+    expect(excerpt.length).toBeGreaterThan(20)
+    const plan = benchmarkPlan()
+    plan.sources[0]!.uri = `attachment:${attachmentId}`
+    plan.sources[0]!.excerpt = excerpt
+    const send = async (body: Record<string, unknown>) =>
+      decode(
+        await service(
+          { documentId: 'document-p0-10', projectId: plan.projectId, ...body },
+          signal(),
+        ),
+      )
+    await send({ operation: 'save_plan', expectedRevision: 0, plan })
+    const audit = await send({ operation: 'audit_sources' })
+    expect(audit.sources[0]).toMatchObject({
+      sourceId: plan.sources[0]!.id,
+      attachmentId,
+      status: 'found',
+      offset: expect.any(Number),
+      locator: expect.stringMatching(/^第 \d+ 页$/),
+    })
+    expect(audit.sources[0].offset).toBeGreaterThan(1_000_000)
+    expect(window.pageSpans.some((span) => span.locator === audit.sources[0].locator)).toBe(true)
   }, 180_000)
 }
