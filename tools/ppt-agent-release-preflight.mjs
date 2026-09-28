@@ -179,6 +179,17 @@ export async function inspectDeployedOffice(origin, build, fetcher = fetch) {
     const response = await fetcher(url, { cache: 'no-store', signal: AbortSignal.timeout(5_000) })
     if (!response.ok)
       throw new Error(`deployed asset unavailable: ${url.pathname} (${response.status})`)
+    const cache = (response.headers.get('cache-control') || '')
+      .toLowerCase()
+      .split(',')
+      .map((part) => part.trim())
+    if (file.path.startsWith('assets/') && file.path !== 'assets/icon.png') {
+      const maxAge = cache.find((part) => /^max-age=\d+$/.test(part))
+      if (!cache.includes('immutable') || !maxAge || Number(maxAge.slice(8)) < 31_536_000)
+        throw new Error(`deployed Office cache policy invalid: ${url.pathname}`)
+    } else if (!cache.includes('no-store')) {
+      throw new Error(`deployed Office cache policy invalid: ${url.pathname}`)
+    }
     if (!response.body) throw new Error(`deployed asset unavailable: ${url.pathname}`)
     const reader = response.body.getReader()
     const chunks = []

@@ -505,9 +505,30 @@ test('checks deployed version, HTML and immutable script as one build', async ()
       sha256: createHash('sha256').update(value).digest('hex'),
     })),
   }
+  const cacheHeaders = (path) => ({
+    'Cache-Control':
+      path.startsWith('/assets/') && path !== '/assets/icon.png'
+        ? 'public, max-age=31536000, immutable'
+        : 'no-store',
+  })
+  let omitCacheFor
   const fetcher = async (url) =>
-    new Response(assets.get(url.pathname) ?? '', { status: assets.has(url.pathname) ? 200 : 404 })
+    new Response(assets.get(url.pathname) ?? '', {
+      status: assets.has(url.pathname) ? 200 : 404,
+      headers: url.pathname === omitCacheFor ? {} : cacheHeaders(url.pathname),
+    })
   await inspectDeployedOffice('https://office.example', build, fetcher)
+  omitCacheFor = '/version.json'
+  await assert.rejects(
+    inspectDeployedOffice('https://office.example', build, fetcher),
+    /cache policy/,
+  )
+  omitCacheFor = '/assets/taskpane-AbC_123.js'
+  await assert.rejects(
+    inspectDeployedOffice('https://office.example', build, fetcher),
+    /cache policy/,
+  )
+  omitCacheFor = undefined
   assets.set(
     '/taskpane.html',
     '<script src="/assets/taskpane-AbC_123.js"></script><script src="https://evil.example/extra.js"></script>',
