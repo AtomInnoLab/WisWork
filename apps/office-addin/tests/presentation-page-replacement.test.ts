@@ -88,7 +88,11 @@ function setup() {
     },
   )
   const adapter = {
-    reconcilePending: vi.fn(async () => ({ status: 'baseline' as const })),
+    reconcilePending: vi.fn(
+      async (): Promise<{ status: 'baseline' | 'inserted' | 'conflict'; newSlideId?: string }> => ({
+        status: 'baseline',
+      }),
+    ),
     inspect: vi.fn(async () => ({
       status: hostStatus,
       slideIds: hostStatus === 'staged' ? ['original', 'host', 'new'] : ['original', 'host'],
@@ -311,6 +315,53 @@ it('inspects an uncertain pending transaction without inserting or deleting', as
   })
   expect(f.adapter.stage).toHaveBeenCalledTimes(1)
   expect(f.adapter.discard).not.toHaveBeenCalled()
+})
+it('reconciles a pending generated-page insertion without repeating the host write or switching mapping', async () => {
+  const f = setup()
+  f.adapter.stage.mockImplementationOnce(async () => {
+    f.setHost('staged')
+    throw new Error('office_state_uncertain')
+  })
+  await f.skill.executeTool(f.stage)
+  expect(await f.confirm()).toMatchObject({ status: 'failed' })
+  expect(f.journal()?.state).toBe('pending')
+  expect(JSON.parse((await f.call('inspect')).output).nextTool).toBe(
+    'reconcile_presentation_page_replacement',
+  )
+  f.adapter.reconcilePending.mockResolvedValueOnce({ status: 'inserted', newSlideId: 'new' })
+  f.write.mockRejectedValueOnce(new Error('journal_unavailable'))
+  expect((await f.call('reconcile')).isError).toBe(true)
+  expect(f.journal()?.state).toBe('pending')
+  f.adapter.reconcilePending.mockResolvedValueOnce({ status: 'inserted', newSlideId: 'new' })
+  const result = await f.call('reconcile')
+  expect(result.isError, result.output).not.toBe(true)
+  expect(JSON.parse(result.output)).toMatchObject({
+    status: 'staged',
+    newSlideId: 'new',
+    originalRetained: true,
+    businessMappingUpdated: false,
+    hostWrite: false,
+  })
+  expect(f.journal()).toMatchObject({ state: 'staged', newSlideId: 'new' })
+  expect(f.receipts.get('production/project/parent')).toBe(f.receipt)
+  expect(f.adapter.stage).toHaveBeenCalledTimes(1)
+  expect(f.adapter.commit).not.toHaveBeenCalled()
+  expect(f.adapter.discard).not.toHaveBeenCalled()
+})
+it('keeps a pending generated-page receipt when no insertion is observed or proof conflicts', async () => {
+  const f = setup()
+  f.adapter.stage.mockRejectedValueOnce(new Error('office_state_uncertain'))
+  await f.skill.executeTool(f.stage)
+  await f.confirm()
+  expect(JSON.parse((await f.call('reconcile')).output)).toMatchObject({
+    status: 'pending_no_insert_observed',
+    hostWrite: false,
+  })
+  expect(f.journal()?.state).toBe('pending')
+  f.adapter.reconcilePending.mockResolvedValueOnce({ status: 'conflict' })
+  expect((await f.call('reconcile')).isError).toBe(true)
+  expect(f.journal()?.state).toBe('pending')
+  expect(f.adapter.stage).toHaveBeenCalledTimes(1)
 })
 it('keeps inserted when post-insertion content proof conflicts', async () => {
   const f = setup()

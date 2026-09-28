@@ -53,21 +53,23 @@ async function digest(bytes: Uint8Array) {
     (b) => b.toString(16).padStart(2, '0'),
   ).join('')
 }
-const names = ['stage', 'inspect', 'resume', 'discard', 'commit', 'undo'] as const
+const names = ['stage', 'inspect', 'reconcile', 'resume', 'discard', 'commit', 'undo'] as const
 const tools: AgentToolDef[] = names.map((action) => ({
   name: `${action}_presentation_page_replacement`,
   description:
     action === 'stage'
       ? 'Propose inserting a compiled revision after its backed-up original page, retaining the original and existing business mapping. Requires explicit confirmation. This stages a replacement; it does not finish replacement.'
       : action === 'inspect'
-        ? 'Inspect a durable staged replacement without writing; uncertain pending insertion requires manual review.'
-        : action === 'resume'
-          ? 'Propose completing only the receipt for an already known, verified inserted page. Never repeats insertion.'
-          : action === 'commit'
-            ? 'Confirm replacing the backed-up original with its verified staged revision, atomically switching the business mapping. Reuse to recover commit_pending. Explicitly prepare the child request after completion.'
-            : action === 'undo'
-              ? 'Confirm restoring the verified original backup before removing the revision. Reuse to recover undo_pending/restore_inserted; explicitly prepare the parent request after completion.'
-              : 'Propose removing only the unchanged owned staged page. Keeps the original page and backup; requires explicit confirmation.',
+        ? 'Inspect a durable staged replacement without writing; pending insertion may be reconciled by exact host page proof.'
+        : action === 'reconcile'
+          ? 'Read-only recovery for a pending page insertion. Verify the original backup and exact host page/order/package proof, then journal the new slide ID without repeating insertion.'
+          : action === 'resume'
+            ? 'Propose completing only the receipt for an already known, verified inserted page. Never repeats insertion.'
+            : action === 'commit'
+              ? 'Confirm replacing the backed-up original with its verified staged revision, atomically switching the business mapping. Reuse to recover commit_pending. Explicitly prepare the child request after completion.'
+              : action === 'undo'
+                ? 'Confirm restoring the verified original backup before removing the revision. Reuse to recover undo_pending/restore_inserted; explicitly prepare the parent request after completion.'
+                : 'Propose removing only the unchanged owned staged page. Keeps the original page and backup; requires explicit confirmation.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -98,7 +100,7 @@ export function createPresentationPageReplacementSkill(
       return options.available() ? tools : []
     },
     systemPrompt:
-      'Stage a backed-up revision with explicit confirmation, retaining the original. Inspect the durable transaction; resume only completes a known staged insertion. Commit verifies both pages and the backup, deletes the original and switches the business mapping. Undo restores the original backup before deleting the revision. Reuse commit for commit_pending and undo for undo_pending/restore_inserted recovery; uncertain unknown inserted IDs require manual review. After commit explicitly prepare the child request; after undo explicitly prepare the parent request before editing or QA. Discard removes an unchanged staged page only. Never claim visual, content or round-trip QA acceptance from replacement success.',
+      'Stage a backed-up revision with explicit confirmation, retaining the original. Inspect the durable transaction; reconcile a pending insertion by exact host page/order/package proof before any retry, without replaying a write. Resume only completes a known staged insertion. Commit verifies both pages and the backup, deletes the original and switches the business mapping. Undo restores the original backup before deleting the revision. Reuse commit for commit_pending and undo for undo_pending/restore_inserted recovery. After commit explicitly prepare the child request; after undo explicitly prepare the parent request before editing or QA. Discard removes an unchanged staged page only. Never claim visual, content or round-trip QA acceptance from replacement success.',
     clear() {
       epoch++
     },
@@ -476,6 +478,9 @@ export function createPresentationPageReplacementSkill(
                 'restore_inserted',
                 'undone',
               ].includes(record.state),
+              ...(record.state === 'pending'
+                ? { nextTool: 'reconcile_presentation_page_replacement' }
+                : {}),
             }),
             mutated: false,
             summary: '已核对当前页面；事务状态为持久检查点，内容验收需另行执行',
@@ -527,6 +532,45 @@ export function createPresentationPageReplacementSkill(
           await current(s)
           if (!same(read(), next)) throw new Error('office_state_uncertain')
           latest = structuredClone(next)
+        }
+        if (action === 'reconcile') {
+          if (record.state !== 'pending' || record.newSlideId)
+            throw new Error('presentation_page_replacement_uncertain')
+          await verifyBackup(signal)
+          const found = await options.adapter.reconcilePending(record, signal)
+          await unchanged(signal)
+          if (found.status === 'conflict')
+            throw new Error('presentation_page_replacement_uncertain')
+          if (found.status === 'baseline')
+            return {
+              output: JSON.stringify({
+                changeId,
+                status: 'pending_no_insert_observed',
+                originalRetained: true,
+                businessMappingUpdated: false,
+                hostWrite: false,
+              }),
+              mutated: false,
+              summary: '未观察到修订页；保留待核对回执，不重放插入',
+            }
+          if (!found.newSlideId) throw new Error('presentation_page_replacement_uncertain')
+          await save({ ...record, state: 'inserted', newSlideId: found.newSlideId }, signal)
+          const proof = await options.adapter.inspect(latest!, signal)
+          await unchanged(signal)
+          if (proof.status !== 'staged') throw new Error('presentation_page_replacement_uncertain')
+          await save({ ...latest!, state: 'staged' }, signal)
+          return {
+            output: JSON.stringify({
+              changeId,
+              status: 'staged',
+              newSlideId: found.newSlideId,
+              originalRetained: true,
+              businessMappingUpdated: false,
+              hostWrite: false,
+            }),
+            mutated: false,
+            summary: '已核对并认领修订页，可继续检查与确认提交',
+          }
         }
         const proposal = options.proposals.propose({
           operation: call.name,
