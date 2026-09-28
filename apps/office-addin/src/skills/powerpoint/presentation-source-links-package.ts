@@ -1,4 +1,5 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
+import type JSZip from 'jszip'
 import { loadBoundedZip, MAX_PPTX_XML_BYTES } from './powerpoint-package.js'
 
 type Node = Record<string, unknown>
@@ -53,8 +54,19 @@ export async function inspectPowerPointSourceLinks(
   const zip = await loadBoundedZip(base64, signal, true, 8 * 1024 * 1024)
   const slides = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
   if (slides.length !== 1) throw new Error('office_api_unsupported')
-  const slide = xml(await zip.file(slides[0]!)!.async('string'))
-  const relPath = slides[0]!.replace('/slides/', '/slides/_rels/') + '.rels'
+  return inspectPowerPointSourceLinksFromZip(zip, slides[0]!, signal)
+}
+
+/** Reuses the same bounded parser for one slide selected from a multi-slide source package. */
+export async function inspectPowerPointSourceLinksFromZip(
+  zip: JSZip,
+  slidePath: string,
+  signal?: AbortSignal,
+): Promise<{ status: 'read' | 'not_present'; links: PresentationSourceLink[] }> {
+  if (!/^ppt\/slides\/slide[1-9]\d*\.xml$/.test(slidePath) || !zip.file(slidePath))
+    throw new Error('office_api_unsupported')
+  const slide = xml(await zip.file(slidePath)!.async('string'))
+  const relPath = slidePath.replace('/slides/', '/slides/_rels/') + '.rels'
   const relFile = zip.file(relPath)
   const rels = relFile ? tags(xml(await relFile.async('string')), 'Relationship') : []
   const targets = new Map<string, string>()

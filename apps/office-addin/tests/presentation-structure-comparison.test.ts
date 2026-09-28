@@ -85,6 +85,141 @@ it('flags speaker notes changed by a host export', async () => {
   })
 })
 
+it('flags a source hyperlink retargeted while visible text stays unchanged', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const page = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = page.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const inspection = {
+    slideId: 'host',
+    slideWidth: 960,
+    slideHeight: 540,
+    shapes,
+    shapesTruncated: false,
+    overflows: [],
+    overlaps: [],
+    overlapsTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: '' },
+  }
+  const source = await JSZip.loadAsync(bytes)
+  const slidePath = 'ppt/slides/slide1.xml'
+  const relsPath = 'ppt/slides/_rels/slide1.xml.rels'
+  source.file(
+    slidePath,
+    (await source.file(slidePath)!.async('string')).replace(
+      '<p:cNvPr id="2" name="title"></p:cNvPr>',
+      '<p:cNvPr id="2" name="title"><a:hlinkClick r:id="rId999"/></p:cNvPr>',
+    ),
+  )
+  source.file(
+    relsPath,
+    (await source.file(relsPath)!.async('string')).replace(
+      '</Relationships>',
+      '<Relationship Id="rId999" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://source.example/report" TargetMode="External"/></Relationships>',
+    ),
+  )
+  const original = await source.generateAsync({ type: 'base64' })
+  const unchanged = await comparePresentationPageStructure(original, 0, inspection, original)
+  expect(unchanged.content.sourceLinkChanged).toEqual([])
+  const exported = await JSZip.loadAsync(Buffer.from(original, 'base64'))
+  exported.file(
+    relsPath,
+    (await exported.file(relsPath)!.async('string')).replace(
+      'https://source.example/report',
+      'https://other.example/report',
+    ),
+  )
+  const changed = await comparePresentationPageStructure(
+    original,
+    0,
+    inspection,
+    await exported.generateAsync({ type: 'base64' }),
+  )
+  expect(changed.content).toMatchObject({
+    status: 'warning',
+    sourceLinkChanged: ['title'],
+    sourceLinksUnchecked: false,
+  })
+  expect(JSON.stringify(changed)).not.toContain('https://other.example/report')
+  const removed = await JSZip.loadAsync(Buffer.from(original, 'base64'))
+  removed.file(
+    relsPath,
+    (await removed.file(relsPath)!.async('string')).replace(
+      /<Relationship\b[^>]*Id="rId999"[^>]*\/>/,
+      '',
+    ),
+  )
+  const lost = await comparePresentationPageStructure(
+    original,
+    0,
+    inspection,
+    await removed.generateAsync({ type: 'base64' }),
+  )
+  expect(lost.content).toMatchObject({ status: 'warning', sourceLinkChanged: ['title'] })
+  const duplicate = await JSZip.loadAsync(Buffer.from(original, 'base64'))
+  duplicate.file(
+    relsPath,
+    (await duplicate.file(relsPath)!.async('string')).replace(
+      '</Relationships>',
+      '<Relationship Id="rId999" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://third.example/report" TargetMode="External"/></Relationships>',
+    ),
+  )
+  const uncertain = await comparePresentationPageStructure(
+    original,
+    0,
+    inspection,
+    await duplicate.generateAsync({ type: 'base64' }),
+  )
+  expect(uncertain.content).toMatchObject({ status: 'incomplete', sourceLinksUnchecked: true })
+})
+
+it('flags an explicit line break added to native text on export', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const page = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = page.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const host = await JSZip.loadAsync(bytes)
+  const path = 'ppt/slides/slide1.xml'
+  const xml = await host.file(path)!.async('string')
+  expect(xml).toContain('<a:r>')
+  host.file(path, xml.replace('<a:r>', '<a:br/><a:r>'))
+  const result = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlapsTruncated: false,
+      overlaps: [],
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await host.generateAsync({ type: 'base64' }),
+  )
+  expect(result.content).toMatchObject({ status: 'warning', changed: ['title'] })
+})
+
 it('detects changed native text in an exported host page package', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[0]!]

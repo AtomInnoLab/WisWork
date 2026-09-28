@@ -8,6 +8,7 @@ import {
 } from './powerpoint-package.js'
 import { inspectPowerPointComplexPagePackage } from './presentation-complex-page-package.js'
 import { inspectPowerPointChartSourcesBatch } from './presentation-chart-source-package.js'
+import { inspectPowerPointSourceLinksFromZip } from './presentation-source-links-package.js'
 
 type Issue =
   | { name: string; kind: 'missing' | 'extra' | 'duplicate' }
@@ -32,6 +33,7 @@ type SourceObject = {
   appearance?: [string, string, string]
   rotation: number
 }
+type SourceLink = { name: string; target: string; label: string; location: string }
 const POINTS_PER_EMU = 72 / 914400
 const types: Record<string, string[]> = {
   shape: ['TextBox', 'GeometricShape'],
@@ -146,7 +148,13 @@ function textRuns(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(textRuns)
   if (!value || typeof value !== 'object') return []
   return Object.entries(value).flatMap(([tag, child]) =>
-    tag === 'a:t' ? [String(child)] : tag.startsWith('@_') ? [] : textRuns(child),
+    tag === 'a:t'
+      ? [typeof child === 'string' ? child : String((child as Xml)?.['#text'] ?? '')]
+      : tag === 'a:br'
+        ? ['\n']
+        : tag.startsWith('@_')
+          ? []
+          : textRuns(child),
   )
 }
 
@@ -253,7 +261,12 @@ async function readPage(
   base64: string,
   index: number,
   maxBytes: number,
-): Promise<{ objects: SourceObject[]; backgroundColor?: string; notesText?: string }> {
+): Promise<{
+  objects: SourceObject[]
+  backgroundColor?: string
+  notesText?: string
+  links?: SourceLink[]
+}> {
   try {
     const zip = await loadBoundedZip(base64, undefined, true, maxBytes)
     const slidePath = `ppt/slides/slide${index + 1}.xml`
@@ -263,10 +276,19 @@ async function readPage(
     if (!objects.length || objects.length > 100) throw new Error('invalid slide objects')
     const backgroundColor = await resolvedBackground(zip, slidePath, root)
     const notesText = await pageNotes(zip, slidePath)
+    const extractedLinks = await inspectPowerPointSourceLinksFromZip(zip, slidePath).catch(
+      () => undefined,
+    )
+    const links = extractedLinks?.links.map((link) => {
+      const name = objects.find((item) => item.shapeId === link.packageShapeId)?.name
+      if (!name) throw new Error('unmapped source link')
+      return { name, target: link.target, label: link.label, location: link.location }
+    })
     return {
       objects,
       ...(backgroundColor ? { backgroundColor } : {}),
       ...(notesText !== undefined ? { notesText } : {}),
+      ...(links !== undefined ? { links } : {}),
     }
   } catch {
     throw new Error('presentation_qa_structure_unavailable')
@@ -302,6 +324,8 @@ export async function comparePresentationPageStructure(
     backgroundUnchecked: boolean
     notesChanged: boolean
     notesUnchecked: boolean
+    sourceLinkChanged: string[]
+    sourceLinksUnchecked: boolean
     mediaChanged: string[]
     mediaChecked: string[]
     mediaUnchecked: string[]
@@ -396,6 +420,27 @@ export async function comparePresentationPageStructure(
     sourcePage.notesText === undefined ||
     exportedPage?.notesText === undefined
   const notesChanged = !notesUnchecked && sourcePage.notesText !== exportedPage?.notesText
+  const sourceLinksUnchecked =
+    !hostBase64 || !readbackConsistent || !sourcePage.links || !exportedPage?.links
+  const sourceLinkChanged: string[] = []
+  if (!sourceLinksUnchecked) {
+    const names = new Set([
+      ...sourcePage.links!.map((link) => link.name),
+      ...exportedPage!.links!.map((link) => link.name),
+    ])
+    for (const name of names) {
+      const linksFor = (links: SourceLink[]) =>
+        links
+          .filter((link) => link.name === name)
+          .map((link) => JSON.stringify([link.location, link.label, link.target]))
+          .sort()
+      if (
+        JSON.stringify(linksFor(sourcePage.links!)) !==
+        JSON.stringify(linksFor(exportedPage!.links!))
+      )
+        sourceLinkChanged.push(name)
+    }
+  }
   if (hostBase64 && readbackConsistent)
     for (const element of source) {
       const actual = exportedByName.get(element.name)
@@ -607,6 +652,7 @@ export async function comparePresentationPageStructure(
     cacheChanged.length ||
     backgroundChanged ||
     notesChanged ||
+    sourceLinkChanged.length ||
     chartTypeChanged.length ||
     chartStyleChanged.length ||
     chartSourceChanged.length ||
@@ -622,7 +668,7 @@ export async function comparePresentationPageStructure(
     textStyleChanged.length ||
     tableStyleChanged.length
       ? 'warning'
-      : unchecked.length || backgroundUnchecked || notesUnchecked
+      : unchecked.length || backgroundUnchecked || notesUnchecked || sourceLinksUnchecked
         ? 'incomplete'
         : 'passed') as 'passed' | 'warning' | 'incomplete',
     changed,
@@ -630,6 +676,8 @@ export async function comparePresentationPageStructure(
     backgroundUnchecked,
     notesChanged,
     notesUnchecked,
+    sourceLinkChanged,
+    sourceLinksUnchecked,
     cacheChanged,
     chartTypeChanged,
     chartStyleChanged,
