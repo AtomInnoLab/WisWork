@@ -34,6 +34,10 @@
 
 ## 3. 阶段记录
 
+### 2026-09-28：O6 Mac/Windows 关键路径 CI 矩阵
+
+按原方案 O6 的跨平台基准矩阵，在现有 Linux CI 外新增 Mac/Windows 作业，分别运行 PC 与 Office 类型检查、备用截图渲染器测试，以及 Office Manifest/真实生产构建输出测试。YAML 解析与格式检查通过；相同测试命令在本机 Linux 顺序执行，Shell **6/6**、Office **24/24** 通过。新作业尚未在 GitHub Mac/Windows runner 上执行，因此不把配置视为跨平台通过，更不代替 PowerPoint Desktop/Web 宿主验收。O6 **50%**，整体 **64% → 64%（575/9）**，真实专业任务 **0/20**。下一步获取 CI 平台结果，修正实际差异，再执行真实 Office 宿主矩阵。
+
 ### 2026-09-28：O4 跨平台备用截图命令发现
 
 按原方案 O4 的截图备用路径，PC 渲染器现在先检查 Mac 的系统与用户应用安装位置、Windows 的标准 Program Files 安装位置，最后回退到 PATH 中的 `soffice`/`soffice.exe`；执行仍使用独立临时配置、15 秒上限和单页包资源限制。Shell 定向测试 **6/6**、完整回归 **431/431**、类型检查通过，其中 Linux 上真实 LibreOffice 单页成图通过；Mac/Windows 仅验证候选路径生成，尚未实机成图。O4 **75%**，整体 **64% → 64%（575/9）**，真实专业任务 **0/20**。下一步在 Mac/Windows PC 与 PowerPoint 宿主上验证备用渲染和截图对照。
