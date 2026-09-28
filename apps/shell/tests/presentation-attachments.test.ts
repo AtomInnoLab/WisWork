@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, rm, writeFile, symlink } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, symlink, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -44,6 +44,42 @@ async function upload(
   return attachmentId
 }
 describe('durable presentation attachments', () => {
+  it('indexes the frozen P0-06 contract and its separate review inputs without mixing sources', async () => {
+    const { call } = await setup()
+    const root = new URL(
+      '../../../docs/product/ppt-benchmark-materials/PPT-P0-06/',
+      import.meta.url,
+    )
+    const ids = new Map<string, string>()
+    for (const name of ['synthetic-nda.txt', 'review-policy.txt', 'revision-notes.txt']) {
+      const id = await upload(call, await readFile(new URL(name, root)), name)
+      const saved = await call({ operation: 'attachment_finish', attachmentId: id })
+      expect(saved).toMatchObject({ status: 'ready', name })
+      expect(JSON.stringify(saved)).not.toContain('PRIVATE-SIM-P0-06-7E91')
+      ids.set(name, id)
+    }
+    expect(
+      await call({
+        operation: 'attachment_match_excerpt',
+        attachmentId: ids.get('synthetic-nda.txt'),
+        excerpt: '法律或有权机关要求披露时',
+      }),
+    ).toMatchObject({ status: 'found' })
+    expect(
+      await call({
+        operation: 'attachment_match_excerpt',
+        attachmentId: ids.get('revision-notes.txt'),
+        excerpt: '法律或有权机关要求披露时',
+      }),
+    ).toMatchObject({ status: 'not_found' })
+    expect(
+      await call({
+        operation: 'attachment_match_excerpt',
+        attachmentId: ids.get('revision-notes.txt'),
+        excerpt: '当前仅允许“法律允许时提前通知”',
+      }),
+    ).toMatchObject({ status: 'found' })
+  })
   it.each([
     [
       'web.html',
