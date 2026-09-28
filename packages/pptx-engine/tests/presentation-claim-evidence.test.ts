@@ -157,3 +157,27 @@ it('binds external original URI evidence to an explicit snapshot', () => {
       'presentation_claim_evidence_invalid:',
     )
 })
+it('requires fetched URL provenance to carry a bounded retrieval time and snapshot', () => {
+  const value = report()
+  const source = {
+    ...value.source,
+    uri: 'https://example.com/original',
+    snapshotAttachmentId: hash,
+  }
+  const attachment = {
+    ...value.attachment,
+    provenance: { binding: 'fetched_url_matched', retrievedAt: 1790590000000 },
+  }
+  expect(
+    parsePresentationClaimEvidence({ ...value, source, attachment }).attachment.provenance,
+  ).toEqual(attachment.provenance)
+  for (const changed of [
+    { ...attachment, provenance: { binding: 'fetched_url_matched' } },
+    { ...attachment, provenance: { binding: 'fetched_url_matched', retrievedAt: 1.5 } },
+    { ...attachment, provenance: { binding: 'user_supplied', retrievedAt: 1790590000000 } },
+  ])
+    expect(() =>
+      parsePresentationClaimEvidence({ ...value, source, attachment: changed }),
+    ).toThrow()
+  expect(() => parsePresentationClaimEvidence({ ...value, attachment })).toThrow()
+})

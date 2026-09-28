@@ -26,6 +26,8 @@ export interface PresentationClaimEvidence {
     text: string
     offsetUnit: 'utf16_code_unit'
     locatorSpans?: { locator: string; start: number; end: number }[]
+    provenance?:
+      { binding: 'fetched_url_matched'; retrievedAt: number } | { binding: 'user_supplied' }
   }
   excerptMatch:
     | { status: 'found'; offset: number; locator?: string }
@@ -100,6 +102,15 @@ const schema = object({
         object({ locator: text(32, 1), start: number(0, 1000000), end: number(0, 1000000) }),
         4096,
       ),
+      provenance: {
+        anyOf: [
+          object({
+            binding: choice('fetched_url_matched'),
+            retrievedAt: number(1, Number.MAX_SAFE_INTEGER),
+          }),
+          object({ binding: choice('user_supplied') }),
+        ],
+      },
     },
     ['id', 'name', 'offset', 'totalChars', 'text', 'offsetUnit'],
   ),
@@ -149,7 +160,11 @@ export function parsePresentationClaimEvidence(value: unknown): PresentationClai
     new TextEncoder().encode(JSON.stringify(report)).byteLength > 256 * 1024 ||
     ![report.planRevision, attachment.offset, attachment.totalChars].every(Number.isSafeInteger) ||
     attachmentId !== attachment.id ||
-    attachment.offset + attachment.text.length > attachment.totalChars
+    attachment.offset + attachment.text.length > attachment.totalChars ||
+    (attachment.provenance?.binding === 'fetched_url_matched' &&
+      (!Number.isSafeInteger(attachment.provenance.retrievedAt) ||
+        !source.snapshotAttachmentId ||
+        !/^https?:\/\//i.test(source.uri)))
   )
     reject()
   const locatorUnit = /\.pdf$/i.test(attachment.name)

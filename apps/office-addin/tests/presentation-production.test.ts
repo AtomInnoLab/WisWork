@@ -1151,6 +1151,7 @@ it('validates claim review inputs and preserves explicit server conflicts', asyn
   await f.skill.executeTool(evidenceCall)
   for (const error of [
     'evidence_changed',
+    'evidence_source_mismatch',
     'evidence_excerpt_not_found',
     'evidence_locator_mismatch',
     'request_conflict',

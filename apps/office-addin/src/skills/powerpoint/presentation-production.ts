@@ -526,6 +526,7 @@ export function createPresentationProductionSkill(
             if (
               [
                 'evidence_source_unsupported',
+                'evidence_source_mismatch',
                 'evidence_changed',
                 'evidence_excerpt_not_found',
                 'evidence_locator_mismatch',
@@ -893,11 +894,13 @@ export function createPresentationProductionSkill(
                       ? '当前证据的页码或段落与计划不一致；请核对来源定位后再记录“支持”'
                       : code === 'presentation_evidence_source_unsupported'
                         ? '当前证据读取仅支持已上传附件来源；此来源不能通过本工具读取'
-                        : code === 'presentation_page_replacement_required'
-                          ? '当前修订尚无已提交页面映射，不能整批追加导入；请先完成页面替换'
-                          : code === 'presentation_upgrade_required'
-                            ? '当前 PC 尚不支持页级生产，请升级 WisWork PC 后重试'
-                            : '页级生产操作未完成；已保存成果保留，可刷新查看',
+                        : code === 'presentation_evidence_source_mismatch'
+                          ? '计划来源网址与网页快照的实际抓取网址不一致；请核对来源后重新读取证据'
+                          : code === 'presentation_page_replacement_required'
+                            ? '当前修订尚无已提交页面映射，不能整批追加导入；请先完成页面替换'
+                            : code === 'presentation_upgrade_required'
+                              ? '当前 PC 尚不支持页级生产，请升级 WisWork PC 后重试'
+                              : '页级生产操作未完成；已保存成果保留，可刷新查看',
         }
       }
     },

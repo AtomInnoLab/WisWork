@@ -212,14 +212,18 @@ it('rejects changed evidence, invalid requests and cancellation without writing'
       error: 'invalid_request',
     })
   }
-  const changedAttachments = vi.fn(async () => ({
-    attachmentId: evidence.attachment.id,
-    sourceUri: evidence.source.uri,
-    name: evidence.attachment.name,
-    offset: evidence.attachment.offset,
-    totalChars: evidence.attachment.totalChars,
-    text: evidence.attachment.text.replace('after', 'other'),
-  }))
+  const changedAttachments = vi.fn(async (body: Record<string, unknown>) =>
+    body.operation === 'attachment_metadata'
+      ? { attachmentId: evidence.attachment.id, status: 'ready', kind: 'text' }
+      : {
+          attachmentId: evidence.attachment.id,
+          sourceUri: evidence.source.uri,
+          name: evidence.attachment.name,
+          offset: evidence.attachment.offset,
+          totalChars: evidence.attachment.totalChars,
+          text: evidence.attachment.text.replace('after', 'other'),
+        },
+  )
   await expect(
     handlePresentationProduction(
       request,

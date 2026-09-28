@@ -336,6 +336,32 @@ export async function handlePresentationProduction(
       throw new Error('not_found')
     const attachmentId = presentationSourceAttachmentId(source)
     if (!attachmentId) throw new Error('evidence_source_unsupported')
+    const details = (await attachments(
+      { operation: 'attachment_metadata', documentId, attachmentId },
+      signal,
+    )) as {
+      attachmentId?: unknown
+      status?: unknown
+      kind?: unknown
+      sourceUrlHash?: unknown
+      retrievedAt?: unknown
+    }
+    check(signal)
+    if (
+      details.attachmentId !== attachmentId ||
+      details.status !== 'ready' ||
+      details.kind !== 'text'
+    )
+      throw new Error('invalid_state')
+    if (!matchesFetchedSourceUrl(source.uri, details.sourceUrlHash))
+      throw new Error('evidence_source_mismatch')
+    const provenance =
+      details.sourceUrlHash === undefined
+        ? { binding: 'user_supplied' as const }
+        : {
+            binding: 'fetched_url_matched' as const,
+            retrievedAt: details.retrievedAt,
+          }
     const window = (await attachments(
       {
         operation: 'attachment_read',
@@ -390,6 +416,7 @@ export async function handlePresentationProduction(
         text: window.text,
         offsetUnit: 'utf16_code_unit',
         ...(window.pageSpans ? { locatorSpans: window.pageSpans } : {}),
+        provenance,
       },
       excerptMatch: matchPresentationClaimExcerpt(
         source.excerpt,

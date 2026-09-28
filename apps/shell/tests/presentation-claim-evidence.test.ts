@@ -73,10 +73,68 @@ it('reads a document-bound snapshot while preserving the original URL in frozen 
   const result = await f.call('production_claim_evidence', f.request)
   expect(result).toMatchObject({
     source: { uri: originalUri, snapshotAttachmentId: f.plan.sources[0]!.snapshotAttachmentId },
-    attachment: { text: 'before 原文 after\f' },
+    attachment: { text: 'before 原文 after\f', provenance: { binding: 'user_supplied' } },
     excerptMatch: { status: 'found' },
   })
   expect(f.compile).not.toHaveBeenCalled()
+})
+it('rejects a fetched snapshot with a different plan URL and records the matched fetch time', async () => {
+  const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-fetched-evidence-'))
+  roots.push(userDataPath)
+  const service = createPresentationService({
+    userDataPath,
+    fetchPage: async () =>
+      new Response('<html><body><p>Original finding</p></body></html>', {
+        headers: { 'content-type': 'text/html' },
+      }),
+  })
+  const call = async (body: Record<string, unknown>) =>
+    decode(await service({ documentId: 'doc', ...body }, new AbortController().signal))
+  const url = 'https://8.8.8.8/research?revision=1'
+  const snapshot = await call({ operation: 'attachment_import_webpage', url })
+  const plan = benchmarkPlan()
+  plan.sources[0]!.uri = 'https://8.8.8.8/research?revision=2'
+  plan.sources[0]!.snapshotAttachmentId = snapshot.attachmentId
+  plan.sources[0]!.excerpt = 'Original finding'
+  plan.sources[0]!.locator = '第 1 段'
+  const deck = benchmarkPlannedDeck()
+  deck.claims = presentationPlanClaims(plan)
+  await call({ operation: 'save_plan', projectId: deck.id, expectedRevision: 0, plan })
+  await call({
+    operation: 'production_begin',
+    projectId: deck.id,
+    requestId: 'wrong',
+    planRevision: 1,
+    deck,
+  })
+  const evidence = (requestId: string) =>
+    call({
+      operation: 'production_claim_evidence',
+      projectId: deck.id,
+      requestId,
+      pageId: deck.slides[0]!.id,
+      claimId: 'source-1',
+      sourceId: 'source',
+      offset: 0,
+      maxChars: 8000,
+    })
+  expect(await evidence('wrong')).toEqual({ error: 'evidence_source_mismatch' })
+  plan.sources[0]!.uri = url
+  deck.claims = presentationPlanClaims(plan)
+  await call({ operation: 'save_plan', projectId: deck.id, expectedRevision: 1, plan })
+  await call({
+    operation: 'production_begin',
+    projectId: deck.id,
+    requestId: 'correct',
+    planRevision: 2,
+    deck,
+  })
+  expect(await evidence('correct')).toMatchObject({
+    attachment: {
+      provenance: { binding: 'fetched_url_matched', retrievedAt: snapshot.retrievedAt },
+    },
+    excerptMatch: { status: 'found', locator: '第 1 段' },
+  })
 })
 it('reads frozen attachment evidence before compilation without disk writes, including restart and exact windows', async () => {
   const f = await setup()
@@ -179,7 +237,9 @@ it('honors cancellation after the attachment read completes without publishing o
   const f = await setup(),
     controller = new AbortController()
   const before = files(f.userDataPath)
-  const attachments = vi.fn(async () => {
+  const attachments = vi.fn(async (body: Record<string, unknown>) => {
+    if (body.operation === 'attachment_metadata')
+      return { attachmentId: f.plan.sources[0]!.uri.slice(11), status: 'ready', kind: 'text' }
     controller.abort()
     return {}
   })
