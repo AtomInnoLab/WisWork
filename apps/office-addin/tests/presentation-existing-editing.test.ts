@@ -125,6 +125,41 @@ it('resumes a table batch after one cell was durably written and the next write 
   expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applied', cursor: 2 })
 })
 
+it.each([false, true])(
+  'undoes a partially applied table batch when the next write %s',
+  async (receiptLost) => {
+    const f = await fixture()
+    f.setShapeType('Table')
+    const baseline_id = await f.baseline()
+    const proposed = await f.call('edit_existing_presentation_table_batch', {
+      baseline_id,
+      intent: 'Update two figures',
+      preserved: [],
+      validation: [],
+      risk: 'medium',
+      operations: [
+        { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
+        { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
+      ],
+    })
+    const changeId = JSON.parse(proposed.output).changeId as string
+    const write = f.editTableCell.getMockImplementation()!
+    f.editTableCell.mockImplementationOnce(write).mockImplementationOnce(async (...args) => {
+      if (receiptLost) await write(...args)
+      throw new Error(receiptLost ? 'receipt_lost' : 'office_write_failed')
+    })
+    await expect(f.confirm()).rejects.toThrow()
+    expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'applying', cursor: 1 })
+    f.reopen()
+    const undo = await f.call('undo_existing_presentation_batch', { change_id: changeId })
+    expect(undo.isError, undo.output).not.toBe(true)
+    await f.confirm()
+    expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
+    expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'undone', cursor: 0 })
+    expect(f.editTableCell).toHaveBeenCalledTimes(receiptLost ? 4 : 3)
+  },
+)
+
 it('stops a confirmed batch after its first durable write when Stop is requested', async () => {
   const f = await fixture()
   f.setShapeType('Table')

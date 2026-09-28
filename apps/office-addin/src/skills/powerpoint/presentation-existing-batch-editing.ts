@@ -1028,7 +1028,10 @@ export function createPresentationExistingBatchEditingSkill(
             mutated: false,
             summary: '已核对批量变更各目标当前值',
           }
-        if (call.name === 'undo_existing_presentation_batch' && record.state !== 'applied')
+        if (
+          call.name === 'undo_existing_presentation_batch' &&
+          !['applied', 'applying'].includes(record.state)
+        )
           throw new Error('presentation_existing_batch_state_invalid')
         if (
           call.name === 'resume_existing_presentation_batch' &&
@@ -1041,7 +1044,11 @@ export function createPresentationExistingBatchEditingSkill(
           (_, n) =>
             values[n] === (n < record.cursor ? 'after' : 'before') ||
             (n === (reverse ? record.cursor - 1 : record.cursor) &&
-              values[n] === (reverse ? 'before' : 'after')),
+              values[n] === (reverse ? 'before' : 'after')) ||
+            (reverse &&
+              record.state === 'applying' &&
+              n === record.cursor &&
+              values[n] === 'after'),
         )
         if (!allowed) throw new Error('presentation_existing_batch_conflict')
         const proposal = options.proposals.propose({
@@ -1091,8 +1098,16 @@ export function createPresentationExistingBatchEditingSkill(
             if (creating) await store(record)
             await ensureBackups(writeSignal)
             if (call.name === 'undo_existing_presentation_batch') {
+              // A completed Office write can lose its durable receipt. Include that
+              // target in the reverse prefix before switching direction.
+              if (record.state === 'applying' && values[record.cursor] === 'after')
+                await store({
+                  ...record,
+                  cursor: record.cursor + 1,
+                  state: record.cursor + 1 === record.operations.length ? 'applied' : 'applying',
+                })
               const { reviews: _reviews, ...r } = record
-              await store({ ...r, state: 'undoing' })
+              await store({ ...r, state: record.cursor === 0 ? 'undone' : 'undoing' })
             }
             while (record.state === 'applying' || record.state === 'undoing') {
               if (writeSignal?.aborted) throw new Error('cancelled')
