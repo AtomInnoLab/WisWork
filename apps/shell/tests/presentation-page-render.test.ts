@@ -7,10 +7,32 @@ import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compi
 import { benchmarkPlannedDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
 import {
   convertSinglePagePackageToPng,
+  libreOfficeCommands,
   readBoundedRenderedPng,
 } from '../src/main/presentation-page-render'
 
-const sofficeAvailable = spawnSync('soffice', ['--version'], { timeout: 5_000 }).status === 0
+const sofficeAvailable = libreOfficeCommands().some(
+  (command) => spawnSync(command, ['--version'], { timeout: 5_000 }).status === 0,
+)
+
+it('checks standard Mac and Windows LibreOffice installations before PATH', () => {
+  expect(libreOfficeCommands('darwin', {}, '/Users/test')).toEqual([
+    '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+    '/Users/test/Applications/LibreOffice.app/Contents/MacOS/soffice',
+    'soffice',
+  ])
+  expect(
+    libreOfficeCommands('win32', {
+      ProgramFiles: 'C:\\Program Files',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+    }),
+  ).toEqual([
+    'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
+    'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe',
+    'soffice.exe',
+  ])
+  expect(libreOfficeCommands('linux', {})).toEqual(['soffice'])
+})
 
 it.skipIf(!sofficeAvailable)(
   'converts a real one-page PPTX to PNG for the fallback renderer',

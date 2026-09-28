@@ -1,12 +1,48 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, open, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { access, mkdtemp, open, rm, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
+import { join, win32 } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const MAX_PNG_BYTES = 64 * 1024
 const MAX_RENDERED_PNG_BYTES = 4 * 1024 * 1024
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+
+export function libreOfficeCommands(
+  platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+): string[] {
+  if (platform === 'darwin')
+    return [
+      '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+      join(home, 'Applications/LibreOffice.app/Contents/MacOS/soffice'),
+      'soffice',
+    ]
+  if (platform === 'win32') {
+    const roots = [environment.ProgramFiles, environment['ProgramFiles(x86)']].filter(
+      (value): value is string => Boolean(value && win32.isAbsolute(value)),
+    )
+    return [
+      ...roots.map((root) => win32.join(root, 'LibreOffice', 'program', 'soffice.exe')),
+      'soffice.exe',
+    ]
+  }
+  return ['soffice']
+}
+
+async function libreOfficeCommand(): Promise<string> {
+  const commands = libreOfficeCommands()
+  for (const command of commands.slice(0, -1)) {
+    try {
+      await access(command)
+      return command
+    } catch {
+      // Continue to the next standard installation location.
+    }
+  }
+  return commands.at(-1)!
+}
 
 /** Read no more than the renderer's file budget and reject oversized PNG dimensions before decode. */
 export async function readBoundedRenderedPng(path: string): Promise<Uint8Array> {
@@ -46,11 +82,12 @@ export async function convertSinglePagePackageToPng(
   if (!pptx.length || pptx.length > 8 * 1024 * 1024) throw new Error('renderer_unavailable')
   const dir = await mkdtemp(join(tmpdir(), 'wiswork-page-render-'))
   try {
+    const command = await libreOfficeCommand()
     const source = join(dir, 'page.pptx')
     await writeFile(source, pptx, { mode: 0o600 })
     await new Promise<void>((resolve, reject) => {
       const process = spawn(
-        'soffice',
+        command,
         [
           `-env:UserInstallation=${pathToFileURL(join(dir, 'profile')).href}`,
           '--headless',
