@@ -857,6 +857,31 @@ describe('saved production task selection', () => {
       expect(f.controller.snapshot().project).toBeUndefined()
     }
   })
+  it('accepts bounded older job events and rejects malformed event summaries', async () => {
+    const f = tasksFixture()
+    Object.assign(f.productionTasks[1]!, {
+      lastEvent: {
+        type: 'run.paused',
+        createdAt: '2026-09-24T00:00:02.000Z',
+      },
+    })
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.productionTasks?.[1]?.lastEvent?.type).toBe(
+      'run.paused',
+    )
+    for (const lastEvent of [
+      null,
+      { type: 'unknown', createdAt: '2026-09-24T00:00:02.000Z' },
+      { type: 'page.failed', createdAt: '2026-09-24T00:00:02.000Z' },
+      { type: 'run.paused', createdAt: 'bad' },
+      { type: 'run.paused', createdAt: '2026-09-24T00:00:02.000Z', pageId: 'wrong' },
+    ]) {
+      const bad = tasksFixture()
+      Object.assign(bad.productionTasks[1]!, { lastEvent })
+      await bad.controller.refresh()
+      expect(bad.controller.snapshot().project).toBeUndefined()
+    }
+  })
   it('does not prepare derived revisions from the workbench even when every page compiled', async () => {
     const f = tasksFixture()
     f.production.status = 'compiled'

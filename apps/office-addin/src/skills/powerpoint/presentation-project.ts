@@ -25,6 +25,11 @@ export interface PresentationProductionTask {
   compiledCount: number
   total: number
   jobState?: PresentationProductionJob['state']
+  lastEvent?: {
+    type: PresentationProductionJob['events'][number]['type']
+    createdAt: string
+    pageId?: string
+  }
 }
 export interface PresentationProjectStatus {
   sourcePreparation?: {
@@ -233,6 +238,7 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
               'compiledCount',
               'total',
               'jobState',
+              'lastEvent',
             ].includes(key),
           ) &&
           validId(task.requestId) &&
@@ -261,6 +267,34 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
               'failed',
             ].includes(task.jobState)) &&
           (task.jobState !== 'completed' || task.status === 'compiled') &&
+          (task.lastEvent === undefined ||
+            (!task.jobState
+              ? false
+              : task.lastEvent !== null &&
+                typeof task.lastEvent === 'object' &&
+                !Array.isArray(task.lastEvent) &&
+                Object.keys(task.lastEvent).sort().join(',') ===
+                  ('pageId' in task.lastEvent ? 'createdAt,pageId,type' : 'createdAt,type') &&
+                [
+                  'run.started',
+                  'run.pause_requested',
+                  'run.paused',
+                  'run.cancel_requested',
+                  'run.cancelled',
+                  'run.interrupted',
+                  'run.completed',
+                  'run.failed',
+                  'page.started',
+                  'page.compiled',
+                  'page.failed',
+                ].includes(task.lastEvent.type) &&
+                typeof task.lastEvent.createdAt === 'string' &&
+                /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(task.lastEvent.createdAt) &&
+                Number.isFinite(Date.parse(task.lastEvent.createdAt)) &&
+                new Date(task.lastEvent.createdAt).toISOString() === task.lastEvent.createdAt &&
+                (task.lastEvent.type.startsWith('page.')
+                  ? validId(task.lastEvent.pageId)
+                  : task.lastEvent.pageId === undefined))) &&
           (index === 0 || task.sequence < tasks[index - 1]!.sequence),
       ) ||
       new Set(tasks.map((task) => task.requestId)).size !== tasks.length ||

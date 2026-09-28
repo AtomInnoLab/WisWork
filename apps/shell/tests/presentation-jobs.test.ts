@@ -430,6 +430,7 @@ it.each([false, true])(
           compiledCount: 0,
           total: 2,
           jobState: 'running',
+          lastEvent: { type: 'page.started', pageId: 'slide-1', createdAt: expect.any(String) },
         },
       ])
       await f.call('production_begin', { requestId: 'newest', deck: f.deck, planRevision: 1 })

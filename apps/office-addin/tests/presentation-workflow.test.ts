@@ -436,6 +436,41 @@ it('rebuilds recovery events from saved records and isolates the selected reques
     at: event.createdAt,
     text: expect.stringContaining(event.pageId),
   })
+  const withHistory = presentationWorkflowSummary(
+    {
+      ...selected,
+      productionTasks: [
+        {
+          requestId: production.requestId,
+          sequence: 2,
+          planRevision: 1,
+          status: 'compiled',
+          compiledCount: production.total,
+          total: production.total,
+          lastEvent: { type: 'run.completed', createdAt: '2026-09-24T00:00:01.000Z' },
+        },
+        {
+          requestId: 'older',
+          sequence: 1,
+          planRevision: 1,
+          status: 'partial',
+          compiledCount: 1,
+          total: production.total,
+          jobState: 'paused',
+          lastEvent: { type: 'run.paused', createdAt: '2026-09-23T00:00:00.000Z' },
+        },
+      ],
+    },
+    imported,
+    qa,
+  )!
+  expect(withHistory.timeline.find((item) => item.id === 'task-older-latest')).toMatchObject({
+    text: expect.stringContaining('已暂停制作'),
+    at: '2026-09-23T00:00:00.000Z',
+  })
+  expect(
+    withHistory.timeline.some((item) => item.id === `task-${production.requestId}-latest`),
+  ).toBe(false)
   expect(first.timeline.filter((item) => item.at).map((item) => item.at)).toEqual(
     first.timeline
       .filter((item) => item.at)

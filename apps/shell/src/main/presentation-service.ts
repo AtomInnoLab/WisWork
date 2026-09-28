@@ -621,6 +621,7 @@ export function createPresentationService(options: {
             .map((record) => {
               const summary = presentationProductionSummary(record)
               const job = store.productionJob(projectId, documentId, record.requestId)
+              const lastEvent = job?.events.at(-1)
               return {
                 requestId: record.requestId,
                 sequence: record.sequence,
@@ -629,6 +630,15 @@ export function createPresentationService(options: {
                 compiledCount: summary.compiledCount,
                 total: summary.total,
                 ...(job ? { jobState: job.state } : {}),
+                ...(lastEvent
+                  ? {
+                      lastEvent: {
+                        type: lastEvent.type,
+                        createdAt: lastEvent.createdAt,
+                        ...('pageId' in lastEvent ? { pageId: lastEvent.pageId } : {}),
+                      },
+                    }
+                  : {}),
               }
             })
           const production = productionRecord

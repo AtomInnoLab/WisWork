@@ -4,6 +4,20 @@ import type { PresentationQaRecord } from '../skills/powerpoint/presentation-qa.
 import type { PresentationDeliveryReport } from '@wiswork/pptx-engine/presentation-delivery-report'
 import { PRESENTATION_DOMAIN_PROFILES } from '@wiswork/pptx-engine/presentation-plan'
 
+const jobEventLabels = {
+  'run.started': '开始逐页制作',
+  'run.pause_requested': '请求暂停制作',
+  'run.paused': '已暂停制作',
+  'run.cancel_requested': '请求取消制作',
+  'run.cancelled': '已取消制作',
+  'run.interrupted': '制作中断',
+  'run.completed': '逐页编译完成',
+  'run.failed': '页任务失败',
+  'page.started': '开始编译',
+  'page.compiled': '编译完成',
+  'page.failed': '编译失败',
+} as const
+
 export interface PresentationWorkflowSummary {
   stages: {
     name: string
@@ -389,28 +403,23 @@ export function presentationWorkflowSummary(
       project.productionJob?.requestId === production.requestId &&
       project.productionJob.projectId === project.projectId
     ) {
-      const labels: Record<string, string> = {
-        'run.started': '开始逐页制作',
-        'run.pause_requested': '请求暂停制作',
-        'run.paused': '已暂停制作',
-        'run.cancel_requested': '请求取消制作',
-        'run.cancelled': '已取消制作',
-        'run.interrupted': '制作中断',
-        'run.completed': '逐页编译完成',
-        'run.failed': '页任务失败',
-        'page.started': '开始编译',
-        'page.compiled': '编译完成',
-        'page.failed': '编译失败',
-      }
       for (const event of project.productionJob.events.slice(-20)) {
         const pageText = 'pageId' in event ? ` · ${event.pageId}（第 ${event.attempt} 次）` : ''
         timeline.push({
           id: `job-${event.sequence}`,
-          text: `${labels[event.type]}${pageText}`,
+          text: `${jobEventLabels[event.type]}${pageText}`,
           at: event.createdAt,
         })
       }
     }
+  }
+  for (const task of project.productionTasks?.slice(0, 20) ?? []) {
+    if (!task.lastEvent || task.requestId === project.productionJob?.requestId) continue
+    timeline.push({
+      id: `task-${task.requestId}-latest`,
+      text: `页任务 ${task.requestId}：${jobEventLabels[task.lastEvent.type]}${task.lastEvent.pageId ? ` · ${task.lastEvent.pageId}` : ''}；已编译 ${task.compiledCount}/${task.total} 页`,
+      at: task.lastEvent.createdAt,
+    })
   }
   if (importMatches) {
     timeline.push({
