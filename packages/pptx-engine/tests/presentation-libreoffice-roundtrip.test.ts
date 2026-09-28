@@ -62,19 +62,60 @@ it.skipIf(!sofficeAvailable)(
       expect(parsed.slides).toHaveLength(original.slides.length)
       for (const [index, slide] of parsed.slides.entries()) {
         expect(slide.background).toEqual({ type: 'solid', color: `#${original.style.background}` })
-        const title = slide.elements.find(
-          (element) =>
-            element.type === 'shape' &&
-            element.text?.paragraphs.some((paragraph) =>
-              paragraph.runs.some((run) => run.text === original.slides[index]!.title),
-            ),
-        )
-        expect(title?.type).toBe('shape')
-        if (title?.type !== 'shape') continue
-        const run = title.text?.paragraphs[0]?.runs[0]
-        expect(run?.fontFamily).toBe(original.style.fontFace)
-        expect(run?.fontSize).toBe(32)
-        expect(run?.color?.toUpperCase()).toBe(`#${original.style.textColor}`)
+        for (const source of original.slides[index]!.elements) {
+          if (source.kind === 'text') {
+            const native = slide.elements.find(
+              (element) =>
+                element.type === 'shape' &&
+                element.text?.paragraphs
+                  .map((paragraph) => paragraph.runs.map((run) => run.text).join(''))
+                  .join('') === source.text,
+            )
+            expect(native?.type).toBe('shape')
+            if (native?.type !== 'shape') continue
+            const run = native.text?.paragraphs[0]?.runs[0]
+            expect(run?.fontFamily).toBe(original.style.fontFace)
+            expect(run?.fontSize).toBe(source.fontSize ?? 20)
+            expect(run?.color?.toUpperCase()).toBe(`#${source.color ?? original.style.textColor}`)
+          } else if (source.kind === 'shape') {
+            const native = slide.elements.find(
+              (element) =>
+                element.type === 'shape' &&
+                element.presetGeometry === source.shape &&
+                element.fill?.type === 'solid',
+            )
+            expect(native?.type).toBe('shape')
+            if (native?.type !== 'shape') continue
+            expect(native.fill).toEqual({
+              type: 'solid',
+              color: `#${source.fill ?? original.style.accentColor}`,
+            })
+          } else if (source.kind === 'image') {
+            expect(slide.elements.some((element) => element.type === 'picture')).toBe(true)
+          } else if (source.kind === 'table') {
+            const native = slide.elements.find((element) => element.type === 'table')
+            expect(native?.type).toBe('table')
+            if (native?.type !== 'table') continue
+            expect(
+              native.rows.map((row) =>
+                row.map(
+                  (cell) =>
+                    cell.text?.paragraphs
+                      .map((paragraph) => paragraph.runs.map((run) => run.text).join(''))
+                      .join('') ?? '',
+                ),
+              ),
+            ).toEqual(source.rows)
+          } else {
+            const native = slide.elements.find((element) => element.type === 'chart')
+            expect(native?.type).toBe('chart')
+            if (native?.type !== 'chart') continue
+            expect(native.chart.categories).toEqual(source.categories)
+            expect(native.chart.series.map((series) => series.values)).toEqual(
+              source.series.map((series) => series.values),
+            )
+          }
+        }
       }
     } finally {
       rmSync(directory, { recursive: true, force: true })

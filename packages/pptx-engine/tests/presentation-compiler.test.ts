@@ -124,6 +124,64 @@ describe('presentation contract and compiler', () => {
       'presentation_compile:structure_mismatch',
     )
   })
+  it('rejects changed native background, text, shape and table styles', async () => {
+    const deck = benchmarkDeck()
+    const { bytes } = await compilePresentationDeck(deck)
+    const mutations: Array<{ slide: number; before: string; after: string }> = [
+      {
+        slide: 1,
+        before: '<p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"',
+        after: '<p:bgPr><a:solidFill><a:srgbClr val="000000"',
+      },
+      { slide: 1, before: 'typeface="Microsoft YaHei"', after: 'typeface="Arial"' },
+      { slide: 1, before: 'sz="3200"', after: 'sz="2800"' },
+      { slide: 1, before: 'val="172033"', after: 'val="FF0000"' },
+      { slide: 4, before: 'val="2255AA"', after: 'val="FF0000"' },
+      { slide: 6, before: 'sz="1600"', after: 'sz="1200"' },
+    ]
+    for (const { slide, before, after } of mutations) {
+      const zip = await JSZip.loadAsync(bytes)
+      const path = `ppt/slides/slide${slide}.xml`
+      const original = await zip.file(path)!.async('string')
+      expect(original).toContain(before)
+      zip.file(path, original.replace(before, after))
+      await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+        'presentation_compile:structure_mismatch',
+      )
+    }
+  })
+  it('accepts a valid empty table cell with paragraph-level font styling', async () => {
+    const deck = benchmarkDeck()
+    const table = deck.slides[5]!.elements[1]!
+    if (table.kind !== 'table') throw new Error('invalid fixture')
+    table.rows[1]![1] = ''
+    await expect(compilePresentationDeck(deck)).resolves.toMatchObject({
+      report: { checks: { structure: 'passed' } },
+    })
+  })
+  it('accepts explicitly styled native text and shapes', async () => {
+    const deck = benchmarkDeck()
+    const title = deck.slides[0]!.elements[0]!
+    const shape = deck.slides[3]!.elements[1]!
+    const table = deck.slides[5]!.elements[1]!
+    if (title.kind !== 'text' || shape.kind !== 'shape' || table.kind !== 'table')
+      throw new Error('invalid fixture')
+    Object.assign(title, { color: 'AA1122', fontSize: 28, bold: true, align: 'center' })
+    Object.assign(shape, { fill: '00AA22', lineColor: '1122AA' })
+    table.fontSize = 12
+    await expect(compilePresentationDeck(deck)).resolves.toMatchObject({
+      report: { checks: { structure: 'passed' } },
+    })
+  })
+  it('accepts contract-valid lowercase hex colors', async () => {
+    const deck = benchmarkDeck()
+    deck.style.background = 'ffffff'
+    deck.style.textColor = '1720aa'
+    deck.style.accentColor = '2255aa'
+    await expect(compilePresentationDeck(deck)).resolves.toMatchObject({
+      report: { checks: { structure: 'passed' } },
+    })
+  })
   it('compiles eight Chinese slides to native editable objects and preserves attribution', async () => {
     const { bytes, report } = await compilePresentationDeck(benchmarkDeck())
     const opened = await openPptx(bytes)
