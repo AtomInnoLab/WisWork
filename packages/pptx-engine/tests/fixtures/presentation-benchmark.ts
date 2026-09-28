@@ -52,7 +52,7 @@ export function benchmarkDeck(): PresentationDeck & { assets: PresentationInline
         width: 1,
         height: 1,
         base64:
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jB1sAAAAASUVORK5CYII=',
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4AWP4DwQACfsD/c8LaHIAAAAASUVORK5CYII=',
         source: 'Synthetic fixture',
       },
     ],

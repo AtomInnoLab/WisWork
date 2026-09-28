@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import JSZip from 'jszip'
+import { PNG } from 'pngjs'
 import { openPptx } from '../src/index'
 import { compilePresentationDeck } from '../src/presentation-compiler'
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
@@ -21,7 +22,11 @@ it.skipIf(!sofficeAvailable)(
     mkdirSync(inputDirectory)
     mkdirSync(outputDirectory)
     try {
-      const { bytes } = await compilePresentationDeck(benchmarkDeck())
+      const original = benchmarkDeck()
+      const image = original.slides[2]!.elements[1]
+      if (image?.kind !== 'image') throw new Error('benchmark_image_missing')
+      image.altText = '合成像素示意图'
+      const { bytes } = await compilePresentationDeck(original)
       const input = join(inputDirectory, 'benchmark.pptx')
       writeFileSync(input, bytes)
       execFileSync(
@@ -57,9 +62,20 @@ it.skipIf(!sofficeAvailable)(
       expect(
         Object.keys(reopened.files).some((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name)),
       ).toBe(true)
-      const original = benchmarkDeck()
       const parsed = (await openPptx(readFileSync(join(outputDirectory, 'benchmark.pptx')))).deck
       expect(parsed.slides).toHaveLength(original.slides.length)
+      const expectFrame = (
+        actual: { offset: { x: number; y: number; cx: number; cy: number } },
+        source: { x: number; y: number; w: number; h: number },
+      ) => {
+        for (const [field, expected] of [
+          ['x', source.x],
+          ['y', source.y],
+          ['cx', source.w],
+          ['cy', source.h],
+        ] as const)
+          expect(Math.abs(actual.offset[field] - expected * 914400)).toBeLessThanOrEqual(9144)
+      }
       for (const [index, slide] of parsed.slides.entries()) {
         expect(slide.background).toEqual({ type: 'solid', color: `#${original.style.background}` })
         for (const source of original.slides[index]!.elements) {
@@ -73,6 +89,7 @@ it.skipIf(!sofficeAvailable)(
             )
             expect(native?.type).toBe('shape')
             if (native?.type !== 'shape') continue
+            expectFrame(native.transform, source)
             const run = native.text?.paragraphs[0]?.runs[0]
             expect(run?.fontFamily).toBe(original.style.fontFace)
             expect(run?.fontSize).toBe(source.fontSize ?? 20)
@@ -86,16 +103,33 @@ it.skipIf(!sofficeAvailable)(
             )
             expect(native?.type).toBe('shape')
             if (native?.type !== 'shape') continue
+            expectFrame(native.transform, source)
             expect(native.fill).toEqual({
               type: 'solid',
               color: `#${source.fill ?? original.style.accentColor}`,
             })
           } else if (source.kind === 'image') {
-            expect(slide.elements.some((element) => element.type === 'picture')).toBe(true)
+            const picture = slide.elements.find((element) => element.type === 'picture')
+            expect(picture?.type).toBe('picture')
+            if (picture?.type !== 'picture') continue
+            expectFrame(picture.transform, source)
+            expect(picture.descr).toBe('合成像素示意图')
+            expect(picture.mediaRef).toMatch(/^ppt\/media\//)
+            const media = reopened.file(picture.mediaRef)
+            expect(media).not.toBeNull()
+            expect((await media!.async('uint8array')).slice(0, 8)).toEqual(
+              new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+            )
+            const originalPixel = PNG.sync.read(Buffer.from(original.assets[0]!.base64, 'base64'))
+            const reopenedPixel = PNG.sync.read(Buffer.from(await media!.async('uint8array')))
+            expect(reopenedPixel.width).toBe(originalPixel.width)
+            expect(reopenedPixel.height).toBe(originalPixel.height)
+            expect(reopenedPixel.data).toEqual(originalPixel.data)
           } else if (source.kind === 'table') {
             const native = slide.elements.find((element) => element.type === 'table')
             expect(native?.type).toBe('table')
             if (native?.type !== 'table') continue
+            expectFrame(native.transform, source)
             expect(
               native.rows.map((row) =>
                 row.map(
@@ -110,6 +144,7 @@ it.skipIf(!sofficeAvailable)(
             const native = slide.elements.find((element) => element.type === 'chart')
             expect(native?.type).toBe('chart')
             if (native?.type !== 'chart') continue
+            expectFrame(native.transform, source)
             expect(native.chart.categories).toEqual(source.categories)
             expect(native.chart.series.map((series) => series.values)).toEqual(
               source.series.map((series) => series.values),
