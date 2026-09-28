@@ -83,7 +83,8 @@ function IssueList({
         {issues.slice(0, limit).map((issue) => (
           <li key={issue.id}>
             <p>
-              {issue.code} · 主张 {issue.claimId}：
+              {issue.code === 'source_original_not_frozen' ? '项目未保存该来源原文' : issue.code} ·
+              主张 {issue.claimId}：
               {report.plan.claims.find((claim) => claim.id === issue.claimId)?.statement}
               {issue.sourceId && (
                 <>

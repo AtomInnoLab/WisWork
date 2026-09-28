@@ -9,7 +9,7 @@ import type { PresentationProjectController } from '../src/skills/powerpoint/pre
 it('lets the reviewer reach and record issues after the first 20', async () => {
   const issues = Array.from({ length: 25 }, (_, index) => ({
     id: `issue-${index}`,
-    code: 'source_review_missing',
+    code: index === 0 ? 'source_original_not_frozen' : 'source_review_missing',
     claimId: 'claim',
     sourceId: 'source',
     digest: 'a'.repeat(64),
@@ -59,6 +59,7 @@ it('lets the reviewer reach and record issues after the first 20', async () => {
       '第 12 页',
     )
     expect(container.textContent).toContain('完整原文中未找到片段')
+    expect(container.textContent).toContain('项目未保存该来源原文')
     expect(container.textContent).toContain('不核验事实支持')
     expect(container.querySelector('#evidence-source-request-source script')).toBeNull()
     await act(async () =>
