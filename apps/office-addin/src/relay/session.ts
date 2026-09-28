@@ -76,6 +76,7 @@ export type OfficeRelayCapability =
   | 'presentation-attachments.v1'
   | 'presentation-assets.v1'
   | 'presentation-remote-images.v1'
+  | 'presentation-webpages.v1'
   | 'presentation-asset-rights.v1'
   | 'presentation-animation-frame.v1'
   | 'presentation-pdf.v1'

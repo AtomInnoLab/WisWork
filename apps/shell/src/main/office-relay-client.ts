@@ -127,6 +127,7 @@ export function createOfficeRelayClient(options: {
       'presentation-attachments.v1',
       'presentation-assets.v1',
       'presentation-remote-images.v1',
+      'presentation-webpages.v1',
       'presentation-asset-rights.v1',
       'presentation-animation-frame.v1',
       'presentation-pdf.v1',
@@ -231,6 +232,9 @@ export function createOfficeRelayClient(options: {
           frame.body.operation === 'attachment_import_url' &&
           capabilityName !== 'presentation-remote-images.v1') ||
         (jsonObject(frame.body) &&
+          frame.body.operation === 'attachment_import_webpage' &&
+          capabilityName !== 'presentation-webpages.v1') ||
+        (jsonObject(frame.body) &&
           ['attachment_attest_license', 'attachment_revoke_license'].includes(
             frame.body.operation as string,
           ) &&
@@ -250,6 +254,7 @@ export function createOfficeRelayClient(options: {
         capabilityName === 'presentation-attachments.v1' ||
         capabilityName === 'presentation-assets.v1' ||
         capabilityName === 'presentation-remote-images.v1' ||
+        capabilityName === 'presentation-webpages.v1' ||
         capabilityName === 'presentation-asset-rights.v1' ||
         capabilityName === 'presentation-animation-frame.v1' ||
         capabilityName === 'presentation-pdf.v1' ||
@@ -269,6 +274,7 @@ export function createOfficeRelayClient(options: {
                 capabilityName === 'presentation-attachments.v1' ||
                 capabilityName === 'presentation-assets.v1' ||
                 capabilityName === 'presentation-remote-images.v1' ||
+                capabilityName === 'presentation-webpages.v1' ||
                 capabilityName === 'presentation-asset-rights.v1' ||
                 capabilityName === 'presentation-animation-frame.v1' ||
                 capabilityName === 'presentation-pdf.v1' ||

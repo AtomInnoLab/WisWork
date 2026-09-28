@@ -808,6 +808,7 @@ describe('Office relay PC client', () => {
     'presentation-attachments.v1',
     'presentation-assets.v1',
     'presentation-remote-images.v1',
+    'presentation-webpages.v1',
     'presentation-asset-rights.v1',
     'presentation-animation-frame.v1',
     'presentation-pdf.v1',
@@ -841,6 +842,7 @@ describe('Office relay PC client', () => {
         'presentation-attachments.v1',
         'presentation-assets.v1',
         'presentation-remote-images.v1',
+        'presentation-webpages.v1',
         'presentation-asset-rights.v1',
         'presentation-animation-frame.v1',
         'presentation-pdf.v1',
@@ -931,6 +933,17 @@ describe('Office relay PC client', () => {
           request_id: 'wrong_remote_capability',
           capability_name: capabilityName,
           body: { operation: 'attachment_import_url', url: 'https://example.com/image.png' },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      if (capabilityName === 'presentation-webpages.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_webpage_capability',
+          capability_name: 'presentation-attachments.v1',
+          body: { operation: 'attachment_import_webpage', url: 'https://example.com/page' },
         })
         await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
       }

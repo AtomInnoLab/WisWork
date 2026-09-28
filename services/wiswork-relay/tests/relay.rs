@@ -678,6 +678,11 @@ async fn v2_negotiates_presentation_remote_images_and_denies_unnegotiated_reques
 }
 
 #[tokio::test]
+async fn v2_negotiates_presentation_webpages_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-webpages.v1").await;
+}
+
+#[tokio::test]
 async fn v2_negotiates_presentation_asset_rights_and_denies_unnegotiated_requests() {
     check_v2_capability("presentation-asset-rights.v1").await;
 }

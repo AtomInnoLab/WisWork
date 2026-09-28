@@ -194,6 +194,7 @@ const PAIRING_CAPABILITIES = [
   'presentation-attachments.v1',
   'presentation-assets.v1',
   'presentation-remote-images.v1',
+  'presentation-webpages.v1',
   'presentation-asset-rights.v1',
 ]
 

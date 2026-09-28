@@ -109,11 +109,13 @@ export interface OfficeHostRuntime {
   durableAttachmentsAvailable?(): boolean
   durableImagesAvailable?(): boolean
   remoteImagesAvailable?(): boolean
+  webpagesAvailable?(): boolean
   rightsAvailable?(): boolean
   animationFrameAvailable?(): boolean
   listDurableAttachments?(): Promise<PresentationAttachmentMetadata[]>
   deleteDurableAttachment?(attachmentId: string): Promise<void>
   importPresentationImageUrl?(url: string | string[]): Promise<void>
+  importPresentationWebpageUrl?(url: string): Promise<void>
   attestPresentationImageLicense?(
     imageId: string,
     license: 'owned' | 'licensed' | 'public_domain',
@@ -612,6 +614,7 @@ export function createOfficeHostRuntime(
               options.presentation?.assetsAvailable?.(),
             ),
           remoteImagesAvailable: () => Boolean(options.presentation?.remoteImagesAvailable?.()),
+          webpagesAvailable: () => Boolean(options.presentation?.webpagesAvailable?.()),
           rightsAvailable: () => Boolean(options.presentation?.rightsAvailable?.()),
         })
       : undefined
@@ -1201,6 +1204,7 @@ export function createOfficeHostRuntime(
             remove: attachments.remove,
             importUrl: attachments.importUrl,
             importUrls: attachments.importUrls,
+            importWebpage: attachments.importWebpage,
             attestLicense: attachments.attestLicense,
             revokeLicense: attachments.revokeLicense,
             extractFirstFrame: attachments.extractFirstFrame,
@@ -1210,6 +1214,7 @@ export function createOfficeHostRuntime(
                 options.presentation?.assetsAvailable?.(),
               ),
             remoteImagesAvailable: () => Boolean(options.presentation?.remoteImagesAvailable?.()),
+            webpagesAvailable: () => Boolean(options.presentation?.webpagesAvailable?.()),
             rightsAvailable: () => Boolean(options.presentation?.rightsAvailable?.()),
             animationFrameAvailable: () =>
               Boolean(options.presentation?.animationFrameAvailable?.()),
@@ -1235,6 +1240,7 @@ function lifecycle(
     available(): boolean
     imagesAvailable(): boolean
     remoteImagesAvailable(): boolean
+    webpagesAvailable(): boolean
     rightsAvailable(): boolean
     animationFrameAvailable(): boolean
     upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
@@ -1242,6 +1248,7 @@ function lifecycle(
     remove(attachmentId: string): Promise<void>
     importUrl(url: string): Promise<unknown>
     importUrls(urls: string[]): Promise<unknown>
+    importWebpage(url: string): Promise<unknown>
     attestLicense(
       imageId: string,
       license: 'owned' | 'licensed' | 'public_domain',
@@ -1274,6 +1281,7 @@ function lifecycle(
     durableAttachmentsAvailable: () => attachments?.available() ?? false,
     durableImagesAvailable: () => attachments?.imagesAvailable() ?? false,
     remoteImagesAvailable: () => attachments?.remoteImagesAvailable() ?? false,
+    webpagesAvailable: () => attachments?.webpagesAvailable() ?? false,
     rightsAvailable: () => attachments?.rightsAvailable() ?? false,
     animationFrameAvailable: () => attachments?.animationFrameAvailable() ?? false,
     listDurableAttachments: () => attachments?.list() ?? Promise.resolve([]),
@@ -1282,6 +1290,10 @@ function lifecycle(
     importPresentationImageUrl: async (url) => {
       if (!attachments?.remoteImagesAvailable()) throw new Error('presentation_assets_unavailable')
       await attachments.importUrls(Array.isArray(url) ? url : [url])
+    },
+    importPresentationWebpageUrl: async (url) => {
+      if (!attachments?.webpagesAvailable()) throw new Error('presentation_webpages_unavailable')
+      await attachments.importWebpage(url)
     },
     attestPresentationImageLicense: async (imageId, license, evidenceId) => {
       if (!attachments?.rightsAvailable()) throw new Error('presentation_assets_unavailable')

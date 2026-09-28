@@ -53,6 +53,44 @@ function setup() {
   })
   return { bytes, attachmentId, request, documentId, vfs, skill }
 }
+it('imports a webpage only with the negotiated capability and validates the saved text metadata', async () => {
+  const f = setup()
+  await expect(f.skill.importWebpage('https://example.com/page')).rejects.toThrow(
+    'presentation_webpages_unavailable',
+  )
+  await expect(f.skill.importWebpage('http://user:pass@example.com/page')).rejects.toThrow(
+    'invalid_tool_input',
+  )
+  const result = {
+    attachmentId: f.attachmentId,
+    sha256: f.attachmentId,
+    name: 'remote.html',
+    sizeBytes: 100,
+    receivedBytes: 100,
+    status: 'ready',
+    kind: 'text',
+    totalChars: 5,
+    source: 'https://example.com/page',
+    retrievedAt: 1_780_000_000_000,
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify(result)))
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    webpagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  expect(await skill.importWebpage('https://example.com/page')).toMatchObject(result)
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      operation: 'attachment_import_webpage',
+      documentId: 'doc1',
+      url: 'https://example.com/page',
+    }),
+    expect.any(AbortSignal),
+  )
+})
 it('lists document-scoped PC copies and deletes only a validated selected ID', async () => {
   const f = setup()
   expect(await f.skill.list()).toMatchObject([{ attachmentId: f.attachmentId }])

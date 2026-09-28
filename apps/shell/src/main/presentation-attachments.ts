@@ -3,8 +3,8 @@ import { constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, rename, rm } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
-import { parseFileToText } from '@wiswork/file-parse'
-import { fetchRemoteImage, isSafeRemoteUrl } from '@wiswork/electron-utils'
+import { htmlToText, parseFileToText } from '@wiswork/file-parse'
+import { fetchRemoteImage, fetchWithSsrfGuard, isSafeRemoteUrl } from '@wiswork/electron-utils'
 import {
   inspectPresentationImage,
   normalizePresentationImage,
@@ -18,6 +18,7 @@ const DOCUMENT_LIMIT = 100 * 1024 * 1024
 const FILE_RESERVATION_FLOOR = 64 * 1024
 const CHUNK_LIMIT = 128 * 1024
 const TEXT_LIMIT = 1_000_000
+const WEBPAGE_LIMIT = 5 * 1024 * 1024
 const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const locks = new Map<string, Promise<void>>()
 const hash = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex')
@@ -94,6 +95,7 @@ interface Metadata {
   animationHandling?: 'first_frame'
   source?: string
   sourceUrlHash?: string
+  retrievedAt?: number
   sourceAliases?: { source: string; sourceUrlHash: string }[]
   licenseDeclaration?: {
     kind: 'owned' | 'licensed' | 'public_domain'
@@ -216,6 +218,8 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
     (m.source !== undefined && !sourceValid(m.source)) ||
     (m.sourceUrlHash !== undefined && !isId(m.sourceUrlHash)) ||
     (m.source === undefined) !== (m.sourceUrlHash === undefined) ||
+    (m.retrievedAt !== undefined &&
+      (!integer(m.retrievedAt, 1, Number.MAX_SAFE_INTEGER) || m.source === undefined)) ||
     (m.sourceAliases !== undefined &&
       (!Array.isArray(m.sourceAliases) ||
         m.sourceAliases.length > 31 ||
@@ -232,7 +236,7 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
         ))) ||
     (m.status === 'uploading' && m.source !== undefined) ||
     (m.status === 'failed' && m.source !== undefined && m.error !== 'animated_image_unsupported') ||
-    (!imageFile(m.name) && m.source !== undefined)
+    (!imageFile(m.name) && extname(m.name).toLowerCase() !== '.html' && m.source !== undefined)
   )
     fail('invalid_state')
   if (m.status === 'ready') {
@@ -288,6 +292,7 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
   ...(m.error ? { error: m.error } : {}),
   ...(m.totalChars !== undefined ? { totalChars: m.totalChars } : {}),
   ...(m.source ? { source: m.source } : {}),
+  ...(m.retrievedAt ? { retrievedAt: m.retrievedAt } : {}),
   ...(m.sourceAliases?.length
     ? { sources: [m.source!, ...m.sourceAliases.map((alias) => alias.source)] }
     : {}),
@@ -377,6 +382,7 @@ export function createPresentationAttachmentService(options: {
   normalizeImage?: typeof normalizePresentationImage
   normalizeFirstFrame?: typeof normalizePresentationImageFirstFrame
   fetchImage?: (url: string, signal: AbortSignal) => Promise<Response | null>
+  fetchPage?: (url: string, signal: AbortSignal) => Promise<Response | null>
 }) {
   const root = join(resolve(options.userDataPath), 'presentation-attachments')
   const parse = options.parse ?? parseFileToText
@@ -386,6 +392,13 @@ export function createPresentationAttachmentService(options: {
     options.fetchImage ??
     ((url: string, signal: AbortSignal) =>
       fetchRemoteImage(url, {
+        fetchImpl: (input, init) => fetch(input, { ...init, signal }),
+      }))
+  const fetchPage =
+    options.fetchPage ??
+    ((url: string, signal: AbortSignal) =>
+      fetchWithSsrfGuard(url, {
+        headers: { Accept: 'text/html,application/xhtml+xml;q=0.9' },
         fetchImpl: (input, init) => fetch(input, { ...init, signal }),
       }))
   let stagingCleanup: Promise<void> | undefined
@@ -398,6 +411,7 @@ export function createPresentationAttachmentService(options: {
       attachment_extract_first_frame: ['attachmentId'],
       attachment_delete: ['attachmentId'],
       attachment_import_url: ['url'],
+      attachment_import_webpage: ['url'],
       attachment_attest_license: ['attachmentId', 'license', 'evidenceAttachmentId'],
       attachment_revoke_license: ['attachmentId'],
       attachment_list: [],
@@ -430,11 +444,19 @@ export function createPresentationAttachmentService(options: {
     )
       fail('invalid_request')
     if (
-      !['attachment_list', 'attachment_list_assets', 'attachment_import_url'].includes(op) &&
+      ![
+        'attachment_list',
+        'attachment_list_assets',
+        'attachment_import_url',
+        'attachment_import_webpage',
+      ].includes(op) &&
       !isId(body.attachmentId)
     )
       fail('invalid_request')
-    if (op === 'attachment_import_url' && (typeof body.url !== 'string' || body.url.length > 2048))
+    if (
+      (op === 'attachment_import_url' || op === 'attachment_import_webpage') &&
+      (typeof body.url !== 'string' || body.url.length > 2048)
+    )
       fail('invalid_request')
     if (body.stageAnimated !== undefined && body.stageAnimated !== true) fail('invalid_request')
     if (body.after !== undefined && !isId(body.after)) fail('invalid_request')
@@ -487,6 +509,110 @@ export function createPresentationAttachmentService(options: {
       const id = body.attachmentId as string
       const dir = id ? join(doc, id) : doc
       const exists = entries.includes(id)
+      if (op === 'attachment_import_webpage') {
+        let url: URL
+        try {
+          url = new URL(body.url as string)
+        } catch {
+          fail('invalid_request')
+        }
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+          fail('invalid_request')
+        const urlHash = hash(url.toString())
+        for (const entry of entries) {
+          const item = await metadata(join(doc, entry), entry)
+          if (item.status !== 'ready' || item.kind !== 'text' || item.sourceUrlHash !== urlHash)
+            continue
+          const stored = await bytes(join(doc, entry, 'raw.html'), WEBPAGE_LIMIT)
+          if (hash(stored) !== entry) fail('digest_mismatch')
+          return publicMetadata(item, item.sizeBytes)
+        }
+        if (!(await isSafeRemoteUrl(url.toString()))) fail('remote_webpage_unavailable')
+        const combined = AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+        let response: Response | null
+        try {
+          response = await fetchPage(url.toString(), combined)
+        } catch {
+          checkAbort(combined)
+          fail('remote_webpage_unavailable')
+        }
+        if (
+          !response?.ok ||
+          !response.body ||
+          !/^text\/html(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '')
+        )
+          fail('remote_webpage_unavailable')
+        if (Number(response.headers.get('content-length')) > WEBPAGE_LIMIT) fail('quota_exceeded')
+        const reader = response.body.getReader()
+        const chunks: Uint8Array[] = []
+        let total = 0
+        try {
+          while (true) {
+            checkAbort(combined)
+            const next = await reader.read().catch(() => {
+              checkAbort(combined)
+              fail('remote_webpage_unavailable')
+            })
+            if (next.done) break
+            total += next.value.byteLength
+            if (total > WEBPAGE_LIMIT) fail('quota_exceeded')
+            chunks.push(next.value)
+          }
+        } finally {
+          await reader.cancel().catch(() => undefined)
+        }
+        checkAbort(combined)
+        const raw = Buffer.concat(
+          chunks.map((chunk) => Buffer.from(chunk)),
+          total,
+        )
+        let text: string
+        try {
+          text = htmlToText(new TextDecoder('utf-8', { fatal: true }).decode(raw))
+        } catch {
+          fail('parse_failed')
+        }
+        if (!text || text.length > TEXT_LIMIT) fail('parse_failed')
+        const attachmentId = hash(raw)
+        if (entries.includes(attachmentId)) fail('remote_webpage_source_conflict')
+        let declared = 0
+        for (const entry of entries)
+          declared += Math.max(
+            (await metadata(join(doc, entry), entry)).sizeBytes,
+            FILE_RESERVATION_FLOOR,
+          )
+        if (
+          entries.length >= 32 ||
+          declared + Math.max(raw.length, FILE_RESERVATION_FLOOR) > DOCUMENT_LIMIT
+        )
+          fail('quota_exceeded')
+        url.search = ''
+        url.hash = ''
+        const item: Metadata = {
+          attachmentId,
+          sha256: attachmentId,
+          name: 'remote.html',
+          sizeBytes: raw.length,
+          status: 'ready',
+          kind: 'text',
+          totalChars: text.length,
+          textDigest: hash(text),
+          source: url.toString(),
+          sourceUrlHash: urlHash,
+          retrievedAt: Date.now(),
+        }
+        const staging = join(root, `.tmp-${randomUUID()}`)
+        await directory(staging)
+        try {
+          await atomic(join(staging, 'raw.html'), raw)
+          await atomic(join(staging, 'text.txt'), text)
+          await atomic(join(staging, 'metadata.json'), JSON.stringify(item))
+          await rename(staging, join(doc, attachmentId))
+        } finally {
+          await rm(staging, { recursive: true, force: true })
+        }
+        return publicMetadata(item, raw.length)
+      }
       if (op === 'attachment_import_url') {
         let url: URL
         try {
@@ -1028,6 +1154,8 @@ export function createPresentationAttachmentService(options: {
           'animated_image_unsupported',
           'remote_image_unavailable',
           'remote_image_source_conflict',
+          'remote_webpage_unavailable',
+          'remote_webpage_source_conflict',
           'attachment_in_use',
           'aborted',
         ].includes(code)

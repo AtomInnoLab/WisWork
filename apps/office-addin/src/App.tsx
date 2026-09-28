@@ -204,7 +204,12 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
     invalid_tool_input: '请输入 1 到 4 个不同的 HTTP(S) 图片网址，每行一个。',
     presentation_remote_image_source_conflict:
       '相同图片内容已从另一来源加入当前文档。请使用已有素材，或手动上传本地文件。',
-    presentation_aborted: '图片下载超时或已取消，请重试。',
+    presentation_remote_webpage_unavailable:
+      '网页无法安全抓取，或未返回 HTML。请检查网址后重试，也可上传保存的 HTML 文件。',
+    presentation_remote_webpage_source_conflict:
+      '相同网页内容已作为另一份资料加入当前文档。请使用已有附件。',
+    presentation_webpages_unavailable: '请更新并连接支持网页资料的 PC 端后重试。',
+    presentation_aborted: '下载超时或已取消，请重试。',
     presentation_parse_failed: '图片无法解码为受支持的 PNG、JPEG、静态 GIF 或 WebP。',
     presentation_animated_image_staged:
       '动画网址原件已保存在 PC，但不会直接用于页面。请在附件列表中选择“生成静态首帧”，或使用其他静态图片。',
@@ -257,11 +262,13 @@ export interface OfficeWorkspaceUi {
   readonly durableAttachmentsAvailable?: () => boolean
   readonly durableImagesAvailable?: () => boolean
   readonly remoteImagesAvailable?: () => boolean
+  readonly webpagesAvailable?: () => boolean
   readonly rightsAvailable?: () => boolean
   readonly animationFrameAvailable?: () => boolean
   readonly listDurableAttachments?: () => Promise<PresentationAttachmentMetadata[]>
   readonly deleteDurableAttachment?: (attachmentId: string) => Promise<void>
   readonly importPresentationImageUrl?: (url: string | string[]) => Promise<void>
+  readonly importPresentationWebpageUrl?: (url: string) => Promise<void>
   readonly attestPresentationImageLicense?: (
     imageId: string,
     license: 'owned' | 'licensed' | 'public_domain',
@@ -322,11 +329,13 @@ export function createOfficeWorkspaceUi(
     durableAttachmentsAvailable: runtime.durableAttachmentsAvailable,
     durableImagesAvailable: runtime.durableImagesAvailable,
     remoteImagesAvailable: runtime.remoteImagesAvailable,
+    webpagesAvailable: runtime.webpagesAvailable,
     rightsAvailable: runtime.rightsAvailable,
     animationFrameAvailable: runtime.animationFrameAvailable,
     listDurableAttachments: runtime.listDurableAttachments,
     deleteDurableAttachment: runtime.deleteDurableAttachment,
     importPresentationImageUrl: runtime.importPresentationImageUrl,
+    importPresentationWebpageUrl: runtime.importPresentationWebpageUrl,
     attestPresentationImageLicense: runtime.attestPresentationImageLicense,
     revokePresentationImageLicense: runtime.revokePresentationImageLicense,
     extractPresentationImageFirstFrame: runtime.extractPresentationImageFirstFrame,
@@ -541,6 +550,7 @@ export function AgentWorkspace(props: {
   const [uploadPending, setUploadPending] = useState(false)
   const [uploadStatus, setUploadStatus] = useState('')
   const [imageUrl, setImageUrl] = useState('')
+  const [webpageUrl, setWebpageUrl] = useState('')
   const uploadEpoch = useRef(0)
   const [diagnosticStatus, setDiagnosticStatus] = useState('')
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
@@ -887,9 +897,53 @@ export function AgentWorkspace(props: {
               />
               <p>
                 {ui.durableAttachmentsAvailable?.()
-                  ? 'PDF、Word（DOCX）、TXT、MD、CSV、JSON 资料每个最多 50 MiB，保存于 PC 并绑定当前文档；退出登录不会删除。重连后可让 Agent 列出和读取，重新选择同一文件可续传。'
+                  ? 'PDF、Word（DOCX）、HTML、TXT、MD、CSV、JSON 资料每个最多 50 MiB，保存于 PC 并绑定当前文档；退出登录不会删除。重连后可让 Agent 列出和读取，重新选择同一文件可续传。'
                   : `Files are limited to ${displayMebibytes(MAX_VFS_FILE_BYTES)} MiB each and ${displayMebibytes(MAX_VFS_TOTAL_BYTES)} MiB per session, then cleared on logout.`}
               </p>
+              {ui.webpagesAvailable?.() && (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (uploadPending || state.busy || !webpageUrl.trim()) return
+                    setUploadPending(true)
+                    setUploadError('')
+                    setUploadStatus('正在由 PC 抓取网页并保存原文…')
+                    void ui
+                      .importPresentationWebpageUrl?.(webpageUrl.trim())
+                      .then(async () => {
+                        if (!mounted.current) return
+                        setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
+                        setUploadStatus('网页原文及正文已保存到当前文档的 PC 资料。')
+                        setWebpageUrl('')
+                      })
+                      .catch((error: unknown) => {
+                        if (mounted.current) {
+                          setUploadStatus('')
+                          setUploadError(safeUploadError(error))
+                        }
+                      })
+                      .finally(() => {
+                        if (mounted.current) setUploadPending(false)
+                      })
+                  }}
+                >
+                  <label htmlFor="presentation-webpage-url">网页网址</label>
+                  <input
+                    id="presentation-webpage-url"
+                    type="url"
+                    value={webpageUrl}
+                    onChange={(event) => setWebpageUrl(event.currentTarget.value)}
+                    placeholder="https://example.com/article"
+                    required
+                  />
+                  <button
+                    type="submit"
+                    disabled={uploadPending || state.busy || !webpageUrl.trim()}
+                  >
+                    由 PC 获取网页
+                  </button>
+                </form>
+              )}
               {ui.durableImagesAvailable?.() && (
                 <>
                   <p>
@@ -1022,6 +1076,14 @@ export function AgentWorkspace(props: {
                             ))}
                           </ul>
                         </details>
+                      )}
+                      {file.kind === 'text' && file.source && (
+                        <p>
+                          网页来源：{file.source}；抓取时间：
+                          {file.retrievedAt
+                            ? new Date(file.retrievedAt).toLocaleString()
+                            : '未记录'}
+                        </p>
                       )}
                       {file.kind === 'image' && file.licenseDeclaration && (
                         <p>
@@ -1438,6 +1500,7 @@ function ConfiguredApp() {
               'presentation-attachments.v1',
               'presentation-assets.v1',
               'presentation-remote-images.v1',
+              'presentation-webpages.v1',
               'presentation-asset-rights.v1',
               'presentation-animation-frame.v1',
               'presentation-pdf.v1',
@@ -1598,6 +1661,13 @@ function ConfiguredApp() {
                           snapshot.capabilities?.includes('presentation-remote-images.v1') === true
                         )
                       },
+                      webpagesAvailable: () => {
+                        const snapshot = bridge.snapshot()
+                        return (
+                          snapshot.status === 'connected' &&
+                          snapshot.capabilities?.includes('presentation-webpages.v1') === true
+                        )
+                      },
                       rightsAvailable: () => {
                         const snapshot = bridge.snapshot()
                         return (
@@ -1630,16 +1700,22 @@ function ConfiguredApp() {
                             : body &&
                                 typeof body === 'object' &&
                                 'operation' in body &&
-                                ['attachment_attest_license', 'attachment_revoke_license'].includes(
-                                  body.operation as string,
-                                )
-                              ? 'presentation-asset-rights.v1'
+                                body.operation === 'attachment_import_webpage'
+                              ? 'presentation-webpages.v1'
                               : body &&
                                   typeof body === 'object' &&
                                   'operation' in body &&
-                                  body.operation === 'attachment_extract_first_frame'
-                                ? 'presentation-animation-frame.v1'
-                                : 'presentation-attachments.v1',
+                                  [
+                                    'attachment_attest_license',
+                                    'attachment_revoke_license',
+                                  ].includes(body.operation as string)
+                                ? 'presentation-asset-rights.v1'
+                                : body &&
+                                    typeof body === 'object' &&
+                                    'operation' in body &&
+                                    body.operation === 'attachment_extract_first_frame'
+                                  ? 'presentation-animation-frame.v1'
+                                  : 'presentation-attachments.v1',
                           body,
                           signal,
                         ),

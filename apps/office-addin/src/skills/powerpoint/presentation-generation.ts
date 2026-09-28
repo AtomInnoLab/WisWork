@@ -66,6 +66,7 @@ export interface PresentationGenerationOptions {
   available(): boolean
   assetsAvailable?(): boolean
   remoteImagesAvailable?(): boolean
+  webpagesAvailable?(): boolean
   rightsAvailable?(): boolean
   animationFrameAvailable?(): boolean
   attachmentsAvailable?(): boolean

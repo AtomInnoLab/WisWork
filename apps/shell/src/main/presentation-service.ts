@@ -364,6 +364,7 @@ export function createPresentationService(options: {
           'attachment_attest_license',
           'attachment_revoke_license',
           'attachment_import_url',
+          'attachment_import_webpage',
           'attachment_list',
           'attachment_read',
           'attachment_asset',

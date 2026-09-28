@@ -40,6 +40,83 @@ async function upload(
   return attachmentId
 }
 describe('durable presentation attachments', () => {
+  it('fetches an HTML URL into a document-scoped, deduplicated source snapshot', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-webpage-'))
+    dirs.push(userDataPath)
+    let requests = 0
+    const fetchPage = async () => {
+      requests++
+      return new Response(
+        '<html><body><h1>Study</h1><p>Result &amp; method</p><script>ignore()</script></body></html>',
+        {
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        },
+      )
+    }
+    const service = createPresentationAttachmentService({ userDataPath, fetchPage })
+    const call = (body: Record<string, unknown>) =>
+      service({ documentId: 'doc-1', ...body }, new AbortController().signal)
+    const url = 'https://8.8.8.8/study?session=private#section'
+    const first = (await call({ operation: 'attachment_import_webpage', url })) as {
+      attachmentId: string
+      source: string
+      kind: string
+    }
+    expect(first).toMatchObject({ source: 'https://8.8.8.8/study', kind: 'text' })
+    expect((first as { retrievedAt?: number }).retrievedAt).toBeGreaterThan(0)
+    expect(requests).toBe(1)
+    expect(await call({ operation: 'attachment_import_webpage', url })).toMatchObject({
+      attachmentId: first.attachmentId,
+    })
+    expect(requests).toBe(1)
+    expect(
+      await call({
+        operation: 'attachment_read',
+        attachmentId: first.attachmentId,
+        offset: 0,
+        maxChars: 100,
+      }),
+    ).toMatchObject({
+      text: 'Study\nResult & method',
+      sourceUri: `attachment:${first.attachmentId}`,
+    })
+    await expect(
+      service(
+        {
+          documentId: 'doc-2',
+          operation: 'attachment_read',
+          attachmentId: first.attachmentId,
+          offset: 0,
+          maxChars: 100,
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow('not_found')
+    await expect(
+      call({ operation: 'attachment_import_webpage', url: 'https://8.8.8.8/other' }),
+    ).rejects.toThrow('remote_webpage_source_conflict')
+  })
+
+  it('rejects unsafe or non-HTML webpage sources and oversized responses', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-webpage-'))
+    dirs.push(userDataPath)
+    let response = new Response('plain', { headers: { 'content-type': 'text/plain' } })
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      fetchPage: async () => response,
+    })
+    const call = (url: string) =>
+      service(
+        { documentId: 'doc-1', operation: 'attachment_import_webpage', url },
+        new AbortController().signal,
+      )
+    await expect(call('http://127.0.0.1/private')).rejects.toThrow('remote_webpage_unavailable')
+    await expect(call('https://8.8.8.8/page')).rejects.toThrow('remote_webpage_unavailable')
+    response = new Response('html', {
+      headers: { 'content-type': 'text/html', 'content-length': String(6 * 1024 * 1024) },
+    })
+    await expect(call('https://8.8.8.8/page')).rejects.toThrow('quota_exceeded')
+  })
   it('resumes after a lost acknowledgement and restart, and reads bounded durable text', async () => {
     const { call, userDataPath } = await setup()
     const bytes = Buffer.from('资料 evidence')
