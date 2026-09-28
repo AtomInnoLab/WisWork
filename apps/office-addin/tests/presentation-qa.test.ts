@@ -294,7 +294,11 @@ it('does not allow review when a capture could not publish its image to the mode
     options = { ...f.options, vfs: new InMemoryVfs({ maxTotalBytes: 1 }) },
     skill = createPresentationQaSkill(options)
   const result = await skill.executeTool(f.capture)
-  expect(result).toMatchObject({ isError: true })
+  expect(result).toMatchObject({
+    isError: true,
+    output: 'presentation_session_storage_full',
+    summary: expect.stringContaining('图片未发布'),
+  })
   expect(result.modelContent).toBeUndefined()
   const page = f.readQa()!.pages[0]!
   expect(page.visual.status).toBe('needs_review')
@@ -310,6 +314,28 @@ it('does not allow review when a capture could not publish its image to the mode
       },
     }),
   ).toMatchObject({ isError: true, output: 'presentation_qa_capture_required' })
+})
+it('requires reading the saved QA state when a reviewed report cannot fit in the session', async () => {
+  const f = setup()
+  expect((await f.skill.executeTool(f.capture)).isError).not.toBe(true)
+  const screenshotDigest = f.readQa()!.pages[0]!.screenshotDigest
+  f.options.vfs = new InMemoryVfs({ maxTotalBytes: 1 })
+  const result = await f.skill.executeTool({
+    id: 'review',
+    name: 'record_presentation_page_review',
+    input: {
+      page_id: 'first',
+      screenshot_digest: screenshotDigest,
+      outcome: 'pass',
+      notes: 'Checked screenshot',
+    },
+  })
+  expect(result).toMatchObject({
+    isError: true,
+    output: 'presentation_session_storage_full',
+    summary: expect.stringContaining('读取已保存 QA 记录'),
+  })
+  expect(f.readQa()?.pages[0]?.visual.status).toBe('pass')
 })
 it('leaves the page waiting for a screenshot after host capture failure without replacing a prior review', async () => {
   const f = setup()

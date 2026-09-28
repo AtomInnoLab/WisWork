@@ -79,9 +79,12 @@ it('reads full evidence, validates identity, and atomically exports complete JSO
     vfs,
   })
   expect(
-    (await skill.executeTool({ id: 'x', name: 'export_presentation_delivery_report', input }))
-      .output,
-  ).toBe('vfs_limit')
+    await skill.executeTool({ id: 'x', name: 'export_presentation_delivery_report', input }),
+  ).toMatchObject({
+    isError: true,
+    output: 'presentation_session_storage_full',
+    summary: expect.stringContaining('会话附件空间不足'),
+  })
   expect(vfs.list('/home/user')).toEqual([])
 })
 it('sends validated issue action and preserves stale/CAS server errors', async () => {

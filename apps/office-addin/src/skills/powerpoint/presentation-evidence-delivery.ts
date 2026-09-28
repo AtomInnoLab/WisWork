@@ -154,6 +154,14 @@ export function createPresentationEvidenceDeliverySkill(
         }
       } catch (error) {
         const code = error instanceof Error ? error.message : ''
+        if (code === 'vfs_limit')
+          return {
+            output: 'presentation_session_storage_full',
+            isError: true,
+            mutated: false,
+            summary:
+              '会话附件空间不足；PC 上的证据报告仍可读取。请下载所需文件后开启新会话，再重新导出。',
+          }
         return {
           output: /^(presentation_[a-z_]{1,80}|vfs_[a-z_]+|cancelled|invalid_tool_input)$/.test(
             code,

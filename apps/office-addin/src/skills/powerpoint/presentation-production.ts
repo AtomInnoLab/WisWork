@@ -863,27 +863,31 @@ export function createPresentationProductionSkill(
       } catch (error) {
         const raw = error instanceof Error ? error.message : '',
           code =
-            raw === 'cancelled' ||
-            raw === 'invalid_tool_input' ||
-            /^presentation_[a-z_]{1,80}$/.test(raw)
-              ? raw
-              : 'presentation_operation_failed'
+            raw === 'vfs_limit'
+              ? 'presentation_session_storage_full'
+              : raw === 'cancelled' ||
+                  raw === 'invalid_tool_input' ||
+                  /^presentation_[a-z_]{1,80}$/.test(raw)
+                ? raw
+                : 'presentation_operation_failed'
         return {
           output: code,
           isError: true,
           mutated: false,
           summary:
-            code === 'presentation_evidence_read_required'
-              ? '请先在当前会话读取同一主张和来源的证据窗口，再记录复核'
-              : code === 'presentation_evidence_changed'
-                ? '证据已变化，请重新读取后复核；本次未保存复核记录'
-                : code === 'presentation_evidence_source_unsupported'
-                  ? '当前证据读取仅支持已上传附件来源；此来源不能通过本工具读取'
-                  : code === 'presentation_page_replacement_required'
-                    ? '当前修订尚无已提交页面映射，不能整批追加导入；请先完成页面替换'
-                    : code === 'presentation_upgrade_required'
-                      ? '当前 PC 尚不支持页级生产，请升级 WisWork PC 后重试'
-                      : '页级生产操作未完成；已保存成果保留，可刷新查看',
+            code === 'presentation_session_storage_full'
+              ? '会话附件空间不足；PC 已编译页面仍保留。请下载所需文件后开启新会话，再读取页面成果。'
+              : code === 'presentation_evidence_read_required'
+                ? '请先在当前会话读取同一主张和来源的证据窗口，再记录复核'
+                : code === 'presentation_evidence_changed'
+                  ? '证据已变化，请重新读取后复核；本次未保存复核记录'
+                  : code === 'presentation_evidence_source_unsupported'
+                    ? '当前证据读取仅支持已上传附件来源；此来源不能通过本工具读取'
+                    : code === 'presentation_page_replacement_required'
+                      ? '当前修订尚无已提交页面映射，不能整批追加导入；请先完成页面替换'
+                      : code === 'presentation_upgrade_required'
+                        ? '当前 PC 尚不支持页级生产，请升级 WisWork PC 后重试'
+                        : '页级生产操作未完成；已保存成果保留，可刷新查看',
         }
       }
     },

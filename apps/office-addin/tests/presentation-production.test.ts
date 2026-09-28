@@ -286,7 +286,11 @@ it('does not publish artifact paths when the VFS batch fails', async () => {
     name: 'read_presentation_page_artifact',
     input: { project_id: 'p', request_id: 'r', page_id: 'one' },
   })
-  expect(result.isError).toBe(true)
+  expect(result).toMatchObject({
+    isError: true,
+    output: 'presentation_session_storage_full',
+    summary: expect.stringContaining('会话附件空间不足'),
+  })
   expect(result.output).not.toContain('/home/user')
   expect(f.vfs.list('/home/user')).toEqual([])
 })

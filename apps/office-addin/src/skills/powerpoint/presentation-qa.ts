@@ -703,6 +703,16 @@ export function createPresentationQaSkill(options: PresentationQaOptions): Agent
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : ''
+        if (message === 'vfs_limit')
+          return {
+            output: 'presentation_session_storage_full',
+            isError: true,
+            mutated: false,
+            summary:
+              call.name === 'record_presentation_page_review'
+                ? '会话附件空间不足；审查记录可能已保存。请读取已保存 QA 记录核对状态，下载所需文件后开启新会话再处理。'
+                : '会话附件空间不足；截图状态已保存，但图片未发布给 Agent。请下载所需文件后开启新会话，再重新截图后复核。',
+          }
         return {
           output: /^(presentation_[a-z_]+|office_[a-z_]+|invalid_tool_input|cancelled)$/.test(
             message,
