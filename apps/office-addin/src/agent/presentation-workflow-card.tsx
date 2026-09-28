@@ -93,7 +93,16 @@ export function PresentationWorkflowCard({
       <ol>
         {workflow.stages.map((stage) => (
           <li key={stage.name}>
-            <strong>{stage.name}</strong>：{stage.detail}
+            <strong>{stage.name}</strong> ·{' '}
+            {
+              {
+                pending: '待开始',
+                working: '进行中',
+                attention: '需处理',
+                recorded: '已有记录',
+              }[stage.status]
+            }
+            ：{stage.detail}
           </li>
         ))}
       </ol>
@@ -116,8 +125,9 @@ export function PresentationWorkflowCard({
         <ol>
           {workflow.pages.map((page) => (
             <li key={page.id}>
-              <strong>{page.title}</strong>{page.section ? ` · ${page.section}` : ''} · {page.id}：{page.production} / {page.imported} /{' '}
-              {page.qa} / {page.evidence}；下一步：{page.nextAction}
+              <strong>{page.title}</strong>
+              {page.section ? ` · ${page.section}` : ''} · {page.id}：{page.production} /{' '}
+              {page.imported} / {page.qa} / {page.evidence}；下一步：{page.nextAction}
             </li>
           ))}
         </ol>

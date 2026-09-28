@@ -100,6 +100,9 @@ it('shows the chosen domain sections only for the matching plan revision', () =>
 })
 
 it('walks the saved plan through production, import and QA without claiming delivery', () => {
+  expect(
+    presentationWorkflowSummary(project, undefined, undefined)?.stages.map((stage) => stage.status),
+  ).toEqual(['recorded', 'recorded', 'pending', 'pending', 'pending', 'pending'])
   expect(presentationWorkflowSummary(project, undefined, undefined)?.nextAction).toContain(
     '启动逐页生产',
   )
@@ -179,7 +182,45 @@ it('walks the saved plan through production, import and QA without claiming deli
   expect(complete.nextAction).toContain('读取当前任务的内容证据')
   expect(complete.nextTool).toBe('read_report')
   expect(complete.stages.at(-1)?.detail).toContain('尚不能')
+  expect(complete.stages.map((stage) => stage.status)).toEqual([
+    'recorded',
+    'recorded',
+    'recorded',
+    'recorded',
+    'recorded',
+    'pending',
+  ])
   expect(complete.pages.every((page) => page.qa === '历史结构与视觉通过')).toBe(true)
+})
+
+it('marks durable phase problems for attention without claiming delivery completion', async () => {
+  const failed = {
+    ...production,
+    compiledCount: production.total - 1,
+    pages: production.pages.map((page, index) =>
+      index === 0 ? { ...page, state: 'failed' as const } : page,
+    ),
+  }
+  expect(
+    presentationWorkflowSummary({ ...project, production: failed }, undefined, undefined)?.stages[2]
+      ?.status,
+  ).toBe('attention')
+  const uncertain = {
+    ...imported,
+    status: 'uncertain' as const,
+    completed: imported.total - 1,
+    pages: imported.pages.map((page, index) =>
+      index === 0 ? { ...page, state: 'uncertain' as const } : page,
+    ),
+  }
+  expect(
+    presentationWorkflowSummary({ ...project, production }, uncertain, qa)?.stages[3]?.status,
+  ).toBe('attention')
+  const report = await deliveryReportFixture()
+  expect(
+    presentationWorkflowSummary({ ...project, production }, imported, qa, report)?.stages[5]
+      ?.status,
+  ).not.toBe('recorded')
 })
 
 it('uses only the selected request report and keeps its open issues visible', async () => {
@@ -544,6 +585,10 @@ it('labels old QA as historical after a brand or style revision', () => {
     production,
   }
   const summary = presentationWorkflowSummary(selected, imported, qa)!
+  expect(summary.timeline.map((event) => event.id)).toEqual(
+    expect.arrayContaining(['research-1', 'style-1', 'style-2']),
+  )
+  expect(summary.timeline.map((event) => event.id)).not.toContain('research-2')
   expect(summary.attention.map((item) => item.id)).toContain('style-revision')
   expect(summary.pages[0]?.qa).toBe('旧样式版本历史通过')
   expect(summary.pages[0]?.nextAction).toBe('先确认继续旧计划或选择新任务')

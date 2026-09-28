@@ -5,7 +5,11 @@ import type { PresentationDeliveryReport } from '@wiswork/pptx-engine/presentati
 import { PRESENTATION_DOMAIN_PROFILES } from '@wiswork/pptx-engine/presentation-plan'
 
 export interface PresentationWorkflowSummary {
-  stages: { name: string; detail: string }[]
+  stages: {
+    name: string
+    detail: string
+    status: 'pending' | 'working' | 'attention' | 'recorded'
+  }[]
   timeline: { id: string; text: string; at?: string }[]
   attention: { id: string; text: string }[]
   pages: {
@@ -241,21 +245,35 @@ export function presentationWorkflowSummary(
       nextAction: pageNext,
     }
   })
-  const stages = [
+  const stages: PresentationWorkflowSummary['stages'] = [
     {
       name: '目标与资料',
+      status:
+        sourceProblems.length || project.sourcePreparationUnavailable
+          ? 'attention'
+          : plan
+            ? 'recorded'
+            : 'pending',
       detail: plan
         ? `Brief 已保存；登记 ${plan.sources.length} 份资料、${plan.claims.length} 条主张${sourceStatus}，真实性仍需核验`
         : '尚无已保存的结构化计划',
     },
     {
       name: '故事线与样式',
+      status: planChangedSinceProduction ? 'attention' : plan ? 'recorded' : 'pending',
       detail: plan
         ? `已保存 ${plan.slides.length} 页施工图和样式契约${domainProfile ? ` · ${domainProfile.title}结构` : ''} · 计划第 ${project.plan!.revision} 版`
         : '待保存逐页施工图与样式契约',
     },
     {
       name: '逐页制作',
+      status: failed
+        ? 'attention'
+        : production
+          ? production.compiledCount === production.total
+            ? 'recorded'
+            : 'working'
+          : 'pending',
       detail: production
         ? `已编译 ${production.compiledCount}/${production.total} 页${failed ? ` · ${failed} 页失败待重试` : ''}；尚不代表导入或验收`
         : project.status === 'compiled'
@@ -264,6 +282,14 @@ export function presentationWorkflowSummary(
     },
     {
       name: '导入 PowerPoint',
+      status:
+        (imported && !importMatches) || imported?.status === 'uncertain'
+          ? 'attention'
+          : importMatches
+            ? imported!.completed === imported!.total
+              ? 'recorded'
+              : 'working'
+            : 'pending',
       detail: importMatches
         ? `已记录 ${imported!.completed}/${imported!.total} 页；${imported!.status === 'uncertain' ? '写入结果不确定，需检查文档' : '导入不代表视觉验收'}`
         : imported
@@ -272,6 +298,19 @@ export function presentationWorkflowSummary(
     },
     {
       name: '页面审查',
+      status:
+        (qa && !qaMatches) ||
+        recheck ||
+        (qaMatches &&
+          qa!.pages.some(
+            (page) => page.visual.status === 'needs_changes' || page.structure.status !== 'passed',
+          ))
+          ? 'attention'
+          : qaMatches
+            ? reviewed === qa!.pages.length
+              ? 'recorded'
+              : 'working'
+            : 'pending',
       detail: qaMatches
         ? `历史结构与视觉复核 ${reviewed}/${qa!.pages.length} 页通过；${qa!.pages.filter((page) => page.recheckRequired).length} 页需重审`
         : qa
@@ -280,6 +319,7 @@ export function presentationWorkflowSummary(
     },
     {
       name: '交付核验',
+      status: openIssues ? 'attention' : reportMatches ? 'working' : 'pending',
       detail: `${reportMatches ? `内容证据报告有 ${openIssues} 项待处理；` : '尚无当前任务的内容证据报告；'}来源真实性、保存重开及真实 PowerPoint 验收尚不能由上述记录证明`,
     },
   ]
@@ -316,6 +356,23 @@ export function presentationWorkflowSummary(
           text: `已保存计划第 ${event.revision} 版${detail}；来源真实性仍需核验`,
           at: event.createdAt,
         })
+        if (
+          current &&
+          (!previous ||
+            current.sourcesDigest !== previous.sourcesDigest ||
+            current.claimsDigest !== previous.claimsDigest)
+        )
+          timeline.push({
+            id: `research-${event.revision}`,
+            text: `第 ${event.revision} 版已登记 ${current.sourceCount} 份资料、${current.claimCount} 条主张；尚需核对来源与结论`,
+            at: event.createdAt,
+          })
+        if (current && (!previous || current.styleDigest !== previous.styleDigest))
+          timeline.push({
+            id: `style-${event.revision}`,
+            text: `第 ${event.revision} 版样式规范已保存；页面视觉效果仍需审查`,
+            at: event.createdAt,
+          })
       }
     } else
       timeline.push({
