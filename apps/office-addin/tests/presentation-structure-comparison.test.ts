@@ -257,6 +257,60 @@ it('detects changed table cells and leaves chart data explicitly unchecked', asy
   }
 })
 
+it('detects native table cell fill, border and font drift when cell text is unchanged', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[5]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.name === 'table' ? 'Table' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const slide = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const table = slide.match(
+    /<p:graphicFrame>[^]*?<a:tbl>[^]*?<\/a:tbl>[^]*?<\/p:graphicFrame>/,
+  )?.[0]
+  expect(table).toBeTruthy()
+  for (const altered of [
+    table!.replace(/(<a:rPr[^>]*\bsz=")[^"]+/, (_match, prefix: string) => `${prefix}9900`),
+    table!.replace('</a:tcPr>', '<a:solidFill><a:srgbClr val="112233"/></a:solidFill></a:tcPr>'),
+    table!.replace(
+      /(<a:lnL[^>]*>[^]*?<a:srgbClr val=")[^"]+/,
+      (_match, prefix: string) => `${prefix}112233`,
+    ),
+  ]) {
+    expect(altered).not.toBe(table)
+    zip.file('ppt/slides/slide1.xml', slide.replace(table!, altered))
+    const result = await comparePresentationPageStructure(
+      Buffer.from(bytes).toString('base64'),
+      0,
+      {
+        slideId: 'host',
+        slideWidth: 960,
+        slideHeight: 540,
+        shapes,
+        shapesTruncated: false,
+        overflows: [],
+        overlaps: [],
+        overlapsTruncated: false,
+        screenshot: { mime: 'image/png', base64: '' },
+      },
+      await zip.generateAsync({ type: 'base64' }),
+    )
+    expect(result.content).toMatchObject({
+      status: 'warning',
+      tableStyleChanged: ['table'],
+      changed: [],
+    })
+  }
+})
+
 it('compares a selected chart cache from a multi-page source deck', async () => {
   const { bytes } = await compilePresentationDeck(benchmarkDeck())
   const source = (await openPptx(bytes)).deck.slides[6]!

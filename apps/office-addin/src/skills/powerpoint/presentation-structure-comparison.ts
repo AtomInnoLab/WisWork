@@ -22,6 +22,11 @@ type SourceObject = {
   box: [number, number, number, number]
   text: string[]
   textStyles?: Array<[string, string, string, string]>
+  tableCellStyles?: Array<{
+    fill: string
+    borders: Array<[string, string]>
+    runs: Array<[string, string, string, string]>
+  }>
   altText?: string
   crop?: [number, number, number, number]
   appearance?: [string, string, string]
@@ -115,8 +120,8 @@ function textRuns(value: unknown): string[] {
   )
 }
 
-function textStyles(element: Xml): Array<[string, string, string, string]> {
-  return many(element['p:txBody']?.['a:p']).flatMap((paragraph) =>
+function textStyles(body: Xml | undefined): Array<[string, string, string, string]> {
+  return many(body?.['a:p']).flatMap((paragraph) =>
     many(paragraph['a:r']).map((run) => {
       const style = run['a:rPr']
       return [
@@ -126,6 +131,22 @@ function textStyles(element: Xml): Array<[string, string, string, string]> {
         String(style?.['a:solidFill']?.['a:srgbClr']?.['@_val'] ?? '').toUpperCase(),
       ] as [string, string, string, string]
     }),
+  )
+}
+
+function tableCellStyles(element: Xml): SourceObject['tableCellStyles'] {
+  const table = element['a:graphic']?.['a:graphicData']?.['a:tbl']
+  return many(table?.['a:tr']).flatMap((row) =>
+    many(row['a:tc']).map((cell) => ({
+      fill: String(cell['a:tcPr']?.['a:solidFill']?.['a:srgbClr']?.['@_val'] ?? '').toUpperCase(),
+      borders: (['a:lnL', 'a:lnR', 'a:lnT', 'a:lnB'] as const).map((side) => [
+        String(cell['a:tcPr']?.[side]?.['@_w'] ?? ''),
+        String(
+          cell['a:tcPr']?.[side]?.['a:solidFill']?.['a:srgbClr']?.['@_val'] ?? '',
+        ).toUpperCase(),
+      ]),
+      runs: textStyles(cell['a:txBody']),
+    })),
   )
 }
 
@@ -182,7 +203,8 @@ function sourceObjects(root: Xml): SourceObject[] {
         type,
         box: box as SourceObject['box'],
         text: textRuns(element),
-        ...(tag === 'p:sp' ? { textStyles: textStyles(element) } : {}),
+        ...(tag === 'p:sp' ? { textStyles: textStyles(element['p:txBody']) } : {}),
+        ...(type === 'table' ? { tableCellStyles: tableCellStyles(element) } : {}),
         rotation,
         ...(tag === 'p:sp' ? { appearance } : {}),
         ...(tag === 'p:pic'
@@ -244,6 +266,7 @@ export async function comparePresentationPageStructure(
     cropChanged: string[]
     appearanceChanged: string[]
     textStyleChanged: string[]
+    tableStyleChanged: string[]
     unchecked: string[]
   }
 }> {
@@ -341,6 +364,7 @@ export async function comparePresentationPageStructure(
     cropChanged: string[] = [],
     appearanceChanged: string[] = [],
     textStyleChanged: string[] = [],
+    tableStyleChanged: string[] = [],
     unchecked: string[] = []
   if (hostBase64 && readbackConsistent) {
     for (const element of source.filter((item) => item.type === 'shape')) {
@@ -356,6 +380,14 @@ export async function comparePresentationPageStructure(
         JSON.stringify(actual.textStyles) !== JSON.stringify(element.textStyles)
       )
         textStyleChanged.push(element.name)
+    }
+    for (const element of source.filter((item) => item.type === 'table')) {
+      const actual = exportedByName.get(element.name)
+      if (
+        actual?.type === 'table' &&
+        JSON.stringify(actual.tableCellStyles) !== JSON.stringify(element.tableCellStyles)
+      )
+        tableStyleChanged.push(element.name)
     }
     const pictures = source.filter((element) => element.type === 'picture')
     for (const element of pictures) {
@@ -493,7 +525,8 @@ export async function comparePresentationPageStructure(
     altTextChanged.length ||
     cropChanged.length ||
     appearanceChanged.length ||
-    textStyleChanged.length
+    textStyleChanged.length ||
+    tableStyleChanged.length
       ? 'warning'
       : unchecked.length || backgroundUnchecked
         ? 'incomplete'
@@ -511,6 +544,7 @@ export async function comparePresentationPageStructure(
     cropChanged,
     appearanceChanged,
     textStyleChanged,
+    tableStyleChanged,
     unchecked,
   }
   const structureStatus =
