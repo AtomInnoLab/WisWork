@@ -53,6 +53,8 @@
 
 统计同时输出 `firstAttemptPassed` 和 `firstAttemptDeliveryRate`：按每项 `attempt_no: 1` 的结果计数，必须全部 20 项至少尝试一次后才给出比例；补跑成功不会改写首次结果。最终 `passed` 和 `completionRate` 仍按最新尝试计算，两组数值应并列报告。
 
+目录模式还会读取通过记录的 PPTX，校验其 OOXML 包含演示文稿、8 个幻灯片引用及对应幻灯片 XML，拒绝把任意字节改名为 `.pptx` 或用非 8 页文件计入通过。此结构检查不替代 PowerPoint 中保存、关闭、重开和编辑的人工证据核验。
+
 统计输入示例：`records/01.json` 内容为数组，失败/阻塞记录也用相同的 `case_id`、`attempt_id`、`attempt_no`、`outcome` 字段，`outcome` 取 `passed`、`failed` 或 `blocked`。通过记录还须填写以下字段；示例值只说明格式，不是验收证据：
 
 ```json

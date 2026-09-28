@@ -4,6 +4,7 @@ import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import PptxGenJS from 'pptxgenjs'
 import {
   CASE_IDS,
   readPresentationAcceptance,
@@ -139,7 +140,9 @@ test('directory acceptance checks the actual PPTX and reopen evidence hashes', a
   const directory = await mkdtemp(join(tmpdir(), 'ppt-acceptance-'))
   const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
   try {
-    const deck = Buffer.from('synthetic deck bytes')
+    const presentation = new PptxGenJS()
+    for (let index = 0; index < 8; index++) presentation.addSlide().addText(`Slide ${index + 1}`)
+    const deck = Buffer.from(await presentation.write({ outputType: 'nodebuffer' }))
     const reopen = Buffer.from('synthetic reopen capture')
     const material = Buffer.from('source,license,sha256 and reviewer signature')
     await writeFile(join(directory, 'final.pptx'), deck)
@@ -157,6 +160,23 @@ test('directory acceptance checks the actual PPTX and reopen evidence hashes', a
     }
     await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     assert.equal((await readPresentationAcceptance(directory)).passed, 1)
+    await writeFile(join(directory, 'final.pptx'), 'synthetic deck bytes')
+    record.artifacts.pptx_sha256 = sha256('synthetic deck bytes')
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_pptx_invalid/)
+    await writeFile(join(directory, 'final.pptx'), deck)
+    record.artifacts.pptx_sha256 = sha256(deck)
+    const shortPresentation = new PptxGenJS()
+    for (let index = 0; index < 7; index++)
+      shortPresentation.addSlide().addText(`Slide ${index + 1}`)
+    const shortDeck = Buffer.from(await shortPresentation.write({ outputType: 'nodebuffer' }))
+    await writeFile(join(directory, 'final.pptx'), shortDeck)
+    record.artifacts.pptx_sha256 = sha256(shortDeck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_pptx_page_count/)
+    await writeFile(join(directory, 'final.pptx'), deck)
+    record.artifacts.pptx_sha256 = sha256(deck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     delete record.material_manifest_sha256
     await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     await assert.rejects(

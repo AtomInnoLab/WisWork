@@ -3,6 +3,8 @@ import { createReadStream } from 'node:fs'
 import { readdir, readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { XMLParser, XMLValidator } from 'fast-xml-parser'
+import JSZip from 'jszip'
 
 export const CASE_IDS = Array.from(
   { length: 20 },
@@ -236,6 +238,7 @@ export async function readPresentationAcceptance(directory) {
       record.artifacts.pptx_file,
       record.artifacts.pptx_sha256,
     )
+    await verifyPptx(pptxPath)
     const reopenPath = await verifyArtifact(
       root,
       record.artifacts.reopen_evidence_file,
@@ -244,6 +247,48 @@ export async function readPresentationAcceptance(directory) {
     if (pptxPath === reopenPath) throw new Error('acceptance_artifact_invalid:reopen_evidence_file')
   }
   return report
+}
+
+async function verifyPptx(path) {
+  try {
+    const zip = await JSZip.loadAsync(await readFile(path))
+    const expandedBytes = Object.values(zip.files).reduce(
+      (total, entry) => total + (entry._data?.uncompressedSize ?? 0),
+      0,
+    )
+    if (expandedBytes > 500 * 1024 * 1024) throw new Error('pptx_expanded_size_invalid')
+    const xml = async (name) => {
+      const part = zip.file(name)
+      if (!part || part._data?.uncompressedSize > 10 * 1024 * 1024) throw new Error('part_missing')
+      const content = await part.async('string')
+      if (XMLValidator.validate(content) !== true) throw new Error('xml_invalid')
+      return new XMLParser({ ignoreAttributes: false }).parse(content)
+    }
+    const types = await xml('[Content_Types].xml')
+    const overrides = [].concat(types.Types?.Override ?? [])
+    if (!overrides.some((entry) => entry['@_PartName'] === '/ppt/presentation.xml'))
+      throw new Error('presentation_type_missing')
+    const presentation = await xml('ppt/presentation.xml')
+    const slideIds = [].concat(presentation['p:presentation']?.['p:sldIdLst']?.['p:sldId'] ?? [])
+    if (slideIds.length !== 8) throw new Error('acceptance_pptx_page_count')
+    const relationships = await xml('ppt/_rels/presentation.xml.rels')
+    const slideRels = new Map(
+      []
+        .concat(relationships.Relationships?.Relationship ?? [])
+        .filter((entry) => entry['@_Type']?.endsWith('/slide'))
+        .map((entry) => [entry['@_Id'], entry['@_Target']]),
+    )
+    for (const slide of slideIds) {
+      const target = slideRels.get(slide['@_r:id'])
+      if (!target || !/^slides\/slide\d+\.xml$/.test(target))
+        throw new Error('slide_relationship_invalid')
+      const slideXml = await xml(`ppt/${target}`)
+      if (!slideXml['p:sld']) throw new Error('slide_xml_invalid')
+    }
+  } catch (error) {
+    if (error?.message === 'acceptance_pptx_page_count') throw error
+    throw new Error('acceptance_pptx_invalid')
+  }
 }
 
 async function boundedFile(root, name, maxBytes) {
