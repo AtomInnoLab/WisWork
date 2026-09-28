@@ -27,11 +27,13 @@
   "dependencies": {
     "fast-xml-parser": "^5.3.4",
     "jszip": "^3.10.1",
+    "pngjs": "^7.0.0",
     "pptxgenjs": "^4.0.1",
     "@wiswork/project-store": "*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "@types/pngjs": "^6.0.5",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
   }

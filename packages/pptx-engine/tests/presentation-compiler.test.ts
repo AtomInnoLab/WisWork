@@ -404,6 +404,14 @@ describe('presentation contract and compiler', () => {
     expect((await openPptx(output.bytes)).deck.slides).toHaveLength(8)
   })
 
+  it('rejects a PNG with valid dimensions but corrupt pixel data', async () => {
+    const deck = benchmarkDeck()
+    const bytes = Buffer.from(deck.assets[0]!.base64, 'base64')
+    bytes[48] = bytes[48]! ^ 0xff
+    deck.assets[0]!.base64 = bytes.toString('base64')
+    await expect(compilePresentationDeck(deck)).rejects.toThrow(/image_dimensions_or_data/)
+  })
+
   it.each([
     { w: 4, h: 2, crop: { l: 0, r: 0, t: 0.25, b: 0.25 } },
     { w: 2, h: 4, crop: { l: 0.25, r: 0.25, t: 0, b: 0 } },

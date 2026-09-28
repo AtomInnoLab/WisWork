@@ -1,5 +1,6 @@
 import PptxGenJS from 'pptxgenjs'
 import JSZip from 'jszip'
+import { PNG } from 'pngjs'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { relsPathFor, resolveTarget } from './zip'
 import { parseChartXml } from './chart'
@@ -391,6 +392,15 @@ function imageData(asset: PresentationInlineAsset): string {
     ) {
       width = bytes.readUInt32BE(16)
       height = bytes.readUInt32BE(20)
+      if (width === asset.width && height === asset.height) {
+        try {
+          const decoded = PNG.sync.read(bytes)
+          if (decoded.width !== width || decoded.height !== height)
+            throw new Error('decoded_dimensions_mismatch')
+        } catch {
+          throw new Error('presentation_invalid:image_dimensions_or_data')
+        }
+      }
     }
   } else {
     // JPEG marker segments carry dimensions in SOF; never trust caller-supplied dimensions.
