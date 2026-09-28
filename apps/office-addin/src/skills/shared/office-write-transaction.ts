@@ -8,15 +8,16 @@ function cancelled(signal?: AbortSignal): void {
 async function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
   cancelled(signal)
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, milliseconds)
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer)
-        reject(new Error('cancelled'))
-      },
-      { once: true },
-    )
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      reject(new Error('cancelled'))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, milliseconds)
+    signal?.addEventListener('abort', onAbort, { once: true })
   })
   cancelled(signal)
 }
