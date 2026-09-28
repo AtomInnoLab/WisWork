@@ -257,6 +257,9 @@ export async function comparePresentationPageStructure(
     cacheChanged: string[]
     chartTypeChanged: string[]
     chartStyleChanged: string[]
+    chartSourceChanged: string[]
+    chartFormulaChanged: string[]
+    chartSourceVerificationRegressed: string[]
     workbookBytesChanged: string[]
     workbookDataChanged: string[]
     backgroundChanged: boolean
@@ -359,6 +362,9 @@ export async function comparePresentationPageStructure(
     cacheChanged: string[] = [],
     chartTypeChanged: string[] = [],
     chartStyleChanged: string[] = [],
+    chartSourceChanged: string[] = [],
+    chartFormulaChanged: string[] = [],
+    chartSourceVerificationRegressed: string[] = [],
     workbookBytesChanged: string[] = [],
     workbookDataChanged: string[] = [],
     workbookUnverifiedChanged: string[] = [],
@@ -490,6 +496,14 @@ export async function comparePresentationPageStructure(
         if (!hostElement || hostElement.type !== 'chart') continue
         const original = before.reports[element.shapeId]
         const current = after.reports[hostElement.shapeId]
+        if (!original || !current) continue
+        if (original.sourceKind !== current.sourceKind) chartSourceChanged.push(element.name)
+        if (
+          JSON.stringify(original.formulaReferences) !== JSON.stringify(current.formulaReferences)
+        )
+          chartFormulaChanged.push(element.name)
+        if (original.verification === 'matches' && current.verification !== 'matches')
+          chartSourceVerificationRegressed.push(element.name)
         if (
           original?.sourceKind === 'embedded_xlsx' &&
           current?.sourceKind === 'embedded_xlsx' &&
@@ -539,6 +553,9 @@ export async function comparePresentationPageStructure(
     backgroundChanged ||
     chartTypeChanged.length ||
     chartStyleChanged.length ||
+    chartSourceChanged.length ||
+    chartFormulaChanged.length ||
+    chartSourceVerificationRegressed.length ||
     workbookDataChanged.length ||
     workbookUnverifiedChanged.length ||
     mediaChanged.length ||
@@ -557,6 +574,9 @@ export async function comparePresentationPageStructure(
     cacheChanged,
     chartTypeChanged,
     chartStyleChanged,
+    chartSourceChanged,
+    chartFormulaChanged,
+    chartSourceVerificationRegressed,
     workbookBytesChanged,
     workbookDataChanged,
     mediaChanged,

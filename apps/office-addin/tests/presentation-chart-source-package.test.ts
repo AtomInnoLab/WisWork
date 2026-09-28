@@ -73,6 +73,7 @@ describe('PowerPoint chart source inspection', () => {
       shapeId: '8',
       sourceKind: 'embedded_xlsx',
       verification: 'matches',
+      formulaReferences: [{ categories: 'Sheet1!$A$2:$A$3', values: 'Sheet1!$B$2:$B$3' }],
       series: [{ categories: ['Q1', 'Q2'], values: ['1', '2'] }],
     })
     expect(result.sourceDigest).toMatch(/^[a-f0-9]{64}$/)

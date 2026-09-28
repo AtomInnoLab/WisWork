@@ -141,6 +141,7 @@ export interface ChartSourceReport {
   sourceDigest?: string
   workbookContentDigest?: string
   workbookDataDigest?: string
+  formulaReferences: Array<{ categories?: string; values?: string }>
   series: Array<{ categories: string[]; values: string[] }>
 }
 /** Read a single chart's bounded cache and embedded workbook; external targets are classified, never fetched. */
@@ -212,10 +213,15 @@ async function inspectChartSourceFromZip(
     categories: points(item, 'c:cat') ?? [],
     values: points(item, 'c:val') ?? [],
   }))
+  const formulaReferences = allSeries.map((item) => ({
+    categories: formula(item, 'c:cat'),
+    values: formula(item, 'c:val'),
+  }))
   const result: ChartSourceReport = {
     shapeId,
     sourceKind: 'cache_only',
     verification: 'not_verified',
+    formulaReferences,
     series,
   }
   if (JSON.stringify(result).length > 128 * 1024) throw new Error('office_api_unsupported')
@@ -274,11 +280,9 @@ async function inspectChartSourceFromZip(
       byte.toString(16).padStart(2, '0'),
     ).join('')
   }
-  const formulaPairs = allSeries.map(
-    (item) => [formula(item, 'c:cat'), formula(item, 'c:val')] as const,
-  )
-  const ranges = formulaPairs.map(
-    ([cat, val]) => [cat ? range(cat) : undefined, val ? range(val) : undefined] as const,
+  const ranges = formulaReferences.map(
+    ({ categories, values }) =>
+      [categories ? range(categories) : undefined, values ? range(values) : undefined] as const,
   )
   const unsupportedFormula =
     !series.length ||

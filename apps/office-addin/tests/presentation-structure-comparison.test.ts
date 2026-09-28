@@ -564,6 +564,76 @@ it('does not warn for embedded workbook metadata changes with identical cells', 
   expect(result.content.status).toBe('incomplete')
 })
 
+it('reports chart formula drift even when visible caches and workbook cells stay unchanged', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.type === 'chart' ? 'Chart' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const chartPath = Object.keys(zip.files).find((path) =>
+    /^ppt\/charts\/chart\d+\.xml$/.test(path),
+  )!
+  const chart = await zip.file(chartPath)!.async('string')
+  const edited = chart.replace(/(<c:val>[\s\S]*?<c:f>)[^<]+/, '$1Sheet1!$C$2:$C$3')
+  expect(edited).not.toBe(chart)
+  zip.file(chartPath, edited)
+  const result = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(result.content).toMatchObject({
+    status: 'warning',
+    cacheChanged: [],
+    workbookDataChanged: [],
+    chartFormulaChanged: ['chart'],
+  })
+  const detached = chart.replace(/<c:externalData[^>]*(?:\/>|>[\s\S]*?<\/c:externalData>)/, '')
+  expect(detached).not.toBe(chart)
+  zip.file(chartPath, detached)
+  const detachedResult = await comparePresentationPageStructure(
+    Buffer.from(bytes).toString('base64'),
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(detachedResult.content).toMatchObject({
+    status: 'warning',
+    cacheChanged: [],
+    chartSourceChanged: ['chart'],
+  })
+})
+
 it('checks embedded workbooks for all seventeen charts', async () => {
   const deck = benchmarkDeck()
   const chart = deck.slides[6]!.elements[1]!
