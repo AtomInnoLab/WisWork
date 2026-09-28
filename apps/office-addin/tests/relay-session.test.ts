@@ -239,6 +239,43 @@ describe('Office cloud relay session', () => {
     })
   })
 
+  it('aborts an active request when the paired PC explicitly revokes the session', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1'],
+      randomUUID: () => 'request_revoked',
+    })
+    const paired = session.connect('powerpoint')
+    socket.open()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_1',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_1',
+        capability: 'cap_1',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await paired
+    const pending = session.capabilityFetch('agent.v1', { messages: [] })
+    expect(frame(socket, 1).request_id).toBe('request_revoked')
+    socket.receive(JSON.stringify({ version: 2, type: 'relay.error', code: 'session_revoked' }))
+    await expect(pending).rejects.toThrow()
+    expect(session.snapshot().status).toBe('offline')
+    expect(socket.readyState).toBe(3)
+  })
+
   it('falls back to a new pairing if the Relay cannot resume the previous session', async () => {
     const first = new FakeSocket(),
       resume = new FakeSocket(),
