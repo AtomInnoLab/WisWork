@@ -24,8 +24,8 @@
       "metric": "Total sales and financial services revenue",
       "valueMillions": 13020768,
       "currency": "JPY",
-      "valueSource": "https://www.sony.com/en/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf",
-      "valueSourcePdfPage": 4
+      "valueSource": "https://www.sony.com/en/SonyInfo/IR/library/FY2023_20F_PDF.pdf",
+      "valueSourcePdfPage": 48
     }
   ],
   "illustrativeFx": {
