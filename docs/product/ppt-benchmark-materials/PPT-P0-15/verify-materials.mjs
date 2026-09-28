@@ -86,11 +86,10 @@ for (let i = 0; i < 8; i++) {
   const xml = await generated.file(`ppt/slides/slide${i + 1}.xml`)?.async('string')
   assert.ok(xml?.includes(`<a:t>${scenario.boundGeneration.expectedTitles[i]}</a:t>`))
 }
-assert.ok(
-  (await generated.file('ppt/slides/slide4.xml')?.async('string'))?.includes(
-    '招募、工作坊、三个月后访谈',
-  ),
-)
+const generatedPage = await generated.file('ppt/slides/slide4.xml')?.async('string')
+assert.ok(generatedPage?.includes('招募、工作坊、三个月后访谈'))
+assert.ok(generatedPage?.includes('<p:pic>'))
+assert.ok(generatedPage?.includes('participant-image'))
 console.log(
   'PPT-P0-15: seventeen inputs, two eight-page native decks, four charts and exact edit targets verified',
 )

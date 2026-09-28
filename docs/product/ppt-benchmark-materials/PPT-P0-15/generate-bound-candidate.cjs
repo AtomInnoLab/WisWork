@@ -5,6 +5,7 @@ const { compilePresentationDeck } = require('@wiswork/pptx-engine/presentation-c
 async function main() {
   const root = __dirname
   const scenario = JSON.parse(await readFile(join(root, 'scenario.json'), 'utf8'))
+  const illustration = (await readFile(join(root, 'images/schematic-07.png'))).toString('base64')
   const titles = scenario.boundGeneration.expectedTitles
   const bodies = [
     'Deardorff 等，PLOS ONE 2020。此稿是现稿修改路径对照，研究主张仍待科研审阅。',
@@ -26,7 +27,17 @@ async function main() {
       textColor: '122B43',
       accentColor: '008086',
     },
-    assets: [],
+    assets: [
+      {
+        id: 'participant-illustration',
+        mime: 'image/png',
+        width: 960,
+        height: 540,
+        base64: illustration,
+        source: 'WisWork 自制示意图 07',
+        license: 'owned',
+      },
+    ],
     claims: [
       {
         id: 'source-1',
@@ -65,6 +76,16 @@ async function main() {
         },
         ...(index === 3
           ? [
+              {
+                kind: 'image',
+                id: 'participant-image',
+                assetId: 'participant-illustration',
+                x: 0.85,
+                y: 4.05,
+                w: 5.5,
+                h: 1.7,
+                fit: 'contain',
+              },
               {
                 kind: 'text',
                 id: 'left-caption',

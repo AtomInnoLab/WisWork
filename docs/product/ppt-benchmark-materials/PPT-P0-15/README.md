@@ -9,7 +9,7 @@
 - `images/schematic-01.png` 至 `schematic-12.png` 与 `asset-rights.json`：自制授权示意图，**不代表论文测量数据**。现稿已嵌入图片；独立文件用于权利核对和生成绑定稿的素材输入。
 - `scenario.json`：任意现稿的两对象修改、禁止修改页、手工位移冲突和生成绑定稿目标。生成绑定稿必须在验收时由 WisWork 从同一论文生产并导入，实际 Project/Slide/Host ID 与回执不能由材料包预造。
 
-`wiswork-generated-candidate.pptx` 使用仓库 PPTX 引擎和同一研究内容编译，含八页原生对象与两张图表。它只是生成路径的可检查候选，尚无 PowerPoint 导入映射。可运行 `node -r tsx/cjs generate-bound-candidate.cjs` 重建。
+`wiswork-generated-candidate.pptx` 使用仓库 PPTX 引擎和同一研究内容编译，含八页原生对象、同一授权示意图与两张图表。它只是生成路径的可检查候选，尚无 PowerPoint 导入映射。可运行 `node -r tsx/cjs generate-bound-candidate.cjs` 重建。
 
 `SHA256SUMS` 冻结上述 17 份输入；`verify-materials.mjs` 核对全部摘要、图片许可、两份八页原生稿、四张原生图表和第 4 页目标对象。复用原文与素材不复用其他任务的执行结果。
 
