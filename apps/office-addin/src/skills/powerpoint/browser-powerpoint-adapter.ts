@@ -766,6 +766,29 @@ function geometryApplied(
 }
 
 export class BrowserPowerPointAdapter implements PowerPointAdapter {
+  private async runScreenshot<T>(
+    minimumVersion: '1.8' | '1.10',
+    callback: (context: RuntimeRecord) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      cancelled(signal)
+      try {
+        return await this.run(minimumVersion, callback)
+      } catch (error) {
+        cancelled(signal)
+        // A fresh PowerPoint.run context is required after a rejected host batch.
+        if (
+          attempt > 0 ||
+          !error ||
+          typeof error !== 'object' ||
+          !['ActivityLimitReached', 'Timeout'].includes(String((error as { code?: unknown }).code))
+        )
+          throw error
+      }
+    }
+  }
+
   private run<T>(
     minimumVersion: '1.4' | '1.8' | '1.10',
     callback: (context: RuntimeRecord) => Promise<T>,
@@ -1277,17 +1300,21 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     signal?: AbortSignal,
   ): Promise<{ base64: string; mime: 'image/png' }> {
     cancelled(signal)
-    return this.run('1.8', async (context) => {
-      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-      const slide = await getSlide(context, slides, slideIndex, signal)
-      if (typeof slide.getImageAsBase64 !== 'function') throw new Error('office_api_unsupported')
-      const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
-        width: 960,
-      })
-      await sync(context, signal)
-      if (typeof image.value !== 'string') throw new Error('office_read_failed')
-      return { base64: image.value, mime: 'image/png' }
-    })
+    return this.runScreenshot(
+      '1.8',
+      async (context) => {
+        const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+        const slide = await getSlide(context, slides, slideIndex, signal)
+        if (typeof slide.getImageAsBase64 !== 'function') throw new Error('office_api_unsupported')
+        const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
+          width: 960,
+        })
+        await sync(context, signal)
+        if (typeof image.value !== 'string') throw new Error('office_read_failed')
+        return { base64: image.value, mime: 'image/png' }
+      },
+      signal,
+    )
   }
 
   async readSlideText(
@@ -1359,127 +1386,133 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     cancelled(signal)
     if (typeof slideId !== 'string' || !slideId.length || slideId.length > 256)
       throw new Error('invalid_tool_input')
-    return this.run('1.10', async (context) => {
-      const presentation = context.presentation as RuntimeRecord
-      const slides = presentation.slides as RuntimeRecord
-      const pageSetup = presentation.pageSetup as RuntimeRecord | undefined
-      if (typeof slides?.getItem !== 'function' || typeof pageSetup?.load !== 'function')
-        throw new Error('office_api_unsupported')
-      // Resolve the durable host ID directly; global verification only visits the first 20 pages.
-      const slide = (slides.getItem as (id: string) => RuntimeRecord)(slideId)
-      const collection = slide?.shapes as RuntimeRecord | undefined
-      if (
-        typeof slide?.load !== 'function' ||
-        typeof collection?.load !== 'function' ||
-        typeof slide.getImageAsBase64 !== 'function'
-      )
-        throw new Error('office_api_unsupported')
-      ;(slide.load as (properties: string) => void)('id')
-      ;(pageSetup.load as (properties: string[]) => void)(['slideWidth', 'slideHeight'])
-      loadShapes(collection)
-      const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
-        width: 960,
-      })
-      await sync(context, signal)
-      if (slide.id !== slideId || !Array.isArray(collection.items))
-        throw new Error('office_read_failed')
-      const slideWidth = pageSetup.slideWidth,
-        slideHeight = pageSetup.slideHeight
-      if (
-        typeof slideWidth !== 'number' ||
-        !Number.isFinite(slideWidth) ||
-        slideWidth <= 0 ||
-        typeof slideHeight !== 'number' ||
-        !Number.isFinite(slideHeight) ||
-        slideHeight <= 0
-      )
-        throw new Error('office_read_failed')
-      const raw = (collection.items as RuntimeRecord[]).slice(0, MAX_POWERPOINT_VERIFY_SHAPES)
-      for (const shape of raw) {
+    return this.runScreenshot(
+      '1.10',
+      async (context) => {
+        const presentation = context.presentation as RuntimeRecord
+        const slides = presentation.slides as RuntimeRecord
+        const pageSetup = presentation.pageSetup as RuntimeRecord | undefined
+        if (typeof slides?.getItem !== 'function' || typeof pageSetup?.load !== 'function')
+          throw new Error('office_api_unsupported')
+        // Resolve the durable host ID directly; global verification only visits the first 20 pages.
+        const slide = (slides.getItem as (id: string) => RuntimeRecord)(slideId)
+        const collection = slide?.shapes as RuntimeRecord | undefined
         if (
-          !shape ||
-          typeof shape.id !== 'string' ||
-          !shape.id.length ||
-          shape.id.length > 256 ||
-          ['left', 'top', 'width', 'height'].some(
-            (key) => typeof shape[key] !== 'number' || !Number.isFinite(shape[key]),
-          ) ||
-          (shape.width as number) < 0 ||
-          (shape.height as number) < 0 ||
-          !Number.isFinite((shape.left as number) + (shape.width as number)) ||
-          !Number.isFinite((shape.top as number) + (shape.height as number))
+          typeof slide?.load !== 'function' ||
+          typeof collection?.load !== 'function' ||
+          typeof slide.getImageAsBase64 !== 'function'
         )
-          throw new Error('office_read_failed')
-      }
-      const shapes = raw.map(shapeInfo)
-      if (new Set(shapes.map((shape) => shape.id)).size !== shapes.length)
-        throw new Error('office_read_failed')
-      const overflows: SlideVerification['overflows'] = []
-      for (const shape of shapes) {
-        if (shape.left < 0)
-          overflows.push({ shapeId: shape.id, edge: 'left', overflowBy: -shape.left })
-        if (shape.top < 0)
-          overflows.push({ shapeId: shape.id, edge: 'top', overflowBy: -shape.top })
-        if (shape.left + shape.width > slideWidth)
-          overflows.push({
-            shapeId: shape.id,
-            edge: 'right',
-            overflowBy: shape.left + shape.width - slideWidth,
-          })
-        if (shape.top + shape.height > slideHeight)
-          overflows.push({
-            shapeId: shape.id,
-            edge: 'bottom',
-            overflowBy: shape.top + shape.height - slideHeight,
-          })
-      }
-      const overlaps: SlideVerification['overlaps'] = []
-      let overlapsTruncated = false
-      for (let i = 0; i < shapes.length; i++)
-        for (let j = i + 1; j < shapes.length; j++) {
-          const a = shapes[i]!,
-            b = shapes[j]!
-          if (
-            explicitCanvasBackground(a, slideWidth, slideHeight) ||
-            explicitCanvasBackground(b, slideWidth, slideHeight)
-          )
-            continue
-          const overlapX = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left)
-          const overlapY = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top)
-          if (overlapX > 0 && overlapY > 0) {
-            if (overlaps.length === MAX_POWERPOINT_VERIFY_OVERLAPS) {
-              overlapsTruncated = true
-              break
-            }
-            overlaps.push({ shapeAId: a.id, shapeBId: b.id, overlapX, overlapY })
-          }
-        }
-      let base64 = validatePowerPointPageScreenshot(image.value)
-      // Keep a single PNG well below the Office transport's 256 KiB total request limit.
-      // Use the same deterministic widths when recapturing for a review.
-      const fitsModelBudget = () => atob(base64).length <= 64 * 1024
-      for (const width of [640, 480, 320, 240]) {
-        if (fitsModelBudget()) break
-        const smaller = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
-          width,
+          throw new Error('office_api_unsupported')
+        ;(slide.load as (properties: string) => void)('id')
+        ;(pageSetup.load as (properties: string[]) => void)(['slideWidth', 'slideHeight'])
+        loadShapes(collection)
+        const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
+          width: 960,
         })
         await sync(context, signal)
-        base64 = validatePowerPointPageScreenshot(smaller.value)
-      }
-      if (!fitsModelBudget()) throw new Error('office_image_too_large')
-      cancelled(signal)
-      return {
-        slideId,
-        slideWidth,
-        slideHeight,
-        shapes,
-        shapesTruncated: collection.items.length > MAX_POWERPOINT_VERIFY_SHAPES,
-        overflows,
-        overlaps,
-        overlapsTruncated,
-        screenshot: { mime: 'image/png', base64 },
-      }
-    })
+        if (slide.id !== slideId || !Array.isArray(collection.items))
+          throw new Error('office_read_failed')
+        const slideWidth = pageSetup.slideWidth,
+          slideHeight = pageSetup.slideHeight
+        if (
+          typeof slideWidth !== 'number' ||
+          !Number.isFinite(slideWidth) ||
+          slideWidth <= 0 ||
+          typeof slideHeight !== 'number' ||
+          !Number.isFinite(slideHeight) ||
+          slideHeight <= 0
+        )
+          throw new Error('office_read_failed')
+        const raw = (collection.items as RuntimeRecord[]).slice(0, MAX_POWERPOINT_VERIFY_SHAPES)
+        for (const shape of raw) {
+          if (
+            !shape ||
+            typeof shape.id !== 'string' ||
+            !shape.id.length ||
+            shape.id.length > 256 ||
+            ['left', 'top', 'width', 'height'].some(
+              (key) => typeof shape[key] !== 'number' || !Number.isFinite(shape[key]),
+            ) ||
+            (shape.width as number) < 0 ||
+            (shape.height as number) < 0 ||
+            !Number.isFinite((shape.left as number) + (shape.width as number)) ||
+            !Number.isFinite((shape.top as number) + (shape.height as number))
+          )
+            throw new Error('office_read_failed')
+        }
+        const shapes = raw.map(shapeInfo)
+        if (new Set(shapes.map((shape) => shape.id)).size !== shapes.length)
+          throw new Error('office_read_failed')
+        const overflows: SlideVerification['overflows'] = []
+        for (const shape of shapes) {
+          if (shape.left < 0)
+            overflows.push({ shapeId: shape.id, edge: 'left', overflowBy: -shape.left })
+          if (shape.top < 0)
+            overflows.push({ shapeId: shape.id, edge: 'top', overflowBy: -shape.top })
+          if (shape.left + shape.width > slideWidth)
+            overflows.push({
+              shapeId: shape.id,
+              edge: 'right',
+              overflowBy: shape.left + shape.width - slideWidth,
+            })
+          if (shape.top + shape.height > slideHeight)
+            overflows.push({
+              shapeId: shape.id,
+              edge: 'bottom',
+              overflowBy: shape.top + shape.height - slideHeight,
+            })
+        }
+        const overlaps: SlideVerification['overlaps'] = []
+        let overlapsTruncated = false
+        for (let i = 0; i < shapes.length; i++)
+          for (let j = i + 1; j < shapes.length; j++) {
+            const a = shapes[i]!,
+              b = shapes[j]!
+            if (
+              explicitCanvasBackground(a, slideWidth, slideHeight) ||
+              explicitCanvasBackground(b, slideWidth, slideHeight)
+            )
+              continue
+            const overlapX = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left)
+            const overlapY = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top)
+            if (overlapX > 0 && overlapY > 0) {
+              if (overlaps.length === MAX_POWERPOINT_VERIFY_OVERLAPS) {
+                overlapsTruncated = true
+                break
+              }
+              overlaps.push({ shapeAId: a.id, shapeBId: b.id, overlapX, overlapY })
+            }
+          }
+        let base64 = validatePowerPointPageScreenshot(image.value)
+        // Keep a single PNG well below the Office transport's 256 KiB total request limit.
+        // Use the same deterministic widths when recapturing for a review.
+        const fitsModelBudget = () => atob(base64).length <= 64 * 1024
+        for (const width of [640, 480, 320, 240]) {
+          if (fitsModelBudget()) break
+          const smaller = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)(
+            {
+              width,
+            },
+          )
+          await sync(context, signal)
+          base64 = validatePowerPointPageScreenshot(smaller.value)
+        }
+        if (!fitsModelBudget()) throw new Error('office_image_too_large')
+        cancelled(signal)
+        return {
+          slideId,
+          slideWidth,
+          slideHeight,
+          shapes,
+          shapesTruncated: collection.items.length > MAX_POWERPOINT_VERIFY_SHAPES,
+          overflows,
+          overlaps,
+          overlapsTruncated,
+          screenshot: { mime: 'image/png', base64 },
+        }
+      },
+      signal,
+    )
   }
 
   async verifySlides(signal?: AbortSignal): Promise<VerifySlidesResult> {

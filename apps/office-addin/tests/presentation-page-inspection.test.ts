@@ -94,6 +94,40 @@ describe('exact imported PowerPoint page inspection', () => {
     ])
     expect(result.overlaps).toEqual([{ shapeAId: 'a', shapeBId: 'b', overlapX: 7, overlapY: 10 }])
   })
+  it('retries a temporary host screenshot failure in a fresh context and rechecks page identity', async () => {
+    const { adapter, context, slides } = setup()
+    const hostError = Object.assign(new Error('busy'), { code: 'ActivityLimitReached' })
+    context.sync.mockRejectedValueOnce(hostError)
+    expect((await adapter.inspectPresentationPage('host-page-25')).screenshot.base64).toBe(png)
+    expect(slides.getItem).toHaveBeenCalledTimes(2)
+    expect(slides.getItem).toHaveBeenNthCalledWith(2, 'host-page-25')
+  })
+  it('bounds transient host retries and never retries an invalid page', async () => {
+    const { adapter, context, slides, slide } = setup()
+    context.sync.mockRejectedValue(
+      Object.assign(new Error('busy'), { code: 'ActivityLimitReached' }),
+    )
+    await expect(adapter.inspectPresentationPage('host-page-25')).rejects.toThrow('busy')
+    expect(slides.getItem).toHaveBeenCalledTimes(2)
+    context.sync.mockReset().mockResolvedValue(undefined)
+    slides.getItem.mockClear()
+    slide.id = 'wrong-page'
+    await expect(adapter.inspectPresentationPage('host-page-25')).rejects.toThrow(
+      'office_read_failed',
+    )
+    expect(slides.getItem).toHaveBeenCalledTimes(1)
+  })
+  it('retries a transient ordinary slide screenshot from its slide index', async () => {
+    const { adapter, context, slides, slide } = setup()
+    Object.assign(slides, { getCount: vi.fn(() => ({ value: 1 })) })
+    slides.getItemAt.mockImplementation(() => slide)
+    slide.getImageAsBase64.mockImplementationOnce(() => {
+      throw Object.assign(new Error('busy'), { code: 'Timeout' })
+    })
+    expect(await adapter.screenshotSlide(0)).toEqual({ mime: 'image/png', base64: png })
+    expect(slides.getItemAt).toHaveBeenCalledTimes(2)
+    expect(context.sync).toHaveBeenCalledTimes(5)
+  })
   it('reduces dense screenshots to the model image budget and rejects unbounded output', async () => {
     const { adapter, slide } = setup()
     const dense = new PNG({ width: 400, height: 200 })
