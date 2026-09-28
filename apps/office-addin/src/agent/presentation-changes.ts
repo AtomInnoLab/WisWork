@@ -390,13 +390,15 @@ export function createPresentationChangesController(
                           ? [saved.record.hostSlideId]
                           : [],
                         affectedPageCount: 1,
-                        before: `原图：${saved.record.oldShapeId}\n媒体摘要：${saved.record.original.mediaDigest}\n原图已持久备份`,
+                        before: `原图：${saved.record.oldShapeId}\n媒体摘要：${saved.record.original.mediaDigest}\n原图已持久备份${saved.record.reapplies ? `\n重新应用来源：${saved.record.reapplies}` : ''}`,
                         after: `新图：${saved.record.insertedShapeId ?? '尚未记录'}\n媒体摘要：${saved.record.assetDigest}${saved.record.restoredShapeId ? `\n恢复图片：${saved.record.restoredShapeId}` : ''}`,
                         actions:
                           saved.record.state === 'complete'
                             ? ['inspect', 'undo']
                             : saved.record.state === 'undone'
-                              ? ['inspect']
+                              ? saved.record.sourceBackup
+                                ? ['inspect', 'reapply']
+                                : ['inspect']
                               : ['inspect', 'resume'],
                       },
                       record: copy(saved.record),

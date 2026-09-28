@@ -275,6 +275,7 @@ export function createOfficeHostRuntime(
                 'reapply_existing_presentation_change',
                 'replace_existing_presentation_image',
                 'resume_existing_presentation_image_change',
+                'reapply_existing_presentation_image_change',
                 'undo_existing_presentation_image_change',
                 'stage_existing_presentation_page_change',
                 'resume_existing_presentation_page_change',

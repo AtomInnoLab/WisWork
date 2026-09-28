@@ -1,6 +1,75 @@
 import { expect, it, vi } from 'vitest'
 import { createPresentationChangesController } from '../src/agent/presentation-changes.js'
 import type { PresentationHistoryEntry } from '../src/skills/powerpoint/presentation-change-history.js'
+import type { PresentationExistingImageChange } from '../src/skills/powerpoint/presentation-existing-image.js'
+
+it('routes an undone image reapply by its saved ID only when a durable replacement source exists', async () => {
+  const picture = (shapeId: string, mediaDigest: string) => ({
+    slideId: 'slide',
+    shapeId,
+    geometry: { left: 0, top: 0, width: 10, height: 10 },
+    rotation: 0,
+    name: 'Picture',
+    altTextTitle: '',
+    altTextDescription: '',
+    zOrderPosition: 0,
+    shapeIds: [shapeId],
+    pictureFingerprint: mediaDigest,
+    mediaDigest,
+  })
+  const record: PresentationExistingImageChange = {
+    version: 1,
+    changeId: 'image-change',
+    documentId: 'doc',
+    baselineId: 'baseline',
+    baselineDigest: 'a'.repeat(64),
+    scope: { slideIds: ['slide'], shapeIds: ['old'] },
+    hostSlideId: 'slide',
+    oldShapeId: 'old',
+    assetDigest: 'b'.repeat(64),
+    original: picture('old', 'c'.repeat(64)),
+    backup: { attachmentId: 'c'.repeat(64), sizeBytes: 68, mime: 'image/png' },
+    sourceBackup: { attachmentId: 'b'.repeat(64), sizeBytes: 68, mime: 'image/png' },
+    state: 'undone',
+    insertedShapeId: 'new',
+    after: picture('new', 'b'.repeat(64)),
+    undoBaseline: picture('new', 'b'.repeat(64)),
+    restoredShapeId: 'restored',
+  }
+  const executeTool = vi.fn(async () => ({ output: '{}', summary: 'Done' }))
+  const controller = createPresentationChangesController({
+    available: () => false,
+    existingAvailable: () => true,
+    artifact: () => undefined,
+    documentId: async () => 'doc',
+    listChangeHistory: () => [
+      {
+        id: 'existing_image:image-change',
+        sequence: 1,
+        legacy: false,
+        kind: 'existing_image',
+        record,
+      },
+    ],
+    executeTool,
+  })
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect', 'reapply'])
+  await controller.run('existing_image:image-change', 'reapply')
+  expect(executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'reapply_existing_presentation_image_change',
+      input: { change_id: 'image-change' },
+    }),
+    expect.any(AbortSignal),
+  )
+  delete record.sourceBackup
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect'])
+  executeTool.mockClear()
+  await controller.run('existing_image:image-change', 'reapply')
+  expect(executeTool).not.toHaveBeenCalled()
+})
 function setup() {
   let documentId = 'doc',
     available = true
