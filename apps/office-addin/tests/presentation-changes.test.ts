@@ -354,6 +354,64 @@ it('counts batch page savepoints as linked PC backups', async () => {
   await controller.run('existing_batch:batch', 'resume')
   expect(controller.snapshot().error).toContain('当前页面与保存点不一致')
 })
+it('routes chart reapply only for undone history with retained values and backup', async () => {
+  const record: PresentationExistingChartChange = {
+    version: 1,
+    changeId: 'chart-redo',
+    documentId: 'doc',
+    oldSlideId: 'old',
+    shapeId: '7',
+    slideIndex: 0,
+    beforeSlideIds: ['old'],
+    beforePackageDigest: 'a'.repeat(64),
+    afterPackageDigest: 'b'.repeat(64),
+    backup: { backupId: 'backup', sha256: 'c'.repeat(64), sizeBytes: 120 },
+    state: 'undone',
+    newSlideId: 'edited',
+    restoredSlideId: 'restored',
+    values: [['5']],
+  }
+  const executeTool = vi.fn(async () => ({ output: '{}', mutated: false, summary: 'proposed' }))
+  const controller = createPresentationChangesController({
+    available: () => false,
+    existingAvailable: () => true,
+    artifact: () => undefined,
+    documentId: async () => 'doc',
+    listChangeHistory: () => [
+      {
+        id: 'existing_chart:chart-redo',
+        kind: 'existing_chart',
+        sequence: 1,
+        legacy: false,
+        record,
+      },
+    ],
+    executeTool,
+  })
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]).toMatchObject({
+    pageId: 'restored',
+    actions: ['inspect', 'reapply', 'release'],
+  })
+  await controller.run('existing_chart:chart-redo', 'reapply')
+  expect(executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'reapply_slide_chart_values_change',
+      input: { change_id: 'chart-redo' },
+    }),
+    expect.any(AbortSignal),
+  )
+  record.backupReleasedAt = '2026-09-29T00:00:00.000Z'
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect'])
+  delete record.backupReleasedAt
+  delete record.values
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect', 'release'])
+  executeTool.mockClear()
+  await controller.run('existing_chart:chart-redo', 'reapply')
+  expect(executeTool).not.toHaveBeenCalled()
+})
 it('offers one chart backup release after cancellation and accepts the receipt update', async () => {
   let record: PresentationExistingChartChange = {
     version: 1,

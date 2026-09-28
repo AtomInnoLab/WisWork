@@ -324,10 +324,13 @@ export function createPresentationChangesController(
                     id: saved.id,
                     source: 'existing_chart',
                     kind: 'chart',
-                    pageId: saved.record.newSlideId ?? saved.record.oldSlideId,
+                    pageId:
+                      saved.record.state === 'undone'
+                        ? saved.record.restoredSlideId!
+                        : (saved.record.newSlideId ?? saved.record.oldSlideId),
                     state: saved.record.state,
                     affectedPageCount: 1,
-                    before: `原页：${saved.record.oldSlideId}\n图表：${saved.record.shapeId}\n包摘要：${saved.record.beforePackageDigest}\n${saved.record.backupReleasedAt ? `备份已释放：${saved.record.backupReleasedAt}` : '原页已持久备份'}`,
+                    before: `原页：${saved.record.oldSlideId}\n图表：${saved.record.shapeId}\n包摘要：${saved.record.beforePackageDigest}\n${saved.record.backupReleasedAt ? `备份已释放：${saved.record.backupReleasedAt}` : '原页已持久备份'}${saved.record.reapplies ? `\n重新应用来源：${saved.record.reapplies}` : ''}`,
                     after: `新页：${saved.record.newSlideId ?? '尚未记录'}\n包摘要：${saved.record.afterPackageDigest}${saved.record.restoredSlideId ? `\n恢复页：${saved.record.restoredSlideId}` : ''}`,
                     actions:
                       saved.record.state === 'applied'
@@ -335,6 +338,11 @@ export function createPresentationChangesController(
                         : ['undone', 'cancelled'].includes(saved.record.state)
                           ? [
                               'inspect',
+                              ...(saved.record.state === 'undone' &&
+                              saved.record.values &&
+                              !saved.record.backupReleasedAt
+                                ? ['reapply' as const]
+                                : []),
                               ...(saved.record.backupReleasedAt ? [] : ['release' as const]),
                             ]
                           : ['inspect', 'resume'],

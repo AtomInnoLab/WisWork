@@ -274,7 +274,7 @@ it('shows partial batch progress and both recovery choices', async () => {
   }
 })
 
-it.each(['existing_batch', 'existing_image'] as const)(
+it.each(['existing_batch', 'existing_image', 'existing_chart'] as const)(
   'routes the saved %s reapply button by its exact history ID',
   async (source) => {
     const run = vi.fn()
@@ -285,7 +285,12 @@ it.each(['existing_batch', 'existing_image'] as const)(
           {
             id: `${source}:redo`,
             source,
-            kind: source === 'existing_image' ? 'image' : 'text',
+            kind:
+              source === 'existing_image'
+                ? 'image'
+                : source === 'existing_chart'
+                  ? 'chart'
+                  : 'text',
             pageId: 'slide',
             state: 'undone',
             before: 'old',
@@ -309,7 +314,9 @@ it.each(['existing_batch', 'existing_image'] as const)(
         container.querySelector<HTMLButtonElement>('[aria-label="重新应用 slide"]')!.click(),
       )
       expect(run).toHaveBeenCalledWith(`${source}:redo`, 'reapply')
-      expect(container.textContent).toContain('不代表当前页面 QA 通过')
+      expect(container.textContent).toContain(
+        source === 'existing_chart' ? '变更后需重新采集页面 QA' : '不代表当前页面 QA 通过',
+      )
     } finally {
       await act(async () => root.unmount())
     }
