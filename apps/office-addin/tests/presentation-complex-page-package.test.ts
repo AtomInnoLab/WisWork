@@ -44,6 +44,24 @@ describe('complex PowerPoint page package read', () => {
     })
   })
 
+  it('reads bounded explicit chart direction, grouping, legend and value-label options', async () => {
+    const styled = chart
+      .replace(
+        '<c:barChart>',
+        '<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:dLbls><c:showVal val="1"/></c:dLbls>',
+      )
+      .replace('</c:chart>', '<c:legend><c:legendPos val="b"/></c:legend></c:chart>')
+    const result = await inspectPowerPointComplexPagePackage(
+      await packageWith(slide(chartFrame), rels, styled),
+    )
+    expect(result.charts[0]?.visualOptions).toEqual({
+      barDirections: ['col'],
+      groupings: ['clustered'],
+      legendPositions: ['b'],
+      valueLabels: ['1'],
+    })
+  })
+
   it('rejects external, traversing, and non-chart relationships', async () => {
     for (const replacement of [
       'TargetMode="External" Target="https://example.com/chart.xml"',

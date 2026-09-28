@@ -256,6 +256,7 @@ export async function comparePresentationPageStructure(
     changed: string[]
     cacheChanged: string[]
     chartTypeChanged: string[]
+    chartStyleChanged: string[]
     workbookBytesChanged: string[]
     backgroundChanged: boolean
     backgroundUnchecked: boolean
@@ -356,6 +357,7 @@ export async function comparePresentationPageStructure(
   const changed: string[] = [],
     cacheChanged: string[] = [],
     chartTypeChanged: string[] = [],
+    chartStyleChanged: string[] = [],
     workbookBytesChanged: string[] = [],
     mediaChanged: string[] = [],
     mediaChecked: string[] = [],
@@ -445,6 +447,8 @@ export async function comparePresentationPageStructure(
         if (!original || !current || original.truncated || current.truncated) continue
         if (JSON.stringify(original.plotTypes) !== JSON.stringify(current.plotTypes))
           chartTypeChanged.push(element.name)
+        if (JSON.stringify(original.visualOptions) !== JSON.stringify(current.visualOptions))
+          chartStyleChanged.push(element.name)
         if (
           (original.series.length || current.series.length) &&
           JSON.stringify(original.series) !== JSON.stringify(current.series)
@@ -520,6 +524,7 @@ export async function comparePresentationPageStructure(
     cacheChanged.length ||
     backgroundChanged ||
     chartTypeChanged.length ||
+    chartStyleChanged.length ||
     workbookBytesChanged.length ||
     mediaChanged.length ||
     altTextChanged.length ||
@@ -536,6 +541,7 @@ export async function comparePresentationPageStructure(
     backgroundUnchecked,
     cacheChanged,
     chartTypeChanged,
+    chartStyleChanged,
     workbookBytesChanged,
     mediaChanged,
     mediaChecked,

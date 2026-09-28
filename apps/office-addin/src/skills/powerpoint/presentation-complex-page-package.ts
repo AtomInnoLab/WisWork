@@ -48,6 +48,12 @@ export interface ComplexPagePackageSummary {
   charts: Array<{
     shapeId: string
     plotTypes: string[]
+    visualOptions: {
+      barDirections: string[]
+      groupings: string[]
+      legendPositions: string[]
+      valueLabels: string[]
+    }
     series: Array<{ name?: string; categories: string[]; values: string[] }>
     cacheOnly: true
     truncated?: boolean
@@ -189,6 +195,24 @@ export async function inspectPowerPointComplexPagePackage(
     ].filter((type) => elements(chart, `c:${type}`).length > 0)
     if (!plotTypes.length) output.truncated = true
     const allSeries = elements(chart, 'c:ser')
+    const options = (tag: string): string[] => {
+      const nodes = tagNodes(chart, tag)
+      if (nodes.length > 8) output.truncated = true
+      return nodes.slice(0, 8).map((node) => {
+        const val = (node[':@'] as Node | undefined)?.['@_val']
+        if (typeof val !== 'string' || val.length > 32) {
+          output.truncated = true
+          return ''
+        }
+        return val
+      })
+    }
+    const visualOptions = {
+      barDirections: options('c:barDir'),
+      groupings: options('c:grouping'),
+      legendPositions: options('c:legendPos'),
+      valueLabels: options('c:showVal'),
+    }
     const series = allSeries.slice(0, 8).map((ser) => {
       const cache = (container: string): string[] => {
         const groups = elements(ser, container)
@@ -228,6 +252,7 @@ export async function inspectPowerPointComplexPagePackage(
     output.charts.push({
       shapeId,
       plotTypes,
+      visualOptions,
       series,
       cacheOnly: true,
       ...(output.truncated ? { truncated: true } : {}),

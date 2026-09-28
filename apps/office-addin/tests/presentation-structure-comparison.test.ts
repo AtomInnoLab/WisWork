@@ -423,6 +423,55 @@ it('detects chart category, series label and native plot type drift after host e
   }
 })
 
+it('warns when native chart direction, grouping, legend or labels change without changing values', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = source.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.type === 'chart' ? 'Chart' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const path = Object.keys(zip.files).find((item) => /^ppt\/charts\/chart\d+\.xml$/.test(item))!
+  const original = await zip.file(path)!.async('string')
+  for (const edited of [
+    original.replace(/<c:barDir val="[^"]+"\/>/, '<c:barDir val="bar"/>'),
+    original.replace(/<c:grouping val="[^"]+"\/>/, '<c:grouping val="stacked"/>'),
+    original.replace('</c:chart>', '<c:legend><c:legendPos val="b"/></c:legend></c:chart>'),
+    original.replace('</c:barChart>', '<c:dLbls><c:showVal val="1"/></c:dLbls></c:barChart>'),
+  ]) {
+    expect(edited).not.toBe(original)
+    zip.file(path, edited)
+    const result = await comparePresentationPageStructure(
+      Buffer.from(bytes).toString('base64'),
+      0,
+      {
+        slideId: 'host',
+        slideWidth: 960,
+        slideHeight: 540,
+        shapes,
+        shapesTruncated: false,
+        overflows: [],
+        overlaps: [],
+        overlapsTruncated: false,
+        screenshot: { mime: 'image/png', base64: '' },
+      },
+      await zip.generateAsync({ type: 'base64' }),
+    )
+    expect(result.content).toMatchObject({
+      status: 'warning',
+      chartStyleChanged: ['chart'],
+      cacheChanged: [],
+    })
+  }
+})
+
 it('reports embedded chart workbook bytes changing while cached values stay the same', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[6]!]
