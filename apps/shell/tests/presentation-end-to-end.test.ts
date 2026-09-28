@@ -50,7 +50,9 @@ describe('Taskpane to durable PC compilation', () => {
       const outcome = await recreated.executeTool(call)
       expect(outcome.isError).not.toBe(true)
       expect(compile).toHaveBeenCalledOnce()
-      const opened = await openPptx(vfs.readBytes(`/home/user/generated/${deck.id}.pptx`))
+      const { path } = JSON.parse(outcome.output)
+      expect(path).toBe(`/home/user/generated/${deck.id}/request-1/deck.pptx`)
+      const opened = await openPptx(vfs.readBytes(path))
       expect(opened.deck.slides).toHaveLength(8)
       expect(opened.deck.slides[5]!.elements.some((element) => element.type === 'table')).toBe(true)
       expect(opened.deck.slides[6]!.elements.some((element) => element.type === 'chart')).toBe(true)
@@ -122,7 +124,9 @@ describe('Taskpane project recovery controls', () => {
         phase: 'idle',
         project: { status: 'compiled', checks: { render: 'not_run' } },
       })
-      const opened = await openPptx(vfs.readBytes(`/home/user/generated/${deck.id}.pptx`))
+      const opened = await openPptx(
+        vfs.readBytes(`/home/user/generated/${deck.id}/request-1/deck.pptx`),
+      )
       expect(opened.deck.slides).toHaveLength(8)
       expect(compile).toHaveBeenCalledTimes(2)
       await project.restore()
@@ -189,8 +193,11 @@ describe('planned production across restarts', () => {
         name: 'compile_deck_with_pptxgenjs',
         input: { request_id: 'build-1', plan_revision: 1, deck: benchmarkPlannedDeck() },
       }
-      expect((await generation.executeTool(call)).isError).not.toBe(true)
-      const before = vfs.readBytes(`/home/user/generated/${plan.projectId}.pptx`)
+      const compiled = await generation.executeTool(call)
+      expect(compiled.isError).not.toBe(true)
+      const { path } = JSON.parse(compiled.output)
+      expect(path).toBe(`/home/user/generated/${plan.projectId}/build-1/deck.pptx`)
+      const before = vfs.readBytes(path)
       expect((await openPptx(before)).deck.slides).toHaveLength(8)
       const next = { ...plan, brief: { ...plan.brief, objective: '修订汇报目标' } }
       expect(
@@ -210,7 +217,7 @@ describe('planned production across restarts', () => {
       })
       expect((await generation.executeTool(call)).isError).not.toBe(true)
       expect(compile).toHaveBeenCalledOnce()
-      expect(vfs.readBytes(`/home/user/generated/${plan.projectId}.pptx`)).toEqual(before)
+      expect(vfs.readBytes(path)).toEqual(before)
       expect(
         await generation.executeTool({ ...call, input: { ...call.input, request_id: 'build-2' } }),
       ).toMatchObject({ isError: true, output: 'presentation_revision_conflict' })

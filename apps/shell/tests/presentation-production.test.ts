@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +12,15 @@ import {
   benchmarkPlannedDeck,
 } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
 import { createPresentationService } from '../src/main/presentation-service'
+import {
+  convertSinglePagePackageToPng,
+  libreOfficeCommands,
+} from '../src/main/presentation-page-render'
+const sofficeAvailable = libreOfficeCommands().some(
+  (command) => spawnSync(command, ['--version'], { timeout: 5_000 }).status === 0,
+)
+if (process.env.WISWORK_REQUIRE_LIBREOFFICE === '1' && !sofficeAvailable)
+  throw new Error('LibreOffice is required for presentation visual comparison')
 const roots: string[] = []
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -241,6 +251,42 @@ it('keeps native page structure and explicit style identical between serial and 
       await structure('serial-style', slide.id),
     )
 })
+it.skipIf(!sofficeAvailable)(
+  'renders all eight serial and parallel pages identically in LibreOffice',
+  async () => {
+    const f = await setup()
+    await f.call('production_begin', { requestId: 'serial-visual', planRevision: 1, deck: f.deck })
+    expect((await f.call('production_run', { requestId: 'serial-visual' })).status).toBe('compiled')
+    f.plan.parallelism = 2
+    f.plan.slides.forEach((slide) => {
+      slide.dependsOn = []
+    })
+    expect((await f.call('save_plan', { expectedRevision: 1, plan: f.plan })).revision).toBe(2)
+    await f.call('production_begin', {
+      requestId: 'parallel-visual',
+      planRevision: 2,
+      deck: f.deck,
+    })
+    expect((await f.call('production_run', { requestId: 'parallel-visual' })).status).toBe(
+      'compiled',
+    )
+    for (const slide of f.deck.slides) {
+      const [serial, parallel] = await Promise.all(
+        ['serial-visual', 'parallel-visual'].map(async (requestId) => {
+          const page = await f.call('production_page', { requestId, pageId: slide.id })
+          return Buffer.from(
+            await convertSinglePagePackageToPng(
+              Buffer.from(page.pptxBase64, 'base64'),
+              new AbortController().signal,
+            ),
+          )
+        }),
+      )
+      expect(parallel.equals(serial), `Rendered page ${slide.id} drifted`).toBe(true)
+    }
+  },
+  180_000,
+)
 it('holds a dependent page pending when its predecessor fails, then resumes both safely', async () => {
   let fail = true
   const compile = vi.fn(async (input: unknown) => {
