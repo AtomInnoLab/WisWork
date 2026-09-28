@@ -245,6 +245,43 @@ it('tries bounded image URL candidates after a rejected animated image', async (
   ).rejects.toThrow('invalid_tool_input')
   expect(f.request).not.toHaveBeenCalled()
 })
+it('surfaces staged animated URLs after trying every candidate', async () => {
+  const f = setup()
+  const first = 'https://example.com/motion.webp'
+  const second = 'https://example.org/missing.png'
+  f.request.mockImplementation(
+    async (body) =>
+      new Response(
+        JSON.stringify(
+          body.url === first
+            ? {
+                attachmentId: f.attachmentId,
+                sha256: f.attachmentId,
+                name: 'remote-motion.webp',
+                sizeBytes: 12,
+                receivedBytes: 12,
+                status: 'failed',
+                error: 'animated_image_unsupported',
+                source: first,
+              }
+            : { error: 'remote_image_unavailable' },
+        ),
+      ),
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    remoteImagesAvailable: () => true,
+    animationFrameAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  await expect(skill.importUrls([first, second])).rejects.toThrow(
+    'presentation_animated_image_staged',
+  )
+  expect(f.request.mock.calls.map(([body]) => body.url)).toEqual([first, second])
+  expect(f.request.mock.calls.every(([body]) => body.stageAnimated === true)).toBe(true)
+})
 it('does not try another image candidate after a document change or cancellation', async () => {
   const f = setup()
   f.request.mockResolvedValue(new Response(JSON.stringify({ error: 'document_changed' })))

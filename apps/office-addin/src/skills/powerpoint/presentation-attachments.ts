@@ -288,9 +288,26 @@ export function createPresentationAttachmentSkill(
     }
     return scope(undefined, async (request) => {
       if (!options.remoteImagesAvailable?.()) throw new Error('presentation_assets_unavailable')
+      let stagedAnimation = false
+      let lastFailure = ''
       for (const url of urls) {
         try {
-          const result = metadata(await request({ operation: 'attachment_import_url', url }))
+          const result = metadata(
+            await request({
+              operation: 'attachment_import_url',
+              url,
+              ...(options.animationFrameAvailable?.() ? { stageAnimated: true } : {}),
+            }),
+          )
+          if (
+            result.status === 'failed' &&
+            result.error === 'animated_image_unsupported' &&
+            result.source &&
+            options.animationFrameAvailable?.()
+          ) {
+            stagedAnimation = true
+            continue
+          }
           if (result.status !== 'ready' || result.kind !== 'image' || !result.source)
             return invalid()
           return result
@@ -305,13 +322,11 @@ export function createPresentationAttachmentSkill(
             ].includes(code)
           )
             throw error
-          if (url === urls.at(-1))
-            throw new Error(urls.length === 1 ? code : 'presentation_image_candidates_exhausted', {
-              cause: error,
-            })
+          lastFailure = code
         }
       }
-      return invalid()
+      if (stagedAnimation) throw new Error('presentation_animated_image_staged')
+      throw new Error(urls.length === 1 ? lastFailure : 'presentation_image_candidates_exhausted')
     })
   }
   return {

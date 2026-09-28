@@ -65,7 +65,7 @@ describe('durable presentation image assets', () => {
       ).resolves.toMatchObject({ mime: 'image/png', width: 2, height: 3 })
     }
   })
-  it('records animation as a distinct unsupported input for uploads and remote images', async () => {
+  it('records animated uploads and URLs as unusable until explicit first-frame selection', async () => {
     const { call } = await setup()
     for (const name of ['animated.gif', 'animated.webp']) {
       const id = await upload(call, fixture(name), name)
@@ -85,21 +85,94 @@ describe('durable presentation image assets', () => {
     }
     const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-animated-url-'))
     dirs.push(userDataPath)
+    const fetchImage = vi.fn(
+      async () =>
+        new Response(fixture('animated.webp'), { headers: { 'content-type': 'image/webp' } }),
+    )
+    const firstFrame = vi.fn(async () => ({ bytes: fixture('control.png'), width: 2, height: 3 }))
     const service = createPresentationAttachmentService({
       userDataPath,
-      fetchImage: async () =>
-        new Response(fixture('animated.webp'), { headers: { 'content-type': 'image/webp' } }),
+      fetchImage,
+      normalizeFirstFrame: firstFrame,
     })
     await expect(
       service(
         {
           documentId: 'doc',
           operation: 'attachment_import_url',
-          url: 'https://93.184.216.34/animated.webp',
+          url: 'https://93.184.216.34/animated.webp?token=private',
         },
         new AbortController().signal,
       ),
     ).rejects.toThrow('animated_image_unsupported')
+    expect(
+      await service(
+        { documentId: 'doc', operation: 'attachment_list_assets' },
+        new AbortController().signal,
+      ),
+    ).toEqual({ attachments: [] })
+    const remoteCall = (body: Record<string, unknown>) =>
+      service(
+        {
+          documentId: 'doc',
+          ...body,
+          ...(body.operation === 'attachment_import_url' ? { stageAnimated: true } : {}),
+        },
+        new AbortController().signal,
+      )
+    const first = (await remoteCall({
+      operation: 'attachment_import_url',
+      url: 'https://93.184.216.34/animated.webp?token=private',
+    })) as { attachmentId: string; status: string; source: string; error: string }
+    expect(first).toMatchObject({
+      status: 'failed',
+      error: 'animated_image_unsupported',
+      source: 'https://93.184.216.34/animated.webp',
+    })
+    expect(JSON.stringify(first)).not.toContain('private')
+    expect(
+      await remoteCall({
+        operation: 'attachment_import_url',
+        url: 'https://93.184.216.34/animated.webp?token=private',
+      }),
+    ).toEqual(first)
+    expect(fetchImage).toHaveBeenCalledTimes(2)
+    await expect(
+      service(
+        {
+          documentId: 'doc',
+          operation: 'attachment_import_url',
+          url: 'https://93.184.216.34/animated.webp?token=private',
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow('animated_image_unsupported')
+    expect(fetchImage).toHaveBeenCalledTimes(2)
+    const second = (await remoteCall({
+      operation: 'attachment_import_url',
+      url: 'https://93.184.216.34/other.webp',
+    })) as { sources: string[] }
+    expect(second.sources).toEqual([
+      'https://93.184.216.34/animated.webp',
+      'https://93.184.216.34/other.webp',
+    ])
+    await expect(
+      remoteCall({ operation: 'attachment_asset', attachmentId: first.attachmentId }),
+    ).rejects.toThrow('invalid_state')
+    expect(firstFrame).not.toHaveBeenCalled()
+    const converted = await remoteCall({
+      operation: 'attachment_extract_first_frame',
+      attachmentId: first.attachmentId,
+    })
+    expect(converted).toMatchObject({
+      status: 'ready',
+      animationHandling: 'first_frame',
+      sources: second.sources,
+    })
+    expect(
+      await remoteCall({ operation: 'attachment_asset', attachmentId: first.attachmentId }),
+    ).toMatchObject({ sources: second.sources })
+    expect(firstFrame).toHaveBeenCalledTimes(1)
   })
   it('converts an explicitly selected animated upload into a durable first-frame asset', async () => {
     const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-first-frame-'))

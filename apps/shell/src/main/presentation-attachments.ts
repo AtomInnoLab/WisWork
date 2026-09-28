@@ -210,6 +210,29 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
     !['uploading', 'ready', 'failed'].includes(m.status)
   )
     fail('invalid_state')
+  if (
+    (m.source !== undefined && !sourceValid(m.source)) ||
+    (m.sourceUrlHash !== undefined && !isId(m.sourceUrlHash)) ||
+    (m.source === undefined) !== (m.sourceUrlHash === undefined) ||
+    (m.sourceAliases !== undefined &&
+      (!Array.isArray(m.sourceAliases) ||
+        m.sourceAliases.length > 31 ||
+        !m.source ||
+        !m.sourceUrlHash ||
+        new Set(m.sourceAliases.map((alias) => alias?.sourceUrlHash)).size !==
+          m.sourceAliases.length ||
+        m.sourceAliases.some(
+          (alias) =>
+            !alias ||
+            !sourceValid(alias.source) ||
+            !isId(alias.sourceUrlHash) ||
+            alias.sourceUrlHash === m.sourceUrlHash,
+        ))) ||
+    (m.status === 'uploading' && m.source !== undefined) ||
+    (m.status === 'failed' && m.source !== undefined && m.error !== 'animated_image_unsupported') ||
+    (!imageFile(m.name) && m.source !== undefined)
+  )
+    fail('invalid_state')
   if (m.status === 'ready') {
     if (imageFile(m.name)) {
       if (
@@ -220,23 +243,6 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
         m.width * m.height > 16_000_000 ||
         !isId(m.assetSha256) ||
         (m.animationHandling !== undefined && m.animationHandling !== 'first_frame') ||
-        (m.source !== undefined && !sourceValid(m.source)) ||
-        (m.sourceUrlHash !== undefined && !isId(m.sourceUrlHash)) ||
-        (m.source === undefined) !== (m.sourceUrlHash === undefined) ||
-        (m.sourceAliases !== undefined &&
-          (!Array.isArray(m.sourceAliases) ||
-            m.sourceAliases.length > 31 ||
-            !m.source ||
-            !m.sourceUrlHash ||
-            new Set(m.sourceAliases.map((alias) => alias?.sourceUrlHash)).size !==
-              m.sourceAliases.length ||
-            m.sourceAliases.some(
-              (alias) =>
-                !alias ||
-                !sourceValid(alias.source) ||
-                !isId(alias.sourceUrlHash) ||
-                alias.sourceUrlHash === m.sourceUrlHash,
-            ))) ||
         (m.licenseDeclaration !== undefined &&
           (!m.licenseDeclaration ||
             typeof m.licenseDeclaration !== 'object' ||
@@ -279,6 +285,10 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
   ...(m.kind ? { kind: m.kind } : {}),
   ...(m.error ? { error: m.error } : {}),
   ...(m.totalChars !== undefined ? { totalChars: m.totalChars } : {}),
+  ...(m.source ? { source: m.source } : {}),
+  ...(m.sourceAliases?.length
+    ? { sources: [m.source!, ...m.sourceAliases.map((alias) => alias.source)] }
+    : {}),
   ...(m.kind === 'image'
     ? {
         mime: m.mime,
@@ -286,10 +296,6 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
         height: m.height,
         assetSha256: m.assetSha256,
         ...(m.animationHandling ? { animationHandling: m.animationHandling } : {}),
-        ...(m.source ? { source: m.source } : {}),
-        ...(m.sourceAliases?.length
-          ? { sources: [m.source!, ...m.sourceAliases.map((alias) => alias.source)] }
-          : {}),
         ...(m.licenseDeclaration ? { licenseDeclaration: m.licenseDeclaration } : {}),
       }
     : {}),
@@ -414,10 +420,11 @@ export function createPresentationAttachmentService(options: {
       'documentId',
       ...fields[op]!,
       ...(op === 'attachment_list_assets' ? ['after'] : []),
+      ...(op === 'attachment_import_url' ? ['stageAnimated'] : []),
     ]
     if (
       Object.keys(body).some((k) => !allowed.includes(k)) ||
-      allowed.some((k) => k !== 'after' && !Object.hasOwn(body, k))
+      allowed.some((k) => !['after', 'stageAnimated'].includes(k) && !Object.hasOwn(body, k))
     )
       fail('invalid_request')
     if (
@@ -427,6 +434,7 @@ export function createPresentationAttachmentService(options: {
       fail('invalid_request')
     if (op === 'attachment_import_url' && (typeof body.url !== 'string' || body.url.length > 2048))
       fail('invalid_request')
+    if (body.stageAnimated !== undefined && body.stageAnimated !== true) fail('invalid_request')
     if (body.after !== undefined && !isId(body.after)) fail('invalid_request')
     if (
       op === 'attachment_match_excerpt' &&
@@ -490,12 +498,23 @@ export function createPresentationAttachmentService(options: {
         for (const entry of entries) {
           const item = await metadata(join(doc, entry), entry)
           if (
-            item.status !== 'ready' ||
+            (item.status !== 'ready' &&
+              !(item.status === 'failed' && item.error === 'animated_image_unsupported')) ||
             (item.sourceUrlHash !== urlHash &&
               !item.sourceAliases?.some((alias) => alias.sourceUrlHash === urlHash))
           )
             continue
-          await cachedImage(join(doc, entry), item)
+          if (item.status === 'failed' && body.stageAnimated !== true)
+            fail('animated_image_unsupported')
+          if (item.status === 'ready') await cachedImage(join(doc, entry), item)
+          else {
+            const original = await bytes(
+              join(doc, entry, `raw${extname(item.name).toLowerCase()}`),
+              PRESENTATION_IMAGE_INPUT_LIMIT,
+            )
+            if (original.length !== item.sizeBytes || hash(original) !== entry)
+              fail('digest_mismatch')
+          }
           return publicMetadata(item, item.sizeBytes)
         }
         if (!(await isSafeRemoteUrl(url.toString()))) fail('remote_image_unavailable')
@@ -537,26 +556,44 @@ export function createPresentationAttachmentService(options: {
           chunks.map((chunk) => Buffer.from(chunk)),
           total,
         )
-        const info = inspectPresentationImage(raw)
-        const image = await normalizeImage(raw)
+        let info: ReturnType<typeof inspectPresentationImage>
+        let animatedInput = false
+        try {
+          info = inspectPresentationImage(raw)
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== 'animated_image_unsupported')
+            throw error
+          info = inspectPresentationImage(raw, true)
+          if (!info.animated) fail('parse_failed')
+          if (body.stageAnimated !== true) fail('animated_image_unsupported')
+          animatedInput = true
+        }
+        const image = animatedInput ? undefined : await normalizeImage(raw)
         checkAbort(combined)
-        const normalized = inspectPresentationImage(image.bytes)
-        if (
-          image.bytes.length > PRESENTATION_IMAGE_CACHE_LIMIT ||
-          normalized.mime !== 'image/png' ||
-          image.width !== info.width ||
-          image.height !== info.height ||
-          normalized.width !== image.width ||
-          normalized.height !== image.height
-        )
-          fail('parse_failed')
+        if (image) {
+          const normalized = inspectPresentationImage(image.bytes)
+          if (
+            image.bytes.length > PRESENTATION_IMAGE_CACHE_LIMIT ||
+            normalized.mime !== 'image/png' ||
+            image.width !== info.width ||
+            image.height !== info.height ||
+            normalized.width !== image.width ||
+            normalized.height !== image.height
+          )
+            fail('parse_failed')
+        }
         const attachmentId = hash(raw)
         if (entries.includes(attachmentId)) {
           const existingDir = join(doc, attachmentId)
           const existing = await metadata(existingDir, attachmentId)
           if (
-            existing.status !== 'ready' ||
-            existing.kind !== 'image' ||
+            (existing.status !== 'ready' &&
+              !(
+                animatedInput &&
+                existing.status === 'failed' &&
+                existing.error === 'animated_image_unsupported'
+              )) ||
+            (existing.status === 'ready' && existing.kind !== 'image') ||
             !existing.source ||
             !existing.sourceUrlHash ||
             !(
@@ -567,7 +604,7 @@ export function createPresentationAttachmentService(options: {
             ).equals(raw)
           )
             fail('remote_image_source_conflict')
-          await cachedImage(existingDir, existing)
+          if (existing.status === 'ready') await cachedImage(existingDir, existing)
           if ((existing.sourceAliases?.length ?? 0) >= 31) fail('quota_exceeded')
           url.search = ''
           url.hash = ''
@@ -597,12 +634,16 @@ export function createPresentationAttachmentService(options: {
           sha256: attachmentId,
           name,
           sizeBytes: raw.length,
-          status: 'ready',
-          kind: 'image',
-          mime: 'image/png',
-          width: image.width,
-          height: image.height,
-          assetSha256: hash(image.bytes),
+          ...(image
+            ? {
+                status: 'ready' as const,
+                kind: 'image' as const,
+                mime: 'image/png' as const,
+                width: image.width,
+                height: image.height,
+                assetSha256: hash(image.bytes),
+              }
+            : { status: 'failed' as const, error: 'animated_image_unsupported' }),
           source: url.toString(),
           sourceUrlHash: urlHash,
         }
@@ -610,7 +651,7 @@ export function createPresentationAttachmentService(options: {
         await directory(staging)
         try {
           await atomic(join(staging, `raw${extname(name)}`), raw)
-          await atomic(join(staging, 'image.png'), Buffer.from(image.bytes))
+          if (image) await atomic(join(staging, 'image.png'), Buffer.from(image.bytes))
           await atomic(join(staging, 'metadata.json'), JSON.stringify(item))
           await rename(staging, join(doc, attachmentId))
         } finally {
@@ -727,6 +768,13 @@ export function createPresentationAttachmentService(options: {
           height: image.height,
           assetSha256: hash(image.bytes),
           animationHandling: 'first_frame',
+          ...(m.source
+            ? {
+                source: m.source,
+                sourceUrlHash: m.sourceUrlHash,
+                ...(m.sourceAliases ? { sourceAliases: m.sourceAliases } : {}),
+              }
+            : {}),
         }
         await atomic(join(dir, 'metadata.json'), JSON.stringify(m))
         return publicMetadata(m, m.sizeBytes)

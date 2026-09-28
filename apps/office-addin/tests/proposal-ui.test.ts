@@ -151,6 +151,9 @@ describe('generic proposal presentation', () => {
     expect(safeUploadError(new Error('presentation_animated_image_unsupported'))).toContain(
       '动画网址未保存',
     )
+    expect(safeUploadError(new Error('presentation_animated_image_staged'))).toContain(
+      '生成静态首帧',
+    )
     expect(
       safeUploadError(new Error('presentation_animated_image_unsupported'), { size: 100 }),
     ).toContain('动画原件已保留')
