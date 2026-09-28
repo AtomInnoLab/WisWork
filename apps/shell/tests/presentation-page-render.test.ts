@@ -15,6 +15,10 @@ const sofficeAvailable = libreOfficeCommands().some(
   (command) => spawnSync(command, ['--version'], { timeout: 5_000 }).status === 0,
 )
 
+it('requires a working LibreOffice executable in cross-platform CI', () => {
+  if (process.env.WISWORK_REQUIRE_LIBREOFFICE === '1') expect(sofficeAvailable).toBe(true)
+})
+
 it('checks standard Mac and Windows LibreOffice installations before PATH', () => {
   expect(libreOfficeCommands('darwin', {}, '/Users/test')).toEqual([
     '/Applications/LibreOffice.app/Contents/MacOS/soffice',
