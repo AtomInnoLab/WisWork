@@ -195,6 +195,8 @@ reviewer_and_date: 待执行
 
 ## 6. 阶段汇报与部署矩阵
 
+本机故障复盘可运行 `node tools/ppt-agent-diagnostic-report.mjs <office-diagnostics.json> [relay.jsonl]`。第一份文件来自插件的诊断复制/导出；第二份可选，是 Relay 标准错误输出中逐行 JSON 的 `office_diagnostic` 日志。报告只输出失败事件的固定字段、Project/Session/Document/Page/Tool Call ID、阶段和错误码，并用会话、trace 与事件 ID 三者核对 Relay 是否观测到同一事件。`relay_observed: false` 可能是远程采样、网络丢失或日志缺失，不能单独判为上传失败。诊断文件含本机标识，分享前须检查；该工具不读取原文或判断专业内容质量，真实验收仍需录屏、文件和人工审阅。
+
 阶段报告按§20列目标、交付、验证证据、未完成项、风险、下一步及入口条件；不能把“进行中”自动推进为下一阶段已获验收。
 
 | 部署层                     | 当前验收状态                           | 需保留证据                                  |
