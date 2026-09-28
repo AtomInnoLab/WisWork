@@ -1468,6 +1468,7 @@ export function AgentWorkspace(props: {
         {ui.project && (
           <PresentationProjectCard
             controller={ui.project}
+            onEndFrontend={() => session.stop()}
             disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
           />
         )}
