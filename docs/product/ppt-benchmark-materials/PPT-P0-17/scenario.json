@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "asOf": "2026-09-28",
+  "taskId": "PPT-P0-17",
+  "documents": [
+    {
+      "key": "science",
+      "marker": "SCI-P0-17",
+      "source": "deardorff-2020-article.pdf",
+      "pages": 11,
+      "title": "科研：生物医学工作流可复现性研讨班",
+      "slideTitles": [
+        "研究封面",
+        "报告目录",
+        "研究问题",
+        "样本与方法",
+        "工作坊流程",
+        "结果与原文证据",
+        "局限与可比性",
+        "结论与待核验项"
+      ]
+    },
+    {
+      "key": "legal",
+      "marker": "LAW-P0-17",
+      "source": "edpb-guidelines-07-2020.pdf",
+      "pages": 51,
+      "title": "规则说明：EDPB 控制者与处理者指南",
+      "slideTitles": [
+        "指南封面",
+        "报告目录",
+        "文件版本与适用范围",
+        "概念定义",
+        "角色判断流程",
+        "职责对照",
+        "指南中的限制与例子",
+        "待法律审阅项"
+      ]
+    },
+    {
+      "key": "finance",
+      "marker": "FIN-P0-17",
+      "source": "apple-fy2024-form10k.pdf",
+      "pages": 121,
+      "title": "财务：Apple FY2024 审计年报",
+      "slideTitles": [
+        "财务封面",
+        "报告目录",
+        "报告期与审计范围",
+        "收入结构",
+        "利润与现金流",
+        "年度对照",
+        "口径与风险",
+        "结论与待财务审阅项"
+      ]
+    }
+  ],
+  "interleaving": [
+    "在同一 PC 登录下打开三份不同的 PowerPoint 文档，并分别从 Taskpane 建立项目。",
+    "交错推进各项目至至少两页已导入，记录每个 project/request/document/session/slide ID。",
+    "关闭科研文档；法律文档另存为新文件；财务文档继续生成，三者保持各自 8 页目标。",
+    "向关闭或另存前的会话注入延迟回执，核对其被拒绝且未写入其他文档。",
+    "恢复各项目并交付三份独立 PPTX；逐份保存、关闭、重开，修改原生文本和图表数据。"
+  ]
+}
