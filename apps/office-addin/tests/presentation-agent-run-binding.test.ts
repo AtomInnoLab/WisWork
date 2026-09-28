@@ -92,6 +92,13 @@ describe('presentation AgentRun checkpoint', () => {
     expect(createPresentationAgentRunCheckpoint(binding, id, storage).recovery()?.instruction).toBe(
       'Private request',
     )
+    await checkpoint.tool('run-1', 'tool_pending', 'read_presentation_plan')
+    expect(createPresentationAgentRunCheckpoint(binding, id, storage).recovery()).toMatchObject({
+      instruction: 'Private request',
+      phase: 'tool_pending',
+      restartSafe: true,
+    })
+    await checkpoint.tool('run-1', 'tool_completed', 'read_presentation_plan')
     expect(
       createPresentationAgentRunCheckpoint(binding, 'foreign-document', storage).recovery(),
     ).toBeUndefined()
@@ -287,6 +294,74 @@ describe('presentation AgentRun checkpoint', () => {
     location = 'file:///original.pptx'
     await binding.updateAgentRun(id, 'run-1', 'tool_completed', 'write_presentation_page')
     expect(create().agentRunRecovery(id)?.phase).toBe('tool_completed')
+  })
+
+  it('allows restarting only when every checkpointed tool is explicitly read-only', async () => {
+    const values = new Map<string, string>()
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => 'file:///deck.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    await binding.rememberAgentRun(id, 'run-1')
+    await expect(
+      binding.updateAgentRun(id, 'run-1', 'tool_completed', 'read_presentation_plan'),
+    ).rejects.toThrow('presentation_run_checkpoint_unavailable')
+    await binding.updateAgentRun(id, 'run-1', 'tool_pending', 'read_presentation_plan')
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(true)
+    await binding.updateAgentRun(id, 'run-1', 'tool_completed', 'read_presentation_plan')
+    await binding.updateAgentRun(id, 'run-1', 'tool_pending', 'list_presentation_attachments')
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(true)
+    await binding.updateAgentRun(id, 'run-1', 'tool_completed', 'list_presentation_attachments')
+    await binding.updateAgentRun(id, 'run-1', 'tool_pending', 'write_presentation_page')
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(false)
+    const key = 'wiswork.presentation.agent-run.v1'
+    const forged = JSON.parse(values.get(key)!) as Record<string, unknown>
+    values.set(key, JSON.stringify({ ...forged, restartSafe: true }))
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(false)
+    values.set(key, JSON.stringify(forged))
+    await binding.updateAgentRun(id, 'run-1', 'tool_completed', 'write_presentation_page')
+    await binding.updateAgentRun(id, 'run-1', 'tool_pending', 'read_presentation_plan')
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(false)
+  })
+
+  it('never promotes a legacy tool checkpoint or a mutating read result to restart-safe', async () => {
+    const values = new Map<string, string>()
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => 'file:///deck.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    await binding.rememberAgentRun(id, 'run-1')
+    const key = 'wiswork.presentation.agent-run.v1'
+    const legacy = JSON.parse(values.get(key)!) as Record<string, unknown>
+    delete legacy.restartSafe
+    values.set(
+      key,
+      JSON.stringify({ ...legacy, phase: 'tool_pending', toolName: 'read_presentation_plan' }),
+    )
+    expect(binding.agentRunRecovery(id)?.restartSafe).not.toBe(true)
+    await binding.updateAgentRun(id, 'run-1', 'tool_completed', 'read_presentation_plan')
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(false)
+    await binding.finishAgentRun(id, 'run-1')
+    await binding.rememberAgentRun(id, 'run-2')
+    await binding.updateAgentRun(id, 'run-2', 'tool_pending', 'read_presentation_plan')
+    await binding.updateAgentRun(id, 'run-2', 'tool_completed', 'read_presentation_plan', true)
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(false)
   })
 
   it('rejects malformed or oversized run records', async () => {

@@ -724,7 +724,7 @@ export function AgentWorkspace(props: {
             disabled={state.busy || state.applying || projectPhase !== 'idle'}
             onClick={() => void session.resumeInterrupted?.()}
           >
-            继续上次请求
+            重新运行上次请求
           </button>
         )}
         {proposal &&

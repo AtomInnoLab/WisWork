@@ -198,10 +198,16 @@ export function createOfficeAgentSession(dependencies: {
       instruction: string
       phase: 'running' | 'tool_pending' | 'tool_completed'
       toolName?: string
+      restartSafe?: boolean
     }
     validateDocument?(): Promise<boolean>
     begin(runId: string, instruction: string): Promise<void>
-    tool?(runId: string, phase: 'tool_pending' | 'tool_completed', toolName: string): Promise<void>
+    tool?(
+      runId: string,
+      phase: 'tool_pending' | 'tool_completed',
+      toolName: string,
+      mutated?: boolean,
+    ): Promise<void>
     finish(runId: string): Promise<void>
   }
 }): OfficeAgentSession {
@@ -226,7 +232,8 @@ export function createOfficeAgentSession(dependencies: {
     status: 'idle',
     retryable: false,
     recoveryAvailable:
-      dependencies.runCheckpoint?.recovery?.phase === 'running' &&
+      (dependencies.runCheckpoint?.recovery?.phase === 'running' ||
+        dependencies.runCheckpoint?.recovery?.restartSafe === true) &&
       Boolean(dependencies.runCheckpoint.recovery.instruction),
     timeline: dependencies.runCheckpoint?.interrupted
       ? appendPresentationEvent(emptyPresentationTimeline(), {
@@ -234,7 +241,7 @@ export function createOfficeAgentSession(dependencies: {
           kind: 'system',
           text: dependencies.runCheckpoint.scrubFailed
             ? '上次运行已中断。旧版检查点中的请求原文仍保留在本 PPTX：清理保存失败。请先保存可写副本并重新打开，期间不能继续该运行。'
-            : `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}请先核对项目、页面和写入记录；未自动重放写入。运行阶段保存在演示文稿设置中，请求仅保存在本机浏览器。`,
+            : `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}${dependencies.runCheckpoint.recovery?.phase === 'running' ? '尚未调用工具，可在核对文档后主动重新运行原请求。' : dependencies.runCheckpoint.recovery?.restartSafe ? '此前仅运行了可重读工具，可在核对文档后主动重新运行原请求。' : '请先核对项目、页面和写入记录；未自动重放写入。'}运行阶段保存在演示文稿设置中，请求仅保存在本机浏览器。`,
         })
       : emptyPresentationTimeline(),
   }
@@ -382,17 +389,17 @@ export function createOfficeAgentSession(dependencies: {
       const runId = activeRunId
       const epoch = sessionEpoch
       const currentRun = () => epoch === sessionEpoch && runId === activeRunId && !disposed
-      const checkpointCompleted = async (): Promise<boolean> => {
+      const checkpointCompleted = async (mutated: boolean): Promise<boolean> => {
         if (runId && currentRun() && dependencies.runCheckpoint?.tool)
           try {
-            await dependencies.runCheckpoint.tool(runId, 'tool_completed', call.name)
+            await dependencies.runCheckpoint.tool(runId, 'tool_completed', call.name, mutated)
           } catch {
             return false
           }
         return true
       }
       const checkpointed = async (result: ToolExecution): Promise<ToolExecution> =>
-        (await checkpointCompleted())
+        (await checkpointCompleted(result.mutated === true))
           ? result
           : {
               output: JSON.stringify({ error: 'presentation_run_checkpoint_unavailable' }),
@@ -786,9 +793,11 @@ export function createOfficeAgentSession(dependencies: {
     },
     async resumeInterrupted() {
       const checkpoint = dependencies.runCheckpoint
+      const epoch = sessionEpoch
       if (
         !checkpoint?.recovery?.instruction ||
-        checkpoint.recovery.phase !== 'running' ||
+        (checkpoint.recovery.phase !== 'running' && checkpoint.recovery.restartSafe !== true) ||
+        !state.recoveryAvailable ||
         state.busy ||
         state.applying ||
         disposed ||
@@ -800,6 +809,7 @@ export function createOfficeAgentSession(dependencies: {
       } catch {
         return
       }
+      if (epoch !== sessionEpoch || !state.recoveryAvailable || state.busy || disposed) return
       startRun(checkpoint.recovery.instruction)
     },
     logout() {

@@ -170,6 +170,72 @@ describe('Office agent session', () => {
     expect(harness.stream).not.toHaveBeenCalled()
   })
 
+  it('restarts an interrupted read-only run only on explicit action after document validation', async () => {
+    const harness = transportHarness()
+    const validateDocument = vi.fn(async () => true)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: {
+          instruction: 'Inspect this presentation',
+          phase: 'tool_pending',
+          toolName: 'read_presentation_plan',
+          restartSafe: true,
+        },
+        validateDocument,
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    expect(session.snapshot().recoveryAvailable).toBe(true)
+    expect(harness.stream).not.toHaveBeenCalled()
+    await session.resumeInterrupted?.()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    expect(validateDocument).toHaveBeenCalledOnce()
+  })
+
+  it.each(['newTask', 'logout'] as const)(
+    'does not restart an interrupted request after %s during document validation',
+    async (action) => {
+      const harness = transportHarness()
+      let releaseValidation!: (valid: boolean) => void
+      const begin = vi.fn(async () => undefined)
+      const validateDocument = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            releaseValidation = resolve
+          }),
+      )
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+        proposals: proposalsHarness().controller,
+        runCheckpoint: {
+          interrupted: true,
+          recovery: {
+            instruction: 'Inspect this presentation',
+            phase: 'tool_pending',
+            toolName: 'read_presentation_plan',
+            restartSafe: true,
+          },
+          validateDocument,
+          begin,
+          finish: vi.fn(async () => undefined),
+        },
+      })
+      const pending = session.resumeInterrupted?.()
+      expect(validateDocument).toHaveBeenCalledOnce()
+      session[action]()
+      releaseValidation(true)
+      await pending
+      expect(begin).not.toHaveBeenCalled()
+      expect(harness.stream).not.toHaveBeenCalled()
+    },
+  )
+
   it('saves a checkpoint before starting and clears it after completion', async () => {
     const harness = transportHarness()
     const begin = vi.fn(async (_runId: string) => undefined)
@@ -226,7 +292,12 @@ describe('Office agent session', () => {
 
     savePending()
     await vi.waitFor(() =>
-      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'read_document'),
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_completed',
+        'read_document',
+        false,
+      ),
     )
     expect(executeTool).toHaveBeenCalledOnce()
     expect(tool.mock.calls[0]?.[0]).toBe(begin.mock.calls[0]?.[0])
@@ -357,7 +428,7 @@ describe('Office agent session', () => {
     expect(tool).toHaveBeenCalledTimes(1)
     await session.confirm('p1')
     await vi.waitFor(() =>
-      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'propose'),
+      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'propose', true),
     )
     expect(harness.stream).toHaveBeenCalledOnce()
     releaseCompleted()
@@ -443,7 +514,7 @@ describe('Office agent session', () => {
     expect(tool).toHaveBeenCalledTimes(1)
     releaseResult({ output: 'done', summary: 'Done' })
     await vi.waitFor(() =>
-      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'wait'),
+      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'wait', false),
     )
     expect(harness.stream).toHaveBeenCalledOnce()
     releaseCompleted()

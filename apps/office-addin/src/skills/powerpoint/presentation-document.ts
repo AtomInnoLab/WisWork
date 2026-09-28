@@ -77,7 +77,32 @@ export interface PresentationAgentRunRecovery {
   instruction: string
   phase: 'running' | 'tool_pending' | 'tool_completed'
   toolName?: string
+  restartSafe?: boolean
 }
+// Only audited reads may restart the original instruction after a Taskpane interruption.
+// A write or an unknown tool permanently closes this path for the run.
+const restartSafeTools = new Set([
+  'read_presentation_plan',
+  'read_presentation_import_status',
+  'read_presentation_page',
+  'read_presentation_page_geometry',
+  'read_presentation_baseline',
+  'read_presentation_baseline_page',
+  'read_presentation_baseline_complex_page',
+  'read_presentation_baseline_chart_source',
+  'read_presentation_baseline_notes',
+  'read_presentation_baseline_source_links',
+  'read_presentation_baseline_rich_text',
+  'read_presentation_qa',
+  'read_presentation_attachment',
+  'list_presentation_attachments',
+  'list_presentation_changes',
+  'list_presentation_brand_kits',
+  'read_presentation_brand_kit',
+  'list_presentation_preferences',
+  'read_presentation_domain_skill',
+  'compare_presentation_page_structure',
+])
 const AGENT_RUN_LOCAL_PREFIX = 'wiswork.presentation.agent-run.prompt.v1.'
 const AGENT_RUN_LOCAL_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const validId = (value: unknown): value is string =>
@@ -1443,14 +1468,24 @@ export function createPresentationDocumentBinding(
         if (keys === 'documentId,runId,startedAt')
           return { runId: value.runId as string, instruction: '', phase: 'tool_pending' }
         if (
-          keys !== 'documentId,phase,runId,startedAt' &&
-          keys !== 'documentId,phase,runId,startedAt,toolName' &&
-          keys !== 'documentId,instruction,phase,runId,startedAt' &&
-          keys !== 'documentId,instruction,phase,runId,startedAt,toolName'
+          Object.keys(value).some(
+            (key) =>
+              ![
+                'documentId',
+                'runId',
+                'startedAt',
+                'phase',
+                'toolName',
+                'instruction',
+                'restartSafe',
+              ].includes(key),
+          ) ||
+          !Object.hasOwn(value, 'phase')
         )
           return undefined
         if (
           !['running', 'tool_pending', 'tool_completed'].includes(value.phase as string) ||
+          (value.restartSafe !== undefined && typeof value.restartSafe !== 'boolean') ||
           (value.toolName !== undefined &&
             (typeof value.toolName !== 'string' || value.toolName.length > 128))
         )
@@ -1460,6 +1495,13 @@ export function createPresentationDocumentBinding(
           instruction: '',
           phase: value.phase as PresentationAgentRunRecovery['phase'],
           ...(typeof value.toolName === 'string' ? { toolName: value.toolName } : {}),
+          ...(typeof value.restartSafe === 'boolean'
+            ? {
+                restartSafe:
+                  value.restartSafe &&
+                  (value.phase === 'running' || restartSafeTools.has(String(value.toolName))),
+              }
+            : {}),
         }
       } catch {
         return undefined
@@ -1499,6 +1541,7 @@ export function createPresentationDocumentBinding(
           runId,
           startedAt: Date.now(),
           phase: 'running',
+          restartSafe: true,
         })
         if (new TextEncoder().encode(raw).byteLength > 4096)
           throw new Error('presentation_run_checkpoint_unavailable')
@@ -1518,6 +1561,7 @@ export function createPresentationDocumentBinding(
       runId: string,
       phase: 'tool_pending' | 'tool_completed',
       toolName: string,
+      mutated = false,
     ) {
       return queueRunCheckpoint(async () => {
         if ((await documentId()) !== boundDocumentId || toolName.length > 128)
@@ -1526,9 +1570,20 @@ export function createPresentationDocumentBinding(
         const current = this.agentRunRecovery(boundDocumentId)
         if (!current || current.runId !== runId || typeof previous !== 'string')
           throw new Error('presentation_run_checkpoint_unavailable')
+        if (
+          (phase === 'tool_pending' && current.phase === 'tool_pending') ||
+          (phase === 'tool_completed' &&
+            (current.phase !== 'tool_pending' || current.toolName !== toolName))
+        )
+          throw new Error('presentation_run_checkpoint_unavailable')
         const next = JSON.parse(previous) as Record<string, unknown>
         delete next.instruction
-        const raw = JSON.stringify({ ...next, phase, toolName })
+        const raw = JSON.stringify({
+          ...next,
+          phase,
+          toolName,
+          restartSafe: current.restartSafe === true && restartSafeTools.has(toolName) && !mutated,
+        })
         if (new TextEncoder().encode(raw).byteLength > 4096)
           throw new Error('presentation_run_checkpoint_unavailable')
         settings.set(AGENT_RUN_KEY, raw)
@@ -1738,10 +1793,15 @@ export function createPresentationAgentRunCheckpoint(
       }
       runDocuments.set(runId, boundDocumentId)
     },
-    async tool(runId: string, phase: 'tool_pending' | 'tool_completed', toolName: string) {
+    async tool(
+      runId: string,
+      phase: 'tool_pending' | 'tool_completed',
+      toolName: string,
+      mutated = false,
+    ) {
       const id = runDocuments.get(runId)
       if (!id) throw new Error('presentation_run_checkpoint_unavailable')
-      await binding.updateAgentRun(id, runId, phase, toolName)
+      await binding.updateAgentRun(id, runId, phase, toolName, mutated)
     },
     async finish(runId: string) {
       const id = runDocuments.get(runId)
