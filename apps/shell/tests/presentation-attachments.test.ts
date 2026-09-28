@@ -122,6 +122,34 @@ describe('durable presentation attachments', () => {
       }),
     ).rejects.toThrow('invalid_state')
   })
+  it('persists page numbers with no extracted PDF text across reconnects', async () => {
+    const { call, userDataPath } = await setup()
+    const id = await upload(
+      call,
+      Buffer.from(buildPdfFixture(['First page evidence', ''])),
+      'partly-readable.pdf',
+    )
+    expect(await call({ operation: 'attachment_finish', attachmentId: id })).toMatchObject({
+      status: 'ready',
+      sectionCount: 2,
+      pagesWithoutExtractedText: [2],
+    })
+    const restarted = createPresentationAttachmentService({ userDataPath })
+    expect(
+      await restarted(
+        { operation: 'attachment_metadata', documentId: 'doc-1', attachmentId: id },
+        new AbortController().signal,
+      ),
+    ).toMatchObject({ pagesWithoutExtractedText: [2] })
+  })
+  it('marks a PDF with no extractable text as failed instead of ready', async () => {
+    const { call } = await setup()
+    const id = await upload(call, Buffer.from(buildPdfFixture(['', ''])), 'image-only.pdf')
+    expect(await call({ operation: 'attachment_finish', attachmentId: id })).toMatchObject({
+      status: 'failed',
+      error: 'parse_failed',
+    })
+  })
   it('prefers the cited page when the same PDF excerpt appears more than once', async () => {
     const { call } = await setup()
     const id = await upload(

@@ -1125,6 +1125,23 @@ export function AgentWorkspace(props: {
                           {file.name.toLowerCase().endsWith('.pdf') ? '页' : '段'}
                         </span>
                       )}
+                      {file.pagesWithoutExtractedText?.length ? (
+                        <p role="status">
+                          第 {file.pagesWithoutExtractedText.slice(0, 20).join('、')}
+                          {file.pagesWithoutExtractedText.length > 20
+                            ? ` 等 ${file.pagesWithoutExtractedText.length} `
+                            : ' '}
+                          页未提取到文字；如这些页面包含内容，请补充可读取文本或 OCR 结果。
+                        </p>
+                      ) : null}
+                      {file.status === 'failed' && file.error === 'parse_failed' && (
+                        <p role="alert">
+                          资料解析失败。
+                          {file.name.toLowerCase().endsWith('.pdf')
+                            ? '如 PDF 是扫描件，请补充可读取文本或 OCR 结果后重新上传。'
+                            : '请检查文件格式或重新上传。'}
+                        </p>
+                      )}
                       {file.animationHandling === 'first_frame' && (
                         <p>已按你的选择从动画原件生成静态首帧；原件仍保存在 PC。</p>
                       )}

@@ -111,6 +111,37 @@ it('lists document-scoped PC copies and deletes only a validated selected ID', a
   )
   expect(f.skill.tools.map((tool) => tool.name)).not.toContain('delete_presentation_attachment')
 })
+it('shows PDF pages without extracted text and rejects malformed page coverage', async () => {
+  const f = setup()
+  const item = {
+    attachmentId: f.attachmentId,
+    sha256: f.attachmentId,
+    name: 'partly-readable.pdf',
+    sizeBytes: 100,
+    receivedBytes: 100,
+    status: 'ready',
+    kind: 'text',
+    totalChars: 20,
+    sectionCount: 3,
+    pagesWithoutExtractedText: [2],
+  }
+  f.request.mockImplementation(
+    async () => new Response(JSON.stringify({ attachments: [item] })),
+  )
+  expect(await f.skill.list()).toMatchObject([item])
+  expect(
+    JSON.parse(
+      (await f.skill.executeTool({ id: 'list', name: 'list_presentation_attachments', input: {} }))
+        .output,
+    ),
+  ).toMatchObject({ attachments: [item] })
+  for (const pages of [[0], [3, 2], [1, 1], [1, 2, 3]]) {
+    f.request.mockResolvedValue(
+      new Response(JSON.stringify({ attachments: [{ ...item, pagesWithoutExtractedText: pages }] })),
+    )
+    await expect(f.skill.list()).rejects.toThrow('presentation_response_invalid')
+  }
+})
 it('requires negotiated support and validates the user-selected first-frame result', async () => {
   const f = setup()
   const response = {

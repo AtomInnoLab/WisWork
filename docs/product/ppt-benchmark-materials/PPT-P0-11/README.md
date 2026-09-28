@@ -12,7 +12,7 @@
 
 论文：Ariel Deardorff, “Assessing the impact of introductory programming workshops on the computational reproducibility of biomedical workflows,” *PLOS ONE* 15(7), e0230697 (2020)，DOI `10.1371/journal.pone.0230697`。[出版页](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0230697)、[原始 PDF](https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0230697&type=printable)、[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。图像化 PDF 和辅助文本是 WisWork 基于获许可论文制作的衍生文件，保留作者、来源及修改说明；固定于 2026-09-28。每份文件的 SHA256 在 `SHA256SUMS`。
 
-`generate-materials.py` 可重建衍生文件，需要 Poppler `pdftoppm`/`pdftotext` 和 Pillow；重新构建若摘要改变，须提升本包版本。图像化 PDF 的第一页已渲染并检查可读性。共享解析器回归测试要求它返回 `pdf_no_extractable_text`，原 PDF 与辅助文本则正常提取。此项仅证明文本提取边界，不等于 OCR 或真实扫描件处理能力。
+`generate-materials.py` 可重建衍生文件，需要 Poppler `pdftoppm`/`pdftotext` 和 Pillow；重新构建若摘要改变，须提升本包版本。图像化 PDF 的第一页已渲染并检查可读性。共享解析器回归测试要求它返回 `pdf_no_extractable_text`，PC 附件服务将其标为解析失败；原 PDF 与辅助文本则正常提取。另用两页工程 fixture 检查“第一页有文字、第二页无文字”时，PC 持久记录 `pagesWithoutExtractedText: [2]`，插件清单和界面提示补料。该 fixture 不是本包三份任务输入。此项仅证明文本提取边界，不等于 OCR 或真实扫描件处理能力。
 
 ## 工程回归固定任务提示
 

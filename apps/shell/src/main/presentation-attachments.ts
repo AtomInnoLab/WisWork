@@ -112,6 +112,7 @@ interface Metadata {
   textDigest?: string
   sectionsDigest?: string
   sectionCount?: number
+  pagesWithoutExtractedText?: number[]
 }
 async function directory(path: string, create = true) {
   if (create) {
@@ -207,7 +208,7 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
   await directory(dir)
   let m: Metadata
   try {
-    m = JSON.parse((await bytes(join(dir, 'metadata.json'), 4096)).toString('utf8')) as Metadata
+    m = JSON.parse((await bytes(join(dir, 'metadata.json'), 32 * 1024)).toString('utf8')) as Metadata
   } catch {
     return fail('invalid_state')
   }
@@ -288,6 +289,22 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
       !integer(m.sectionCount, 1, 4096))
   )
     fail('invalid_state')
+  if (
+    m.pagesWithoutExtractedText !== undefined &&
+    (m.status !== 'ready' ||
+      m.kind !== 'text' ||
+      extname(m.name).toLowerCase() !== '.pdf' ||
+      !m.sectionCount ||
+      !Array.isArray(m.pagesWithoutExtractedText) ||
+      m.pagesWithoutExtractedText.length < 1 ||
+      m.pagesWithoutExtractedText.length >= m.sectionCount ||
+      m.pagesWithoutExtractedText.some(
+        (page, index) =>
+          !integer(page, 1, m.sectionCount!) ||
+          (index > 0 && page <= m.pagesWithoutExtractedText![index - 1]!),
+      ))
+  )
+    fail('invalid_state')
   if (m.status !== 'ready' && m.licenseDeclaration !== undefined) fail('invalid_state')
   if (m.status !== 'ready' && m.animationHandling !== undefined) fail('invalid_state')
   if (
@@ -308,6 +325,9 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
   ...(m.error ? { error: m.error } : {}),
   ...(m.totalChars !== undefined ? { totalChars: m.totalChars } : {}),
   ...(m.sectionCount !== undefined ? { sectionCount: m.sectionCount } : {}),
+  ...(m.pagesWithoutExtractedText
+    ? { pagesWithoutExtractedText: m.pagesWithoutExtractedText }
+    : {}),
   ...(m.source ? { source: m.source } : {}),
   ...(m.sourceUrlHash ? { sourceUrlHash: m.sourceUrlHash } : {}),
   ...(m.retrievedAt ? { retrievedAt: m.retrievedAt } : {}),
@@ -1127,6 +1147,7 @@ export function createPresentationAttachmentService(options: {
                 !parsed.ok ||
                 parsed.kind !== 'text' ||
                 typeof parsed.text !== 'string' ||
+                !parsed.text.trim() ||
                 parsed.text.length > TEXT_LIMIT
               )
                 fail('parse_failed')
@@ -1156,6 +1177,12 @@ export function createPresentationAttachmentService(options: {
                 await atomic(join(dir, 'sections.json'), sectionsRaw)
               }
               await atomic(join(dir, 'text.txt'), parsed.text)
+              const pagesWithoutExtractedText =
+                extname(m.name).toLowerCase() === '.pdf'
+                  ? (parsed.sections ?? []).flatMap((section, index) =>
+                      section.start === section.end ? [index + 1] : [],
+                    )
+                  : []
               m = {
                 attachmentId: id,
                 sha256: id,
@@ -1168,6 +1195,7 @@ export function createPresentationAttachmentService(options: {
                 ...(sectionsRaw
                   ? { sectionCount: parsed.sections!.length, sectionsDigest: hash(sectionsRaw) }
                   : {}),
+                ...(pagesWithoutExtractedText.length ? { pagesWithoutExtractedText } : {}),
               }
             }
           } catch (error) {
