@@ -74,4 +74,28 @@ for (const [index, expected] of [
 const slide7 = await reference.file('ppt/slides/slide7.xml')?.async('string')
 assert.ok(slide7?.includes('同口径美元收入差额：空缺'))
 assert.ok(slide7?.includes('跨公司收入排名：空缺'))
-console.log('PPT-P0-08 partial: Apple report, recalc, eight slides and isolated native charts verified; Sony PDF pending')
+const tableRows = (xml) => {
+  const table = /<a:tbl>([\s\S]*?)<\/a:tbl>/.exec(xml)?.[1]
+  assert.ok(table)
+  return [...table.matchAll(/<a:tr\b[^>]*>([\s\S]*?)<\/a:tr>/g)].map((row) =>
+    [...row[1].matchAll(/<a:tc>([\s\S]*?)<\/a:tc>/g)].map((cell) =>
+      [...cell[1].matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((text) => text[1]).join(''),
+    ),
+  )
+}
+const slide3 = await reference.file('ppt/slides/slide3.xml')?.async('string')
+assert.ok(slide3?.includes('name="basis-matrix"'))
+assert.deepEqual(tableRows(slide3), [
+  ['核对项', 'Apple FY2024', 'Sony FY2023'],
+  ['财年结束', basis.companies[0].fiscalYearEnd, basis.companies[1].fiscalYearEnd],
+  ['会计准则', basis.companies[0].accounting, basis.companies[1].accounting],
+  ['币种与单位', 'USD millions', 'JPY millions'],
+  ['收入范围', basis.companies[0].metric, basis.companies[1].metric],
+])
+assert.ok(slide7.includes('name="comparison-gaps"'))
+assert.deepEqual(tableRows(slide7), [
+  ['比较项', '结果', '理由'],
+  ['同口径美元收入差额', '', '财年、准则和范围不同'],
+  ['跨公司收入排名', '', '换算不能消除口径差异'],
+])
+console.log('PPT-P0-08 partial: Apple report, recalc, eight slides, native charts and blank comparison table verified; Sony PDF pending')

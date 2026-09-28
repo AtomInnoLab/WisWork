@@ -9,7 +9,7 @@
 - 示意换算：`13,020,768 / 144.4 = 90,171.52` 百万美元。汇率是 Sony FY2023 年度平均汇率，并非 2024-11-01 即期汇率，也不能代表 Apple 财年的汇率。仅用来演示汇率来源和公式；不得与 Apple 的净销售额相减、排名或声称业务规模可比。
 - 不可比原因：财年结束日不同、US GAAP 与 IFRS 不同，且 Sony 指标包括金融服务收入。`basis.json` 将直接差额和跨公司排名设为 `null`，而非生成猜测值。
 
-`independent-recalc.csv` 冻结示意换算与两个留空项；`p0-08-reference.pptx` 是按该口径编译的八页参考稿。Apple 和 Sony 原币指标位于**两张独立的原生图表**，各自纵轴从零开始；未制作混合币种或混合报告期的比较图。`SHA256SUMS` 冻结 Apple PDF、口径、复算表和参考稿。运行 `node -r tsx/cjs generate-reference.cjs` 可重建参考稿，`node verify-materials.mjs` 核对当前部分材料、图表底层值和留空项。参考稿经 LibreOffice 渲染为八页并目视检查，但不等于 PowerPoint 宿主验收或金融结论审阅。
+`independent-recalc.csv` 冻结示意换算与两个留空项；`p0-08-reference.pptx` 是按该口径编译的八页参考稿。第 3 页用原生表格列出口径差异，第 7 页用原生表格让两项不可比结果保持真正的**空白单元格**，并在相邻列说明原因。Apple 和 Sony 原币指标位于**两张独立的原生图表**，各自纵轴从零开始；未制作混合币种或混合报告期的比较图。`SHA256SUMS` 冻结 Apple PDF、口径、复算表和参考稿。运行 `node -r tsx/cjs generate-reference.cjs` 可重建参考稿，`node verify-materials.mjs` 核对当前部分材料、图表底层值和留空项。参考稿经 LibreOffice 渲染为八页并目视检查，但不等于 PowerPoint 宿主验收或金融结论审阅。
 
 ## 固定任务提示草案
 

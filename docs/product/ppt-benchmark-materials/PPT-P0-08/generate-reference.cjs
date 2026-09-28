@@ -46,7 +46,19 @@ async function main() {
         notes: '候选参考稿；Sony 官方 PDF 尚待下载，本稿未经财务审阅和 PowerPoint 宿主验收。',
         elements: [
           { kind: 'text', id: 'title', x: 0.65, y: 0.48, w: 12, h: 0.7, text: title, fontSize: 26 },
-          { kind: 'text', id: 'body', x: 0.9, y: 1.6, w: 11.4, h: company ? 0.8 : 3.5, text: bodies[index], fontSize: 18 },
+          { kind: 'text', id: 'body', x: 0.9, y: 1.6, w: 11.4, h: company || index === 2 || index === 6 ? 0.8 : 3.5, text: bodies[index], fontSize: 18 },
+          ...(index === 2 ? [{ kind: 'table', id: 'basis-matrix', x: 0.9, y: 2.65, w: 11.4, h: 3.3, fontSize: 15, rows: [
+            ['核对项', 'Apple FY2024', 'Sony FY2023'],
+            ['财年结束', apple.fiscalYearEnd, sony.fiscalYearEnd],
+            ['会计准则', apple.accounting, sony.accounting],
+            ['币种与单位', 'USD millions', 'JPY millions'],
+            ['收入范围', apple.metric, sony.metric],
+          ] }] : []),
+          ...(index === 6 ? [{ kind: 'table', id: 'comparison-gaps', x: 0.9, y: 2.65, w: 11.4, h: 2.7, fontSize: 16, rows: [
+            ['比较项', '结果', '理由'],
+            ['同口径美元收入差额', '', '财年、准则和范围不同'],
+            ['跨公司收入排名', '', '换算不能消除口径差异'],
+          ] }] : []),
           ...(company ? [{ kind: 'chart', id: `${index === 3 ? 'apple' : 'sony'}-native-chart`, x: 1, y: 2.8, w: 10.8, h: 3.2, chartType: 'bar', categories: [company.name], series: [{ name: `${company.metric}（百万${company.currency === 'USD' ? '美元' : '日元'}）`, values: [company.valueMillions] }] }] : []),
           { kind: 'text', id: 'footer', role: 'decoration', x: 0.9, y: 6.95, w: 11.4, h: 0.25, text: index === 3 ? '来源：Apple FY2024 Form 10-K，PDF 第 32 页' : index === 4 ? '来源：Sony FY2023 Form 20-F，PDF 第 48 页；原件待冻结' : '参考稿；资料与专业结论待审阅', fontSize: 9 },
         ],
