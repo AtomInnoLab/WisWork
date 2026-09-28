@@ -93,6 +93,50 @@ function workspaceMarkup(
 }
 
 describe('Office Agent workspace UI', () => {
+  it('folds presentation stages while keeping confirmation outside the stage details', () => {
+    const timeline: OfficeAgentSnapshot['timeline'] = [
+      { id: 'u1', kind: 'user', text: '制作演示文稿' },
+      {
+        id: 't1',
+        kind: 'tool',
+        callId: 'c1',
+        name: 'read_presentation_plan',
+        summary: 'Ready',
+        state: 'complete',
+      },
+      {
+        id: 't2',
+        kind: 'tool',
+        callId: 'c2',
+        name: 'save_presentation_plan',
+        summary: 'Failed',
+        state: 'error',
+      },
+      { id: 'p1', kind: 'proposal', proposal, state: 'pending' },
+      {
+        id: 't3',
+        kind: 'tool',
+        callId: 'c3',
+        name: 'read_presentation_plan',
+        summary: 'Reading',
+        state: 'running',
+      },
+    ]
+    const container = document.createElement('div')
+    container.innerHTML = workspaceMarkup({ timeline }, undefined, 'powerpoint')
+    const stages = container.querySelectorAll('.stage-event')
+    expect(stages).toHaveLength(2)
+    expect(stages[0]?.querySelector('details')?.open).toBe(false)
+    expect(stages[0]?.querySelector('summary')?.textContent).toContain('2 项')
+    expect(stages[0]?.querySelector('[role="alert"]')?.textContent).toContain('恢复记录')
+    const approval = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Confirm change',
+    )!
+    expect(approval.disabled).toBe(false)
+    expect(approval.closest('.stage-event')).toBeNull()
+    expect(workspaceMarkup({ timeline }, undefined, 'word')).not.toContain('stage-event')
+  })
+
   it('requires a user confirmation before deleting a PC attachment', async () => {
     const id = 'a'.repeat(64)
     const list = vi.fn().mockResolvedValue([

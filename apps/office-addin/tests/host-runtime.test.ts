@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { acpPresentationStage } from '@wiswork/agent-harness'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
 import type { StructuredProposalController } from '../src/agent/proposal-controller.js'
 
@@ -78,6 +79,27 @@ const inventories = {
 } as const
 
 describe('host runtime composition', () => {
+  it('gives registered PowerPoint operations a user-facing presentation stage', () => {
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request: vi.fn(),
+        documentId: async () => 'document-1',
+        lastProject: () => 'project-1',
+        rememberProject: async () => undefined,
+      },
+    })
+    try {
+      const unmapped = runtime.skill.tools
+        .filter((tool) => !['read', 'bash'].includes(tool.name))
+        .filter((tool) => !acpPresentationStage(tool.name))
+        .map((tool) => tool.name)
+      expect(unmapped).toEqual([])
+    } finally {
+      runtime.dispose()
+    }
+  })
+
   it.each(Object.entries(inventories))(
     'composes shared tools with only the %s host skill',
     (host, expected) => {

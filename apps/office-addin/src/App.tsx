@@ -14,6 +14,8 @@ import {
 } from './skills/powerpoint/presentation-attachments.js'
 import { PresentationProjectCard } from './agent/presentation-project-card.js'
 import { PresentationWorkflowCard } from './agent/presentation-workflow-card.js'
+import { PresentationStageCard } from './agent/presentation-stage-card.js'
+import { presentationStageTimeline } from './agent/presentation-stage-timeline.js'
 import type { PresentationProjectController } from './skills/powerpoint/presentation-project.js'
 import {
   createBrowserPresentationDocumentBinding,
@@ -641,6 +643,8 @@ export function AgentWorkspace(props: {
 
   const proposal = state.proposal
   const hasTimeline = state.timeline.length > 0
+  const timelineItems =
+    host === 'powerpoint' ? presentationStageTimeline(state.timeline) : state.timeline
   const showConversationChrome =
     hasTimeline || state.busy || state.applying || Boolean(state.error) || Boolean(proposal)
   const showStatus =
@@ -788,17 +792,21 @@ export function AgentWorkspace(props: {
             </div>
           </div>
         )}
-        {state.timeline.map((event) => (
-          <TimelineEvent
-            key={event.id}
-            event={event}
-            activeProposalId={proposal?.id}
-            busy={state.busy}
-            applying={state.applying}
-            confirm={(id) => void session.confirm(id)}
-            reject={() => session.reject()}
-          />
-        ))}
+        {timelineItems.map((event) =>
+          event.kind === 'stage' ? (
+            <PresentationStageCard key={event.id} group={event} />
+          ) : (
+            <TimelineEvent
+              key={event.id}
+              event={event}
+              activeProposalId={proposal?.id}
+              busy={state.busy}
+              applying={state.applying}
+              confirm={(id) => void session.confirm(id)}
+              reject={() => session.reject()}
+            />
+          ),
+        )}
         {state.recoveryAvailable && (
           <button
             type="button"
@@ -1875,6 +1883,7 @@ function ConfiguredApp() {
                 : {}),
             })
             const session = createOfficeAgentSession({
+              host: activeHost,
               transport: createPcBridgeAgentTransport(bridge),
               skill: runtime.skill,
               proposals: runtime.proposals,

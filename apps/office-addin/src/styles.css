@@ -441,6 +441,18 @@ p {
   font-size: 12px;
 }
 
+.stage-event {
+  display: block;
+}
+
+.stage-event details {
+  margin-top: 8px;
+}
+
+.stage-event li {
+  overflow-wrap: anywhere;
+}
+
 .tool-error .tool-indicator {
   background: var(--color-error);
 }
