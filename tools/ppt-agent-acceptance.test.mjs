@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import PptxGenJS from 'pptxgenjs'
+import { PNG } from 'pngjs'
 import {
   CASE_IDS,
   readPresentationAcceptance,
@@ -145,9 +146,17 @@ test('directory acceptance checks the actual PPTX and reopen evidence hashes', a
     const deck = Buffer.from(await presentation.write({ outputType: 'nodebuffer' }))
     const reopen = Buffer.from('synthetic reopen capture')
     const material = Buffer.from('source,license,sha256 and reviewer signature')
+    const ledger = Buffer.from('{"claims":[]}')
+    const qa = Buffer.from('{"layers":[]}')
+    const screenshot = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+    await mkdir(join(directory, 'files'))
     await writeFile(join(directory, 'final.pptx'), deck)
     await writeFile(join(directory, 'reopen.mp4'), reopen)
     await writeFile(join(directory, 'material.md'), material)
+    await writeFile(join(directory, 'files', 'ledger.json'), ledger)
+    await writeFile(join(directory, 'files', 'qa.json'), qa)
+    for (let page = 1; page <= 8; page++)
+      await writeFile(join(directory, 'files', `page-${page}.png`), screenshot)
     const record = passed(CASE_IDS[0])
     record.material_manifest = 'material.md'
     record.material_manifest_sha256 = sha256(material)
@@ -157,9 +166,40 @@ test('directory acceptance checks the actual PPTX and reopen evidence hashes', a
       pptx_sha256: sha256(deck),
       reopen_evidence_file: 'reopen.mp4',
       reopen_evidence_sha256: sha256(reopen),
+      claim_ledger_file: 'files/ledger.json',
+      claim_ledger_sha256: sha256(ledger),
+      qa_report_file: 'files/qa.json',
+      qa_report_sha256: sha256(qa),
+      page_screenshots: Array.from({ length: 8 }, (_, index) => ({
+        page_no: index + 1,
+        file: `files/page-${index + 1}.png`,
+        sha256: sha256(screenshot),
+      })),
     }
     await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     assert.equal((await readPresentationAcceptance(directory)).passed, 1)
+    record.artifacts.page_screenshots.pop()
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /page_screenshots/)
+    record.artifacts.page_screenshots.push({
+      page_no: 8,
+      file: 'files/page-8.png',
+      sha256: sha256(screenshot),
+    })
+    await writeFile(join(directory, 'files', 'page-8.png'), 'not a png')
+    record.artifacts.page_screenshots[7].sha256 = sha256('not a png')
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /page_screenshots/)
+    await writeFile(join(directory, 'files', 'page-8.png'), screenshot)
+    record.artifacts.page_screenshots[7].sha256 = sha256(screenshot)
+    delete record.artifacts.claim_ledger_sha256
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(
+      readPresentationAcceptance(directory),
+      /acceptance_artifact_invalid:digest/,
+    )
+    record.artifacts.claim_ledger_sha256 = sha256(ledger)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     await writeFile(join(directory, 'final.pptx'), 'synthetic deck bytes')
     record.artifacts.pptx_sha256 = sha256('synthetic deck bytes')
     await writeFile(join(directory, '01.json'), JSON.stringify([record]))

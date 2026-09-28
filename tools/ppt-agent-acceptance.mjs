@@ -5,6 +5,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import JSZip from 'jszip'
+import { PNG } from 'pngjs'
 
 export const CASE_IDS = Array.from(
   { length: 20 },
@@ -227,7 +228,11 @@ export async function readPresentationAcceptance(directory) {
   const report = summarizePresentationAcceptance(records)
   for (const record of records) {
     if (record.outcome !== 'passed') continue
-    await verifyArtifact(root, record.material_manifest, record.material_manifest_sha256)
+    const materialPath = await verifyArtifact(
+      root,
+      record.material_manifest,
+      record.material_manifest_sha256,
+    )
     if (
       typeof record.artifacts?.pptx_file !== 'string' ||
       !record.artifacts.pptx_file.endsWith('.pptx')
@@ -245,6 +250,48 @@ export async function readPresentationAcceptance(directory) {
       record.artifacts.reopen_evidence_sha256,
     )
     if (pptxPath === reopenPath) throw new Error('acceptance_artifact_invalid:reopen_evidence_file')
+    const bundlePaths = new Set([materialPath, pptxPath, reopenPath])
+    if (bundlePaths.size !== 3) throw new Error('acceptance_artifact_invalid:duplicate_file')
+    for (const kind of ['claim_ledger', 'qa_report']) {
+      const path = await verifyArtifact(
+        root,
+        record.artifacts[`${kind}_file`],
+        record.artifacts[`${kind}_sha256`],
+      )
+      if (bundlePaths.has(path)) throw new Error(`acceptance_artifact_invalid:${kind}_file`)
+      bundlePaths.add(path)
+    }
+    const screenshots = record.artifacts.page_screenshots
+    if (
+      !Array.isArray(screenshots) ||
+      screenshots.length !== 8 ||
+      screenshots.some((shot, index) => shot?.page_no !== index + 1)
+    )
+      throw new Error('acceptance_artifact_invalid:page_screenshots')
+    for (const shot of screenshots) {
+      if (typeof shot.file !== 'string' || !shot.file.endsWith('.png'))
+        throw new Error('acceptance_artifact_invalid:page_screenshots')
+      const path = await verifyArtifact(root, shot.file, shot.sha256, 20 * 1024 * 1024)
+      if (bundlePaths.has(path)) throw new Error('acceptance_artifact_invalid:page_screenshots')
+      bundlePaths.add(path)
+      try {
+        const data = await readFile(path)
+        const pngSignature = Buffer.from('89504e470d0a1a0a', 'hex')
+        if (
+          data.length < 24 ||
+          !data.subarray(0, 8).equals(pngSignature) ||
+          !data.subarray(12, 16).equals(Buffer.from('IHDR'))
+        )
+          throw new Error('image_header_invalid')
+        const width = data.readUInt32BE(16)
+        const height = data.readUInt32BE(20)
+        if (width < 1 || height < 1 || width * height > 16_000_000)
+          throw new Error('image_size_invalid')
+        PNG.sync.read(data)
+      } catch {
+        throw new Error('acceptance_artifact_invalid:page_screenshots')
+      }
+    }
   }
   return report
 }
@@ -316,14 +363,14 @@ async function boundedFile(root, name, maxBytes) {
   return actual
 }
 
-async function verifyArtifact(root, name, expected) {
+async function verifyArtifact(root, name, expected, maxBytes = 100 * 1024 * 1024) {
   if (!digest(expected)) throw new Error('acceptance_artifact_invalid:digest')
-  const path = await boundedFile(root, name, 100 * 1024 * 1024)
+  const path = await boundedFile(root, name, maxBytes)
   const hash = createHash('sha256')
   let size = 0
   for await (const chunk of createReadStream(path)) {
     size += chunk.length
-    if (size > 100 * 1024 * 1024) throw new Error('acceptance_artifact_invalid:size')
+    if (size > maxBytes) throw new Error('acceptance_artifact_invalid:size')
     hash.update(chunk)
   }
   if (hash.digest('hex') !== expected) throw new Error('acceptance_artifact_digest_mismatch')

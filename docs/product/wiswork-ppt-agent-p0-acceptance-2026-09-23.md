@@ -55,6 +55,8 @@
 
 目录模式还会读取通过记录的 PPTX，校验其 OOXML 包含演示文稿、8 个幻灯片引用及对应幻灯片 XML，拒绝把任意字节改名为 `.pptx` 或用非 8 页文件计入通过。此结构检查不替代 PowerPoint 中保存、关闭、重开和编辑的人工证据核验。
 
+每次 `passed` 还须绑定独立的 Claim Ledger、五层 QA 报告，以及按 `page_no: 1..8` 排列的 8 张逐页 PNG 截图。字段分别为 `claim_ledger_file`/`claim_ledger_sha256`、`qa_report_file`/`qa_report_sha256`、`page_screenshots: [{page_no,file,sha256}]`。统计器核对文件路径、摘要、截图可解码性和文件不重复；Ledger、QA 和截图的专业内容及截图是否来自真实宿主仍由审阅人核验。证据 JSON 应放入子目录，目录根层的 `.json` 文件只用于尝试记录。
+
 统计输入示例：`records/01.json` 内容为数组，失败/阻塞记录也用相同的 `case_id`、`attempt_id`、`attempt_no`、`outcome` 字段，`outcome` 取 `passed`、`failed` 或 `blocked`。通过记录还须填写以下字段；示例值只说明格式，不是验收证据：
 
 ```json
@@ -92,6 +94,52 @@
       "pptx_sha256": "填写真实文件的 64 位小写 SHA256",
       "reopen_evidence_file": "files/PPT-P0-01-reopen.mp4",
       "reopen_evidence_sha256": "填写真实录屏的 64 位小写 SHA256",
+      "claim_ledger_file": "files/PPT-P0-01-claim-ledger.json",
+      "claim_ledger_sha256": "填写真实文件的 64 位小写 SHA256",
+      "qa_report_file": "files/PPT-P0-01-qa.json",
+      "qa_report_sha256": "填写真实文件的 64 位小写 SHA256",
+      "page_screenshots": [
+        {
+          "page_no": 1,
+          "file": "files/PPT-P0-01-page-1.png",
+          "sha256": "填写第 1 页 PNG 的 SHA256"
+        },
+        {
+          "page_no": 2,
+          "file": "files/PPT-P0-01-page-2.png",
+          "sha256": "填写第 2 页 PNG 的 SHA256"
+        },
+        {
+          "page_no": 3,
+          "file": "files/PPT-P0-01-page-3.png",
+          "sha256": "填写第 3 页 PNG 的 SHA256"
+        },
+        {
+          "page_no": 4,
+          "file": "files/PPT-P0-01-page-4.png",
+          "sha256": "填写第 4 页 PNG 的 SHA256"
+        },
+        {
+          "page_no": 5,
+          "file": "files/PPT-P0-01-page-5.png",
+          "sha256": "填写第 5 页 PNG 的 SHA256"
+        },
+        {
+          "page_no": 6,
+          "file": "files/PPT-P0-01-page-6.png",
+          "sha256": "填写第 6 页 PNG 的 SHA256"
+        },
+        {
+          "page_no": 7,
+          "file": "files/PPT-P0-01-page-7.png",
+          "sha256": "填写第 7 页 PNG 的 SHA256"
+        },
+        {
+          "page_no": 8,
+          "file": "files/PPT-P0-01-page-8.png",
+          "sha256": "填写第 8 页 PNG 的 SHA256"
+        }
+      ],
       "powerpoint_reopened": true,
       "editable_after_reopen": true
     }
