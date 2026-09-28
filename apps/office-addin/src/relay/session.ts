@@ -128,6 +128,15 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   let pairingId: string | undefined
   let sessionId: string | undefined
   let capability: string | undefined
+  let activeHost: OfficeHost = 'unknown'
+  let resumeCredentials:
+    | {
+        host: OfficeHost
+        sessionId: string
+        capability: string
+        capabilities: OfficeRelayCapability[]
+      }
+    | undefined
   let negotiatedCapabilities: OfficeRelayCapability[] = []
   let request: ActiveRequest | undefined
   let generation = 0
@@ -165,12 +174,13 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       }
     } else active.reject(new Error(error ?? 'relay_disconnected'))
   }
-  const revoke = (status: OfficeRelayStatus = 'offline', close = true) => {
+  const revoke = (status: OfficeRelayStatus = 'offline', close = true, retainResume = false) => {
     generation += 1
     finishRequest('relay_disconnected')
     pairingId = undefined
     sessionId = undefined
     capability = undefined
+    if (!retainResume) resumeCredentials = undefined
     negotiatedCapabilities = []
     for (const pending of pendingDiagnostics.values())
       pending.reject(new Error('diagnostic_unavailable'))
@@ -306,6 +316,13 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       sessionId = frame.session_id
       capability = frame.capability
       negotiatedCapabilities = approvedCapabilities
+      if (protocolVersion === 2)
+        resumeCredentials = {
+          host: activeHost,
+          sessionId: frame.session_id,
+          capability: frame.capability,
+          capabilities: [...approvedCapabilities],
+        }
       pairingId = undefined
       if (pairingTimer !== undefined) clearTimeout(pairingTimer)
       pairingTimer = undefined
@@ -317,6 +334,26 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
           ? { capabilities: Object.freeze([...negotiatedCapabilities]) }
           : {}),
       })
+      return
+    }
+    if (frame.type === 'office.resumed') {
+      if (
+        protocolVersion !== 2 ||
+        state.status !== 'connecting' ||
+        !resumeCredentials ||
+        frameBytes > MAX_CONTROL_FRAME_BYTES ||
+        !exactKeys(frame, ['version', 'type', 'session_id', 'expires_in', 'capabilities']) ||
+        frame.session_id !== resumeCredentials.sessionId ||
+        !expiry(frame.expires_in, 1800) ||
+        JSON.stringify(frame.capabilities) !== JSON.stringify(resumeCredentials.capabilities)
+      )
+        return protocolFailure()
+      sessionId = resumeCredentials.sessionId
+      capability = resumeCredentials.capability
+      negotiatedCapabilities = [...resumeCredentials.capabilities]
+      settleConnect?.()
+      settleConnect = undefined
+      publish({ status: 'connected', capabilities: Object.freeze([...negotiatedCapabilities]) })
       return
     }
     if (
@@ -459,43 +496,115 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       return () => listeners.delete(listener)
     },
     connect(host) {
-      revoke('offline')
+      revoke('offline', true, host !== 'unknown' && resumeCredentials?.host === host)
+      activeHost = host
       if (host === 'unknown') return Promise.resolve()
       const epoch = generation
       publish({ status: 'connecting' })
       return new Promise<void>((resolve) => {
         settleConnect = resolve
-        let opened: RelayWebSocket
-        try {
-          opened = createSocket(OFFICE_RELAY_URL)
-        } catch {
-          revoke('offline')
-          return
-        }
-        socket = opened
-        opened.onopen = () => {
-          if (epoch !== generation) return
+        let retried = false
+        let resumeAttempts = 0
+        const openSocket = (resuming: boolean) => {
+          let opened: RelayWebSocket
           try {
-            send({
-              version: protocolVersion,
-              type: 'office.create',
-              host: hostLabels[host],
-              ...(protocolVersion === 2 ? { capabilities: requestedCapabilities } : {}),
-            })
+            opened = createSocket(OFFICE_RELAY_URL)
           } catch {
-            protocolFailure()
+            revoke('offline')
+            return
+          }
+          socket = opened
+          const fallback = () => {
+            if (retried || epoch !== generation || socket !== opened) return
+            retried = true
+            resumeCredentials = undefined
+            socket = undefined
+            if (opened.readyState <= 1) opened.close()
+            openSocket(false)
+          }
+          const retryResume = () => {
+            if (resumeAttempts >= 2) return fallback()
+            resumeAttempts += 1
+            socket = undefined
+            if (opened.readyState <= 1) opened.close()
+            setTimeout(() => {
+              if (epoch === generation && state.status === 'connecting') openSocket(true)
+            }, 100 * resumeAttempts)
+          }
+          opened.onopen = () => {
+            if (epoch !== generation || socket !== opened) return
+            try {
+              send(
+                resuming && resumeCredentials
+                  ? {
+                      version: 2,
+                      type: 'office.resume',
+                      session_id: resumeCredentials.sessionId,
+                      capability: resumeCredentials.capability,
+                      host: hostLabels[host],
+                    }
+                  : {
+                      version: protocolVersion,
+                      type: 'office.create',
+                      host: hostLabels[host],
+                      ...(protocolVersion === 2 ? { capabilities: requestedCapabilities } : {}),
+                    },
+              )
+            } catch {
+              if (resuming) fallback()
+              else protocolFailure()
+            }
+          }
+          opened.onmessage = (event) => {
+            if (epoch !== generation || socket !== opened) return
+            if (resuming && state.status === 'connecting' && typeof event.data === 'string') {
+              try {
+                const frame = JSON.parse(event.data) as Record<string, unknown>
+                if (
+                  frame.version === 2 &&
+                  frame.type === 'relay.error' &&
+                  frame.code === 'session_active'
+                )
+                  return retryResume()
+                if (
+                  frame.type === 'relay.error' &&
+                  [
+                    'invalid_session',
+                    'invalid_capability',
+                    'invalid_frame',
+                    'unknown_type',
+                  ].includes(String(frame.code))
+                )
+                  return fallback()
+              } catch {
+                /* handled by protocol validation */
+              }
+            }
+            handleFrame(event.data, epoch)
+          }
+          opened.onerror = () => {
+            if (epoch !== generation || socket !== opened) return
+            if (state.status === 'connected') revoke('offline', true, protocolVersion === 2)
+            else if (resuming) fallback()
+            else revoke('offline')
+          }
+          opened.onclose = () => {
+            if (epoch !== generation || socket !== opened) return
+            if (resuming && state.status === 'connecting') fallback()
+            else revoke('offline', false, state.status === 'connected' && protocolVersion === 2)
           }
         }
-        opened.onmessage = (event) => handleFrame(event.data, epoch)
-        opened.onerror = () => {
-          if (epoch === generation) revoke('offline')
-        }
-        opened.onclose = () => {
-          if (epoch === generation) revoke('offline', false)
-        }
+        openSocket(protocolVersion === 2 && resumeCredentials?.host === host)
       })
     },
     disconnect() {
+      if (protocolVersion === 2 && state.status === 'connected' && sessionId && capability) {
+        try {
+          send({ version: 2, type: 'office.leave', session_id: sessionId, capability })
+        } catch {
+          /* socket already closed */
+        }
+      }
       revoke('offline')
     },
     async authenticatedFetch(path, init) {

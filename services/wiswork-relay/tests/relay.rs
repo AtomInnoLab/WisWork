@@ -239,6 +239,90 @@ async fn approved_v2_session(
     (office, pc, office_ready, pc_ready)
 }
 
+#[tokio::test]
+async fn office_socket_resumes_the_same_v2_session_without_new_pairing() {
+    let url = server().await;
+    let (mut office, mut pc, office_ready, pc_ready) = approved_v2_session(&url).await;
+    let sid = office_ready["session_id"].as_str().unwrap();
+    let capability = office_ready["capability"].as_str().unwrap();
+
+    let mut premature = socket(&url, ORIGIN).await;
+    send(&mut premature, json!({"version":2,"type":"office.resume","session_id":sid,"capability":capability,"host":"Word"})).await;
+    assert_eq!(recv(&mut premature).await["code"], "session_active");
+    premature.close(None).await.unwrap();
+
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":capability,"request_id":"interrupted","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "interrupted");
+    office.close(None).await.unwrap();
+    assert_eq!(recv(&mut pc).await["type"], "relay.cancel");
+
+    let mut attacker = socket(&url, ORIGIN).await;
+    send(&mut attacker, json!({"version":2,"type":"office.resume","session_id":sid,"capability":"wrong","host":"Word"})).await;
+    assert_eq!(recv(&mut attacker).await["code"], "invalid_capability");
+    attacker.close(None).await.unwrap();
+
+    let mut resumed = socket(&url, ORIGIN).await;
+    send(&mut resumed, json!({"version":2,"type":"office.resume","session_id":sid,"capability":capability,"host":"Word"})).await;
+    let ack = recv(&mut resumed).await;
+    assert_eq!(ack["type"], "office.resumed");
+    assert_eq!(ack["session_id"], office_ready["session_id"]);
+    assert_eq!(ack["capabilities"], office_ready["capabilities"]);
+    send(&mut resumed, json!({"version":2,"type":"office.request","session_id":sid,"capability":capability,"request_id":"after_resume","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "after_resume");
+    send(&mut pc, json!({"version":2,"type":"pc.start","session_id":sid,"capability":pc_ready["capability"],"request_id":"after_resume","status":200,"content_type":"application/json"})).await;
+    assert_eq!(recv(&mut resumed).await["type"], "relay.start");
+    send(&mut pc, json!({"version":2,"type":"pc.done","session_id":sid,"capability":pc_ready["capability"],"request_id":"after_resume"})).await;
+    assert_eq!(recv(&mut resumed).await["type"], "relay.done");
+
+    send(
+        &mut resumed,
+        json!({"version":2,"type":"office.leave","session_id":sid,"capability":capability}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["code"], "session_revoked");
+    let mut again = socket(&url, ORIGIN).await;
+    send(&mut again, json!({"version":2,"type":"office.resume","session_id":sid,"capability":capability,"host":"Word"})).await;
+    assert_eq!(recv(&mut again).await["code"], "invalid_session");
+}
+
+#[tokio::test]
+async fn three_powerpoint_sessions_route_interleaved_requests_to_their_own_pcs() {
+    let url = server().await;
+    let mut sessions = Vec::new();
+    for index in 0..3 {
+        let mut office = socket(&url, ORIGIN).await;
+        send(&mut office, json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["agent.v1"]})).await;
+        let created = recv(&mut office).await;
+        let mut pc = pc_socket(&url).await;
+        send(&mut pc, json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":["agent.v1"]})).await;
+        let claimed = recv(&mut pc).await;
+        send(&mut pc, json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"]})).await;
+        let pc_ready = recv(&mut pc).await;
+        let office_ready = recv(&mut office).await;
+        sessions.push((office, pc, office_ready, pc_ready, index));
+    }
+    for (office, _, ready, _, index) in &mut sessions {
+        send(office, json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"same_request_id","capability_name":"agent.v1","body":{"document":index}})).await;
+    }
+    for (_, pc, ready, _, index) in &mut sessions {
+        let forwarded = recv(pc).await;
+        assert_eq!(forwarded["session_id"], ready["session_id"]);
+        assert_eq!(forwarded["body"]["document"], json!(index));
+    }
+    for (_, pc, ready, pc_ready, _) in &mut sessions {
+        send(pc, json!({"version":2,"type":"pc.start","session_id":ready["session_id"],"capability":pc_ready["capability"],"request_id":"same_request_id","status":200,"content_type":"application/json"})).await;
+        send(pc, json!({"version":2,"type":"pc.done","session_id":ready["session_id"],"capability":pc_ready["capability"],"request_id":"same_request_id"})).await;
+    }
+    for (office, _, ready, _, _) in &mut sessions {
+        assert_eq!(recv(office).await["session_id"], ready["session_id"]);
+        assert_eq!(recv(office).await["type"], "relay.done");
+    }
+    sessions[0].0.close(None).await.unwrap();
+    let (office, pc, ready, _, _) = &mut sessions[1];
+    send(office, json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"second_document_still_live","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(pc).await["request_id"], "second_document_still_live");
+}
+
 fn diagnostic(ready: &Value, event_id: &str) -> Value {
     json!({
         "version": 2,

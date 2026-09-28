@@ -143,6 +143,264 @@ describe('Office cloud relay session', () => {
     expect(session.snapshot()).toEqual({ status: 'expired' })
   })
 
+  it('reattaches a v2 PowerPoint session after socket loss and leaves it on explicit disconnect', async () => {
+    const first = new FakeSocket(),
+      resumed = new FakeSocket()
+    const sockets = [first, resumed]
+    const session = createOfficeRelaySession({
+      createSocket: () => sockets.shift()!,
+      capabilities: ['agent.v1', 'presentation.v1'],
+      randomUUID: () => 'request_after_resume',
+    })
+    const paired = session.connect('powerpoint')
+    first.open()
+    first.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_1',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    first.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_1',
+        capability: 'cap_1',
+        expires_in: 1800,
+        capabilities: ['agent.v1', 'presentation.v1'],
+      }),
+    )
+    await paired
+    first.close()
+    expect(session.snapshot().status).toBe('offline')
+    const reconnecting = session.connect('powerpoint')
+    resumed.open()
+    expect(frame(resumed, 0)).toEqual({
+      version: 2,
+      type: 'office.resume',
+      session_id: 'session_1',
+      capability: 'cap_1',
+      host: 'PowerPoint',
+    })
+    resumed.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.resumed',
+        session_id: 'session_1',
+        expires_in: 120,
+        capabilities: ['agent.v1', 'presentation.v1'],
+      }),
+    )
+    await reconnecting
+    expect(session.snapshot()).toEqual({
+      status: 'connected',
+      capabilities: ['agent.v1', 'presentation.v1'],
+    })
+    const pending = session.capabilityFetch('presentation.v1', { operation: 'status' })
+    expect(frame(resumed, 1)).toMatchObject({
+      type: 'office.request',
+      session_id: 'session_1',
+      capability: 'cap_1',
+      request_id: 'request_after_resume',
+    })
+    resumed.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.start',
+        session_id: 'session_1',
+        request_id: 'request_after_resume',
+        status: 200,
+        content_type: 'application/json',
+      }),
+    )
+    resumed.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.done',
+        session_id: 'session_1',
+        request_id: 'request_after_resume',
+      }),
+    )
+    expect(await (await pending).text()).toBe('')
+    session.disconnect()
+    expect(frame(resumed, 2)).toEqual({
+      version: 2,
+      type: 'office.leave',
+      session_id: 'session_1',
+      capability: 'cap_1',
+    })
+  })
+
+  it('falls back to a new pairing if the Relay cannot resume the previous session', async () => {
+    const first = new FakeSocket(),
+      resume = new FakeSocket(),
+      fallback = new FakeSocket()
+    const sockets = [first, resume, fallback]
+    const session = createOfficeRelaySession({
+      createSocket: () => sockets.shift()!,
+      capabilities: ['agent.v1'],
+    })
+    const paired = session.connect('powerpoint')
+    first.open()
+    first.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_1',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    first.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_1',
+        capability: 'cap_1',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await paired
+    first.close()
+    const reconnecting = session.connect('powerpoint')
+    resume.open()
+    resume.receive(JSON.stringify({ version: 1, type: 'relay.error', code: 'invalid_frame' }))
+    fallback.open()
+    expect(frame(fallback, 0)).toEqual({
+      version: 2,
+      type: 'office.create',
+      host: 'PowerPoint',
+      capabilities: ['agent.v1'],
+    })
+    fallback.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_2',
+        verification_code: '654321',
+        expires_in: 120,
+      }),
+    )
+    expect(session.snapshot()).toEqual({ status: 'pending', verificationCode: '654321' })
+    fallback.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_2',
+        capability: 'cap_2',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await reconnecting
+    expect(session.snapshot().status).toBe('connected')
+    session.disconnect()
+  })
+
+  it('retains resumable credentials after a connected socket error', async () => {
+    const first = new FakeSocket(),
+      second = new FakeSocket()
+    const sockets = [first, second]
+    const session = createOfficeRelaySession({
+      createSocket: () => sockets.shift()!,
+      capabilities: ['agent.v1'],
+    })
+    const paired = session.connect('powerpoint')
+    first.open()
+    first.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_1',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    first.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_1',
+        capability: 'cap_1',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await paired
+    first.onerror?.()
+    expect(session.snapshot().status).toBe('offline')
+    const reconnecting = session.connect('powerpoint')
+    second.open()
+    expect(frame(second, 0).type).toBe('office.resume')
+    second.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.resumed',
+        session_id: 'session_1',
+        expires_in: 120,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await reconnecting
+    session.disconnect()
+  })
+
+  it('retries when the Relay still sees the old socket during resume', async () => {
+    const first = new FakeSocket(),
+      early = new FakeSocket(),
+      retry = new FakeSocket()
+    const sockets = [first, early, retry]
+    const session = createOfficeRelaySession({
+      createSocket: () => sockets.shift()!,
+      capabilities: ['agent.v1'],
+    })
+    const paired = session.connect('powerpoint')
+    first.open()
+    first.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_1',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    first.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_1',
+        capability: 'cap_1',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await paired
+    first.close()
+    const reconnecting = session.connect('powerpoint')
+    early.open()
+    early.receive(JSON.stringify({ version: 2, type: 'relay.error', code: 'session_active' }))
+    await new Promise((resolve) => setTimeout(resolve, 130))
+    retry.open()
+    expect(frame(retry, 0).type).toBe('office.resume')
+    retry.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.resumed',
+        session_id: 'session_1',
+        expires_in: 120,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await reconnecting
+    expect(session.snapshot().status).toBe('connected')
+    session.disconnect()
+  })
+
   it('ignores old socket frames after re-pairing and completes the current request', async () => {
     const oldSocket = new FakeSocket()
     const socket = new FakeSocket()

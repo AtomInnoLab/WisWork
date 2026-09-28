@@ -129,6 +129,7 @@ struct Session {
     pc_cap: String,
     expires: Instant,
     absolute_expires: Instant,
+    resume_until: Option<Instant>,
     active: Option<Active>,
     used_requests: VecDeque<String>,
     capabilities: Vec<String>,
@@ -530,7 +531,9 @@ fn diagnostic_response(tx: &Tx, value: Value) {
     let _ = try_send(tx, value);
 }
 fn renew_session(session: &mut Session, idle_ttl: Duration) {
-    session.expires = (Instant::now() + idle_ttl).min(session.absolute_expires);
+    session.expires = (Instant::now() + idle_ttl)
+        .min(session.absolute_expires)
+        .min(session.resume_until.unwrap_or(session.absolute_expires));
 }
 async fn renew_connection_sessions(app: &App, conn: u64) {
     let mut store = app.inner.state.lock().await;
@@ -622,6 +625,8 @@ async fn process(
     }
     match kind {
         "office.create" => create(app, conn, tx, origin, peer, map).await,
+        "office.resume" => resume_office(app, conn, tx, origin, map).await,
+        "office.leave" => leave_office(app, conn, origin, map).await,
         "pc.negotiate" => negotiate(app, tx, subject.ok_or("auth_required")?, map).await,
         "pc.claim" => claim(app, conn, tx, subject.ok_or("auth_required")?, map).await,
         "pc.approve" => approve(app, conn, tx, map).await,
@@ -996,6 +1001,7 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
             pc_cap: pc,
             expires: now + expires,
             absolute_expires: now + app.inner.config.session_max_ttl,
+            resume_until: None,
             active: None,
             used_requests: VecDeque::new(),
             capabilities: approved_capabilities,
@@ -1004,6 +1010,91 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
             diagnostic_window_count: 0,
         },
     );
+    Ok(())
+}
+
+async fn resume_office(
+    app: &App,
+    conn: u64,
+    tx: &Tx,
+    origin: Option<&str>,
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
+    if version(&m)? != PROTOCOL_V2
+        || origin != Some(OFFICE_ORIGIN)
+        || !exact(&m, &["version", "type", "session_id", "capability", "host"])
+    {
+        return Err("invalid_frame");
+    }
+    let sid = string(&m, "session_id")?.to_owned();
+    let cap = string(&m, "capability")?;
+    let host = string(&m, "host")?;
+    if !matches!(host, "Word" | "Excel" | "PowerPoint") {
+        return Err("unsupported_host");
+    }
+    let mut store = app.inner.state.lock().await;
+    expire(&mut store, app.inner.config.pairing_ttl);
+    let session = store.sessions.get_mut(&sid).ok_or("invalid_session")?;
+    if session.version != PROTOCOL_V2 || session.office_cap != cap || session.host != host {
+        return Err("invalid_capability");
+    }
+    if session.office != 0 {
+        return Err("session_active");
+    }
+    if session
+        .resume_until
+        .is_none_or(|deadline| deadline <= Instant::now())
+    {
+        return Err("invalid_session");
+    }
+    let remaining = session.expires.saturating_duration_since(Instant::now());
+    try_send(tx, json!({"version":PROTOCOL_V2,"type":"office.resumed","session_id":sid,"expires_in":remaining.as_secs().max(1),"capabilities":session.capabilities}))
+        .map_err(|_| "peer_unavailable")?;
+    session.office = conn;
+    session.office_tx = tx.clone();
+    session.resume_until = None;
+    renew_session(session, app.inner.config.session_ttl);
+    store
+        .connection_sessions
+        .entry(conn)
+        .or_default()
+        .insert(sid);
+    Ok(())
+}
+
+async fn leave_office(
+    app: &App,
+    conn: u64,
+    origin: Option<&str>,
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
+    if version(&m)? != PROTOCOL_V2
+        || origin != Some(OFFICE_ORIGIN)
+        || !exact(&m, &["version", "type", "session_id", "capability"])
+    {
+        return Err("invalid_frame");
+    }
+    let sid = string(&m, "session_id")?;
+    let cap = string(&m, "capability")?;
+    let mut store = app.inner.state.lock().await;
+    let session = store.sessions.get(sid).ok_or("invalid_session")?;
+    if session.office != conn || session.office_cap != cap || session.version != PROTOCOL_V2 {
+        return Err("invalid_capability");
+    }
+    let session = store.sessions.remove(sid).ok_or("invalid_session")?;
+    if let Some(ids) = store.connection_sessions.get_mut(&conn) {
+        ids.remove(sid);
+    }
+    if let Some(ids) = store.connection_sessions.get_mut(&session.pc) {
+        ids.remove(sid);
+    }
+    versioned_error(&session.pc_tx, PROTOCOL_V2, "session_revoked");
+    if let Some(active) = session.active {
+        send(
+            &session.pc_tx,
+            json!({"version":PROTOCOL_V2,"type":"relay.cancel","session_id":sid,"request_id":active.id}),
+        );
+    }
     Ok(())
 }
 
@@ -1650,6 +1741,25 @@ async fn cleanup(app: &App, conn: u64) {
         .map(|(id, _)| id.clone())
         .collect();
     for id in ids {
+        if s.sessions
+            .get(&id)
+            .is_some_and(|x| x.office == conn && x.version == PROTOCOL_V2)
+        {
+            if let Some(x) = s.sessions.get_mut(&id) {
+                let active = x.active.take();
+                x.office = 0;
+                x.resume_until =
+                    Some((Instant::now() + app.inner.config.pairing_ttl).min(x.absolute_expires));
+                renew_session(x, app.inner.config.session_ttl);
+                if let Some(active) = active {
+                    send(
+                        &x.pc_tx,
+                        json!({"version":x.version,"type":"relay.cancel","session_id":id,"request_id":active.id}),
+                    );
+                }
+            }
+            continue;
+        }
         if let Some(x) = s.sessions.remove(&id) {
             let peer = if x.office == conn { x.pc } else { x.office };
             if let Some(session_ids) = s.connection_sessions.get_mut(&peer) {
