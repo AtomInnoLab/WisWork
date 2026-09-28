@@ -299,7 +299,7 @@ export function DiagnosticCopyButton(props: {
           setStatus('')
           void props
             .copyDiagnostics()
-            .then(() => setStatus('诊断信息已复制；含项目和页面 ID，请检查后分享'))
+            .then(() => setStatus('诊断信息已复制；含文档、会话、项目和页面 ID，请检查后分享'))
             .catch(() => setStatus('复制诊断信息失败'))
         }}
       >
@@ -680,7 +680,9 @@ export function AgentWorkspace(props: {
                       .then(
                         () =>
                           mounted.current &&
-                          setDiagnosticStatus('诊断信息已复制；含项目和页面 ID，请检查后分享'),
+                          setDiagnosticStatus(
+                            '诊断信息已复制；含文档、会话、项目和页面 ID，请检查后分享',
+                          ),
                       )
                       .catch(() => mounted.current && setDiagnosticStatus('复制诊断信息失败'))
                     event.currentTarget.closest('details')?.removeAttribute('open')
@@ -1688,6 +1690,8 @@ function ConfiguredApp() {
               platform: environment.platform,
               build: __WISWORK_OFFICE_BUILD_ID__,
               localDocumentId: boundPresentationDocumentId,
+              localSessionId: () =>
+                'diagnosticSessionId' in bridge ? bridge.diagnosticSessionId() : undefined,
               requirementSets: environment.requirementSets,
               remoteEnabled: remoteDiagnosticsEnabled,
               remoteSamplePercent: diagnosticSamplePercent,

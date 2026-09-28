@@ -19,6 +19,7 @@ describe('Office safe diagnostics', () => {
     })
     diagnostics.startTrace()
     diagnostics.setTool('run_presentation_production', {
+      document_id: 'spoofed-document',
       project_id: 'project-1',
       request_id: 'run-1',
       page_id: 'page-3',
@@ -77,6 +78,33 @@ describe('Office safe diagnostics', () => {
     })
     expect(sent).toHaveLength(1)
     expect(JSON.stringify(sent)).not.toContain('document')
+  })
+  it('binds each local event to the current Relay session and clears it after revocation', () => {
+    const sent: unknown[] = []
+    let sessionId: string | undefined = 'relay-1'
+    const diagnostics = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'test',
+      localDocumentId: 'document-1',
+      localSessionId: () => sessionId,
+      remoteEnabled: true,
+      send: (event) => {
+        sent.push(event)
+      },
+    })
+    diagnostics.startTrace()
+    diagnostics.setTool('run_presentation_production', { session_id: 'spoofed-session' })
+    expect(diagnostics.record({ phase: 'tool', errorCode: 'office_write_failed' })).toMatchObject({
+      presentation_context: { document_id: 'document-1', session_id: 'relay-1' },
+    })
+    sessionId = undefined
+    expect(diagnostics.record({ phase: 'transport', errorCode: 'network_error' })).toMatchObject({
+      presentation_context: { document_id: 'document-1' },
+    })
+    expect(diagnostics.snapshot().events.at(-1)?.presentation_context).not.toHaveProperty(
+      'session_id',
+    )
+    expect(JSON.stringify(sent)).not.toContain('relay-1')
   })
   it('samples remote events per trace while retaining every local event', () => {
     const sent: string[] = []

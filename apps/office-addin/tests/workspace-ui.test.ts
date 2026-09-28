@@ -605,7 +605,7 @@ describe('Office Agent workspace UI', () => {
     await act(async () => copy.click())
     expect(copyDiagnostics).toHaveBeenCalledOnce()
     expect(container.querySelector('.diagnostic-status')?.textContent).toBe(
-      '诊断信息已复制；含项目和页面 ID，请检查后分享',
+      '诊断信息已复制；含文档、会话、项目和页面 ID，请检查后分享',
     )
     await act(async () => root.unmount())
     container.remove()
@@ -623,7 +623,7 @@ describe('Office Agent workspace UI', () => {
     await act(async () => button.click())
     expect(copyDiagnostics).toHaveBeenCalledOnce()
     expect(container.querySelector('[role="status"]')?.textContent).toBe(
-      '诊断信息已复制；含项目和页面 ID，请检查后分享',
+      '诊断信息已复制；含文档、会话、项目和页面 ID，请检查后分享',
     )
     await act(async () => root.unmount())
     container.remove()

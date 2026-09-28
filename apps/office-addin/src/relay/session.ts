@@ -55,6 +55,8 @@ export interface OfficeRelaySnapshot {
 
 export interface OfficeRelaySession {
   snapshot(): OfficeRelaySnapshot
+  /** Local diagnostics only; never expose the session capability. */
+  diagnosticSessionId(): string | undefined
   subscribe(listener: () => void): () => void
   connect(host: OfficeHost): Promise<void>
   disconnect(): void
@@ -515,6 +517,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   }
 
   const api: OfficeRelaySession = {
+    diagnosticSessionId: () => sessionId ?? resumeCredentials?.sessionId,
     snapshot: () => state,
     subscribe(listener) {
       listeners.add(listener)

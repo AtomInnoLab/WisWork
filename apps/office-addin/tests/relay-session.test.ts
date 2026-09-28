@@ -174,8 +174,10 @@ describe('Office cloud relay session', () => {
       }),
     )
     await paired
+    expect(session.diagnosticSessionId()).toBe('session_1')
     first.close()
     expect(session.snapshot().status).toBe('offline')
+    expect(session.diagnosticSessionId()).toBe('session_1')
     const reconnecting = session.connect('powerpoint')
     resumed.open()
     expect(frame(resumed, 0)).toEqual({
@@ -196,6 +198,7 @@ describe('Office cloud relay session', () => {
       }),
     )
     await reconnecting
+    expect(session.diagnosticSessionId()).toBe('session_1')
     expect(session.snapshot()).toEqual({
       status: 'connected',
       capabilities: ['agent.v1', 'presentation.v1'],
@@ -231,6 +234,7 @@ describe('Office cloud relay session', () => {
     )
     expect(await (await pending).text()).toBe('')
     session.disconnect()
+    expect(session.diagnosticSessionId()).toBeUndefined()
     expect(frame(resumed, 2)).toEqual({
       version: 2,
       type: 'office.leave',
@@ -311,6 +315,7 @@ describe('Office cloud relay session', () => {
     const reconnecting = session.connect('powerpoint')
     resume.open()
     resume.receive(JSON.stringify({ version: 1, type: 'relay.error', code: 'invalid_frame' }))
+    expect(session.diagnosticSessionId()).toBeUndefined()
     fallback.open()
     expect(frame(fallback, 0)).toEqual({
       version: 2,
@@ -340,6 +345,7 @@ describe('Office cloud relay session', () => {
     )
     await reconnecting
     expect(session.snapshot().status).toBe('connected')
+    expect(session.diagnosticSessionId()).toBe('session_2')
     session.disconnect()
   })
 

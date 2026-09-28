@@ -11,6 +11,7 @@ export type DiagnosticOutcome = 'passed' | 'failed' | 'unsupported' | 'cancelled
 export type VerificationStage = 'text' | 'body_shape' | 'content' | 'boundary'
 export interface PresentationDiagnosticContext {
   document_id?: string
+  session_id?: string
   project_id?: string
   request_id?: string
   page_id?: string
@@ -84,6 +85,7 @@ interface DiagnosticOptions {
   platform?: string
   build: string
   localDocumentId?: string
+  localSessionId?: () => string | undefined
   requirementSets?: Readonly<Record<string, boolean>>
   remoteEnabled?: boolean
   remoteSamplePercent?: number
@@ -221,7 +223,14 @@ function requirementSets(value: Readonly<Record<string, boolean>> | undefined) {
 
 function presentationContext(value: PresentationDiagnosticContext | undefined) {
   if (!value) return undefined
-  const allowed = ['document_id', 'project_id', 'request_id', 'page_id', 'tool_call_id'] as const
+  const allowed = [
+    'document_id',
+    'session_id',
+    'project_id',
+    'request_id',
+    'page_id',
+    'tool_call_id',
+  ] as const
   const safe = Object.fromEntries(
     allowed.flatMap((key) =>
       typeof value[key] === 'string' && /^[A-Za-z0-9_#-]{1,128}$/.test(value[key])
@@ -316,7 +325,12 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
     },
     setTool(name, inputContext) {
       tool = identifier(name, 'unknown', 128)
-      context = presentationContext(inputContext)
+      context = presentationContext({
+        project_id: inputContext?.project_id,
+        request_id: inputContext?.request_id,
+        page_id: inputContext?.page_id,
+        tool_call_id: inputContext?.tool_call_id,
+      })
     },
     record(input) {
       if (!traceId) {
@@ -325,6 +339,7 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
       }
       const errorCode = stableError(input.errorCode)
       const presentationStage = acpPresentationStage(tool)
+      const sessionContext = presentationContext({ session_id: options.localSessionId?.() })
       const event = freezeEvent({
         event_id: randomUUID(),
         trace_id: traceId,
@@ -343,8 +358,8 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
             ? Math.min(600_000, Math.trunc(input.durationMs!))
             : 0,
         requirement_sets: requirements,
-        ...(documentContext || context
-          ? { presentation_context: { ...documentContext, ...context } }
+        ...(documentContext || sessionContext || context
+          ? { presentation_context: { ...context, ...sessionContext, ...documentContext } }
           : {}),
       })
       if (encoder.encode(JSON.stringify(event)).byteLength > MAX_DIAGNOSTIC_EVENT_BYTES) {
