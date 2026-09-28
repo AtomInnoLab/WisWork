@@ -7,6 +7,10 @@ export interface PresentationPageReplacementInspection {
   slideIds: string[]
 }
 export interface PresentationPageReplacementAdapter {
+  reconcilePending(
+    record: PresentationPageReplacement,
+    signal?: AbortSignal,
+  ): Promise<{ status: 'baseline' | 'inserted' | 'conflict'; newSlideId?: string }>
   inspect(
     record: PresentationPageReplacement,
     signal?: AbortSignal,
@@ -156,6 +160,33 @@ async function inspect(
 
 /** Every write requires its durable intent and exact page identity/content proof. */
 export class BrowserPresentationPageReplacementAdapter implements PresentationPageReplacementAdapter {
+  async reconcilePending(
+    record: PresentationPageReplacement,
+    signal?: AbortSignal,
+  ): Promise<{ status: 'baseline' | 'inserted' | 'conflict'; newSlideId?: string }> {
+    check(signal)
+    const saved = structuredClone(record)
+    if (saved.state !== 'pending' || saved.newSlideId) throw new Error('office_concurrent_change')
+    return runtime().run(async (context: PowerPoint.RequestContext) => {
+      const ids = await order(context, signal)
+      if (same(ids, saved.beforeSlideIds)) {
+        return (await digest(context, saved.oldSlideId, signal)) === saved.originalPackageDigest &&
+          same(await order(context, signal), ids)
+          ? { status: 'baseline' as const }
+          : { status: 'conflict' as const }
+      }
+      const added = ids.filter((id) => !saved.beforeSlideIds.includes(id))
+      if (
+        added.length !== 1 ||
+        !same(ids, stagedIds({ ...saved, newSlideId: added[0]! })) ||
+        (await digest(context, saved.oldSlideId, signal)) !== saved.originalPackageDigest ||
+        (await digest(context, added[0]!, signal)) !== saved.replacementPackageDigest ||
+        !same(await order(context, signal), ids)
+      )
+        return { status: 'conflict' }
+      return { status: 'inserted', newSlideId: added[0]! }
+    })
+  }
   async inspect(
     record: PresentationPageReplacement,
     signal?: AbortSignal,

@@ -207,6 +207,11 @@ async function fixture() {
     return new Response(JSON.stringify(meta))
   })
   const adapter = {
+    reconcilePending: vi.fn(async () =>
+      slideIds.length === 2
+        ? ({ status: 'inserted', newSlideId: 'new' } as const)
+        : ({ status: 'baseline' } as const),
+    ),
     inspect: vi.fn(async (): Promise<PresentationPageReplacementInspection> => ({
       status:
         slideIds.length === 2
@@ -310,6 +315,9 @@ async function fixture() {
     },
     removeStaged: () => {
       slideIds = ['old']
+    },
+    markUnknownInserted: () => {
+      slideIds = ['old', 'new']
     },
     source: () => source,
     backup: () => backupBytes,
@@ -638,8 +646,48 @@ it('marks unknown pending insertion for manual review and never replays it', asy
   expect(f.records.get(id)?.state).toBe('pending')
   const inspected = await f.call('inspect', { change_id: id })
   expect(JSON.parse(inspected.output).manualReview).toBe(true)
+  expect(JSON.parse(inspected.output).nextTool).toBe(
+    'reconcile_pending_existing_presentation_page_change',
+  )
   expect((await f.call('resume', { change_id: id })).isError).toBe(true)
+  const reconciled = await f.call('reconcile', { change_id: id })
+  expect(JSON.parse(reconciled.output)).toMatchObject({
+    status: 'pending_no_insert_observed',
+    hostWrite: false,
+  })
+  expect(f.records.get(id)?.state).toBe('pending')
   expect(f.adapter.stage).toHaveBeenCalledTimes(1)
+})
+
+it('reconciles a pending insertion into durable staged state without replaying the host write', async () => {
+  const f = await fixture()
+  const proposed = await f.call('stage', {
+    baseline_id: 'baseline',
+    slide_id: 'old',
+    path: '/home/user/rebuilt.pptx',
+  })
+  f.adapter.stage.mockImplementationOnce(async () => {
+    f.markUnknownInserted()
+    throw new Error('office_state_uncertain')
+  })
+  await expect(f.confirm()).rejects.toThrow('office_state_uncertain')
+  const id = JSON.parse(proposed.output).changeId as string
+  expect(f.records.get(id)?.state).toBe('pending')
+  f.setWriteFailure(true)
+  expect((await f.call('reconcile', { change_id: id })).isError).toBe(true)
+  expect(f.records.get(id)?.state).toBe('pending')
+  f.setWriteFailure(false)
+  const reconciled = await f.call('reconcile', { change_id: id })
+  expect(reconciled.isError, reconciled.output).not.toBe(true)
+  expect(JSON.parse(reconciled.output)).toMatchObject({
+    status: 'staged',
+    newSlideId: 'new',
+    hostWrite: false,
+  })
+  expect(f.records.get(id)).toMatchObject({ state: 'staged', newSlideId: 'new' })
+  expect(f.adapter.stage).toHaveBeenCalledTimes(1)
+  expect(f.adapter.commit).not.toHaveBeenCalled()
+  expect((await f.call('reconcile', { change_id: id })).isError).toBe(true)
 })
 
 it('discards a staged page without deleting the original', async () => {

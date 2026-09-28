@@ -103,6 +103,23 @@ it('stages a single page after the old page, journals identity before validation
   await f.adapter.discard({ ...f.record, state: 'discard_pending' }, guard)
   expect(f.remove).toHaveBeenCalledTimes(1)
 })
+it('reconciles an exact pending insertion without issuing another host write', async () => {
+  const f = await setup()
+  expect(await f.adapter.reconcilePending(f.record)).toEqual({ status: 'baseline' })
+  f.setIds(['before', 'old', 'new', 'after'])
+  f.packages.new = f.replacement
+  expect(await f.adapter.reconcilePending(f.record)).toEqual({
+    status: 'inserted',
+    newSlideId: 'new',
+  })
+  expect(f.insert).not.toHaveBeenCalled()
+  expect(f.remove).not.toHaveBeenCalled()
+  f.packages.new = f.original
+  expect(await f.adapter.reconcilePending(f.record)).toEqual({ status: 'conflict' })
+  f.packages.new = f.replacement
+  f.setIds(['before', 'new', 'old', 'after'])
+  expect(await f.adapter.reconcilePending(f.record)).toEqual({ status: 'conflict' })
+})
 it('never retries or deletes on partial insertion, failed identity receipt, or changed imported content', async () => {
   for (const mode of ['partial', 'receipt', 'content']) {
     const f = await setup(),

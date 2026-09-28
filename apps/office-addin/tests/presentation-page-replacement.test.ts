@@ -88,6 +88,7 @@ function setup() {
     },
   )
   const adapter = {
+    reconcilePending: vi.fn(async () => ({ status: 'baseline' as const })),
     inspect: vi.fn(async () => ({
       status: hostStatus,
       slideIds: hostStatus === 'staged' ? ['original', 'host', 'new'] : ['original', 'host'],

@@ -136,6 +136,7 @@ async function oneSlide(bytesValue: Uint8Array, signal?: AbortSignal) {
 const names = [
   'stage',
   'inspect',
+  'reconcile',
   'resume',
   'commit',
   'discard',
@@ -151,19 +152,21 @@ const tools: AgentToolDef[] = names.map((action) => ({
       ? 'Confirm backup and stage a one-slide PPTX after an existing native page; original remains.'
       : action === 'inspect'
         ? 'Inspect current native page order and content against a saved change.'
-        : action === 'resume'
-          ? 'Finish journal for a known inserted page without replaying insertion.'
-          : action === 'commit'
-            ? 'Confirm replacing the original with the verified staged page.'
-            : action === 'discard'
-              ? 'Confirm deleting the verified staged page while keeping the original.'
-              : action === 'undo'
-                ? 'Confirm restoring the backed-up original page and removing the replacement.'
-                : action === 'release'
-                  ? 'Confirm releasing the PC backup of a discarded or undone page change.'
-                  : action === 'capture'
-                    ? 'Capture one affected page for visual judgment; does not pass QA.'
-                    : 'Persist a visual judgment for one unchanged captured page.',
+        : action === 'reconcile'
+          ? 'Read-only recovery for a pending page insertion: identify one exact inserted page and journal its host ID without replaying a write.'
+          : action === 'resume'
+            ? 'Finish journal for a known inserted page without replaying insertion.'
+            : action === 'commit'
+              ? 'Confirm replacing the original with the verified staged page.'
+              : action === 'discard'
+                ? 'Confirm deleting the verified staged page while keeping the original.'
+                : action === 'undo'
+                  ? 'Confirm restoring the backed-up original page and removing the replacement.'
+                  : action === 'release'
+                    ? 'Confirm releasing the PC backup of a discarded or undone page change.'
+                    : action === 'capture'
+                      ? 'Capture one affected page for visual judgment; does not pass QA.'
+                      : 'Persist a visual judgment for one unchanged captured page.',
   inputSchema: {
     type: 'object',
     properties:
@@ -275,7 +278,7 @@ export function createPresentationExistingPageEditingSkill(
           )
     },
     systemPrompt:
-      'Existing page rebuild uses a validated one-slide VFS PPTX. For an ordinary embedded native picture, prepare_existing_presentation_image_revision creates a one-slide revision in VFS; then stage the returned path with picture_shape_id through the existing page change flow so post-write media can be read back. For equal-length text spanning multiple formatting runs, prepare_existing_presentation_text_revision preserves each run and produces a one-slide VFS revision; stage that path through the same confirmed page change flow. To restore a whole page from a completed single or batch existing-edit savepoint, call prepare_existing_presentation_original_page_restore for its exact change and slide; read a fresh page baseline, then stage using the returned path and restore_source_kind/restore_source_change_id, inspect both pages, and separately confirm commit. The edited page is backed up before stage and remains until commit; the restored page receives a new host slide ID. Preparation does not modify PowerPoint. An unverified image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. Inspect and resume interrupted insertion before further action; never replay unknown insertion. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
+      'Existing page rebuild uses a validated one-slide VFS PPTX. For an ordinary embedded native picture, prepare_existing_presentation_image_revision creates a one-slide revision in VFS; then stage the returned path with picture_shape_id through the existing page change flow so post-write media can be read back. For equal-length text spanning multiple formatting runs, prepare_existing_presentation_text_revision preserves each run and produces a one-slide VFS revision; stage that path through the same confirmed page change flow. To restore a whole page from a completed single or batch existing-edit savepoint, call prepare_existing_presentation_original_page_restore for its exact change and slide; read a fresh page baseline, then stage using the returned path and restore_source_kind/restore_source_change_id, inspect both pages, and separately confirm commit. The edited page is backed up before stage and remains until commit; the restored page receives a new host slide ID. Preparation does not modify PowerPoint. An unverified image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. A pending insertion with unknown host ID must use reconcile_pending_existing_presentation_page_change before any retry; it only accepts an exact page/order/package match and does not replay a write. Inspect and resume recorded interrupted insertions before further action. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
     clear() {
       epoch++
       reviewCapture = undefined
@@ -711,6 +714,39 @@ export function createPresentationExistingPageEditingSkill(
           expected = structuredClone(next)
           reviewCapture = undefined
         }
+        if (action === 'reconcile') {
+          if (record.state !== 'pending' || record.newSlideId)
+            throw new Error('presentation_existing_page_state_invalid')
+          const found = await options.adapter.reconcilePending(projected(record), signal)
+          await current()
+          if (found.status === 'conflict')
+            throw new Error('presentation_existing_page_manual_review')
+          if (found.status === 'baseline')
+            return {
+              output: output({
+                changeId: record.changeId,
+                status: 'pending_no_insert_observed',
+                hostWrite: false,
+              }),
+              mutated: false,
+              summary: '未观察到暂存页；保留待核对记录，不重放写入',
+            }
+          if (!host(found.newSlideId)) throw new Error('office_state_uncertain')
+          await store({ ...record, state: 'inserted', newSlideId: found.newSlideId })
+          if ((await options.adapter.inspect(projected(record), signal)).status !== 'staged')
+            throw new Error('presentation_existing_page_manual_review')
+          await store({ ...record, state: 'staged' })
+          return {
+            output: output({
+              changeId: record.changeId,
+              status: 'staged',
+              newSlideId: found.newSlideId,
+              hostWrite: false,
+            }),
+            mutated: false,
+            summary: '已核对并认领暂存页，可继续检查与确认提交',
+          }
+        }
         if (action === 'release') {
           if (!['discarded', 'undone'].includes(record.state) || record.backupReleasedAt)
             throw new Error('presentation_existing_page_state_invalid')
@@ -868,6 +904,9 @@ export function createPresentationExistingPageEditingSkill(
               inspection: observed,
               currentHostVerified: verified,
               manualReview: !verified,
+              ...(record.state === 'pending'
+                ? { nextTool: 'reconcile_pending_existing_presentation_page_change' }
+                : {}),
               visualReceipts,
               qaPassed: false,
             }),
