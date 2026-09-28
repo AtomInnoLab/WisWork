@@ -66,7 +66,9 @@ describe('presentation contract and compiler', () => {
     chart.series[0]!.values = [371483, 402766, 422318]
     const { bytes } = await compilePresentationDeck(deck)
     const zip = await JSZip.loadAsync(bytes)
-    const chartPath = Object.keys(zip.files).find((path) => /^ppt\/charts\/chart\d+\.xml$/.test(path))
+    const chartPath = Object.keys(zip.files).find((path) =>
+      /^ppt\/charts\/chart\d+\.xml$/.test(path),
+    )
     expect(chartPath).toBeDefined()
     const xml = await zip.file(chartPath!)!.async('string')
     expect(xml).toMatch(/<c:valAx>[\s\S]*?<c:scaling>[\s\S]*?<c:min val="0"\/>/)
@@ -171,6 +173,90 @@ describe('presentation contract and compiler', () => {
     await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
       'presentation_compile:structure_mismatch',
     )
+  })
+  it('rejects embedded chart data that disagrees with visible chart caches', async () => {
+    const deck = benchmarkDeck()
+    const chart = deck.slides[6]!.elements[1]!
+    if (chart.kind !== 'chart') throw new Error('invalid fixture')
+    chart.series.push({ name: '第二组', values: [100, 80] })
+    const { bytes } = await compilePresentationDeck(deck)
+    const original = await JSZip.loadAsync(bytes)
+    const embedding = Object.keys(original.files).find((name) =>
+      /^ppt\/embeddings\/[^/]+\.xlsx$/.test(name),
+    )!
+    const missing = await JSZip.loadAsync(bytes)
+    missing.remove(embedding)
+    await expect(verifyCompiledPresentationStructure(missing, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+    for (const [part, from, to] of [
+      ['xl/worksheets/sheet1.xml', '<v>120</v>', '<v>121</v>'],
+      ['xl/sharedStrings.xml', '<t>第二组</t>', '<t>错误组</t>'],
+    ]) {
+      const zip = await JSZip.loadAsync(bytes)
+      const workbook = await JSZip.loadAsync(await zip.file(embedding)!.async('uint8array'))
+      const xml = await workbook.file(part)!.async('string')
+      expect(xml).toContain(from)
+      workbook.file(part, xml.replace(from, to))
+      zip.file(embedding, await workbook.generateAsync({ type: 'uint8array' }))
+      await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+        'presentation_compile:structure_mismatch',
+      )
+    }
+    const wrongReference = await JSZip.loadAsync(bytes)
+    const chartPath = Object.keys(wrongReference.files).find((name) =>
+      /^ppt\/charts\/chart\d+\.xml$/.test(name),
+    )!
+    const chartXml = await wrongReference.file(chartPath)!.async('string')
+    expect(chartXml).toContain('Sheet1!$B$2:$B$3')
+    wrongReference.file(chartPath, chartXml.replace('Sheet1!$B$2:$B$3', 'Sheet1!$C$2:$C$3'))
+    await expect(verifyCompiledPresentationStructure(wrongReference, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+  })
+  it('does not treat an empty workbook value as an editable zero', async () => {
+    const deck = benchmarkDeck()
+    const chart = deck.slides[6]!.elements[1]!
+    if (chart.kind !== 'chart') throw new Error('invalid fixture')
+    chart.series[0]!.values[0] = 0
+    const { bytes } = await compilePresentationDeck(deck)
+    const zip = await JSZip.loadAsync(bytes)
+    const embedding = Object.keys(zip.files).find((name) =>
+      /^ppt\/embeddings\/[^/]+\.xlsx$/.test(name),
+    )!
+    const workbook = await JSZip.loadAsync(await zip.file(embedding)!.async('uint8array'))
+    const path = 'xl/worksheets/sheet1.xml'
+    const xml = await workbook.file(path)!.async('string')
+    expect(xml).toContain('<c r="B2"><v>0</v></c>')
+    workbook.file(path, xml.replace('<c r="B2"><v>0</v></c>', '<c r="B2"><v></v></c>'))
+    zip.file(embedding, await workbook.generateAsync({ type: 'uint8array' }))
+    await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+  })
+  it('repairs zero values in every series across two native charts', async () => {
+    const deck = benchmarkDeck()
+    const first = deck.slides[6]!.elements[1]!
+    if (first.kind !== 'chart') throw new Error('invalid fixture')
+    first.series.push({ name: '第二组', values: [100, 0] })
+    deck.slides[7]!.elements[1] = {
+      ...structuredClone(first),
+      id: 'second-chart',
+      series: [{ name: '第三组', values: [0, 80] }],
+    }
+    const { bytes } = await compilePresentationDeck(deck)
+    const zip = await JSZip.loadAsync(bytes)
+    const workbooks = Object.keys(zip.files).filter((name) =>
+      /^ppt\/embeddings\/[^/]+\.xlsx$/.test(name),
+    )
+    expect(workbooks).toHaveLength(2)
+    for (const path of workbooks) {
+      const workbook = await JSZip.loadAsync(await zip.file(path)!.async('uint8array'))
+      const sheet = await workbook.file('xl/worksheets/sheet1.xml')!.async('string')
+      expect(sheet).not.toContain('<v></v>')
+      expect(sheet).toContain('<v>0</v>')
+    }
+    await expect(verifyCompiledPresentationStructure(zip, deck)).resolves.toBeUndefined()
   })
   it('rejects charts with missing visible values or an unexpected legend', async () => {
     const deck = benchmarkDeck()

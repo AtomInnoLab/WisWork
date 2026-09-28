@@ -84,6 +84,173 @@ function verifyTextStyle(
     throw new Error('presentation_compile:structure_mismatch')
 }
 
+/** The visible chart cache and the workbook opened by PowerPoint's Edit Data must agree. */
+async function chartWorkbookPath(
+  zip: JSZip,
+  chartPath: string,
+  chartRoot: XmlNode,
+  parser: XMLParser,
+): Promise<string> {
+  const fail = (): never => {
+    throw new Error('presentation_compile:structure_mismatch')
+  }
+  const external = chartRoot['c:chartSpace']?.['c:externalData']
+  const id = external?.['@_r:id']
+  if (typeof id !== 'string') fail()
+  const relsFile = zip.file(relsPathFor(chartPath))
+  if (!relsFile) fail()
+  const relsXml = await relsFile!.async('string')
+  if (relsXml.length > 1024 * 1024 || XMLValidator.validate(relsXml) !== true) fail()
+  const relations = xmlItems((parser.parse(relsXml) as XmlNode).Relationships?.Relationship)
+  const matches = relations.filter((relation) => relation['@_Id'] === id)
+  if (
+    matches.length !== 1 ||
+    !String(matches[0]?.['@_Type']).endsWith('/package') ||
+    matches[0]?.['@_TargetMode'] !== undefined ||
+    typeof matches[0]?.['@_Target'] !== 'string'
+  )
+    fail()
+  return resolveTarget(chartPath, matches[0]!['@_Target'])
+}
+
+async function verifyChartWorkbook(
+  zip: JSZip,
+  chartPath: string,
+  chartRoot: XmlNode,
+  chart: Extract<PresentationDeck['slides'][number]['elements'][number], { kind: 'chart' }>,
+  seriesNodes: XmlNode[],
+  parser: XMLParser,
+): Promise<void> {
+  const fail = (): never => {
+    throw new Error('presentation_compile:structure_mismatch')
+  }
+  const workbookPath = await chartWorkbookPath(zip, chartPath, chartRoot, parser)
+  const workbookFile = zip.file(workbookPath)
+  if (!workbookFile) fail()
+  const workbookBytes = await workbookFile!.async('uint8array')
+  if (workbookBytes.length > 8 * 1024 * 1024) fail()
+  let workbook: JSZip
+  try {
+    workbook = await JSZip.loadAsync(workbookBytes)
+  } catch {
+    return fail()
+  }
+  if (Object.keys(workbook.files).length > 100) fail()
+  const readXml = async (path: string): Promise<XmlNode> => {
+    const file = workbook.file(path)
+    if (!file) fail()
+    const xml = await file!.async('string')
+    if (xml.length > 2 * 1024 * 1024 || XMLValidator.validate(xml) !== true) fail()
+    return parser.parse(xml) as XmlNode
+  }
+  const strings = xmlItems((await readXml('xl/sharedStrings.xml')).sst?.si).map((item) => {
+    if (item.r !== undefined) fail()
+    if (typeof item.t === 'string') return item.t
+    if (
+      item.t &&
+      typeof item.t === 'object' &&
+      Object.keys(item.t).every((key) => key === '#text' || key === '@_xml:space') &&
+      (item.t['#text'] === undefined || typeof item.t['#text'] === 'string')
+    )
+      return item.t['#text'] ?? ''
+    return fail()
+  })
+  const expected = new Map<string, string | number>([['A1', '']])
+  if (seriesNodes.length !== chart.series.length) fail()
+  chart.series.forEach((series, index) => {
+    const column = String.fromCharCode(66 + index)
+    const node = seriesNodes[index]!
+    const lastRow = chart.categories.length + 1
+    if (
+      node['c:tx']?.['c:strRef']?.['c:f'] !== `Sheet1!$${column}$1` ||
+      (node['c:cat']?.['c:multiLvlStrRef']?.['c:f'] ??
+        node['c:cat']?.['c:strRef']?.['c:f'] ??
+        node['c:cat']?.['c:numRef']?.['c:f']) !== `Sheet1!$A$2:$A$${lastRow}` ||
+      node['c:val']?.['c:numRef']?.['c:f'] !== `Sheet1!$${column}$2:$${column}$${lastRow}`
+    )
+      fail()
+    expected.set(`${column}1`, series.name)
+    series.values.forEach((value, row) => expected.set(`${column}${row + 2}`, value))
+  })
+  chart.categories.forEach((category, row) => expected.set(`A${row + 2}`, category))
+  const rows = xmlItems((await readXml('xl/worksheets/sheet1.xml')).worksheet?.sheetData?.row)
+  const cells = rows.flatMap((row) => xmlItems(row.c))
+  if (cells.length !== expected.size) fail()
+  const seen = new Set<string>()
+  for (const cell of cells) {
+    const address = cell['@_r']
+    const raw = cell.v
+    if (typeof address !== 'string' || seen.has(address) || !expected.has(address) || cell.f) fail()
+    seen.add(address)
+    const want = expected.get(address)
+    if (
+      typeof raw !== 'string' ||
+      (cell['@_t'] === 's'
+        ? !/^\d+$/.test(raw)
+        : !/^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw))
+    )
+      fail()
+    const actual =
+      cell['@_t'] === 's'
+        ? strings[Number(raw)]
+        : cell['@_t'] === undefined || cell['@_t'] === 'n'
+          ? Number(raw)
+          : undefined
+    if (actual !== want) fail()
+  }
+}
+
+/** PptxGenJS emits an empty worksheet cell for numeric zero; restore the editable value. */
+async function restoreGeneratedChartZeros(zip: JSZip, deck: PresentationDeck): Promise<boolean> {
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' })
+  const chartPaths = Object.keys(zip.files)
+    .filter((path) => /^ppt\/charts\/chart\d+\.xml$/.test(path))
+    .sort(
+      (left, right) =>
+        Number(/\d+(?=\.xml$)/.exec(left)![0]) - Number(/\d+(?=\.xml$)/.exec(right)![0]),
+    )
+  let chartIndex = 0
+  let changed = false
+  for (const slide of deck.slides)
+    for (const element of slide.elements) {
+      if (element.kind !== 'chart') continue
+      const chartPath = chartPaths[chartIndex++]
+      if (!chartPath) throw new Error('presentation_compile:structure_mismatch')
+      const zeroCells = element.series.flatMap((series, seriesIndex) =>
+        series.values.flatMap((value, rowIndex) =>
+          value === 0 ? [`${String.fromCharCode(66 + seriesIndex)}${rowIndex + 2}`] : [],
+        ),
+      )
+      if (!zeroCells.length) continue
+      const chartXml = await zip.file(chartPath)!.async('string')
+      if (chartXml.length > 2 * 1024 * 1024 || XMLValidator.validate(chartXml) !== true)
+        throw new Error('presentation_compile:structure_mismatch')
+      const path = await chartWorkbookPath(
+        zip,
+        chartPath,
+        parser.parse(chartXml) as XmlNode,
+        parser,
+      )
+      const file = zip.file(path)
+      if (!file) throw new Error('presentation_compile:structure_mismatch')
+      const workbook = await JSZip.loadAsync(await file.async('uint8array'))
+      const sheetPath = 'xl/worksheets/sheet1.xml'
+      const sheet = workbook.file(sheetPath)
+      if (!sheet) throw new Error('presentation_compile:structure_mismatch')
+      let xml = await sheet.async('string')
+      for (const address of zeroCells) {
+        const before = `<c r="${address}"><v></v></c>`
+        if (xml.includes(before)) {
+          xml = xml.replace(before, `<c r="${address}"><v>0</v></c>`)
+          changed = true
+        }
+      }
+      workbook.file(sheetPath, xml)
+      zip.file(path, await workbook.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }))
+    }
+  return changed
+}
+
 /** Verify the generated OOXML has the promised native objects before reporting structure passed. */
 export async function verifyCompiledPresentationStructure(
   zip: JSZip,
@@ -317,7 +484,8 @@ export async function verifyCompiledPresentationStructure(
         if (element.kind === 'chart') {
           const id = object['a:graphic']['a:graphicData']['c:chart']?.['@_r:id']
           if (typeof id !== 'string') throw new Error('presentation_compile:structure_mismatch')
-          const chartXml = await zip.file(await linkedPart(id, 'chart'))!.async('string')
+          const chartPath = await linkedPart(id, 'chart')
+          const chartXml = await zip.file(chartPath)!.async('string')
           if (chartXml.length > 2 * 1024 * 1024 || XMLValidator.validate(chartXml) !== true)
             throw new Error('presentation_compile:structure_mismatch')
           const chart = parseChartXml(chartXml)
@@ -349,6 +517,7 @@ export async function verifyCompiledPresentationStructure(
             !labelsMatch
           )
             throw new Error('presentation_compile:structure_mismatch')
+          await verifyChartWorkbook(zip, chartPath, chartRoot, element, seriesNodes, parser)
           const categoriesMatch =
             seriesNodes.length === element.series.length &&
             seriesNodes.every((series) => {
@@ -630,9 +799,12 @@ export async function compilePresentationDeck(
   })
   if (new Set(sourceSlideIds).size !== sourceSlideIds.length)
     throw new Error('presentation_compile:invalid_slide_ids')
+  const repairedZeros = await restoreGeneratedChartZeros(zip, deck)
   await verifyCompiledPresentationStructure(zip, deck)
   return {
-    bytes: output,
+    bytes: repairedZeros
+      ? await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+      : output,
     sourceSlideIds,
     report: {
       deckId: deck.id,
