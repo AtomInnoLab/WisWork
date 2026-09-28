@@ -77,6 +77,75 @@ it('persists exact single-page package, resumes chunks and reads after restart',
   })
   expect(Buffer.from(read.base64 as string, 'base64')).toEqual(f.raw)
 })
+it('renders only a ready, document-scoped page package and returns its identity', async () => {
+  const f = await fixture()
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII=',
+    'base64',
+  )
+  const renderPage = async (raw: Uint8Array) => {
+    expect(Buffer.from(raw)).toEqual(f.raw)
+    return png
+  }
+  const service = createPresentationService({ userDataPath: f.userDataPath, renderPage })
+  const call = (operation: string, body: Record<string, unknown> = {}, documentId = 'document-1') =>
+    f.call(operation, body, documentId, service)
+  await call('existing_page_backup_begin', f.begin)
+  expect(await call('existing_page_backup_render', { backupId: f.begin.backupId })).toEqual({
+    error: 'page_not_ready',
+  })
+  await call('existing_page_backup_chunk', {
+    backupId: f.begin.backupId,
+    offset: 0,
+    base64: f.raw.toString('base64'),
+  })
+  await call('existing_page_backup_finish', { backupId: f.begin.backupId })
+  expect(
+    await call('existing_page_backup_render', { backupId: f.begin.backupId }, 'other'),
+  ).toEqual({ error: 'not_found' })
+  expect(await call('existing_page_backup_render', { backupId: f.begin.backupId })).toEqual({
+    backupId: f.begin.backupId,
+    hostSlideId: f.begin.hostSlideId,
+    sha256: f.begin.sha256,
+    renderer: 'libreoffice',
+    mime: 'image/png',
+    base64: png.toString('base64'),
+  })
+  await call('existing_page_backup_release', f.begin)
+  expect(await call('existing_page_backup_render', { backupId: f.begin.backupId })).toEqual({
+    error: 'not_found',
+  })
+})
+it('abandons only a matching incomplete fallback upload without releasing a ready savepoint', async () => {
+  const f = await fixture()
+  await f.call('existing_page_backup_begin', f.begin)
+  await f.call('existing_page_backup_chunk', {
+    backupId: f.begin.backupId,
+    offset: 0,
+    base64: f.raw.subarray(0, 1024).toString('base64'),
+  })
+  expect(
+    await f.call('existing_page_backup_abandon', { ...f.begin, hostSlideId: 'other' }),
+  ).toEqual({ error: 'invalid_request' })
+  expect(await f.call('existing_page_backup_abandon', f.begin)).toEqual({
+    backupId: f.begin.backupId,
+    documentId: 'document-1',
+    status: 'abandoned',
+  })
+  expect(await f.call('existing_page_backup_status', { backupId: f.begin.backupId })).toEqual({
+    error: 'not_found',
+  })
+  await f.call('existing_page_backup_begin', f.begin)
+  await f.call('existing_page_backup_chunk', {
+    backupId: f.begin.backupId,
+    offset: 0,
+    base64: f.raw.toString('base64'),
+  })
+  await f.call('existing_page_backup_finish', { backupId: f.begin.backupId })
+  expect(await f.call('existing_page_backup_abandon', f.begin)).toEqual({
+    error: 'request_conflict',
+  })
+})
 it('requires scoped identity and refuses conflicting page/order, document and size', async () => {
   const f = await fixture()
   expect(await f.call('existing_page_backup_begin', { ...f.begin, projectId: 'foreign' })).toEqual({

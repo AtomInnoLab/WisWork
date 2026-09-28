@@ -632,6 +632,7 @@ function errorCode(error: unknown, write = false): string {
       'invalid_tool_input',
       'office_api_unsupported',
       'office_concurrent_change',
+      'presentation_page_backup_cleanup_failed',
       'cancelled',
     ].includes(code)
   )
@@ -1381,6 +1382,10 @@ export function createPowerPointSkill(options: {
   platform?: string
   vfs?: InMemoryVfs
   nativeMasterEditingSupported?: boolean
+  screenshotFallback?(
+    slideIndex: number,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; base64: string; mime: 'image/png'; renderer?: 'libreoffice' }>
   chartSavepoint?: {
     documentId(): Promise<string>
     request(body: unknown, signal?: AbortSignal): Promise<Response>
@@ -1962,7 +1967,45 @@ export function createPowerPointSkill(options: {
           return failure(call.name, 'office_api_unsupported')
         if (call.name === 'screenshot_slide') {
           const input = slideInput(call.input)
-          const result = await options.adapter.screenshotSlide(input.slide_index, signal)
+          let result: Awaited<ReturnType<PowerPointAdapter['screenshotSlide']>> & {
+            renderer?: 'libreoffice'
+          }
+          try {
+            result = await options.adapter.screenshotSlide(input.slide_index, signal)
+          } catch (error) {
+            const code =
+              error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+            if (
+              !options.screenshotFallback ||
+              !['office_screenshot_unavailable', 'ActivityLimitReached', 'Timeout'].includes(
+                String(code),
+              )
+            )
+              throw error
+            try {
+              result = await options.screenshotFallback(input.slide_index, signal)
+            } catch (fallbackError) {
+              if (
+                signal?.aborted ||
+                (fallbackError instanceof Error &&
+                  [
+                    'cancelled',
+                    'office_concurrent_change',
+                    'presentation_qa_stale',
+                    'presentation_page_backup_cleanup_failed',
+                  ].includes(fallbackError.message))
+              )
+                throw fallbackError
+              return {
+                output: boundedJson({
+                  status: 'waiting_screenshot',
+                  slideIndex: input.slide_index,
+                }),
+                mutated: false,
+                summary: '当前页等待宿主或备用渲染截图；稍后可重试',
+              }
+            }
+          }
           assertNotCancelled(signal)
           if (
             result.mime !== 'image/png' ||
@@ -1976,6 +2019,7 @@ export function createPowerPointSkill(options: {
             output: boundedJson({
               slideId: result.slideId,
               slideIndex: input.slide_index,
+              ...(result.renderer ? { renderer: result.renderer } : {}),
               mime: result.mime,
               bytes: base64Bytes(result.base64),
               fingerprint: fingerprint(result.base64),

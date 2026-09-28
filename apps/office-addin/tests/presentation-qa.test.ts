@@ -93,6 +93,18 @@ it('captures the exact imported page, publishes real screenshot and persists onl
   expect(f.vfs.list('/home/user')).toContain('/home/user/generated/qa-project-first.png')
   expect(validatePresentationQaRecord(f.readQa())).toBe(true)
 })
+it('labels a PC fallback preview so visual review cannot masquerade as host rendering', async () => {
+  const f = setup()
+  const native = f.inspectPage.getMockImplementation()!
+  f.inspectPage.mockImplementation(async () => {
+    const page = await native()
+    return { ...page, screenshot: { ...page.screenshot, renderer: 'libreoffice' as const } }
+  })
+  const result = await f.skill.executeTool(f.capture)
+  expect(result.summary).toContain('LibreOffice')
+  expect(f.readQa()?.pages[0]?.screenshotRenderer).toBe('libreoffice')
+  expect(validatePresentationQaRecord(f.readQa())).toBe(true)
+})
 it('records an agent review only after a live capture and unchanged recapture', async () => {
   const f = setup()
   await f.skill.executeTool(f.capture)

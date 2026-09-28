@@ -24,6 +24,8 @@ import type { PresentationPageReplacement } from '../skills/powerpoint/presentat
 import { createPresentationPageReplacementSkill } from '../skills/powerpoint/presentation-page-replacement.js'
 import { BrowserPresentationPageReplacementAdapter } from '../skills/powerpoint/browser-presentation-page-replacement-adapter.js'
 import { createPresentationPageBackupSkill } from '../skills/powerpoint/presentation-page-backup.js'
+import { createPresentationPageScreenshotFallback } from '../skills/powerpoint/presentation-page-screenshot-fallback.js'
+import { presentationPackageDigest } from '../skills/powerpoint/powerpoint-package.js'
 import type { PresentationGeometryChange } from '../skills/powerpoint/presentation-geometry-change.js'
 import { createPresentationProductionSkill } from '../skills/powerpoint/presentation-production.js'
 import { BrowserPresentationImageAdapter } from '../skills/powerpoint/browser-presentation-image-adapter.js'
@@ -375,6 +377,14 @@ export function createOfficeHostRuntime(
     enableConversions: options.enableConversions,
   })
   const powerPointAdapter = host === 'powerpoint' ? new BrowserPowerPointAdapter() : undefined
+  const inspectQaPage =
+    powerPointAdapter && options.presentation
+      ? createPresentationPageScreenshotFallback({
+          adapter: powerPointAdapter,
+          request: options.presentation.request,
+          documentId: options.presentation.documentId,
+        })
+      : undefined
   const hostSkill = {
     word: () => createWordSkill({ adapter: new BrowserWordAdapter(), vfs, proposals }),
     excel: () => createExcelSkill({ adapter: new BrowserExcelAdapter(), proposals }),
@@ -385,6 +395,28 @@ export function createOfficeHostRuntime(
         vfs,
         nativeMasterEditingSupported: supportsNativePowerPointMasterEditing(),
         platform: options.platform ?? currentOfficePlatform(),
+        screenshotFallback:
+          powerPointAdapter && inspectQaPage
+            ? async (index, signal) => {
+                const before = await powerPointAdapter.exportSlidePackage(index, signal)
+                const inspected = await inspectQaPage(before.slideId, signal)
+                const after = await powerPointAdapter.exportSlidePackage(index, signal)
+                if (
+                  after.slideId !== before.slideId ||
+                  (await presentationPackageDigest(after.base64, signal)) !==
+                    (await presentationPackageDigest(before.base64, signal))
+                )
+                  throw new Error('office_concurrent_change')
+                return {
+                  slideId: before.slideId,
+                  mime: 'image/png' as const,
+                  base64: inspected.screenshot.base64,
+                  ...(inspected.screenshot.renderer
+                    ? { renderer: inspected.screenshot.renderer }
+                    : {}),
+                }
+              }
+            : undefined,
         chartSavepoint:
           localBinding?.readExistingChartChange &&
           localBinding.writeExistingChartChange &&
@@ -808,7 +840,7 @@ export function createOfficeHostRuntime(
           artifact: visibleArtifact,
           documentId: options.presentation.documentId,
           readReceipt: options.presentation.readReceipt,
-          inspectPage: (id, signal) => powerPointAdapter.inspectPresentationPage(id, signal),
+          inspectPage: inspectQaPage!,
           exportPage: (id, signal) => powerPointAdapter.exportPresentationPagePackage(id, signal),
           readQa: options.presentation.readQa,
           writeQa: async (key, record) => {

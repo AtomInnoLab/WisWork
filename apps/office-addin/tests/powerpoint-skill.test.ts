@@ -380,6 +380,35 @@ describe('PowerPoint compatibility skill', () => {
       isError: true,
     })
   })
+  it('uses a labeled fallback screenshot and keeps a missing image in a waiting state', async () => {
+    const failure = Object.assign(new Error('office_read_failed'), {
+      code: 'office_screenshot_unavailable',
+    })
+    const fake = adapter({ screenshotSlide: vi.fn().mockRejectedValue(failure) })
+    const screenshotFallback = vi.fn().mockResolvedValue({
+      slideId: 'host-slide-1',
+      mime: 'image/png',
+      base64: png,
+      renderer: 'libreoffice',
+    })
+    const skill = createPowerPointSkill({
+      adapter: fake,
+      proposals: createStructuredProposalController(),
+      screenshotFallback,
+    })
+    const result = await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    expect(JSON.parse(result.output)).toMatchObject({
+      slideId: 'host-slide-1',
+      slideIndex: 0,
+      renderer: 'libreoffice',
+      visualAvailableToModel: true,
+    })
+    expect(screenshotFallback).toHaveBeenCalledWith(0, undefined)
+    screenshotFallback.mockRejectedValue(new Error('renderer_unavailable'))
+    const waiting = await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    expect(JSON.parse(waiting.output)).toEqual({ status: 'waiting_screenshot', slideIndex: 0 })
+    expect(waiting.modelContent).toBeUndefined()
+  })
 
   it('gates text edits behind immutable stale-checked proposals and verifies after confirmation', async () => {
     const fake = adapter({

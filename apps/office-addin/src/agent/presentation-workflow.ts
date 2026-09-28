@@ -88,6 +88,14 @@ export function presentationWorkflowSummary(
           page.visual.status === 'pass',
       ).length
     : 0
+  const fallbackReviewed = qaMatches
+    ? qa!.pages.filter(
+        (page) =>
+          !page.recheckRequired &&
+          page.screenshotRenderer === 'libreoffice' &&
+          page.visual.status === 'pass',
+      ).length
+    : 0
   const reportMatches = Boolean(
     production &&
     report &&
@@ -215,13 +223,17 @@ export function presentationWorkflowSummary(
     const qaText = reviewedPage
       ? reviewedPage.recheckRequired
         ? '历史检查已失效'
-        : reviewedPage.visual.status === 'pass' && reviewedPage.structure.status === 'passed'
-          ? styleChangedSinceProduction
-            ? '旧样式版本历史通过'
-            : '历史结构与视觉通过'
-          : reviewedPage.visual.status === 'needs_changes'
-            ? '历史检查需修改'
-            : '待完成页面复核'
+        : reviewedPage.visual.status === 'pass' &&
+            reviewedPage.structure.status === 'passed' &&
+            reviewedPage.screenshotRenderer === 'libreoffice'
+          ? '备用预览已复核；宿主外观待核验'
+          : reviewedPage.visual.status === 'pass' && reviewedPage.structure.status === 'passed'
+            ? styleChangedSinceProduction
+              ? '旧样式版本历史通过'
+              : '历史结构与视觉通过'
+            : reviewedPage.visual.status === 'needs_changes'
+              ? '历史检查需修改'
+              : '待完成页面复核'
       : '无当前任务 QA 记录'
     const pageNext = planChangedSinceProduction
       ? '先确认继续旧计划或选择新任务'
@@ -245,7 +257,9 @@ export function presentationWorkflowSummary(
                         ? pageIssues
                           ? '处理此页内容证据问题'
                           : '继续来源与保存重开核验'
-                        : '完成页面复核'
+                        : reviewedPage.screenshotRenderer === 'libreoffice'
+                          ? 'PowerPoint 可用后核验宿主外观'
+                          : '完成页面复核'
     return {
       id: slide.id,
       title: slide.title,
@@ -326,7 +340,7 @@ export function presentationWorkflowSummary(
               : 'working'
             : 'pending',
       detail: qaMatches
-        ? `历史结构与视觉复核 ${reviewed}/${qa!.pages.length} 页通过；${qa!.pages.filter((page) => page.recheckRequired).length} 页需重审`
+        ? `历史结构与视觉复核 ${reviewed}/${qa!.pages.length} 页通过；${fallbackReviewed} 页使用备用预览且宿主外观待核验；${qa!.pages.filter((page) => page.recheckRequired).length} 页需重审`
         : qa
           ? '现有 QA 记录无法与当前页任务匹配，需核对'
           : '尚无当前页任务的 QA 记录',
@@ -449,13 +463,13 @@ export function presentationWorkflowSummary(
     for (const page of qa!.pages) {
       timeline.push({
         id: `capture-${page.pageId}`,
-        text: `已采集页面 ${page.title} 的历史截图${page.recheckRequired ? '；需重审' : ''}`,
+        text: `已采集页面 ${page.title} 的历史${page.screenshotRenderer ? 'LibreOffice 备用预览' : '宿主截图'}${page.recheckRequired ? '；需重审' : ''}`,
         at: page.capturedAt,
       })
       if (page.visual.reviewedAt)
         timeline.push({
           id: `review-${page.pageId}`,
-          text: `已记录页面 ${page.title} 的历史视觉复核：${page.visual.status === 'pass' ? '通过' : '需修改'}${page.recheckRequired ? '；结果已失效' : ''}`,
+          text: `已记录页面 ${page.title} 的历史视觉复核：${page.visual.status === 'pass' ? '通过' : '需修改'}${page.screenshotRenderer ? '；宿主外观待核验' : ''}${page.recheckRequired ? '；结果已失效' : ''}`,
           at: page.visual.reviewedAt,
         })
     }

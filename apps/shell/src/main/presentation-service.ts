@@ -61,6 +61,7 @@ const errorCodes = new Set([
   'remote_image_source_conflict',
   'attachment_in_use',
   'page_not_ready',
+  'renderer_unavailable',
 ])
 const encode = (value: unknown): Uint8Array => Buffer.from(JSON.stringify(value), 'utf8')
 function boundedResponse(value: unknown): Uint8Array {
@@ -86,6 +87,7 @@ export function createPresentationService(options: {
   normalizeImage?: (
     bytes: Uint8Array,
   ) => Promise<{ bytes: Uint8Array; width: number; height: number }>
+  renderPage?: (pptx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>
 }): (body: unknown, signal: AbortSignal) => Promise<Uint8Array> {
   const pageBackups = createPresentationPageBackupService(options)
   const existingPageBackups = createPresentationExistingPageBackupService(options)
@@ -229,7 +231,9 @@ export function createPresentationService(options: {
           'existing_page_backup_finish',
           'existing_page_backup_status',
           'existing_page_backup_read',
+          'existing_page_backup_render',
           'existing_page_backup_release',
+          'existing_page_backup_abandon',
           'existing_page_backup_list',
         ].includes(request.operation as string)
       )

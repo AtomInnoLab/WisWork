@@ -4,6 +4,8 @@ import { lstat, mkdir, open, readdir, rename, rm } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { assertPresentationId } from '@wiswork/project-store'
 import { validateSinglePageBackupPackage } from './presentation-page-backups'
+import { renderSinglePagePackage } from './presentation-page-render'
+import { inspectPresentationImage } from './presentation-image'
 
 const LIMIT = 8 * 1024 * 1024
 const MAX_ACTIVE_BACKUPS = 16
@@ -132,7 +134,10 @@ async function metadata(dir: string): Promise<Metadata> {
     return fail('invalid_state')
   }
 }
-export function createPresentationExistingPageBackupService(options: { userDataPath: string }) {
+export function createPresentationExistingPageBackupService(options: {
+  userDataPath: string
+  renderPage?: (pptx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>
+}) {
   const root = join(resolve(options.userDataPath), 'presentation-existing-page-backups')
   return async (request: Record<string, unknown>, signal: AbortSignal): Promise<unknown> => {
     check(signal)
@@ -142,7 +147,9 @@ export function createPresentationExistingPageBackupService(options: { userDataP
       existing_page_backup_finish: ['backupId'],
       existing_page_backup_status: ['backupId'],
       existing_page_backup_read: ['backupId', 'offset', 'length'],
+      existing_page_backup_render: ['backupId'],
       existing_page_backup_release: beginFields,
+      existing_page_backup_abandon: beginFields,
       existing_page_backup_list: [],
     }
     const op = request.operation
@@ -158,7 +165,11 @@ export function createPresentationExistingPageBackupService(options: { userDataP
     )
       fail('invalid_request')
     if (op !== 'existing_page_backup_list') assertPresentationId(request.backupId)
-    if (op === 'existing_page_backup_begin' || op === 'existing_page_backup_release')
+    if (
+      op === 'existing_page_backup_begin' ||
+      op === 'existing_page_backup_release' ||
+      op === 'existing_page_backup_abandon'
+    )
       validBegin(request)
     // Snapshot caller-owned arrays before awaiting the document lock.
     const body = structuredClone(request),
@@ -197,6 +208,18 @@ export function createPresentationExistingPageBackupService(options: { userDataP
         return { documentId, backups }
       }
       const exists = entries.includes(hash(backupId))
+      if (op === 'existing_page_backup_abandon') {
+        if (exists) {
+          const pending = await metadata(dir)
+          if (pending.documentId !== documentId || !sameScope(body, pending))
+            fail('request_conflict')
+          if (pending.status !== 'uploading') fail('request_conflict')
+          check(signal)
+          await rm(dir, { recursive: true })
+          await syncDirectory(document)
+        }
+        return { backupId, documentId, status: 'abandoned' }
+      }
       let hasReceipt = false
       try {
         const receiptInfo = await lstat(receiptPath)
@@ -218,6 +241,7 @@ export function createPresentationExistingPageBackupService(options: { userDataP
           stored.status !== 'ready'
         )
           fail('invalid_state')
+        if (op === 'existing_page_backup_render') fail('not_found')
         if (op === 'existing_page_backup_begin') fail('request_conflict')
         if (op === 'existing_page_backup_release') {
           if (!sameScope(body, stored)) fail('request_conflict')
@@ -338,6 +362,25 @@ export function createPresentationExistingPageBackupService(options: { userDataP
           base64: raw.subarray(body.offset, body.offset + body.length).toString('base64'),
         }
       }
+      if (op === 'existing_page_backup_render') {
+        if (m.status !== 'ready') fail('page_not_ready')
+        const png = await (options.renderPage ?? renderSinglePagePackage)(raw, signal)
+        check(signal)
+        if (png.length > 64 * 1024) fail('output_too_large')
+        try {
+          if (inspectPresentationImage(png).mime !== 'image/png') fail('renderer_unavailable')
+        } catch {
+          fail('renderer_unavailable')
+        }
+        return {
+          backupId,
+          hostSlideId: m.hostSlideId,
+          sha256: m.sha256,
+          renderer: 'libreoffice',
+          mime: 'image/png',
+          base64: Buffer.from(png).toString('base64'),
+        }
+      }
       check(signal)
       return { ...m, receivedBytes: received }
     } catch (error) {
@@ -355,6 +398,7 @@ export function createPresentationExistingPageBackupService(options: { userDataP
           'digest_mismatch',
           'unsupported_file',
           'page_not_ready',
+          'renderer_unavailable',
         ].includes(error.message)
       )
         throw error

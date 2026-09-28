@@ -227,6 +227,14 @@ describe('exact imported PowerPoint page inspection', () => {
       'office_api_unsupported',
     )
   })
+  it('uses a validated fallback PNG while still re-reading native page identity and geometry', async () => {
+    const { adapter, slide } = setup([shape('native-shape')])
+    Object.assign(slide, { getImageAsBase64: undefined })
+    const result = await adapter.inspectPresentationPage('host-page-25', undefined, png)
+    expect(result.shapes[0]?.id).toBe('native-shape')
+    expect(result.screenshot).toEqual({ mime: 'image/png', base64: png, renderer: 'libreoffice' })
+    expect(slide.getImageAsBase64).toBeUndefined()
+  })
   it('rejects ambiguous or negative shape geometry while preserving zero-height lines', async () => {
     const { adapter, shapes } = setup([shape('same'), shape('same')])
     await expect(adapter.inspectPresentationPage('host-page-25')).rejects.toThrow(

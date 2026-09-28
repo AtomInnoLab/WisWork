@@ -192,6 +192,19 @@ it('walks the saved plan through production, import and QA without claiming deli
   ])
   expect(complete.pages.every((page) => page.qa === '历史结构与视觉通过')).toBe(true)
 })
+it('identifies a fallback visual review as pending PowerPoint host appearance', () => {
+  const fallback = structuredClone(qa)
+  fallback.pages[0]!.screenshotRenderer = 'libreoffice'
+  const summary = presentationWorkflowSummary({ ...project, production }, imported, fallback)!
+  expect(summary.pages[0]!.qa).toContain('备用预览')
+  expect(summary.pages[0]!.nextAction).toContain('宿主外观')
+  expect(summary.stages.find((stage) => stage.name === '页面审查')?.detail).toContain(
+    '1 页使用备用预览',
+  )
+  expect(
+    summary.timeline.find((event) => event.id === `capture-${fallback.pages[0]!.pageId}`)?.text,
+  ).toContain('LibreOffice 备用预览')
+})
 
 it('marks durable phase problems for attention without claiming delivery completion', async () => {
   const failed = {

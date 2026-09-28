@@ -88,11 +88,20 @@ export function PresentationQaCard({
                   }[page.visual.status]
                 }
               </p>
+              {page.screenshotRenderer === 'libreoffice' && (
+                <p>图片来自本机 LibreOffice 备用预览；PowerPoint 宿主外观仍待核验。</p>
+              )}
               {page.visual.notes && <p>{page.visual.notes}</p>}
-              <small>采集于 <time dateTime={page.capturedAt}>{page.capturedAt}</time></small>
-              {page.visual.reviewedAt && <small> · 复核记录于 <time dateTime={page.visual.reviewedAt}>
-                {page.visual.reviewedAt}
-              </time></small>}
+              <small>
+                采集于 <time dateTime={page.capturedAt}>{page.capturedAt}</time>
+              </small>
+              {page.visual.reviewedAt && (
+                <small>
+                  {' '}
+                  · 复核记录于{' '}
+                  <time dateTime={page.visual.reviewedAt}>{page.visual.reviewedAt}</time>
+                </small>
+              )}
             </li>
           ))}
         </ol>

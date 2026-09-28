@@ -83,7 +83,7 @@ export interface PowerPointPageInspection {
   overflows: SlideVerification['overflows']
   overlaps: SlideVerification['overlaps']
   overlapsTruncated: boolean
-  screenshot: { mime: 'image/png'; base64: string }
+  screenshot: { mime: 'image/png'; base64: string; renderer?: 'libreoffice' }
 }
 
 export interface VerifySlidesResult {
@@ -230,7 +230,11 @@ export interface PowerPointAdapter {
     expectedText: string,
     signal?: AbortSignal,
   ): Promise<void>
-  inspectPresentationPage?(slideId: string, signal?: AbortSignal): Promise<PowerPointPageInspection>
+  inspectPresentationPage?(
+    slideId: string,
+    signal?: AbortSignal,
+    fallbackBase64?: string,
+  ): Promise<PowerPointPageInspection>
   inspectStyleDependencies?(signal?: AbortSignal): Promise<PowerPointStyleDependencies>
   inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState>
   executeMasterOperations(
@@ -1305,7 +1309,10 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       async (context) => {
         const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
         const slide = await getSlide(context, slides, slideIndex, signal)
-        if (typeof slide.getImageAsBase64 !== 'function') throw new Error('office_api_unsupported')
+        if (typeof slide.getImageAsBase64 !== 'function')
+          throw Object.assign(new Error('office_api_unsupported'), {
+            code: 'office_screenshot_unavailable',
+          })
         const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
           width: 960,
         })
@@ -1388,6 +1395,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
   async inspectPresentationPage(
     slideId: string,
     signal?: AbortSignal,
+    fallbackBase64?: string,
   ): Promise<PowerPointPageInspection> {
     cancelled(signal)
     if (typeof slideId !== 'string' || !slideId.length || slideId.length > 256)
@@ -1403,18 +1411,20 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         // Resolve the durable host ID directly; global verification only visits the first 20 pages.
         const slide = (slides.getItem as (id: string) => RuntimeRecord)(slideId)
         const collection = slide?.shapes as RuntimeRecord | undefined
-        if (
-          typeof slide?.load !== 'function' ||
-          typeof collection?.load !== 'function' ||
-          typeof slide.getImageAsBase64 !== 'function'
-        )
+        if (typeof slide?.load !== 'function' || typeof collection?.load !== 'function')
           throw new Error('office_api_unsupported')
+        if (!fallbackBase64 && typeof slide.getImageAsBase64 !== 'function')
+          throw Object.assign(new Error('office_api_unsupported'), {
+            code: 'office_screenshot_unavailable',
+          })
         ;(slide.load as (properties: string) => void)('id')
         ;(pageSetup.load as (properties: string[]) => void)(['slideWidth', 'slideHeight'])
         loadShapes(collection)
-        const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
-          width: 960,
-        })
+        const image = fallbackBase64
+          ? undefined
+          : (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
+              width: 960,
+            })
         await sync(context, signal)
         if (slide.id !== slideId || !Array.isArray(collection.items))
           throw new Error('office_read_failed')
@@ -1498,11 +1508,11 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             })
           }
         }
-        let base64 = screenshot(image.value)
+        let base64 = screenshot(fallbackBase64 ?? image?.value)
         // Keep a single PNG well below the Office transport's 256 KiB total request limit.
         // Use the same deterministic widths when recapturing for a review.
         const fitsModelBudget = () => atob(base64).length <= 64 * 1024
-        for (const width of [640, 480, 320, 240]) {
+        for (const width of fallbackBase64 ? [] : [640, 480, 320, 240]) {
           if (fitsModelBudget()) break
           const smaller = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)(
             {
@@ -1523,7 +1533,11 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           overflows,
           overlaps,
           overlapsTruncated,
-          screenshot: { mime: 'image/png', base64 },
+          screenshot: {
+            mime: 'image/png',
+            base64,
+            ...(fallbackBase64 ? { renderer: 'libreoffice' as const } : {}),
+          },
         }
       },
       signal,

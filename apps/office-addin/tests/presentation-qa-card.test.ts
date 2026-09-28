@@ -51,6 +51,17 @@ it('makes post-edit recapture take precedence over a historical visual pass', ()
   expect(html).toContain('dateTime="2026-09-23T00:00:00.000Z"')
   expect(html).not.toContain('视觉：Agent 判断通过')
 })
+it('labels a fallback preview separately from PowerPoint host appearance', () => {
+  const fallback = structuredClone(record)
+  fallback.pages[0]!.screenshotRenderer = 'libreoffice'
+  const html = renderToStaticMarkup(
+    React.createElement(PresentationQaCard, {
+      controller: { read: () => fallback, revision: () => 0, subscribe: () => () => {} },
+    }),
+  )
+  expect(html).toContain('LibreOffice 备用预览')
+  expect(html).toContain('PowerPoint 宿主外观仍待核验')
+})
 
 const controller = { read: () => record, revision: () => 0, subscribe: () => () => {} }
 it('prepares exact single-page and affected-page ranges without changing historical QA', async () => {
