@@ -327,6 +327,25 @@ describe('saved presentation planning tools', () => {
     )
     expect(f.rememberProject).toHaveBeenCalledWith(plan.projectId)
   })
+  it('keeps a snapshot binding when PC rejects the plan and explains version checks', async () => {
+    const f = setup()
+    const snapshotPlan = structuredClone(plan)
+    snapshotPlan.sources[0]!.uri = 'https://example.com/research'
+    snapshotPlan.sources[0]!.snapshotAttachmentId = 'a'.repeat(64)
+    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'invalid_plan' })))
+    const result = await f.skill.executeTool({
+      id: 'snapshot-save',
+      name: 'save_presentation_plan',
+      input: { expected_revision: 0, plan: snapshotPlan },
+    })
+    expect(result).toMatchObject({ isError: true, output: 'presentation_invalid_plan' })
+    expect(result.summary).toContain('PC 版本')
+    expect(result.summary).toContain('不要移除快照绑定')
+    expect(f.request).toHaveBeenCalledWith(
+      expect.objectContaining({ plan: snapshotPlan }),
+      undefined,
+    )
+  })
   it('preserves earlier plan revision attachments and explains exhausted session storage', async () => {
     const f = setup()
     const first = await f.skill.executeTool({

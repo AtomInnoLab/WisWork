@@ -180,6 +180,7 @@ export function createPresentationPlanningSkill(
         if (signal?.aborted || captured !== epoch) throw new Error('cancelled')
         if (!options.available()) throw new Error('presentation_unavailable')
       }
+      let savingSnapshotPlan = false
       try {
         check()
         if (call.inputError || call.truncated) throw new Error('invalid_tool_input')
@@ -647,6 +648,7 @@ export function createPresentationPlanningSkill(
         if (save) {
           try {
             plan = parsePresentationPlan(input.plan)
+            savingSnapshotPlan = plan.sources.some((source) => source.snapshotAttachmentId)
           } catch {
             throw new Error('presentation_invalid_plan')
           }
@@ -751,9 +753,11 @@ export function createPresentationPlanningSkill(
           summary:
             code === 'presentation_revision_conflict'
               ? '计划已有更新，请读取最新计划后再修改'
-              : code === 'presentation_session_storage_full'
-                ? '会话附件空间不足；PC 已保存的计划仍保留。请下载所需文件后开启新会话，再从项目恢复计划。'
-                : '计划操作未完成，已有成果已保留',
+              : code === 'presentation_invalid_plan' && savingSnapshotPlan
+                ? 'PC 拒绝了含原文快照的计划；请检查计划字段与 PC 版本，不要移除快照绑定来绕过核验。'
+                : code === 'presentation_session_storage_full'
+                  ? '会话附件空间不足；PC 已保存的计划仍保留。请下载所需文件后开启新会话，再从项目恢复计划。'
+                  : '计划操作未完成，已有成果已保留',
         }
       }
     },
