@@ -11,6 +11,7 @@ function sha256(bytes) {
 }
 
 function checkManifest(manifest, expectedOrigin) {
+  const referenced = []
   const domains = [...manifest.matchAll(/<AppDomain>([^<]+)<\/AppDomain>/g)].map(
     (match) => match[1],
   )
@@ -35,8 +36,24 @@ function checkManifest(manifest, expectedOrigin) {
         (tag === 'IconUrl' && url.pathname !== '/assets/icon.png')
       )
         throw new Error(`manifest ${tag} origin mismatch`)
+      if (url.hash) throw new Error(`manifest ${tag} invalid URL`)
+      referenced.push(url.pathname.slice(1))
     }
   }
+  return referenced
+}
+
+function referencedStylesheets(html) {
+  const referenced = []
+  for (const [element] of html.matchAll(/<link\b[^>]*>/g)) {
+    const rel = element.match(/\brel=["']([^"']+)["']/)?.[1]
+    if (!rel?.split(/\s+/).includes('stylesheet')) continue
+    const href = element.match(/\bhref=["']([^"']+)["']/)?.[1]
+    if (!href || !/^\/assets\/[A-Za-z0-9_.-]+\.css$/.test(href))
+      throw new Error('invalid Office stylesheet reference')
+    referenced.push(href.slice(1))
+  }
+  return referenced
 }
 
 export async function inspectOfficeBuild(dist, expectedOrigin) {
@@ -50,7 +67,7 @@ export async function inspectOfficeBuild(dist, expectedOrigin) {
   const htmlBytes = await readFile(resolve(dist, 'taskpane.html'))
   const html = htmlBytes.toString('utf8')
   const manifest = await readFile(resolve(dist, 'manifest.xml'), 'utf8')
-  checkManifest(manifest, expectedOrigin)
+  const referenced = [...checkManifest(manifest, expectedOrigin), ...referencedStylesheets(html)]
   if (html.includes('__WISWORK_CONNECT_ORIGINS__')) throw new Error('unresolved connect policy')
   const scripts = [...html.matchAll(/<script\b[^>]*\bsrc="(\/assets\/[^"?]+\.js)"/g)].map((match) =>
     match[1].slice(1),
@@ -79,6 +96,9 @@ export async function inspectOfficeBuild(dist, expectedOrigin) {
       throw new Error('Office release artifact too large')
     files.push({ path, size: stat.size, sha256: sha256(await readFile(resolve(dist, path))) })
   }
+  const present = new Set(files.map((file) => file.path))
+  for (const path of referenced)
+    if (!present.has(path)) throw new Error(`missing referenced asset: ${path}`)
   return {
     buildId: metadata.buildId,
     script: scripts[0],

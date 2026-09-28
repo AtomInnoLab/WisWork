@@ -380,6 +380,31 @@ test('rejects conflicting Manifest URLs even when correct URLs are also present'
   )
 })
 
+test('rejects HTML stylesheet and Manifest resources absent from the release', async (t) => {
+  const dist = await artifact(t)
+  await writeFile(
+    resolve(dist, 'taskpane.html'),
+    '<script src="/assets/taskpane-AbC_123.js"></script><link rel="stylesheet" href="/assets/missing.css">',
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /missing referenced asset/,
+  )
+  await writeFile(
+    resolve(dist, 'taskpane.html'),
+    '<script src="/assets/taskpane-AbC_123.js"></script><link href="/assets/taskpane-AbC_123.css" rel="stylesheet">',
+  )
+  await inspectOfficeBuild(dist, 'https://office.example')
+  await writeFile(
+    resolve(dist, 'manifest.xml'),
+    '<AppDomain>https://office.example</AppDomain><IconUrl DefaultValue="https://office.example/assets/icon.png"/><HighResolutionIconUrl DefaultValue="https://office.example/assets/missing.png"/><SourceLocation DefaultValue="https://office.example/taskpane.html"/>',
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /missing referenced asset/,
+  )
+})
+
 test('requires exact Relay health response and secure remote origin', async () => {
   const fetcher = async (url, options) => {
     assert.equal(url.href, 'https://relay.example/office-relay/health')
