@@ -1416,19 +1416,22 @@ function ConfiguredApp() {
           setHost(activeHost)
           setHostSupported(activeHost !== 'unknown')
           if (activeHost !== 'unknown') {
-            const presentationBinding =
-              activeHost === 'powerpoint' ? createBrowserPresentationDocumentBinding() : undefined
-            const boundPresentationDocumentId = presentationBinding
-              ? await presentationBinding.documentId()
-              : undefined
             if (
               activeHost === 'powerpoint' &&
-              !presentationRolloutEnabled(boundPresentationDocumentId, presentationRolloutPercent)
+              !presentationRolloutEnabled(
+                Office.context.document.url || undefined,
+                presentationRolloutPercent,
+              )
             ) {
               setPresentationRolloutExcluded(true)
               setStatus('PPT Agent is not enabled for this presentation yet.')
               return
             }
+            const presentationBinding =
+              activeHost === 'powerpoint' ? createBrowserPresentationDocumentBinding() : undefined
+            const boundPresentationDocumentId = presentationBinding
+              ? await presentationBinding.documentId()
+              : undefined
             const runRecovery =
               presentationBinding && boundPresentationDocumentId
                 ? await preparePresentationAgentRunRecovery(

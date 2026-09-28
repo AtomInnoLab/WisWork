@@ -58,14 +58,14 @@ export function officePresentationRolloutPercent(env: BuildEnv): number {
 }
 
 export function presentationRolloutEnabled(
-  documentId: string | undefined,
+  documentUrl: string | undefined,
   percent: number,
 ): boolean {
   if (percent === 100) return true
-  if (!documentId || percent === 0) return false
+  if (!documentUrl || percent === 0) return false
   // Stable per presentation across reloads; no identifier is sent to the release server.
   let hash = 2_166_136_261
-  for (const char of documentId) hash = Math.imul(hash ^ char.charCodeAt(0), 16_777_619)
+  for (const char of documentUrl) hash = Math.imul(hash ^ char.charCodeAt(0), 16_777_619)
   return (hash >>> 0) % 100 < percent
 }
 

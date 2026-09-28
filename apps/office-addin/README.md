@@ -129,8 +129,9 @@ build must set `VITE_WISWORK_OFFICE_TRANSPORT=loopback` and configure the same b
 Office and PC. Remove that flag to return to Relay mode.
 
 For a presentation cohort rollout, build with `VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT=0..100`
-(default `100`). The add-in consistently buckets each PowerPoint document identity; documents
-outside the cohort show an unavailable status before the Agent runtime starts. A new build changes
+(default `100`). The add-in consistently buckets each saved PowerPoint document URL without writing document settings; documents
+outside the cohort, including unsaved documents during a partial rollout, show an unavailable
+status before the Agent runtime starts. A new build changes
 the rollout percentage. Keep the old build and manifest for rollback. This controls only the
 PowerPoint Agent entry point; it does not certify a host or protocol combination.
 
