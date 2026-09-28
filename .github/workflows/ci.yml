@@ -118,7 +118,7 @@ jobs:
       - name: Install LibreOffice for PPT package roundtrip
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libreoffice-impress
+          sudo apt-get install -y --no-install-recommends libreoffice-impress poppler-utils
 
       - name: Check PPT package roundtrip through LibreOffice
         env:

@@ -10,8 +10,11 @@ import { compilePresentationDeck } from '../src/presentation-compiler'
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
 const sofficeAvailable = spawnSync('soffice', ['--version'], { timeout: 5_000 }).status === 0
+const popplerAvailable = spawnSync('pdftoppm', ['-v'], { timeout: 5_000 }).status === 0
 if (process.env.WISWORK_REQUIRE_LIBREOFFICE === '1' && !sofficeAvailable)
   throw new Error('LibreOffice is required for the PPTX round-trip gate')
+if (process.env.WISWORK_REQUIRE_LIBREOFFICE === '1' && !popplerAvailable)
+  throw new Error('Poppler is required for the PPTX visual round-trip gate')
 
 it.skipIf(!sofficeAvailable)(
   'reopens the eight-page editable benchmark through LibreOffice without losing native content',
@@ -150,6 +153,70 @@ it.skipIf(!sofficeAvailable)(
               source.series.map((series) => series.values),
             )
           }
+        }
+      }
+      if (popplerAvailable) {
+        const render = (pptxPath: string, folder: string) => {
+          const pdfDirectory = join(directory, folder)
+          mkdirSync(pdfDirectory)
+          execFileSync(
+            'soffice',
+            [
+              `-env:UserInstallation=file://${join(directory, `${folder}-profile`)}`,
+              '--headless',
+              '--convert-to',
+              'pdf',
+              '--outdir',
+              pdfDirectory,
+              pptxPath,
+            ],
+            { timeout: 60_000, stdio: 'pipe' },
+          )
+          execFileSync(
+            'pdftoppm',
+            [
+              '-f',
+              '1',
+              '-l',
+              '8',
+              '-r',
+              '72',
+              '-png',
+              join(pdfDirectory, 'benchmark.pdf'),
+              join(pdfDirectory, 'page'),
+            ],
+            { timeout: 60_000, stdio: 'pipe' },
+          )
+          return Array.from({ length: 8 }, (_, index) =>
+            PNG.sync.read(readFileSync(join(pdfDirectory, `page-${index + 1}.png`))),
+          )
+        }
+        const before = render(input, 'before-render')
+        const after = render(join(outputDirectory, 'benchmark.pptx'), 'after-render')
+        for (let index = 0; index < 8; index++) {
+          const originalPage = before[index]!
+          const reopenedPage = after[index]!
+          expect([reopenedPage.width, reopenedPage.height]).toEqual([
+            originalPage.width,
+            originalPage.height,
+          ])
+          let changed = 0
+          let visible = 0
+          for (let pixel = 0; pixel < originalPage.data.length; pixel += 4) {
+            const rgb = [0, 1, 2] as const
+            if (rgb.some((channel) => originalPage.data[pixel + channel]! < 245)) visible++
+            if (
+              rgb.some(
+                (channel) =>
+                  Math.abs(
+                    originalPage.data[pixel + channel]! - reopenedPage.data[pixel + channel]!,
+                  ) > 12,
+              )
+            )
+              changed++
+          }
+          expect(visible).toBeGreaterThan(100)
+          expect(changed / (originalPage.width * originalPage.height)).toBeLessThan(0.02)
         }
       }
     } finally {
