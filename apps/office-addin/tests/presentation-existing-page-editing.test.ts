@@ -1,5 +1,7 @@
-import { expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
+import { readFileSync } from 'node:fs'
+import { PNG } from 'pngjs'
 import { createStructuredProposalController } from '../src/agent/proposal-controller'
 import { createPresentationExistingPageEditingSkill } from '../src/skills/powerpoint/presentation-existing-page-editing'
 import {
@@ -12,7 +14,8 @@ import type { InMemoryVfs } from '../src/skills/shared/vfs'
 import type { PresentationExistingChange } from '../src/skills/powerpoint/presentation-existing-change'
 import type { PresentationExistingBatch } from '../src/skills/powerpoint/presentation-existing-batch'
 
-vi.mock('../src/skills/powerpoint/powerpoint-package', () => ({
+vi.mock('../src/skills/powerpoint/powerpoint-package', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/skills/powerpoint/powerpoint-package')>()),
   MAX_PPTX_PACKAGE_BYTES: 8 * 1024 * 1024,
   presentationPackageDigest: async (base64: string) => {
     const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
@@ -24,6 +27,88 @@ vi.mock('../src/skills/powerpoint/powerpoint-package', () => ({
 const binary = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
 const base64 = (value: Uint8Array) =>
   btoa(Array.from(value, (x) => String.fromCharCode(x)).join(''))
+afterEach(() => vi.unstubAllGlobals())
+
+it('keeps a frozen P0-19 three-object edit in one saved page transaction through undo', async () => {
+  const material = new URL(
+    '../../../docs/product/ppt-benchmark-materials/PPT-P0-19/',
+    import.meta.url,
+  )
+  const zip = await JSZip.loadAsync(
+    readFileSync(new URL('wiswork-image-dense-research-draft.pptx', material)),
+  )
+  for (let page = 1; page <= 8; page++)
+    if (page !== 4) {
+      zip.remove(`ppt/slides/slide${page}.xml`)
+      zip.remove(`ppt/slides/_rels/slide${page}.xml.rels`)
+    }
+  zip.file(
+    'ppt/presentation.xml',
+    (await zip.file('ppt/presentation.xml')!.async('string')).replace(
+      /<p:sldId\b[^>]*\/>/g,
+      (item) => (item.includes('r:id="rId5"') ? item : ''),
+    ),
+  )
+  const original = await zip.generateAsync({ type: 'base64' })
+  const sourceXml = await zip.file('ppt/slides/slide4.xml')!.async('string')
+  const caption = [...sourceXml.matchAll(/<p:sp\b[^>]*>[\s\S]*?<\/p:sp>/g)].find(([xml]) =>
+    xml.includes('id="6"'),
+  )![0]
+  const off = /<a:off x="(\d+)" y="(\d+)"\/>/.exec(caption)!
+  const ext = /<a:ext cx="(\d+)" cy="(\d+)"\/>/.exec(caption)!
+  const before = {
+    left: Number(off[1]) / 12700,
+    top: Number(off[2]) / 12700,
+    width: Number(ext[1]) / 12700,
+    height: Number(ext[2]) / 12700,
+  }
+  const f = await fixture()
+  f.changeBackup(binary(original))
+  f.setCurrentPage(binary(original))
+  f.preparedFiles.set(
+    '/home/user/schematic-12.png',
+    readFileSync(new URL('images/schematic-12.png', material)),
+  )
+  vi.stubGlobal(
+    'createImageBitmap',
+    vi.fn(async (blob: Blob) => {
+      const decoded = PNG.sync.read(Buffer.from(await blob.arrayBuffer()))
+      return { width: decoded.width, height: decoded.height, close: vi.fn() }
+    }),
+  )
+  const prepared = await f.skill.executeTool({
+    id: 'prepare-p0-19',
+    name: 'prepare_existing_presentation_composite_revision',
+    input: {
+      baseline_id: 'baseline',
+      slide_id: 'old',
+      text: { shape_id: '3', start: 0, before: '参与者与证据路径', after: '参与者与证据链' },
+      geometry: { shape_id: '6', before, after: { ...before, top: before.top + 5.76 } },
+      picture: { shape_id: '7', path: '/home/user/schematic-12.png' },
+    },
+  })
+  expect(prepared.isError, prepared.output).not.toBe(true)
+  const revision = JSON.parse(prepared.output)
+  const stage = await f.call('stage', revision.nextInput)
+  expect(stage.isError, stage.output).not.toBe(true)
+  expect((await f.confirm()).status).toBe('confirmed')
+  const changeId = [...f.records.keys()][0]!
+  expect(f.records.get(changeId)).toMatchObject({
+    state: 'staged',
+    pictureTarget: { shapeId: '7' },
+    originalPackageDigest: revision.beforeDigest,
+    replacementPackageDigest: revision.afterDigest,
+  })
+  const commit = await f.call('commit', { change_id: changeId })
+  expect(commit.isError, commit.output).not.toBe(true)
+  expect((await f.confirm()).status).toBe('confirmed')
+  expect(f.records.get(changeId)?.state).toBe('applied')
+  const undo = await f.call('undo', { change_id: changeId })
+  expect(undo.isError, undo.output).not.toBe(true)
+  expect((await f.confirm()).status).toBe('confirmed')
+  expect(f.records.get(changeId)?.state).toBe('undone')
+  expect(f.data()).toEqual(binary(original))
+})
 async function fixture() {
   const make = async (text: string) => {
     const zip = new JSZip()
