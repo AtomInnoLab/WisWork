@@ -742,6 +742,7 @@ export function createPresentationExistingBatchEditingSkill(
               if (!same(values, await classify()) || !(await originalPackagesRestored(writeSignal)))
                 throw new Error('proposal_stale')
               for (const backup of record.backups!) {
+                if (writeSignal?.aborted) throw new Error('cancelled')
                 await current()
                 saved()
                 const response = await options.request(
@@ -1086,6 +1087,7 @@ export function createPresentationExistingBatchEditingSkill(
           execute: async (writeSignal) => {
             if (!(await freshBaseline())) throw new Error('proposal_stale')
             if (!same(values, await classify())) throw new Error('proposal_stale')
+            if (writeSignal?.aborted) throw new Error('cancelled')
             if (creating) await store(record)
             await ensureBackups(writeSignal)
             if (call.name === 'undo_existing_presentation_batch') {
@@ -1093,6 +1095,7 @@ export function createPresentationExistingBatchEditingSkill(
               await store({ ...r, state: 'undoing' })
             }
             while (record.state === 'applying' || record.state === 'undoing') {
+              if (writeSignal?.aborted) throw new Error('cancelled')
               const back = record.state === 'undoing'
               const index = back ? record.cursor - 1 : record.cursor
               const op = record.operations[index]
@@ -1101,6 +1104,7 @@ export function createPresentationExistingBatchEditingSkill(
               const v = await value(op)
               if (!matches(v, target)) {
                 if (!matches(v, source)) throw new Error('presentation_existing_batch_conflict')
+                if (writeSignal?.aborted) throw new Error('cancelled')
                 if (op.kind === 'table_cell')
                   await options.adapter.editPresentationTableCell!(
                     op.hostSlideId,
@@ -1109,7 +1113,7 @@ export function createPresentationExistingBatchEditingSkill(
                     op.columnIndex,
                     target as string,
                     source as string,
-                    signal,
+                    writeSignal,
                   )
                 else if (op.kind === 'text')
                   await options.adapter.editPresentationPageText!(
@@ -1117,7 +1121,7 @@ export function createPresentationExistingBatchEditingSkill(
                     op.shapeId,
                     target as string,
                     source as string,
-                    signal,
+                    writeSignal,
                   )
                 else
                   await options.adapter.editPresentationPageGeometry!(
@@ -1125,7 +1129,7 @@ export function createPresentationExistingBatchEditingSkill(
                     op.shapeId,
                     target as PresentationPageGeometry,
                     source as PresentationPageGeometry,
-                    signal,
+                    writeSignal,
                   )
               }
               if (!matches(await value(op), target)) throw new Error('office_verify_failed')

@@ -124,6 +124,80 @@ it('resumes a table batch after one cell was durably written and the next write 
   expect([f.tableText(), f.tableText2()]).toEqual(['after', 'after-2'])
   expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applied', cursor: 2 })
 })
+
+it('stops a confirmed batch after its first durable write when Stop is requested', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_table_batch', {
+    baseline_id,
+    intent: 'Update two figures',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  const changeId = JSON.parse(proposed.output).changeId as string
+  const write = f.editTableCell.getMockImplementation()!
+  f.editTableCell.mockImplementationOnce(async (...args) => {
+    await write(...args)
+    f.getRuntime().proposals.logout()
+  })
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.editTableCell).toHaveBeenCalledTimes(1)
+  expect([f.tableText(), f.tableText2()]).toEqual(['after', 'before-2'])
+  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'applying', cursor: 1 })
+  f.reopen()
+  const resumed = await f.call('resume_existing_presentation_batch', { change_id: changeId })
+  expect(resumed.isError, resumed.output).not.toBe(true)
+  await f.confirm()
+  expect([f.tableText(), f.tableText2()]).toEqual(['after', 'after-2'])
+  expect(f.editTableCell).toHaveBeenCalledTimes(2)
+})
+
+it('stops a batch undo after its first durable reverse write and resumes it', async () => {
+  const f = await fixture()
+  f.setShapeType('Table')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_table_batch', {
+    baseline_id,
+    intent: 'Update two figures',
+    preserved: [],
+    validation: [],
+    risk: 'medium',
+    operations: [
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 0, text: 'after' },
+      { slide_id: 'slide', shape_id: 'shape', row_index: 0, column_index: 1, text: 'after-2' },
+    ],
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  const changeId = JSON.parse(proposed.output).changeId as string
+  await f.confirm()
+  f.reopen()
+  const undo = await f.call('undo_existing_presentation_batch', { change_id: changeId })
+  expect(undo.isError, undo.output).not.toBe(true)
+  f.editTableCell.mockClear()
+  const write = f.editTableCell.getMockImplementation()!
+  f.editTableCell.mockImplementationOnce(async (...args) => {
+    await write(...args)
+    f.getRuntime().proposals.logout()
+  })
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.editTableCell).toHaveBeenCalledTimes(1)
+  expect([f.tableText(), f.tableText2()]).toEqual(['after', 'before-2'])
+  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'undoing', cursor: 1 })
+  f.reopen()
+  const resumed = await f.call('resume_existing_presentation_batch', { change_id: changeId })
+  expect(resumed.isError, resumed.output).not.toBe(true)
+  await f.confirm()
+  expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
+  expect(f.editTableCell).toHaveBeenCalledTimes(2)
+  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'undone', cursor: 0 })
+})
 it('finalizes an already written table cell after a lost receipt without replaying it', async () => {
   const f = await fixture()
   f.setShapeType('Table')
