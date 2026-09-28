@@ -233,6 +233,9 @@ export function createOfficeAgentSession(dependencies: {
       }
       changeReceipt?: { total: number; unresolved: number }
     }
+    readRecovery?(): NonNullable<
+      Parameters<typeof createOfficeAgentSession>[0]['runCheckpoint']
+    >['recovery']
     validateDocument?(): Promise<boolean>
     begin(runId: string, instruction: string): Promise<void>
     tool?(
@@ -278,8 +281,11 @@ export function createOfficeAgentSession(dependencies: {
     status: 'idle',
     retryable: false,
     recoveryAvailable:
+      !dependencies.runCheckpoint?.scrubFailed &&
+      dependencies.runCheckpoint?.recovery?.restartSafe !== false &&
       (dependencies.runCheckpoint?.recovery?.phase === 'running' ||
-        dependencies.runCheckpoint?.recovery?.restartSafe === true) &&
+        (dependencies.runCheckpoint?.recovery?.phase === 'tool_completed' &&
+          dependencies.runCheckpoint?.recovery?.restartSafe === true)) &&
       Boolean(dependencies.runCheckpoint.recovery.instruction),
     timeline: dependencies.runCheckpoint?.interrupted
       ? appendPresentationEvent(emptyPresentationTimeline(), {
@@ -304,6 +310,50 @@ export function createOfficeAgentSession(dependencies: {
   let sessionEpoch = 0
   let pendingStart = false
   let activeRunId: string | undefined
+  let toolsStarted = false
+  let recoveryPending = false
+  const readRecovery = () => {
+    try {
+      return (
+        dependencies.runCheckpoint?.readRecovery?.() ??
+        (dependencies.runCheckpoint?.readRecovery
+          ? undefined
+          : dependencies.runCheckpoint?.recovery)
+      )
+    } catch {
+      return undefined
+    }
+  }
+  const safeRecovery = () => {
+    const checkpoint = dependencies.runCheckpoint
+    if (
+      !checkpoint ||
+      checkpoint.scrubFailed ||
+      (activeRunId && unsettledToolRuns.has(activeRunId))
+    )
+      return undefined
+    if (toolsStarted && !checkpoint.readRecovery) return undefined
+    const record = readRecovery()
+    if (checkpoint.readRecovery && !record) return undefined
+    if (
+      !record &&
+      !toolsStarted &&
+      new TextEncoder().encode(lastInstruction).byteLength <= 8 * 1024
+    )
+      return { instruction: lastInstruction, phase: 'running' as const }
+    if (record?.restartSafe === false) return undefined
+    if (
+      !record?.instruction ||
+      new TextEncoder().encode(record.instruction).byteLength > 8 * 1024 ||
+      record.importReceipt?.state === 'uncertain' ||
+      record.changeReceipt?.total
+    )
+      return undefined
+    return record.phase === 'running' ||
+      (record.phase === 'tool_completed' && record.restartSafe === true)
+      ? record
+      : undefined
+  }
   const unsettledToolRuns = new Set<string>()
   const finishCheckpoint = () => {
     const id = activeRunId
@@ -421,6 +471,7 @@ export function createOfficeAgentSession(dependencies: {
   const sessionSkill: AgentSkill = {
     ...dependencies.skill,
     async executeTool(call, signal): Promise<ToolExecutionOutcome> {
+      toolsStarted = true
       if (staleTools.has(call.name)) {
         return {
           output: JSON.stringify({
@@ -580,9 +631,24 @@ export function createOfficeAgentSession(dependencies: {
         })
       },
       onError: (error) => {
+        const transient = [
+          'network_error',
+          'provider_unavailable',
+          'request_timeout',
+          'transport_timeout',
+        ].includes(error)
         if (error === 'presentation_run_checkpoint_unavailable') activeRunId = undefined
-        else finishCheckpoint()
+        else if (!(transient && dependencies.runCheckpoint)) finishCheckpoint()
         const safeError = safeRunError(error)
+        const retryable =
+          safeError.retryable &&
+          (!dependencies.runCheckpoint || (transient && Boolean(safeRecovery())))
+        const message =
+          dependencies.runCheckpoint && transient && !retryable
+            ? '运行已中断，检查点已保留。请核对项目、页面和写入记录；不能重跑可能已写入的原请求。'
+            : dependencies.runCheckpoint && transient
+              ? '服务暂时中断，运行阶段已保留。可在核对当前文档后主动重新运行安全请求；未自动重放。'
+              : safeError.message
         diagnose((diagnostics) => {
           diagnostics.setTool('agent_run')
           diagnostics.record({
@@ -595,7 +661,7 @@ export function createOfficeAgentSession(dependencies: {
         append({
           id: eventId(),
           kind: 'error',
-          text: safeError.message,
+          text: message,
           code: safeError.code,
         })
         publish({
@@ -603,8 +669,8 @@ export function createOfficeAgentSession(dependencies: {
           activity: '',
           status: 'error',
           error: safeError.code,
-          errorMessage: safeError.message,
-          retryable: safeError.retryable,
+          errorMessage: message,
+          retryable,
         })
       },
     },
@@ -690,6 +756,7 @@ export function createOfficeAgentSession(dependencies: {
     if (!value || harness.snapshot.busy || pendingStart || state.applying || disposed) return
     diagnose((diagnostics) => diagnostics.startTrace())
     staleTools.clear()
+    toolsStarted = false
     runStartedAt = Date.now()
     proposals.newTurn()
     lastInstruction = value
@@ -743,6 +810,39 @@ export function createOfficeAgentSession(dependencies: {
       })
   }
 
+  const resumeRecovery = async (interrupted: boolean) => {
+    const checkpoint = dependencies.runCheckpoint
+    const epoch = sessionEpoch
+    if (
+      !checkpoint?.validateDocument ||
+      recoveryPending ||
+      state.busy ||
+      state.applying ||
+      disposed ||
+      (interrupted ? !state.recoveryAvailable : !state.retryable) ||
+      !safeRecovery()
+    )
+      return
+    recoveryPending = true
+    try {
+      if (!(await checkpoint.validateDocument())) return
+      if (
+        epoch !== sessionEpoch ||
+        state.busy ||
+        state.applying ||
+        disposed ||
+        (interrupted ? !state.recoveryAvailable : !state.retryable)
+      )
+        return
+      const record = safeRecovery()
+      if (record) startRun(record.instruction)
+    } catch {
+      /* identity or recovery unavailable: do not replay */
+    } finally {
+      recoveryPending = false
+    }
+  }
+
   return {
     snapshot: () => cached,
     subscribe(listener) {
@@ -755,6 +855,11 @@ export function createOfficeAgentSession(dependencies: {
     },
     stop() {
       if (disposed) return
+      if (recoveryPending) {
+        sessionEpoch += 1
+        publish({ retryable: false, recoveryAvailable: false, status: 'cancelled' })
+        return
+      }
       if (pendingStart) {
         sessionEpoch += 1
         publish({ busy: false, activity: '', status: 'cancelled' })
@@ -862,28 +967,11 @@ export function createOfficeAgentSession(dependencies: {
       )
         return
       const instruction = lastInstruction
-      startRun(instruction)
+      if (dependencies.runCheckpoint) void resumeRecovery(false)
+      else startRun(instruction)
     },
     async resumeInterrupted() {
-      const checkpoint = dependencies.runCheckpoint
-      const epoch = sessionEpoch
-      if (
-        !checkpoint?.recovery?.instruction ||
-        (checkpoint.recovery.phase !== 'running' && checkpoint.recovery.restartSafe !== true) ||
-        !state.recoveryAvailable ||
-        state.busy ||
-        state.applying ||
-        disposed ||
-        !checkpoint.validateDocument
-      )
-        return
-      try {
-        if (!(await checkpoint.validateDocument())) return
-      } catch {
-        return
-      }
-      if (epoch !== sessionEpoch || !state.recoveryAvailable || state.busy || disposed) return
-      startRun(checkpoint.recovery.instruction)
+      await resumeRecovery(true)
     },
     logout() {
       if (disposed) return

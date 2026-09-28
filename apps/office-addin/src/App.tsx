@@ -1884,6 +1884,8 @@ function ConfiguredApp() {
                       interrupted: runRecovery!.interrupted,
                       scrubFailed: runRecovery!.scrubFailed,
                       recovery: interruptedRun,
+                      readRecovery: () =>
+                        runRecovery!.scrubFailed ? undefined : runCheckpoint!.recovery(),
                       validateDocument: async () =>
                         (await presentationBinding.documentId()) === boundPresentationDocumentId,
                       begin: runCheckpoint!.begin,

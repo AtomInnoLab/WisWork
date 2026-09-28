@@ -83,6 +83,99 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it.each(['stop', 'newTask', 'logout'] as const)(
+    'does not restart transient recovery after %s during validation',
+    async (action) => {
+      const harness = transportHarness()
+      let release!: (value: boolean) => void
+      const validateDocument = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            release = resolve
+          }),
+      )
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+        proposals: proposalsHarness().controller,
+        runCheckpoint: {
+          interrupted: false,
+          begin: vi.fn(async () => undefined),
+          finish: vi.fn(async () => undefined),
+          validateDocument,
+        },
+      })
+      session.send('read deck')
+      await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+      harness.callbacks().onError('network_error')
+      session.retry()
+      session.retry()
+      expect(validateDocument).toHaveBeenCalledOnce()
+      session[action]()
+      release(true)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(harness.stream).toHaveBeenCalledOnce()
+    },
+  )
+
+  it.each(['missing', 'throws'] as const)(
+    'fails closed when latest checkpoint %s despite safe static snapshot',
+    async (mode) => {
+      const harness = transportHarness()
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+        proposals: proposalsHarness().controller,
+        runCheckpoint: {
+          interrupted: false,
+          recovery: { instruction: 'old', phase: 'running', restartSafe: true },
+          readRecovery: () => {
+            if (mode === 'throws') throw new Error('corrupt')
+            return undefined
+          },
+          begin: vi.fn(async () => undefined),
+          finish: vi.fn(async () => undefined),
+          validateDocument: async () => true,
+        },
+      })
+      session.send('read deck')
+      await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+      harness.callbacks().onError('request_timeout')
+      expect(session.snapshot().retryable).toBe(false)
+      session.retry()
+      expect(harness.stream).toHaveBeenCalledOnce()
+    },
+  )
+  it('preserves a transient-failure checkpoint and blocks replay after an unsafe tool', async () => {
+    const harness = transportHarness()
+    const finish = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'write', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => ({ output: 'written', mutated: true, summary: 'Written' })),
+      },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool: vi.fn(async () => undefined),
+        finish,
+      },
+    })
+    session.send('write deck')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'write-1', name: 'write', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    harness.callbacks().onError('network_error')
+    expect(finish).not.toHaveBeenCalled()
+    expect(session.snapshot().retryable).toBe(false)
+    session.retry()
+    expect(harness.stream).toHaveBeenCalledTimes(2)
+  })
   it('opens after legacy prompt scrub failure but disables recovery and warns', async () => {
     const harness = transportHarness()
     const session = createOfficeAgentSession({
@@ -250,7 +343,7 @@ describe('Office agent session', () => {
         interrupted: true,
         recovery: {
           instruction: 'Inspect this presentation',
-          phase: 'tool_pending',
+          phase: 'tool_completed',
           toolName: 'read_presentation_plan',
           restartSafe: true,
         },
@@ -286,7 +379,7 @@ describe('Office agent session', () => {
           interrupted: true,
           recovery: {
             instruction: 'Inspect this presentation',
-            phase: 'tool_pending',
+            phase: 'tool_completed',
             toolName: 'read_presentation_plan',
             restartSafe: true,
           },
@@ -1157,7 +1250,7 @@ describe('Office agent session', () => {
       transport: harness.transport,
       skill: { id: 'p0-20', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
       proposals: proposalsHarness().controller,
-      runCheckpoint: { interrupted: false, begin, finish },
+      runCheckpoint: { interrupted: false, begin, finish, validateDocument: async () => true },
     })
     const instruction = '继续同一项目的八页制作'
     session.send(instruction)
