@@ -28,6 +28,48 @@ import { assertBrandLogoAsset } from './presentation-brand'
 const check = (signal: AbortSignal) => {
   if (signal.aborted) throw new Error('aborted')
 }
+/** Verify a cited document source through the same bounded read used for evidence windows. */
+export async function assertCitedPresentationSourcesReady(
+  plan: ReturnType<typeof parsePresentationPlan>,
+  slide: ReturnType<typeof parsePresentationDeck>['slides'][number],
+  documentId: string,
+  attachments: (request: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>,
+  signal: AbortSignal,
+  cache: Map<string, Promise<boolean>>,
+): Promise<void> {
+  const citedIds = new Set(
+    plan.claims
+      .filter((claim) => slide.claimIds?.includes(claim.id))
+      .flatMap((claim) => claim.sourceIds),
+  )
+  for (const source of plan.sources.filter((item) => citedIds.has(item.id))) {
+    const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
+    if (!match) continue
+    const attachmentId = match[1]!
+    let ready = cache.get(attachmentId)
+    if (!ready) {
+      ready = (async () => {
+        try {
+          const value = (await attachments(
+            { operation: 'attachment_read', documentId, attachmentId, offset: 0, maxChars: 1 },
+            signal,
+          )) as { attachmentId?: unknown; sourceUri?: unknown; text?: unknown }
+          return (
+            value.attachmentId === attachmentId &&
+            value.sourceUri === `attachment:${attachmentId}` &&
+            typeof value.text === 'string'
+          )
+        } catch {
+          check(signal)
+          return false
+        }
+      })()
+      cache.set(attachmentId, ready)
+    }
+    if (!(await ready)) throw new Error('source_unavailable')
+  }
+  check(signal)
+}
 export function presentationProductionSummary(record: PresentationProductionRecord) {
   const deck = parsePresentationDeck(record.deck)
   const compiledCount = record.pages.filter((page) => page.state === 'compiled').length
@@ -368,36 +410,14 @@ export async function handlePresentationProduction(
     let result: NonNullable<PresentationProductionPage['result']>
     let failure: string | undefined
     try {
-      const citedIds = new Set(
-        plan.claims
-          .filter((claim) => slide.claimIds?.includes(claim.id))
-          .flatMap((claim) => claim.sourceIds),
+      await assertCitedPresentationSourcesReady(
+        plan,
+        slide,
+        documentId,
+        attachments,
+        signal,
+        sourceReadiness,
       )
-      for (const source of plan.sources.filter((item) => citedIds.has(item.id))) {
-        const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
-        if (!match) continue
-        const attachmentId = match[1]!
-        let ready = sourceReadiness.get(attachmentId)
-        if (!ready) {
-          ready = (async () => {
-            try {
-              const value = (await attachments(
-                { operation: 'attachment_read', documentId, attachmentId, offset: 0, maxChars: 1 },
-                signal,
-              )) as { attachmentId?: unknown; sourceUri?: unknown; text?: unknown }
-              return value.attachmentId === attachmentId &&
-                value.sourceUri === `attachment:${attachmentId}` &&
-                typeof value.text === 'string'
-            } catch {
-              check(signal)
-              return false
-            }
-          })()
-          sourceReadiness.set(attachmentId, ready)
-        }
-        if (!(await ready)) throw new Error('source_unavailable')
-      }
-      check(signal)
       const assetIds = new Set(
         slide.elements.flatMap((el) => (el.kind === 'image' ? [el.assetId] : [])),
       )

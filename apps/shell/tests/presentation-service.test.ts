@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type { PresentationCompileReport } from '@wiswork/pptx-engine/presentation'
+import { presentationPlanClaims } from '@wiswork/pptx-engine/presentation-plan'
 import { PresentationStore } from '@wiswork/project-store'
 import { createPresentationService } from '../src/main/presentation-service.js'
 
@@ -302,6 +303,59 @@ const planRequest = (value = plan(), expectedRevision = 0) => ({
   plan: value,
 })
 describe('durable presentation planning', () => {
+  it('checks cited attachment sources before whole-deck compilation and retries after upload', async () => {
+    const userDataPath = root()
+    const compile = vi.fn(async () => result())
+    const service = createPresentationService({ userDataPath, compile })
+    const raw = Buffer.from('Hello, traceable source')
+    const attachmentId = createHash('sha256').update(raw).digest('hex')
+    const savedPlan = plan()
+    savedPlan.sources = [
+      {
+        id: 'source',
+        title: 'Source',
+        uri: `attachment:${attachmentId}`,
+        excerpt: 'Hello',
+      },
+    ]
+    savedPlan.claims = [
+      {
+        id: 'claim',
+        statement: 'Hello',
+        type: 'assumption',
+        sourceIds: ['source'],
+        confidence: 'low',
+        reviewStatus: 'needs_review',
+      },
+    ]
+    savedPlan.slides[0]!.claimIds = ['claim']
+    const deck = structuredClone(input.deck)
+    deck.slides[0]!.claimIds = ['claim']
+    deck.claims = presentationPlanClaims(savedPlan)
+    const send = async (body: Record<string, unknown>) => decode(await service(body, signal()))
+    expect(await send(planRequest(savedPlan))).toMatchObject({ revision: 1 })
+    const request = { ...input, requestId: 'source-run', planRevision: 1, deck }
+    expect(await send(request)).toEqual({ error: 'source_unavailable' })
+    expect(compile).not.toHaveBeenCalled()
+    const attachment = async (operation: string, extra: Record<string, unknown>) =>
+      send({ operation, documentId: input.documentId, ...extra })
+    await attachment('attachment_begin', {
+      attachmentId,
+      sha256: attachmentId,
+      name: 'source.txt',
+      sizeBytes: raw.length,
+    })
+    await attachment('attachment_chunk', {
+      attachmentId,
+      offset: 0,
+      base64: raw.toString('base64'),
+    })
+    expect(await attachment('attachment_finish', { attachmentId })).toMatchObject({
+      status: 'ready',
+    })
+    expect(await send(request)).toMatchObject({ status: 'compiled', requestId: 'source-run' })
+    expect(compile).toHaveBeenCalledOnce()
+  })
   it('persists an opted-in domain story only after all required sections are planned', async () => {
     const service = createPresentationService({ userDataPath: root(), compile: vi.fn(async () => result()) })
     const incomplete = { ...plan(), domain: 'report' }

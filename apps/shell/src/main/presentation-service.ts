@@ -10,6 +10,7 @@ import { parsePresentationClaimReview } from '@wiswork/pptx-engine/presentation-
 import { createPresentationPageBackupService } from './presentation-page-backups'
 import { createPresentationExistingPageBackupService } from './presentation-existing-page-backups'
 import {
+  assertCitedPresentationSourcesReady,
   handlePresentationProduction,
   presentationProductionSummary,
 } from './presentation-production'
@@ -890,11 +891,23 @@ export function createPresentationService(options: {
         const inputDeck = savedDeck(record.deck)
         if (inputDeck.id !== projectId) throw new Error('invalid_deck')
         if (record.plan) {
+          let plan: ReturnType<typeof parsePresentationPlan>
           try {
-            assertDeckMatchesPresentationPlan(inputDeck, parsePresentationPlan(record.plan.plan))
+            plan = parsePresentationPlan(record.plan.plan)
+            assertDeckMatchesPresentationPlan(inputDeck, plan)
           } catch {
             throw new Error('plan_mismatch')
           }
+          const sourceReadiness = new Map<string, Promise<boolean>>()
+          for (const slide of inputDeck.slides)
+            await assertCitedPresentationSourcesReady(
+              plan,
+              slide,
+              documentId,
+              attachments,
+              signal,
+              sourceReadiness,
+            )
         }
         // Keep compact references in the durable receipt. Resolve only against this document.
         const assets = []
