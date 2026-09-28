@@ -1273,7 +1273,7 @@ it.each(['text', 'geometry'] as const)(
     expect(f.binding().readExistingChange(record.changeId)?.backupReleasedAt).toBeTruthy()
   },
 )
-it('keeps a single existing-page edit unwritten when its PC package backup is unavailable and resumes it later', async () => {
+it('keeps a single existing-page edit unwritten when its PC package backup is unavailable and refuses to synthesize its backup on resume', async () => {
   const f = await fixture()
   await f.propose()
   f.setBackupOffline(true)
@@ -1288,9 +1288,9 @@ it('keeps a single existing-page edit unwritten when its PC package backup is un
     change_id: record!.changeId,
   })
   expect(resumed.isError, resumed.output).not.toBe(true)
-  await f.confirm()
-  expect(f.text()).toBe('after')
-  expect(f.readyBackups()).toBe(1)
+  await expect(f.confirm()).rejects.toThrow('presentation_existing_backup_missing')
+  expect(f.text()).toBe('before')
+  expect(f.readyBackups()).toBe(0)
 })
 it('does not write a single existing-page edit when the PC backup quota is full', async () => {
   const f = await fixture()
@@ -1308,12 +1308,10 @@ it('does not write a single existing-page edit when the PC backup quota is full'
     change_id: f.records()[0]!.record.changeId,
   })
   expect(resumed.isError, resumed.output).not.toBe(true)
-  await f.confirm()
-  expect(f.geometry().left).toBe(30)
-  expect(f.readyBackups()).toBe(1)
-  const finalBackup = f.records()[0]!.record.backup!
-  expect(finalBackup.packageDigest).toBe(previousBackup.packageDigest)
-  expect(finalBackup.sha256).not.toBe(previousBackup.sha256)
+  await expect(f.confirm()).rejects.toThrow('presentation_existing_backup_missing')
+  expect(f.geometry().left).toBe(1)
+  expect(f.readyBackups()).toBe(0)
+  expect(f.records()[0]!.record.backup).toEqual(previousBackup)
 })
 it('rejects a single edit if the original page package changes after proposal', async () => {
   const f = await fixture()
@@ -2120,4 +2118,189 @@ it('does not reuse a baseline after a successful edit and validates malformed to
     ).output,
   ).toBe('presentation_baseline_changed')
   expect(f.editText).toHaveBeenCalledTimes(1)
+})
+
+it.each(['text', 'geometry'] as const)(
+  'reapplies an undone single %s and undoes again after reopen',
+  async (kind) => {
+    const f = await fixture()
+    await f.propose(kind)
+    await f.confirm()
+    const change_id = f.records()[0]!.record.changeId
+    await f.call('undo_existing_presentation_change', { change_id })
+    await f.confirm()
+    const original = f.records()[0]!.record
+    f.reopen()
+    const proposal = await f.call('reapply_existing_presentation_change', { change_id })
+    expect(proposal.isError, proposal.output).not.toBe(true)
+    expect(f.records()[0]!.record.state).toBe('undone')
+    await f.confirm()
+    expect(f.records()[0]!.record).toEqual({ ...original, state: 'applied' })
+    f.reopen()
+    await f.call('undo_existing_presentation_change', { change_id })
+    await f.confirm()
+    expect(f.records()[0]!.record).toEqual(original)
+  },
+)
+it('does not regenerate a missing single reapply backup or transition its record', async () => {
+  const f = await fixture()
+  await f.propose()
+  await f.confirm()
+  const change_id = f.records()[0]!.record.changeId
+  await f.call('undo_existing_presentation_change', { change_id })
+  await f.confirm()
+  const original = f.records()[0]!.record
+  f.deleteBackup(original.backup!.backupId)
+  const proposal = await f.call('reapply_existing_presentation_change', { change_id })
+  expect(proposal.isError, proposal.output).not.toBe(true)
+  await expect(f.confirm()).rejects.toThrow('presentation_existing_backup_missing')
+  expect(f.records()[0]!.record).toEqual(original)
+  expect(f.editText).toHaveBeenCalledTimes(2)
+})
+
+it.each(['text_range', 'table_cell'] as const)(
+  'reapplies an undone single %s preserving its target and backup',
+  async (kind) => {
+    const f = await fixture()
+    if (kind === 'table_cell') f.setShapeType('Table')
+    const baseline_id = await f.baseline()
+    const result = await f.call(`edit_existing_presentation_${kind}`, {
+      baseline_id,
+      slide_id: 'slide',
+      shape_id: 'shape',
+      ...(kind === 'table_cell'
+        ? { row_index: 0, column_index: 0, text: 'after' }
+        : { range_start: 0, range_length: 3, text: 'NEW' }),
+    })
+    expect(result.isError, result.output).not.toBe(true)
+    await f.confirm()
+    const change_id = f.records()[0]!.record.changeId
+    await f.call('undo_existing_presentation_change', { change_id })
+    await f.confirm()
+    const original = f.records()[0]!.record
+    await f.call('reapply_existing_presentation_change', { change_id })
+    await f.confirm()
+    expect(f.records()[0]!.record).toEqual({ ...original, state: 'applied' })
+    f.reopen()
+    await f.call('undo_existing_presentation_change', { change_id })
+    await f.confirm()
+    expect(f.records()[0]!.record).toEqual(original)
+  },
+)
+it('rejects manual third values and preserved package changes during single reapply', async () => {
+  const f = await fixture()
+  await f.propose()
+  await f.confirm()
+  const change_id = f.records()[0]!.record.changeId
+  await f.call('undo_existing_presentation_change', { change_id })
+  await f.confirm()
+  f.setText('manual')
+  expect((await f.call('reapply_existing_presentation_change', { change_id })).output).toBe(
+    'presentation_existing_change_conflict',
+  )
+  f.setText('before')
+  await f.call('reapply_existing_presentation_change', { change_id })
+  f.setTableText2('manual preserved cell')
+  await expect(f.confirm()).rejects.toThrow('presentation_baseline_changed')
+  expect(f.records()[0]!.record.state).toBe('undone')
+})
+it('finalizes a lost single reapply receipt after reopen without a duplicate host write', async () => {
+  const f = await fixture()
+  await f.propose()
+  await f.confirm()
+  const change_id = f.records()[0]!.record.changeId
+  await f.call('undo_existing_presentation_change', { change_id })
+  await f.confirm()
+  await f.call('reapply_existing_presentation_change', { change_id })
+  let failed = false
+  f.save.mockImplementation(async () => {
+    const raw = f.values.get('wiswork.presentation.existing-change.v1')
+    if (!failed && raw && JSON.parse(raw).state === 'applied') {
+      failed = true
+      throw new Error('save_failed')
+    }
+  })
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.text()).toBe('after')
+  expect(f.records()[0]!.record.state).toBe('pending')
+  f.reopen()
+  const resumed = await f.call('resume_existing_presentation_change', { change_id })
+  expect(JSON.parse(resumed.output).receiptOnly).toBe(true)
+  await f.confirm()
+  expect(f.editText).toHaveBeenCalledTimes(3)
+  expect(f.records()[0]!.record.state).toBe('applied')
+})
+
+it('blocks offline and released single reapply backups and clears historical review on reapply', async () => {
+  const f = await fixture()
+  await f.propose()
+  await f.confirm()
+  const change_id = f.records()[0]!.record.changeId
+  await f.call('undo_existing_presentation_change', { change_id })
+  await f.confirm()
+  const shot = await f.call('capture_existing_presentation_change', { change_id })
+  await f.call('record_existing_presentation_change_review', {
+    change_id,
+    screenshot_digest: JSON.parse(shot.output).screenshotDigest,
+    status: 'pass',
+    notes: 'Original',
+  })
+  const original = f.records()[0]!.record
+  expect(original.review).toBeDefined()
+  await f.call('reapply_existing_presentation_change', { change_id })
+  f.setBackupOffline(true)
+  await expect(f.confirm()).rejects.toThrow('presentation_existing_backup_missing')
+  expect(f.records()[0]!.record).toEqual(original)
+  f.setBackupOffline(false)
+  await f.call('reapply_existing_presentation_change', { change_id })
+  await f.confirm()
+  expect(f.records()[0]!.record.review).toBeUndefined()
+  await f.call('undo_existing_presentation_change', { change_id })
+  await f.confirm()
+  await f.call('release_existing_presentation_change', { change_id })
+  await f.confirm()
+  expect((await f.call('reapply_existing_presentation_change', { change_id })).output).toBe(
+    'presentation_existing_change_state_invalid',
+  )
+  const released = f.records()[0]!.record
+  await expect(
+    f.binding().writeExistingChange({ ...released, state: 'pending' }, released),
+  ).rejects.toThrow('presentation_existing_change_state_invalid')
+})
+it('rejects changes to operation and backup identity in an undone to pending transition', async () => {
+  const f = await fixture()
+  await f.propose()
+  await f.confirm()
+  const change_id = f.records()[0]!.record.changeId
+  await f.call('undo_existing_presentation_change', { change_id })
+  await f.confirm()
+  const original = f.records()[0]!.record
+  if (original.kind !== 'text') throw new Error('expected_text_change')
+  for (const replacement of [
+    { ...original, after: 'tampered' },
+    { ...original, backup: { ...original.backup!, backupId: 'tampered' } },
+  ]) {
+    await expect(
+      f.binding().writeExistingChange({ ...replacement, state: 'pending' }, original),
+    ).rejects.toThrow('presentation_existing_change_state_invalid')
+  }
+  expect(f.records()[0]!.record).toEqual(original)
+})
+it('requires the retained backup again after persisting pending reapply and on resumed writes', async () => {
+  const f = await fixture()
+  await f.propose()
+  await f.confirm()
+  const change_id = f.records()[0]!.record.changeId
+  await f.call('undo_existing_presentation_change', { change_id })
+  await f.confirm()
+  const original = f.records()[0]!.record
+  await f.call('reapply_existing_presentation_change', { change_id })
+  f.save.mockImplementationOnce(async () => f.deleteBackup(original.backup!.backupId))
+  await expect(f.confirm()).rejects.toThrow('presentation_existing_backup_missing')
+  expect(f.records()[0]!.record.state).toBe('pending')
+  expect(f.editText).toHaveBeenCalledTimes(2)
+  f.reopen()
+  await f.call('resume_existing_presentation_change', { change_id })
+  await expect(f.confirm()).rejects.toThrow('presentation_existing_backup_missing')
+  expect(f.editText).toHaveBeenCalledTimes(2)
 })

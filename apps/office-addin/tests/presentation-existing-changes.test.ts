@@ -51,6 +51,20 @@ function setup() {
       history = structuredClone(history)
       history[0].record.state = state as never
     },
+    retainBackup: () => {
+      const record = history[0].record as Extract<
+        PresentationHistoryEntry,
+        { kind: 'existing' }
+      >['record']
+      record.beforeSlideIds = ['slide']
+      record.backup = {
+        hostSlideId: 'slide',
+        backupId: 'backup',
+        sha256: 'a'.repeat(64),
+        packageDigest: 'b'.repeat(64),
+        sizeBytes: 128,
+      }
+    },
     corrupt: () => {
       history = [history[0], history[0]]
     },
@@ -169,4 +183,20 @@ it('rejects damaged history returned after tool execution', async () => {
   await s.controller.run('existing:change', 'undo')
   expect(s.controller.snapshot().error).toBeTruthy()
   expect(s.controller.snapshot().entries).toEqual([])
+})
+
+it('offers single reapply only with retained backup and routes the exact change ID', async () => {
+  const s = setup()
+  s.setState('undone')
+  s.retainBackup()
+  await s.controller.refresh()
+  expect(s.controller.snapshot().entries[0]?.actions).toEqual(['inspect', 'reapply', 'release'])
+  await s.controller.run('existing:change', 'reapply')
+  expect(s.executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'reapply_existing_presentation_change',
+      input: { change_id: 'change' },
+    }),
+    expect.any(AbortSignal),
+  )
 })

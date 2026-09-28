@@ -67,6 +67,7 @@ const names = [
   'inspect_existing_presentation_change',
   'undo_existing_presentation_change',
   'resume_existing_presentation_change',
+  'reapply_existing_presentation_change',
   'release_existing_presentation_change',
   'capture_existing_presentation_change',
   'record_existing_presentation_change_review',
@@ -127,7 +128,7 @@ const tools: AgentToolDef[] = names.map((name) => {
               ? 'Read current target values and classify a durable existing-deck savepoint without writing. Unknown target values require manual review.'
               : name.startsWith('release_')
                 ? 'After field-level undo, release the paired-PC original page backup only if the complete current page package still equals the saved original. Requires separate confirmation.'
-                : 'Propose undo or interrupted recovery by exact saved change ID. Fresh confirmation and host value checks are required; completed host writes only need receipt finalization.',
+                : 'Propose undo, reapply or interrupted recovery by exact saved change ID. Reapply requires an undone record and a retained readable original PC backup. Recovery never recreates a missing backup. Fresh confirmation and host value checks are required; completed host writes only need receipt finalization.',
     inputSchema: {
       type: 'object',
       properties,
@@ -808,7 +809,7 @@ export function createPresentationExistingEditingSkill(
             if (s?.aborted) throw error
           }
           if (!ready) {
-            if (receiptOnly) throw new Error('presentation_existing_backup_missing')
+            if (receiptOnly || !editing) throw new Error('presentation_existing_backup_missing')
             const exported = await options.adapter.exportPresentationPagePackage(
               backup.hostSlideId,
               s,
@@ -1080,9 +1081,15 @@ export function createPresentationExistingEditingSkill(
           }
         }
         const undo = call.name === 'undo_existing_presentation_change',
-          resume = call.name === 'resume_existing_presentation_change'
+          resume = call.name === 'resume_existing_presentation_change',
+          reapply = call.name === 'reapply_existing_presentation_change'
         if (
           (undo && record!.state !== 'applied') ||
+          (reapply &&
+            (record!.state !== 'undone' ||
+              !record!.backup ||
+              !record!.beforeSlideIds ||
+              record!.backupReleasedAt)) ||
           (resume && !['pending', 'undo_pending'].includes(record!.state))
         )
           throw new Error('presentation_existing_change_state_invalid')
@@ -1102,7 +1109,9 @@ export function createPresentationExistingEditingSkill(
                 ? '撤销现稿修改'
                 : resume
                   ? '继续现稿修改'
-                  : '修改现稿对象',
+                  : reapply
+                    ? '重新应用现稿修改'
+                    : '修改现稿对象',
           preview: {
             hostSlideId: record!.hostSlideId,
             shapeId: record!.shapeId,
@@ -1137,7 +1146,12 @@ export function createPresentationExistingEditingSkill(
             await checkBaseline(s)
             if (!matches(await value(s), initial)) throw new Error('proposal_stale')
             if (editing) await store(record!, s)
-            else if (undo) {
+            else if (reapply) {
+              await ensureBackup(s)
+              if (!matches(await value(s), source)) throw new Error('proposal_stale')
+              const { review: _review, ...r } = record!
+              await store({ ...r, state: 'pending' } as PresentationExistingChange, s)
+            } else if (undo) {
               const { review: _review, ...r } = record!
               await store({ ...r, state: 'undo_pending' } as PresentationExistingChange, s)
             }

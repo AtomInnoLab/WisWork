@@ -1011,7 +1011,10 @@ export function createPresentationDocumentBinding(
             pending: 'applied',
             applied: 'undo_pending',
             undo_pending: 'undone',
-            undone: undefined,
+            undone:
+              prior.backup && prior.beforeSlideIds && !prior.backupReleasedAt
+                ? 'pending'
+                : undefined,
           }
           const backupRejournal =
             prior.state === 'pending' &&

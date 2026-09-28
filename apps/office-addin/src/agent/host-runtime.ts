@@ -272,6 +272,7 @@ export function createOfficeHostRuntime(
                 'edit_existing_presentation_geometry',
                 'undo_existing_presentation_change',
                 'resume_existing_presentation_change',
+                'reapply_existing_presentation_change',
                 'replace_existing_presentation_image',
                 'resume_existing_presentation_image_change',
                 'undo_existing_presentation_image_change',

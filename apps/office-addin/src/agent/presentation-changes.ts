@@ -476,7 +476,7 @@ export function createPresentationChangesController(
                                 ? ['inspect', 'undo']
                                 : saved.record.state === 'undone'
                                   ? saved.record.backup && !saved.record.backupReleasedAt
-                                    ? ['inspect', 'release']
+                                    ? ['inspect', 'reapply', 'release']
                                     : ['inspect']
                                   : ['inspect', 'resume'],
                           },

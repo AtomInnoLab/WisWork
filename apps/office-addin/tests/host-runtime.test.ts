@@ -36,6 +36,7 @@ const inventories = {
     'inspect_existing_presentation_batch',
     'resume_existing_presentation_batch',
     'reapply_existing_presentation_batch',
+    'reapply_existing_presentation_change',
     'undo_existing_presentation_batch',
     'release_existing_presentation_batch',
     'capture_existing_presentation_batch_page',
@@ -755,5 +756,35 @@ it('exposes existing-page rebuild and routes saved-page inspection through the r
   } finally {
     runtime.dispose()
     vi.unstubAllGlobals()
+  }
+})
+it('invalidates exactly the affected host pages when confirming single reapply', async () => {
+  const invalidateQa = vi.fn(async (_hostSlideIds?: readonly string[]) => {})
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request: vi.fn(async () => new Response('{}')),
+      documentId: async () => 'doc',
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+      invalidateQa,
+    },
+  })
+  try {
+    const proposals = runtime.proposals as StructuredProposalController
+    const proposal = proposals.propose({
+      operation: 'reapply_existing_presentation_change',
+      toolName: 'reapply_existing_presentation_change',
+      title: 'Reapply batch',
+      preview: {},
+      impact: { host: 'powerpoint', targets: ['slide-2'], count: 1 },
+      fingerprint: 'batch',
+      validate: () => true,
+      execute: () => {},
+    })
+    await proposals.confirm(proposal.id)
+    expect(invalidateQa).toHaveBeenCalledExactlyOnceWith(['slide-2'])
+  } finally {
+    runtime.dispose()
   }
 })

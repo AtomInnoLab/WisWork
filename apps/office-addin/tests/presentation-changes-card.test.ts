@@ -368,3 +368,39 @@ it('separates captured, pending, passed and failed existing-page evidence', asyn
     await act(async () => root.unmount())
   }
 })
+it('routes the saved single reapply button by its exact history ID', async () => {
+  const run = vi.fn()
+  const controller: PresentationChangesController = {
+    snapshot: () => ({
+      phase: 'idle',
+      entries: [
+        {
+          id: 'existing:redo',
+          source: 'existing',
+          kind: 'text',
+          pageId: 'slide',
+          state: 'undone',
+          before: 'old',
+          after: 'new',
+          actions: ['inspect', 'reapply', 'release'],
+        },
+      ],
+    }),
+    subscribe: () => () => {},
+    run,
+    refresh: vi.fn(),
+    clear: vi.fn(),
+  }
+  const container = document.createElement('div')
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(React.createElement(PresentationChangesCard, { controller })))
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="重新应用 slide"]')!.click(),
+    )
+    expect(run).toHaveBeenCalledWith('existing:redo', 'reapply')
+    expect(container.textContent).toContain('变更后需重新采集页面 QA')
+  } finally {
+    await act(async () => root.unmount())
+  }
+})
