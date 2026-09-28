@@ -83,3 +83,41 @@ it('falls back after an image fetch failure, reuses the durable cache, and compi
   expect(media).toHaveLength(1)
   expect(await zip.file(media[0]!)!.async('nodebuffer')).toEqual(image)
 })
+
+it('reports exhausted sources without leaving a ready image attachment', async () => {
+  const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-p0-14-exhausted-'))
+  roots.push(userDataPath)
+  const fetchImage = vi.fn(async () => {
+    throw new Error('simulated_timeout')
+  })
+  const attachments = createPresentationAttachmentService({ userDataPath, fetchImage })
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    remoteImagesAvailable: () => true,
+    request: async (body, signal) => {
+      try {
+        return new Response(
+          JSON.stringify(
+            await attachments(
+              body as Record<string, unknown>,
+              signal ?? new AbortController().signal,
+            ),
+          ),
+        )
+      } catch (error) {
+        return new Response(JSON.stringify({ error: (error as Error).message }))
+      }
+    },
+    documentId: async () => 'p0-14-document',
+    vfs: new InMemoryVfs(),
+  })
+  await expect(
+    skill.importUrls(['https://93.184.216.34/failed-a.png', 'https://93.184.216.34/failed-b.png']),
+  ).rejects.toThrow('presentation_image_candidates_exhausted')
+  expect(fetchImage).toHaveBeenCalledTimes(2)
+  const listed = (await attachments(
+    { operation: 'attachment_list_assets', documentId: 'p0-14-document' },
+    new AbortController().signal,
+  )) as { attachments: unknown[] }
+  expect(listed.attachments).toEqual([])
+})
