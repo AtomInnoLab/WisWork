@@ -67,6 +67,11 @@ const hostLabels: Record<OfficeHost, string> = {
   unknown: 'Office',
 }
 
+const sessionAttachmentLabel = (file: string) =>
+  file.startsWith('/home/user/generated/')
+    ? file.slice('/home/user/generated/'.length).replaceAll('/', ' / ')
+    : (file.split('/').at(-1) ?? file)
+
 const agentProductLabels: Record<OfficeHost, string> = {
   word: 'AI Word',
   excel: 'AI Sheets',
@@ -1166,10 +1171,10 @@ export function AgentWorkspace(props: {
                   <li key={file}>
                     {ui.downloadFile ? (
                       <button type="button" onClick={() => ui.downloadFile?.(file)}>
-                        {file.split('/').at(-1)} · 下载
+                        {sessionAttachmentLabel(file)} · 下载
                       </button>
                     ) : (
-                      file.split('/').at(-1)
+                      sessionAttachmentLabel(file)
                     )}
                   </li>
                 ))}
@@ -1314,7 +1319,8 @@ export function AgentWorkspace(props: {
                     file.startsWith('/home/user/generated/') &&
                     (file.endsWith('.pptx') ||
                       file.endsWith('.pdf') ||
-                      file.endsWith('.report.json')),
+                      file.endsWith('.report.json') ||
+                      file.endsWith('/report.json')),
                 )
                 .slice(-4)
                 .map((file) => (
@@ -1324,7 +1330,7 @@ export function AgentWorkspace(props: {
                       : file.endsWith('.pdf')
                         ? '下载 PDF 预览'
                         : '下载验收报告'}{' '}
-                    · {file.split('/').at(-1)}
+                    · {sessionAttachmentLabel(file)}
                   </button>
                 ))}
             </section>

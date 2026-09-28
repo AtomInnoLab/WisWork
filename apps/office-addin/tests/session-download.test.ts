@@ -41,7 +41,10 @@ describe('session file download', () => {
   })
   it('downloads generated PDF with the application/pdf MIME type', () => {
     const vfs = new InMemoryVfs()
-    vfs.writeFile('/home/user/generated/deck.pdf', new Uint8Array([37, 80, 68, 70]))
+    vfs.writeFile(
+      '/home/user/generated/project-1/request-1/compiled.pdf',
+      new Uint8Array([37, 80, 68, 70]),
+    )
     const create = vi.fn((_blob: Blob) => 'blob:pdf')
     vi.stubGlobal(
       'URL',
@@ -50,9 +53,15 @@ describe('session file download', () => {
         static revokeObjectURL = vi.fn()
       },
     )
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-    downloadSessionFile(vfs, '/home/user/generated/deck.pdf')
+    let downloaded = ''
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloaded = this.download
+    })
+    downloadSessionFile(vfs, '/home/user/generated/project-1/request-1/compiled.pdf')
     expect(create.mock.calls[0]![0]).toMatchObject({ type: 'application/pdf' })
+    expect(downloaded).toBe('request-1-compiled.pdf')
     vi.unstubAllGlobals()
   })
 })

@@ -205,7 +205,7 @@ export function createPresentationGenerationSkill(
           if ((await options.documentId()) !== documentId)
             throw new Error('presentation_document_changed')
           check()
-          const path = `/home/user/generated/${value.project_id}.pdf`
+          const path = `/home/user/generated/${value.project_id}/${value.request_id}/${value.source ?? 'compiled'}.pdf`
           options.vfs.writeFile(
             path,
             Uint8Array.from(binary, (char) => char.charCodeAt(0)),
@@ -373,8 +373,8 @@ export function createPresentationGenerationSkill(
             throw new Error('presentation_document_changed')
           check()
         }
-        const path = `/home/user/generated/${projectId}.pptx`
-        const reportPath = `/home/user/generated/${projectId}.report.json`
+        const path = `/home/user/generated/${projectId}/${result.requestId}/deck.pptx`
+        const reportPath = `/home/user/generated/${projectId}/${result.requestId}/report.json`
         options.vfs.writeBatch([
           [path, bytes],
           [reportPath, JSON.stringify(result.report, null, 2)],

@@ -80,6 +80,63 @@ const compileCall = () => ({
 })
 
 describe('PowerPoint presentation generation', () => {
+  it('keeps distinct requests and PDF sources as separate downloadable artifacts', async () => {
+    const f = fixture()
+    f.request.mockResolvedValueOnce(response()).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          projectId: deck.id,
+          requestId: 'request-2',
+          status: 'compiled',
+          pptxBase64: btoa('PK\u0003\u0004second'),
+          report,
+        }),
+      ),
+    )
+    expect((await f.skill.executeTool(compileCall())).isError).not.toBe(true)
+    expect(
+      (
+        await f.skill.executeTool({
+          ...compileCall(),
+          id: 'compile-2',
+          input: { request_id: 'request-2', deck },
+        })
+      ).isError,
+    ).not.toBe(true)
+    const firstPptx = '/home/user/generated/research-1/request-1/deck.pptx'
+    const secondPptx = '/home/user/generated/research-1/request-2/deck.pptx'
+    expect(f.vfs.readBytes(firstPptx)).not.toEqual(f.vfs.readBytes(secondPptx))
+    for (const [source, content] of [
+      ['compiled', '%PDF-1.4\ncompiled\n%%EOF\n'],
+      ['production', '%PDF-1.4\nproduction\n%%EOF\n'],
+    ] as const) {
+      f.pdfRequest.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: 'exported',
+            source,
+            projectId: deck.id,
+            requestId: 'request-1',
+            slideCount: 1,
+            pdfBase64: btoa(content),
+          }),
+        ),
+      )
+      const result = await f.skill.executeTool({
+        id: `pdf-${source}`,
+        name: 'export_presentation_pdf',
+        input: { project_id: deck.id, request_id: 'request-1', source },
+      })
+      expect(result.isError).not.toBe(true)
+    }
+    expect(f.vfs.readText('/home/user/generated/research-1/request-1/compiled.pdf')).toContain(
+      'compiled',
+    )
+    expect(f.vfs.readText('/home/user/generated/research-1/request-1/production.pdf')).toContain(
+      'production',
+    )
+  })
+
   it('exports a completed project PDF into Session attachments without returning binary to the model', async () => {
     const f = fixture()
     f.pdfRequest.mockResolvedValueOnce(
@@ -109,7 +166,9 @@ describe('PowerPoint presentation generation', () => {
       },
       undefined,
     )
-    expect(f.vfs.list('/home/user')).toContain('/home/user/generated/research-1.pdf')
+    expect(f.vfs.list('/home/user')).toContain(
+      '/home/user/generated/research-1/request-1/compiled.pdf',
+    )
     expect(result.output).not.toContain('JVBER')
   })
 
@@ -144,7 +203,9 @@ describe('PowerPoint presentation generation', () => {
       undefined,
     )
     expect(result.output).toContain('"source":"production"')
-    expect(f.vfs.list('/home/user')).toContain('/home/user/generated/research-1.pdf')
+    expect(f.vfs.list('/home/user')).toContain(
+      '/home/user/generated/research-1/request-1/production.pdf',
+    )
   })
 
   it('accepts the legacy compiled PDF receipt without a source field', async () => {
@@ -234,8 +295,8 @@ describe('PowerPoint presentation generation', () => {
       undefined,
     )
     expect(f.vfs.list('/home/user')).toEqual([
-      '/home/user/generated/research-1.pptx',
-      '/home/user/generated/research-1.report.json',
+      '/home/user/generated/research-1/request-1/deck.pptx',
+      '/home/user/generated/research-1/request-1/report.json',
     ])
     expect(result.output).toContain('not_run')
     expect(result.output).not.toContain('UEsD')
@@ -299,7 +360,9 @@ describe('PowerPoint presentation generation', () => {
       { operation: 'get', documentId: 'document-1', projectId: deck.id },
       undefined,
     )
-    expect(f.vfs.list('/home/user')).toContain('/home/user/generated/research-1.pptx')
+    expect(f.vfs.list('/home/user')).toContain(
+      '/home/user/generated/research-1/request-1/deck.pptx',
+    )
   })
   it('preserves existing downloads on cancellation', async () => {
     const f = fixture()
@@ -410,7 +473,9 @@ describe('generation lifecycle and source preservation', () => {
     f.vfs.writeFile('/home/user/research-1.pptx', source)
     await f.skill.executeTool(compileCall())
     expect(f.vfs.readBytes('/home/user/research-1.pptx')).toEqual(source)
-    expect(f.vfs.list('/home/user')).toContain('/home/user/generated/research-1.pptx')
+    expect(f.vfs.list('/home/user')).toContain(
+      '/home/user/generated/research-1/request-1/deck.pptx',
+    )
   })
   it('does not repopulate artifacts after logout or a new task clears a pending compile', async () => {
     const f = fixture()
@@ -481,7 +546,9 @@ describe('durable project recovery entry', () => {
       { operation: 'resume', documentId: 'document-1', projectId: deck.id, requestId: 'request-1' },
       undefined,
     )
-    expect(f.vfs.list('/home/user')).toContain('/home/user/generated/research-1.pptx')
+    expect(f.vfs.list('/home/user')).toContain(
+      '/home/user/generated/research-1/request-1/deck.pptx',
+    )
   })
 })
 
