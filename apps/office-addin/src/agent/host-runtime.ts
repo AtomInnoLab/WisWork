@@ -110,6 +110,7 @@ export interface OfficeHostRuntime {
   durableImagesAvailable?(): boolean
   remoteImagesAvailable?(): boolean
   rightsAvailable?(): boolean
+  animationFrameAvailable?(): boolean
   listDurableAttachments?(): Promise<PresentationAttachmentMetadata[]>
   deleteDurableAttachment?(attachmentId: string): Promise<void>
   importPresentationImageUrl?(url: string | string[]): Promise<void>
@@ -119,6 +120,7 @@ export interface OfficeHostRuntime {
     evidenceId: string,
   ): Promise<void>
   revokePresentationImageLicense?(imageId: string): Promise<void>
+  extractPresentationImageFirstFrame?(imageId: string): Promise<void>
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   vfs: InMemoryVfs
@@ -1224,6 +1226,7 @@ export function createOfficeHostRuntime(
             importUrls: attachments.importUrls,
             attestLicense: attachments.attestLicense,
             revokeLicense: attachments.revokeLicense,
+            extractFirstFrame: attachments.extractFirstFrame,
             imagesAvailable: () =>
               Boolean(
                 options.presentation?.attachmentsAvailable?.() &&
@@ -1231,6 +1234,8 @@ export function createOfficeHostRuntime(
               ),
             remoteImagesAvailable: () => Boolean(options.presentation?.remoteImagesAvailable?.()),
             rightsAvailable: () => Boolean(options.presentation?.rightsAvailable?.()),
+            animationFrameAvailable: () =>
+              Boolean(options.presentation?.animationFrameAvailable?.()),
           }
         : undefined,
     ),
@@ -1254,6 +1259,7 @@ function lifecycle(
     imagesAvailable(): boolean
     remoteImagesAvailable(): boolean
     rightsAvailable(): boolean
+    animationFrameAvailable(): boolean
     upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
     list(): Promise<PresentationAttachmentMetadata[]>
     remove(attachmentId: string): Promise<void>
@@ -1265,6 +1271,7 @@ function lifecycle(
       evidenceId: string,
     ): Promise<unknown>
     revokeLicense(imageId: string): Promise<unknown>
+    extractFirstFrame(imageId: string): Promise<unknown>
   },
 ): OfficeHostRuntime {
   const packageRuntime = suppliedPackageRuntime ?? new SkillPackageWorkerRuntime()
@@ -1291,6 +1298,7 @@ function lifecycle(
     durableImagesAvailable: () => attachments?.imagesAvailable() ?? false,
     remoteImagesAvailable: () => attachments?.remoteImagesAvailable() ?? false,
     rightsAvailable: () => attachments?.rightsAvailable() ?? false,
+    animationFrameAvailable: () => attachments?.animationFrameAvailable() ?? false,
     listDurableAttachments: () => attachments?.list() ?? Promise.resolve([]),
     deleteDurableAttachment: (attachmentId) =>
       attachments?.remove(attachmentId) ?? Promise.reject(new Error('presentation_unavailable')),
@@ -1305,6 +1313,11 @@ function lifecycle(
     revokePresentationImageLicense: async (imageId) => {
       if (!attachments?.rightsAvailable()) throw new Error('presentation_assets_unavailable')
       await attachments.revokeLicense(imageId)
+    },
+    extractPresentationImageFirstFrame: async (imageId) => {
+      if (!attachments?.animationFrameAvailable())
+        throw new Error('presentation_assets_unavailable')
+      await attachments.extractFirstFrame(imageId)
     },
     async uploadFile(name, content) {
       if (disposed) throw new Error('upload_cancelled')

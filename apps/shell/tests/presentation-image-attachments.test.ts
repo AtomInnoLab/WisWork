@@ -69,19 +69,113 @@ describe('durable presentation image assets', () => {
     const { call } = await setup()
     for (const name of ['animated.gif', 'animated.webp']) {
       const id = await upload(call, fixture(name), name)
-      await expect(call({ operation: 'attachment_finish', attachmentId: id })).resolves.toMatchObject({
-        status: 'failed', error: 'animated_image_unsupported',
+      await expect(
+        call({ operation: 'attachment_finish', attachmentId: id }),
+      ).resolves.toMatchObject({
+        status: 'failed',
+        error: 'animated_image_unsupported',
       })
-      const listed = await call({ operation: 'attachment_list_assets' }) as { attachments: { attachmentId: string; status: string; error?: string }[] }
-      expect(listed.attachments.find((item) => item.attachmentId === id)).toMatchObject({ status: 'failed', error: 'animated_image_unsupported' })
+      const listed = (await call({ operation: 'attachment_list_assets' })) as {
+        attachments: { attachmentId: string; status: string; error?: string }[]
+      }
+      expect(listed.attachments.find((item) => item.attachmentId === id)).toMatchObject({
+        status: 'failed',
+        error: 'animated_image_unsupported',
+      })
     }
     const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-animated-url-'))
     dirs.push(userDataPath)
     const service = createPresentationAttachmentService({
       userDataPath,
-      fetchImage: async () => new Response(fixture('animated.webp'), { headers: { 'content-type': 'image/webp' } }),
+      fetchImage: async () =>
+        new Response(fixture('animated.webp'), { headers: { 'content-type': 'image/webp' } }),
     })
-    await expect(service({ documentId: 'doc', operation: 'attachment_import_url', url: 'https://93.184.216.34/animated.webp' }, new AbortController().signal)).rejects.toThrow('animated_image_unsupported')
+    await expect(
+      service(
+        {
+          documentId: 'doc',
+          operation: 'attachment_import_url',
+          url: 'https://93.184.216.34/animated.webp',
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow('animated_image_unsupported')
+  })
+  it('converts an explicitly selected animated upload into a durable first-frame asset', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-first-frame-'))
+    dirs.push(userDataPath)
+    const firstFrame = vi.fn(async () => ({ bytes: fixture('control.png'), width: 2, height: 3 }))
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      normalizeFirstFrame: firstFrame,
+    })
+    const call = (body: Record<string, unknown>, documentId = 'doc') =>
+      service({ documentId, ...body }, new AbortController().signal)
+    const raw = fixture('animated.gif')
+    const id = await upload(call, raw, 'animated.gif')
+    expect(await call({ operation: 'attachment_finish', attachmentId: id })).toMatchObject({
+      status: 'failed',
+      error: 'animated_image_unsupported',
+    })
+    await expect(
+      call({ operation: 'attachment_extract_first_frame', attachmentId: id }, 'other'),
+    ).rejects.toThrow('not_found')
+    const converted = await call({ operation: 'attachment_extract_first_frame', attachmentId: id })
+    expect(converted).toMatchObject({
+      attachmentId: id,
+      sha256: id,
+      status: 'ready',
+      kind: 'image',
+      animationHandling: 'first_frame',
+      assetSha256: hash(fixture('control.png')),
+    })
+    expect(firstFrame).toHaveBeenCalledTimes(1)
+    expect(await call({ operation: 'attachment_extract_first_frame', attachmentId: id })).toEqual(
+      converted,
+    )
+    expect(firstFrame).toHaveBeenCalledTimes(1)
+    expect(await call({ operation: 'attachment_asset', attachmentId: id })).toMatchObject({
+      mime: 'image/png',
+      width: 2,
+      height: 3,
+    })
+    await expect(
+      call({ operation: 'attachment_original', attachmentId: id, offset: 0, length: 1 }),
+    ).rejects.toThrow('invalid_state')
+    const docDir = join(userDataPath, 'presentation-attachments', hash('doc'), id)
+    expect(await readFile(join(docDir, 'raw.gif'))).toEqual(raw)
+    const reopened = createPresentationAttachmentService({ userDataPath })
+    expect(
+      await reopened(
+        { documentId: 'doc', operation: 'attachment_metadata', attachmentId: id },
+        new AbortController().signal,
+      ),
+    ).toEqual(converted)
+  })
+  it('keeps the uploaded animation retryable when first-frame decoding fails', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-first-frame-fail-'))
+    dirs.push(userDataPath)
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      normalizeFirstFrame: async () => {
+        throw new Error('parse_failed')
+      },
+    })
+    const call = (body: Record<string, unknown>) =>
+      service({ documentId: 'doc', ...body }, new AbortController().signal)
+    const raw = fixture('animated.webp')
+    const id = await upload(call, raw, 'animated.webp')
+    await call({ operation: 'attachment_finish', attachmentId: id })
+    await expect(
+      call({ operation: 'attachment_extract_first_frame', attachmentId: id }),
+    ).rejects.toThrow('parse_failed')
+    expect(await call({ operation: 'attachment_metadata', attachmentId: id })).toMatchObject({
+      status: 'failed',
+      error: 'animated_image_unsupported',
+    })
+    expect(
+      await readFile(join(userDataPath, 'presentation-attachments', hash('doc'), id, 'raw.webp')),
+    ).toEqual(raw)
   })
   it('imports a static WebP URL and serves the converted asset after a restart', async () => {
     const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-webp-url-'))

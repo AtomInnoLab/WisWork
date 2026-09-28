@@ -682,6 +682,11 @@ async fn v2_negotiates_presentation_asset_rights_and_denies_unnegotiated_request
     check_v2_capability("presentation-asset-rights.v1").await;
 }
 
+#[tokio::test]
+async fn v2_negotiates_presentation_animation_frame_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-animation-frame.v1").await;
+}
+
 async fn check_v2_capability(capability: &str) {
     let url = server().await;
     let mut office = socket(&url, ORIGIN).await;

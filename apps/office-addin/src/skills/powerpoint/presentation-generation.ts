@@ -52,6 +52,7 @@ export interface PresentationGenerationOptions {
   assetsAvailable?(): boolean
   remoteImagesAvailable?(): boolean
   rightsAvailable?(): boolean
+  animationFrameAvailable?(): boolean
   attachmentsAvailable?(): boolean
   attachmentsRequest?(body: unknown, signal?: AbortSignal): Promise<Response>
   request(body: unknown, signal?: AbortSignal): Promise<Response>

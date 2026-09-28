@@ -87,6 +87,9 @@ export function createPresentationService(options: {
   normalizeImage?: (
     bytes: Uint8Array,
   ) => Promise<{ bytes: Uint8Array; width: number; height: number }>
+  normalizeFirstFrame?: (
+    bytes: Uint8Array,
+  ) => Promise<{ bytes: Uint8Array; width: number; height: number }>
   renderPage?: (pptx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>
 }): (body: unknown, signal: AbortSignal) => Promise<Uint8Array> {
   const pageBackups = createPresentationPageBackupService(options)
@@ -253,6 +256,7 @@ export function createPresentationService(options: {
           'attachment_begin',
           'attachment_chunk',
           'attachment_finish',
+          'attachment_extract_first_frame',
           'attachment_delete',
           'attachment_attest_license',
           'attachment_revoke_license',

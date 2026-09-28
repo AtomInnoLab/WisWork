@@ -15,16 +15,21 @@ function animated(): never {
   throw new Error('animated_image_unsupported')
 }
 /** Header admission only. Electron must subsequently validate the full image. */
-export function inspectPresentationImage(input: Uint8Array): {
+export function inspectPresentationImage(
+  input: Uint8Array,
+  allowAnimated = false,
+): {
   mime: ImageMime
   width: number
   height: number
+  animated?: true
 } {
   if (!input.length || input.length > PRESENTATION_IMAGE_INPUT_LIMIT) invalid()
   const bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength)
   let width = 0,
     height = 0,
-    mime: ImageMime
+    mime: ImageMime,
+    isAnimated = false
   if (
     bytes.length >= 33 &&
     bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
@@ -39,15 +44,25 @@ export function inspectPresentationImage(input: Uint8Array): {
     width = bytes.readUInt32BE(16)
     height = bytes.readUInt32BE(20)
     let offset = 8
+    let firstAnimationFrameBeforeImage = false
+    let imageDataSeen = false
     while (offset + 12 <= bytes.length) {
       const size = bytes.readUInt32BE(offset)
       const end = offset + 12 + size
       if (end > bytes.length) invalid()
       const kind = bytes.toString('ascii', offset + 4, offset + 8)
-      if (kind === 'acTL') animated()
+      if (kind === 'acTL') {
+        if (!allowAnimated) animated()
+        isAnimated = true
+      }
+      if (kind === 'fcTL' && isAnimated && !imageDataSeen) firstAnimationFrameBeforeImage = true
+      if (kind === 'IDAT') imageDataSeen = true
       offset = end
     }
     if (offset !== bytes.length) invalid()
+    // APNG may carry a poster image outside its animation. The browser's default
+    // image would then differ from the first animation frame, so reject that form.
+    if (isAnimated && !firstAnimationFrameBeforeImage) invalid()
   } else if (
     bytes.length >= 4 &&
     bytes[0] === 255 &&
@@ -89,12 +104,15 @@ export function inspectPresentationImage(input: Uint8Array): {
     while (offset < bytes.length) {
       const tag = bytes[offset++]!
       if (tag === 0x3b) {
-        if (offset !== bytes.length || frames !== 1) invalid()
+        if (offset !== bytes.length || frames < 1 || (!allowAnimated && frames !== 1)) invalid()
         trailer = true
         break
       }
       if (tag === 0x2c) {
-        if (++frames > 1) animated()
+        if (++frames > 1) {
+          if (!allowAnimated) animated()
+          isAnimated = true
+        }
         if (offset + 9 > bytes.length) invalid()
         const flags = bytes[offset + 8]!
         offset += 9
@@ -104,8 +122,10 @@ export function inspectPresentationImage(input: Uint8Array): {
       } else if (tag === 0x21) {
         if (offset >= bytes.length) invalid()
         const label = bytes[offset++]!
-        if (label === 0xff && bytes.toString('ascii', offset + 1, offset + 12) === 'NETSCAPE2.0')
-          animated()
+        if (label === 0xff && bytes.toString('ascii', offset + 1, offset + 12) === 'NETSCAPE2.0') {
+          if (!allowAnimated) animated()
+          isAnimated = true
+        }
       } else invalid()
       while (true) {
         if (offset >= bytes.length) invalid()
@@ -133,7 +153,10 @@ export function inspectPresentationImage(input: Uint8Array): {
       if (end > bytes.length) invalid()
       if (kind === 'VP8X') {
         if (size !== 10 || offset !== 12 || extended) invalid()
-        if (bytes[offset + 8]! & 0x02) animated()
+        if (bytes[offset + 8]! & 0x02) {
+          if (!allowAnimated) animated()
+          isAnimated = true
+        }
         if (bytes[offset + 8]! & 0xc1) invalid()
         extended = true
         width = 1 + bytes.readUIntLE(offset + 12, 3)
@@ -162,18 +185,27 @@ export function inspectPresentationImage(input: Uint8Array): {
           width = w
           height = h
         }
-      } else if (kind === 'ANIM' || kind === 'ANMF') animated()
-      else if (!extended) invalid()
+      } else if (kind === 'ANIM' || kind === 'ANMF') {
+        if (!allowAnimated) animated()
+        isAnimated = true
+        if (kind === 'ANMF') imageChunks++
+      } else if (!extended) invalid()
       offset = end
     }
-    if (offset !== bytes.length || imageChunks !== 1) invalid()
+    if (
+      offset !== bytes.length ||
+      (!isAnimated && imageChunks !== 1) ||
+      (isAnimated && imageChunks < 1)
+    )
+      invalid()
   } else invalid()
   if (!width || !height || width > 8192 || height > 8192 || width * height > 16_000_000) invalid()
-  return { mime, width, height }
+  return { mime, width, height, ...(isAnimated ? { animated: true as const } : {}) }
 }
 async function decodeBrowserImage(
   input: Uint8Array,
   expected: { mime: ImageMime; width: number; height: number },
+  firstFrame = false,
 ): Promise<Buffer> {
   const run = async () => {
     const { app, WebContentsView, session } = await import('electron')
@@ -213,11 +245,18 @@ async function decodeBrowserImage(
     const result = await contents.executeJavaScript(`new Promise((resolve, reject) => {
       const image = new Image();
       image.onerror = () => reject(Error('parse_failed'));
-      image.onload = () => {
+      image.onload = async () => {
         if (image.naturalWidth !== ${expected.width} || image.naturalHeight !== ${expected.height}) return reject(Error('parse_failed'));
         const canvas = document.createElement('canvas');
         canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
-        canvas.getContext('2d').drawImage(image, 0, 0);
+        try {
+          if (${firstFrame}) {
+            const bitmap = await createImageBitmap(image);
+            if (bitmap.width !== canvas.width || bitmap.height !== canvas.height) throw Error('parse_failed');
+            canvas.getContext('2d').drawImage(bitmap, 0, 0);
+            bitmap.close();
+          } else canvas.getContext('2d').drawImage(image, 0, 0);
+        } catch (error) { return reject(error); }
         resolve(canvas.toDataURL('image/png'));
       };
       image.src = ${JSON.stringify(url)};
@@ -264,6 +303,24 @@ export async function normalizePresentationImage(
     if (width !== expected.width || height !== expected.height) invalid()
     bytes = image.toPNG()
   }
+  if (!bytes.length || bytes.length > PRESENTATION_IMAGE_CACHE_LIMIT) invalid()
+  const actual = inspectPresentationImage(bytes)
+  if (
+    actual.mime !== 'image/png' ||
+    actual.width !== expected.width ||
+    actual.height !== expected.height
+  )
+    invalid()
+  return { bytes, width: expected.width, height: expected.height }
+}
+
+/** Called only after the user chooses a static first-frame derivative of an animated upload. */
+export async function normalizePresentationImageFirstFrame(
+  input: Uint8Array,
+): Promise<NormalizedPresentationImage> {
+  const expected = inspectPresentationImage(input, true)
+  if (!expected.animated) invalid()
+  const bytes = await decodeBrowserImage(input, expected, true)
   if (!bytes.length || bytes.length > PRESENTATION_IMAGE_CACHE_LIMIT) invalid()
   const actual = inspectPresentationImage(bytes)
   if (

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import JSZip from 'jszip'
@@ -24,7 +24,10 @@ it('rejects inline image evidence that was not resolved against this document', 
   deck.assets[0]!.licenseEvidence = `attachment:${'a'.repeat(64)}`
   const service = createPresentationService({ userDataPath })
   const result = decode(
-    await service({ operation: 'compile', documentId: 'document-forgery', requestId: 'forged', deck }, signal()),
+    await service(
+      { operation: 'compile', documentId: 'document-forgery', requestId: 'forged', deck },
+      signal(),
+    ),
   )
   expect(result).toEqual({ error: 'invalid_deck' })
 })
@@ -120,6 +123,50 @@ it('compiles durable image references into real PPTX media and recovers without 
       deck: { ...deck, id: 'another-project' },
     }),
   ).toEqual({ error: 'not_found' })
+})
+
+it('compiles an explicitly selected animated first frame into PPTX image media', async () => {
+  const userDataPath = mkdtempSync(join(tmpdir(), 'presentation-animation-asset-'))
+  roots.push(userDataPath)
+  const raw = readFileSync(join(__dirname, 'fixtures/presentation-image/animated.gif'))
+  const firstFrame = readFileSync(join(__dirname, 'fixtures/presentation-image/control.png'))
+  const attachmentId = createHash('sha256').update(raw).digest('hex')
+  const service = createPresentationService({
+    userDataPath,
+    normalizeFirstFrame: async () => ({ bytes: firstFrame, width: 2, height: 3 }),
+  })
+  const request = async (body: Record<string, unknown>) =>
+    decode(await service({ documentId: 'document-animation', ...body }, signal()))
+  await request({
+    operation: 'attachment_begin',
+    attachmentId,
+    name: 'animation.gif',
+    sha256: attachmentId,
+    sizeBytes: raw.length,
+  })
+  await request({
+    operation: 'attachment_chunk',
+    attachmentId,
+    offset: 0,
+    base64: raw.toString('base64'),
+  })
+  expect(await request({ operation: 'attachment_finish', attachmentId })).toMatchObject({
+    status: 'failed',
+    error: 'animated_image_unsupported',
+  })
+  expect(
+    await request({ operation: 'attachment_extract_first_frame', attachmentId }),
+  ).toMatchObject({ status: 'ready', animationHandling: 'first_frame' })
+  const deck = benchmarkDeck()
+  deck.assets = [{ id: deck.assets[0]!.id, attachmentId }]
+  const output = await request({ operation: 'compile', requestId: 'first-frame', deck })
+  expect(output.status).toBe('compiled')
+  const zip = await JSZip.loadAsync(Buffer.from(output.pptxBase64, 'base64'))
+  const media = Object.keys(zip.files).filter(
+    (path) => path.startsWith('ppt/media/') && !zip.files[path]!.dir,
+  )
+  expect(media.length).toBeGreaterThan(0)
+  expect(await zip.file(media[0]!)!.async('nodebuffer')).toEqual(firstFrame)
 })
 
 it('keeps all PC image URL sources in compiled PowerPoint notes', async () => {

@@ -148,7 +148,12 @@ describe('generic proposal presentation', () => {
 
   it('maps upload failures to stable UI-safe errors', () => {
     expect(safeUploadError(new Error('invalid_skill_package'))).toBe('invalid_skill_package')
-    expect(safeUploadError(new Error('presentation_animated_image_unsupported'))).toContain('静态 PNG')
+    expect(safeUploadError(new Error('presentation_animated_image_unsupported'))).toContain(
+      '动画网址未保存',
+    )
+    expect(
+      safeUploadError(new Error('presentation_animated_image_unsupported'), { size: 100 }),
+    ).toContain('动画原件已保留')
     expect(safeUploadError(new Error('/Users/alice/private'))).toBe('upload_failed')
   })
 

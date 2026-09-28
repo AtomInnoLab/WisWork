@@ -8,6 +8,7 @@ import { fetchRemoteImage, isSafeRemoteUrl } from '@wiswork/electron-utils'
 import {
   inspectPresentationImage,
   normalizePresentationImage,
+  normalizePresentationImageFirstFrame,
   PRESENTATION_IMAGE_INPUT_LIMIT,
   PRESENTATION_IMAGE_CACHE_LIMIT,
 } from './presentation-image'
@@ -88,6 +89,7 @@ interface Metadata {
   width?: number
   height?: number
   assetSha256?: string
+  animationHandling?: 'first_frame'
   source?: string
   sourceUrlHash?: string
   sourceAliases?: { source: string; sourceUrlHash: string }[]
@@ -217,6 +219,7 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
         !integer(m.height, 1, 8192) ||
         m.width * m.height > 16_000_000 ||
         !isId(m.assetSha256) ||
+        (m.animationHandling !== undefined && m.animationHandling !== 'first_frame') ||
         (m.source !== undefined && !sourceValid(m.source)) ||
         (m.sourceUrlHash !== undefined && !isId(m.sourceUrlHash)) ||
         (m.source === undefined) !== (m.sourceUrlHash === undefined) ||
@@ -252,11 +255,13 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
       m.kind !== 'text' ||
       !integer(m.totalChars, 0, TEXT_LIMIT) ||
       !isId(m.textDigest) ||
-      m.licenseDeclaration !== undefined
+      m.licenseDeclaration !== undefined ||
+      m.animationHandling !== undefined
     )
       fail('invalid_state')
   }
   if (m.status !== 'ready' && m.licenseDeclaration !== undefined) fail('invalid_state')
+  if (m.status !== 'ready' && m.animationHandling !== undefined) fail('invalid_state')
   if (
     m.status === 'failed' &&
     !['parse_failed', 'animated_image_unsupported'].includes(m.error ?? '')
@@ -280,6 +285,7 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
         width: m.width,
         height: m.height,
         assetSha256: m.assetSha256,
+        ...(m.animationHandling ? { animationHandling: m.animationHandling } : {}),
         ...(m.source ? { source: m.source } : {}),
         ...(m.sourceAliases?.length
           ? { sources: [m.source!, ...m.sourceAliases.map((alias) => alias.source)] }
@@ -361,11 +367,13 @@ export function createPresentationAttachmentService(options: {
   userDataPath: string
   parse?: typeof parseFileToText
   normalizeImage?: typeof normalizePresentationImage
+  normalizeFirstFrame?: typeof normalizePresentationImageFirstFrame
   fetchImage?: (url: string, signal: AbortSignal) => Promise<Response | null>
 }) {
   const root = join(resolve(options.userDataPath), 'presentation-attachments')
   const parse = options.parse ?? parseFileToText
   const normalizeImage = options.normalizeImage ?? normalizePresentationImage
+  const normalizeFirstFrame = options.normalizeFirstFrame ?? normalizePresentationImageFirstFrame
   const fetchImage =
     options.fetchImage ??
     ((url: string, signal: AbortSignal) =>
@@ -379,6 +387,7 @@ export function createPresentationAttachmentService(options: {
       attachment_begin: ['attachmentId', 'name', 'sizeBytes', 'sha256'],
       attachment_chunk: ['attachmentId', 'offset', 'base64'],
       attachment_finish: ['attachmentId'],
+      attachment_extract_first_frame: ['attachmentId'],
       attachment_delete: ['attachmentId'],
       attachment_import_url: ['url'],
       attachment_attest_license: ['attachmentId', 'license', 'evidenceAttachmentId'],
@@ -677,6 +686,51 @@ export function createPresentationAttachmentService(options: {
         return publicMetadata(m, 0)
       }
       let m = await metadata(dir, id)
+      if (op === 'attachment_extract_first_frame') {
+        if (m.status === 'ready' && m.animationHandling === 'first_frame') {
+          await cachedImage(dir, m)
+          return publicMetadata(m, m.sizeBytes)
+        }
+        if (m.status !== 'failed' || m.error !== 'animated_image_unsupported' || !imageFile(m.name))
+          fail('invalid_state')
+        const raw = await bytes(
+          join(dir, `raw${extname(m.name).toLowerCase()}`),
+          PRESENTATION_IMAGE_INPUT_LIMIT,
+        )
+        if (raw.length !== m.sizeBytes || hash(raw) !== id) fail('digest_mismatch')
+        const info = inspectPresentationImage(raw, true)
+        if (!info.animated || info.mime !== imageMime(m.name)) fail('invalid_state')
+        checkAbort(signal)
+        const image = await normalizeFirstFrame(raw)
+        checkAbort(signal)
+        const normalized = inspectPresentationImage(image.bytes)
+        if (
+          image.bytes.length > PRESENTATION_IMAGE_CACHE_LIMIT ||
+          normalized.mime !== 'image/png' ||
+          image.width !== info.width ||
+          image.height !== info.height ||
+          normalized.width !== image.width ||
+          normalized.height !== image.height
+        )
+          fail('parse_failed')
+        await atomic(join(dir, 'image.png'), Buffer.from(image.bytes))
+        checkAbort(signal)
+        m = {
+          attachmentId: id,
+          sha256: id,
+          name: m.name,
+          sizeBytes: m.sizeBytes,
+          status: 'ready',
+          kind: 'image',
+          mime: 'image/png',
+          width: image.width,
+          height: image.height,
+          assetSha256: hash(image.bytes),
+          animationHandling: 'first_frame',
+        }
+        await atomic(join(dir, 'metadata.json'), JSON.stringify(m))
+        return publicMetadata(m, m.sizeBytes)
+      }
       if (op === 'attachment_attest_license' || op === 'attachment_revoke_license') {
         if (m.status !== 'ready' || m.kind !== 'image') fail('invalid_state')
         if (op === 'attachment_attest_license') {
@@ -839,7 +893,12 @@ export function createPresentationAttachmentService(options: {
       if (op === 'attachment_original') {
         if (!integer(body.offset, 0, m.sizeBytes) || !integer(body.length, 1, CHUNK_LIMIT))
           fail('invalid_request')
-        if (m.status !== 'ready' || m.kind !== 'image' || m.sizeBytes > 2 * 1024 * 1024)
+        if (
+          m.status !== 'ready' ||
+          m.kind !== 'image' ||
+          m.animationHandling !== undefined ||
+          m.sizeBytes > 2 * 1024 * 1024
+        )
           fail('invalid_state')
         const raw = await bytes(rawPath, 2 * 1024 * 1024)
         if (raw.length !== m.sizeBytes || hash(raw) !== id) fail('digest_mismatch')

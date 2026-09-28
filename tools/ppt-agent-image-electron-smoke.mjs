@@ -23,10 +23,10 @@ try {
   await writeFile(
     driver,
     `
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, nativeImage } = require('electron')
 const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
-const { normalizePresentationImage } = require(${JSON.stringify(bundle)})
+const { normalizePresentationImage, normalizePresentationImageFirstFrame } = require(${JSON.stringify(bundle)})
 const fixture = ${JSON.stringify(fixture)}
 app.whenReady().then(async () => {
   const names = ['static.gif', 'static.webp', 'extended.webp', 'static.gif', 'static.webp']
@@ -34,9 +34,16 @@ app.whenReady().then(async () => {
   for (const image of results) {
     if (image.width !== 2 || image.height !== 3 || image.bytes.length === 0) throw Error('bad normalized image')
   }
-  for (const name of ['animated.gif', 'animated.webp']) {
+  for (const name of ['animated.gif', 'animated.webp', 'animated.png']) {
     try { await normalizePresentationImage(readFileSync(join(fixture, name))); throw Error('animation accepted') }
-    catch (error) { if (error.message !== 'parse_failed') throw error }
+    catch (error) { if (error.message !== 'animated_image_unsupported') throw error }
+    const source = readFileSync(join(fixture, name))
+    const first = await normalizePresentationImageFirstFrame(source)
+    const repeated = await normalizePresentationImageFirstFrame(source)
+    if (first.width !== 2 || first.height !== 3 || !Buffer.from(first.bytes).equals(Buffer.from(repeated.bytes)))
+      throw Error('first frame was not stable')
+    const pixel = nativeImage.createFromBuffer(Buffer.from(first.bytes)).toBitmap()
+    if (pixel[2] < 240 || pixel[0] > 20) throw Error('first frame was not the red frame')
   }
   const main = new BrowserWindow({ show: false })
   await new Promise((resolve, reject) => {
@@ -44,7 +51,7 @@ app.whenReady().then(async () => {
     app.once('window-all-closed', () => { clearTimeout(timer); resolve() })
     main.close()
   })
-  console.log('Electron image smoke passed: 5 consecutive/concurrent static decodes, 2 animations rejected, app lifecycle preserved')
+  console.log('Electron image smoke passed: 5 static decodes, 3 animations rejected by default and converted to stable first frames, app lifecycle preserved')
   app.quit()
 }).catch(error => { console.error(error); app.exit(1) })
 `,

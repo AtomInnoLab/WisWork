@@ -185,6 +185,10 @@ function displayMegabytes(bytes: number): string {
 
 export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>): string {
   const code = error instanceof Error ? error.message : ''
+  if (code === 'presentation_animated_image_unsupported')
+    return file
+      ? '动画原件已保留在 PC。请在附件列表中选择“生成静态首帧”，或改用静态 PNG/JPEG。'
+      : '动画网址未保存。请先下载并上传原件，再在附件列表中选择“生成静态首帧”。'
   const attachmentErrors: Record<string, string> = {
     presentation_attachment_too_large: '制作资料每个文件最多 50 MB。',
     presentation_image_too_large: '图片每个文件最多 10 MB。',
@@ -197,8 +201,6 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
       '相同图片内容已从另一来源加入当前文档。请使用已有素材，或手动上传本地文件。',
     presentation_aborted: '图片下载超时或已取消，请重试。',
     presentation_parse_failed: '图片无法解码为受支持的 PNG、JPEG、静态 GIF 或 WebP。',
-    presentation_animated_image_unsupported:
-      '暂不支持动画图片。请上传静态 PNG、JPEG，或将 GIF/WebP 导出为单帧图片后重试。',
     presentation_assets_unavailable: '请更新并连接支持图片素材的 PC 端后重试。',
     presentation_attachment_failed: '资料解析未完成，请检查文件或重新上传。',
     presentation_not_found: '这份 PC 资料已不存在，请刷新附件列表。',
@@ -248,6 +250,7 @@ export interface OfficeWorkspaceUi {
   readonly durableImagesAvailable?: () => boolean
   readonly remoteImagesAvailable?: () => boolean
   readonly rightsAvailable?: () => boolean
+  readonly animationFrameAvailable?: () => boolean
   readonly listDurableAttachments?: () => Promise<PresentationAttachmentMetadata[]>
   readonly deleteDurableAttachment?: (attachmentId: string) => Promise<void>
   readonly importPresentationImageUrl?: (url: string | string[]) => Promise<void>
@@ -257,6 +260,7 @@ export interface OfficeWorkspaceUi {
     evidenceId: string,
   ) => Promise<void>
   readonly revokePresentationImageLicense?: (imageId: string) => Promise<void>
+  readonly extractPresentationImageFirstFrame?: (imageId: string) => Promise<void>
   readonly attachments: () => readonly string[]
   readonly downloadFile?: (path: string) => void
   readonly skills: () => readonly string[]
@@ -309,11 +313,13 @@ export function createOfficeWorkspaceUi(
     durableImagesAvailable: runtime.durableImagesAvailable,
     remoteImagesAvailable: runtime.remoteImagesAvailable,
     rightsAvailable: runtime.rightsAvailable,
+    animationFrameAvailable: runtime.animationFrameAvailable,
     listDurableAttachments: runtime.listDurableAttachments,
     deleteDurableAttachment: runtime.deleteDurableAttachment,
     importPresentationImageUrl: runtime.importPresentationImageUrl,
     attestPresentationImageLicense: runtime.attestPresentationImageLicense,
     revokePresentationImageLicense: runtime.revokePresentationImageLicense,
+    extractPresentationImageFirstFrame: runtime.extractPresentationImageFirstFrame,
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
     downloadFile: (path: string) => downloadSessionFile(runtime.vfs, path),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
@@ -857,6 +863,12 @@ export function AgentWorkspace(props: {
                       if (!current()) return
                       setUploadStatus('')
                       setUploadError(safeUploadError(error, file))
+                      void ui
+                        .listDurableAttachments?.()
+                        .then((items) => {
+                          if (current()) setDurableFiles(items)
+                        })
+                        .catch(() => undefined)
                     })
                     .finally(() => {
                       if (current()) setUploadPending(false)
@@ -951,6 +963,38 @@ export function AgentWorkspace(props: {
                   {durableFiles.map((file) => (
                     <li key={file.attachmentId}>
                       {file.name} · {file.status}
+                      {file.animationHandling === 'first_frame' && (
+                        <p>已按你的选择从动画原件生成静态首帧；原件仍保存在 PC。</p>
+                      )}
+                      {file.status === 'failed' &&
+                        file.error === 'animated_image_unsupported' &&
+                        ui.animationFrameAvailable?.() && (
+                          <button
+                            type="button"
+                            disabled={uploadPending || state.busy}
+                            onClick={() => {
+                              setUploadPending(true)
+                              setUploadError('')
+                              void ui
+                                .extractPresentationImageFirstFrame?.(file.attachmentId)
+                                .then(async () => {
+                                  if (!mounted.current) return
+                                  setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
+                                  setUploadStatus(
+                                    `${file.name} 的静态首帧已生成，可作为图片素材使用。`,
+                                  )
+                                })
+                                .catch((error: unknown) => {
+                                  if (mounted.current) setUploadError(safeUploadError(error))
+                                })
+                                .finally(() => {
+                                  if (mounted.current) setUploadPending(false)
+                                })
+                            }}
+                          >
+                            生成静态首帧
+                          </button>
+                        )}
                       {file.kind === 'image' && file.source && (
                         <details>
                           <summary>
@@ -1369,6 +1413,7 @@ function ConfiguredApp() {
               'presentation-assets.v1',
               'presentation-remote-images.v1',
               'presentation-asset-rights.v1',
+              'presentation-animation-frame.v1',
             ],
           }),
     [transportMode],
@@ -1509,6 +1554,14 @@ function ConfiguredApp() {
                           snapshot.capabilities?.includes('presentation-asset-rights.v1') === true
                         )
                       },
+                      animationFrameAvailable: () => {
+                        const snapshot = bridge.snapshot()
+                        return (
+                          snapshot.status === 'connected' &&
+                          snapshot.capabilities?.includes('presentation-animation-frame.v1') ===
+                            true
+                        )
+                      },
                       attachmentsAvailable: () => {
                         const snapshot = bridge.snapshot()
                         return (
@@ -1530,7 +1583,12 @@ function ConfiguredApp() {
                                   body.operation as string,
                                 )
                               ? 'presentation-asset-rights.v1'
-                              : 'presentation-attachments.v1',
+                              : body &&
+                                  typeof body === 'object' &&
+                                  'operation' in body &&
+                                  body.operation === 'attachment_extract_first_frame'
+                                ? 'presentation-animation-frame.v1'
+                                : 'presentation-attachments.v1',
                           body,
                           signal,
                         ),

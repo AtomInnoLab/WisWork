@@ -44,8 +44,43 @@ describe('image admission before native decoding', () => {
       width: 2,
       height: 3,
     })
-    expect(() => inspectPresentationImage(fixture('animated.gif'))).toThrow('animated_image_unsupported')
-    expect(() => inspectPresentationImage(fixture('animated.webp'))).toThrow('animated_image_unsupported')
+    expect(() => inspectPresentationImage(fixture('animated.gif'))).toThrow(
+      'animated_image_unsupported',
+    )
+    expect(() => inspectPresentationImage(fixture('animated.webp'))).toThrow(
+      'animated_image_unsupported',
+    )
+    expect(() => inspectPresentationImage(fixture('animated.png'))).toThrow(
+      'animated_image_unsupported',
+    )
+    expect(inspectPresentationImage(fixture('animated.gif'), true)).toMatchObject({
+      mime: 'image/gif',
+      animated: true,
+    })
+    expect(inspectPresentationImage(fixture('animated.webp'), true)).toMatchObject({
+      mime: 'image/webp',
+      animated: true,
+    })
+    expect(inspectPresentationImage(fixture('animated.png'), true)).toMatchObject({
+      mime: 'image/png',
+      animated: true,
+    })
+    const apngBytes = fixture('animated.png')
+    const chunks: Buffer[] = []
+    for (let offset = 8; offset < apngBytes.length;) {
+      const end = offset + 12 + apngBytes.readUInt32BE(offset)
+      chunks.push(apngBytes.subarray(offset, end))
+      offset = end
+    }
+    const posterOnly = Buffer.concat([
+      apngBytes.subarray(0, 8),
+      chunks[0]!,
+      chunks[1]!,
+      chunks[3]!,
+      chunks[2]!,
+      ...chunks.slice(4),
+    ])
+    expect(() => inspectPresentationImage(posterOnly, true)).toThrow('parse_failed')
     const animationChunk = Buffer.alloc(20)
     animationChunk.writeUInt32BE(8, 0)
     animationChunk.write('acTL', 4, 'ascii')

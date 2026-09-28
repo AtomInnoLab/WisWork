@@ -68,6 +68,49 @@ it('lists document-scoped PC copies and deletes only a validated selected ID', a
   )
   expect(f.skill.tools.map((tool) => tool.name)).not.toContain('delete_presentation_attachment')
 })
+it('requires negotiated support and validates the user-selected first-frame result', async () => {
+  const f = setup()
+  const response = {
+    attachmentId: f.attachmentId,
+    sha256: f.attachmentId,
+    name: 'motion.gif',
+    sizeBytes: 100,
+    receivedBytes: 100,
+    status: 'ready',
+    kind: 'image',
+    mime: 'image/png',
+    width: 2,
+    height: 3,
+    assetSha256: 'a'.repeat(64),
+    animationHandling: 'first_frame',
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify(response)))
+  await expect(f.skill.extractFirstFrame(f.attachmentId)).rejects.toThrow(
+    'presentation_assets_unavailable',
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    animationFrameAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  expect(await skill.extractFirstFrame(f.attachmentId)).toMatchObject(response)
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      operation: 'attachment_extract_first_frame',
+      attachmentId: f.attachmentId,
+      documentId: 'doc1',
+    }),
+    expect.any(AbortSignal),
+  )
+  f.request.mockResolvedValue(
+    new Response(JSON.stringify({ ...response, animationHandling: undefined })),
+  )
+  await expect(skill.extractFirstFrame(f.attachmentId)).rejects.toThrow(
+    'presentation_response_invalid',
+  )
+})
 it('pages more than 32 durable images for the UI and Agent', async () => {
   const f = setup()
   const ids = Array.from({ length: 33 }, (_, i) => i.toString(16).padStart(64, '0'))
@@ -228,7 +271,9 @@ it('does not try another image candidate after a document change or cancellation
 })
 it('reports exhausted image candidates after recoverable failures', async () => {
   const f = setup()
-  f.request.mockImplementation(async () => new Response(JSON.stringify({ error: 'remote_image_unavailable' })))
+  f.request.mockImplementation(
+    async () => new Response(JSON.stringify({ error: 'remote_image_unavailable' })),
+  )
   const skill = createPresentationAttachmentSkill({
     available: () => true,
     remoteImagesAvailable: () => true,
@@ -284,17 +329,32 @@ it('resumes after a lost chunk acknowledgement', async () => {
 it('surfaces animated upload rejection instead of a generic attachment failure', async () => {
   const bytes = new Uint8Array([71, 73, 70, 56, 57, 97])
   const attachmentId = createHash('sha256').update(bytes).digest('hex')
-  const request = vi.fn(async (body: Record<string, unknown>) => new Response(JSON.stringify({
-    attachmentId, sha256: attachmentId, name: 'animated.gif', sizeBytes: bytes.length,
-    receivedBytes: body.operation === 'attachment_begin' ? 0 : bytes.length,
-    status: body.operation === 'attachment_finish' ? 'failed' : 'uploading',
-    ...(body.operation === 'attachment_finish' ? { error: 'animated_image_unsupported' } : {}),
-  })))
+  const request = vi.fn(
+    async (body: Record<string, unknown>) =>
+      new Response(
+        JSON.stringify({
+          attachmentId,
+          sha256: attachmentId,
+          name: 'animated.gif',
+          sizeBytes: bytes.length,
+          receivedBytes: body.operation === 'attachment_begin' ? 0 : bytes.length,
+          status: body.operation === 'attachment_finish' ? 'failed' : 'uploading',
+          ...(body.operation === 'attachment_finish'
+            ? { error: 'animated_image_unsupported' }
+            : {}),
+        }),
+      ),
+  )
   const skill = createPresentationAttachmentSkill({
-    available: () => true, imagesAvailable: () => true, request,
-    documentId: async () => 'doc', vfs: new InMemoryVfs(),
+    available: () => true,
+    imagesAvailable: () => true,
+    request,
+    documentId: async () => 'doc',
+    vfs: new InMemoryVfs(),
   })
-  await expect(skill.upload('animated.gif', Promise.resolve(bytes.buffer))).rejects.toThrow('presentation_animated_image_unsupported')
+  await expect(skill.upload('animated.gif', Promise.resolve(bytes.buffer))).rejects.toThrow(
+    'presentation_animated_image_unsupported',
+  )
 })
 it('aborts and prevents late publication after clear', async () => {
   const f = setup()
