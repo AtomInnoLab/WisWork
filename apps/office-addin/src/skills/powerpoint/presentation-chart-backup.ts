@@ -69,6 +69,15 @@ async function call(
   } catch {
     fail()
   }
+  if (
+    operation === 'existing_page_backup_begin' &&
+    body &&
+    typeof body === 'object' &&
+    !Array.isArray(body) &&
+    'error' in body &&
+    body.error === 'quota_exceeded'
+  )
+    throw new Error('presentation_existing_backup_capacity')
   if (!response.ok || !body || typeof body !== 'object' || Array.isArray(body) || 'error' in body)
     fail()
   return body as Record<string, unknown>

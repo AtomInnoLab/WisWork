@@ -375,6 +375,14 @@ export function createPresentationExistingPageEditingSkill(
           const response = await options.request({ operation, documentId, ...data }, signal)
           await current()
           const value = (await response.json()) as Record<string, unknown>
+          if (
+            operation === 'existing_page_backup_begin' &&
+            value &&
+            typeof value === 'object' &&
+            !Array.isArray(value) &&
+            value.error === 'quota_exceeded'
+          )
+            throw new Error('presentation_existing_backup_capacity')
           if (!response.ok || !value || typeof value !== 'object' || 'error' in value)
             throw new Error('presentation_page_backup_failed')
           return value

@@ -100,6 +100,7 @@ const PROPOSAL_ERROR_CODES = new Set([
   'office_recovery_failed',
   'office_concurrent_change',
   'office_state_uncertain',
+  'presentation_existing_backup_capacity',
 ])
 
 function stableProposalError(error: unknown): string {
@@ -133,27 +134,40 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
-async function boundedPostWrite(value: ProposalPostWriteEvidence): Promise<ProposalPostWriteEvidence> {
+async function boundedPostWrite(
+  value: ProposalPostWriteEvidence,
+): Promise<ProposalPostWriteEvidence> {
   if (value?.status === 'unavailable') {
     if (!/^[a-z_]{1,64}$/.test(value.reason)) throw new Error('invalid_evidence')
     return { status: 'unavailable', reason: value.reason }
   }
-  if (value?.status !== 'captured' || !Array.isArray(value.pages) ||
-      value.pages.length < 1 || value.pages.length > MAX_POST_WRITE_PAGES)
+  if (
+    value?.status !== 'captured' ||
+    !Array.isArray(value.pages) ||
+    value.pages.length < 1 ||
+    value.pages.length > MAX_POST_WRITE_PAGES
+  )
     throw new Error('invalid_evidence')
   const seen = new Set<string>()
   let totalBytes = 0
   const pages = []
   for (const page of value.pages) {
-    if (!page || typeof page.slideId !== 'string' || !page.slideId ||
-        page.slideId.length > 256 || seen.has(page.slideId)) throw new Error('invalid_evidence')
+    if (
+      !page ||
+      typeof page.slideId !== 'string' ||
+      !page.slideId ||
+      page.slideId.length > 256 ||
+      seen.has(page.slideId)
+    )
+      throw new Error('invalid_evidence')
     seen.add(page.slideId)
     validatePowerPointPageScreenshot(page.pngBase64)
     const bytes = Uint8Array.from(atob(page.pngBase64), (char) => char.charCodeAt(0))
     totalBytes += bytes.byteLength
     if (totalBytes > MAX_POST_WRITE_BYTES) throw new Error('invalid_evidence')
     const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
-      .map((byte) => byte.toString(16).padStart(2, '0')).join('')
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('')
     if (page.digest !== digest) throw new Error('invalid_evidence')
     pages.push({ slideId: page.slideId, pngBase64: page.pngBase64, digest })
   }
@@ -305,7 +319,10 @@ export function createStructuredProposalController(
             postWrite = { status: 'unavailable', reason: 'capture_failed' }
           }
         }
-        settle(proposal.decision, postWrite ? { status: 'confirmed', postWrite } : { status: 'confirmed' })
+        settle(
+          proposal.decision,
+          postWrite ? { status: 'confirmed', postWrite } : { status: 'confirmed' },
+        )
       } catch (error) {
         const code = stableProposalError(error)
         diagnose(() =>

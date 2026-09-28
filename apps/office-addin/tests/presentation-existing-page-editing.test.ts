@@ -1144,3 +1144,54 @@ it('fails safely on source-backup quota without host insertion or an ownerless r
   expect(f.records.size).toBe(0)
   expect(f.data().length).toBe(0)
 })
+
+it.each([1, 2])(
+  'classifies a real PC quota response for page backup %s before host insertion',
+  async (blockedBegin) => {
+    const f = await fixture()
+    const backend = f.request.getMockImplementation()!
+    let begins = 0
+    f.request.mockImplementation(async (body) => {
+      if (
+        (body as Record<string, unknown>).operation === 'existing_page_backup_begin' &&
+        ++begins === blockedBegin
+      )
+        return new Response(
+          JSON.stringify({ error: 'quota_exceeded', detail: '/private/backup' }),
+          { status: 409 },
+        )
+      return backend(body)
+    })
+    const staged = await f.call('stage', {
+      baseline_id: 'baseline',
+      slide_id: 'old',
+      path: '/rebuilt.pptx',
+    })
+    expect(staged.isError, staged.output).not.toBe(true)
+    const pending = f.confirm()
+    await expect(pending).rejects.toThrow('presentation_existing_backup_capacity')
+    expect(f.adapter.stage).not.toHaveBeenCalled()
+    expect(f.records.size).toBe(0)
+  },
+)
+
+it.each([
+  ['existing_page_backup_begin', 'quota_exceeded: /private/secret'],
+  ['existing_page_backup_begin', 'access_denied'],
+  ['existing_page_backup_chunk', 'quota_exceeded'],
+])(
+  'filters page backup response %s %s without exposing PC body details',
+  async (blockedOperation, error) => {
+    const f = await fixture()
+    const backend = f.request.getMockImplementation()!
+    f.request.mockImplementation(async (body) =>
+      (body as Record<string, unknown>).operation === blockedOperation
+        ? new Response(JSON.stringify({ error, detail: '/private/secret' }), { status: 409 })
+        : backend(body),
+    )
+    await f.call('stage', { baseline_id: 'baseline', slide_id: 'old', path: '/rebuilt.pptx' })
+    await expect(f.confirm()).rejects.toThrow('presentation_page_backup_failed')
+    expect(f.adapter.stage).not.toHaveBeenCalled()
+    expect(f.records.size).toBe(0)
+  },
+)

@@ -76,6 +76,12 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
     message: '文档内容已发生变化，刚才的修改未应用。',
     retryable: true,
   },
+  presentation_existing_backup_capacity: {
+    code: 'presentation_existing_backup_capacity',
+    message:
+      '保存点备份容量已满。请在修改差异与撤销中释放已结束记录的备份，再重新发起修改。释放后该记录无法重新应用；不会自动重试。',
+    retryable: false,
+  },
   office_write_failed: {
     code: 'office_write_failed',
     message: 'The approved change could not be applied.',

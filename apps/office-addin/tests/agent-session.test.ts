@@ -1691,6 +1691,10 @@ describe('Office agent session', () => {
   it.each([
     ['office_verify_failed', 'The approved change could not be verified.'],
     [
+      'presentation_existing_backup_capacity',
+      '保存点备份容量已满。请在修改差异与撤销中释放已结束记录的备份，再重新发起修改。释放后该记录无法重新应用；不会自动重试。',
+    ],
+    [
       'office_overwrite_required',
       'The target cells contain data. Choose an empty range or explicitly allow overwrite.',
     ],
@@ -1905,4 +1909,23 @@ describe('Office agent session', () => {
     disconnect()
     expect(authLoss).toBeUndefined()
   })
+})
+
+it('hides unknown backup confirmation response text from the session', async () => {
+  const proposals = proposalsHarness()
+  proposals.controller.confirm.mockRejectedValue(new Error('quota_exceeded /private/secret'))
+  proposals.setPending()
+  const session = createOfficeAgentSession({
+    transport: transportHarness().transport,
+    skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+    proposals: proposals.controller,
+  })
+  await session.confirm('p1')
+  expect(session.snapshot()).toMatchObject({
+    error: 'office_write_failed',
+    errorMessage: 'The approved change could not be applied.',
+    retryable: false,
+  })
+  expect(JSON.stringify(session.snapshot())).not.toContain('/private/secret')
+  expect(proposals.controller.confirm).toHaveBeenCalledOnce()
 })

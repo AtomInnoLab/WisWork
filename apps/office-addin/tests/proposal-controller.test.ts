@@ -618,8 +618,12 @@ describe('post-write evidence', () => {
   it('runs capture after successful target verification and returns bounded evidence', async () => {
     const order: string[] = []
     const input = request()
-    input.execute.mockImplementation(async () => { order.push('execute') })
-    input.verify.mockImplementation(async () => { order.push('verify') })
+    input.execute.mockImplementation(async () => {
+      order.push('execute')
+    })
+    input.verify.mockImplementation(async () => {
+      order.push('verify')
+    })
     input.postWrite.mockImplementation(async () => {
       order.push('postWrite')
       return { status: 'captured', pages: [{ slideId: 'slide-1', pngBase64, digest }] }
@@ -651,7 +655,10 @@ describe('post-write evidence', () => {
     for (const result of [
       new Error('capture error'),
       { status: 'captured', pages: [{ slideId: 'slide-1', pngBase64: 'bad', digest }] },
-      { status: 'captured', pages: [{ slideId: 'slide-1', pngBase64: 'A'.repeat(3 * 1024 * 1024), digest }] },
+      {
+        status: 'captured',
+        pages: [{ slideId: 'slide-1', pngBase64: 'A'.repeat(3 * 1024 * 1024), digest }],
+      },
     ]) {
       const input = request()
       input.postWrite.mockImplementation(async () => {
@@ -662,7 +669,33 @@ describe('post-write evidence', () => {
       const proposal = controller.propose(input)
       const decision = controller.waitForDecision(proposal.id)
       await expect(controller.confirm(proposal.id)).resolves.toBeUndefined()
-      await expect(decision).resolves.toMatchObject({ status: 'confirmed', postWrite: { status: 'unavailable' } })
+      await expect(decision).resolves.toMatchObject({
+        status: 'confirmed',
+        postWrite: { status: 'unavailable' },
+      })
     }
+  })
+})
+
+it('preserves the stable backup capacity code in a failed proposal decision', async () => {
+  const controller = createStructuredProposalController()
+  const proposal = controller.propose({
+    operation: 'stage_existing_presentation_page_change',
+    title: 'Stage page',
+    preview: {},
+    impact: { host: 'powerpoint', targets: ['slide'], count: 1 },
+    fingerprint: 'v1',
+    validate: () => true,
+    execute: () => {
+      throw new Error('presentation_existing_backup_capacity')
+    },
+  })
+  const decision = controller.waitForDecision(proposal.id)
+  await expect(controller.confirm(proposal.id)).rejects.toThrow(
+    'presentation_existing_backup_capacity',
+  )
+  await expect(decision).resolves.toEqual({
+    status: 'failed',
+    error: 'presentation_existing_backup_capacity',
   })
 })
