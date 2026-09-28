@@ -4,12 +4,50 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { openPptx } from '@wiswork/pptx-engine'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { isInstalledFontFamily } from '@wiswork/font-metrics'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { createPresentationService } from '../src/main/presentation-service'
 import { createPresentationGenerationSkill } from '../../office-addin/src/skills/powerpoint/presentation-generation'
 import { InMemoryVfs } from '../../office-addin/src/skills/shared/vfs'
 
 describe('Taskpane to durable PC compilation', () => {
+  it('uses an installed PC font fallback and preserves the decision in the delivery report', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-presentation-font-'))
+    try {
+      const service = createPresentationService({ userDataPath })
+      const deck = benchmarkDeck()
+      deck.style.fontFace = 'WisWork Benchmark Display 2026'
+      deck.style.fontFallbacks = ['Noto Sans CJK SC', 'Arial', 'Helvetica Neue', 'DejaVu Sans']
+      const expectedFont = deck.style.fontFallbacks.find(isInstalledFontFamily)
+      expect(expectedFont).toBeTruthy()
+      const vfs = new InMemoryVfs()
+      const skill = createPresentationGenerationSkill({
+        available: () => true,
+        documentId: async () => 'document-font',
+        lastProject: () => deck.id,
+        rememberProject: async () => {},
+        vfs,
+        request: async (body) =>
+          new Response(Buffer.from(await service(body, new AbortController().signal))),
+      })
+      const outcome = await skill.executeTool({
+        id: 'compile-font',
+        name: 'compile_deck_with_pptxgenjs',
+        input: { request_id: 'font-request', deck },
+      })
+      expect(outcome.isError).not.toBe(true)
+      const delivered = JSON.parse(outcome.output)
+      expect(delivered.report.fontResolution).toEqual({
+        requested: 'WisWork Benchmark Display 2026',
+        used: expectedFont,
+        substituted: true,
+      })
+      expect(outcome.summary).toContain(`本机编译字体改用 ${expectedFont}`)
+      expect((await openPptx(vfs.readBytes(delivered.path))).deck.slides).toHaveLength(8)
+    } finally {
+      rmSync(userDataPath, { recursive: true, force: true })
+    }
+  })
   it('delivers native eight-page PPTX and recovers a lost response without recompiling', async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-presentation-e2e-'))
     try {

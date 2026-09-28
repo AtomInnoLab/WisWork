@@ -79,6 +79,14 @@ const compileCall = () => ({
 })
 
 describe('PowerPoint presentation generation', () => {
+  it('explains unavailable requested and fallback fonts as a repairable style issue', async () => {
+    const f = fixture()
+    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'font_unavailable' })))
+    const outcome = await f.skill.executeTool(compileCall())
+    expect(outcome).toMatchObject({ isError: true, output: 'presentation_font_unavailable' })
+    expect(outcome.summary).toContain('回退字体')
+    expect(f.vfs.list('/home/user')).toEqual([])
+  })
   it('explains a missing cited attachment without reporting a compiler failure', async () => {
     const f = fixture()
     f.request.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'source_unavailable' })))

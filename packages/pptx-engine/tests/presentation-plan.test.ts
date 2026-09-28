@@ -12,6 +12,20 @@ import { benchmarkPlan } from './fixtures/presentation-plan'
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
 describe('durable presentation plan', () => {
+  it('freezes the ordered font fallback list with the page plan', () => {
+    const plan = benchmarkPlan()
+    const deck = benchmarkDeck()
+    plan.style.fontFallbacks = ['Noto Sans CJK SC', 'Arial']
+    deck.style.fontFallbacks = ['Noto Sans CJK SC', 'Arial']
+    expect(() => parsePresentationPlan(plan)).not.toThrow()
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).not.toThrow()
+    deck.style.fontFallbacks.reverse()
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow(
+      'presentation_plan_mismatch:style',
+    )
+    plan.style.fontFallbacks = [plan.style.fontFace]
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:font_fallback')
+  })
   it('bounds opt-in parallelism and requires backward-only page dependencies', () => {
     const plan = benchmarkPlan()
     plan.parallelism = 2

@@ -302,6 +302,7 @@ export function createPresentationGenerationSkill(
             'output_too_large',
             'compile_failed',
             'source_unavailable',
+            'font_unavailable',
           ].includes(result.error)
         )
           throw new Error(`presentation_${result.error}`)
@@ -318,6 +319,25 @@ export function createPresentationGenerationSkill(
           typeof result.pptxBase64 !== 'string' ||
           result.pptxBase64.length > 14 * 1024 * 1024 ||
           !/^[A-Za-z0-9+/]+={0,2}$/.test(result.pptxBase64)
+        )
+          throw new Error('presentation_response_invalid')
+        const fontResolution = result.report.fontResolution as
+          { requested?: unknown; used?: unknown; substituted?: unknown } | undefined
+        if (
+          fontResolution !== undefined &&
+          (!fontResolution ||
+            typeof fontResolution !== 'object' ||
+            Array.isArray(fontResolution) ||
+            Object.keys(fontResolution).sort().join(',') !== 'requested,substituted,used' ||
+            typeof fontResolution.requested !== 'string' ||
+            typeof fontResolution.used !== 'string' ||
+            fontResolution.requested.length < 1 ||
+            fontResolution.requested.length > 80 ||
+            fontResolution.used.length < 1 ||
+            fontResolution.used.length > 80 ||
+            typeof fontResolution.substituted !== 'boolean' ||
+            fontResolution.substituted !== (fontResolution.requested !== fontResolution.used) ||
+            (deck && fontResolution.requested !== deck.style.fontFace))
         )
           throw new Error('presentation_response_invalid')
         let pages: Array<{ id: string; title: string; sourceSlideId: string }> | undefined
@@ -404,7 +424,7 @@ export function createPresentationGenerationSkill(
             report: result.report,
           }),
           mutated: false,
-          summary: `已生成 ${result.report.slideCount} 页可编辑 PPTX，可在附件中下载；请查看待验收项`,
+          summary: `已生成 ${result.report.slideCount} 页可编辑 PPTX，可在附件中下载${fontResolution?.substituted ? `；本机编译字体改用 ${fontResolution.used}，仍需在 PowerPoint 检查显示` : ''}；请查看待验收项`,
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : ''
@@ -427,11 +447,13 @@ export function createPresentationGenerationSkill(
                 ? '请更新并连接支持图片素材的 PC 端后重试'
                 : code === 'presentation_source_unavailable'
                   ? '引用的来源附件不可读取，或计划摘录未出现在附件原文中；请补齐资料，或修订计划摘录后重新编译。'
-                  : call.name === 'export_presentation_pdf'
-                    ? code === 'presentation_pdf_unavailable'
-                      ? '当前 PC 尚不支持 PDF 导出，请更新后重试'
-                      : 'PDF 导出未完成，请检查本机 LibreOffice 或稍后重试'
-                    : 'PPT 生成未完成，已有成果已保留',
+                  : code === 'presentation_font_unavailable'
+                    ? '指定字体及候选回退字体在本机均不可用；请在样式中选择已安装字体并修订计划后重试。'
+                    : call.name === 'export_presentation_pdf'
+                      ? code === 'presentation_pdf_unavailable'
+                        ? '当前 PC 尚不支持 PDF 导出，请更新后重试'
+                        : 'PDF 导出未完成，请检查本机 LibreOffice 或稍后重试'
+                      : 'PPT 生成未完成，已有成果已保留',
         }
       }
     },

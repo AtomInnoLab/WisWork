@@ -239,7 +239,7 @@ export function PresentationProjectCard(props: {
                     : ''}
                   {'attempt' in event ? ` · 尝试 ${event.attempt}` : ''}
                   {'error' in event && event.error
-                    ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', source_unavailable: '附件不可读或来源摘录未匹配', invalid_state: '任务状态异常' }[event.error]}`
+                    ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', source_unavailable: '附件不可读或来源摘录未匹配', font_unavailable: '指定字体及回退字体均不可用', invalid_state: '任务状态异常' }[event.error]}`
                     : ''}
                 </li>
               ))}
@@ -298,7 +298,7 @@ export function PresentationProjectCard(props: {
                 }{' '}
                 · 尝试 {page.attempt} 次
                 {page.error
-                  ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', source_unavailable: '附件不可读或来源摘录未匹配' }[page.error]}`
+                  ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', source_unavailable: '附件不可读或来源摘录未匹配', font_unavailable: '指定字体及回退字体均不可用' }[page.error]}`
                   : ''}
                 {page.state === 'compiled' && (
                   <button

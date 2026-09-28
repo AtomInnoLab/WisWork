@@ -434,9 +434,24 @@ function imageData(asset: PresentationInlineAsset): string {
 /** Deterministic mapping from validated IR to editable OOXML; this is not a rendered visual review. */
 export async function compilePresentationDeck(
   input: unknown,
-  options: { trustedAssetEvidence?: boolean } = {},
+  options: { trustedAssetEvidence?: boolean; fontAvailable?: (family: string) => boolean } = {},
 ): Promise<{ bytes: Uint8Array; report: PresentationCompileReport; sourceSlideIds?: string[] }> {
-  const deck = parsePresentationDeck(input, options)
+  const requestedDeck = parsePresentationDeck(input, options)
+  let fontResolution: PresentationCompileReport['fontResolution']
+  let usedFont = requestedDeck.style.fontFace
+  if (requestedDeck.style.fontFallbacks && options.fontAvailable) {
+    usedFont = [usedFont, ...requestedDeck.style.fontFallbacks].find(options.fontAvailable) ?? ''
+    if (!usedFont) throw new Error('font_unavailable')
+    fontResolution = {
+      requested: requestedDeck.style.fontFace,
+      used: usedFont,
+      substituted: usedFont !== requestedDeck.style.fontFace,
+    }
+  }
+  const deck =
+    usedFont === requestedDeck.style.fontFace
+      ? requestedDeck
+      : { ...requestedDeck, style: { ...requestedDeck.style, fontFace: usedFont } }
   const geometry = inspectPresentationGeometry(deck)
   if (geometry.some((issue) => issue.kind === 'out_of_bounds'))
     throw new Error('presentation_geometry:out_of_bounds')
@@ -624,6 +639,7 @@ export async function compilePresentationDeck(
       elementCount: deck.slides.reduce((n, slide) => n + slide.elements.length, 0),
       geometry,
       assetWarnings,
+      ...(fontResolution ? { fontResolution } : {}),
       checks: {
         structure: 'passed',
         geometry: geometry.length ? 'warning' : 'passed',

@@ -16,6 +16,7 @@ export const PRESENTATION_HEIGHT = 7.5
 export const PRESENTATION_TEXT_BUDGET = 250_000
 export interface PresentationStyle {
   fontFace: string
+  fontFallbacks?: string[]
   background: string
   textColor: string
   accentColor: string
@@ -85,7 +86,10 @@ export interface PresentationDeck {
 }
 
 /** Visible source labels shared by file and host compilers; source truth is checked separately. */
-export function presentationSlideSourceLabels(slide: SlideIR, claims: PresentationClaim[]): string[] {
+export function presentationSlideSourceLabels(
+  slide: SlideIR,
+  claims: PresentationClaim[],
+): string[] {
   const byId = new Map(claims.map((claim) => [claim.id, claim]))
   return (slide.claimIds ?? []).map((id) => {
     const claim = byId.get(id)
@@ -104,6 +108,7 @@ export interface PresentationCompileReport {
   elementCount: number
   geometry: GeometryIssue[]
   assetWarnings?: { missingSource: number; unknownLicense: number; missingAltText: number }
+  fontResolution?: { requested: string; used: string; substituted: boolean }
   checks: {
     structure: 'passed'
     geometry: 'passed' | 'warning'
@@ -129,12 +134,16 @@ export const PRESENTATION_DECK_SCHEMA: Schema = object({
   version: { type: 'number', enum: [1] },
   id,
   title: text(300, 1),
-  style: object({
-    fontFace: { ...text(80, 1), pattern: '^[^<>\\r\\n]+$' },
-    background: color,
-    textColor: color,
-    accentColor: color,
-  }),
+  style: object(
+    {
+      fontFace: { ...text(80, 1), pattern: '^[^<>\\r\\n]+$' },
+      fontFallbacks: array({ ...text(80, 1), pattern: '^[^<>\\r\\n]+$' }, 4, 1),
+      background: color,
+      textColor: color,
+      accentColor: color,
+    },
+    ['fontFace', 'background', 'textColor', 'accentColor'],
+  ),
   assets: array(
     {
       anyOf: [
@@ -251,6 +260,12 @@ export function parsePresentationDeck(
 ): PresentationDeck {
   if (!valid(input, PRESENTATION_DECK_SCHEMA)) reject('schema')
   const deck = input as PresentationDeck
+  if (
+    deck.style.fontFallbacks &&
+    new Set([deck.style.fontFace, ...deck.style.fontFallbacks]).size !==
+      deck.style.fontFallbacks.length + 1
+  )
+    reject('duplicate_font_fallback')
   unique(deck.slides, 'slide')
   unique(deck.assets, 'asset')
   unique(deck.claims, 'claim')

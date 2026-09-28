@@ -27,6 +27,7 @@ const errors = [
   'output_too_large',
   'asset_unavailable',
   'source_unavailable',
+  'font_unavailable',
 ] as const
 export interface PresentationProductionStatus {
   revision?: { parentRequestId: string; pageId: string; parentInputDigest: string }
@@ -539,6 +540,7 @@ export function createPresentationProductionSkill(
                 'compile_failed',
                 'asset_unavailable',
                 'source_unavailable',
+                'font_unavailable',
                 'invalid_state',
               ].includes(value.error)
             )

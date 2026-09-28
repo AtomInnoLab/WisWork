@@ -317,6 +317,12 @@ export function presentationSourceAttachmentId(
 export function parsePresentationPlan(input: unknown): PresentationPlan {
   if (!valid(input, PRESENTATION_PLAN_SCHEMA)) reject('schema')
   const plan = input as PresentationPlan
+  if (
+    plan.style.fontFallbacks &&
+    new Set([plan.style.fontFace, ...plan.style.fontFallbacks]).size !==
+      plan.style.fontFallbacks.length + 1
+  )
+    reject('font_fallback')
   if (plan.brandKit) {
     let brandKit: PresentationBrandKit
     try {
@@ -486,6 +492,11 @@ export function assertDeckMatchesPresentationPlan(
   if (deck.id !== plan.projectId || deck.title !== plan.title) mismatch('project')
   for (const key of ['fontFace', 'background', 'textColor', 'accentColor'] as const)
     if (deck.style[key] !== plan.style[key]) mismatch('style')
+  if (
+    JSON.stringify(deck.style.fontFallbacks ?? []) !==
+    JSON.stringify(plan.style.fontFallbacks ?? [])
+  )
+    mismatch('style')
   if (plan.brandKit) {
     const colors = new Set(plan.brandKit.allowedColors.map((value) => value.toUpperCase()))
     for (const slide of deck.slides)

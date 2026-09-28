@@ -468,7 +468,12 @@ export async function handlePresentationProduction(
       const code = error instanceof Error ? error.message : ''
       failure = signal.aborted
         ? 'aborted'
-        : ['output_too_large', 'asset_unavailable', 'source_unavailable'].includes(code)
+        : [
+              'output_too_large',
+              'asset_unavailable',
+              'source_unavailable',
+              'font_unavailable',
+            ].includes(code)
           ? code
           : code === 'plan_mismatch' ||
               code.startsWith('presentation_invalid:') ||

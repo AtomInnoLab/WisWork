@@ -35,6 +35,7 @@ import { PresentationPreferenceLibrary } from './presentation-preferences'
 import { PresentationCommentLibrary } from './presentation-comments'
 import { convertPresentationToPdf } from './presentation-page-render'
 import { PDFDocument } from 'pdf-lib'
+import { isInstalledFontFamily } from '@wiswork/font-metrics'
 
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
@@ -65,6 +66,7 @@ const errorCodes = new Set([
   'invalid_brand_kit',
   'remote_image_unavailable',
   'remote_image_source_conflict',
+  'font_unavailable',
   'attachment_in_use',
   'page_not_ready',
   'renderer_unavailable',
@@ -106,7 +108,13 @@ export function createPresentationService(options: {
   const brandLibrary = new PresentationBrandLibrary(options.userDataPath)
   const preferenceLibrary = new PresentationPreferenceLibrary(options.userDataPath)
   const commentLibrary = new PresentationCommentLibrary(options.userDataPath)
-  const compile = options.compile ?? compilePresentationDeck
+  const compile =
+    options.compile ??
+    ((deck, settings) =>
+      compilePresentationDeck(deck, {
+        ...settings,
+        fontAvailable: isInstalledFontFamily,
+      }))
   const renderPdf = options.renderPdf ?? convertPresentationToPdf
   return async (body, signal) => {
     try {

@@ -11,6 +11,33 @@ import {
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
 describe('presentation contract and compiler', () => {
+  it('selects an installed fallback font and reports the substitution', async () => {
+    const deck = benchmarkDeck()
+    deck.style.fontFace = 'Unavailable Benchmark Font'
+    deck.style.fontFallbacks = ['Noto Sans CJK SC', 'Arial']
+    const result = await compilePresentationDeck(deck, {
+      fontAvailable: (family) => family === 'Noto Sans CJK SC',
+    })
+    expect(result.report.fontResolution).toEqual({
+      requested: 'Unavailable Benchmark Font',
+      used: 'Noto Sans CJK SC',
+      substituted: true,
+    })
+    const zip = await JSZip.loadAsync(result.bytes)
+    expect(await zip.file('ppt/theme/theme1.xml')!.async('string')).toContain('Noto Sans CJK SC')
+    expect(await zip.file('ppt/slides/slide1.xml')!.async('string')).not.toContain(
+      'Unavailable Benchmark Font',
+    )
+  })
+
+  it('rejects an unavailable font when no declared fallback is installed', async () => {
+    const deck = benchmarkDeck()
+    deck.style.fontFace = 'Unavailable Benchmark Font'
+    deck.style.fontFallbacks = ['Also Unavailable']
+    await expect(compilePresentationDeck(deck, { fontAvailable: () => false })).rejects.toThrow(
+      'font_unavailable',
+    )
+  })
   it('rejects source attribution that cannot fit the visible footer without truncation', async () => {
     const deck = benchmarkDeck()
     deck.claims[0]!.source = '来源'.repeat(245)
