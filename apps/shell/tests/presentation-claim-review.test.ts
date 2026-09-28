@@ -12,6 +12,7 @@ import {
 } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
 import { presentationPlanClaims } from '@wiswork/pptx-engine/presentation-plan'
 import { createPresentationService } from '../src/main/presentation-service'
+import { buildPdfFixture } from '../../../packages/file-parse/tests/helpers/fixtures'
 const roots: string[] = []
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -24,19 +25,23 @@ const files = (root: string) =>
       join(e.parentPath, e.name),
       readFileSync(join(e.parentPath, e.name)).toString('base64'),
     ])
-async function setup(uri?: string) {
+async function setup(
+  uri?: string,
+  file?: { raw: Buffer; name: string; excerpt: string; locator: string },
+) {
   const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-evidence-'))
   roots.push(userDataPath)
   const compile = vi.fn()
   const service = createPresentationService({ userDataPath, compile })
   const plan = benchmarkPlan(),
     deck = benchmarkPlannedDeck()
-  const raw = Buffer.from('😀before 原文 after\f')
+  const raw = file?.raw ?? Buffer.from('😀before 原文 after\f')
   const attachmentId = createHash('sha256').update(raw).digest('hex')
   plan.sources.push({ ...plan.sources[0]!, id: 'unrelated-source' })
   plan.claims.push({ ...plan.claims[0]!, id: 'unrelated-claim' })
   plan.sources[0]!.uri = uri ?? `attachment:${attachmentId}`
-  plan.sources[0]!.excerpt = '原文'
+  plan.sources[0]!.excerpt = file?.excerpt ?? '原文'
+  if (file) plan.sources[0]!.locator = file.locator
   deck.claims = presentationPlanClaims(plan)
   const call = async (operation: string, extra: Record<string, unknown> = {}) =>
     decode(await service({ operation, documentId: 'doc', ...extra }, new AbortController().signal))
@@ -44,7 +49,7 @@ async function setup(uri?: string) {
     await call('attachment_begin', {
       attachmentId,
       sha256: attachmentId,
-      name: 'evidence.txt',
+      name: file?.name ?? 'evidence.txt',
       sizeBytes: raw.length,
     }),
   ).not.toHaveProperty('error')
@@ -125,6 +130,56 @@ it('records agent judgments, retries immutably, and reads history without an att
       ),
     ),
   ).toEqual(result)
+})
+it('requires a literal excerpt in the reviewed window before saving supported', async () => {
+  const f = await setup()
+  const request = { ...f.request, offset: 2, maxChars: 4 }
+  const evidence = decode(await f.service(request, new AbortController().signal))
+  expect(evidence.excerptMatch.status).toBe('not_found_in_window')
+  const body = {
+    ...request,
+    operation: 'production_record_claim_review',
+    reviewId: 'missing-excerpt',
+    evidenceDigest: createHash('sha256')
+      .update(presentationClaimEvidenceContent(evidence))
+      .digest('hex'),
+    outcome: 'supported',
+    notes: 'I think this supports the claim',
+  }
+  expect(decode(await f.service(body, new AbortController().signal))).toEqual({
+    error: 'evidence_excerpt_not_found',
+  })
+  expect(
+    decode(
+      await f.service({ ...body, outcome: 'insufficient_evidence' }, new AbortController().signal),
+    ),
+  ).toMatchObject({
+    outcome: 'insufficient_evidence',
+  })
+})
+it('binds a supported PDF review to the planned page locator', async () => {
+  const f = await setup(undefined, {
+    raw: Buffer.from(buildPdfFixture(['First page', 'Target evidence'])),
+    name: 'evidence.pdf',
+    excerpt: 'Target evidence',
+    locator: '第 1 页',
+  })
+  const request = { ...f.request, offset: 0 }
+  const evidence = decode(await f.service(request, new AbortController().signal))
+  expect(evidence.excerptMatch).toMatchObject({ status: 'found', locator: '第 2 页' })
+  const body = {
+    ...request,
+    operation: 'production_record_claim_review',
+    reviewId: 'wrong-page',
+    evidenceDigest: createHash('sha256')
+      .update(presentationClaimEvidenceContent(evidence))
+      .digest('hex'),
+    outcome: 'supported',
+    notes: 'Evidence on the second page',
+  }
+  expect(decode(await f.service(body, new AbortController().signal))).toEqual({
+    error: 'evidence_locator_mismatch',
+  })
 })
 it('rejects changed evidence, invalid requests and cancellation without writing', async () => {
   const f = await setup()

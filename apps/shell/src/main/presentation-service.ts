@@ -62,6 +62,8 @@ const errorCodes = new Set([
   'unsupported_file',
   'evidence_source_unsupported',
   'evidence_changed',
+  'evidence_excerpt_not_found',
+  'evidence_locator_mismatch',
   'attachment_conflict',
   'quota_exceeded',
   'digest_mismatch',

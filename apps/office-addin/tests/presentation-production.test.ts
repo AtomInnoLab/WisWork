@@ -1149,7 +1149,13 @@ it('validates claim review inputs and preserves explicit server conflicts', asyn
     ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
   f.request.mockResolvedValue(new Response(JSON.stringify(evidenceResponse())))
   await f.skill.executeTool(evidenceCall)
-  for (const error of ['evidence_changed', 'request_conflict', 'quota_exceeded']) {
+  for (const error of [
+    'evidence_changed',
+    'evidence_excerpt_not_found',
+    'evidence_locator_mismatch',
+    'request_conflict',
+    'quota_exceeded',
+  ]) {
     f.request.mockResolvedValue(new Response(JSON.stringify({ error })))
     expect(await f.skill.executeTool(recordReviewCall)).toMatchObject({
       isError: true,

@@ -39,6 +39,46 @@ it('parses a report and checks UTF16 literal offsets', () => {
   })
   expect(matchPresentationClaimExcerpt(' \n', '原文', 0)).toEqual({ status: 'empty_excerpt' })
 })
+it('binds a repeated excerpt to the preferred indexed page and rejects forged locators', () => {
+  const value = {
+    ...report(),
+    source: { ...report().source, locator: '第2页' },
+    attachment: {
+      ...report().attachment,
+      name: 'study.pdf',
+      offset: 0,
+      totalChars: 8,
+      text: '原文\n\n原文',
+      locatorSpans: [
+        { locator: '第 1 页', start: 0, end: 2 },
+        { locator: '第 2 页', start: 4, end: 6 },
+      ],
+    },
+    excerptMatch: { status: 'found', offset: 4, locator: '第 2 页' },
+  }
+  expect(parsePresentationClaimEvidence(value).excerptMatch).toEqual(value.excerptMatch)
+  expect(() =>
+    parsePresentationClaimEvidence({
+      ...value,
+      excerptMatch: { status: 'found', offset: 0, locator: '第 2 页' },
+    }),
+  ).toThrow()
+  expect(() =>
+    parsePresentationClaimEvidence({
+      ...value,
+      attachment: { ...value.attachment, name: 'study.html' },
+    }),
+  ).toThrow()
+})
+it('prefers a contained excerpt when an earlier match crosses page boundaries', () => {
+  expect(
+    matchPresentationClaimExcerpt('X\n\nY', 'X\n\nY\n\nX\n\nY', 0, [
+      { locator: '第 1 页', start: 0, end: 1 },
+      { locator: '第 2 页', start: 3, end: 4 },
+      { locator: '第 3 页', start: 6, end: 10 },
+    ]),
+  ).toEqual({ status: 'found', offset: 6, locator: '第 3 页' })
+})
 it('rejects forged matches, identity, bounds, checks and extra fields', () => {
   for (const patch of [
     { extra: true },

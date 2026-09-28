@@ -182,6 +182,16 @@ export async function handlePresentationProduction(
         .update(presentationClaimEvidenceContent(evidence))
         .digest('hex')
       if (digest !== request.evidenceDigest) throw new Error('evidence_changed')
+      if (request.outcome === 'supported') {
+        if (evidence.excerptMatch.status !== 'found') throw new Error('evidence_excerpt_not_found')
+        const planned = canonicalSourceLocator(evidence.source.locator)
+        if (
+          planned &&
+          evidence.attachment.locatorSpans &&
+          evidence.excerptMatch.locator !== planned
+        )
+          throw new Error('evidence_locator_mismatch')
+      }
       check(signal)
       saved = store.saveClaimReview(projectId, documentId, requestId!, request.reviewId as string, {
         pageId: evidence.pageId,
@@ -342,6 +352,7 @@ export async function handlePresentationProduction(
       totalChars: number
       text: string
       sourceUri: string
+      pageSpans?: { locator: string; start: number; end: number }[]
     }
     check(signal)
     if (
@@ -378,8 +389,15 @@ export async function handlePresentationProduction(
         totalChars: window.totalChars,
         text: window.text,
         offsetUnit: 'utf16_code_unit',
+        ...(window.pageSpans ? { locatorSpans: window.pageSpans } : {}),
       },
-      excerptMatch: matchPresentationClaimExcerpt(source.excerpt, window.text, window.offset),
+      excerptMatch: matchPresentationClaimExcerpt(
+        source.excerpt,
+        window.text,
+        window.offset,
+        window.pageSpans,
+        canonicalSourceLocator(source.locator),
+      ),
       checks: {
         support: 'not_verified',
         sourceAuthority: 'not_verified',
