@@ -797,6 +797,7 @@ export function createOfficeAgentSession(dependencies: {
       .catch(() => {
         pendingStart = false
         if (disposed || epoch !== sessionEpoch) return
+        if (activeRunId && !unsettledToolRuns.has(activeRunId)) activeRunId = undefined
         checkpointBeginFailed = true
         append({
           id: eventId(),
