@@ -468,7 +468,11 @@ describe('Office Agent workspace UI', () => {
       clearSession: vi.fn(),
     } as unknown as OfficeHostRuntime
     const writeText = vi.fn(async () => undefined)
-    const diagnostics = { exportJson: vi.fn(() => '{"version":1}') }
+    const diagnostics = {
+      exportJson: vi.fn((options?: { includeLocalContext?: boolean }) =>
+        options?.includeLocalContext ? '{"version":1,"context":true}' : '{"version":1}',
+      ),
+    }
     const ui = createOfficeWorkspaceUi(runtime, diagnostics, { writeText })
     expect(Object.isFrozen(ui)).toBe(true)
     expect(Object.isFrozen(ui.attachments())).toBe(true)
@@ -478,6 +482,8 @@ describe('Office Agent workspace UI', () => {
     expect(ui).not.toHaveProperty('proposals')
     await expect(ui.copyDiagnostics!()).resolves.toBeUndefined()
     expect(writeText).toHaveBeenCalledWith('{"version":1}')
+    await expect(ui.copyDiagnosticsWithContext!()).resolves.toBeUndefined()
+    expect(writeText).toHaveBeenCalledWith('{"version":1,"context":true}')
   })
 
   it('offers a direct copy-diagnostics action without exposing diagnostic state', () => {
@@ -578,12 +584,14 @@ describe('Office Agent workspace UI', () => {
       dispose: vi.fn(),
     } satisfies OfficeAgentSession
     const copyDiagnostics = vi.fn(async () => undefined)
+    const copyDiagnosticsWithContext = vi.fn(async () => undefined)
     const ui: OfficeWorkspaceUi = Object.freeze({
       attachments: () => Object.freeze([]),
       skills: () => Object.freeze([]),
       skillPackagesEnabled: true,
       upload: vi.fn(),
       copyDiagnostics,
+      copyDiagnosticsWithContext,
       clear: vi.fn(),
     })
     const container = document.createElement('div')
@@ -605,7 +613,15 @@ describe('Office Agent workspace UI', () => {
     await act(async () => copy.click())
     expect(copyDiagnostics).toHaveBeenCalledOnce()
     expect(container.querySelector('.diagnostic-status')?.textContent).toBe(
-      '诊断信息已复制；含文档、会话、项目和页面 ID，请检查后分享',
+      '诊断信息已复制；已移除文档、会话、项目和页面 ID',
+    )
+    const withContext = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === '复制含定位 ID 的诊断',
+    )!
+    await act(async () => withContext.click())
+    expect(copyDiagnosticsWithContext).toHaveBeenCalledOnce()
+    expect(container.querySelector('.diagnostic-status')?.textContent).toBe(
+      '已复制含定位 ID 的本机诊断；请检查后分享',
     )
     await act(async () => root.unmount())
     container.remove()
@@ -613,17 +629,31 @@ describe('Office Agent workspace UI', () => {
 
   it('offers the same diagnostic copy feedback on a disconnected status screen', async () => {
     const copyDiagnostics = vi.fn(async () => undefined)
+    const copyDiagnosticsWithContext = vi.fn(async () => undefined)
     const container = document.createElement('div')
     document.body.append(container)
     const root = createRoot(container)
     await act(async () => {
-      root.render(React.createElement(DiagnosticCopyButton, { copyDiagnostics }))
+      root.render(
+        React.createElement(DiagnosticCopyButton, {
+          copyDiagnostics,
+          copyDiagnosticsWithContext,
+        }),
+      )
     })
     const button = container.querySelector('button')!
     await act(async () => button.click())
     expect(copyDiagnostics).toHaveBeenCalledOnce()
     expect(container.querySelector('[role="status"]')?.textContent).toBe(
-      '诊断信息已复制；含文档、会话、项目和页面 ID，请检查后分享',
+      '诊断信息已复制；已移除文档、会话、项目和页面 ID',
+    )
+    const withContext = Array.from(container.querySelectorAll('button')).find(
+      (item) => item.textContent === '复制含定位 ID 的诊断',
+    )!
+    await act(async () => withContext.click())
+    expect(copyDiagnosticsWithContext).toHaveBeenCalledOnce()
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      '已复制含定位 ID 的本机诊断；请检查后分享',
     )
     await act(async () => root.unmount())
     container.remove()

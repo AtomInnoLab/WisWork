@@ -283,12 +283,14 @@ export interface OfficeWorkspaceUi {
   readonly skillPackagesEnabled: boolean
   readonly upload: (file: SessionFile) => Promise<void>
   readonly copyDiagnostics?: () => Promise<void>
+  readonly copyDiagnosticsWithContext?: () => Promise<void>
   readonly uninstallSkill?: (name: string) => void
   readonly clear: () => void
 }
 
 export function DiagnosticCopyButton(props: {
   copyDiagnostics: () => Promise<void>
+  copyDiagnosticsWithContext?: () => Promise<void>
 }): React.ReactElement {
   const [status, setStatus] = useState('')
   return (
@@ -299,12 +301,26 @@ export function DiagnosticCopyButton(props: {
           setStatus('')
           void props
             .copyDiagnostics()
-            .then(() => setStatus('诊断信息已复制；含文档、会话、项目和页面 ID，请检查后分享'))
+            .then(() => setStatus('诊断信息已复制；已移除文档、会话、项目和页面 ID'))
             .catch(() => setStatus('复制诊断信息失败'))
         }}
       >
         复制诊断信息
       </button>
+      {props.copyDiagnosticsWithContext && (
+        <button
+          type="button"
+          onClick={() => {
+            setStatus('')
+            void props
+              .copyDiagnosticsWithContext?.()
+              .then(() => setStatus('已复制含定位 ID 的本机诊断；请检查后分享'))
+              .catch(() => setStatus('复制诊断信息失败'))
+          }}
+        >
+          复制含定位 ID 的诊断
+        </button>
+      )}
       {status && (
         <p className="diagnostic-status" role="status">
           {status}
@@ -351,6 +367,11 @@ export function createOfficeWorkspaceUi(
             if (!clipboard || typeof clipboard.writeText !== 'function')
               throw new Error('diagnostic_copy_failed')
             await clipboard.writeText(diagnostics.exportJson())
+          },
+          copyDiagnosticsWithContext: async () => {
+            if (!clipboard || typeof clipboard.writeText !== 'function')
+              throw new Error('diagnostic_copy_failed')
+            await clipboard.writeText(diagnostics.exportJson({ includeLocalContext: true }))
           },
         }
       : {}),
@@ -680,15 +701,32 @@ export function AgentWorkspace(props: {
                       .then(
                         () =>
                           mounted.current &&
-                          setDiagnosticStatus(
-                            '诊断信息已复制；含文档、会话、项目和页面 ID，请检查后分享',
-                          ),
+                          setDiagnosticStatus('诊断信息已复制；已移除文档、会话、项目和页面 ID'),
                       )
                       .catch(() => mounted.current && setDiagnosticStatus('复制诊断信息失败'))
                     event.currentTarget.closest('details')?.removeAttribute('open')
                   }}
                 >
                   复制诊断信息
+                </button>
+              )}
+              {ui.copyDiagnosticsWithContext && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    setDiagnosticStatus('')
+                    void ui
+                      .copyDiagnosticsWithContext?.()
+                      .then(
+                        () =>
+                          mounted.current &&
+                          setDiagnosticStatus('已复制含定位 ID 的本机诊断；请检查后分享'),
+                      )
+                      .catch(() => mounted.current && setDiagnosticStatus('复制诊断信息失败'))
+                    event.currentTarget.closest('details')?.removeAttribute('open')
+                  }}
+                >
+                  复制含定位 ID 的诊断
                 </button>
               )}
               <button type="button" onClick={disconnect}>
@@ -1948,7 +1986,10 @@ function ConfiguredApp() {
               : 'Try again'}
         </button>
         {workspace?.ui.copyDiagnostics && (
-          <DiagnosticCopyButton copyDiagnostics={workspace.ui.copyDiagnostics} />
+          <DiagnosticCopyButton
+            copyDiagnostics={workspace.ui.copyDiagnostics}
+            copyDiagnosticsWithContext={workspace.ui.copyDiagnosticsWithContext}
+          />
         )}
       </StatusScreen>
     )

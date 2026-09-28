@@ -76,7 +76,7 @@ export interface OfficeDiagnostics {
     durationMs?: number
   }): OfficeDiagnosticEvent
   snapshot(): OfficeDiagnosticSnapshot
-  exportJson(): string
+  exportJson(options?: { includeLocalContext?: boolean }): string
   clear(): void
 }
 
@@ -370,8 +370,16 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
       return event
     },
     snapshot: () => Object.freeze({ trace_id: traceId, events: Object.freeze([...events]) }),
-    exportJson() {
-      const value = JSON.stringify({ version: 1, trace_id: traceId, events }, null, 2)
+    exportJson(exportOptions) {
+      const exportedEvents =
+        exportOptions?.includeLocalContext === true
+          ? events
+          : events.map(({ presentation_context: _localContext, ...event }) => event)
+      const value = JSON.stringify(
+        { version: 1, trace_id: traceId, events: exportedEvents },
+        null,
+        2,
+      )
       if (encoder.encode(value).byteLength > MAX_DIAGNOSTIC_EXPORT_BYTES)
         throw new Error('diagnostic_export_too_large')
       return value

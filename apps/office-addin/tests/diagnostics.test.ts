@@ -27,7 +27,7 @@ describe('Office safe diagnostics', () => {
     })
     diagnostics.startTrace()
     diagnostics.setTool('read_presentation_attachment', {
-      page_id: 'page-4',
+      page_id: probe,
       extra: contract,
     } as never)
     diagnostics.record({
@@ -38,7 +38,9 @@ describe('Office safe diagnostics', () => {
       }),
       prohibitedPrompt: contract,
     } as never)
+    expect(diagnostics.snapshot().events[0]?.presentation_context?.page_id).toBe(probe)
     expect(diagnostics.exportJson()).not.toContain(probe)
+    expect(diagnostics.exportJson({ includeLocalContext: true })).toContain(probe)
     expect(JSON.stringify(sent)).not.toContain(probe)
     expect(sent).toHaveLength(1)
   })
@@ -73,7 +75,8 @@ describe('Office safe diagnostics', () => {
         tool_call_id: 'call-1',
       },
     })
-    expect(diagnostics.exportJson()).toContain('"page_id": "page-3"')
+    expect(diagnostics.exportJson()).not.toContain('presentation_context')
+    expect(diagnostics.exportJson({ includeLocalContext: true })).toContain('"page_id": "page-3"')
     expect(JSON.stringify(sent)).not.toContain('presentation_context')
     expect(JSON.stringify(sent)).not.toContain('document-1')
     expect(JSON.stringify(sent)).not.toContain('private brief')
