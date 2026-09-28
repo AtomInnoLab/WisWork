@@ -1,6 +1,7 @@
 import { WISWORK_MESSAGES_URL } from '@wiswork/ai-provider'
 import type { MessagesProxy, OfficeBridge } from '@wiswork/office-bridge'
 import type { OfficeBridgeStatus } from '../shared/home-api'
+import type { createOfficeOutboundAudit } from './office-outbound-audit'
 
 export const DEFAULT_OFFICE_BRIDGE_PORT = 43_127
 export const DEFAULT_OFFICE_BRIDGE_PORTS = [
@@ -127,6 +128,7 @@ export function createOfficeMessagesProxy(options: {
   fetchWithAuth(request: (accessToken: string) => Promise<Response>): Promise<Response>
   fetch?: typeof fetch
   onTerminalAuthLoss?: () => void
+  audit?: ReturnType<typeof createOfficeOutboundAudit>
 }): MessagesProxy {
   const doFetch = options.fetch ?? fetch
   const streamBody = (body: ReadableStream<Uint8Array> | null): AsyncIterable<Uint8Array> => ({
@@ -145,6 +147,9 @@ export function createOfficeMessagesProxy(options: {
     },
   })
   return async ({ body, signal }) => {
+    const outboundBody = JSON.stringify(body)
+    const auditId = await options.audit?.begin(outboundBody, WISWORK_MESSAGES_URL)
+    let completionAttempted = false
     try {
       const upstream = await options.fetchWithAuth((accessToken) =>
         doFetch(WISWORK_MESSAGES_URL, {
@@ -154,11 +159,13 @@ export function createOfficeMessagesProxy(options: {
             'content-type': 'application/json',
             'x-req-location': 'sg',
           },
-          body: JSON.stringify(body),
+          body: outboundBody,
           signal,
         }),
       )
       if (upstream.status === 401) throw new Error('auth_required')
+      completionAttempted = true
+      if (auditId) await options.audit!.finish(auditId, 'response_received', upstream.status)
       return {
         status: upstream.status,
         contentType: upstream.headers.get('content-type') ?? undefined,
@@ -167,6 +174,15 @@ export function createOfficeMessagesProxy(options: {
     } catch (error) {
       if (error instanceof Error && error.message === 'auth_required')
         options.onTerminalAuthLoss?.()
+      if (auditId && !completionAttempted)
+        await options.audit!.finish(
+          auditId,
+          error instanceof Error && error.message === 'auth_required'
+            ? 'auth_required'
+            : signal.aborted
+              ? 'aborted'
+              : 'failed',
+        )
       throw error
     }
   }

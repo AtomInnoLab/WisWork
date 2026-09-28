@@ -163,6 +163,7 @@ import { createThemeController, registerThemeIpc } from './theme-controller'
 import { applyUpdateChannel, initAutoUpdater } from './updater'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
 import { startOfficeBridgeHttpServer, type OfficeBridgeHttpServer } from './office-bridge-http'
+import { createOfficeOutboundAudit } from './office-outbound-audit'
 import {
   bindOfficeBridgePortPool,
   createOfficeMessagesProxy,
@@ -2529,6 +2530,7 @@ app.whenReady().then(async () => {
   }
   const officeMessagesProxy = createOfficeMessagesProxy({
     fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+    audit: createOfficeOutboundAudit({ userDataPath: app.getPath('userData') }),
     onTerminalAuthLoss: () => {
       officeBridge?.setSessionAvailable(false)
       officeRelay?.revoke('auth_required')
