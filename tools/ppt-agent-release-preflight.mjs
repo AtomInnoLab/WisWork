@@ -1,4 +1,4 @@
-import { readFile, readdir } from 'node:fs/promises'
+import { lstat, readFile, readdir } from 'node:fs/promises'
 import { createHash, randomUUID, randomBytes } from 'node:crypto'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -43,7 +43,7 @@ export async function inspectOfficeBuild(dist, expectedOrigin) {
   const origin = new URL(expectedOrigin)
   if (origin.protocol !== 'https:' || origin.origin !== expectedOrigin)
     throw new Error('expected origin must be an HTTPS origin without a path')
-  const files = await readdir(dist, { recursive: true })
+  const entries = await readdir(dist, { recursive: true })
   const metadata = JSON.parse(await readFile(resolve(dist, 'version.json'), 'utf8'))
   if (!/^[A-Za-z0-9_.-]{3,96}$/.test(metadata.buildId || ''))
     throw new Error('invalid version.json buildId')
@@ -60,14 +60,31 @@ export async function inspectOfficeBuild(dist, expectedOrigin) {
   const script = await readFile(resolve(dist, scripts[0]))
   if (!script.toString('utf8').includes(metadata.buildId))
     throw new Error('buildId differs from compiled taskpane')
-  for (const path of files) {
+  const files = []
+  let totalBytes = 0
+  for (const path of entries.sort()) {
+    const stat = await lstat(resolve(dist, path))
+    if (stat.isDirectory()) continue
     if (path.endsWith('.map')) throw new Error('source map in release artifact')
+    if (
+      !stat.isFile() ||
+      (!['version.json', 'taskpane.html', 'manifest.xml'].includes(path) &&
+        !/^assets\/[A-Za-z0-9_.-]+$/.test(path)) ||
+      stat.size < 1 ||
+      stat.size > 16 * 1024 * 1024
+    )
+      throw new Error(`invalid Office release file: ${path}`)
+    totalBytes += stat.size
+    if (files.length >= 128 || totalBytes > 64 * 1024 * 1024)
+      throw new Error('Office release artifact too large')
+    files.push({ path, size: stat.size, sha256: sha256(await readFile(resolve(dist, path))) })
   }
   return {
     buildId: metadata.buildId,
     script: scripts[0],
     scriptSha256: sha256(script),
     htmlSha256: sha256(htmlBytes),
+    files,
   }
 }
 
@@ -89,30 +106,54 @@ export async function inspectRelayHealth(relayOrigin, fetcher = fetch) {
 }
 
 export async function inspectDeployedOffice(origin, build, fetcher = fetch) {
-  const requested = [
-    new URL('/version.json', origin),
-    new URL('/taskpane.html', origin),
-    new URL(`/${build.script}`, origin),
-  ]
-  const responses = []
-  for (const url of requested) {
+  if (!Array.isArray(build.files) || build.files.length < 4)
+    throw new Error('incomplete Office release artifact')
+  for (const file of build.files) {
+    if (
+      !file ||
+      typeof file.path !== 'string' ||
+      (!['version.json', 'taskpane.html', 'manifest.xml'].includes(file.path) &&
+        !/^assets\/[A-Za-z0-9_.-]+$/.test(file.path)) ||
+      !Number.isSafeInteger(file.size) ||
+      file.size < 1 ||
+      file.size > 16 * 1024 * 1024 ||
+      !/^[a-f0-9]{64}$/.test(file.sha256)
+    )
+      throw new Error('invalid Office release file manifest')
+    const url = new URL(`/${file.path}`, origin)
     const response = await fetcher(url, { cache: 'no-store', signal: AbortSignal.timeout(5_000) })
     if (!response.ok)
       throw new Error(`deployed asset unavailable: ${url.pathname} (${response.status})`)
-    responses.push(Buffer.from(await response.arrayBuffer()))
+    if (!response.body) throw new Error(`deployed asset unavailable: ${url.pathname}`)
+    const reader = response.body.getReader()
+    const chunks = []
+    let bytes = 0
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        bytes += value.byteLength
+        if (bytes > file.size)
+          throw new Error('deployed Office assets differ from release artifact')
+        chunks.push(value)
+      }
+    } finally {
+      await reader.cancel().catch(() => {})
+    }
+    const body = Buffer.concat(chunks)
+    if (bytes !== file.size || sha256(body) !== file.sha256)
+      throw new Error('deployed Office assets differ from release artifact')
+    if (file.path === 'version.json') {
+      let metadata
+      try {
+        metadata = JSON.parse(body.toString('utf8'))
+      } catch {
+        throw new Error('invalid deployed version.json')
+      }
+      if (metadata.buildId !== build.buildId)
+        throw new Error('deployed Office assets differ from release artifact')
+    }
   }
-  let metadata
-  try {
-    metadata = JSON.parse(responses[0].toString('utf8'))
-  } catch {
-    throw new Error('invalid deployed version.json')
-  }
-  if (
-    metadata.buildId !== build.buildId ||
-    sha256(responses[1]) !== build.htmlSha256 ||
-    sha256(responses[2]) !== build.scriptSha256
-  )
-    throw new Error('deployed Office assets differ from release artifact')
 }
 
 const OFFICE_RELAY_ORIGIN = 'https://office.8-216-134-194.sslip.io'
@@ -424,7 +465,7 @@ async function main(args) {
     await inspectRelayPairing(options['--relay-origin'], process.env.PPT_AGENT_RELEASE_PC_TOKEN)
   }
   process.stdout.write(
-    `PPT Agent release preflight passed: build ${build.buildId}, ${build.script}, Relay healthy${options['--pairing'] ? ', v2 presentation capability routes verified' : ''}\n`,
+    `PPT Agent release preflight passed: build ${build.buildId}, ${build.files.length} artifact files${options['--deployed'] ? ' matched deployed bytes' : ' checked locally'}, Relay healthy${options['--pairing'] ? ', v2 presentation capability routes verified' : ''}\n`,
   )
 }
 

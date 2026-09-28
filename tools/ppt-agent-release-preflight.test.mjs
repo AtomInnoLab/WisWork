@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { test } from 'node:test'
@@ -31,6 +31,9 @@ async function artifact(t) {
     '<script src="/assets/taskpane-AbC_123.js"></script>',
   )
   await writeFile(resolve(dist, 'assets/taskpane-AbC_123.js'), 'const version="release_123"')
+  await writeFile(resolve(dist, 'assets/taskpane-AbC_123.css'), 'body{color:#123456}')
+  await writeFile(resolve(dist, 'assets/worker-AbC_123.js'), 'self.onmessage=()=>{}')
+  await writeFile(resolve(dist, 'assets/icon.png'), Buffer.from([137, 80, 78, 71]))
   await writeFile(
     resolve(dist, 'manifest.xml'),
     '<AppDomain>https://office.example</AppDomain><IconUrl DefaultValue="https://office.example/assets/icon.png"/><SourceLocation DefaultValue="https://office.example/taskpane.html"/>',
@@ -47,6 +50,24 @@ test('validates complete release artifact', async (t) => {
     htmlSha256: createHash('sha256')
       .update('<script src="/assets/taskpane-AbC_123.js"></script>')
       .digest('hex'),
+    files: [
+      ['assets/icon.png', Buffer.from([137, 80, 78, 71])],
+      ['assets/taskpane-AbC_123.css', Buffer.from('body{color:#123456}')],
+      ['assets/taskpane-AbC_123.js', Buffer.from('const version="release_123"')],
+      ['assets/worker-AbC_123.js', Buffer.from('self.onmessage=()=>{}')],
+      [
+        'manifest.xml',
+        Buffer.from(
+          '<AppDomain>https://office.example</AppDomain><IconUrl DefaultValue="https://office.example/assets/icon.png"/><SourceLocation DefaultValue="https://office.example/taskpane.html"/>',
+        ),
+      ],
+      ['taskpane.html', Buffer.from('<script src="/assets/taskpane-AbC_123.js"></script>')],
+      ['version.json', Buffer.from('{"buildId":"release_123"}')],
+    ].map(([path, bytes]) => ({
+      path,
+      size: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    })),
   })
 })
 
@@ -327,6 +348,18 @@ test('fails on source maps and unresolved connect policy', async (t) => {
   await assert.rejects(inspectOfficeBuild(dist, 'https://office.example'), /source map/)
 })
 
+test('rejects unlisted and symlinked release files', async (t) => {
+  const dist = await artifact(t)
+  await writeFile(resolve(dist, 'assets/unexpected.map'), '{}')
+  await assert.rejects(inspectOfficeBuild(dist, 'https://office.example'), /source map/)
+  await rm(resolve(dist, 'assets/unexpected.map'))
+  await symlink('../version.json', resolve(dist, 'assets/linked.js'))
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /invalid Office release file/,
+  )
+})
+
 test('rejects conflicting Manifest URLs even when correct URLs are also present', async (t) => {
   const dist = await artifact(t)
   await writeFile(
@@ -366,6 +399,15 @@ test('requires exact Relay health response and secure remote origin', async () =
 })
 
 test('checks deployed version, HTML and immutable script as one build', async () => {
+  const assets = new Map([
+    ['/version.json', '{"buildId":"release_123"}'],
+    ['/taskpane.html', '<script src="/assets/taskpane-AbC_123.js"></script>'],
+    ['/assets/taskpane-AbC_123.js', 'const version="release_123"'],
+    ['/assets/taskpane-AbC_123.css', 'body{color:#123456}'],
+    ['/assets/worker-AbC_123.js', 'self.onmessage=()=>{}'],
+    ['/assets/icon.png', Buffer.from([137, 80, 78, 71])],
+    ['/manifest.xml', '<AppDomain>https://office.example</AppDomain>'],
+  ])
   const build = {
     buildId: 'release_123',
     script: 'assets/taskpane-AbC_123.js',
@@ -373,12 +415,12 @@ test('checks deployed version, HTML and immutable script as one build', async ()
     htmlSha256: createHash('sha256')
       .update('<script src="/assets/taskpane-AbC_123.js"></script>')
       .digest('hex'),
+    files: [...assets].map(([path, value]) => ({
+      path: path.slice(1),
+      size: Buffer.byteLength(value),
+      sha256: createHash('sha256').update(value).digest('hex'),
+    })),
   }
-  const assets = new Map([
-    ['/version.json', '{"buildId":"release_123"}'],
-    ['/taskpane.html', '<script src="/assets/taskpane-AbC_123.js"></script>'],
-    ['/assets/taskpane-AbC_123.js', 'const version="release_123"'],
-  ])
   const fetcher = async (url) =>
     new Response(assets.get(url.pathname) ?? '', { status: assets.has(url.pathname) ? 200 : 404 })
   await inspectDeployedOffice('https://office.example', build, fetcher)
@@ -398,4 +440,15 @@ test('checks deployed version, HTML and immutable script as one build', async ()
     inspectDeployedOffice('https://office.example', build, fetcher),
     /unavailable/,
   )
+  assets.set('/assets/taskpane-AbC_123.js', 'const version="release_123"')
+  assets.delete('/assets/taskpane-AbC_123.css')
+  await assert.rejects(
+    inspectDeployedOffice('https://office.example', build, fetcher),
+    /unavailable/,
+  )
+  assets.set('/assets/taskpane-AbC_123.css', 'body{color:#123456}')
+  assets.set('/assets/worker-AbC_123.js', 'self.onmessage=()=>{throw Error("changed")}')
+  await assert.rejects(inspectDeployedOffice('https://office.example', build, fetcher), /differ/)
+  assets.set('/assets/worker-AbC_123.js', 'x'.repeat(2 * 1024 * 1024))
+  await assert.rejects(inspectDeployedOffice('https://office.example', build, fetcher), /differ/)
 })
