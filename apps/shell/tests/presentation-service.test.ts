@@ -356,6 +356,27 @@ describe('durable presentation planning', () => {
     expect(await send(request)).toMatchObject({ status: 'compiled', requestId: 'source-run' })
     expect(compile).toHaveBeenCalledOnce()
   })
+  it('rejects a planned whole deck when its cited excerpt is absent from a readable attachment', async () => {
+    const compile = vi.fn(async () => result())
+    const service = createPresentationService({ userDataPath: root(), compile })
+    const raw = Buffer.from('Actual attachment content')
+    const attachmentId = createHash('sha256').update(raw).digest('hex')
+    const savedPlan = plan()
+    savedPlan.sources = [{ id: 'source', title: 'Source', uri: `attachment:${attachmentId}`, excerpt: 'Invented quote' }]
+    savedPlan.claims = [{ id: 'claim', statement: 'Claim', type: 'assumption', sourceIds: ['source'], confidence: 'low', reviewStatus: 'needs_review' }]
+    savedPlan.slides[0]!.claimIds = ['claim']
+    const deck = structuredClone(input.deck)
+    deck.slides[0]!.claimIds = ['claim']
+    deck.claims = presentationPlanClaims(savedPlan)
+    const send = async (body: Record<string, unknown>) => decode(await service(body, signal()))
+    expect(await send(planRequest(savedPlan))).toMatchObject({ revision: 1 })
+    const upload = async (operation: string, extra: Record<string, unknown>) => send({ operation, documentId: input.documentId, ...extra })
+    await upload('attachment_begin', { attachmentId, sha256: attachmentId, name: 'source.txt', sizeBytes: raw.length })
+    await upload('attachment_chunk', { attachmentId, offset: 0, base64: raw.toString('base64') })
+    expect(await upload('attachment_finish', { attachmentId })).toMatchObject({ status: 'ready' })
+    expect(await send({ ...input, requestId: 'invented-source', planRevision: 1, deck })).toEqual({ error: 'source_unavailable' })
+    expect(compile).not.toHaveBeenCalled()
+  })
   it('persists an opted-in domain story only after all required sections are planned', async () => {
     const service = createPresentationService({ userDataPath: root(), compile: vi.fn(async () => result()) })
     const incomplete = { ...plan(), domain: 'report' }

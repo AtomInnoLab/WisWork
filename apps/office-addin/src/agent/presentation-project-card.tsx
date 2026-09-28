@@ -239,7 +239,7 @@ export function PresentationProjectCard(props: {
                     : ''}
                   {'attempt' in event ? ` · 尝试 ${event.attempt}` : ''}
                   {'error' in event && event.error
-                    ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', source_unavailable: '引用的附件来源不可用', invalid_state: '任务状态异常' }[event.error]}`
+                    ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', source_unavailable: '附件不可读或来源摘录未匹配', invalid_state: '任务状态异常' }[event.error]}`
                     : ''}
                 </li>
               ))}
@@ -298,7 +298,7 @@ export function PresentationProjectCard(props: {
                 }{' '}
                 · 尝试 {page.attempt} 次
                 {page.error
-                  ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', source_unavailable: '引用的附件来源不可用' }[page.error]}`
+                  ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', source_unavailable: '附件不可读或来源摘录未匹配' }[page.error]}`
                   : ''}
                 {page.state === 'compiled' && (
                   <button
@@ -353,6 +353,9 @@ export function PresentationProjectCard(props: {
           </p>
           {project.sourcePreparation.some((source) => source.status !== 'ready') && (
             <p>未就绪来源会阻止引用它的页面编译；请补齐资料后继续该页任务。</p>
+          )}
+          {project.production?.pages.some((page) => page.error === 'source_unavailable') && (
+            <p>附件已就绪但摘录未匹配时，请核对附件原文，修订计划摘录后启动新任务。</p>
           )}
           <ul>
             {project.sourcePreparation.map((source) => (

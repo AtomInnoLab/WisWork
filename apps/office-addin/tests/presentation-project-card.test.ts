@@ -108,7 +108,8 @@ describe('presentation project recovery card', () => {
         },
       },
     })
-    expect(view.container.textContent).toContain('引用的附件来源不可用')
+    expect(view.container.textContent).toContain('附件不可读或来源摘录未匹配')
+    expect(view.container.textContent).toContain('修订计划摘录后启动新任务')
     await view.update({
       phase: 'idle',
       project: {

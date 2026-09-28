@@ -9,7 +9,7 @@ const tools: AgentToolDef[] = [
   {
     name: 'compile_deck_with_pptxgenjs',
     description:
-      'For a saved plan supply its plan_revision and exact style, slide order/titles and claim mapping. Compile a planned 16:9 presentation into editable PPTX using the paired PC. Cited attachment sources must be readable; if one is unavailable, repair it and retry the same request. Coordinates are inches on a 13.333333 x 7.5 canvas; claimed slides reserve the bottom 0.55 inches for sources. Colors are hex without #. Give each slide image a meaningful altText. Inline assets may carry source and asserted license; use unknown when rights are unclear. The report counts missing source, unknown license and missing alt text without claiming verification. Entire request including inline images must be <=256 KiB; use compact prepared images. Returns downloadable PPTX and a report; it does not modify the open document. Reuse the request_id for unchanged retries; use a new request_id only when the deck changes.',
+      'For a saved plan supply its plan_revision and exact style, slide order/titles and claim mapping. Compile a planned 16:9 presentation into editable PPTX using the paired PC. Cited attachment sources must be readable and each plan excerpt must occur literally in its parsed text. Repair a missing attachment and retry the same request; revise an incorrect excerpt in a new plan revision and use a new request ID. Coordinates are inches on a 13.333333 x 7.5 canvas; claimed slides reserve the bottom 0.55 inches for sources. Colors are hex without #. Give each slide image a meaningful altText. Inline assets may carry source and asserted license; use unknown when rights are unclear. The report counts missing source, unknown license and missing alt text without claiming verification. Entire request including inline images must be <=256 KiB; use compact prepared images. Returns downloadable PPTX and a report; it does not modify the open document. Reuse the request_id for unchanged retries; use a new request_id only when the deck changes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -426,7 +426,7 @@ export function createPresentationGenerationSkill(
               : code === 'presentation_assets_unavailable'
                 ? '请更新并连接支持图片素材的 PC 端后重试'
                 : code === 'presentation_source_unavailable'
-                  ? '引用的来源附件尚不可读取；请在项目中补齐或修复资料后继续原请求。'
+                  ? '引用的来源附件不可读取，或计划摘录未出现在附件原文中；请补齐资料，或修订计划摘录后重新编译。'
                   : call.name === 'export_presentation_pdf'
                     ? code === 'presentation_pdf_unavailable'
                       ? '当前 PC 尚不支持 PDF 导出，请更新后重试'

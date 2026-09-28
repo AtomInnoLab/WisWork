@@ -28,7 +28,7 @@ import { assertBrandLogoAsset } from './presentation-brand'
 const check = (signal: AbortSignal) => {
   if (signal.aborted) throw new Error('aborted')
 }
-/** Verify a cited document source through the same bounded read used for evidence windows. */
+/** Require a cited excerpt to occur literally in its document-bound, digest-checked attachment. */
 export async function assertCitedPresentationSourcesReady(
   plan: ReturnType<typeof parsePresentationPlan>,
   slide: ReturnType<typeof parsePresentationDeck>['slides'][number],
@@ -46,25 +46,29 @@ export async function assertCitedPresentationSourcesReady(
     const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
     if (!match) continue
     const attachmentId = match[1]!
-    let ready = cache.get(attachmentId)
+    const key = JSON.stringify([attachmentId, source.excerpt])
+    let ready = cache.get(key)
     if (!ready) {
       ready = (async () => {
         try {
           const value = (await attachments(
-            { operation: 'attachment_read', documentId, attachmentId, offset: 0, maxChars: 1 },
+            {
+              operation: 'attachment_match_excerpt',
+              documentId,
+              attachmentId,
+              excerpt: source.excerpt,
+            },
             signal,
-          )) as { attachmentId?: unknown; sourceUri?: unknown; text?: unknown }
-          return (
-            value.attachmentId === attachmentId &&
-            value.sourceUri === `attachment:${attachmentId}` &&
-            typeof value.text === 'string'
-          )
+          )) as { attachmentId?: unknown; status?: unknown; offset?: unknown }
+          return value.attachmentId === attachmentId &&
+            value.status === 'found' &&
+            Number.isSafeInteger(value.offset) && Number(value.offset) >= 0
         } catch {
           check(signal)
           return false
         }
       })()
-      cache.set(attachmentId, ready)
+      cache.set(key, ready)
     }
     if (!(await ready)) throw new Error('source_unavailable')
   }

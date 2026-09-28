@@ -450,6 +450,32 @@ it('isolates a missing attachment source to its citing page and retries after up
   expect(resumed.pages[0]).toMatchObject({ state: 'compiled', attempt: 3 })
   expect(f.compile).toHaveBeenCalledTimes(8)
 })
+it('isolates a cited excerpt absent from a readable attachment to its page', async () => {
+  const f = await setup()
+  const plan = structuredClone(f.plan)
+  const deck = structuredClone(f.deck)
+  const raw = Buffer.from('Actual source text')
+  const attachmentId = createHash('sha256').update(raw).digest('hex')
+  plan.sources[0]!.uri = `attachment:${attachmentId}`
+  plan.sources[0]!.excerpt = 'Invented source text'
+  for (let index = 1; index < plan.slides.length; index++) {
+    plan.slides[index]!.claimIds = []
+    deck.slides[index]!.claimIds = []
+  }
+  const { presentationPlanClaims } = await import('@wiswork/pptx-engine/presentation-plan')
+  deck.claims = presentationPlanClaims(plan)
+  expect(await f.call('save_plan', { expectedRevision: 1, plan })).toMatchObject({ revision: 2 })
+  const attachment = async (operation: string, extra: Record<string, unknown>) =>
+    decode(await f.service({ operation, documentId: 'doc', ...extra }, new AbortController().signal))
+  await attachment('attachment_begin', { attachmentId, sha256: attachmentId, name: 'source.txt', sizeBytes: raw.length })
+  await attachment('attachment_chunk', { attachmentId, offset: 0, base64: raw.toString('base64') })
+  expect(await attachment('attachment_finish', { attachmentId })).toMatchObject({ status: 'ready' })
+  await f.call('production_begin', { requestId: 'excerpt-run', planRevision: 2, deck })
+  const result = await f.call('production_run', { requestId: 'excerpt-run' })
+  expect(result).toMatchObject({ status: 'partial', compiledCount: 7 })
+  expect(result.pages[0]).toMatchObject({ state: 'failed', error: 'source_unavailable' })
+  expect(f.compile).toHaveBeenCalledTimes(7)
+})
 it('downloads an independently produced page through the Taskpane and leaves whole-deck delivery untouched', async () => {
   const { createPresentationProductionSkill } =
     await import('../../office-addin/src/skills/powerpoint/presentation-production')

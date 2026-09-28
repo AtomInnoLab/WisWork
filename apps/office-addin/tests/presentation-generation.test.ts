@@ -85,6 +85,7 @@ describe('PowerPoint presentation generation', () => {
     const outcome = await f.skill.executeTool(compileCall())
     expect(outcome).toMatchObject({ isError: true, output: 'presentation_source_unavailable' })
     expect(outcome.summary).toContain('来源附件')
+    expect(outcome.summary).toContain('计划摘录')
     expect(f.vfs.list('/home/user')).toEqual([])
   })
   it('explains full session attachment storage after a PC result instead of blaming rendering', async () => {
