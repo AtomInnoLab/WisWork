@@ -1,10 +1,47 @@
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import {
   createOfficeDiagnostics,
   officeDiagnosticEnvironment,
 } from '../src/diagnostics/office-diagnostics.js'
 
 describe('Office safe diagnostics', () => {
+  it('keeps the frozen P0-06 contract probe out of local and remote diagnostics', () => {
+    const contract = readFileSync(
+      new URL(
+        '../../../docs/product/ppt-benchmark-materials/PPT-P0-06/synthetic-nda.txt',
+        import.meta.url,
+      ),
+      'utf8',
+    )
+    const probe = /^测试追踪码：([^\r\n]+)$/m.exec(contract)?.[1]
+    expect(probe).toMatch(/^PRIVATE-SIM-P0-06-/)
+    const sent: unknown[] = []
+    const diagnostics = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'test',
+      remoteEnabled: true,
+      send: (event) => {
+        sent.push(event)
+      },
+    })
+    diagnostics.startTrace()
+    diagnostics.setTool('read_presentation_attachment', {
+      page_id: 'page-4',
+      extra: contract,
+    } as never)
+    diagnostics.record({
+      phase: 'tool',
+      errorCode: 'office_read_failed',
+      error: Object.assign(new Error(contract), {
+        debugInfo: { statement: contract, errorLocation: 'Body.insertText' },
+      }),
+      prohibitedPrompt: contract,
+    } as never)
+    expect(diagnostics.exportJson()).not.toContain(probe)
+    expect(JSON.stringify(sent)).not.toContain(probe)
+    expect(sent).toHaveLength(1)
+  })
   it('keeps validated presentation identifiers in local export and strips them from remote events', () => {
     const sent: unknown[] = []
     const diagnostics = createOfficeDiagnostics({
