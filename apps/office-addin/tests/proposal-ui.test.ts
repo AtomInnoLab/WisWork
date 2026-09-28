@@ -162,14 +162,14 @@ describe('generic proposal presentation', () => {
 
   it('turns VFS limits into actionable attachment messages', () => {
     expect(safeUploadError(new Error('vfs_limit'), { size: 26.4 * 1024 * 1024 })).toBe(
-      'File is 26.4 MB. Attachments must be 20 MB or smaller.',
+      'File is 26.4 MiB. Attachments must be 20 MiB or smaller.',
     )
     expect(safeUploadError(new Error('vfs_limit'))).toBe(
-      'Attachment limit reached. Files are limited to 20 MB each and 64 MB per session.',
+      'Attachment limit reached. Files are limited to 20 MiB each and 64 MiB per session.',
     )
   })
 
-  it('accepts a session attachment larger than the old 2 MB limit', async () => {
+  it('accepts a session attachment larger than the old 2 MiB limit', async () => {
     const arrayBuffer = vi.fn(async () => new ArrayBuffer(0))
     const runtime = {
       uploadFile: vi.fn(async () => undefined),

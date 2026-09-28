@@ -455,7 +455,7 @@ const tools = [
   {
     name: 'add_slide_ir_objects',
     description:
-      'Propose adding all text, shape and table objects plus a visible source footer from one validated SlideIR and Claim Ledger to an existing PowerPoint slide using native Office.js objects. Source truth is not verified here. Unsupported image/chart pages are rejected before writing. This does not create a slide or provide page-level atomic rollback; review the resulting page.',
+      'Propose adding all text, shape and table objects plus a visible source footer from one validated SlideIR and Claim Ledger to an existing PowerPoint slide using native Office.js objects. If style.fontFallbacks is set, pass resolved_font_face from a checked PC compilation report or another explicitly reviewed choice; it must match style.fontFace or one of its declared candidates. The host still needs visual font review. Source truth is not verified here. Unsupported image/chart pages are rejected before writing. This does not create a slide or provide page-level atomic rollback; review the resulting page.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -463,6 +463,7 @@ const tools = [
         slide: PRESENTATION_DECK_SCHEMA.properties!.slides.items!,
         style: PRESENTATION_DECK_SCHEMA.properties!.style,
         claims: PRESENTATION_DECK_SCHEMA.properties!.claims,
+        resolved_font_face: { type: 'string', minLength: 1, maxLength: 80 },
         explanation: { type: 'string', maxLength: 100 },
       },
       required: ['slide_index', 'slide', 'style', 'claims'],
@@ -2191,6 +2192,7 @@ export function createPowerPointSkill(options: {
               'slide',
               'style',
               'claims',
+              'resolved_font_face',
               'explanation',
             ])
             if (
@@ -2203,7 +2205,12 @@ export function createPowerPointSkill(options: {
               throw new Error('invalid_tool_input')
             let serialized: string
             try {
-              serialized = JSON.stringify([value.slide, value.style, value.claims])
+              serialized = JSON.stringify([
+                value.slide,
+                value.style,
+                value.claims,
+                value.resolved_font_face,
+              ])
             } catch {
               throw new Error('invalid_tool_input')
             }
@@ -2223,6 +2230,7 @@ export function createPowerPointSkill(options: {
               deck.style,
               value.slide_index as number,
               deck.claims,
+              value.resolved_font_face as string | undefined,
             )
             const code = JSON.stringify({ version: 1, operations })
             if (new TextEncoder().encode(code).byteLength > MAX_CODE)

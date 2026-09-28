@@ -18,6 +18,7 @@
 - 16:9，底色白，墨蓝 `#102A43`、青绿 `#007F86` 为主；其他允许颜色仅见 `brand-kit.json`。标题、正文、证据侧栏和页脚的位置以模板及 Brand Kit 为参照，不可只复制背景色。
 - 标题指定字体 `WisWork Benchmark Display 2026` 是**故意缺失**的测试字体；执行时记录宿主字体清单和实际替代字体，选一款宿主已安装、覆盖所需中文字形的字体，记录替代前后截图和行高/溢出检查。不得声称指定字体已安装或替代必然一致。
 - 冻结计划的 `style.fontFace` 可保持上述指定字体，并设置 `style.fontFallbacks`（如本机已安装的 `Noto Sans CJK SC`）作为有序候选。PC 的 PptxGenJS 编译报告记录 `fontResolution.requested/used/substituted`；候选均不可用会返回 `font_unavailable`。本机可用性不证明 PowerPoint 最终字形、行宽或跨设备一致，仍须逐页截图审阅。
+- 若走 Office.js 的 `add_slide_ir_objects` 直接写入路径，须把已检查的 `fontResolution.used` 或明确审阅的候选字体填入 `resolved_font_face`；工具只接受 `style.fontFace` 或 `style.fontFallbacks` 中的字体，缺少选择时写前拒绝。该字段是显式选择，不是 Office 宿主字体探针。
 - 正文优先使用 `Noto Sans CJK SC`；若宿主缺失，同样记录实际回退及字形检查。页脚必须保留来源与日期；原生图表须标明分母、单位、期间和来源。
 - 模板的 3 页分别展示封面、内容证据布局、图表布局。最终 8 页须根据专业内容填写，原生文本/形状/表格/图表可编辑；模板占位语句不能作为研究事实交付。
 

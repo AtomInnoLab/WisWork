@@ -17,6 +17,7 @@ export function officeOperationsForSlideIR(
   style: PresentationStyle,
   slideIndex: number,
   claims: PresentationClaim[] = [],
+  resolvedFontFace?: string,
 ): AddOperation[] {
   if (
     !Number.isSafeInteger(slideIndex) ||
@@ -26,11 +27,16 @@ export function officeOperationsForSlideIR(
     !slide.elements.length ||
     slide.elements.length > 32 ||
     !style?.fontFace ||
+    (style.fontFallbacks?.length && !resolvedFontFace) ||
+    (resolvedFontFace !== undefined &&
+      resolvedFontFace !== style.fontFace &&
+      !style.fontFallbacks?.includes(resolvedFontFace)) ||
     style.fontFace.length > 128 ||
     !/^[0-9A-Fa-f]{6}$/.test(style.textColor) ||
     !/^[0-9A-Fa-f]{6}$/.test(style.accentColor)
   )
     throw new Error('invalid_tool_input')
+  const fontFace = resolvedFontFace ?? style.fontFace
   const names = new Set<string>()
   const labels = presentationSlideSourceLabels(slide, claims)
   const sourceText = labels.join('；')
@@ -71,7 +77,7 @@ export function officeOperationsForSlideIR(
         op: 'add_text_box',
         ...box,
         text: element.text,
-        fontFace: style.fontFace,
+        fontFace,
         fontSize: element.fontSize ?? 20,
         color: element.color ?? style.textColor,
         bold: element.bold ?? false,
@@ -120,7 +126,7 @@ export function officeOperationsForSlideIR(
         op: 'add_native_table',
         ...box,
         rows,
-        fontFace: style.fontFace,
+        fontFace,
         fontSize: element.fontSize ?? 16,
         color: style.textColor,
         borderColor: style.accentColor,
@@ -139,7 +145,7 @@ export function officeOperationsForSlideIR(
       top: 507.6,
       width: 885.6,
       height: 21.6,
-      fontFace: style.fontFace,
+      fontFace,
       fontSize: 8,
       color: style.textColor,
       bold: false,

@@ -92,6 +92,28 @@ it('maps a shared SlideIR table to a native Office table operation', () => {
   })
 })
 
+it('uses only a declared resolved font for all direct Office text and table objects', async () => {
+  const deck = benchmarkDeck()
+  deck.style.fontFace = 'WisWork Benchmark Display 2026'
+  deck.style.fontFallbacks = ['Noto Sans CJK SC']
+  const compiled = await compilePresentationDeck(deck, {
+    fontAvailable: (family) => family === 'Noto Sans CJK SC',
+  })
+  const used = compiled.report.fontResolution!.used
+  const operations = officeOperationsForSlideIR(deck.slides[5]!, deck.style, 5, deck.claims, used)
+  expect(
+    operations.map((item) => ('fontFace' in item ? item.fontFace : undefined)).filter(Boolean),
+  ).toEqual([used, used, used])
+  expect(() =>
+    officeOperationsForSlideIR(deck.slides[5]!, deck.style, 5, deck.claims, 'Unlisted Font'),
+  ).toThrow('invalid_tool_input')
+  const opened = await openPptx(compiled.bytes)
+  const table = opened.deck.slides[5]!.elements.find((item) => item.name === 'table')
+  expect(table?.type).toBe('table')
+  if (table?.type === 'table')
+    expect(table.rows[0]?.[0]?.text?.paragraphs[0]?.runs[0]?.fontFamily).toBe(used)
+})
+
 it('keeps supported Office operation structure aligned with the PptxGenJS benchmark output', async () => {
   const deck = benchmarkDeck()
   const { bytes } = await compilePresentationDeck(deck)

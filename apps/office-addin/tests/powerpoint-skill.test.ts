@@ -1867,6 +1867,35 @@ describe('browser PowerPoint adapter', () => {
     expect((fake.executeDeclarative as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(count)
   })
 
+  it('requires a declared resolved font before proposing direct SlideIR writes', async () => {
+    const deck = benchmarkDeck()
+    deck.style.fontFace = 'WisWork Benchmark Display 2026'
+    deck.style.fontFallbacks = ['Noto Sans CJK SC']
+    const fake = adapter()
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const input = {
+      slide_index: 0,
+      slide: deck.slides[3],
+      style: deck.style,
+      claims: deck.claims,
+    }
+    expect(await skill.executeTool(call('add_slide_ir_objects', input))).toMatchObject({
+      isError: true,
+    })
+    expect(
+      await skill.executeTool(
+        call('add_slide_ir_objects', { ...input, resolved_font_face: 'Unlisted Font' }),
+      ),
+    ).toMatchObject({ isError: true })
+    const result = await skill.executeTool(
+      call('add_slide_ir_objects', { ...input, resolved_font_face: 'Noto Sans CJK SC' }),
+    )
+    expect(result.isError).not.toBe(true)
+    expect(proposals.pending()).toBeTruthy()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
+  })
+
   it('routes a SlideIR table page through native table readback', async () => {
     const deck = benchmarkDeck()
     const rows = (deck.slides[5]!.elements[1] as { rows: string[][] }).rows
