@@ -535,7 +535,32 @@ export function createPresentationQaSkill(options: PresentationQaOptions): Agent
             seen.pageJson !== JSON.stringify(previousPage))
         )
           throw new Error('presentation_qa_capture_required')
-        const capturedPage = await options.inspectPage(mapping.slideId, signal)
+        let capturedPage: PowerPointPageInspection
+        try {
+          capturedPage = await options.inspectPage(mapping.slideId, signal)
+        } catch (error) {
+          const hostCode =
+            error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+          if (
+            !signal?.aborted &&
+            (hostCode === 'office_screenshot_unavailable' ||
+              hostCode === 'ActivityLimitReached' ||
+              hostCode === 'Timeout')
+          ) {
+            await consistent()
+            return {
+              output: JSON.stringify({
+                status: 'waiting_screenshot',
+                pageId: page.id,
+                hostSlideId: mapping.slideId,
+                retryable: true,
+              }),
+              mutated: false,
+              summary: '当前页等待宿主截图；可重新截图，尚未写入本次视觉审查',
+            }
+          }
+          throw error
+        }
         await consistent()
         if (compare) {
           const exported = await options.exportPage?.(mapping.slideId, signal)

@@ -299,6 +299,63 @@ it('does not allow review when a capture could not publish its image to the mode
     }),
   ).toMatchObject({ isError: true, output: 'presentation_qa_capture_required' })
 })
+it('leaves the page waiting for a screenshot after host capture failure without replacing a prior review', async () => {
+  const f = setup()
+  await f.skill.executeTool(f.capture)
+  const before = structuredClone(f.readQa()!)
+  f.inspectPage.mockRejectedValue(
+    Object.assign(new Error('office_read_failed'), { code: 'office_screenshot_unavailable' }),
+  )
+  const result = await f.skill.executeTool(f.capture)
+  expect(result).toMatchObject({
+    output: expect.stringContaining('waiting_screenshot'),
+    mutated: false,
+  })
+  expect(result.modelContent).toBeUndefined()
+  expect(f.readQa()).toEqual(before)
+  expect(f.writeQa).toHaveBeenCalledTimes(1)
+  expect(
+    await f.skill.executeTool({
+      id: 'review',
+      name: 'record_presentation_page_review',
+      input: {
+        page_id: 'first',
+        screenshot_digest: before.pages[0]!.screenshotDigest,
+        outcome: 'pass',
+        notes: 'Reviewed',
+      },
+    }),
+  ).toMatchObject({ output: expect.stringContaining('waiting_screenshot') })
+  expect(f.readQa()).toEqual(before)
+})
+it('keeps structural and unsupported API errors distinct from missing screenshots', async () => {
+  const f = setup()
+  f.inspectPage.mockRejectedValueOnce(new Error('office_read_failed'))
+  expect(await f.skill.executeTool(f.capture)).toMatchObject({
+    output: 'office_read_failed',
+    isError: true,
+  })
+  f.inspectPage.mockRejectedValueOnce(new Error('office_api_unsupported'))
+  expect(await f.skill.executeTool(f.capture)).toMatchObject({
+    output: 'office_api_unsupported',
+    isError: true,
+  })
+  f.inspectPage.mockRejectedValueOnce(new Error('cancelled'))
+  expect(await f.skill.executeTool(f.capture)).toMatchObject({ output: 'cancelled', isError: true })
+  expect(f.writeQa).not.toHaveBeenCalled()
+})
+it('does not report a stale import as merely waiting for a screenshot', async () => {
+  const f = setup()
+  f.inspectPage.mockImplementationOnce(async () => {
+    f.receipt.checkpoint.artifactDigest = 'a'.repeat(64)
+    throw Object.assign(new Error('office_read_failed'), { code: 'office_screenshot_unavailable' })
+  })
+  expect(await f.skill.executeTool(f.capture)).toMatchObject({
+    output: 'presentation_qa_stale',
+    isError: true,
+  })
+  expect(f.writeQa).not.toHaveBeenCalled()
+})
 it('invalidates prior visual review after recapture', async () => {
   const f = setup()
   await f.skill.executeTool(f.capture)

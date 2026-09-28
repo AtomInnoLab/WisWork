@@ -240,7 +240,7 @@ export interface PowerPointAdapter {
   screenshotSlide(
     slideIndex: number,
     signal?: AbortSignal,
-  ): Promise<{ base64: string; mime: 'image/png' }>
+  ): Promise<{ slideId: string; base64: string; mime: 'image/png' }>
   listSlideShapes(slideIndex: number, signal?: AbortSignal): Promise<SlideShapesResult>
   readSlideText(slideIndex: number, shapeId: string, signal?: AbortSignal): Promise<SlideTextResult>
   readSlideTable(slideIndex: number, shapeId: string, signal?: AbortSignal): Promise<string[][]>
@@ -1298,7 +1298,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
   async screenshotSlide(
     slideIndex: number,
     signal?: AbortSignal,
-  ): Promise<{ base64: string; mime: 'image/png' }> {
+  ): Promise<{ slideId: string; base64: string; mime: 'image/png' }> {
     cancelled(signal)
     return this.runScreenshot(
       '1.8',
@@ -1310,8 +1310,14 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           width: 960,
         })
         await sync(context, signal)
-        if (typeof image.value !== 'string') throw new Error('office_read_failed')
-        return { base64: image.value, mime: 'image/png' }
+        if (
+          typeof image.value !== 'string' ||
+          typeof slide.id !== 'string' ||
+          !slide.id ||
+          slide.id.length > 256
+        )
+          throw new Error('office_read_failed')
+        return { slideId: slide.id, base64: image.value, mime: 'image/png' }
       },
       signal,
     )
@@ -1483,7 +1489,16 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               overlaps.push({ shapeAId: a.id, shapeBId: b.id, overlapX, overlapY })
             }
           }
-        let base64 = validatePowerPointPageScreenshot(image.value)
+        const screenshot = (value: unknown): string => {
+          try {
+            return validatePowerPointPageScreenshot(value)
+          } catch {
+            throw Object.assign(new Error('office_read_failed'), {
+              code: 'office_screenshot_unavailable',
+            })
+          }
+        }
+        let base64 = screenshot(image.value)
         // Keep a single PNG well below the Office transport's 256 KiB total request limit.
         // Use the same deterministic widths when recapturing for a review.
         const fitsModelBudget = () => atob(base64).length <= 64 * 1024
@@ -1495,7 +1510,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             },
           )
           await sync(context, signal)
-          base64 = validatePowerPointPageScreenshot(smaller.value)
+          base64 = screenshot(smaller.value)
         }
         if (!fitsModelBudget()) throw new Error('office_image_too_large')
         cancelled(signal)

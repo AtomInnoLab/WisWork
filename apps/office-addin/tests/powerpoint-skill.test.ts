@@ -36,7 +36,9 @@ function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter 
       ],
     }),
     executeMasterOperations: vi.fn().mockResolvedValue(undefined),
-    screenshotSlide: vi.fn().mockResolvedValue({ mime: 'image/png', base64: png }),
+    screenshotSlide: vi
+      .fn()
+      .mockResolvedValue({ slideId: 'host-slide-1', mime: 'image/png', base64: png }),
     listSlideShapes: vi.fn().mockResolvedValue({
       slideId: 'slide-1',
       slideIndex: 0,
@@ -370,6 +372,9 @@ describe('PowerPoint compatibility skill', () => {
       modelContent: [{ type: 'image', image: { mime: 'image/png', base64: png } }],
       display: { kind: 'images', items: [{ url: `data:image/png;base64,${png}` }] },
     })
+    expect(
+      JSON.parse((await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))).output),
+    ).toMatchObject({ slideId: 'host-slide-1', slideIndex: 0 })
     await expect(skill.executeTool(call('verify_slides', { nope: true }))).resolves.toMatchObject({
       output: 'invalid_tool_input',
       isError: true,
@@ -1307,7 +1312,9 @@ describe('PowerPoint compatibility skill', () => {
     const skill = createPowerPointSkill({
       adapter: adapter({
         listSlideShapes: vi.fn().mockRejectedValue(new Error('secret')),
-        screenshotSlide: vi.fn().mockResolvedValue({ mime: 'image/png', base64: 'bad!' }),
+        screenshotSlide: vi
+          .fn()
+          .mockResolvedValue({ slideId: 'host-slide-1', mime: 'image/png', base64: 'bad!' }),
       }),
       proposals: createStructuredProposalController(),
     })

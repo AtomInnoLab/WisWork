@@ -14,7 +14,7 @@ function setup(items: Record<string, unknown>[] = []) {
   }
   const slides = {
     getItem: vi.fn(() => slide),
-    getItemAt: vi.fn(() => {
+    getItemAt: vi.fn((): typeof slide => {
       throw new Error('must address by host ID')
     }),
     load: vi.fn(),
@@ -124,7 +124,11 @@ describe('exact imported PowerPoint page inspection', () => {
     slide.getImageAsBase64.mockImplementationOnce(() => {
       throw Object.assign(new Error('busy'), { code: 'Timeout' })
     })
-    expect(await adapter.screenshotSlide(0)).toEqual({ mime: 'image/png', base64: png })
+    expect(await adapter.screenshotSlide(0)).toEqual({
+      slideId: 'host-page-25',
+      mime: 'image/png',
+      base64: png,
+    })
     expect(slides.getItemAt).toHaveBeenCalledTimes(2)
     expect(context.sync).toHaveBeenCalledTimes(5)
   })

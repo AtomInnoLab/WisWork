@@ -1964,10 +1964,18 @@ export function createPowerPointSkill(options: {
           const input = slideInput(call.input)
           const result = await options.adapter.screenshotSlide(input.slide_index, signal)
           assertNotCancelled(signal)
-          if (result.mime !== 'image/png' || !validPng(result.base64))
+          if (
+            result.mime !== 'image/png' ||
+            typeof result.slideId !== 'string' ||
+            !result.slideId ||
+            result.slideId.length > 256 ||
+            !validPng(result.base64)
+          )
             throw new Error('office_read_failed')
           return {
             output: boundedJson({
+              slideId: result.slideId,
+              slideIndex: input.slide_index,
               mime: result.mime,
               bytes: base64Bytes(result.base64),
               fingerprint: fingerprint(result.base64),
