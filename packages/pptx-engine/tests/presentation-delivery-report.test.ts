@@ -79,6 +79,20 @@ function review(
   } as PresentationClaimReview
 }
 describe('delivery evidence report', () => {
+  it('marks a fetched snapshot attributed to the wrong URL as unverifiable', async () => {
+    const value = input()
+    value.plan.sources[0]!.uri = 'https://example.com/wrong'
+    value.plan.sources[0]!.snapshotAttachmentId = 'a'.repeat(64)
+    value.deck.claims = presentationPlanClaims(value.plan)
+    value.sourceAudit = [
+      { sourceId: 'source', attachmentId: 'a'.repeat(64), status: 'source_mismatch' },
+    ]
+    const report = await buildPresentationDeliveryReport(value)
+    expect(report.pages[0]!.issues).toContainEqual(
+      expect.objectContaining({ code: 'source_url_mismatch', category: 'unverifiable' }),
+    )
+    expect(parsePresentationDeliveryReport(report)).toEqual(report)
+  })
   it('flags a cited external source without a frozen original text snapshot', async () => {
     const value = input()
     value.plan.sources[0]!.uri = 'https://example.com/research'

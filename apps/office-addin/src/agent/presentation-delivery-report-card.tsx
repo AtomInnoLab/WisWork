@@ -83,8 +83,12 @@ function IssueList({
         {issues.slice(0, limit).map((issue) => (
           <li key={issue.id}>
             <p>
-              {issue.code === 'source_original_not_frozen' ? '项目未保存该来源原文' : issue.code} ·
-              主张 {issue.claimId}：
+              {issue.code === 'source_original_not_frozen'
+                ? '项目未保存该来源原文'
+                : issue.code === 'source_url_mismatch'
+                  ? '网页快照与计划网址不匹配'
+                  : issue.code}{' '}
+              · 主张 {issue.claimId}：
               {report.plan.claims.find((claim) => claim.id === issue.claimId)?.statement}
               {issue.sourceId && (
                 <>
@@ -188,6 +192,7 @@ export function PresentationDeliveryReportCard({
                     not_ready: '附件尚未解析就绪',
                     unsupported: '附件不是可读文本',
                     missing: '当前文档缺少附件',
+                    source_mismatch: '网页快照与计划网址不匹配',
                   }[report.sourceAudit.find((item) => item.sourceId === source.id)!.status]
                 }
                 。仅核对字面存在，不核验事实支持、来源权威性或时效。

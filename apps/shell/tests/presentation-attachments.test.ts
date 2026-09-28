@@ -62,7 +62,11 @@ describe('durable presentation attachments', () => {
       source: string
       kind: string
     }
-    expect(first).toMatchObject({ source: 'https://8.8.8.8/study', kind: 'text' })
+    expect(first).toMatchObject({
+      source: 'https://8.8.8.8/study',
+      sourceUrlHash: hash(url),
+      kind: 'text',
+    })
     expect((first as { retrievedAt?: number }).retrievedAt).toBeGreaterThan(0)
     expect(requests).toBe(1)
     expect(await call({ operation: 'attachment_import_webpage', url })).toMatchObject({

@@ -34,7 +34,14 @@ export interface DeliveryIssue {
 export interface PresentationSourceAudit {
   sourceId: string
   attachmentId: string
-  status: 'found' | 'not_found' | 'empty_excerpt' | 'not_ready' | 'unsupported' | 'missing'
+  status:
+    | 'found'
+    | 'not_found'
+    | 'empty_excerpt'
+    | 'not_ready'
+    | 'unsupported'
+    | 'missing'
+    | 'source_mismatch'
   offset?: number
 }
 export interface PresentationDeliveryReport {
@@ -132,6 +139,7 @@ function seeds(
         'source_attachment_missing',
         'source_attachment_not_ready',
         'source_attachment_unsupported',
+        'source_url_mismatch',
         'source_original_not_frozen',
         'source_locator_missing',
         'source_review_missing',
@@ -158,6 +166,7 @@ function seeds(
       if (audit?.status === 'missing') add('source_attachment_missing', sourceId)
       if (audit?.status === 'not_ready') add('source_attachment_not_ready', sourceId)
       if (audit?.status === 'unsupported') add('source_attachment_unsupported', sourceId)
+      if (audit?.status === 'source_mismatch') add('source_url_mismatch', sourceId)
       const excerpt = normalize(source.excerpt)
       if (!excerpt) add('source_excerpt_missing', sourceId)
       if (!source.locator?.trim()) add('source_locator_missing', sourceId)
@@ -254,9 +263,15 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
       if (
         audit.sourceId !== expected[index]!.sourceId ||
         audit.attachmentId !== expected[index]!.attachmentId ||
-        !['found', 'not_found', 'empty_excerpt', 'not_ready', 'unsupported', 'missing'].includes(
-          audit.status,
-        ) ||
+        ![
+          'found',
+          'not_found',
+          'empty_excerpt',
+          'not_ready',
+          'unsupported',
+          'missing',
+          'source_mismatch',
+        ].includes(audit.status) ||
         (audit.status === 'found'
           ? !Number.isSafeInteger(audit.offset) || audit.offset! < 0 || audit.offset! > 1_000_000
           : audit.offset !== undefined)

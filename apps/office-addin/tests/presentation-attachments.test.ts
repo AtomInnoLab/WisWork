@@ -71,6 +71,7 @@ it('imports a webpage only with the negotiated capability and validates the save
     kind: 'text',
     totalChars: 5,
     source: 'https://example.com/page',
+    sourceUrlHash: createHash('sha256').update('https://example.com/page').digest('hex'),
     retrievedAt: 1_780_000_000_000,
   }
   f.request.mockResolvedValue(new Response(JSON.stringify(result)))
@@ -89,6 +90,10 @@ it('imports a webpage only with the negotiated capability and validates the save
       url: 'https://example.com/page',
     }),
     expect.any(AbortSignal),
+  )
+  f.request.mockResolvedValue(new Response(JSON.stringify({ ...result, sourceUrlHash: 'bad' })))
+  await expect(skill.importWebpage('https://example.com/page')).rejects.toThrow(
+    'presentation_response_invalid',
   )
 })
 it('lists document-scoped PC copies and deletes only a validated selected ID', async () => {

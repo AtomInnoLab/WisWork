@@ -174,6 +174,7 @@ export function presentationWorkflowSummary(
               unsupported: '非文本资料',
               excerpt_mismatch: '摘录不在原文中',
               excerpt_missing: '计划摘录为空',
+              source_mismatch: '网页快照与计划网址不匹配',
               ready: '旧版 PC 未核对摘录',
               excerpt_matched: '摘录已匹配',
             }[source.status]
@@ -513,7 +514,7 @@ export function presentationWorkflowSummary(
     : !production
       ? sourceProblems.length
         ? sourceProblems.some((source) =>
-            ['excerpt_mismatch', 'excerpt_missing'].includes(source.status),
+            ['excerpt_mismatch', 'excerpt_missing', 'source_mismatch'].includes(source.status),
           )
           ? '核对附件原文并修订计划摘录，再决定是否开始生产'
           : sourceProblems.some((source) => source.status === 'ready')

@@ -15,7 +15,7 @@ import {
   presentationProductionSummary,
 } from './presentation-production'
 import { createPresentationAttachmentService } from './presentation-attachments'
-import { auditPresentationSources } from './presentation-source-audit'
+import { auditPresentationSources, matchesFetchedSourceUrl } from './presentation-source-audit'
 import {
   parsePresentationPlan,
   assertDeckMatchesPresentationPlan,
@@ -100,6 +100,7 @@ export function createPresentationService(options: {
   ) => Promise<{ bytes: Uint8Array; width: number; height: number }>
   renderPage?: (pptx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>
   renderPdf?: (pptx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>
+  fetchPage?: (url: string, signal: AbortSignal) => Promise<Response | null>
 }): (body: unknown, signal: AbortSignal) => Promise<Uint8Array> {
   const pageBackups = createPresentationPageBackupService(options)
   const existingPageBackups = createPresentationExistingPageBackupService(options)
@@ -776,6 +777,7 @@ export function createPresentationService(options: {
                   | 'unsupported'
                   | 'excerpt_mismatch'
                   | 'excerpt_missing'
+                  | 'source_mismatch'
               }[]
             | undefined
           let sourcePreparationUnavailable = false
@@ -783,7 +785,7 @@ export function createPresentationService(options: {
             const references = plan.value.sources.flatMap((source) => {
               const attachmentId = presentationSourceAttachmentId(source)
               return attachmentId
-                ? [{ sourceId: source.id, attachmentId, excerpt: source.excerpt }]
+                ? [{ sourceId: source.id, attachmentId, excerpt: source.excerpt, uri: source.uri }]
                 : []
             })
             if (references.length) {
@@ -802,12 +804,15 @@ export function createPresentationService(options: {
                       attachmentId: string
                       status: 'ready' | 'uploading' | 'failed'
                       kind?: 'text' | 'image'
+                      sourceUrlHash?: string
                     }
                     if (item.attachmentId !== reference.attachmentId)
                       throw new Error('invalid_state')
                     let status: NonNullable<typeof sourcePreparation>[number]['status'] =
                       item.status === 'ready' ? 'unsupported' : item.status
-                    if (item.status === 'ready' && item.kind === 'text') {
+                    if (!matchesFetchedSourceUrl(reference.uri, item.sourceUrlHash)) {
+                      status = 'source_mismatch'
+                    } else if (item.status === 'ready' && item.kind === 'text') {
                       const match = (await attachments(
                         {
                           operation: 'attachment_match_excerpt',

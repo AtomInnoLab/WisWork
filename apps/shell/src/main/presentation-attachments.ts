@@ -292,6 +292,7 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
   ...(m.error ? { error: m.error } : {}),
   ...(m.totalChars !== undefined ? { totalChars: m.totalChars } : {}),
   ...(m.source ? { source: m.source } : {}),
+  ...(m.sourceUrlHash ? { sourceUrlHash: m.sourceUrlHash } : {}),
   ...(m.retrievedAt ? { retrievedAt: m.retrievedAt } : {}),
   ...(m.sourceAliases?.length
     ? { sources: [m.source!, ...m.sourceAliases.map((alias) => alias.source)] }

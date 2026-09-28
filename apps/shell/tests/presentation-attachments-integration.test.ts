@@ -20,6 +20,47 @@ const signal = () => new AbortController().signal
 const decode = (bytes: Uint8Array) => JSON.parse(Buffer.from(bytes).toString('utf8'))
 
 describe('presentation attachment service integration', () => {
+  it('rejects a fetched webpage snapshot attributed to a different plan URL', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-url-source-'))
+    roots.push(userDataPath)
+    const service = createPresentationService({
+      userDataPath,
+      fetchPage: async () =>
+        new Response('<html><body><p>示例数据仅用于测试</p></body></html>', {
+          headers: { 'content-type': 'text/html' },
+        }),
+    })
+    const plan = benchmarkPlan()
+    const documentId = 'source-document'
+    const send = async (body: Record<string, unknown>) =>
+      decode(
+        await service(
+          {
+            documentId,
+            ...(!String(body.operation).startsWith('attachment_')
+              ? { projectId: plan.projectId }
+              : {}),
+            ...body,
+          },
+          signal(),
+        ),
+      )
+    const correctUrl = 'https://8.8.8.8/research?version=1'
+    const snapshot = await send({ operation: 'attachment_import_webpage', url: correctUrl })
+    plan.sources[0]!.snapshotAttachmentId = snapshot.attachmentId
+    plan.sources[0]!.uri = 'https://8.8.8.8/research?version=2'
+    await send({ operation: 'save_plan', expectedRevision: 0, plan })
+    expect((await send({ operation: 'audit_sources' })).sources[0].status).toBe('source_mismatch')
+    expect((await send({ operation: 'status' })).sourcePreparation[0].status).toBe(
+      'source_mismatch',
+    )
+    plan.sources[0]!.uri = correctUrl
+    await send({ operation: 'save_plan', expectedRevision: 1, plan })
+    expect((await send({ operation: 'audit_sources' })).sources[0].status).toBe('found')
+    expect((await send({ operation: 'status' })).sourcePreparation[0].status).toBe(
+      'excerpt_matched',
+    )
+  })
   it('rebuilds plan source readiness from document-bound attachment metadata', async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-source-readiness-'))
     roots.push(userDataPath)

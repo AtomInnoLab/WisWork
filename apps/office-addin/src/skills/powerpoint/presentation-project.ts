@@ -45,6 +45,7 @@ export interface PresentationProjectStatus {
       | 'unsupported'
       | 'excerpt_mismatch'
       | 'excerpt_missing'
+      | 'source_mismatch'
   }[]
   sourcePreparationUnavailable?: boolean
   reviewComments?: {
@@ -400,6 +401,7 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
             'unsupported',
             'excerpt_mismatch',
             'excerpt_missing',
+            'source_mismatch',
           ].includes(item.status),
       )
     )

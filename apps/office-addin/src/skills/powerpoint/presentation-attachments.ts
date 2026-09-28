@@ -54,6 +54,7 @@ export interface PresentationAttachmentMetadata {
   assetSha256?: string
   animationHandling?: 'first_frame'
   source?: string
+  sourceUrlHash?: string
   retrievedAt?: number
   sources?: string[]
   licenseDeclaration?: {
@@ -86,6 +87,7 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
           'assetSha256',
           'animationHandling',
           'source',
+          'sourceUrlHash',
           'retrievedAt',
           'sources',
           'licenseDeclaration',
@@ -106,6 +108,7 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
     (v.kind !== undefined && v.kind !== 'text' && v.kind !== 'image') ||
     (v.error !== undefined && (typeof v.error !== 'string' || v.error.length > 200)) ||
     (v.source !== undefined && !sourceValid(v.source)) ||
+    (v.sourceUrlHash !== undefined && (!idValid(v.sourceUrlHash) || !v.source)) ||
     (v.retrievedAt !== undefined &&
       (!integer(v.retrievedAt, 1, Number.MAX_SAFE_INTEGER) || !v.source)) ||
     (v.licenseDeclaration !== undefined &&

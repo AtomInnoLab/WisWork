@@ -1,6 +1,20 @@
 import type { PresentationPlan } from '@wiswork/pptx-engine/presentation-plan'
 import { presentationSourceAttachmentId } from '@wiswork/pptx-engine/presentation-plan'
 import type { PresentationSourceAudit } from '@wiswork/pptx-engine/presentation-delivery-report'
+import { createHash } from 'node:crypto'
+
+/** A fetched snapshot must be attributed to the exact requested URL, including its query. */
+export function matchesFetchedSourceUrl(uri: string, sourceUrlHash: unknown): boolean {
+  if (sourceUrlHash === undefined) return true // User-uploaded originals have no observed URL.
+  if (typeof sourceUrlHash !== 'string' || !/^[a-f0-9]{64}$/.test(sourceUrlHash))
+    throw new Error('invalid_state')
+  try {
+    const url = new URL(uri)
+    return createHash('sha256').update(url.toString()).digest('hex') === sourceUrlHash
+  } catch {
+    return false
+  }
+}
 
 /** Read-only, document-bound audit. Literal presence never verifies factual support. */
 export async function auditPresentationSources(
@@ -15,6 +29,15 @@ export async function auditPresentationSources(
     const attachmentId = presentationSourceAttachmentId(source)
     if (!attachmentId) continue
     try {
+      const details = (await attachments(
+        { operation: 'attachment_metadata', documentId, attachmentId },
+        signal,
+      )) as { attachmentId?: unknown; sourceUrlHash?: unknown }
+      if (details.attachmentId !== attachmentId) throw new Error('invalid_state')
+      if (!matchesFetchedSourceUrl(source.uri, details.sourceUrlHash)) {
+        sources.push({ sourceId: source.id, attachmentId, status: 'source_mismatch' })
+        continue
+      }
       const result = (await attachments(
         {
           operation: 'attachment_match_excerpt',

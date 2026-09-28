@@ -13,6 +13,7 @@ import {
   benchmarkPlannedDeck,
 } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
 import { createPresentationService } from '../src/main/presentation-service'
+import { assertCitedPresentationSourcesReady } from '../src/main/presentation-production'
 import {
   convertSinglePagePackageToPng,
   libreOfficeCommands,
@@ -27,6 +28,42 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 const decode = (bytes: Uint8Array) => JSON.parse(Buffer.from(bytes).toString('utf8'))
+it('blocks production when a fetched snapshot URL differs from the cited plan URL', async () => {
+  const plan = benchmarkPlan()
+  const deck = benchmarkPlannedDeck()
+  const attachmentId = 'a'.repeat(64)
+  const original = 'https://example.com/report?edition=1'
+  plan.sources[0]!.uri = 'https://example.com/report?edition=2'
+  plan.sources[0]!.snapshotAttachmentId = attachmentId
+  const sourceUrlHash = createHash('sha256').update(original).digest('hex')
+  const attachments = vi.fn(async (request: Record<string, unknown>) =>
+    request.operation === 'attachment_metadata'
+      ? { attachmentId, sourceUrlHash }
+      : { attachmentId, status: 'found', offset: 0 },
+  )
+  await expect(
+    assertCitedPresentationSourcesReady(
+      plan,
+      deck.slides[0]!,
+      'doc',
+      attachments,
+      new AbortController().signal,
+      new Map(),
+    ),
+  ).rejects.toThrow('source_unavailable')
+  expect(attachments).toHaveBeenCalledTimes(1)
+  plan.sources[0]!.uri = original
+  await expect(
+    assertCitedPresentationSourcesReady(
+      plan,
+      deck.slides[0]!,
+      'doc',
+      attachments,
+      new AbortController().signal,
+      new Map(),
+    ),
+  ).resolves.toBeUndefined()
+})
 async function setup(compile = vi.fn(compilePresentationDeck), documentId = 'doc') {
   const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-page-production-'))
   roots.push(userDataPath)

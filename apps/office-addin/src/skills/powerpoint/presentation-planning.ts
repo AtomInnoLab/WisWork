@@ -230,6 +230,7 @@ export function createPresentationPlanningSkill(
                   'not_ready',
                   'unsupported',
                   'missing',
+                  'source_mismatch',
                 ].includes(String(source.status)) ||
                 (source.status === 'found'
                   ? !Number.isSafeInteger(source.offset) ||

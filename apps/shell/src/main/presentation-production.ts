@@ -25,6 +25,7 @@ import {
 import { checkPresentationPageContent } from '@wiswork/pptx-engine/presentation-content-check'
 import type { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { assertBrandLogoAsset } from './presentation-brand'
+import { matchesFetchedSourceUrl } from './presentation-source-audit'
 
 const check = (signal: AbortSignal) => {
   if (signal.aborted) throw new Error('aborted')
@@ -46,11 +47,17 @@ export async function assertCitedPresentationSourcesReady(
   for (const source of plan.sources.filter((item) => citedIds.has(item.id))) {
     const attachmentId = presentationSourceAttachmentId(source)
     if (!attachmentId) continue
-    const key = JSON.stringify([attachmentId, source.excerpt])
+    const key = JSON.stringify([attachmentId, source.uri, source.excerpt])
     let ready = cache.get(key)
     if (!ready) {
       ready = (async () => {
         try {
+          const details = (await attachments(
+            { operation: 'attachment_metadata', documentId, attachmentId },
+            signal,
+          )) as { attachmentId?: unknown; sourceUrlHash?: unknown }
+          if (details.attachmentId !== attachmentId) throw new Error('invalid_state')
+          if (!matchesFetchedSourceUrl(source.uri, details.sourceUrlHash)) return false
           const value = (await attachments(
             {
               operation: 'attachment_match_excerpt',
