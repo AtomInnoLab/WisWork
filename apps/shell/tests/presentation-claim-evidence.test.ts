@@ -23,7 +23,7 @@ const files = (root: string) =>
       join(e.parentPath, e.name),
       readFileSync(join(e.parentPath, e.name)).toString('base64'),
     ])
-async function setup(uri?: string) {
+async function setup(uri?: string, snapshot = false) {
   const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-evidence-'))
   roots.push(userDataPath)
   const compile = vi.fn()
@@ -35,6 +35,7 @@ async function setup(uri?: string) {
   plan.sources.push({ ...plan.sources[0]!, id: 'unrelated-source' })
   plan.claims.push({ ...plan.claims[0]!, id: 'unrelated-claim' })
   plan.sources[0]!.uri = uri ?? `attachment:${attachmentId}`
+  if (snapshot) plan.sources[0]!.snapshotAttachmentId = attachmentId
   plan.sources[0]!.excerpt = '原文'
   deck.claims = presentationPlanClaims(plan)
   const call = async (operation: string, extra: Record<string, unknown> = {}) =>
@@ -66,6 +67,17 @@ async function setup(uri?: string) {
   }
   return { userDataPath, compile, service, call, plan, deck, request }
 }
+it('reads a document-bound snapshot while preserving the original URL in frozen evidence', async () => {
+  const originalUri = 'https://example.com/research'
+  const f = await setup(originalUri, true)
+  const result = await f.call('production_claim_evidence', f.request)
+  expect(result).toMatchObject({
+    source: { uri: originalUri, snapshotAttachmentId: f.plan.sources[0]!.snapshotAttachmentId },
+    attachment: { text: 'before 原文 after\f' },
+    excerptMatch: { status: 'found' },
+  })
+  expect(f.compile).not.toHaveBeenCalled()
+})
 it('reads frozen attachment evidence before compilation without disk writes, including restart and exact windows', async () => {
   const f = await setup()
   const before = files(f.userDataPath)

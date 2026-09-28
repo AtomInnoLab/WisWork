@@ -406,3 +406,28 @@ describe('delivery evidence report', () => {
     expect(parsePresentationPlan(value)).toEqual(value)
   })
 })
+
+it('audits explicit snapshots and keeps the external original URI in delivery', async () => {
+  const value = input()
+  value.plan.sources[0]!.uri = 'https://example.com/original'
+  value.plan.sources[0]!.snapshotAttachmentId = 'a'.repeat(64)
+  value.deck.claims = presentationPlanClaims(value.plan)
+  value.sourceAudit = [{ sourceId: 'source', attachmentId: 'a'.repeat(64), status: 'missing' }]
+  value.reviews = [review(value, 'r1', 'supported')]
+  delete (value.reviews[0] as unknown as Record<string, unknown>).documentId
+  const report = await buildPresentationDeliveryReport(value)
+  expect(report.pages[0]!.issues.map((issue) => issue.code)).not.toContain(
+    'source_original_not_frozen',
+  )
+  expect(report.pages[0]!.issues.map((issue) => issue.code)).toContain('source_attachment_missing')
+  expect(parsePresentationDeliveryReport(report)).toEqual(report)
+  expect(report.plan.sources[0]!.uri).toBe('https://example.com/original')
+  expect(
+    presentationDeliveryMarkdown(report).replace(/&#(\d+);/g, (_, code) =>
+      String.fromCharCode(Number(code)),
+    ),
+  ).toContain('https://example.com/original')
+  const forged = structuredClone(report)
+  forged.sourceAudit![0]!.attachmentId = 'b'.repeat(64)
+  expect(() => parsePresentationDeliveryReport(forged)).toThrow()
+})

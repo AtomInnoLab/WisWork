@@ -20,6 +20,7 @@ import {
   parsePresentationPlan,
   assertDeckMatchesPresentationPlan,
   assertBrandKitRevision,
+  presentationSourceAttachmentId,
 } from '@wiswork/pptx-engine/presentation-plan'
 import { resolve } from 'node:path'
 import { PresentationStore, assertPresentationId } from '@wiswork/project-store'
@@ -771,9 +772,9 @@ export function createPresentationService(options: {
           let sourcePreparationUnavailable = false
           if (plan) {
             const references = plan.value.sources.flatMap((source) => {
-              const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
-              return match
-                ? [{ sourceId: source.id, attachmentId: match[1]!, excerpt: source.excerpt }]
+              const attachmentId = presentationSourceAttachmentId(source)
+              return attachmentId
+                ? [{ sourceId: source.id, attachmentId, excerpt: source.excerpt }]
                 : []
             })
             if (references.length) {

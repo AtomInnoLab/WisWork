@@ -174,3 +174,13 @@ it('enforces global review quota across sources and strict reference fields', ()
     }),
   ).toThrow()
 })
+
+it('binds historical reviews to explicit source snapshots', () => {
+  const f = fixture()
+  f.plan.sources[0]!.uri = 'https://example.com/original'
+  f.plan.sources[0]!.snapshotAttachmentId = f.review.attachmentId
+  f.deck.claims = presentationPlanClaims(f.plan)
+  expect(f.summarize([f.review]).claims[0]!.sources[0]!.status).toBe('supported')
+  f.plan.sources[0]!.snapshotAttachmentId = 'e'.repeat(64)
+  expect(() => f.summarize([f.review])).toThrow('invalid_state')
+})

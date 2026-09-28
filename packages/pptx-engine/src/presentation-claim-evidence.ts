@@ -1,3 +1,4 @@
+import { presentationSourceAttachmentId } from './presentation-plan'
 import { choice, id, number, object, text, valid } from './presentation-schema'
 
 export interface PresentationClaimEvidence {
@@ -10,7 +11,13 @@ export interface PresentationClaimEvidence {
   pageId: string
   claimId: string
   statement: string
-  source: { id: string; uri: string; excerpt: string; locator?: string }
+  source: {
+    id: string
+    uri: string
+    snapshotAttachmentId?: string
+    excerpt: string
+    locator?: string
+  }
   attachment: {
     id: string
     name: string
@@ -52,7 +59,8 @@ const schema = object({
   source: object(
     {
       id,
-      uri: { ...text(75, 75), pattern: '^attachment:[a-f0-9]{64}$' },
+      uri: text(500, 1),
+      snapshotAttachmentId: digest,
       excerpt: text(12000),
       locator: text(200),
     },
@@ -99,10 +107,16 @@ export function parsePresentationClaimEvidence(value: unknown): PresentationClai
     reject()
   const report = value as PresentationClaimEvidence
   const { attachment, source } = report
+  let attachmentId: string | undefined
+  try {
+    attachmentId = presentationSourceAttachmentId(source)
+  } catch {
+    reject()
+  }
   if (
     new TextEncoder().encode(JSON.stringify(report)).byteLength > 256 * 1024 ||
     ![report.planRevision, attachment.offset, attachment.totalChars].every(Number.isSafeInteger) ||
-    source.uri !== `attachment:${attachment.id}` ||
+    attachmentId !== attachment.id ||
     attachment.offset + attachment.text.length > attachment.totalChars
   )
     reject()

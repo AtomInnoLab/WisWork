@@ -12,6 +12,7 @@ import {
 } from './presentation-production.js'
 import {
   parsePresentationPlan,
+  presentationSourceAttachmentId,
   type PresentationPlan,
 } from '@wiswork/pptx-engine/presentation-plan'
 import type { AgentSkill } from '@wiswork/agent-core'
@@ -375,8 +376,8 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
     throw new Error('presentation_response_invalid')
   if (p?.sourcePreparation !== undefined) {
     const expected = plan?.value.sources.flatMap((source) => {
-      const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
-      return match ? [{ sourceId: source.id, attachmentId: match[1]! }] : []
+      const attachmentId = presentationSourceAttachmentId(source)
+      return attachmentId ? [{ sourceId: source.id, attachmentId }] : []
     })
     if (
       !expected ||
@@ -886,8 +887,8 @@ export function createPresentationProjectController(
     const plan = project.plan!
     const documentId = projectDocument
     const expected = plan.value.sources.flatMap((source) => {
-      const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
-      return match ? [{ sourceId: source.id, attachmentId: match[1] }] : []
+      const attachmentId = presentationSourceAttachmentId(source)
+      return attachmentId ? [{ sourceId: source.id, attachmentId }] : []
     })
     if (!expected.length) return
     stopPolling()

@@ -28,7 +28,8 @@ describe('saved presentation planning tools', () => {
   it('exposes bounded literal source audit without claiming factual verification', async () => {
     const f = setup()
     const auditPlan = structuredClone(plan)
-    auditPlan.sources[0]!.uri = `attachment:${'a'.repeat(64)}`
+    auditPlan.sources[0]!.uri = 'https://example.com/research'
+    auditPlan.sources[0]!.snapshotAttachmentId = 'a'.repeat(64)
     const result = {
       projectId: plan.projectId,
       planRevision: 2,

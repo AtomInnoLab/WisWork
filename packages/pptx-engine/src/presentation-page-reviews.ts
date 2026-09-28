@@ -2,7 +2,11 @@ import {
   parsePresentationClaimReview,
   type PresentationClaimReview,
 } from './presentation-claim-review'
-import { assertDeckMatchesPresentationPlan, type PresentationPlan } from './presentation-plan'
+import {
+  presentationSourceAttachmentId,
+  assertDeckMatchesPresentationPlan,
+  type PresentationPlan,
+} from './presentation-plan'
 import type { PresentationDeck } from './presentation'
 import { array, choice, id, number, object, text, valid } from './presentation-schema'
 
@@ -157,7 +161,7 @@ export function summarizePresentationPageReviews(
       !page.claimIds.includes(claim.id) ||
       !claim.sourceIds.includes(review.sourceId) ||
       !source ||
-      source.uri !== `attachment:${review.attachmentId}`
+      presentationSourceAttachmentId(source) !== review.attachmentId
     )
       throw new Error('invalid_state')
     selected.push(review)

@@ -273,7 +273,8 @@ describe('plan-only project status', () => {
       await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
     const plan = benchmarkPlan()
     const attachmentId = 'a'.repeat(64)
-    plan.sources[0]!.uri = `attachment:${attachmentId}`
+    plan.sources[0]!.uri = 'https://example.com/research'
+    plan.sources[0]!.snapshotAttachmentId = attachmentId
     const status = {
       projectId: plan.projectId,
       title: plan.title,
@@ -354,10 +355,24 @@ describe('plan-only project status', () => {
     f.request.mockResolvedValueOnce(new Response(JSON.stringify(value)))
     await f.controller.refresh()
     expect(f.controller.snapshot().project?.sourcePreparation).toEqual(value.sourcePreparation)
-    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ ...value, sourcePreparation: [{ ...value.sourcePreparation[0], status: 'excerpt_matched' }] })))
+    f.request.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...value,
+          sourcePreparation: [{ ...value.sourcePreparation[0], status: 'excerpt_matched' }],
+        }),
+      ),
+    )
     await f.controller.refresh()
     expect(f.controller.snapshot().project?.sourcePreparation?.[0]?.status).toBe('excerpt_matched')
-    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ ...value, sourcePreparation: [{ ...value.sourcePreparation[0], status: 'excerpt_mismatch' }] })))
+    f.request.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...value,
+          sourcePreparation: [{ ...value.sourcePreparation[0], status: 'excerpt_mismatch' }],
+        }),
+      ),
+    )
     await f.controller.refresh()
     expect(f.controller.snapshot().project?.sourcePreparation?.[0]?.status).toBe('excerpt_mismatch')
     f.request.mockResolvedValueOnce(

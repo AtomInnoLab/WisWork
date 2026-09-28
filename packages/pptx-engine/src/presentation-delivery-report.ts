@@ -4,6 +4,7 @@ import {
 } from '@wiswork/project-store/presentation-issue'
 import {
   parsePresentationPlan,
+  presentationSourceAttachmentId,
   assertDeckMatchesPresentationPlan,
   type PresentationPlan,
 } from './presentation-plan'
@@ -152,8 +153,7 @@ function seeds(
     for (const sourceId of claim.sourceIds) {
       const source = report.plan.sources.find((item) => item.id === sourceId)!
       const audit = report.sourceAudit?.find((item) => item.sourceId === sourceId)
-      if (!/^attachment:[a-f0-9]{64}$/.test(source.uri))
-        add('source_original_not_frozen', sourceId)
+      if (!presentationSourceAttachmentId(source)) add('source_original_not_frozen', sourceId)
       if (audit?.status === 'not_found') add('source_excerpt_not_in_attachment', sourceId)
       if (audit?.status === 'missing') add('source_attachment_missing', sourceId)
       if (audit?.status === 'not_ready') add('source_attachment_not_ready', sourceId)
@@ -244,8 +244,8 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
   const plan = parsePresentationPlan(report.plan)
   if (report.sourceAudit !== undefined) {
     const expected = plan.sources.flatMap((source) => {
-      const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
-      return match ? [{ sourceId: source.id, attachmentId: match[1] }] : []
+      const attachmentId = presentationSourceAttachmentId(source)
+      return attachmentId ? [{ sourceId: source.id, attachmentId }] : []
     })
     if (!Array.isArray(report.sourceAudit) || report.sourceAudit.length !== expected.length)
       invalid()
@@ -292,7 +292,8 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
       ) ||
       !page?.claimIds.includes(review.claimId) ||
       !claim?.sourceIds.includes(review.sourceId) ||
-      source?.uri !== `attachment:${review.attachmentId}`
+      !source ||
+      presentationSourceAttachmentId(source) !== review.attachmentId
     )
       invalid()
     reviewIds.add(review.reviewId)

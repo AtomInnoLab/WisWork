@@ -20,6 +20,7 @@ import {
 import {
   assertDeckMatchesPresentationPlan,
   parsePresentationPlan,
+  presentationSourceAttachmentId,
 } from '@wiswork/pptx-engine/presentation-plan'
 import { checkPresentationPageContent } from '@wiswork/pptx-engine/presentation-content-check'
 import type { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
@@ -43,9 +44,8 @@ export async function assertCitedPresentationSourcesReady(
       .flatMap((claim) => claim.sourceIds),
   )
   for (const source of plan.sources.filter((item) => citedIds.has(item.id))) {
-    const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
-    if (!match) continue
-    const attachmentId = match[1]!
+    const attachmentId = presentationSourceAttachmentId(source)
+    if (!attachmentId) continue
     const key = JSON.stringify([attachmentId, source.excerpt])
     let ready = cache.get(key)
     if (!ready) {
@@ -60,9 +60,12 @@ export async function assertCitedPresentationSourcesReady(
             },
             signal,
           )) as { attachmentId?: unknown; status?: unknown; offset?: unknown }
-          return value.attachmentId === attachmentId &&
+          return (
+            value.attachmentId === attachmentId &&
             value.status === 'found' &&
-            Number.isSafeInteger(value.offset) && Number(value.offset) >= 0
+            Number.isSafeInteger(value.offset) &&
+            Number(value.offset) >= 0
+          )
         } catch {
           check(signal)
           return false
@@ -307,9 +310,8 @@ export async function handlePresentationProduction(
       !claim.sourceIds.includes(source.id)
     )
       throw new Error('not_found')
-    if (!/^attachment:[a-f0-9]{64}$/.test(source.uri))
-      throw new Error('evidence_source_unsupported')
-    const attachmentId = source.uri.slice('attachment:'.length)
+    const attachmentId = presentationSourceAttachmentId(source)
+    if (!attachmentId) throw new Error('evidence_source_unsupported')
     const window = (await attachments(
       {
         operation: 'attachment_read',
@@ -330,7 +332,7 @@ export async function handlePresentationProduction(
     check(signal)
     if (
       window.attachmentId !== attachmentId ||
-      window.sourceUri !== source.uri ||
+      window.sourceUri !== `attachment:${attachmentId}` ||
       window.offset !== request.offset ||
       typeof window.text !== 'string' ||
       window.text.length !== Math.min(request.maxChars as number, window.totalChars - window.offset)
@@ -349,6 +351,9 @@ export async function handlePresentationProduction(
       source: {
         id: source.id,
         uri: source.uri,
+        ...(source.snapshotAttachmentId !== undefined
+          ? { snapshotAttachmentId: source.snapshotAttachmentId }
+          : {}),
         excerpt: source.excerpt,
         ...(source.locator !== undefined ? { locator: source.locator } : {}),
       },

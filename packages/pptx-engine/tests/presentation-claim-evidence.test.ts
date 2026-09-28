@@ -98,3 +98,22 @@ it('preserves form-feed parsed text and literal offsets', () => {
   }
   expect(parsePresentationClaimEvidence(value)).toEqual(value)
 })
+
+it('binds external original URI evidence to an explicit snapshot', () => {
+  const value = report()
+  const source = {
+    ...value.source,
+    uri: 'https://example.com/original',
+    snapshotAttachmentId: hash,
+  }
+  expect(parsePresentationClaimEvidence({ ...value, source }).source).toEqual(source)
+  for (const changed of [
+    { ...source, snapshotAttachmentId: 'b'.repeat(64) },
+    { ...source, snapshotAttachmentId: '' },
+    { ...value.source, snapshotAttachmentId: 'b'.repeat(64) },
+    { ...value.source, uri: source.uri },
+  ])
+    expect(() => parsePresentationClaimEvidence({ ...value, source: changed })).toThrow(
+      'presentation_claim_evidence_invalid:',
+    )
+})

@@ -362,92 +362,267 @@ describe('durable presentation planning', () => {
     const raw = Buffer.from('Actual attachment content')
     const attachmentId = createHash('sha256').update(raw).digest('hex')
     const savedPlan = plan()
-    savedPlan.sources = [{ id: 'source', title: 'Source', uri: `attachment:${attachmentId}`, excerpt: 'Invented quote' }]
-    savedPlan.claims = [{ id: 'claim', statement: 'Claim', type: 'assumption', sourceIds: ['source'], confidence: 'low', reviewStatus: 'needs_review' }]
+    savedPlan.sources = [
+      {
+        id: 'source',
+        title: 'Source',
+        uri: 'https://example.com/research',
+        snapshotAttachmentId: attachmentId,
+        excerpt: 'Invented quote',
+      },
+    ]
+    savedPlan.claims = [
+      {
+        id: 'claim',
+        statement: 'Claim',
+        type: 'assumption',
+        sourceIds: ['source'],
+        confidence: 'low',
+        reviewStatus: 'needs_review',
+      },
+    ]
     savedPlan.slides[0]!.claimIds = ['claim']
     const deck = structuredClone(input.deck)
     deck.slides[0]!.claimIds = ['claim']
     deck.claims = presentationPlanClaims(savedPlan)
     const send = async (body: Record<string, unknown>) => decode(await service(body, signal()))
     expect(await send(planRequest(savedPlan))).toMatchObject({ revision: 1 })
-    const upload = async (operation: string, extra: Record<string, unknown>) => send({ operation, documentId: input.documentId, ...extra })
-    await upload('attachment_begin', { attachmentId, sha256: attachmentId, name: 'source.txt', sizeBytes: raw.length })
+    const upload = async (operation: string, extra: Record<string, unknown>) =>
+      send({ operation, documentId: input.documentId, ...extra })
+    await upload('attachment_begin', {
+      attachmentId,
+      sha256: attachmentId,
+      name: 'source.txt',
+      sizeBytes: raw.length,
+    })
     await upload('attachment_chunk', { attachmentId, offset: 0, base64: raw.toString('base64') })
     expect(await upload('attachment_finish', { attachmentId })).toMatchObject({ status: 'ready' })
-    expect(await send({ ...input, requestId: 'invented-source', planRevision: 1, deck })).toEqual({ error: 'source_unavailable' })
+    expect(await send({ ...input, requestId: 'invented-source', planRevision: 1, deck })).toEqual({
+      error: 'source_unavailable',
+    })
     expect(compile).not.toHaveBeenCalled()
   })
   it('persists an opted-in domain story only after all required sections are planned', async () => {
-    const service = createPresentationService({ userDataPath: root(), compile: vi.fn(async () => result()) })
+    const service = createPresentationService({
+      userDataPath: root(),
+      compile: vi.fn(async () => result()),
+    })
     const incomplete = { ...plan(), domain: 'report' }
-    expect(decode(await service(planRequest(incomplete), signal()))).toEqual({ error: 'invalid_plan' })
+    expect(decode(await service(planRequest(incomplete), signal()))).toEqual({
+      error: 'invalid_plan',
+    })
     const sections = ['executive_summary', 'findings', 'supporting_evidence', 'risks', 'actions']
-    const complete = { ...incomplete, slides: sections.map((domainSection, index) => ({ ...plan().slides[0]!, id: `section-${index}`, domainSection })) }
-    expect(decode(await service(planRequest(complete), signal()))).toMatchObject({ revision: 1, plan: complete })
-    expect(decode(await service({ operation: 'get_plan', documentId: input.documentId, projectId: 'deck' }, signal()))).toMatchObject({ plan: complete })
+    const complete = {
+      ...incomplete,
+      slides: sections.map((domainSection, index) => ({
+        ...plan().slides[0]!,
+        id: `section-${index}`,
+        domainSection,
+      })),
+    }
+    expect(decode(await service(planRequest(complete), signal()))).toMatchObject({
+      revision: 1,
+      plan: complete,
+    })
+    expect(
+      decode(
+        await service(
+          { operation: 'get_plan', documentId: input.documentId, projectId: 'deck' },
+          signal(),
+        ),
+      ),
+    ).toMatchObject({ plan: complete })
   })
   it('reuses a catalog layout component across projects and rejects slot drift before compilation', async () => {
     const compile = vi.fn(async () => result())
     const service = createPresentationService({ userDataPath: root(), compile })
-    const brandKit = { id: 'research', revision: 1, name: 'Research', allowedColors: ['FFFFFF', '111111', '3366FF'], layoutComponents: [
-      { id: 'headline', name: 'Headline', layout: 'content', slots: [
-        { id: 'text', kind: 'text', x: 1, y: 1, w: 4, h: 1 },
-      ] },
-    ] }
-    expect(decode(await service({ operation: 'brand_kit_save', documentId: input.documentId, expectedRevision: 0, brandKit }, signal()))).toEqual({ brandKit })
+    const brandKit = {
+      id: 'research',
+      revision: 1,
+      name: 'Research',
+      allowedColors: ['FFFFFF', '111111', '3366FF'],
+      layoutComponents: [
+        {
+          id: 'headline',
+          name: 'Headline',
+          layout: 'content',
+          slots: [{ id: 'text', kind: 'text', x: 1, y: 1, w: 4, h: 1 }],
+        },
+      ],
+    }
+    expect(
+      decode(
+        await service(
+          {
+            operation: 'brand_kit_save',
+            documentId: input.documentId,
+            expectedRevision: 0,
+            brandKit,
+          },
+          signal(),
+        ),
+      ),
+    ).toEqual({ brandKit })
     for (const projectId of ['deck', 'deck-two']) {
       const documentId = `office:${projectId}`
-      const current = { ...plan(), projectId, brandKit, slides: [{ ...plan().slides[0]!, layoutComponentId: 'headline' }] }
-      expect(decode(await service({ operation: 'save_plan', documentId, projectId, expectedRevision: 0, plan: current }, signal()))).toMatchObject({ revision: 1 })
+      const current = {
+        ...plan(),
+        projectId,
+        brandKit,
+        slides: [{ ...plan().slides[0]!, layoutComponentId: 'headline' }],
+      }
+      expect(
+        decode(
+          await service(
+            { operation: 'save_plan', documentId, projectId, expectedRevision: 0, plan: current },
+            signal(),
+          ),
+        ),
+      ).toMatchObject({ revision: 1 })
       const deck = { ...input.deck, id: projectId }
-      expect(decode(await service({ ...input, documentId, projectId, requestId: `bad-${projectId}`, planRevision: 1, deck: {
-        ...deck, slides: [{ ...deck.slides[0]!, elements: [{ ...deck.slides[0]!.elements[0]!, x: 1.2 }] }],
-      } }, signal()))).toEqual({ error: 'plan_mismatch' })
-      expect(decode(await service({ ...input, documentId, projectId, requestId: `good-${projectId}`, planRevision: 1, deck }, signal()))).toMatchObject({ status: 'compiled' })
+      expect(
+        decode(
+          await service(
+            {
+              ...input,
+              documentId,
+              projectId,
+              requestId: `bad-${projectId}`,
+              planRevision: 1,
+              deck: {
+                ...deck,
+                slides: [
+                  { ...deck.slides[0]!, elements: [{ ...deck.slides[0]!.elements[0]!, x: 1.2 }] },
+                ],
+              },
+            },
+            signal(),
+          ),
+        ),
+      ).toEqual({ error: 'plan_mismatch' })
+      expect(
+        decode(
+          await service(
+            {
+              ...input,
+              documentId,
+              projectId,
+              requestId: `good-${projectId}`,
+              planRevision: 1,
+              deck,
+            },
+            signal(),
+          ),
+        ),
+      ).toMatchObject({ status: 'compiled' })
     }
     expect(compile).toHaveBeenCalledTimes(2)
   })
   it('binds a planned brand logo to the bytes passed to the compiler', async () => {
     const compile = vi.fn(async () => result())
     const service = createPresentationService({ userDataPath: root(), compile })
-    const base64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jB1sAAAAASUVORK5CYII='
+    const base64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jB1sAAAAASUVORK5CYII='
     const digest = createHash('sha256').update(Buffer.from(base64, 'base64')).digest('hex')
-    const brandedPlan = { ...plan(), slides: [{ ...plan().slides[0]!, layout: 'cover' }], brandKit: {
-      id: 'company', revision: 1, name: '公司品牌', allowedColors: ['FFFFFF', '111111', '3366FF'],
-      logo: { assetId: 'logo', assetDigest: digest, placement: 'cover' },
-    } }
+    const brandedPlan = {
+      ...plan(),
+      slides: [{ ...plan().slides[0]!, layout: 'cover' }],
+      brandKit: {
+        id: 'company',
+        revision: 1,
+        name: '公司品牌',
+        allowedColors: ['FFFFFF', '111111', '3366FF'],
+        logo: { assetId: 'logo', assetDigest: digest, placement: 'cover' },
+      },
+    }
     expect(decode(await service(planRequest(brandedPlan), signal()))).toMatchObject({ revision: 1 })
     const logo = { id: 'logo', mime: 'image/png', base64, width: 1, height: 1 }
-    const deck = { ...input.deck, assets: [logo], slides: [{ ...input.deck.slides[0]!, elements: [
-      ...input.deck.slides[0]!.elements,
-      { id: 'brand-logo', kind: 'image', assetId: 'logo', x: 5, y: 1, w: 1, h: 1 },
-    ] }] }
-    expect(decode(await service({ ...input, deck, planRevision: 1 }, signal()))).toMatchObject({ status: 'compiled' })
+    const deck = {
+      ...input.deck,
+      assets: [logo],
+      slides: [
+        {
+          ...input.deck.slides[0]!,
+          elements: [
+            ...input.deck.slides[0]!.elements,
+            { id: 'brand-logo', kind: 'image', assetId: 'logo', x: 5, y: 1, w: 1, h: 1 },
+          ],
+        },
+      ],
+    }
+    expect(decode(await service({ ...input, deck, planRevision: 1 }, signal()))).toMatchObject({
+      status: 'compiled',
+    })
     expect(compile).toHaveBeenCalledTimes(1)
     const corrupted = Buffer.from(base64, 'base64')
     corrupted[corrupted.length - 10] ^= 1
     const changedDeck = { ...deck, assets: [{ ...logo, base64: corrupted.toString('base64') }] }
-    expect(decode(await service({ ...input, requestId: 'second', deck: changedDeck, planRevision: 1 }, signal()))).toEqual({ error: 'plan_mismatch' })
+    expect(
+      decode(
+        await service(
+          { ...input, requestId: 'second', deck: changedDeck, planRevision: 1 },
+          signal(),
+        ),
+      ),
+    ).toEqual({ error: 'plan_mismatch' })
     expect(compile).toHaveBeenCalledTimes(1)
   })
   it('persists a brand palette and rejects off-brand SlideIR before compilation', async () => {
     const compile = vi.fn(async () => result())
     const service = createPresentationService({ userDataPath: root(), compile })
-    const branded = { ...plan(), brandKit: {
-      id: 'company', revision: 1, name: '公司品牌',
-      allowedColors: ['FFFFFF', '111111', '3366FF'],
-    } }
-    expect(decode(await service(planRequest(branded), signal()))).toMatchObject({ revision: 1, plan: branded })
-    const offBrand = { ...input, planRevision: 1, deck: { ...input.deck, slides: [{
-      ...input.deck.slides[0]!, elements: [{ ...input.deck.slides[0]!.elements[0]!, color: 'FF0000' }],
-    }] } }
+    const branded = {
+      ...plan(),
+      brandKit: {
+        id: 'company',
+        revision: 1,
+        name: '公司品牌',
+        allowedColors: ['FFFFFF', '111111', '3366FF'],
+      },
+    }
+    expect(decode(await service(planRequest(branded), signal()))).toMatchObject({
+      revision: 1,
+      plan: branded,
+    })
+    const offBrand = {
+      ...input,
+      planRevision: 1,
+      deck: {
+        ...input.deck,
+        slides: [
+          {
+            ...input.deck.slides[0]!,
+            elements: [{ ...input.deck.slides[0]!.elements[0]!, color: 'FF0000' }],
+          },
+        ],
+      },
+    }
     expect(decode(await service(offBrand, signal()))).toEqual({ error: 'plan_mismatch' })
     expect(compile).not.toHaveBeenCalled()
-    expect(decode(await service({ ...input, planRevision: 1 }, signal()))).toMatchObject({ status: 'compiled' })
+    expect(decode(await service({ ...input, planRevision: 1 }, signal()))).toMatchObject({
+      status: 'compiled',
+    })
     expect(compile).toHaveBeenCalledTimes(1)
-    const changedPalette = { ...branded, brandKit: { ...branded.brandKit, allowedColors: [...branded.brandKit.allowedColors, 'AA5500'] } }
-    expect(decode(await service(planRequest(changedPalette, 1), signal()))).toEqual({ error: 'invalid_plan' })
-    expect(decode(await service(planRequest({ ...changedPalette, brandKit: { ...changedPalette.brandKit, revision: 2 } }, 1), signal()))).toMatchObject({ revision: 2 })
+    const changedPalette = {
+      ...branded,
+      brandKit: {
+        ...branded.brandKit,
+        allowedColors: [...branded.brandKit.allowedColors, 'AA5500'],
+      },
+    }
+    expect(decode(await service(planRequest(changedPalette, 1), signal()))).toEqual({
+      error: 'invalid_plan',
+    })
+    expect(
+      decode(
+        await service(
+          planRequest(
+            { ...changedPalette, brandKit: { ...changedPalette.brandKit, revision: 2 } },
+            1,
+          ),
+          signal(),
+        ),
+      ),
+    ).toMatchObject({ revision: 2 })
   })
   it('saves and reloads a plan before any compile and exposes a planned project', async () => {
     const userDataPath = root()
@@ -477,12 +652,26 @@ describe('durable presentation planning', () => {
       status: 'planned',
       slideCount: 1,
       history: [],
-      plan: { revision: 1, value: plan(), revisions: [
-        { revision: 1, createdAt: expect.any(String), inputDigest: expect.any(String),
-          snapshot: { sourceCount: 0, claimCount: 0, slideCount: 1,
-            sourcesDigest: expect.any(String), claimsDigest: expect.any(String),
-            slidesDigest: expect.any(String), styleDigest: expect.any(String) } },
-      ] },
+      plan: {
+        revision: 1,
+        value: plan(),
+        revisions: [
+          {
+            revision: 1,
+            createdAt: expect.any(String),
+            inputDigest: expect.any(String),
+            snapshot: {
+              sourceCount: 0,
+              claimCount: 0,
+              slideCount: 1,
+              sourcesDigest: expect.any(String),
+              claimsDigest: expect.any(String),
+              slidesDigest: expect.any(String),
+              styleDigest: expect.any(String),
+            },
+          },
+        ],
+      },
     })
     expect(decode(await service(planRequest({ ...plan(), title: 'Changed' }), signal()))).toEqual({
       error: 'revision_conflict',

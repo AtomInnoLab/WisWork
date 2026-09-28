@@ -1,4 +1,5 @@
 import type { PresentationPlan } from '@wiswork/pptx-engine/presentation-plan'
+import { presentationSourceAttachmentId } from '@wiswork/pptx-engine/presentation-plan'
 import type { PresentationSourceAudit } from '@wiswork/pptx-engine/presentation-delivery-report'
 
 /** Read-only, document-bound audit. Literal presence never verifies factual support. */
@@ -11,20 +12,20 @@ export async function auditPresentationSources(
   const sources: PresentationSourceAudit[] = []
   for (const source of plan.sources) {
     if (signal.aborted) throw new Error('aborted')
-    const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
-    if (!match) continue
+    const attachmentId = presentationSourceAttachmentId(source)
+    if (!attachmentId) continue
     try {
       const result = (await attachments(
         {
           operation: 'attachment_match_excerpt',
           documentId,
-          attachmentId: match[1],
+          attachmentId,
           excerpt: source.excerpt,
         },
         signal,
       )) as { attachmentId: string; status: PresentationSourceAudit['status']; offset?: number }
       if (
-        result.attachmentId !== match[1] ||
+        result.attachmentId !== attachmentId ||
         !['found', 'not_found', 'empty_excerpt', 'not_ready', 'unsupported'].includes(
           result.status,
         ) ||
@@ -35,13 +36,13 @@ export async function auditPresentationSources(
         throw new Error('invalid_state')
       sources.push({
         sourceId: source.id,
-        attachmentId: match[1],
+        attachmentId,
         status: result.status,
         ...(result.status === 'found' ? { offset: result.offset } : {}),
       })
     } catch (error) {
       if (!(error instanceof Error) || error.message !== 'not_found') throw error
-      sources.push({ sourceId: source.id, attachmentId: match[1], status: 'missing' })
+      sources.push({ sourceId: source.id, attachmentId, status: 'missing' })
     }
   }
   return sources

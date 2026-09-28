@@ -4,6 +4,7 @@ import {
   PRESENTATION_DOMAIN_PROFILES,
   parsePresentationPlan,
   presentationPlanClaims,
+  presentationSourceAttachmentId,
 } from '@wiswork/pptx-engine/presentation-plan'
 import { parsePresentationBrandKit } from '@wiswork/pptx-engine/presentation-plan'
 import type { PresentationGenerationOptions } from './presentation-generation.js'
@@ -110,7 +111,7 @@ const tools: AgentToolDef[] = [
   {
     name: 'save_presentation_plan',
     description:
-      'Persist the brief, evidence/claim ledger, shared style, optional brand kit color/logo rules, and ordered slide tasks before compiling. Optional parallelism=2 requires every slide to declare dependsOn (empty for independent pages); default is serial. Use expected_revision=0 for a new project; after reading the plan, use that revision to update it. On a revision conflict read again; never overwrite a concurrent change blindly. Saving is not source verification or host editing.',
+      'Persist the brief, evidence/claim ledger, shared style, optional brand kit color/logo rules, and ordered slide tasks before compiling. For an uploaded original of a URL source, keep the URL in source.uri and set source.snapshotAttachmentId to its attachment ID. If a plan using this field returns invalid_plan, check the PC version and the plan rather than silently removing the field. Optional parallelism=2 requires every slide to declare dependsOn (empty for independent pages); default is serial. Use expected_revision=0 for a new project; after reading the plan, use that revision to update it. On a revision conflict read again; never overwrite a concurrent change blindly. Saving is not source verification or host editing.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -267,8 +268,8 @@ export function createPresentationPlanningSkill(
             throw new Error('presentation_response_invalid')
           }
           const expected = plan.sources.flatMap((source) => {
-            const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
-            return match ? [{ sourceId: source.id, attachmentId: match[1] }] : []
+            const attachmentId = presentationSourceAttachmentId(source)
+            return attachmentId ? [{ sourceId: source.id, attachmentId }] : []
           })
           if (
             saved.projectId !== call.input.project_id ||

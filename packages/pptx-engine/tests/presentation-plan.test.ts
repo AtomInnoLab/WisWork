@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parsePresentationDeck } from '../src/presentation'
 import {
   parsePresentationPlan,
+  presentationSourceAttachmentId,
   PRESENTATION_DOMAIN_PROFILES,
   presentationPlanClaims,
   assertDeckMatchesPresentationPlan,
@@ -15,14 +16,18 @@ describe('durable presentation plan', () => {
     const plan = benchmarkPlan()
     plan.parallelism = 2
     expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:page_dependency')
-    plan.slides.forEach((slide) => { slide.dependsOn = [] })
+    plan.slides.forEach((slide) => {
+      slide.dependsOn = []
+    })
     plan.slides[1]!.dependsOn = [plan.slides[0]!.id]
     expect(() => parsePresentationPlan(plan)).not.toThrow()
     plan.slides[0]!.dependsOn = [plan.slides[1]!.id]
     expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:page_dependency')
     plan.slides[0]!.dependsOn = []
     plan.slides[1]!.dependsOn = [plan.slides[0]!.id, plan.slides[0]!.id]
-    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:duplicate_page_dependency')
+    expect(() => parsePresentationPlan(plan)).toThrow(
+      'presentation_plan_invalid:duplicate_page_dependency',
+    )
     plan.slides[1]!.dependsOn = []
     plan.parallelism = 3 as 2
     expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:schema')
@@ -34,7 +39,9 @@ describe('durable presentation plan', () => {
     expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:domain_section')
     const sections = ['question', 'method', 'results', 'limitations', 'references'] as const
     plan.slides = sections.map((section, index) => ({
-      ...plan.slides[0]!, id: `domain-${index}`, domainSection: section,
+      ...plan.slides[0]!,
+      id: `domain-${index}`,
+      domainSection: section,
     }))
     expect(() => parsePresentationPlan(plan)).not.toThrow()
     plan.slides[1]!.domainSection = 'customer_problem'
@@ -45,7 +52,9 @@ describe('durable presentation plan', () => {
       const plan = benchmarkPlan()
       plan.domain = domain as keyof typeof PRESENTATION_DOMAIN_PROFILES
       plan.slides = profile.sections.map((domainSection, index) => ({
-        ...plan.slides[0]!, id: `section-${index}`, domainSection,
+        ...plan.slides[0]!,
+        id: `section-${index}`,
+        domainSection,
       }))
       expect(() => parsePresentationPlan(plan)).not.toThrow()
       plan.slides.pop()
@@ -55,21 +64,42 @@ describe('durable presentation plan', () => {
   it('pins reusable layout slots to native object types and geometry', () => {
     const plan = benchmarkPlan()
     plan.brandKit = {
-      id: 'research-brand', revision: 1, name: 'Research',
+      id: 'research-brand',
+      revision: 1,
+      name: 'Research',
       allowedColors: ['FFFFFF', '172033', '2255AA'],
-      layoutComponents: [{ id: 'title-body', name: 'Title and body', layout: 'content', slots: [
-        { id: 'title', kind: 'text', x: 1, y: 1, w: 10, h: 1 },
-        { id: 'body', kind: 'text', x: 1, y: 2.5, w: 10, h: 3 },
-      ] }],
+      layoutComponents: [
+        {
+          id: 'title-body',
+          name: 'Title and body',
+          layout: 'content',
+          slots: [
+            { id: 'title', kind: 'text', x: 1, y: 1, w: 10, h: 1 },
+            { id: 'body', kind: 'text', x: 1, y: 2.5, w: 10, h: 3 },
+          ],
+        },
+      ],
     }
     plan.slides[0]!.layoutComponentId = 'title-body'
     const deck = benchmarkDeck()
     expect(() => assertDeckMatchesPresentationPlan(deck, parsePresentationPlan(plan))).not.toThrow()
     deck.slides[0]!.elements[1]!.x = 1.1
-    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow('presentation_plan_mismatch:layout_component')
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow(
+      'presentation_plan_mismatch:layout_component',
+    )
     deck.slides[0]!.elements[1]!.x = 1
-    deck.slides[0]!.elements[1] = { kind: 'shape', shape: 'rect', id: 'body', x: 1, y: 2.5, w: 10, h: 3 }
-    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow('presentation_plan_mismatch:layout_component')
+    deck.slides[0]!.elements[1] = {
+      kind: 'shape',
+      shape: 'rect',
+      id: 'body',
+      x: 1,
+      y: 2.5,
+      w: 10,
+      h: 3,
+    }
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow(
+      'presentation_plan_mismatch:layout_component',
+    )
     plan.slides[0]!.layout = 'cover'
     expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:layout_component')
     plan.slides[0]!.layout = 'content'
@@ -78,7 +108,9 @@ describe('durable presentation plan', () => {
     plan.slides[0]!.layoutComponentId = 'title-body'
     const revised = structuredClone(plan)
     revised.brandKit!.layoutComponents![0]!.slots[0]!.x = 2
-    expect(() => assertBrandKitRevision(plan, revised)).toThrow('presentation_plan_invalid:brand_kit_revision')
+    expect(() => assertBrandKitRevision(plan, revised)).toThrow(
+      'presentation_plan_invalid:brand_kit_revision',
+    )
     revised.brandKit!.revision = 2
     expect(() => assertBrandKitRevision(plan, revised)).not.toThrow()
     plan.brandKit.layoutComponents![0]!.slots[1]!.w = 13
@@ -87,29 +119,65 @@ describe('durable presentation plan', () => {
   it('enforces an optional brand palette and required cover logo in the compiled deck', () => {
     const plan = benchmarkPlan()
     plan.brandKit = {
-      id: 'research-brand', revision: 1, name: '研究品牌',
+      id: 'research-brand',
+      revision: 1,
+      name: '研究品牌',
       allowedColors: ['FFFFFF', '172033', '2255AA'],
       logo: { assetId: 'pixel', assetDigest: 'a'.repeat(64), placement: 'cover' },
     }
     plan.slides[0]!.layout = 'cover'
     const deck = benchmarkDeck()
-    deck.slides[0]!.elements.push({ kind: 'image', id: 'brand-logo', x: 11, y: 0.3, w: 1, h: 1, assetId: 'pixel' })
+    deck.slides[0]!.elements.push({
+      kind: 'image',
+      id: 'brand-logo',
+      x: 11,
+      y: 0.3,
+      w: 1,
+      h: 1,
+      assetId: 'pixel',
+    })
     expect(parsePresentationPlan(plan).brandKit).toEqual(plan.brandKit)
     expect(() => assertDeckMatchesPresentationPlan(deck, plan)).not.toThrow()
     deck.slides[0]!.elements.pop()
-    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow('presentation_plan_mismatch:brand_logo')
-    deck.slides[0]!.elements.push({ kind: 'image', id: 'brand-logo', x: 11, y: 0.3, w: 1, h: 1, assetId: 'pixel' })
-    deck.slides[0]!.elements[0] = { ...deck.slides[0]!.elements[0]!, kind: 'text', text: '标题', color: 'FF0000' }
-    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow('presentation_plan_mismatch:brand_color')
-    deck.slides[0]!.elements[0] = { ...deck.slides[0]!.elements[0]!, kind: 'text', text: '标题', color: '172033' }
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow(
+      'presentation_plan_mismatch:brand_logo',
+    )
+    deck.slides[0]!.elements.push({
+      kind: 'image',
+      id: 'brand-logo',
+      x: 11,
+      y: 0.3,
+      w: 1,
+      h: 1,
+      assetId: 'pixel',
+    })
+    deck.slides[0]!.elements[0] = {
+      ...deck.slides[0]!.elements[0]!,
+      kind: 'text',
+      text: '标题',
+      color: 'FF0000',
+    }
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow(
+      'presentation_plan_mismatch:brand_color',
+    )
+    deck.slides[0]!.elements[0] = {
+      ...deck.slides[0]!.elements[0]!,
+      kind: 'text',
+      text: '标题',
+      color: '172033',
+    }
     plan.brandKit.allowedColors = ['FFFFFF', 'FFFFFF', '2255AA']
     expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:brand_kit')
     plan.brandKit.allowedColors = ['FFFFFF', '172033', '2255AA']
     plan.slides[0]!.layout = 'content'
-    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:brand_kit_logo_scope')
+    expect(() => parsePresentationPlan(plan)).toThrow(
+      'presentation_plan_invalid:brand_kit_logo_scope',
+    )
     plan.brandKit.logo!.placement = 'all'
     expect(() => parsePresentationPlan(plan)).not.toThrow()
-    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow('presentation_plan_mismatch:brand_logo')
+    expect(() => assertDeckMatchesPresentationPlan(deck, plan)).toThrow(
+      'presentation_plan_mismatch:brand_logo',
+    )
   })
   it('clones a valid plan and maps the benchmark deck exactly', () => {
     const plan = benchmarkPlan()
@@ -361,4 +429,27 @@ describe('durable presentation plan', () => {
       )
     }
   })
+})
+
+it('resolves source snapshots while preserving original URIs and legacy plans', () => {
+  const plan = benchmarkPlan()
+  const source = plan.sources[0]!
+  expect(presentationSourceAttachmentId(source)).toBeUndefined()
+  source.uri = 'https://example.com/original'
+  source.snapshotAttachmentId = 'a'.repeat(64)
+  expect(parsePresentationPlan(plan).sources[0]).toEqual(source)
+  expect(presentationSourceAttachmentId(source)).toBe(source.snapshotAttachmentId)
+  expect(presentationPlanClaims(plan)[0]!.source).toBe(source.uri)
+  source.uri = `attachment:${source.snapshotAttachmentId}`
+  expect(() => parsePresentationPlan(plan)).not.toThrow()
+  delete source.snapshotAttachmentId
+  expect(presentationSourceAttachmentId(source)).toBe('a'.repeat(64))
+  source.snapshotAttachmentId = 'b'.repeat(64)
+  expect(() => parsePresentationPlan(plan)).toThrow(
+    'presentation_plan_invalid:source_snapshot_conflict',
+  )
+  for (const value of ['', 'A'.repeat(64), '../file', 'a'.repeat(63)]) {
+    source.snapshotAttachmentId = value
+    expect(() => parsePresentationPlan(plan)).toThrow('presentation_plan_invalid:')
+  }
 })
