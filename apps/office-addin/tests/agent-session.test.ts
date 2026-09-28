@@ -316,7 +316,13 @@ describe('Office agent session', () => {
     harness.callbacks().onToolCall({ id: 'read-1', name: 'read_document', input: {} })
     harness.callbacks().onDone()
     await vi.waitFor(() =>
-      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_pending', 'read_document'),
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_pending',
+        'read_document',
+        false,
+        'read-1',
+      ),
     )
     expect(executeTool).not.toHaveBeenCalled()
 
@@ -327,6 +333,7 @@ describe('Office agent session', () => {
         'tool_completed',
         'read_document',
         false,
+        'read-1',
       ),
     )
     expect(executeTool).toHaveBeenCalledOnce()
@@ -407,13 +414,25 @@ describe('Office agent session', () => {
       harness.callbacks().onToolCall({ id: 'write-1', name: 'write', input: {} })
       harness.callbacks().onDone()
       await vi.waitFor(() => expect(executeTool).toHaveBeenCalledOnce())
-      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_pending', 'write')
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_pending',
+        'write',
+        false,
+        'write-1',
+      )
 
       session[action]()
       expect(finish).not.toHaveBeenCalled()
       finishWrite({ output: 'changed', summary: 'Changed', mutated: true })
       await Promise.resolve()
-      expect(tool).not.toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'write', true)
+      expect(tool).not.toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_completed',
+        'write',
+        true,
+        'write-1',
+      )
       expect(finish).not.toHaveBeenCalled()
     },
   )
@@ -450,7 +469,13 @@ describe('Office agent session', () => {
     harness.callbacks().onToolCall({ id: 'old-tool', name: 'read', input: {} })
     harness.callbacks().onDone()
     await vi.waitFor(() =>
-      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_pending', 'read'),
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_pending',
+        'read',
+        false,
+        'old-tool',
+      ),
     )
     session.newTask()
     session.send('new')
@@ -499,7 +524,13 @@ describe('Office agent session', () => {
     expect(tool).toHaveBeenCalledTimes(1)
     await session.confirm('p1')
     await vi.waitFor(() =>
-      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'propose', true),
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_completed',
+        'propose',
+        true,
+        'proposal-tool',
+      ),
     )
     expect(harness.stream).toHaveBeenCalledOnce()
     releaseCompleted()
@@ -585,7 +616,13 @@ describe('Office agent session', () => {
     expect(tool).toHaveBeenCalledTimes(1)
     releaseResult({ output: 'done', summary: 'Done' })
     await vi.waitFor(() =>
-      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'wait', false),
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_completed',
+        'wait',
+        false,
+        'wait-tool',
+      ),
     )
     expect(harness.stream).toHaveBeenCalledOnce()
     releaseCompleted()

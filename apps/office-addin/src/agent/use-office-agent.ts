@@ -198,6 +198,7 @@ export function createOfficeAgentSession(dependencies: {
       instruction: string
       phase: 'running' | 'tool_pending' | 'tool_completed'
       toolName?: string
+      toolCallId?: string
       restartSafe?: boolean
     }
     validateDocument?(): Promise<boolean>
@@ -207,6 +208,7 @@ export function createOfficeAgentSession(dependencies: {
       phase: 'tool_pending' | 'tool_completed',
       toolName: string,
       mutated?: boolean,
+      toolCallId?: string,
     ): Promise<void>
     finish(runId: string): Promise<void>
   }
@@ -395,7 +397,13 @@ export function createOfficeAgentSession(dependencies: {
         if (runId && !currentRun()) unsettledToolRuns.delete(runId)
         if (runId && currentRun() && dependencies.runCheckpoint?.tool)
           try {
-            await dependencies.runCheckpoint.tool(runId, 'tool_completed', call.name, mutated)
+            await dependencies.runCheckpoint.tool(
+              runId,
+              'tool_completed',
+              call.name,
+              mutated,
+              call.id,
+            )
             unsettledToolRuns.delete(runId)
           } catch {
             return false
@@ -414,7 +422,7 @@ export function createOfficeAgentSession(dependencies: {
             }
       if (runId && dependencies.runCheckpoint?.tool) {
         try {
-          await dependencies.runCheckpoint.tool(runId, 'tool_pending', call.name)
+          await dependencies.runCheckpoint.tool(runId, 'tool_pending', call.name, false, call.id)
           unsettledToolRuns.add(runId)
         } catch {
           return {

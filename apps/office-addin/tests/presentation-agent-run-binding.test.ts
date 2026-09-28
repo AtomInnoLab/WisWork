@@ -154,6 +154,60 @@ describe('presentation AgentRun checkpoint', () => {
     await checkpoint.finish('oversized-run')
   })
 
+  it('binds an unfinished tool and its completion to the same model call', async () => {
+    const values = new Map<string, string>()
+    const local = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => local.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        local.set(key, value)
+      },
+      removeItem: (key: string) => {
+        local.delete(key)
+      },
+    }
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => 'file:///deck.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    const checkpoint = createPresentationAgentRunCheckpoint(binding, id, storage)
+    await checkpoint.begin('run-1', 'Read plan')
+    await checkpoint.tool('run-1', 'tool_pending', 'read_presentation_plan', false, 'call-1')
+    expect(checkpoint.recovery()).toMatchObject({ toolCallId: 'call-1', restartSafe: true })
+    await expect(
+      checkpoint.tool('run-1', 'tool_completed', 'read_presentation_plan', false, 'call-2'),
+    ).rejects.toThrow('presentation_run_checkpoint_unavailable')
+    expect(checkpoint.recovery()).toMatchObject({ phase: 'tool_pending', toolCallId: 'call-1' })
+    await checkpoint.tool('run-1', 'tool_completed', 'read_presentation_plan', false, 'call-1')
+    expect(createPresentationAgentRunCheckpoint(binding, id, storage).recovery()).toMatchObject({
+      phase: 'tool_completed',
+      toolCallId: 'call-1',
+      restartSafe: true,
+    })
+    await checkpoint.tool('run-1', 'tool_pending', 'list_presentation_attachments', false, 'call-2')
+    expect(checkpoint.recovery()).toMatchObject({ phase: 'tool_pending', toolCallId: 'call-2' })
+    await checkpoint.tool(
+      'run-1',
+      'tool_completed',
+      'list_presentation_attachments',
+      false,
+      'call-2',
+    )
+    const key = 'wiswork.presentation.agent-run.v1'
+    values.set(key, JSON.stringify({ ...JSON.parse(values.get(key)!), toolCallId: 'forged' }))
+    expect(createPresentationAgentRunCheckpoint(binding, id, storage).recovery()?.instruction).toBe(
+      '',
+    )
+  })
+
   it('requires the local checkpoint to agree before offering a document-provided safe restart', async () => {
     const values = new Map<string, string>()
     const local = new Map<string, string>()

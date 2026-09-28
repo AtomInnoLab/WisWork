@@ -77,6 +77,7 @@ export interface PresentationAgentRunRecovery {
   instruction: string
   phase: 'running' | 'tool_pending' | 'tool_completed'
   toolName?: string
+  toolCallId?: string
   restartSafe?: boolean
 }
 // Only audited reads may restart the original instruction after a Taskpane interruption.
@@ -1485,6 +1486,7 @@ export function createPresentationDocumentBinding(
                 'startedAt',
                 'phase',
                 'toolName',
+                'toolCallId',
                 'instruction',
                 'restartSafe',
               ].includes(key),
@@ -1496,7 +1498,11 @@ export function createPresentationDocumentBinding(
           !['running', 'tool_pending', 'tool_completed'].includes(value.phase as string) ||
           (value.restartSafe !== undefined && typeof value.restartSafe !== 'boolean') ||
           (value.toolName !== undefined &&
-            (typeof value.toolName !== 'string' || value.toolName.length > 128))
+            (typeof value.toolName !== 'string' || value.toolName.length > 128)) ||
+          (value.toolCallId !== undefined &&
+            (typeof value.toolCallId !== 'string' ||
+              value.toolCallId.length < 1 ||
+              value.toolCallId.length > 256))
         )
           return undefined
         return {
@@ -1504,6 +1510,7 @@ export function createPresentationDocumentBinding(
           instruction: '',
           phase: value.phase as PresentationAgentRunRecovery['phase'],
           ...(typeof value.toolName === 'string' ? { toolName: value.toolName } : {}),
+          ...(typeof value.toolCallId === 'string' ? { toolCallId: value.toolCallId } : {}),
           ...(typeof value.restartSafe === 'boolean'
             ? {
                 restartSafe:
@@ -1571,9 +1578,14 @@ export function createPresentationDocumentBinding(
       phase: 'tool_pending' | 'tool_completed',
       toolName: string,
       mutated = false,
+      toolCallId?: string,
     ) {
       return queueRunCheckpoint(async () => {
-        if ((await documentId()) !== boundDocumentId || toolName.length > 128)
+        if (
+          (await documentId()) !== boundDocumentId ||
+          toolName.length > 128 ||
+          (toolCallId !== undefined && (toolCallId.length < 1 || toolCallId.length > 256))
+        )
           throw new Error('presentation_document_changed')
         const previous = settings.get(AGENT_RUN_KEY)
         const current = this.agentRunRecovery(boundDocumentId)
@@ -1582,15 +1594,19 @@ export function createPresentationDocumentBinding(
         if (
           (phase === 'tool_pending' && current.phase === 'tool_pending') ||
           (phase === 'tool_completed' &&
-            (current.phase !== 'tool_pending' || current.toolName !== toolName))
+            (current.phase !== 'tool_pending' ||
+              current.toolName !== toolName ||
+              current.toolCallId !== toolCallId))
         )
           throw new Error('presentation_run_checkpoint_unavailable')
         const next = JSON.parse(previous) as Record<string, unknown>
         delete next.instruction
+        delete next.toolCallId
         const raw = JSON.stringify({
           ...next,
           phase,
           toolName,
+          ...(toolCallId === undefined ? {} : { toolCallId }),
           restartSafe: current.restartSafe === true && restartSafeTools.has(toolName) && !mutated,
         })
         if (new TextEncoder().encode(raw).byteLength > 4096)
@@ -1735,9 +1751,18 @@ export function createPresentationAgentRunCheckpoint(
         !value ||
         Array.isArray(value) ||
         Object.keys(value).sort().join(',') !==
-          (value.toolName === undefined
-            ? 'documentId,expiresAt,instruction,phase,restartSafe,runId'
-            : 'documentId,expiresAt,instruction,phase,restartSafe,runId,toolName') ||
+          [
+            'documentId',
+            'expiresAt',
+            'instruction',
+            'phase',
+            'restartSafe',
+            'runId',
+            ...(value.toolCallId === undefined ? [] : ['toolCallId']),
+            ...(value.toolName === undefined ? [] : ['toolName']),
+          ]
+            .sort()
+            .join(',') ||
         value.documentId !== boundDocumentId ||
         value.runId !== record.runId ||
         typeof value.expiresAt !== 'number' ||
@@ -1748,6 +1773,10 @@ export function createPresentationAgentRunCheckpoint(
         new TextEncoder().encode(value.instruction).byteLength > AGENT_RUN_INSTRUCTION_LIMIT ||
         !['running', 'tool_pending', 'tool_completed'].includes(String(value.phase)) ||
         typeof value.restartSafe !== 'boolean' ||
+        (value.toolCallId !== undefined &&
+          (typeof value.toolCallId !== 'string' ||
+            value.toolCallId.length < 1 ||
+            value.toolCallId.length > 256)) ||
         (value.toolName !== undefined && typeof value.toolName !== 'string')
       ) {
         storage.removeItem(localKey(record.runId))
@@ -1756,6 +1785,7 @@ export function createPresentationAgentRunCheckpoint(
       if (
         value.phase !== record.phase ||
         value.toolName !== record.toolName ||
+        value.toolCallId !== record.toolCallId ||
         value.restartSafe !== record.restartSafe
       )
         return { ...record, instruction: '', restartSafe: false }
@@ -1825,6 +1855,7 @@ export function createPresentationAgentRunCheckpoint(
       phase: 'tool_pending' | 'tool_completed',
       toolName: string,
       mutated = false,
+      toolCallId?: string,
     ) {
       const id = runDocuments.get(runId)
       if (!id) throw new Error('presentation_run_checkpoint_unavailable')
@@ -1846,6 +1877,7 @@ export function createPresentationAgentRunCheckpoint(
             localRecord.runId !== runId ||
             localRecord.phase !== current.phase ||
             localRecord.toolName !== current.toolName ||
+            localRecord.toolCallId !== current.toolCallId ||
             localRecord.restartSafe !== current.restartSafe
           )
             throw new Error('presentation_run_checkpoint_unavailable')
@@ -1853,16 +1885,19 @@ export function createPresentationAgentRunCheckpoint(
           throw new Error('presentation_run_checkpoint_unavailable')
         }
       }
-      await binding.updateAgentRun(id, runId, phase, toolName, mutated)
+      await binding.updateAgentRun(id, runId, phase, toolName, mutated, toolCallId)
       if (localRecord) {
         const current = binding.agentRunRecovery(id)
         if (!current || current.runId !== runId)
           throw new Error('presentation_run_checkpoint_unavailable')
         try {
+          const nextLocal = { ...localRecord }
+          delete nextLocal.toolCallId
           const raw = JSON.stringify({
-            ...localRecord,
+            ...nextLocal,
             phase: current.phase,
             toolName: current.toolName,
+            ...(current.toolCallId === undefined ? {} : { toolCallId: current.toolCallId }),
             restartSafe: current.restartSafe === true,
           })
           storage!.setItem(localKey(runId), raw)
