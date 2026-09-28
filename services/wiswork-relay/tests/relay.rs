@@ -356,6 +356,42 @@ async fn explicit_pc_close_revokes_only_its_sessions() {
 }
 
 #[tokio::test]
+async fn pc_close_with_wrong_reason_remains_resumable() {
+    let url = server().await;
+    let (mut office, mut pc, ready, pc_ready) = approved_v2_session(&url).await;
+    pc.close(Some(CloseFrame {
+        code: CloseCode::Normal,
+        reason: "session_revoked_extra".into(),
+    }))
+    .await
+    .unwrap();
+    assert_eq!(recv(&mut office).await["type"], "office.pc_offline");
+
+    let mut resumed = pc_socket(&url).await;
+    send(&mut resumed, json!({"version":2,"type":"pc.resume","session_id":ready["session_id"],"capability":pc_ready["capability"]})).await;
+    assert_eq!(recv(&mut resumed).await["type"], "pc.resumed");
+    assert_eq!(recv(&mut office).await["type"], "office.pc_online");
+}
+
+#[tokio::test]
+async fn explicit_pc_close_terminates_active_office_request() {
+    let url = server().await;
+    let (mut office, mut pc, ready, _) = approved_v2_session(&url).await;
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"in_progress","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "in_progress");
+
+    pc.close(Some(CloseFrame {
+        code: CloseCode::Normal,
+        reason: "session_revoked".into(),
+    }))
+    .await
+    .unwrap();
+    let terminal = recv(&mut office).await;
+    assert_eq!(terminal["type"], "relay.error");
+    assert_eq!(terminal["code"], "session_revoked");
+}
+
+#[tokio::test]
 async fn three_powerpoint_sessions_route_interleaved_requests_to_their_own_pcs() {
     let url = server().await;
     let mut sessions = Vec::new();
