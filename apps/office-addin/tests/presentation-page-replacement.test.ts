@@ -296,14 +296,19 @@ it.each(['clear', 'document', 'order', 'receipt'])(
     expect(f.journal()).toBeUndefined()
   },
 )
-it.each(['backup', 'revision', 'plan'])('rejects mismatched %s before proposing', async (kind) => {
-  const f = setup()
-  if (kind === 'backup') f.metadata.requestId = 'other'
-  if (kind === 'revision') f.status.revision.parentRequestId = 'other'
-  if (kind === 'plan') f.status.planRevision = 2
-  expect(await f.skill.executeTool(f.stage)).toMatchObject({ isError: true })
-  expect(f.proposals.pending()).toBeUndefined()
-})
+it.each(['backup', 'revision', 'plan', 'title'])(
+  'rejects mismatched %s before proposing',
+  async (kind) => {
+    const f = setup()
+    if (kind === 'backup') f.metadata.requestId = 'other'
+    if (kind === 'revision') f.status.revision.parentRequestId = 'other'
+    if (kind === 'plan') f.status.planRevision = 2
+    if (kind === 'title') f.status.pages[0]!.title = 'Changed page title'
+    expect(await f.skill.executeTool(f.stage)).toMatchObject({ isError: true })
+    expect(f.proposals.pending()).toBeUndefined()
+    expect(f.adapter.stage).not.toHaveBeenCalled()
+  },
+)
 it('inspects an uncertain pending transaction without inserting or deleting', async () => {
   const f = setup()
   f.adapter.stage.mockRejectedValueOnce(new Error('office_state_uncertain'))

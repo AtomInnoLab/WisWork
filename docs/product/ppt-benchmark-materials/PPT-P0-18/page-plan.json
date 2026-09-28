@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "status": "candidate_pending_scientific_and_layout_review",
+  "format": "16:9",
+  "language": "zh-CN",
+  "source": {
+    "file": "deardorff-2020-article.pdf",
+    "doi": "10.1371/journal.pone.0230697",
+    "license": "CC BY 4.0"
+  },
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "titleColor": "122B43",
+    "accentColor": "008086",
+    "backgroundColor": "FFFFFF",
+    "sourceFooterRequired": true
+  },
+  "pages": [
+    {
+      "id": "p01",
+      "title": "计算可复现性工作坊：研究汇报",
+      "dependsOn": [],
+      "role": "封面与研究范围",
+      "sourcePages": [1]
+    },
+    {
+      "id": "p02",
+      "title": "研究问题与汇报范围",
+      "dependsOn": [],
+      "role": "研究问题",
+      "sourcePages": [1, 2]
+    },
+    {
+      "id": "p03",
+      "title": "研究方法与时间点",
+      "dependsOn": [],
+      "role": "前测14人，三个月后访谈12人；不得写成同一分母",
+      "sourcePages": [1, 3, 5]
+    },
+    {
+      "id": "p04",
+      "title": "参与者与证据路径",
+      "dependsOn": [],
+      "role": "用原生文字和形状说明招募、工作坊及后访谈三步；自制图仅作示意",
+      "sourcePages": [3, 5],
+      "revisionTarget": true,
+      "initialQaFinding": "现稿主要依赖两张抽象图片，未把三步证据路径明确标为可编辑的原生流程对象；布局审阅要求重做这一页。",
+      "revisionConstraint": "保留标题、来源页脚和已核对研究事实；改为原生三步流程及清晰图注，不修改其余七页。"
+    },
+    {
+      "id": "p05",
+      "title": "六项清单均值",
+      "dependsOn": [],
+      "role": "前测1.6/6、三个月后2.2/6；p=0.318，不能说成显著效果",
+      "sourcePages": [5]
+    },
+    {
+      "id": "p06",
+      "title": "开源软件使用：不同分母",
+      "dependsOn": [],
+      "role": "原生图表展示7/14与10/12；明确分母差异",
+      "sourcePages": [5]
+    },
+    {
+      "id": "p07",
+      "title": "解释边界与局限",
+      "dependsOn": [],
+      "role": "小样本、招募或应答偏差、单人编码及统计功效不足",
+      "sourcePages": [9]
+    },
+    {
+      "id": "p08",
+      "title": "结论与后续审阅",
+      "dependsOn": ["p04", "p05", "p06", "p07"],
+      "role": "结论与局限并列；第4页修订后必须重查引用和视觉连贯性，内容不应无故改写",
+      "sourcePages": [5, 9]
+    }
+  ],
+  "preserveUnchangedPageIds": ["p01", "p02", "p03", "p05", "p06", "p07", "p08"],
+  "recheckAfterRevision": ["p04", "p08"]
+}

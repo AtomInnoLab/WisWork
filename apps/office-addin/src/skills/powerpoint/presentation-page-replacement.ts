@@ -236,8 +236,8 @@ export function createPresentationPageReplacementSkill(
             status.revision.pageId !== input.page_id ||
             status.planRevision !== artifact.planRevision ||
             !same(
-              status.pages.map((p) => p.id),
-              artifact.pages?.map((p) => p.id),
+              status.pages.map((p) => ({ id: p.id, title: p.title })),
+              artifact.pages?.map((p) => ({ id: p.id, title: p.title })),
             )
           )
             throw new Error('presentation_page_binding_invalid')
