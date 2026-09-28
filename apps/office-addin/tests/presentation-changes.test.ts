@@ -168,14 +168,12 @@ it('routes an undone page reapply and counts both retained package backups as re
       { id: 'existing_page:page-redo', kind: 'existing_page', sequence: 1, legacy: false, record },
     ],
     listExistingPageBackups: async () =>
-      [record.backup, record.sourceBackup!]
-        .filter(Boolean)
-        .map((backup) => ({
-          ...backup,
-          status: 'ready',
-          hostSlideId: 'old',
-          slideIds: ['old', 'other'],
-        })),
+      [record.backup, record.sourceBackup!].filter(Boolean).map((backup) => ({
+        ...backup,
+        status: 'ready',
+        hostSlideId: 'old',
+        slideIds: ['old', 'other'],
+      })),
     executeTool,
   })
   await controller.refresh()
