@@ -313,6 +313,7 @@ export function createOfficeHostRuntime(
               [
                 'edit_existing_presentation_batch',
                 'resume_existing_presentation_batch',
+                'reapply_existing_presentation_batch',
                 'undo_existing_presentation_batch',
               ].includes(proposal.operation) &&
               proposal.operation === proposal.toolName &&

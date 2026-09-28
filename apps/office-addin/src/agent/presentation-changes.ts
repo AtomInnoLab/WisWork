@@ -33,7 +33,7 @@ import {
 } from '../skills/powerpoint/presentation-image-replacement-record.js'
 
 export type PresentationChangeAction =
-  'inspect' | 'undo' | 'resume' | 'commit' | 'discard' | 'release'
+  'inspect' | 'undo' | 'resume' | 'reapply' | 'commit' | 'discard' | 'release'
 export interface PresentationChangeEntry {
   origin?: { agentRunId: string; toolCallId: string }
   source?: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart'
@@ -433,7 +433,7 @@ export function createPresentationChangesController(
                               ? ['inspect', 'undo']
                               : saved.record.state === 'undone'
                                 ? saved.record.backups?.length && !saved.record.backupReleasedAt
-                                  ? ['inspect', 'release']
+                                  ? ['inspect', 'reapply', 'release']
                                   : ['inspect']
                                 : saved.record.state === 'applying'
                                   ? ['inspect', 'resume', 'undo']

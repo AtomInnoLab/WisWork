@@ -301,7 +301,21 @@ it('counts batch page savepoints as linked PC backups', async () => {
   })
   await controller.refresh()
   expect(controller.snapshot().backupAudit).toEqual({ active: 2, unmatched: 0 })
-  record = { ...record, state: 'applying', cursor: 1 }
+  record = { ...record, state: 'undone', cursor: 0 }
+  await controller.refresh()
+  expect(controller.snapshot().entries[0].actions).toEqual(['inspect', 'reapply', 'release'])
+  await controller.run('existing_batch:batch', 'reapply')
+  expect(executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'reapply_existing_presentation_batch',
+      input: { change_id: 'batch' },
+    }),
+    expect.any(AbortSignal),
+  )
+  record = { ...record, backupReleasedAt: '2026-09-29T00:00:00.000Z' }
+  await controller.refresh()
+  expect(controller.snapshot().entries[0].actions).toEqual(['inspect'])
+  record = { ...record, state: 'applying', cursor: 1, backupReleasedAt: undefined }
   await controller.refresh()
   expect(controller.snapshot().entries[0]).toMatchObject({
     state: 'applying',

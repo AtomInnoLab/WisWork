@@ -7,6 +7,7 @@ const labels: Record<PresentationChangeAction, string> = {
   inspect: '检查',
   undo: '撤销',
   resume: '继续',
+  reapply: '重新应用',
   commit: '提交替换',
   discard: '丢弃替换',
   release: '释放备份',

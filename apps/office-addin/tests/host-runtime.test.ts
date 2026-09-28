@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
+import type { StructuredProposalController } from '../src/agent/proposal-controller.js'
 
 const inventories = {
   word: [
@@ -34,6 +35,7 @@ const inventories = {
     'edit_existing_presentation_table_batch',
     'inspect_existing_presentation_batch',
     'resume_existing_presentation_batch',
+    'reapply_existing_presentation_batch',
     'undo_existing_presentation_batch',
     'release_existing_presentation_batch',
     'capture_existing_presentation_batch_page',
@@ -530,6 +532,37 @@ it('gates QA by host support and refreshes saved QA after project restoration', 
     expect(listener).toHaveBeenCalledTimes(2)
   } finally {
     vi.unstubAllGlobals()
+  }
+})
+
+it('invalidates exactly the affected host pages when confirming batch reapply', async () => {
+  const invalidateQa = vi.fn(async (_hostSlideIds?: readonly string[]) => {})
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request: vi.fn(async () => new Response('{}')),
+      documentId: async () => 'doc',
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+      invalidateQa,
+    },
+  })
+  try {
+    const proposals = runtime.proposals as StructuredProposalController
+    const proposal = proposals.propose({
+      operation: 'reapply_existing_presentation_batch',
+      toolName: 'reapply_existing_presentation_batch',
+      title: 'Reapply batch',
+      preview: {},
+      impact: { host: 'powerpoint', targets: ['slide-2', 'slide-1'], count: 2 },
+      fingerprint: 'batch',
+      validate: () => true,
+      execute: () => {},
+    })
+    await proposals.confirm(proposal.id)
+    expect(invalidateQa).toHaveBeenCalledExactlyOnceWith(['slide-2', 'slide-1'])
+  } finally {
+    runtime.dispose()
   }
 })
 

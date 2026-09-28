@@ -274,6 +274,43 @@ it('shows partial batch progress and both recovery choices', async () => {
   }
 })
 
+it('routes the saved batch reapply button by its exact history ID', async () => {
+  const run = vi.fn()
+  const controller: PresentationChangesController = {
+    snapshot: () => ({
+      phase: 'idle',
+      entries: [
+        {
+          id: 'existing_batch:redo',
+          source: 'existing_batch',
+          kind: 'text',
+          pageId: 'slide',
+          state: 'undone',
+          before: 'old',
+          after: 'new',
+          actions: ['inspect', 'reapply', 'release'],
+        },
+      ],
+    }),
+    subscribe: () => () => {},
+    run,
+    refresh: vi.fn(),
+    clear: vi.fn(),
+  }
+  const container = document.createElement('div')
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(React.createElement(PresentationChangesCard, { controller })))
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="重新应用 slide"]')!.click(),
+    )
+    expect(run).toHaveBeenCalledWith('existing_batch:redo', 'reapply')
+    expect(container.textContent).toContain('不代表当前页面 QA 通过')
+  } finally {
+    await act(async () => root.unmount())
+  }
+})
+
 it('separates captured, pending, passed and failed existing-page evidence', async () => {
   const capturedAt = '2026-09-24T00:00:00.000Z'
   const controller: PresentationChangesController = {
