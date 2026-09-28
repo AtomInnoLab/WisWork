@@ -570,6 +570,22 @@ describe('Office agent session', () => {
     expect(session.snapshot().error).toBe('presentation_run_checkpoint_unavailable')
     expect(harness.stream).not.toHaveBeenCalled()
   })
+  it('passes a longer presentation brief to the bounded local recovery checkpoint', async () => {
+    const harness = transportHarness()
+    const begin = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: { interrupted: false, begin, finish: vi.fn(async () => undefined) },
+    })
+    const brief = '页面、来源和样式要求。'.repeat(150)
+    expect(brief.length).toBeGreaterThan(1000)
+    session.send(brief)
+    await vi.waitFor(() => expect(begin).toHaveBeenCalledOnce())
+    expect(begin).toHaveBeenCalledWith(expect.any(String), brief)
+    session.stop()
+  })
   it('does not start a cancelled run after a delayed checkpoint save', async () => {
     const harness = transportHarness()
     let release!: () => void

@@ -113,6 +113,47 @@ describe('presentation AgentRun checkpoint', () => {
     expect(local.size).toBe(0)
   })
 
+  it('recovers a longer local brief without embedding it in document settings', async () => {
+    const values = new Map<string, string>()
+    const local = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => local.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        local.set(key, value)
+      },
+      removeItem: (key: string) => {
+        local.delete(key)
+      },
+    }
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => 'file:///deck.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    const checkpoint = createPresentationAgentRunCheckpoint(binding, id, storage)
+    const brief = '研究资料与页面要求。'.repeat(200)
+    expect(new TextEncoder().encode(brief).byteLength).toBeGreaterThan(3000)
+    await checkpoint.begin('long-run', brief)
+    expect(values.get('wiswork.presentation.agent-run.v1')).not.toContain(brief)
+    expect(createPresentationAgentRunCheckpoint(binding, id, storage).recovery()?.instruction).toBe(
+      brief,
+    )
+    await checkpoint.finish('long-run')
+    expect(local.size).toBe(0)
+    await checkpoint.begin('oversized-run', 'A'.repeat(9000))
+    expect(createPresentationAgentRunCheckpoint(binding, id, storage).recovery()?.instruction).toBe(
+      '',
+    )
+    await checkpoint.finish('oversized-run')
+  })
+
   it('sweeps expired orphan prompts when a different deck initializes', async () => {
     const values = new Map<string, string>()
     const local = new Map<string, string>([
@@ -329,6 +370,40 @@ describe('presentation AgentRun checkpoint', () => {
     values.set(key, JSON.stringify(forged))
     await binding.updateAgentRun(id, 'run-1', 'tool_completed', 'write_presentation_page')
     await binding.updateAgentRun(id, 'run-1', 'tool_pending', 'read_presentation_plan')
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(false)
+  })
+
+  it.each([
+    'read_presentation_page_reviews',
+    'read_presentation_claim_review',
+    'read_presentation_claim_evidence',
+    'check_presentation_page_content',
+    'read_presentation_production',
+    'audit_presentation_sources',
+    'list_presentation_review_comments',
+  ])('keeps %s restart-safe only after an unmutated completion', async (toolName) => {
+    const values = new Map<string, string>()
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => 'file:///deck.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    await binding.rememberAgentRun(id, 'read-run')
+    await binding.updateAgentRun(id, 'read-run', 'tool_pending', toolName)
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(true)
+    await binding.updateAgentRun(id, 'read-run', 'tool_completed', toolName)
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(true)
+    await binding.finishAgentRun(id, 'read-run')
+    await binding.rememberAgentRun(id, 'mutated-run')
+    await binding.updateAgentRun(id, 'mutated-run', 'tool_pending', toolName)
+    await binding.updateAgentRun(id, 'mutated-run', 'tool_completed', toolName, true)
     expect(binding.agentRunRecovery(id)?.restartSafe).toBe(false)
   })
 

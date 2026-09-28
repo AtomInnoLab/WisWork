@@ -648,7 +648,7 @@ export function createOfficeAgentSession(dependencies: {
     const epoch = sessionEpoch
     const runId = crypto.randomUUID()
     void dependencies.runCheckpoint
-      .begin(runId, value.length <= 1000 ? value : '')
+      .begin(runId, value)
       .then(() => {
         pendingStart = false
         if (disposed || epoch !== sessionEpoch) {

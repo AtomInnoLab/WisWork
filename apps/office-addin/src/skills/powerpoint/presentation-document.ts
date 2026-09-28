@@ -102,9 +102,18 @@ const restartSafeTools = new Set([
   'list_presentation_preferences',
   'read_presentation_domain_skill',
   'compare_presentation_page_structure',
+  'read_presentation_page_reviews',
+  'read_presentation_claim_review',
+  'read_presentation_claim_evidence',
+  'check_presentation_page_content',
+  'read_presentation_production',
+  'audit_presentation_sources',
+  'list_presentation_review_comments',
 ])
 const AGENT_RUN_LOCAL_PREFIX = 'wiswork.presentation.agent-run.prompt.v1.'
 const AGENT_RUN_LOCAL_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const AGENT_RUN_LOCAL_RECORD_LIMIT = 12 * 1024
+const AGENT_RUN_INSTRUCTION_LIMIT = 8 * 1024
 const validId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 
@@ -1690,7 +1699,7 @@ export function createPresentationAgentRunCheckpoint(
         let expiresAt: unknown
         try {
           expiresAt =
-            raw && new TextEncoder().encode(raw).byteLength <= 4096
+            raw && new TextEncoder().encode(raw).byteLength <= AGENT_RUN_LOCAL_RECORD_LIMIT
               ? (JSON.parse(raw) as Record<string, unknown>).expiresAt
               : undefined
         } catch {
@@ -1716,7 +1725,7 @@ export function createPresentationAgentRunCheckpoint(
     try {
       const raw = storage.getItem(localKey(record.runId))
       if (!raw) return record
-      if (new TextEncoder().encode(raw).byteLength > 4096) {
+      if (new TextEncoder().encode(raw).byteLength > AGENT_RUN_LOCAL_RECORD_LIMIT) {
         storage.removeItem(localKey(record.runId))
         return record
       }
@@ -1732,8 +1741,7 @@ export function createPresentationAgentRunCheckpoint(
         value.expiresAt <= Date.now() ||
         value.expiresAt > Date.now() + AGENT_RUN_LOCAL_TTL_MS ||
         typeof value.instruction !== 'string' ||
-        value.instruction.length > 1000 ||
-        new TextEncoder().encode(value.instruction).byteLength > 3000
+        new TextEncoder().encode(value.instruction).byteLength > AGENT_RUN_INSTRUCTION_LIMIT
       ) {
         storage.removeItem(localKey(record.runId))
         return record
@@ -1750,22 +1758,22 @@ export function createPresentationAgentRunCheckpoint(
       if ((await binding.documentId()) !== boundDocumentId)
         throw new Error('presentation_document_changed')
       const recoverableInstruction =
-        instruction.length <= 1000 && new TextEncoder().encode(instruction).byteLength <= 3000
+        new TextEncoder().encode(instruction).byteLength <= AGENT_RUN_INSTRUCTION_LIMIT
           ? instruction
           : ''
       const previous = binding.agentRunRecovery(boundDocumentId)
       await binding.rememberAgentRun(boundDocumentId, runId)
       try {
-        if (storage && recoverableInstruction)
-          storage.setItem(
-            localKey(runId),
-            JSON.stringify({
-              documentId: boundDocumentId,
-              runId,
-              instruction: recoverableInstruction,
-              expiresAt: Date.now() + AGENT_RUN_LOCAL_TTL_MS,
-            }),
-          )
+        if (storage && recoverableInstruction) {
+          const localRecord = JSON.stringify({
+            documentId: boundDocumentId,
+            runId,
+            instruction: recoverableInstruction,
+            expiresAt: Date.now() + AGENT_RUN_LOCAL_TTL_MS,
+          })
+          if (new TextEncoder().encode(localRecord).byteLength <= AGENT_RUN_LOCAL_RECORD_LIMIT)
+            storage.setItem(localKey(runId), localRecord)
+        }
       } catch {
         await binding.finishAgentRun(boundDocumentId, runId)
         try {
