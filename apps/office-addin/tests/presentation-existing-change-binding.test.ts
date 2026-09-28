@@ -71,6 +71,31 @@ it('validates a native table cell savepoint with exact bounded coordinates', asy
   expect(validatePresentationExistingChange({ ...cell, cellStructureDigest: 'bad' })).toBe(false)
   expect(validatePresentationExistingChange({ ...record, rowIndex: 0 })).toBe(false)
 })
+it('validates a run-bound text range digest while retaining older range records', async () => {
+  const { record } = await fixture()
+  const range = {
+    ...record,
+    kind: 'text_range',
+    start: 0,
+    length: 3,
+    font: {
+      name: 'Arial',
+      size: 20,
+      color: '#000000',
+      bold: false,
+      italic: false,
+      underline: 'None',
+    },
+    runStructureDigest: 'b'.repeat(64),
+  }
+  expect(validatePresentationExistingChange(range)).toBe(true)
+  expect(validatePresentationExistingChange({ ...range, runStructureDigest: 'bad' })).toBe(false)
+  const { runStructureDigest: _digest, ...older } = range
+  expect(validatePresentationExistingChange(older)).toBe(true)
+  expect(
+    validatePresentationExistingChange({ ...record, runStructureDigest: 'b'.repeat(64) }),
+  ).toBe(false)
+})
 it('binds a bounded original page package to the exact existing-change slide', async () => {
   const { record } = await fixture()
   const backed = {

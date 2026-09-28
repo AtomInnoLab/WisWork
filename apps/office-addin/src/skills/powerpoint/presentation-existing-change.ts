@@ -39,6 +39,8 @@ export type PresentationExistingChange = ExistingChangeBase &
         start: number
         length: number
         font: PresentationTextRangeSnapshot['font']
+        /** Present on run-verified records; absent on older records. */
+        runStructureDigest?: string
         before: string
         after: string
       }
@@ -110,6 +112,7 @@ export function validatePresentationExistingChange(
         'start',
         'length',
         'font',
+        'runStructureDigest',
         'before',
         'after',
         'state',
@@ -190,6 +193,7 @@ export function validatePresentationExistingChange(
   if (!cell && ('rowIndex' in r || 'columnIndex' in r || 'cellStructureDigest' in r)) return false
   if (r.kind === 'text_range') {
     if (
+      (r.runStructureDigest !== undefined && !digest(r.runStructureDigest)) ||
       !Number.isSafeInteger(r.start) ||
       r.start < 0 ||
       !Number.isSafeInteger(r.length) ||
@@ -221,7 +225,7 @@ export function validatePresentationExistingChange(
       r.font.underline.length > 64
     )
       return false
-  } else if ('start' in r || 'length' in r || 'font' in r) return false
+  } else if ('start' in r || 'length' in r || 'font' in r || 'runStructureDigest' in r) return false
   if (r.review !== undefined) {
     const v = r.review
     if (

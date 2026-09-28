@@ -318,7 +318,10 @@ async function fixture() {
       underline: 'None',
     },
     selection = ['shape'],
-    screenshot = png
+    screenshot = png,
+    packageRunBold = true,
+    packageRunLinked = false,
+    changePackageFormatOnRangeEdit = false
   const values = new Map<string, string>()
   const save = vi.fn(async () => {})
   const settings = {
@@ -376,23 +379,28 @@ async function fixture() {
       if (text !== expected) throw new Error('office_concurrent_change')
       text = next
     })
+  let textRangePackageMode = false
   const readTextRange = vi
     .spyOn(BrowserPowerPointAdapter.prototype, 'readPresentationPageTextRange')
-    .mockImplementation(async (slideId, shapeId, start, length) => ({
-      slideId,
-      shapeId,
-      start,
-      length,
-      fullText: text,
-      text: text.slice(start, start + length),
-      font: { ...rangeFont },
-    }))
+    .mockImplementation(async (slideId, shapeId, start, length) => {
+      textRangePackageMode = true
+      return {
+        slideId,
+        shapeId,
+        start,
+        length,
+        fullText: text,
+        text: text.slice(start, start + length),
+        font: { ...rangeFont },
+      }
+    })
   const editTextRange = vi
     .spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationPageTextRange')
     .mockImplementation(async (expected, next) => {
       if (text !== expected.fullText || JSON.stringify(rangeFont) !== JSON.stringify(expected.font))
         throw new Error('office_concurrent_change')
       text = text.slice(0, expected.start) + next + text.slice(expected.start + expected.length)
+      if (changePackageFormatOnRangeEdit) packageRunBold = !packageRunBold
     })
   const editGeometry = vi
     .spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationPageGeometry')
@@ -424,9 +432,12 @@ async function fixture() {
   let packageComment = ''
   const tableXml = () =>
     `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="shape" name="Table"/></p:nvGraphicFramePr><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>${tableText}</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>${tableText2}</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`
+  const escapeXml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+  const textXml = () =>
+    `<p:sld xmlns:p="urn:p" xmlns:a="urn:a" xmlns:r="urn:r"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="shape" name="Title"/></p:nvSpPr><p:txBody><a:p><a:r><a:rPr b="${packageRunBold ? 1 : 0}">${packageRunLinked ? '<a:hlinkClick r:id="rId1"/>' : ''}</a:rPr><a:t>${escapeXml(text.slice(0, 3))}</a:t></a:r><a:r><a:rPr i="1"/><a:t>${escapeXml(text.slice(3))}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'exportPresentationPagePackage').mockImplementation(
     async (slideId) => {
-      zip.file('ppt/slides/slide1.xml', tableXml())
+      zip.file('ppt/slides/slide1.xml', textRangePackageMode ? textXml() : tableXml())
       return {
         slideId,
         slideIds: ['slide', 'other'],
@@ -607,6 +618,15 @@ async function fixture() {
     setRangeFont: (v: typeof rangeFont) => {
       rangeFont = v
     },
+    setPackageRunBold: (value: boolean) => {
+      packageRunBold = value
+    },
+    setPackageRunLinked: (value: boolean) => {
+      packageRunLinked = value
+    },
+    setChangePackageFormatOnRangeEdit: (value: boolean) => {
+      changePackageFormatOnRangeEdit = value
+    },
     setScreenshot: (v: string) => {
       screenshot = v
     },
@@ -748,6 +768,8 @@ it('confirms and undoes a bounded text range in a mixed-font shape', async () =>
     before: 'before',
     after: 'newore',
   })
+  if (record.kind !== 'text_range') throw new Error('unexpected_change_kind')
+  expect(record.runStructureDigest).toMatch(/^[a-f0-9]{64}$/)
   f.reopen()
   const undo = await f.call('undo_existing_presentation_change', { change_id: record.changeId })
   expect(undo.isError, undo.output).not.toBe(true)
@@ -792,6 +814,73 @@ it('rejects an invalid range and blocks a stale range font before writing', asyn
   await expect(f.confirm()).rejects.toThrow()
   expect(f.text()).toBe('before')
   expect(f.editTextRange).not.toHaveBeenCalled()
+})
+it('rejects a text range crossing package runs or carrying a hyperlink', async () => {
+  const f = await fixture()
+  const baseline_id = await f.baseline()
+  const crossing = await f.call('edit_existing_presentation_text_range', {
+    baseline_id,
+    slide_id: 'slide',
+    shape_id: 'shape',
+    range_start: 2,
+    range_length: 3,
+    text: 'new',
+  })
+  expect(crossing.output).toBe('presentation_existing_target_unsupported')
+  f.setPackageRunLinked(true)
+  const linked = await f.call('edit_existing_presentation_text_range', {
+    baseline_id,
+    slide_id: 'slide',
+    shape_id: 'shape',
+    range_start: 0,
+    range_length: 3,
+    text: 'new',
+  })
+  expect(linked.output).toBe('presentation_existing_target_unsupported')
+  expect(f.editTextRange).not.toHaveBeenCalled()
+})
+it('blocks a pending text range when package run formatting changes', async () => {
+  const f = await fixture()
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_text_range', {
+    baseline_id,
+    slide_id: 'slide',
+    shape_id: 'shape',
+    range_start: 0,
+    range_length: 3,
+    text: 'new',
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  f.setPackageRunBold(false)
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.text()).toBe('before')
+  expect(f.editTextRange).not.toHaveBeenCalled()
+  expect(f.readyBackups()).toBe(0)
+})
+it('keeps a text range pending if PowerPoint changes run formatting during the write', async () => {
+  const f = await fixture()
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_text_range', {
+    baseline_id,
+    slide_id: 'slide',
+    shape_id: 'shape',
+    range_start: 0,
+    range_length: 3,
+    text: 'new',
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  f.setChangePackageFormatOnRangeEdit(true)
+  await expect(f.confirm()).rejects.toThrow()
+  expect(f.text()).toBe('newore')
+  expect(f.readyBackups()).toBe(1)
+  expect(f.records()[0]!.record.state).toBe('pending')
+  expect(f.editTextRange).toHaveBeenCalledTimes(1)
+  f.reopen()
+  const resume = await f.call('resume_existing_presentation_change', {
+    change_id: f.records()[0]!.record.changeId,
+  })
+  expect(resume.isError).toBe(true)
+  expect(f.editTextRange).toHaveBeenCalledTimes(1)
 })
 it.each(['text', 'geometry'] as const)(
   'persists a confirmed existing %s change and undoes it after reopening while offline',
