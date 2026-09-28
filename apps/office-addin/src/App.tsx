@@ -1687,6 +1687,7 @@ function ConfiguredApp() {
               host: activeHost,
               platform: environment.platform,
               build: __WISWORK_OFFICE_BUILD_ID__,
+              localDocumentId: boundPresentationDocumentId,
               requirementSets: environment.requirementSets,
               remoteEnabled: remoteDiagnosticsEnabled,
               remoteSamplePercent: diagnosticSamplePercent,

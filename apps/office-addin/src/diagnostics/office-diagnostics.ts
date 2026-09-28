@@ -10,6 +10,7 @@ export type DiagnosticPhase =
 export type DiagnosticOutcome = 'passed' | 'failed' | 'unsupported' | 'cancelled'
 export type VerificationStage = 'text' | 'body_shape' | 'content' | 'boundary'
 export interface PresentationDiagnosticContext {
+  document_id?: string
   project_id?: string
   request_id?: string
   page_id?: string
@@ -82,6 +83,7 @@ interface DiagnosticOptions {
   host: Exclude<OfficeHost, 'unknown'>
   platform?: string
   build: string
+  localDocumentId?: string
   requirementSets?: Readonly<Record<string, boolean>>
   remoteEnabled?: boolean
   remoteSamplePercent?: number
@@ -219,7 +221,7 @@ function requirementSets(value: Readonly<Record<string, boolean>> | undefined) {
 
 function presentationContext(value: PresentationDiagnosticContext | undefined) {
   if (!value) return undefined
-  const allowed = ['project_id', 'request_id', 'page_id', 'tool_call_id'] as const
+  const allowed = ['document_id', 'project_id', 'request_id', 'page_id', 'tool_call_id'] as const
   const safe = Object.fromEntries(
     allowed.flatMap((key) =>
       typeof value[key] === 'string' && /^[A-Za-z0-9_#-]{1,128}$/.test(value[key])
@@ -250,6 +252,7 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
   const candidatePlatform = identifier(options.platform, 'unknown', 32).toLowerCase()
   const platform = PLATFORMS.has(candidatePlatform) ? candidatePlatform : 'unknown'
   const build = identifier(options.build, 'unknown', 64)
+  const documentContext = presentationContext({ document_id: options.localDocumentId })
   let events: OfficeDiagnosticEvent[] = []
   let traceId: string | undefined
   let traceGeneration = 0
@@ -340,7 +343,9 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
             ? Math.min(600_000, Math.trunc(input.durationMs!))
             : 0,
         requirement_sets: requirements,
-        ...(context ? { presentation_context: context } : {}),
+        ...(documentContext || context
+          ? { presentation_context: { ...documentContext, ...context } }
+          : {}),
       })
       if (encoder.encode(JSON.stringify(event)).byteLength > MAX_DIAGNOSTIC_EVENT_BYTES) {
         throw new Error('invalid_diagnostic_event')
