@@ -221,6 +221,7 @@ export function createOfficeAgentSession(dependencies: {
     interrupted: boolean
     scrubFailed?: boolean
     recovery?: {
+      runId?: string
       instruction: string
       phase: 'running' | 'tool_pending' | 'tool_completed'
       toolName?: string
@@ -312,6 +313,7 @@ export function createOfficeAgentSession(dependencies: {
   let activeRunId: string | undefined
   let toolsStarted = false
   let recoveryPending = false
+  let checkpointBeginFailed = false
   const readRecovery = () => {
     try {
       return (
@@ -550,6 +552,7 @@ export function createOfficeAgentSession(dependencies: {
     },
   }
   const clearConversation = () => {
+    checkpointBeginFailed = false
     activeAssistantId = undefined
     state = {
       ...state,
@@ -756,6 +759,7 @@ export function createOfficeAgentSession(dependencies: {
     if (!value || harness.snapshot.busy || pendingStart || state.applying || disposed) return
     diagnose((diagnostics) => diagnostics.startTrace())
     staleTools.clear()
+    checkpointBeginFailed = false
     toolsStarted = false
     runStartedAt = Date.now()
     proposals.newTurn()
@@ -793,6 +797,7 @@ export function createOfficeAgentSession(dependencies: {
       .catch(() => {
         pendingStart = false
         if (disposed || epoch !== sessionEpoch) return
+        checkpointBeginFailed = true
         append({
           id: eventId(),
           kind: 'error',
@@ -813,6 +818,20 @@ export function createOfficeAgentSession(dependencies: {
   const resumeRecovery = async (interrupted: boolean) => {
     const checkpoint = dependencies.runCheckpoint
     const epoch = sessionEpoch
+    let checkpointSnapshot: string | undefined
+    try {
+      const latest = checkpoint?.readRecovery?.()
+      if (checkpointBeginFailed && latest) return
+      checkpointSnapshot = JSON.stringify(latest)
+    } catch {
+      return
+    }
+    const candidate = () =>
+      !interrupted && checkpointBeginFailed && !toolsStarted && !activeRunId && lastInstruction
+        ? { instruction: lastInstruction, phase: 'running' as const }
+        : safeRecovery()
+    const original = candidate()
+    const originalSnapshot = original ? JSON.stringify(original) : undefined
     if (
       !checkpoint?.validateDocument ||
       recoveryPending ||
@@ -820,12 +839,13 @@ export function createOfficeAgentSession(dependencies: {
       state.applying ||
       disposed ||
       (interrupted ? !state.recoveryAvailable : !state.retryable) ||
-      !safeRecovery()
+      !originalSnapshot
     )
       return
     recoveryPending = true
     try {
       if (!(await checkpoint.validateDocument())) return
+      if (JSON.stringify(checkpoint.readRecovery?.()) !== checkpointSnapshot) return
       if (
         epoch !== sessionEpoch ||
         state.busy ||
@@ -834,8 +854,8 @@ export function createOfficeAgentSession(dependencies: {
         (interrupted ? !state.recoveryAvailable : !state.retryable)
       )
         return
-      const record = safeRecovery()
-      if (record) startRun(record.instruction)
+      const record = candidate()
+      if (record && JSON.stringify(record) === originalSnapshot) startRun(record.instruction)
     } catch {
       /* identity or recovery unavailable: do not replay */
     } finally {

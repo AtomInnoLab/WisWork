@@ -83,6 +83,62 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it('does not replace another safe run that appears during document validation', async () => {
+    const harness = transportHarness()
+    let record = {
+      runId: 'run-a',
+      instruction: 'Read A',
+      phase: 'running' as const,
+      restartSafe: true,
+    }
+    const begin = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: record,
+        readRecovery: () => record,
+        validateDocument: async () => {
+          record = { ...record, runId: 'run-b', instruction: 'Read B' }
+          return true
+        },
+        begin,
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    await session.resumeInterrupted?.()
+    expect(begin).not.toHaveBeenCalled()
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+  it('retries a failed checkpoint begin after document validation without a recovery record', async () => {
+    const harness = transportHarness()
+    const begin = vi.fn(async () => undefined)
+    begin.mockRejectedValueOnce(new Error('storage unavailable'))
+    const validateDocument = vi.fn(async () => true)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin,
+        finish: vi.fn(async () => undefined),
+        readRecovery: () => undefined,
+        validateDocument,
+      },
+    })
+    session.send('read deck')
+    await vi.waitFor(() =>
+      expect(session.snapshot().error).toBe('presentation_run_checkpoint_unavailable'),
+    )
+    expect(harness.stream).not.toHaveBeenCalled()
+    session.retry()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    expect(validateDocument).toHaveBeenCalledOnce()
+    expect(begin).toHaveBeenCalledTimes(2)
+  })
   it.each(['stop', 'newTask', 'logout'] as const)(
     'does not restart transient recovery after %s during validation',
     async (action) => {
