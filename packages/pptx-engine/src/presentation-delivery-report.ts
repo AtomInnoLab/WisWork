@@ -131,6 +131,7 @@ function seeds(
         'source_attachment_missing',
         'source_attachment_not_ready',
         'source_attachment_unsupported',
+        'source_original_not_frozen',
         'source_locator_missing',
         'source_review_missing',
         'source_review_insufficient',
@@ -151,6 +152,8 @@ function seeds(
     for (const sourceId of claim.sourceIds) {
       const source = report.plan.sources.find((item) => item.id === sourceId)!
       const audit = report.sourceAudit?.find((item) => item.sourceId === sourceId)
+      if (!/^attachment:[a-f0-9]{64}$/.test(source.uri))
+        add('source_original_not_frozen', sourceId)
       if (audit?.status === 'not_found') add('source_excerpt_not_in_attachment', sourceId)
       if (audit?.status === 'missing') add('source_attachment_missing', sourceId)
       if (audit?.status === 'not_ready') add('source_attachment_not_ready', sourceId)
@@ -303,7 +306,7 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
       page.title !== slide.title ||
       !['pending', 'building', 'compiled', 'failed'].includes(page.productionState) ||
       !Array.isArray(page.issues) ||
-      page.issues.length > 512
+      page.issues.length > 608
     )
       invalid()
     const calculations = slide.claimIds

@@ -79,6 +79,21 @@ function review(
   } as PresentationClaimReview
 }
 describe('delivery evidence report', () => {
+  it('flags a cited external source without a frozen original text snapshot', async () => {
+    const value = input()
+    value.plan.sources[0]!.uri = 'https://example.com/research'
+    value.deck.claims = presentationPlanClaims(value.plan)
+    const report = await buildPresentationDeliveryReport(value)
+    expect(report.pages[0]!.issues).toContainEqual(
+      expect.objectContaining({
+        code: 'source_original_not_frozen',
+        category: 'unverifiable',
+        claimId: 'source-1',
+        sourceId: 'source',
+      }),
+    )
+    expect(parsePresentationDeliveryReport(report)).toEqual(report)
+  })
   it('reports an earlier exact source date without claiming independent timeliness verification', async () => {
     const value = input()
     value.plan.claims[0]!.asOf = '2026-09-28'
@@ -284,9 +299,9 @@ describe('delivery evidence report', () => {
     value.deck.claims = presentationPlanClaims(value.plan)
     value.pageStates = [value.pageStates[0]!]
     const report = await buildPresentationDeliveryReport(value)
-    expect(report.pages[0]!.issues).toHaveLength(448)
-    expect(new Set(report.pages[0]!.issues.map((issue) => issue.id)).size).toBe(448)
-    expect(presentationDeliveryMarkdown(report).match(/digest /g)).toHaveLength(448)
+    expect(report.pages[0]!.issues).toHaveLength(544)
+    expect(new Set(report.pages[0]!.issues.map((issue) => issue.id)).size).toBe(544)
+    expect(presentationDeliveryMarkdown(report).match(/digest /g)).toHaveLength(544)
   })
   it('preserves contradictory review history and rejects invalid review ownership', async () => {
     const value = input()

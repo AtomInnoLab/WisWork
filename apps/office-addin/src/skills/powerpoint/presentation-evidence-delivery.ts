@@ -23,7 +23,7 @@ export function createPresentationEvidenceDeliverySkill(
   const tools: AgentToolDef[] = names.map((name) => ({
     name,
     description:
-      'Read frozen presentation evidence, record an issue disposition with a reason, or export full JSON and Markdown to session attachments. Arithmetic reproduction is not fact verification; explanations do not close findings. No host or QA changes.',
+      'Read frozen presentation evidence, record an issue disposition with a reason, or export full JSON and Markdown to session attachments. External sources without a document-bound original text snapshot are flagged as unchecked; attach the original or explain the limitation. Arithmetic reproduction is not fact verification; explanations do not close findings. No host or QA changes.',
     inputSchema: {
       type: 'object',
       properties: {
