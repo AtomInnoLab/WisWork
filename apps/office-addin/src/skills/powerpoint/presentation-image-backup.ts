@@ -43,16 +43,23 @@ function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail()
   return value as Record<string, unknown>
 }
-function validMetadata(value: PresentationImageBackupMetadata) {
-  if (
-    !value ||
-    Object.keys(value).some((k) => !['attachmentId', 'sizeBytes', 'mime'].includes(k)) ||
-    !idValid(value.attachmentId) ||
-    !integer(value.sizeBytes, 1, LIMIT) ||
-    !['image/png', 'image/jpeg'].includes(value.mime)
+export function validPresentationImageBackupMetadata(
+  value: unknown,
+): value is PresentationImageBackupMetadata {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const metadata = value as PresentationImageBackupMetadata
+  return (
+    Object.keys(metadata).length === 3 &&
+    Object.keys(metadata).every((key) => ['attachmentId', 'sizeBytes', 'mime'].includes(key)) &&
+    idValid(metadata.attachmentId) &&
+    integer(metadata.sizeBytes, 1, LIMIT) &&
+    ['image/png', 'image/jpeg'].includes(metadata.mime)
   )
-    fail()
 }
+function validMetadata(value: PresentationImageBackupMetadata) {
+  if (!validPresentationImageBackupMetadata(value)) fail()
+}
+
 export function createPresentationImageBackup(
   options: Pick<PresentationGenerationOptions, 'available' | 'request'>,
 ) {

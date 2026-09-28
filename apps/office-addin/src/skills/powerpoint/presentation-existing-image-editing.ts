@@ -4,7 +4,10 @@ import {
   type ProposalPostWriteEvidence,
   type StructuredProposalController,
 } from '../../agent/proposal-controller.js'
-import { validatePowerPointPageScreenshot, type PowerPointPageInspection } from './browser-powerpoint-adapter.js'
+import {
+  validatePowerPointPageScreenshot,
+  type PowerPointPageInspection,
+} from './browser-powerpoint-adapter.js'
 import {
   MAX_IMPORT_BYTES,
   readBoundedImage,
@@ -32,7 +35,10 @@ interface Options {
     'inspect' | 'captureOriginal' | 'replace' | 'inspectRecovery' | 'finishRecovery'
   >
   imageBackup: PresentationImageBackup
-  inspectPage(slideId: string, signal?: AbortSignal): Promise<Pick<PowerPointPageInspection, 'slideId' | 'shapesTruncated' | 'screenshot'>>
+  inspectPage(
+    slideId: string,
+    signal?: AbortSignal,
+  ): Promise<Pick<PowerPointPageInspection, 'slideId' | 'shapesTruncated' | 'screenshot'>>
   vfs: InMemoryVfs
   proposals: StructuredProposalController
   documentId(): Promise<string>
@@ -62,7 +68,7 @@ const tools: AgentToolDef[] = [
       additionalProperties: false,
     },
   },
-  ...(['inspect', 'resume', 'undo'] as const).map((action): AgentToolDef => ({
+  ...(['inspect', 'resume', 'undo', 'reapply'] as const).map((action): AgentToolDef => ({
     name: `${action}_existing_presentation_image_change`,
     description:
       action === 'inspect'
@@ -77,11 +83,26 @@ const tools: AgentToolDef[] = [
   })),
   ...(['capture', 'record'] as const).map((action): AgentToolDef => ({
     name: `${action}_existing_presentation_image_review`,
-    description: action === 'capture' ? 'Capture the saved image replacement page for visual judgment; does not pass QA.' : 'Persist a visual judgment for an unchanged captured screenshot.',
-    inputSchema: { type: 'object', properties: {
-      change_id: id,
-      ...(action === 'record' ? { screenshot_digest: { type: 'string' }, status: { type: 'string', enum: ['pass', 'fail'] }, notes: { type: 'string', maxLength: 2000 } } : {}),
-    }, required: action === 'record' ? ['change_id', 'screenshot_digest', 'status', 'notes'] : ['change_id'], additionalProperties: false },
+    description:
+      action === 'capture'
+        ? 'Capture the saved image replacement page for visual judgment; does not pass QA.'
+        : 'Persist a visual judgment for an unchanged captured screenshot.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        change_id: id,
+        ...(action === 'record'
+          ? {
+              screenshot_digest: { type: 'string' },
+              status: { type: 'string', enum: ['pass', 'fail'] },
+              notes: { type: 'string', maxLength: 2000 },
+            }
+          : {}),
+      },
+      required:
+        action === 'record' ? ['change_id', 'screenshot_digest', 'status', 'notes'] : ['change_id'],
+      additionalProperties: false,
+    },
   })),
 ]
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
@@ -160,7 +181,9 @@ export function createPresentationExistingImageEditingSkill(
   options: Options,
 ): AgentSkill & { clear(): void } {
   let epoch = 0
-  let reviewCapture: { changeId: string; record: string; digest: string; capturedAt: string; epoch: number } | undefined
+  let reviewCapture:
+    | { changeId: string; record: string; digest: string; capturedAt: string; epoch: number }
+    | undefined
   return {
     id: 'presentation-existing-image-editing',
     get tools() {
@@ -172,7 +195,7 @@ export function createPresentationExistingImageEditingSkill(
       )
     },
     systemPrompt:
-      'For existing native pictures, read_presentation_baseline, then replace_existing_presentation_image with an exact native slide/shape ID and validated VFS PNG/JPEG. A confirmed proposal backs up original bytes before the host write. New native picture IDs differ. For interrupted writes inspect then resume only an identified candidate; never retry insertion automatically. Undo requires the original backup and exact after snapshot. After a confirmed write, capture_existing_presentation_image_review, inspect the displayed image, then record_existing_presentation_image_review with its screenshot_digest and pass/fail notes. Inspect compares a current screenshot with the historical capture when possible; a match never certifies current or whole-deck QA.',
+      'For an undone image with sourceBackup, reapply_existing_presentation_image_change creates a new independent change using the restored native ID and verified durable source; legacy records cannot reapply. For existing native pictures, read_presentation_baseline, then replace_existing_presentation_image with an exact native slide/shape ID and validated VFS PNG/JPEG. A confirmed proposal backs up original bytes before the host write. New native picture IDs differ. For interrupted writes inspect then resume only an identified candidate; never retry insertion automatically. Undo requires the original backup and exact after snapshot. After a confirmed write, capture_existing_presentation_image_review, inspect the displayed image, then record_existing_presentation_image_review with its screenshot_digest and pass/fail notes. Inspect compares a current screenshot with the historical capture when possible; a match never certifies current or whole-deck QA.',
     clear() {
       epoch++
       reviewCapture = undefined
@@ -201,7 +224,8 @@ export function createPresentationExistingImageEditingSkill(
           (!options.imageBackup.available() || !supportsBrowserMediaValidation())
         )
           throw new Error('presentation_image_backup_unavailable')
-        const creating = call.name === 'replace_existing_presentation_image'
+        const reapplying = call.name === 'reapply_existing_presentation_image_change'
+        const creating = call.name === 'replace_existing_presentation_image' || reapplying
         const documentId = await options.documentId()
         active()
         const current = async () => {
@@ -212,8 +236,9 @@ export function createPresentationExistingImageEditingSkill(
         }
         let record: PresentationExistingImageChange
         let originalBaseline: ReturnType<PresentationBaselineSkill['snapshot']>
-        let source: { path: string; base64: string; digest: string } | undefined
-        if (creating) {
+        let source: { path?: string; base64: string; digest: string } | undefined
+        let reappliedRecord: PresentationExistingImageChange | undefined
+        if (creating && !reapplying) {
           const i = call.input
           if (
             typeof i.baseline_id !== 'string' ||
@@ -288,9 +313,50 @@ export function createPresentationExistingImageEditingSkill(
           )
             throw new Error('presentation_existing_image_missing')
           record = structuredClone(saved)
+          if (reapplying) {
+            if (record.state !== 'undone' || !record.sourceBackup)
+              throw new Error('presentation_existing_image_state_invalid')
+            const restored = await options.imageAdapter.inspect(
+              record.hostSlideId,
+              record.restoredShapeId!,
+              signal,
+            )
+            await current()
+            afterPicture(record, restored, true)
+            reappliedRecord = structuredClone(record)
+            const base64 = await options.imageBackup.load(documentId, record.sourceBackup, signal)
+            if ((await hash(decode(base64))) !== record.assetDigest)
+              throw new Error('presentation_image_backup_invalid')
+            const original = await options.imageBackup.load(documentId, record.backup, signal)
+            if ((await hash(decode(original))) !== record.original.mediaDigest)
+              throw new Error('presentation_image_backup_invalid')
+            await current()
+            source = { base64, digest: record.assetDigest }
+            record = {
+              version: 1,
+              changeId: crypto.randomUUID(),
+              documentId,
+              baselineId: crypto.randomUUID(),
+              baselineDigest: await hash(new TextEncoder().encode(JSON.stringify(restored))),
+              scope: { slideIds: [record.hostSlideId], shapeIds: [restored.shapeId] },
+              hostSlideId: record.hostSlideId,
+              oldShapeId: restored.shapeId,
+              assetDigest: record.assetDigest,
+              original: restored,
+              backup: record.backup,
+              sourceBackup: record.sourceBackup,
+              reapplies: record.changeId,
+              state: 'pending',
+            }
+          }
         }
         let expected = creating ? undefined : structuredClone(record)
         const saved = () => {
+          if (
+            reappliedRecord &&
+            !same(options.readExistingImageChange(reappliedRecord.changeId), reappliedRecord)
+          )
+            throw new Error('presentation_existing_image_stale')
           if (!same(options.readExistingImageChange(record.changeId), expected))
             throw new Error('presentation_existing_image_stale')
         }
@@ -326,6 +392,17 @@ export function createPresentationExistingImageEditingSkill(
         }
         const sourceUnchanged = async () => {
           if (!source) return
+          if (!source.path) {
+            const base64 = await options.imageBackup.load(documentId, record.sourceBackup!, signal)
+            if (base64 !== source.base64 || (await hash(decode(base64))) !== source.digest)
+              throw new Error('presentation_image_backup_invalid')
+            const original = await options.imageBackup.load(documentId, record.backup, signal)
+            if ((await hash(decode(original))) !== record.original.mediaDigest)
+              throw new Error('presentation_image_backup_invalid')
+            await current()
+            saved()
+            return
+          }
           const bytes = options.vfs.readBytes(source.path, { maxBytes: MAX_IMPORT_BYTES + 1 })
           if (bytes.length > MAX_IMPORT_BYTES || (await hash(bytes)) !== source.digest)
             throw new Error('proposal_stale')
@@ -388,20 +465,30 @@ export function createPresentationExistingImageEditingSkill(
           } catch {
             status = 'manual_review'
           }
-          let visualReceipt: 'not_captured' | 'matched' | 'different' | 'unavailable' = record.capture ? 'unavailable' : 'not_captured'
+          let visualReceipt: 'not_captured' | 'matched' | 'different' | 'unavailable' =
+            record.capture ? 'unavailable' : 'not_captured'
           if (record.capture && status === 'not_pending') {
             try {
               const shot = await options.inspectPage(record.hostSlideId, signal)
-              await current(); saved()
-              if (shot.slideId !== record.hostSlideId || shot.shapesTruncated || shot.screenshot.mime !== 'image/png') throw new Error('office_read_failed')
+              await current()
+              saved()
+              if (
+                shot.slideId !== record.hostSlideId ||
+                shot.shapesTruncated ||
+                shot.screenshot.mime !== 'image/png'
+              )
+                throw new Error('office_read_failed')
               const png = validatePowerPointPageScreenshot(shot.screenshot.base64)
               const currentDigest = await hash(decode(png))
               const again = await options.imageAdapter.inspect(record.hostSlideId, shapeId, signal)
-              await current(); saved()
+              await current()
+              saved()
               if (!same(again, picture)) throw new Error('office_state_uncertain')
-              visualReceipt = currentDigest === record.capture.screenshotDigest ? 'matched' : 'different'
+              visualReceipt =
+                currentDigest === record.capture.screenshotDigest ? 'matched' : 'different'
             } catch (error) {
-              await current(); saved()
+              await current()
+              saved()
               visualReceipt = 'unavailable'
             }
           }
@@ -421,31 +508,88 @@ export function createPresentationExistingImageEditingSkill(
         if (call.name.endsWith('_existing_presentation_image_review')) {
           if (!['complete', 'undone'].includes(record.state) || record.review)
             throw new Error('presentation_existing_image_state_invalid')
-          const shapeId = record.state === 'complete' ? record.insertedShapeId! : record.restoredShapeId!
+          const shapeId =
+            record.state === 'complete' ? record.insertedShapeId! : record.restoredShapeId!
           const picture = await options.imageAdapter.inspect(record.hostSlideId, shapeId, signal)
-          await current(); saved()
+          await current()
+          saved()
           if (record.state === 'complete') {
-            if (!same(picture, record.after)) throw new Error('presentation_existing_image_conflict')
+            if (!same(picture, record.after))
+              throw new Error('presentation_existing_image_conflict')
           } else afterPicture(record, picture, true)
           const shot = await options.inspectPage(record.hostSlideId, signal)
-          await current(); saved()
-          if (shot.slideId !== record.hostSlideId || shot.shapesTruncated || shot.screenshot.mime !== 'image/png') throw new Error('office_read_failed')
+          await current()
+          saved()
+          if (
+            shot.slideId !== record.hostSlideId ||
+            shot.shapesTruncated ||
+            shot.screenshot.mime !== 'image/png'
+          )
+            throw new Error('office_read_failed')
           const png = validatePowerPointPageScreenshot(shot.screenshot.base64)
           const screenshotDigest = await hash(decode(png))
           const again = await options.imageAdapter.inspect(record.hostSlideId, shapeId, signal)
-          await current(); saved()
+          await current()
+          saved()
           if (!same(again, picture)) throw new Error('presentation_existing_image_conflict')
           if (call.name.startsWith('capture_')) {
-            const capture = { hostSlideId: record.hostSlideId, screenshotDigest, capturedAt: new Date().toISOString() }
+            const capture = {
+              hostSlideId: record.hostSlideId,
+              screenshotDigest,
+              capturedAt: new Date().toISOString(),
+            }
             await store({ ...record, capture })
-            reviewCapture = { changeId: record.changeId, record: JSON.stringify(record), digest: screenshotDigest, capturedAt: capture.capturedAt, epoch }
-            return { output: result({ changeId: record.changeId, hostSlideId: record.hostSlideId, screenshotDigest, qaPassed: false }), display: { kind: 'images', items: [{ url: `data:image/png;base64,${png}` }] }, mutated: false, summary: '已采集图片变更页，等待视觉判断' }
+            reviewCapture = {
+              changeId: record.changeId,
+              record: JSON.stringify(record),
+              digest: screenshotDigest,
+              capturedAt: capture.capturedAt,
+              epoch,
+            }
+            return {
+              output: result({
+                changeId: record.changeId,
+                hostSlideId: record.hostSlideId,
+                screenshotDigest,
+                qaPassed: false,
+              }),
+              display: { kind: 'images', items: [{ url: `data:image/png;base64,${png}` }] },
+              mutated: false,
+              summary: '已采集图片变更页，等待视觉判断',
+            }
           }
-          if (!reviewCapture || reviewCapture.epoch !== epoch || reviewCapture.changeId !== record.changeId || reviewCapture.record !== JSON.stringify(record) || reviewCapture.digest !== screenshotDigest || record.capture?.screenshotDigest !== screenshotDigest || record.capture.capturedAt !== reviewCapture.capturedAt || call.input.screenshot_digest !== screenshotDigest || !['pass', 'fail'].includes(call.input.status as string) || typeof call.input.notes !== 'string' || call.input.notes.length > 2000)
+          if (
+            !reviewCapture ||
+            reviewCapture.epoch !== epoch ||
+            reviewCapture.changeId !== record.changeId ||
+            reviewCapture.record !== JSON.stringify(record) ||
+            reviewCapture.digest !== screenshotDigest ||
+            record.capture?.screenshotDigest !== screenshotDigest ||
+            record.capture.capturedAt !== reviewCapture.capturedAt ||
+            call.input.screenshot_digest !== screenshotDigest ||
+            !['pass', 'fail'].includes(call.input.status as string) ||
+            typeof call.input.notes !== 'string' ||
+            call.input.notes.length > 2000
+          )
             throw new Error('presentation_existing_image_review_stale')
-          const review = { hostSlideId: record.hostSlideId, screenshotDigest, capturedAt: reviewCapture.capturedAt, reviewedAt: new Date().toISOString(), status: call.input.status as 'pass' | 'fail', notes: call.input.notes }
+          const review = {
+            hostSlideId: record.hostSlideId,
+            screenshotDigest,
+            capturedAt: reviewCapture.capturedAt,
+            reviewedAt: new Date().toISOString(),
+            status: call.input.status as 'pass' | 'fail',
+            notes: call.input.notes,
+          }
           await store({ ...record, review })
-          return { output: result({ changeId: record.changeId, historicalReview: review, qaPassed: false }), mutated: false, summary: '已保存图片变更页历史视觉判断' }
+          return {
+            output: result({
+              changeId: record.changeId,
+              historicalReview: review,
+              qaPassed: false,
+            }),
+            mutated: false,
+            summary: '已保存图片变更页历史视觉判断',
+          }
         }
         if (call.name === 'undo_existing_presentation_image_change' && record.state !== 'complete')
           throw new Error('presentation_existing_image_state_invalid')
@@ -468,11 +612,13 @@ export function createPresentationExistingImageEditingSkill(
         const proposal = options.proposals.propose({
           operation: call.name,
           toolName: call.name,
-          title: creating
-            ? (call.input.explanation as string) || '替换现稿图片'
-            : call.name.startsWith('undo_')
-              ? '撤销现稿图片替换'
-              : '恢复现稿图片替换',
+          title: reapplying
+            ? '重新应用现稿图片替换'
+            : creating
+              ? (call.input.explanation as string) || '替换现稿图片'
+              : call.name.startsWith('undo_')
+                ? '撤销现稿图片替换'
+                : '恢复现稿图片替换',
           preview: {
             hostSlideId: record.hostSlideId,
             oldShapeId: record.oldShapeId,
@@ -481,6 +627,7 @@ export function createPresentationExistingImageEditingSkill(
             scope: record.scope,
             createsNewNativeShapeId: true,
             recoveryStatus,
+            ...(record.reapplies ? { reapplies: record.reapplies } : {}),
           },
           impact: { host: 'powerpoint', targets: [record.hostSlideId], count: 1 },
           fingerprint: selectionFingerprint(result(record)),
@@ -517,24 +664,41 @@ export function createPresentationExistingImageEditingSkill(
             if (!(await freshBaseline())) throw new Error('proposal_stale')
             if (creating) {
               if (!(await hostOriginal())) throw new Error('proposal_stale')
-              const captured = await options.imageAdapter.captureOriginal(
-                record.hostSlideId,
-                record.oldShapeId,
-                signal,
-              )
-              if (
-                !same(captured.snapshot, record.original) ||
-                (await hash(decode(captured.base64))) !== record.original.mediaDigest
-              )
-                throw new Error('proposal_stale')
-              const backup = await options.imageBackup.save(documentId, captured.base64, signal)
-              if (backup.attachmentId !== record.original.mediaDigest)
-                throw new Error('presentation_image_backup_invalid')
-              await current()
-              await sourceUnchanged()
-              if (!(await freshBaseline()) || !(await hostOriginal()))
-                throw new Error('proposal_stale')
-              await store({ ...record, backup })
+              if (!reapplying) {
+                const captured = await options.imageAdapter.captureOriginal(
+                  record.hostSlideId,
+                  record.oldShapeId,
+                  signal,
+                )
+                if (
+                  !same(captured.snapshot, record.original) ||
+                  (await hash(decode(captured.base64))) !== record.original.mediaDigest
+                )
+                  throw new Error('proposal_stale')
+                const backup = await options.imageBackup.save(documentId, captured.base64, signal)
+                if (backup.attachmentId !== record.original.mediaDigest)
+                  throw new Error('presentation_image_backup_invalid')
+                await current()
+                await sourceUnchanged()
+                if (!(await freshBaseline()) || !(await hostOriginal()))
+                  throw new Error('proposal_stale')
+                const sourceBackup = await options.imageBackup.save(
+                  documentId,
+                  source!.base64,
+                  signal,
+                )
+                if (sourceBackup.attachmentId !== record.assetDigest)
+                  throw new Error('presentation_image_backup_invalid')
+                await current()
+                await sourceUnchanged()
+                if (!(await freshBaseline()) || !(await hostOriginal()))
+                  throw new Error('proposal_stale')
+                await store({ ...record, backup, sourceBackup })
+              } else {
+                await sourceUnchanged()
+                if (!(await hostOriginal())) throw new Error('proposal_stale')
+                await store(record)
+              }
               await sourceUnchanged()
               if (!(await freshBaseline()) || !(await hostOriginal()))
                 throw new Error('proposal_stale')
@@ -590,7 +754,13 @@ export function createPresentationExistingImageEditingSkill(
               )
                 throw new Error('proposal_stale')
               const bytes = await backupBytes()
-              await store({ ...record, state: 'undo_pending', undoBaseline: record.after, capture: undefined, review: undefined })
+              await store({
+                ...record,
+                state: 'undo_pending',
+                undoBaseline: record.after,
+                capture: undefined,
+                review: undefined,
+              })
               const restored = await options.imageAdapter.replace(
                 record.hostSlideId,
                 record.insertedShapeId!,
@@ -632,23 +802,41 @@ export function createPresentationExistingImageEditingSkill(
               await current()
               saved()
               afterPicture(record, picture, reverse)
-              if (!reverse && !same(picture, record.after)) throw new Error('office_state_uncertain')
+              if (!reverse && !same(picture, record.after))
+                throw new Error('office_state_uncertain')
             }
             await check()
             const shot = await options.inspectPage(record.hostSlideId)
-            if (shot.slideId !== record.hostSlideId || shot.shapesTruncated || shot.screenshot.mime !== 'image/png')
+            if (
+              shot.slideId !== record.hostSlideId ||
+              shot.shapesTruncated ||
+              shot.screenshot.mime !== 'image/png'
+            )
               throw new Error('office_read_failed')
             const pngBase64 = validatePowerPointPageScreenshot(shot.screenshot.base64)
             await check()
             const digest = await hash(decode(pngBase64))
-            await store({ ...record, capture: { hostSlideId: record.hostSlideId, screenshotDigest: digest, capturedAt: new Date().toISOString() } })
-            return { status: 'captured', pages: [{ slideId: record.hostSlideId, pngBase64, digest }] }
+            await store({
+              ...record,
+              capture: {
+                hostSlideId: record.hostSlideId,
+                screenshotDigest: digest,
+                capturedAt: new Date().toISOString(),
+              },
+            })
+            return {
+              status: 'captured',
+              pages: [{ slideId: record.hostSlideId, pngBase64, digest }],
+            }
           },
         })
         return {
           output: result({
             proposalId: proposal.id,
             changeId: record.changeId,
+            ...(record.reapplies
+              ? { reapplies: record.reapplies, sourceChangeId: record.reapplies }
+              : {}),
             status: 'awaiting_confirmation',
           }),
           mutated: false,

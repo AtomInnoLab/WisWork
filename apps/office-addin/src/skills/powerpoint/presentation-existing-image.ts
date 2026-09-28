@@ -1,6 +1,14 @@
 import type { PictureSnapshot } from './browser-presentation-image-adapter.js'
-import type { PresentationImageBackupMetadata } from './presentation-image-backup.js'
-import { validExistingVisualCapture, validExistingVisualReview, type ExistingVisualCapture, type ExistingVisualReview } from './presentation-existing-visual-review.js'
+import {
+  validPresentationImageBackupMetadata,
+  type PresentationImageBackupMetadata,
+} from './presentation-image-backup.js'
+import {
+  validExistingVisualCapture,
+  validExistingVisualReview,
+  type ExistingVisualCapture,
+  type ExistingVisualReview,
+} from './presentation-existing-visual-review.js'
 
 export interface PresentationExistingImageChange {
   version: 1
@@ -13,6 +21,8 @@ export interface PresentationExistingImageChange {
   oldShapeId: string
   assetDigest: string
   original: PictureSnapshot
+  sourceBackup?: PresentationImageBackupMetadata
+  reapplies?: string
   backup: PresentationImageBackupMetadata
   state: 'pending' | 'complete' | 'undo_pending' | 'undone'
   insertedShapeId?: string
@@ -117,6 +127,8 @@ export function validatePresentationExistingImageChange(
     'assetDigest',
     'original',
     'backup',
+    'sourceBackup',
+    'reapplies',
     'state',
     'insertedShapeId',
     'after',
@@ -148,17 +160,20 @@ export function validatePresentationExistingImageChange(
     !snapshot(r.original) ||
     r.original.slideId !== r.hostSlideId ||
     r.original.shapeId !== r.oldShapeId ||
-    !r.backup ||
-    typeof r.backup !== 'object' ||
-    Array.isArray(r.backup) ||
-    Object.keys(r.backup).length !== 3 ||
-    !digest(r.backup.attachmentId) ||
+    !validPresentationImageBackupMetadata(r.backup) ||
     r.backup.attachmentId !== r.original.mediaDigest ||
-    !Number.isSafeInteger(r.backup.sizeBytes) ||
-    r.backup.sizeBytes < 1 ||
-    r.backup.sizeBytes > 2 * 1024 * 1024 ||
-    !['image/png', 'image/jpeg'].includes(r.backup.mime) ||
     !['pending', 'complete', 'undo_pending', 'undone'].includes(r.state)
+  )
+    return false
+  if (
+    r.reapplies !== undefined &&
+    (!id(r.reapplies) || r.reapplies === r.changeId || !r.sourceBackup)
+  )
+    return false
+  if (
+    r.sourceBackup !== undefined &&
+    (!validPresentationImageBackupMetadata(r.sourceBackup) ||
+      r.sourceBackup.attachmentId !== r.assetDigest)
   )
     return false
   if (
@@ -197,11 +212,23 @@ export function validatePresentationExistingImageChange(
     return false
   if (r.state === 'undo_pending' && (!r.after || !r.undoBaseline)) return false
   if (r.state === 'undone' && (!r.after || !r.undoBaseline || !r.restoredShapeId)) return false
-  if (r.capture !== undefined &&
-    (!['complete', 'undone'].includes(r.state) || !validExistingVisualCapture(r.capture) || r.capture.hostSlideId !== r.hostSlideId)) return false
-  if (r.review !== undefined &&
-    (!['complete', 'undone'].includes(r.state) || !validExistingVisualReview(r.review) || r.review.hostSlideId !== r.hostSlideId ||
-      (r.capture !== undefined && (r.capture.screenshotDigest !== r.review.screenshotDigest || r.capture.capturedAt !== r.review.capturedAt)))) return false
+  if (
+    r.capture !== undefined &&
+    (!['complete', 'undone'].includes(r.state) ||
+      !validExistingVisualCapture(r.capture) ||
+      r.capture.hostSlideId !== r.hostSlideId)
+  )
+    return false
+  if (
+    r.review !== undefined &&
+    (!['complete', 'undone'].includes(r.state) ||
+      !validExistingVisualReview(r.review) ||
+      r.review.hostSlideId !== r.hostSlideId ||
+      (r.capture !== undefined &&
+        (r.capture.screenshotDigest !== r.review.screenshotDigest ||
+          r.capture.capturedAt !== r.review.capturedAt)))
+  )
+    return false
   return bytes(r) + existingImageReservedBytes(r) <= 192 * 1024
 }
 
@@ -233,14 +260,20 @@ export function validExistingImageTransition(
     )
   if (before.state === 'complete')
     return (
-      ((after.state === 'complete' && before.review === undefined &&
-        ((after.capture !== undefined && JSON.stringify(before.capture) !== JSON.stringify(after.capture) && after.review === undefined) ||
+      (after.state === 'complete' &&
+        before.review === undefined &&
+        ((after.capture !== undefined &&
+          JSON.stringify(before.capture) !== JSON.stringify(after.capture) &&
+          after.review === undefined) ||
           (!!after.review && JSON.stringify(before.capture) === JSON.stringify(after.capture))) &&
-        before.insertedShapeId === after.insertedShapeId && JSON.stringify(before.after) === JSON.stringify(after.after)) ||
-      (after.state === 'undo_pending' && after.review === undefined && after.capture === undefined &&
-      before.insertedShapeId === after.insertedShapeId &&
-      JSON.stringify(before.after) === JSON.stringify(after.after) &&
-      after.restoredShapeId === undefined))
+        before.insertedShapeId === after.insertedShapeId &&
+        JSON.stringify(before.after) === JSON.stringify(after.after)) ||
+      (after.state === 'undo_pending' &&
+        after.review === undefined &&
+        after.capture === undefined &&
+        before.insertedShapeId === after.insertedShapeId &&
+        JSON.stringify(before.after) === JSON.stringify(after.after) &&
+        after.restoredShapeId === undefined)
     )
   if (before.state === 'undo_pending')
     return (
@@ -253,9 +286,14 @@ export function validExistingImageTransition(
           (!before.restoredShapeId || before.restoredShapeId === after.restoredShapeId)))
     )
   if (before.state === 'undone')
-    return after.state === 'undone' && before.review === undefined &&
-      ((after.capture !== undefined && JSON.stringify(before.capture) !== JSON.stringify(after.capture) && after.review === undefined) ||
+    return (
+      after.state === 'undone' &&
+      before.review === undefined &&
+      ((after.capture !== undefined &&
+        JSON.stringify(before.capture) !== JSON.stringify(after.capture) &&
+        after.review === undefined) ||
         (!!after.review && JSON.stringify(before.capture) === JSON.stringify(after.capture))) &&
       before.restoredShapeId === after.restoredShapeId
+    )
   return false
 }

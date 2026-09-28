@@ -102,7 +102,7 @@ async function fixture() {
       ) => {
         if (id !== current.shapeId || JSON.stringify(expected) !== JSON.stringify(current))
           throw new Error('office_concurrent_change')
-        const nextId = id === 'old' ? 'new' : 'restored'
+        const nextId = id === 'old' ? 'new' : id === 'new' ? 'restored' : `${id}-next`
         await onInserted(nextId)
         current = picture(nextId, base64 === replacementPng ? replacementDigest : originalDigest)
         return { shapeId: nextId }
@@ -115,17 +115,20 @@ async function fixture() {
   }
   const backup = {
     available: () => true,
-    save: vi.fn(async () => ({
-      attachmentId: originalDigest,
-      sizeBytes: bytes(originalPng).length,
+    save: vi.fn(async (_documentId: string, base64: string) => ({
+      attachmentId: await digest(base64),
+      sizeBytes: bytes(base64).length,
       mime: 'image/png' as const,
     })),
-    load: vi.fn(async () => originalPng),
+    load: vi.fn(async (_documentId: string, metadata: { attachmentId: string }): Promise<string> =>
+      metadata.attachmentId === originalDigest ? originalPng : replacementPng,
+    ),
   }
   let assetBytes: Uint8Array = bytes(replacementPng)
   const proposals = createStructuredProposalController()
   const inspectPage = vi.fn(async (slideId: string) => ({
-    slideId, shapesTruncated: false,
+    slideId,
+    shapesTruncated: false,
     screenshot: { mime: 'image/png' as const, base64: originalPng },
   }))
   const create = () =>
@@ -175,63 +178,118 @@ async function fixture() {
 
 it('captures the exact native page after confirmed image replacement and undo', async () => {
   const f = await fixture()
-  const proposed = await f.call('replace_existing_presentation_image', { baseline_id: 'baseline', slide_id: 'slide', shape_id: 'old', path: '/image.png' })
+  const proposed = await f.call('replace_existing_presentation_image', {
+    baseline_id: 'baseline',
+    slide_id: 'slide',
+    shape_id: 'old',
+    path: '/image.png',
+  })
   const first = await f.confirm()
   expect(first.status).toBe('confirmed')
   if (first.status !== 'confirmed') throw new Error('not confirmed')
   expect(first.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'slide' }] })
   expect(f.inspectPage).toHaveBeenCalledWith('slide')
   const changeId = JSON.parse(proposed.output).changeId
-  expect(f.binding.readExistingImageChange(changeId)?.capture).toMatchObject({ hostSlideId: 'slide' })
+  expect(f.binding.readExistingImageChange(changeId)?.capture).toMatchObject({
+    hostSlideId: 'slide',
+  })
   await f.call('undo_existing_presentation_image_change', { change_id: changeId })
   const second = await f.confirm()
   expect(second.status).toBe('confirmed')
   if (second.status !== 'confirmed') throw new Error('not confirmed')
   expect(second.postWrite).toMatchObject({ status: 'captured', pages: [{ slideId: 'slide' }] })
-  expect(f.binding.readExistingImageChange(changeId)?.capture).toMatchObject({ hostSlideId: 'slide' })
+  expect(f.binding.readExistingImageChange(changeId)?.capture).toMatchObject({
+    hostSlideId: 'slide',
+  })
 })
 
 it('records a reviewed screenshot and rejects reuse after undo', async () => {
   const f = await fixture()
-  const proposed = await f.call('replace_existing_presentation_image', { baseline_id: 'baseline', slide_id: 'slide', shape_id: 'old', path: '/image.png' })
+  const proposed = await f.call('replace_existing_presentation_image', {
+    baseline_id: 'baseline',
+    slide_id: 'slide',
+    shape_id: 'old',
+    path: '/image.png',
+  })
   await f.confirm()
   const changeId = JSON.parse(proposed.output).changeId as string
-  const captured = await f.call('capture_existing_presentation_image_review', { change_id: changeId })
+  const captured = await f.call('capture_existing_presentation_image_review', {
+    change_id: changeId,
+  })
   expect(captured.isError).toBeUndefined()
   const screenshotDigest = JSON.parse(captured.output).screenshotDigest as string
-  const reviewed = await f.call('record_existing_presentation_image_review', { change_id: changeId, screenshot_digest: screenshotDigest, status: 'pass', notes: 'checked' })
+  const reviewed = await f.call('record_existing_presentation_image_review', {
+    change_id: changeId,
+    screenshot_digest: screenshotDigest,
+    status: 'pass',
+    notes: 'checked',
+  })
   expect(reviewed.isError).toBeUndefined()
   expect(f.binding.readExistingImageChange(changeId)?.review?.status).toBe('pass')
   await f.call('undo_existing_presentation_image_change', { change_id: changeId })
   await f.confirm()
   expect(f.binding.readExistingImageChange(changeId)?.review).toBeUndefined()
-  const stale = await f.call('record_existing_presentation_image_review', { change_id: changeId, screenshot_digest: screenshotDigest, status: 'pass', notes: 'old shot' })
+  const stale = await f.call('record_existing_presentation_image_review', {
+    change_id: changeId,
+    screenshot_digest: screenshotDigest,
+    status: 'pass',
+    notes: 'old shot',
+  })
   expect(stale.isError).toBe(true)
 })
 
 it('compares the current page with the persisted image capture during inspect', async () => {
   const f = await fixture()
-  const proposed = await f.call('replace_existing_presentation_image', { baseline_id: 'baseline', slide_id: 'slide', shape_id: 'old', path: '/image.png' })
+  const proposed = await f.call('replace_existing_presentation_image', {
+    baseline_id: 'baseline',
+    slide_id: 'slide',
+    shape_id: 'old',
+    path: '/image.png',
+  })
   await f.confirm()
   const changeId = JSON.parse(proposed.output).changeId as string
-  const matched = await f.call('inspect_existing_presentation_image_change', { change_id: changeId })
+  const matched = await f.call('inspect_existing_presentation_image_change', {
+    change_id: changeId,
+  })
   expect(JSON.parse(matched.output)).toMatchObject({ visualReceipt: 'matched', qaPassed: false })
-  f.inspectPage.mockResolvedValue({ slideId: 'slide', shapesTruncated: false, screenshot: { mime: 'image/png', base64: replacementPng } })
-  const different = await f.call('inspect_existing_presentation_image_change', { change_id: changeId })
-  expect(JSON.parse(different.output)).toMatchObject({ visualReceipt: 'different', qaPassed: false })
+  f.inspectPage.mockResolvedValue({
+    slideId: 'slide',
+    shapesTruncated: false,
+    screenshot: { mime: 'image/png', base64: replacementPng },
+  })
+  const different = await f.call('inspect_existing_presentation_image_change', {
+    change_id: changeId,
+  })
+  expect(JSON.parse(different.output)).toMatchObject({
+    visualReceipt: 'different',
+    qaPassed: false,
+  })
 })
 
 it('keeps a confirmed image write while reporting unavailable evidence if the host changes during capture', async () => {
   const f = await fixture()
-  const proposed = await f.call('replace_existing_presentation_image', { baseline_id: 'baseline', slide_id: 'slide', shape_id: 'old', path: '/image.png' })
+  const proposed = await f.call('replace_existing_presentation_image', {
+    baseline_id: 'baseline',
+    slide_id: 'slide',
+    shape_id: 'old',
+    path: '/image.png',
+  })
   f.inspectPage.mockImplementationOnce(async (slideId) => {
     f.setCurrent(f.picture('new', 'f'.repeat(64)))
-    return { slideId, shapesTruncated: false, screenshot: { mime: 'image/png', base64: originalPng } }
+    return {
+      slideId,
+      shapesTruncated: false,
+      screenshot: { mime: 'image/png', base64: originalPng },
+    }
   })
   const decision = await f.confirm()
   expect(decision).toMatchObject({ status: 'confirmed', postWrite: { status: 'unavailable' } })
-  expect(f.binding.readExistingImageChange(JSON.parse(proposed.output).changeId)?.state).toBe('complete')
-  expect(f.binding.readExistingImageChange(JSON.parse(proposed.output).changeId)?.capture).toBeUndefined()
+  expect(f.binding.readExistingImageChange(JSON.parse(proposed.output).changeId)?.state).toBe(
+    'complete',
+  )
+  expect(
+    f.binding.readExistingImageChange(JSON.parse(proposed.output).changeId)?.capture,
+  ).toBeUndefined()
 })
 
 it('backs up before a confirmed native replacement, then undoes from a reopened savepoint', async () => {
@@ -253,7 +311,7 @@ it('backs up before a confirmed native replacement, then undoes from a reopened 
     insertedShapeId: 'new',
   })
   expect(f.current().shapeId).toBe('new')
-  expect(f.backup.save).toHaveBeenCalledOnce()
+  expect(f.backup.save).toHaveBeenCalledTimes(2)
   f.reopen()
   const undo = await f.call('undo_existing_presentation_image_change', { change_id: changeId })
   expect(undo.isError, undo.output).not.toBe(true)
@@ -390,3 +448,165 @@ it('shows a native image replacement in the offline change workbench', async () 
   await f.confirm()
   expect(f.binding.listChangeHistory()[0].record.state).toBe('undone')
 })
+
+it('durably reapplies after reopen as an independent change with a fresh native ID', async () => {
+  const f = await fixture()
+  const first = await f.call('replace_existing_presentation_image', {
+    baseline_id: 'baseline',
+    slide_id: 'slide',
+    shape_id: 'old',
+    path: '/image.png',
+  })
+  await f.confirm()
+  const oldId = JSON.parse(first.output).changeId
+  expect(f.binding.readExistingImageChange(oldId)?.sourceBackup?.attachmentId).toBe(
+    f.replacementDigest,
+  )
+  await f.call('undo_existing_presentation_image_change', { change_id: oldId })
+  await f.confirm()
+  const oldRecord = structuredClone(f.binding.readExistingImageChange(oldId))
+  f.reopen()
+  f.setAsset(new Uint8Array())
+  const reapplied = await f.call('reapply_existing_presentation_image_change', { change_id: oldId })
+  expect(reapplied.isError).toBeUndefined()
+  const newId = JSON.parse(reapplied.output).changeId
+  expect(newId).not.toBe(oldId)
+  expect(JSON.parse(reapplied.output).reapplies).toBe(oldId)
+  expect((await f.confirm()).status).toBe('confirmed')
+  expect(f.binding.readExistingImageChange(oldId)).toEqual(oldRecord)
+  expect(f.binding.readExistingImageChange(newId)).toMatchObject({
+    state: 'complete',
+    oldShapeId: oldRecord!.restoredShapeId,
+    reapplies: oldId,
+  })
+  expect(f.backup.save).toHaveBeenCalledTimes(2)
+  await f.call('undo_existing_presentation_image_change', { change_id: newId })
+  expect((await f.confirm()).status).toBe('confirmed')
+  await f.call('reapply_existing_presentation_image_change', { change_id: newId })
+  expect((await f.confirm()).status).toBe('confirmed')
+})
+
+async function undoneFixture() {
+  const f = await fixture()
+  const proposed = await f.call('replace_existing_presentation_image', {
+    baseline_id: 'baseline',
+    slide_id: 'slide',
+    shape_id: 'old',
+    path: '/image.png',
+  })
+  await f.confirm()
+  const changeId = JSON.parse(proposed.output).changeId
+  await f.call('undo_existing_presentation_image_change', { change_id: changeId })
+  await f.confirm()
+  f.reopen()
+  return { f, changeId }
+}
+
+it.each(['original', 'source'])(
+  'rejects missing or tampered %s backup without recreating it',
+  async (kind) => {
+    const { f, changeId } = await undoneFixture()
+    const before = structuredClone(f.binding.readExistingImageChange(changeId))
+    const replaceCount = f.adapter.replace.mock.calls.length
+    const load = f.backup.load.getMockImplementation()!
+    f.backup.load.mockImplementation(async (doc, metadata) => {
+      const target = kind === 'source' ? before!.assetDigest : before!.original.mediaDigest
+      return metadata.attachmentId === target ? btoa('tampered') : load(doc, metadata)
+    })
+    const rejected = await f.call('reapply_existing_presentation_image_change', {
+      change_id: changeId,
+    })
+    expect(rejected).toMatchObject({ isError: true, output: 'presentation_image_backup_invalid' })
+    expect(f.adapter.replace).toHaveBeenCalledTimes(replaceCount)
+    expect(f.backup.save).toHaveBeenCalledTimes(2)
+    expect(f.binding.readExistingImageChange(changeId)).toEqual(before)
+    f.backup.load.mockRejectedValue(new Error('presentation_image_backup_unavailable'))
+    expect(
+      await f.call('reapply_existing_presentation_image_change', { change_id: changeId }),
+    ).toMatchObject({ isError: true, output: 'presentation_image_backup_unavailable' })
+  },
+)
+
+it.each([
+  'mediaDigest',
+  'name',
+  'altTextTitle',
+  'altTextDescription',
+  'rotation',
+  'geometry',
+  'shapeIds',
+])('rejects manual restored %s conflicts', async (field) => {
+  const { f, changeId } = await undoneFixture()
+  const changed = structuredClone(f.current())
+  Object.assign(changed, {
+    [field]:
+      field === 'geometry'
+        ? { ...changed.geometry, left: 12 }
+        : field === 'rotation'
+          ? 5
+          : field === 'shapeIds'
+            ? [changed.shapeId, 'extra']
+            : 'changed',
+  })
+  f.setCurrent(changed)
+  expect(
+    (await f.call('reapply_existing_presentation_image_change', { change_id: changeId })).isError,
+  ).toBe(true)
+  expect(f.backup.save).toHaveBeenCalledTimes(2)
+})
+
+it('revalidates restored observation and both backups on confirmation', async () => {
+  const { f, changeId } = await undoneFixture()
+  const proposed = await f.call('reapply_existing_presentation_image_change', {
+    change_id: changeId,
+  })
+  expect(proposed.isError).toBeUndefined()
+  f.setCurrent({ ...f.current(), pictureFingerprint: 'e'.repeat(64) })
+  await expect(f.confirm()).rejects.toThrow('proposal_stale')
+  expect(f.binding.readExistingImageChange(JSON.parse(proposed.output).changeId)).toBeUndefined()
+})
+
+it('keeps reapply pending and refuses replay after a lost insertion receipt', async () => {
+  const { f, changeId } = await undoneFixture()
+  const old = structuredClone(f.binding.readExistingImageChange(changeId))
+  const proposed = await f.call('reapply_existing_presentation_image_change', {
+    change_id: changeId,
+  })
+  f.adapter.replace.mockImplementationOnce(async () => {
+    f.setCurrent(f.picture('receipt-lost', f.replacementDigest))
+    throw new Error('office_state_uncertain')
+  })
+  await expect(f.confirm()).rejects.toThrow('office_state_uncertain')
+  const newId = JSON.parse(proposed.output).changeId
+  expect(f.binding.readExistingImageChange(newId)).toMatchObject({
+    state: 'pending',
+    reapplies: changeId,
+  })
+  expect(f.binding.readExistingImageChange(changeId)).toEqual(old)
+  f.reopen()
+  expect(
+    await f.call('resume_existing_presentation_image_change', { change_id: newId }),
+  ).toMatchObject({ isError: true, output: 'presentation_existing_image_manual_review' })
+})
+
+it.each(['original', 'source'])(
+  'rejects %s backup loss after proposal before host write',
+  async (kind) => {
+    const { f, changeId } = await undoneFixture()
+    const old = f.binding.readExistingImageChange(changeId)!
+    const proposed = await f.call('reapply_existing_presentation_image_change', {
+      change_id: changeId,
+    })
+    const load = f.backup.load.getMockImplementation()!
+    f.backup.load.mockImplementation(async (doc, metadata) => {
+      if (
+        metadata.attachmentId === (kind === 'source' ? old.assetDigest : old.original.mediaDigest)
+      )
+        throw new Error('presentation_image_backup_unavailable')
+      return load(doc, metadata)
+    })
+    await expect(f.confirm()).rejects.toThrow('proposal_stale')
+    expect(f.binding.readExistingImageChange(JSON.parse(proposed.output).changeId)).toBeUndefined()
+    expect(f.backup.save).toHaveBeenCalledTimes(2)
+  },
+)

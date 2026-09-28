@@ -127,17 +127,65 @@ it('blocks other changes while image write is unresolved and restores both setti
 it('stores an image review only at a terminal savepoint and clears it before undo', async () => {
   const f = await fixture()
   const inserted = { ...f.record, insertedShapeId: 'p2' }
-  const after = { ...f.record.original, shapeId: 'p2', shapeIds: ['p2'], mediaDigest: f.record.assetDigest }
+  const after = {
+    ...f.record.original,
+    shapeId: 'p2',
+    shapeIds: ['p2'],
+    mediaDigest: f.record.assetDigest,
+  }
   const complete = { ...inserted, state: 'complete' as const, after }
-  const review = { hostSlideId: 's1', screenshotDigest: 'e'.repeat(64), capturedAt: '2026-09-24T00:00:00.000Z', reviewedAt: '2026-09-24T00:01:00.000Z', status: 'pass' as const, notes: 'visual check' }
+  const review = {
+    hostSlideId: 's1',
+    screenshotDigest: 'e'.repeat(64),
+    capturedAt: '2026-09-24T00:00:00.000Z',
+    reviewedAt: '2026-09-24T00:01:00.000Z',
+    status: 'pass' as const,
+    notes: 'visual check',
+  }
   await f.binding.writeExistingImageChange(f.record, undefined)
   await f.binding.writeExistingImageChange(inserted, f.record)
   await f.binding.writeExistingImageChange(complete, inserted)
   const reviewed = { ...complete, review }
   await f.reopen().writeExistingImageChange(reviewed, complete)
   expect(f.reopen().readExistingImageChange('img1')?.review).toEqual(review)
-  await expect(f.binding.writeExistingImageChange({ ...reviewed, state: 'undo_pending', undoBaseline: after }, reviewed)).rejects.toThrow('state_invalid')
+  await expect(
+    f.binding.writeExistingImageChange(
+      { ...reviewed, state: 'undo_pending', undoBaseline: after },
+      reviewed,
+    ),
+  ).rejects.toThrow('state_invalid')
   const undo = { ...complete, state: 'undo_pending' as const, undoBaseline: after }
   await f.binding.writeExistingImageChange(undo, reviewed)
   expect(f.reopen().readExistingImageChange('img1')?.review).toBeUndefined()
+})
+
+it('bounds source metadata and keeps it and reapply provenance immutable across saves', async () => {
+  const f = await fixture()
+  const sourceBackup = {
+    attachmentId: f.record.assetDigest,
+    sizeBytes: 123,
+    mime: 'image/png' as const,
+  }
+  const record = { ...f.record, sourceBackup, reapplies: 'previous' }
+  expect(validatePresentationExistingImageChange(record)).toBe(true)
+  for (const invalid of [
+    { ...record, sourceBackup: { ...sourceBackup, extra: true } },
+    { ...record, sourceBackup: { ...sourceBackup, attachmentId: 'a'.repeat(64) } },
+    { ...record, sourceBackup: { ...sourceBackup, sizeBytes: 2097153 } },
+    { ...record, sourceBackup: { ...sourceBackup, mime: 'image/svg+xml' } },
+    { ...record, reapplies: record.changeId },
+    { ...record, reapplies: 'x'.repeat(129) },
+    { ...record, sourceBackup: undefined },
+  ])
+    expect(validatePresentationExistingImageChange(invalid)).toBe(false)
+  await f.binding.writeExistingImageChange(record, undefined)
+  expect(f.reopen().readExistingImageChange(record.changeId)).toEqual(record)
+  for (const changed of [
+    { ...record, sourceBackup: { ...sourceBackup, sizeBytes: 124 } },
+    { ...record, reapplies: 'another' },
+    { ...record, reapplies: undefined },
+  ])
+    await expect(
+      f.binding.writeExistingImageChange({ ...changed, insertedShapeId: 'p2' }, record),
+    ).rejects.toThrow('state_invalid')
 })
