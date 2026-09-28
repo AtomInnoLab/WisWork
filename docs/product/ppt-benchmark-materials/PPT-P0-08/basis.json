@@ -1,0 +1,49 @@
+{
+  "caseId": "PPT-P0-08",
+  "asOf": "2024-11-01",
+  "companies": [
+    {
+      "name": "Apple Inc.",
+      "report": "Form 10-K FY2024",
+      "source": "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm",
+      "localFile": "apple-fy2024-form10k.pdf",
+      "fiscalYearEnd": "2024-09-28",
+      "accounting": "US GAAP",
+      "metric": "Net sales",
+      "valueMillions": 391035,
+      "currency": "USD",
+      "reportPdfPage": 32
+    },
+    {
+      "name": "Sony Group Corporation",
+      "report": "Form 20-F FY2023",
+      "source": "https://www.sony.com/en/SonyInfo/IR/library/FY2023_20F_PDF.pdf",
+      "localFile": null,
+      "fiscalYearEnd": "2024-03-31",
+      "accounting": "IFRS",
+      "metric": "Total sales and financial services revenue",
+      "valueMillions": 13020768,
+      "currency": "JPY",
+      "valueSource": "https://www.sony.com/en/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf",
+      "valueSourcePdfPage": 4
+    }
+  ],
+  "illustrativeFx": {
+    "source": "https://www.sony.com/en/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf",
+    "sourcePdfPage": 24,
+    "period": "FY2023 annual average, year ended 2024-03-31",
+    "jpyPerUsd": 144.4,
+    "formula": "Sony JPY millions / 144.4 JPY per USD",
+    "sonyUsdMillionsRounded2": 90171.52,
+    "status": "illustrative_only"
+  },
+  "comparison": {
+    "sameFiscalPeriod": false,
+    "sameAccountingStandard": false,
+    "sameRevenueScope": false,
+    "likeForLikeUsdRevenueDifferenceMillions": null,
+    "crossCompanyRevenueRanking": null,
+    "missingReason": "Different fiscal year ends, US GAAP versus IFRS, and Sony revenue includes financial services; a currency conversion alone cannot align these measures."
+  },
+  "review": "pending_financial_reviewer"
+}
