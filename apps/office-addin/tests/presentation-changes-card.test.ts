@@ -274,7 +274,7 @@ it('shows partial batch progress and both recovery choices', async () => {
   }
 })
 
-it.each(['existing_batch', 'existing_image', 'existing_chart'] as const)(
+it.each(['existing_batch', 'existing_image', 'existing_chart', 'existing_page'] as const)(
   'routes the saved %s reapply button by its exact history ID',
   async (source) => {
     const run = vi.fn()
@@ -290,7 +290,9 @@ it.each(['existing_batch', 'existing_image', 'existing_chart'] as const)(
                 ? 'image'
                 : source === 'existing_chart'
                   ? 'chart'
-                  : 'text',
+                  : source === 'existing_page'
+                    ? 'page'
+                    : 'text',
             pageId: 'slide',
             state: 'undone',
             before: 'old',

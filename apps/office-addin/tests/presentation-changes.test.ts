@@ -139,6 +139,66 @@ it('links a single existing-change page backup and offers reapply and release af
   await controller.refresh()
   expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect'])
 })
+it('routes an undone page reapply and counts both retained package backups as referenced', async () => {
+  const record: PresentationExistingPageChange = {
+    version: 1,
+    changeId: 'page-redo',
+    documentId: 'doc',
+    baselineId: 'base',
+    baselineDigest: 'a'.repeat(64),
+    scope: { slideIds: ['old'] },
+    oldSlideId: 'old',
+    beforeSlideIds: ['old', 'other'],
+    originalPackageDigest: 'b'.repeat(64),
+    replacementPackageDigest: 'c'.repeat(64),
+    sourceSlideId: '256#',
+    backup: { backupId: 'original', sha256: 'd'.repeat(64), sizeBytes: 120 },
+    sourceBackup: { backupId: 'source', sha256: 'e'.repeat(64), sizeBytes: 130 },
+    state: 'undone',
+    newSlideId: 'new',
+    restoredSlideId: 'restored',
+  }
+  const executeTool = vi.fn(async () => ({ output: '{}', mutated: false, summary: 'proposed' }))
+  const controller = createPresentationChangesController({
+    available: () => false,
+    existingAvailable: () => true,
+    artifact: () => undefined,
+    documentId: async () => 'doc',
+    listChangeHistory: () => [
+      { id: 'existing_page:page-redo', kind: 'existing_page', sequence: 1, legacy: false, record },
+    ],
+    listExistingPageBackups: async () =>
+      [record.backup, record.sourceBackup!]
+        .filter(Boolean)
+        .map((backup) => ({
+          ...backup,
+          status: 'ready',
+          hostSlideId: 'old',
+          slideIds: ['old', 'other'],
+        })),
+    executeTool,
+  })
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]).toMatchObject({
+    pageId: 'restored',
+    actions: ['reapply', 'release'],
+  })
+  expect(controller.snapshot().backupAudit).toEqual({ active: 2, unmatched: 0 })
+  await controller.run('existing_page:page-redo', 'reapply')
+  expect(executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'reapply_existing_presentation_page_change',
+      input: { change_id: 'page-redo' },
+    }),
+    expect.any(AbortSignal),
+  )
+  delete record.sourceBackup
+  await controller.refresh()
+  expect(controller.snapshot().entries[0]?.actions).toEqual(['release'])
+  executeTool.mockClear()
+  await controller.run('existing_page:page-redo', 'reapply')
+  expect(executeTool).not.toHaveBeenCalled()
+})
 it('shows existing-page identity diff offline and routes commit by exact change ID', async () => {
   let record: PresentationExistingPageChange = {
     version: 1,

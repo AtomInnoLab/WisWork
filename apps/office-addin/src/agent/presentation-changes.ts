@@ -356,7 +356,10 @@ export function createPresentationChangesController(
                       id: saved.id,
                       source: 'existing_page',
                       kind: 'page',
-                      pageId: saved.record.oldSlideId,
+                      pageId:
+                        saved.record.state === 'undone'
+                          ? saved.record.restoredSlideId!
+                          : saved.record.oldSlideId,
                       state: saved.record.state,
                       visualReviews: copy(saved.record.reviews),
                       visualCaptures: copy(saved.record.captures),
@@ -371,10 +374,15 @@ export function createPresentationChangesController(
                                 ? [saved.record.restoredSlideId!]
                                 : [],
                       affectedPageCount: saved.record.state === 'staged' ? 2 : 1,
-                      before: `原页：${saved.record.oldSlideId}\n包摘要：${saved.record.originalPackageDigest}\n${saved.record.backupReleasedAt ? `备份已释放：${saved.record.backupReleasedAt}` : '原页已持久备份'}${saved.record.restores ? `\n原页恢复来源：${saved.record.restores.sourceKind}/${saved.record.restores.sourceChangeId}` : ''}`,
+                      before: `原页：${saved.record.oldSlideId}\n包摘要：${saved.record.originalPackageDigest}\n${saved.record.backupReleasedAt ? `备份已释放：${saved.record.backupReleasedAt}` : '原页已持久备份'}${saved.record.restores ? `\n原页恢复来源：${saved.record.restores.sourceKind}/${saved.record.restores.sourceChangeId}` : ''}${saved.record.reapplies ? `\n重新应用来源：${saved.record.reapplies}` : ''}`,
                       after: `新页：${saved.record.newSlideId ?? '尚未记录'}\n包摘要：${saved.record.replacementPackageDigest}${saved.record.restoredSlideId ? `\n恢复页面：${saved.record.restoredSlideId}` : ''}`,
                       actions: [
                         ...pageActions[saved.record.state],
+                        ...(saved.record.state === 'undone' &&
+                        saved.record.sourceBackup &&
+                        !saved.record.backupReleasedAt
+                          ? ['reapply' as const]
+                          : []),
                         ...(['discarded', 'undone'].includes(saved.record.state) &&
                         !saved.record.backupReleasedAt
                           ? ['release' as const]
@@ -663,6 +671,17 @@ export function createPresentationChangesController(
                 hostSlideId: record.oldSlideId,
                 slideIds: record.beforeSlideIds,
               })
+              if (row.entry.source === 'existing_page') {
+                const page = record as PresentationExistingPageChange
+                if (page.sourceBackup)
+                  known.push({
+                    backupId: page.sourceBackup.backupId,
+                    sha256: page.sourceBackup.sha256,
+                    sizeBytes: page.sourceBackup.sizeBytes,
+                    hostSlideId: page.oldSlideId,
+                    slideIds: page.beforeSlideIds,
+                  })
+              }
             }
           }
           backupAudit = {
