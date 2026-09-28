@@ -37,6 +37,7 @@ test('empty records remain unmeasured against the fixed 20-case denominator', ()
     [20, 0, 0, 20],
   )
   assert.equal(report.completionRate, 'not_measured')
+  assert.equal(report.firstAttemptDeliveryRate, 'not_measured')
   assert.equal(report.rateThresholdMet, false)
 })
 
@@ -56,6 +57,7 @@ test('keeps every attempt and counts only the latest outcome for each fixed case
   assert.equal(report.attempts, 21)
   assert.equal(report.passed, 20)
   assert.equal(report.completionRate, '100%')
+  assert.equal(report.firstAttemptDeliveryRate, '95%')
   assert.equal(report.rateThresholdMet, true)
   assert.deepEqual(report.cases[0], { id: CASE_IDS[0], attempts: 2, status: 'passed' })
 })
@@ -64,6 +66,7 @@ test('requires all 20 cases to be attempted before the 16-case P0 gate can pass'
   const incomplete = summarizePresentationAcceptance(CASE_IDS.slice(0, 16).map((id) => passed(id)))
   assert.equal(incomplete.passed, 16)
   assert.equal(incomplete.completionRate, 'not_measured')
+  assert.equal(incomplete.firstAttemptDeliveryRate, 'not_measured')
   assert.equal(incomplete.rateThresholdMet, false)
   const complete = summarizePresentationAcceptance([
     ...CASE_IDS.slice(0, 16).map((id) => passed(id)),
@@ -75,6 +78,7 @@ test('requires all 20 cases to be attempted before the 16-case P0 gate can pass'
     })),
   ])
   assert.equal(complete.completionRate, '80%')
+  assert.equal(complete.firstAttemptDeliveryRate, '80%')
   assert.equal(complete.rateThresholdMet, true)
 })
 

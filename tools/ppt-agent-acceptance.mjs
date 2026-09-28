@@ -179,6 +179,7 @@ export function summarizePresentationAcceptance(records) {
   }
   let executed = 0
   let passed = 0
+  let firstAttemptPassed = 0
   let blocked = 0
   const latestAttempts = []
   const cases = CASE_IDS.map((id) => {
@@ -186,6 +187,7 @@ export function summarizePresentationAcceptance(records) {
     if (entries.some((entry, index) => entry.attempt_no !== index + 1))
       throw new Error('acceptance_attempt_gap')
     const latest = entries.at(-1)
+    if (entries[0]?.outcome === 'passed') firstAttemptPassed += 1
     latestAttempts.push(latest)
     if (latest) executed += 1
     if (latest?.outcome === 'passed') passed += 1
@@ -196,11 +198,14 @@ export function summarizePresentationAcceptance(records) {
     denominator: 20,
     attempted: executed,
     passed,
+    firstAttemptPassed,
     failed: executed - passed - blocked,
     blocked,
     notRun: 20 - executed,
     attempts: records.length,
     completionRate: executed === 20 ? `${Math.round((passed / 20) * 100)}%` : 'not_measured',
+    firstAttemptDeliveryRate:
+      executed === 20 ? `${Math.round((firstAttemptPassed / 20) * 100)}%` : 'not_measured',
     rateThresholdMet: executed === 20 && passed >= 16,
     measurements: measurementSummary(latestAttempts),
     cases,

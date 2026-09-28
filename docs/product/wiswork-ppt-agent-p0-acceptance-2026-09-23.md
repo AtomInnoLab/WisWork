@@ -51,6 +51,8 @@
 
 验收统计可使用 `node tools/ppt-agent-acceptance.mjs <records-directory>`。目录中每个 `.json` 文件必须是尝试记录数组；同一任务的 `attempt_no` 必须从 1 连续递增，先前失败记录保留，缺号会被拒绝。程序固定 20 项分母，只按每项最新尝试汇总；不足 20 项时完成率输出 `not_measured`，绝不将未执行等同失败。`passed` 记录需包含真实材料状态与清单、版本、身份、审阅人、PPTX SHA256、PowerPoint 保存重开及可编辑证据标记，且不能重启任务或留有 P0 缺陷。目录模式还要求每次 `passed` 尝试提供目录内的材料清单文件 `material_manifest`、`pptx_file` 与独立的 `reopen_evidence_file`，以及各自的 SHA256；程序逐文件核对摘要，拒绝缺失、越界路径和文件被修改。`rateThresholdMet` 只表示 16/20 数量门槛，不表示 P0 所有质量与功能条件均通过。文件摘要只能把记录绑定到实际字节，不能证明 PowerPoint 确实重开、内容可编辑或专业结论正确；这些仍须审阅原始录屏、文件和材料。测试中的合成记录也不计入真实任务结果。
 
+统计同时输出 `firstAttemptPassed` 和 `firstAttemptDeliveryRate`：按每项 `attempt_no: 1` 的结果计数，必须全部 20 项至少尝试一次后才给出比例；补跑成功不会改写首次结果。最终 `passed` 和 `completionRate` 仍按最新尝试计算，两组数值应并列报告。
+
 统计输入示例：`records/01.json` 内容为数组，失败/阻塞记录也用相同的 `case_id`、`attempt_id`、`attempt_no`、`outcome` 字段，`outcome` 取 `passed`、`failed` 或 `blocked`。通过记录还须填写以下字段；示例值只说明格式，不是验收证据：
 
 ```json
