@@ -373,9 +373,18 @@ export function createOfficeAgentSession(dependencies: {
           stopToolBatch: true,
         }
       }
-      if (activeRunId && dependencies.runCheckpoint?.tool) {
+      const runId = activeRunId
+      const epoch = sessionEpoch
+      const currentRun = () => epoch === sessionEpoch && runId === activeRunId && !disposed
+      const checkpointCompleted = async () => {
+        if (runId && currentRun() && dependencies.runCheckpoint?.tool)
+          await dependencies.runCheckpoint
+            .tool(runId, 'tool_completed', call.name)
+            .catch(() => undefined)
+      }
+      if (runId && dependencies.runCheckpoint?.tool) {
         try {
-          await dependencies.runCheckpoint.tool(activeRunId, 'tool_pending', call.name)
+          await dependencies.runCheckpoint.tool(runId, 'tool_pending', call.name)
         } catch {
           return {
             output: JSON.stringify({ error: 'presentation_run_checkpoint_unavailable' }),
@@ -386,16 +395,31 @@ export function createOfficeAgentSession(dependencies: {
           }
         }
       }
-      const runId = activeRunId
+      if (!currentRun())
+        return {
+          output: JSON.stringify({ error: 'presentation_run_cancelled' }),
+          isError: true,
+          mutated: false,
+          summary: 'Run cancelled',
+          stopToolBatch: true,
+        }
       const outcome = await dependencies.skill.executeTool(call, signal)
-      if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') return outcome
+      if ('kind' in outcome && outcome.kind === 'tool-execution-suspension')
+        return suspendToolExecution(
+          outcome.result.then(async (result) => {
+            await checkpointCompleted()
+            return result
+          }),
+        )
       const proposal = proposals.pending()
       if (proposal)
-        return suspendToolExecution(finalProposalExecution(proposal.id, outcome, call.name))
-      if (runId && dependencies.runCheckpoint?.tool)
-        await dependencies.runCheckpoint
-          .tool(runId, 'tool_completed', call.name)
-          .catch(() => undefined)
+        return suspendToolExecution(
+          finalProposalExecution(proposal.id, outcome, call.name).then(async (result) => {
+            await checkpointCompleted()
+            return result
+          }),
+        )
+      await checkpointCompleted()
       return outcome
     },
   }

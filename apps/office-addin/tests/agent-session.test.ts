@@ -1,4 +1,9 @@
-import type { AgentStreamCallbacks, AgentTransport, ToolExecution } from '@wiswork/agent-core'
+import {
+  suspendToolExecution,
+  type AgentStreamCallbacks,
+  type AgentTransport,
+  type ToolExecution,
+} from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
 import { bindAuthLoss, createOfficeAgentSession } from '../src/agent/use-office-agent.js'
 import type { ProposalDecision, StructuredProposal } from '../src/agent/proposal-controller.js'
@@ -229,6 +234,142 @@ describe('Office agent session', () => {
     expect(harness.stream).toHaveBeenCalledOnce()
 
     saveCompleted()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+  })
+
+  it('does not execute an old tool after its pending checkpoint outlives the run', async () => {
+    const harness = transportHarness()
+    let releasePending!: () => void
+    const executeTool = vi.fn(async () => ({ output: 'done', summary: 'Done' }))
+    const tool = vi.fn((_runId: string, phase: 'tool_pending' | 'tool_completed') =>
+      phase === 'tool_pending'
+        ? new Promise<void>((resolve) => {
+            releasePending = resolve
+          })
+        : Promise.resolve(),
+    )
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'read', description: 'read', inputSchema: { type: 'object' } }],
+        executeTool,
+      },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool,
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    session.send('old')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'old-tool', name: 'read', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_pending', 'read'),
+    )
+    session.newTask()
+    session.send('new')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    releasePending()
+    await Promise.resolve()
+    expect(executeTool).not.toHaveBeenCalled()
+    expect(tool).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for proposal decision and completion checkpoint before continuing', async () => {
+    const harness = transportHarness()
+    const proposals = proposalsHarness()
+    let releaseCompleted!: () => void
+    const tool = vi.fn((_runId: string, phase: 'tool_pending' | 'tool_completed') =>
+      phase === 'tool_completed'
+        ? new Promise<void>((resolve) => {
+            releaseCompleted = resolve
+          })
+        : Promise.resolve(),
+    )
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'propose', description: 'propose', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => {
+          proposals.setPending()
+          return { output: 'prepared', summary: 'Prepared' }
+        }),
+      },
+      proposals: proposals.controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool,
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    session.send('edit')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'proposal-tool', name: 'propose', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().proposal?.id).toBe('p1'))
+    expect(tool).toHaveBeenCalledTimes(1)
+    await session.confirm('p1')
+    await vi.waitFor(() =>
+      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'propose'),
+    )
+    expect(harness.stream).toHaveBeenCalledOnce()
+    releaseCompleted()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+  })
+
+  it('waits for a suspended tool result and its completion checkpoint', async () => {
+    const harness = transportHarness()
+    let releaseResult!: (result: ToolExecution) => void
+    let releaseCompleted!: () => void
+    const tool = vi.fn((_runId: string, phase: 'tool_pending' | 'tool_completed') =>
+      phase === 'tool_completed'
+        ? new Promise<void>((resolve) => {
+            releaseCompleted = resolve
+          })
+        : Promise.resolve(),
+    )
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'wait', description: 'wait', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () =>
+          suspendToolExecution(
+            new Promise<ToolExecution>((resolve) => {
+              releaseResult = resolve
+            }),
+          ),
+        ),
+      },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool,
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    session.send('wait')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'wait-tool', name: 'wait', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(releaseResult).toBeTypeOf('function'))
+    expect(tool).toHaveBeenCalledTimes(1)
+    releaseResult({ output: 'done', summary: 'Done' })
+    await vi.waitFor(() =>
+      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'wait'),
+    )
+    expect(harness.stream).toHaveBeenCalledOnce()
+    releaseCompleted()
     await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
   })
 
