@@ -229,6 +229,7 @@ const PRODUCTION_ERRORS = new Set([
   'aborted',
   'output_too_large',
   'asset_unavailable',
+  'source_unavailable',
 ])
 function productionIds(deck: unknown, error: string): string[] {
   jsonDigest(deck, MAX_RECORD_BYTES, error)

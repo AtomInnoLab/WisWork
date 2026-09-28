@@ -239,7 +239,7 @@ export function PresentationProjectCard(props: {
                     : ''}
                   {'attempt' in event ? ` · 尝试 ${event.attempt}` : ''}
                   {'error' in event && event.error
-                    ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', invalid_state: '任务状态异常' }[event.error]}`
+                    ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', source_unavailable: '引用的附件来源不可用', invalid_state: '任务状态异常' }[event.error]}`
                     : ''}
                 </li>
               ))}
@@ -298,7 +298,7 @@ export function PresentationProjectCard(props: {
                 }{' '}
                 · 尝试 {page.attempt} 次
                 {page.error
-                  ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用' }[page.error]}`
+                  ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', source_unavailable: '引用的附件来源不可用' }[page.error]}`
                   : ''}
                 {page.state === 'compiled' && (
                   <button
@@ -340,6 +340,40 @@ export function PresentationProjectCard(props: {
           controller={controller}
           disabled={disabled}
         />
+      )}
+      {project?.sourcePreparationUnavailable && (
+        <p role="alert">附件来源状态暂不可读取；请刷新项目，再核对资料是否已上传并解析。</p>
+      )}
+      {project?.sourcePreparation && project.sourcePreparation.length > 0 && (
+        <section aria-label="附件来源准备状态">
+          <p role="status">
+            附件来源{' '}
+            {project.sourcePreparation.filter((source) => source.status === 'ready').length} /{' '}
+            {project.sourcePreparation.length} 已就绪
+          </p>
+          {project.sourcePreparation.some((source) => source.status !== 'ready') && (
+            <p>未就绪来源会阻止引用它的页面编译；请补齐资料后继续该页任务。</p>
+          )}
+          <ul>
+            {project.sourcePreparation.map((source) => (
+              <li key={source.sourceId}>
+                {project.plan?.value.sources.find((item) => item.id === source.sourceId)?.title ??
+                  source.sourceId}
+                ：
+                {
+                  {
+                    ready: '已解析，编译前仍会复核',
+                    uploading: '上传中',
+                    failed: '解析失败',
+                    missing: '附件缺失',
+                    unsupported: '不是可读文本',
+                  }[source.status]
+                }
+              </li>
+            ))}
+          </ul>
+          <p>就绪来自保存的解析状态；编译前会复核实际内容。它不代表引文准确、事实可靠或信息仍然有效。</p>
+        </section>
       )}
       {project?.plan && (
         <details>

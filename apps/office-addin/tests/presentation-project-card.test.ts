@@ -77,6 +77,48 @@ async function mount(snapshot: Snapshot, disabled = false) {
   }
 }
 describe('presentation project recovery card', () => {
+  it('shows planned attachment source readiness and recovers after refresh', async () => {
+    const plan = benchmarkPlan()
+    const attachmentId = 'a'.repeat(64)
+    plan.sources[0]!.uri = `attachment:${attachmentId}`
+    const project = {
+      ...pending.project!,
+      plan: { revision: 1, value: plan },
+      sourcePreparation: [
+        { sourceId: plan.sources[0]!.id, attachmentId, status: 'missing' as const },
+      ],
+    }
+    const view = await mount({ phase: 'idle', project })
+    expect(view.container.textContent).toContain('附件来源 0 / 1 已就绪')
+    expect(view.container.textContent).toContain('合成基准：附件缺失')
+    await view.update({
+      phase: 'idle',
+      project: {
+        ...project,
+        production: {
+          projectId: 'p1',
+          requestId: 'pages',
+          planRevision: 1,
+          status: 'partial',
+          compiledCount: 0,
+          total: 1,
+          pages: [
+            { id: 's1', title: '目标', state: 'failed', attempt: 1, error: 'source_unavailable' },
+          ],
+        },
+      },
+    })
+    expect(view.container.textContent).toContain('引用的附件来源不可用')
+    await view.update({
+      phase: 'idle',
+      project: {
+        ...project,
+        sourcePreparation: [{ sourceId: plan.sources[0]!.id, attachmentId, status: 'ready' }],
+      },
+    })
+    expect(view.container.textContent).toContain('附件来源 1 / 1 已就绪')
+    expect(view.container.textContent).toContain('合成基准：已解析，编译前仍会复核')
+  })
   it('shows the PDF preview action only for a completed task with the PC capability', async () => {
     const project = {
       ...pending.project!,

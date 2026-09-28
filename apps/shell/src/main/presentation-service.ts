@@ -46,6 +46,7 @@ const errorCodes = new Set([
   'invalid_deck',
   'invalid_state',
   'asset_unavailable',
+  'source_unavailable',
   'document_mismatch',
   'request_conflict',
   'not_found',

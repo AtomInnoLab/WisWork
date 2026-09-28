@@ -9,7 +9,7 @@ export type PresentationProductionJobState =
   | 'completed'
   | 'failed'
 type ProductionError =
-  'compile_failed' | 'invalid_deck' | 'aborted' | 'output_too_large' | 'asset_unavailable'
+  'compile_failed' | 'invalid_deck' | 'aborted' | 'output_too_large' | 'asset_unavailable' | 'source_unavailable'
 export type PresentationProductionJobEventInput =
   | {
       type:
@@ -56,6 +56,7 @@ const errors = [
   'aborted',
   'output_too_large',
   'asset_unavailable',
+  'source_unavailable',
 ]
 function invalid(): never {
   throw new Error('invalid_state')

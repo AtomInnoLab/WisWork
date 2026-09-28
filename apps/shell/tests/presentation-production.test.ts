@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -397,6 +398,57 @@ it('isolates an unavailable image to its referencing page and serializes duplica
     f.call('production_run', { requestId: 'run' }),
   ])
   expect(f.compile).toHaveBeenCalledTimes(7)
+})
+it('isolates a missing attachment source to its citing page and retries after upload', async () => {
+  const f = await setup()
+  const plan = structuredClone(f.plan)
+  const deck = structuredClone(f.deck)
+  const raw = Buffer.from('示例数据仅用于测试')
+  const attachmentId = createHash('sha256').update(raw).digest('hex')
+  plan.sources[0]!.uri = `attachment:${attachmentId}`
+  for (let index = 1; index < plan.slides.length; index++) {
+    plan.slides[index]!.claimIds = []
+    deck.slides[index]!.claimIds = []
+  }
+  const { presentationPlanClaims } = await import('@wiswork/pptx-engine/presentation-plan')
+  deck.claims = presentationPlanClaims(plan)
+  expect(await f.call('save_plan', { expectedRevision: 1, plan })).toMatchObject({ revision: 2 })
+  await f.call('production_begin', { requestId: 'source-run', planRevision: 2, deck })
+  const first = await f.call('production_run', { requestId: 'source-run' })
+  expect(first).toMatchObject({ status: 'partial', compiledCount: 7 })
+  expect(first.pages[0]).toMatchObject({ state: 'failed', error: 'source_unavailable' })
+  expect(first.pages.slice(1).every((page: { state: string }) => page.state === 'compiled')).toBe(
+    true,
+  )
+  expect(f.compile).toHaveBeenCalledTimes(7)
+  const attachment = async (operation: string, extra: Record<string, unknown>) =>
+    decode(
+      await f.service({ operation, documentId: 'doc', ...extra }, new AbortController().signal),
+    )
+  await attachment('attachment_begin', {
+    attachmentId,
+    sha256: attachmentId,
+    name: 'source.txt',
+    sizeBytes: raw.length,
+  })
+  await attachment('attachment_chunk', { attachmentId, offset: 0, base64: raw.toString('base64') })
+  expect(await attachment('attachment_finish', { attachmentId })).toMatchObject({ status: 'ready' })
+  const textPath = join(
+    f.userDataPath,
+    'presentation-attachments',
+    createHash('sha256').update('doc').digest('hex'),
+    attachmentId,
+    'text.txt',
+  )
+  writeFileSync(textPath, 'corrupted')
+  const corrupted = await f.call('production_run', { requestId: 'source-run' })
+  expect(corrupted.pages[0]).toMatchObject({ state: 'failed', attempt: 2, error: 'source_unavailable' })
+  expect(f.compile).toHaveBeenCalledTimes(7)
+  writeFileSync(textPath, raw)
+  const resumed = await f.call('production_run', { requestId: 'source-run' })
+  expect(resumed).toMatchObject({ status: 'compiled', compiledCount: 8 })
+  expect(resumed.pages[0]).toMatchObject({ state: 'compiled', attempt: 3 })
+  expect(f.compile).toHaveBeenCalledTimes(8)
 })
 it('downloads an independently produced page through the Taskpane and leaves whole-deck delivery untouched', async () => {
   const { createPresentationProductionSkill } =

@@ -1,9 +1,11 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { PresentationStore } from '@wiswork/project-store'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { presentationPlanClaims } from '@wiswork/pptx-engine/presentation-plan'
 import {
   benchmarkPlan,
   benchmarkPlannedDeck,
@@ -254,6 +256,51 @@ it('recovers persisted workers without a live process and retries each failed pa
   await f.call('production_job_resume')
   await settled(f, 'completed')
   expect(compile).toHaveBeenCalledTimes(4)
+})
+it('records unavailable source on its page and resumes only that page after upload', async () => {
+  const f = await setup()
+  const plan = structuredClone(f.plan)
+  const deck = structuredClone(f.deck)
+  const raw = Buffer.from('示例数据仅用于测试')
+  const attachmentId = createHash('sha256').update(raw).digest('hex')
+  plan.sources[0]!.uri = `attachment:${attachmentId}`
+  plan.slides[1]!.claimIds = []
+  deck.slides[1]!.claimIds = []
+  deck.claims = presentationPlanClaims(plan)
+  await f.call('save_plan', { expectedRevision: 1, plan })
+  await f.call('production_begin', { requestId: 'source-run', planRevision: 2, deck })
+  await f.call('production_job_start', { requestId: 'source-run' })
+  const status = async () => f.call('production_job_status', { requestId: 'source-run' })
+  await vi.waitFor(async () => expect((await status()).job?.state).toBe('failed'), {
+    timeout: 10000,
+  })
+  const failed = await status()
+  expect(failed.production).toMatchObject({ compiledCount: 1 })
+  expect(failed.job.events).toContainEqual(
+    expect.objectContaining({
+      type: 'page.failed',
+      pageId: deck.slides[0]!.id,
+      error: 'source_unavailable',
+    }),
+  )
+  expect(f.compile).toHaveBeenCalledTimes(1)
+  const service = createPresentationService({ userDataPath: f.userDataPath })
+  const attachment = async (operation: string, extra: Record<string, unknown>) =>
+    decode(await service({ operation, documentId: 'doc', ...extra }, new AbortController().signal))
+  await attachment('attachment_begin', {
+    attachmentId,
+    sha256: attachmentId,
+    name: 'source.txt',
+    sizeBytes: raw.length,
+  })
+  await attachment('attachment_chunk', { attachmentId, offset: 0, base64: raw.toString('base64') })
+  await attachment('attachment_finish', { attachmentId })
+  await f.call('production_job_resume', { requestId: 'source-run' })
+  await vi.waitFor(async () => expect((await status()).job?.state).toBe('completed'), {
+    timeout: 10000,
+  })
+  expect((await status()).production).toMatchObject({ compiledCount: 2 })
+  expect(f.compile).toHaveBeenCalledTimes(2)
 })
 it('keeps different projects independent and refuses another request in an occupied project', async () => {
   const gate = deferred(),

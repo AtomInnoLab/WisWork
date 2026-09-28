@@ -351,6 +351,7 @@ export async function handlePresentationProduction(
   }
   if (request.operation !== 'production_run') return presentationProductionSummary(record)
   let runningRecord: PresentationProductionRecord = record
+  const sourceReadiness = new Map<string, Promise<boolean>>()
   const runPage = async (slide: (typeof deck.slides)[number]) => {
     check(signal)
     const current = runningRecord.pages.find((p) => p.pageId === slide.id)!
@@ -367,6 +368,36 @@ export async function handlePresentationProduction(
     let result: NonNullable<PresentationProductionPage['result']>
     let failure: string | undefined
     try {
+      const citedIds = new Set(
+        plan.claims
+          .filter((claim) => slide.claimIds?.includes(claim.id))
+          .flatMap((claim) => claim.sourceIds),
+      )
+      for (const source of plan.sources.filter((item) => citedIds.has(item.id))) {
+        const match = /^attachment:([a-f0-9]{64})$/.exec(source.uri)
+        if (!match) continue
+        const attachmentId = match[1]!
+        let ready = sourceReadiness.get(attachmentId)
+        if (!ready) {
+          ready = (async () => {
+            try {
+              const value = (await attachments(
+                { operation: 'attachment_read', documentId, attachmentId, offset: 0, maxChars: 1 },
+                signal,
+              )) as { attachmentId?: unknown; sourceUri?: unknown; text?: unknown }
+              return value.attachmentId === attachmentId &&
+                value.sourceUri === `attachment:${attachmentId}` &&
+                typeof value.text === 'string'
+            } catch {
+              check(signal)
+              return false
+            }
+          })()
+          sourceReadiness.set(attachmentId, ready)
+        }
+        if (!(await ready)) throw new Error('source_unavailable')
+      }
+      check(signal)
       const assetIds = new Set(
         slide.elements.flatMap((el) => (el.kind === 'image' ? [el.assetId] : [])),
       )
@@ -408,7 +439,7 @@ export async function handlePresentationProduction(
       const code = error instanceof Error ? error.message : ''
       failure = signal.aborted
         ? 'aborted'
-        : ['output_too_large', 'asset_unavailable'].includes(code)
+        : ['output_too_large', 'asset_unavailable', 'source_unavailable'].includes(code)
           ? code
           : code === 'plan_mismatch' ||
               code.startsWith('presentation_invalid:') ||
