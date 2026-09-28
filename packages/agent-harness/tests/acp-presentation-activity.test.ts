@@ -1,4 +1,12 @@
 import { expect, it } from 'vitest'
+
+it('retains generic activity outside presentation context', () => {
+  for (const name of ['execute_office_js', 'web_search', 'web_fetch', 'image_search']) {
+    expect(acpToolActivity(name, 'running', false)).toBe('正在准备修改…')
+    expect(acpToolActivity(name, 'complete', false)).toBe('已准备修改')
+    expect(acpToolActivity(name, 'error', false)).toBe('准备修改未完成')
+  }
+})
 import {
   acpPresentationStage,
   acpPresentationStageLabel,

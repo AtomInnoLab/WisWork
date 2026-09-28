@@ -83,6 +83,35 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it.each(['word', 'excel', 'powerpoint'] as const)(
+    'uses host-appropriate ACP activity for %s',
+    async (host) => {
+      const harness = transportHarness()
+      const session = createOfficeAgentSession({
+        host,
+        transport: harness.transport,
+        skill: {
+          id: 'test',
+          systemPrompt: 'test',
+          tools: [
+            { name: 'execute_office_js', description: 'execute', inputSchema: { type: 'object' } },
+          ],
+          executeTool: async () => ({ output: 'ok', summary: 'Executed' }),
+        },
+        proposals: proposalsHarness().controller,
+      })
+      session.send('execute')
+      await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+      harness.callbacks().onToolCall({ id: 'execute-1', name: 'execute_office_js', input: {} })
+      harness.callbacks().onDone()
+      await vi.waitFor(() =>
+        expect(session.snapshot().timeline.find((event) => event.kind === 'tool')).toMatchObject({
+          summary: host === 'powerpoint' ? '页面修改操作已结束' : '已准备修改',
+          state: 'complete',
+        }),
+      )
+    },
+  )
   it('does not replace another safe run that appears during document validation', async () => {
     const harness = transportHarness()
     let record = {

@@ -108,8 +108,12 @@ export function acpPresentationStage(name: string): PresentationStage | undefine
 }
 
 /** User-facing activity only. Project completion still comes from persisted receipts. */
-export function acpToolActivity(name: string, state: 'running' | 'complete' | 'error'): string {
-  const key = acpPresentationStage(name)
+export function acpToolActivity(
+  name: string,
+  state: 'running' | 'complete' | 'error',
+  presentationContext = true,
+): string {
+  const key = presentationContext ? acpPresentationStage(name) : undefined
   const stage = key ? acpPresentationStageLabel(key) : undefined
   if (stage)
     return state === 'running'

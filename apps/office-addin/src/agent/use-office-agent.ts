@@ -8,6 +8,7 @@ import {
 } from '@wiswork/agent-core'
 import { acpToolActivity, createAgentHarness } from '@wiswork/agent-harness'
 import { useSyncExternalStore } from 'react'
+import type { OfficeHost } from '../office-document.js'
 import type {
   OfficeProposal,
   ProposalController,
@@ -213,6 +214,7 @@ function presentationDiagnosticContext(
 }
 
 export function createOfficeAgentSession(dependencies: {
+  host?: OfficeHost
   transport: AgentTransport
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
@@ -709,7 +711,11 @@ export function createOfficeAgentSession(dependencies: {
         activeAssistantId = undefined
       }
       const name = update.name ?? 'tool'
-      const summary = acpToolActivity(name, 'running')
+      const summary = acpToolActivity(
+        name,
+        'running',
+        dependencies.host === undefined || dependencies.host === 'powerpoint',
+      )
       append({
         id: eventId(),
         kind: 'tool',
@@ -730,7 +736,11 @@ export function createOfficeAgentSession(dependencies: {
         )
       if (!tool) return
       const terminal = update.status === 'failed' ? 'error' : 'complete'
-      const summary = acpToolActivity(tool.name, terminal)
+      const summary = acpToolActivity(
+        tool.name,
+        terminal,
+        dependencies.host === undefined || dependencies.host === 'powerpoint',
+      )
       replace(tool.id, (item) =>
         item.kind === 'tool'
           ? {
