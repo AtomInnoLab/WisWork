@@ -205,6 +205,34 @@ describe('Office agent session', () => {
     },
   )
 
+  it('shows an interrupted change savepoint without offering write replay', () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: {
+          instruction: '',
+          phase: 'tool_pending',
+          toolName: 'edit_existing_presentation_text',
+          toolCallId: 'call-1',
+          restartSafe: false,
+          changeReceipt: { total: 2, unresolved: 1 },
+        },
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    expect(session.snapshot().recoveryAvailable).toBe(false)
+    expect(session.snapshot().timeline[0]).toMatchObject({
+      kind: 'system',
+      text: expect.stringContaining('对应修改历史 2 项，其中 1 项未结算'),
+    })
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+
   it('restarts an interrupted read-only run only on explicit action after document validation', async () => {
     const harness = transportHarness()
     const validateDocument = vi.fn(async () => true)

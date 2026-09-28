@@ -59,7 +59,7 @@ export type PresentationHistoryEntry = {
     kind: K
     record: Records[K]
   }
-}[keyof Records]
+}[keyof Records] & { agentRunId?: string; toolCallId?: string }
 export function historyEntryId<K extends keyof Records>(kind: K, record: Records[K]): string {
   if (kind === 'image') {
     const r = record as ImageReplacementRecord
@@ -73,7 +73,16 @@ export function validatePresentationHistoryEntry(
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const e = value as PresentationHistoryEntry
   if (
-    Object.keys(e).length !== 5 ||
+    ![
+      'id,kind,legacy,record,sequence',
+      'agentRunId,id,kind,legacy,record,sequence,toolCallId',
+    ].includes(Object.keys(e).sort().join(',')) ||
+    (e.agentRunId !== undefined &&
+      (typeof e.agentRunId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(e.agentRunId) ||
+        typeof e.toolCallId !== 'string' ||
+        e.toolCallId.length < 1 ||
+        e.toolCallId.length > 256)) ||
     !Number.isSafeInteger(e.sequence) ||
     e.sequence < 1 ||
     typeof e.legacy !== 'boolean'
@@ -90,28 +99,49 @@ export function validatePresentationHistoryEntry(
             ? validatePresentationExistingBatch(e.record)
             : e.kind === 'existing_image'
               ? validatePresentationExistingImageChange(e.record)
-            : e.kind === 'existing_page'
+              : e.kind === 'existing_page'
                 ? validatePresentationExistingPageChange(e.record)
                 : e.kind === 'existing_chart'
                   ? validatePresentationExistingChartChange(e.record)
-              : e.kind === 'existing'
-                ? validatePresentationExistingChange(e.record)
-                : e.kind === 'page'
-                  ? validatePresentationPageReplacement(e.record)
-                  : false
+                  : e.kind === 'existing'
+                    ? validatePresentationExistingChange(e.record)
+                    : e.kind === 'page'
+                      ? validatePresentationPageReplacement(e.record)
+                      : false
   return valid && e.id === historyEntryId(e.kind, e.record)
 }
 export interface PresentationHistoryEnvelope {
   version: 1
   entries: PresentationHistoryEntry[]
   heads: Partial<
-    Record<'text' | 'geometry' | 'page' | 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart', string>
+    Record<
+      | 'text'
+      | 'geometry'
+      | 'page'
+      | 'existing'
+      | 'existing_batch'
+      | 'existing_image'
+      | 'existing_page'
+      | 'existing_chart',
+      string
+    >
   >
 }
 export const presentationHistoryBytes = (history: PresentationHistoryEnvelope) =>
   new TextEncoder().encode(JSON.stringify(history)).byteLength +
   // Updating an older record can lengthen the current-head ID without adding an entry.
-  (['text', 'geometry', 'page', 'existing', 'existing_batch', 'existing_image', 'existing_page', 'existing_chart'] as const).reduce(
+  (
+    [
+      'text',
+      'geometry',
+      'page',
+      'existing',
+      'existing_batch',
+      'existing_image',
+      'existing_page',
+      'existing_chart',
+    ] as const
+  ).reduce(
     (sum, kind) =>
       sum +
       (history.heads[kind] === undefined ? 0 : kind.length + 1 + 128 - history.heads[kind]!.length),
@@ -124,19 +154,19 @@ export const presentationHistoryBytes = (history: PresentationHistoryEnvelope) =
         ? existingBatchReservedBytes(e.record)
         : e.kind === 'existing_image'
           ? existingImageReservedBytes(e.record)
-        : e.kind === 'existing_page'
+          : e.kind === 'existing_page'
             ? existingPageReservedBytes(e.record)
-          : e.kind === 'existing_chart'
-            ? existingChartReservedBytes(e.record)
-          : e.kind === 'existing'
-            ? existingChangeReservedBytes(e.record)
-            : e.kind === 'page'
-              ? Math.max(
-                  0,
-                  192 * 1024 - new TextEncoder().encode(JSON.stringify(e.record)).byteLength,
-                )
-              : e.kind === 'image'
-                ? imageReplacementReservedBytes(e.record)
-                : 'undo_pending'.length - e.record.state.length),
+            : e.kind === 'existing_chart'
+              ? existingChartReservedBytes(e.record)
+              : e.kind === 'existing'
+                ? existingChangeReservedBytes(e.record)
+                : e.kind === 'page'
+                  ? Math.max(
+                      0,
+                      192 * 1024 - new TextEncoder().encode(JSON.stringify(e.record)).byteLength,
+                    )
+                  : e.kind === 'image'
+                    ? imageReplacementReservedBytes(e.record)
+                    : 'undo_pending'.length - e.record.state.length),
     0,
   )

@@ -205,6 +205,7 @@ export function createOfficeAgentSession(dependencies: {
         completed: number
         total?: number
       }
+      changeReceipt?: { total: number; unresolved: number }
     }
     validateDocument?(): Promise<boolean>
     begin(runId: string, instruction: string): Promise<void>
@@ -239,6 +240,10 @@ export function createOfficeAgentSession(dependencies: {
         ? `已找到对应导入回执：${importReceipt.completed} 页完成，下一页结果不确定。请先核对宿主页面，勿直接重试。`
         : `已找到对应导入回执：${importReceipt.completed}/${importReceipt.total ?? '?'} 页完成。可核对后从剩余页面继续。`
     : ''
+  const changeReceipt = dependencies.runCheckpoint?.recovery?.changeReceipt
+  const changeReceiptText = changeReceipt
+    ? `已找到对应修改历史 ${changeReceipt.total} 项，其中 ${changeReceipt.unresolved} 项未结算。请在变更历史中核对保存点、宿主对象和撤销状态；未自动重放修改。`
+    : ''
   let state: Omit<OfficeAgentSnapshot, 'proposal'> = {
     assistantText: '',
     activity: '',
@@ -256,7 +261,7 @@ export function createOfficeAgentSession(dependencies: {
           kind: 'system',
           text: dependencies.runCheckpoint.scrubFailed
             ? '上次运行已中断。旧版检查点中的请求原文仍保留在本 PPTX：清理保存失败。请先保存可写副本并重新打开，期间不能继续该运行。'
-            : `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}${dependencies.runCheckpoint.recovery?.phase === 'running' ? '尚未调用工具，可在核对文档后主动重新运行原请求。' : dependencies.runCheckpoint.recovery?.restartSafe ? '此前仅运行了可重读工具，可在核对文档后主动重新运行原请求。' : '请先核对项目、页面和写入记录；未自动重放写入。'}${importReceiptText}运行阶段保存在演示文稿设置中，请求仅保存在本机浏览器。`,
+            : `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}${dependencies.runCheckpoint.recovery?.phase === 'running' ? '尚未调用工具，可在核对文档后主动重新运行原请求。' : dependencies.runCheckpoint.recovery?.restartSafe ? '此前仅运行了可重读工具，可在核对文档后主动重新运行原请求。' : '请先核对项目、页面和写入记录；未自动重放写入。'}${importReceiptText}${changeReceiptText}运行阶段保存在演示文稿设置中，请求仅保存在本机浏览器。`,
         })
       : emptyPresentationTimeline(),
   }

@@ -80,6 +80,7 @@ export interface PresentationAgentRunRecovery {
   toolCallId?: string
   restartSafe?: boolean
   importReceipt?: { state: 'complete' | 'partial' | 'uncertain'; completed: number; total?: number }
+  changeReceipt?: { total: number; unresolved: number }
 }
 // Only audited reads may restart the original instruction after a Taskpane interruption.
 // A write or an unknown tool permanently closes this path for the run.
@@ -716,13 +717,45 @@ export function createPresentationDocumentBinding(
       history.entries.some((e) => e.id !== entry.id && unresolved(e))
     )
       throw new Error('presentation_change_history_pending')
-    if (index < 0)
-      history.entries.push({ ...entry, sequence: (history.entries.at(-1)?.sequence ?? 0) + 1 })
-    else
+    if (index < 0) {
+      let attribution: { agentRunId: string; toolCallId: string } | undefined
+      try {
+        const raw = settings.get(AGENT_RUN_KEY)
+        const run =
+          typeof raw === 'string' ? (JSON.parse(raw) as Record<string, unknown>) : undefined
+        if (
+          run?.documentId === entry.record.documentId &&
+          run.phase === 'tool_pending' &&
+          typeof run.toolName === 'string' &&
+          !restartSafeTools.has(run.toolName) &&
+          !['import_generated_presentation', 'import_presentation_production'].includes(
+            run.toolName,
+          ) &&
+          validId(run.runId) &&
+          typeof run.toolCallId === 'string' &&
+          run.toolCallId.length > 0 &&
+          run.toolCallId.length <= 256
+        )
+          attribution = { agentRunId: run.runId, toolCallId: run.toolCallId }
+      } catch {
+        /* Legacy checkpoints cannot establish an originating tool. */
+      }
+      history.entries.push({
+        ...entry,
+        ...attribution,
+        sequence: (history.entries.at(-1)?.sequence ?? 0) + 1,
+      })
+    } else
       history.entries[index] = {
         ...entry,
         sequence: history.entries[index].sequence,
         legacy: history.entries[index].legacy,
+        ...(history.entries[index].agentRunId
+          ? {
+              agentRunId: history.entries[index].agentRunId,
+              toolCallId: history.entries[index].toolCallId,
+            }
+          : {}),
       } as PresentationHistoryEntry
     if (entry.kind !== 'image') history.heads[entry.kind] = entry.id
     if (
@@ -1577,6 +1610,31 @@ export function createPresentationDocumentBinding(
         ...(record.checkpoint ? { total: record.checkpoint.sourceSlideIds.length } : {}),
       }
     },
+    agentChangeReceipt(boundDocumentId: string, runId: string, toolCallId: string) {
+      if (
+        !validId(runId) ||
+        typeof toolCallId !== 'string' ||
+        toolCallId.length < 1 ||
+        toolCallId.length > 256
+      )
+        return undefined
+      const entries = readHistory().entries.filter(
+        (entry) =>
+          entry.record.documentId === boundDocumentId &&
+          entry.agentRunId === runId &&
+          entry.toolCallId === toolCallId,
+      )
+      if (!entries.length) return undefined
+      return {
+        total: entries.length,
+        unresolved: entries.filter(
+          (entry) =>
+            !['applied', 'undone', 'discarded', 'complete', 'cancelled'].includes(
+              entry.record.state,
+            ),
+        ).length,
+      }
+    },
     interruptedAgentRun(boundDocumentId: string): boolean {
       return Boolean(this.agentRunRecovery(boundDocumentId))
     },
@@ -1753,6 +1811,7 @@ export function createPresentationAgentRunCheckpoint(
     | 'documentId'
     | 'agentRunRecovery'
     | 'agentImportReceipt'
+    | 'agentChangeReceipt'
     | 'rememberAgentRun'
     | 'updateAgentRun'
     | 'finishAgentRun'
@@ -1798,6 +1857,7 @@ export function createPresentationAgentRunCheckpoint(
     const saved = binding.agentRunRecovery(boundDocumentId)
     if (!saved) return undefined
     let importReceipt: PresentationAgentRunRecovery['importReceipt']
+    let changeReceipt: PresentationAgentRunRecovery['changeReceipt']
     if (
       saved.toolCallId &&
       ['import_generated_presentation', 'import_presentation_production'].includes(
@@ -1809,7 +1869,17 @@ export function createPresentationAgentRunCheckpoint(
       } catch {
         /* A damaged import journal cannot justify resuming a write. */
       }
-    const record = importReceipt ? { ...saved, importReceipt } : saved
+    if (saved.toolCallId)
+      try {
+        changeReceipt = binding.agentChangeReceipt(boundDocumentId, saved.runId, saved.toolCallId)
+      } catch {
+        /* A damaged change journal cannot justify resuming a write. */
+      }
+    const record = {
+      ...saved,
+      ...(importReceipt ? { importReceipt } : {}),
+      ...(changeReceipt ? { changeReceipt, restartSafe: false, instruction: '' } : {}),
+    }
     if (!storage) return record
     try {
       const raw = storage.getItem(localKey(record.runId))
@@ -1861,7 +1931,7 @@ export function createPresentationAgentRunCheckpoint(
         value.restartSafe !== record.restartSafe
       )
         return { ...record, instruction: '', restartSafe: false }
-      return { ...record, instruction: value.instruction }
+      return { ...record, instruction: changeReceipt ? '' : value.instruction }
     } catch {
       return record
     }

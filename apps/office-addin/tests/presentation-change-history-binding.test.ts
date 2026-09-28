@@ -1,7 +1,10 @@
 import type { PresentationHistoryEnvelope } from '../src/skills/powerpoint/presentation-change-history'
 import type { PresentationPageReplacement } from '../src/skills/powerpoint/presentation-page-replacement-record'
 import { expect, it, vi } from 'vitest'
-import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
+import {
+  createPresentationAgentRunCheckpoint,
+  createPresentationDocumentBinding,
+} from '../src/skills/powerpoint/presentation-document'
 import type { PresentationTextChange } from '../src/skills/powerpoint/presentation-text-change'
 const historyKey = 'wiswork.presentation.change-history.v1'
 const textKey = 'wiswork.presentation.text-change.v1'
@@ -64,6 +67,48 @@ it('retains same-kind records after reopening and selects older records exactly 
   await expect(
     reopened.writeTextChange({ ...applied, state: 'undo_pending' }, applied),
   ).rejects.toThrow('stale')
+})
+it('binds a new savepoint to the originating AgentRun and preserves it across updates', async () => {
+  const f = await fixture()
+  const id = f.record.documentId
+  const local = new Map<string, string>()
+  const storage = {
+    getItem: (key: string) => local.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      local.set(key, value)
+    },
+    removeItem: (key: string) => {
+      local.delete(key)
+    },
+  }
+  const checkpoint = createPresentationAgentRunCheckpoint(f.binding, id, storage)
+  await checkpoint.begin('run-1', 'Change this text')
+  await checkpoint.tool('run-1', 'tool_pending', 'edit_existing_presentation_text', false, 'call-1')
+  await f.binding.writeTextChange(f.record, undefined)
+  expect(f.create().listChangeHistory()[0]).toMatchObject({
+    agentRunId: 'run-1',
+    toolCallId: 'call-1',
+    record: { state: 'pending' },
+  })
+  expect(f.create().agentChangeReceipt(id, 'run-1', 'call-1')).toEqual({
+    total: 1,
+    unresolved: 1,
+  })
+  expect(createPresentationAgentRunCheckpoint(f.create(), id, storage).recovery()).toMatchObject({
+    restartSafe: false,
+    instruction: '',
+    changeReceipt: { total: 1, unresolved: 1 },
+  })
+  const applied = { ...f.record, state: 'applied' as const }
+  await f.binding.writeTextChange(applied, f.record)
+  expect(checkpoint.recovery()?.changeReceipt).toEqual({ total: 1, unresolved: 0 })
+  await checkpoint.finish('run-1')
+  await checkpoint.begin('run-2')
+  await checkpoint.tool('run-2', 'tool_pending', 'edit_existing_presentation_text', false, 'call-1')
+  expect(checkpoint.recovery()?.changeReceipt).toBeUndefined()
+  await f.binding.writeTextChange({ ...applied, state: 'undo_pending' }, applied)
+  expect(f.create().agentChangeReceipt(id, 'run-1', 'call-1')).toEqual({ total: 1, unresolved: 1 })
+  expect(f.create().agentChangeReceipt(id, 'run-2', 'call-1')).toBeUndefined()
 })
 it('saves legacy slot and history together and restores both after completion failure', async () => {
   const f = await fixture()
@@ -148,6 +193,9 @@ it('rejects old-version head changes, malformed history, forged heads and duplic
     },
     (h: PresentationHistoryEnvelope & { extra?: boolean }) => {
       h.entries[0].id = 'text:wrong'
+    },
+    (h: PresentationHistoryEnvelope & { extra?: boolean }) => {
+      h.entries[0].agentRunId = 'forged'
     },
     (h: PresentationHistoryEnvelope & { extra?: boolean }) => {
       h.extra = true
