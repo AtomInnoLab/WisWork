@@ -361,6 +361,8 @@ describe('Office Agent workspace UI', () => {
     const applying = workspaceMarkup({ applying: true })
     expect(applying).toContain('Applying approved change')
     expect(applying).toContain('Applying…')
+    expect(applying).toContain('>Stop<')
+    expect(applying).not.toContain('class="send-button"')
 
     expect(applying).toMatch(/aria-label="Attachments"[^>]*disabled/)
     expect(applying).toMatch(/<button type="button" disabled="">管理技能<\/button>/)

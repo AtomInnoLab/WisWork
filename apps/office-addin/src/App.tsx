@@ -1588,7 +1588,7 @@ export function AgentWorkspace(props: {
               更改需确认
             </span>
           </div>
-          {state.busy ? (
+          {state.busy || state.applying ? (
             <button type="button" className="stop-button" onClick={() => session.stop()}>
               Stop
             </button>
