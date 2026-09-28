@@ -183,7 +183,7 @@ export function proposalPresentation(proposal: DisplayProposal) {
 
 const MEBIBYTE = 1024 * 1024
 
-function displayMegabytes(bytes: number): string {
+function displayMebibytes(bytes: number): string {
   const value = bytes / MEBIBYTE
   return Number.isInteger(value) ? String(value) : value.toFixed(1)
 }
@@ -195,8 +195,8 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
       ? '动画原件已保留在 PC。请在附件列表中选择“生成静态首帧”，或改用静态 PNG/JPEG。'
       : '动画网址未保存。请先下载并上传原件，再在附件列表中选择“生成静态首帧”。'
   const attachmentErrors: Record<string, string> = {
-    presentation_attachment_too_large: '制作资料每个文件最多 50 MB。',
-    presentation_image_too_large: '图片每个文件最多 10 MB。',
+    presentation_attachment_too_large: '制作资料每个文件最多 50 MiB。',
+    presentation_image_too_large: '图片每个文件最多 10 MiB。',
     presentation_remote_image_unavailable:
       '图片网址无法安全下载或图片格式不受支持，请检查网址后重试。',
     presentation_image_candidates_exhausted:
@@ -214,7 +214,7 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
     presentation_attachment_in_use: '这份资料正被图片使用权声明引用，请先撤回声明再删除。',
     presentation_invalid_state: 'PC 资料状态异常，请重连后重试。',
     presentation_quota_exceeded:
-      '当前文档在 PC 的资料容量已满（资料最多 32 个，附件预留容量总计 100 MB）。请删除不再需要的资料或图片后重试。',
+      '当前文档在 PC 的资料容量已满（资料最多 32 个，附件预留容量总计 100 MiB）。请删除不再需要的资料或图片后重试。',
     presentation_document_changed: '文档已改变，本次上传已停止。请在目标文档重新上传。',
     presentation_service_unavailable: 'PC 连接不可用，请重连后重新选择同一文件续传。',
     presentation_unavailable: 'PC 连接不可用，请重连后重新选择同一文件续传。',
@@ -223,9 +223,9 @@ export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>
   if (attachmentErrors[code]) return attachmentErrors[code]
   if (code === 'vfs_limit') {
     if (file && file.size > MAX_VFS_FILE_BYTES) {
-      return `File is ${displayMegabytes(file.size)} MB. Attachments must be ${displayMegabytes(MAX_VFS_FILE_BYTES)} MB or smaller.`
+      return `File is ${displayMebibytes(file.size)} MiB. Attachments must be ${displayMebibytes(MAX_VFS_FILE_BYTES)} MiB or smaller.`
     }
-    return `Attachment limit reached. Files are limited to ${displayMegabytes(MAX_VFS_FILE_BYTES)} MB each and ${displayMegabytes(MAX_VFS_TOTAL_BYTES)} MB per session.`
+    return `Attachment limit reached. Files are limited to ${displayMebibytes(MAX_VFS_FILE_BYTES)} MiB each and ${displayMebibytes(MAX_VFS_TOTAL_BYTES)} MiB per session.`
   }
   return [
     'upload_cancelled',
@@ -887,13 +887,13 @@ export function AgentWorkspace(props: {
               />
               <p>
                 {ui.durableAttachmentsAvailable?.()
-                  ? 'PDF、Word（DOCX）、TXT、MD、CSV、JSON 资料每个最多 50 MB，保存于 PC 并绑定当前文档；退出登录不会删除。重连后可让 Agent 列出和读取，重新选择同一文件可续传。'
-                  : `Files are limited to ${displayMegabytes(MAX_VFS_FILE_BYTES)} MB each and ${displayMegabytes(MAX_VFS_TOTAL_BYTES)} MB per session, then cleared on logout.`}
+                  ? 'PDF、Word（DOCX）、TXT、MD、CSV、JSON 资料每个最多 50 MiB，保存于 PC 并绑定当前文档；退出登录不会删除。重连后可让 Agent 列出和读取，重新选择同一文件可续传。'
+                  : `Files are limited to ${displayMebibytes(MAX_VFS_FILE_BYTES)} MiB each and ${displayMebibytes(MAX_VFS_TOTAL_BYTES)} MiB per session, then cleared on logout.`}
               </p>
               {ui.durableImagesAvailable?.() && (
                 <>
                   <p>
-                    PNG、JPEG、静态 GIF、WebP 图片每个最多 10 MB，上传后在 PC
+                    PNG、JPEG、静态 GIF、WebP 图片每个最多 10 MiB，上传后在 PC
                     校验并缓存；可直接用于制作，无需将图片编码发给 Agent。
                   </p>
                   {ui.remoteImagesAvailable?.() && (
@@ -964,7 +964,7 @@ export function AgentWorkspace(props: {
               )}
               {ui.durableAttachmentsAvailable?.() && (
                 <p>
-                  下方仅显示本次会话可下载的副本；超过 20 MB 或会话容量的资料仍可由 Agent 在 PC
+                  下方仅显示本次会话可下载的副本；超过 20 MiB 或会话容量的资料仍可由 Agent 在 PC
                   读取。其他文件及技能仅保留在会话中。
                 </p>
               )}
