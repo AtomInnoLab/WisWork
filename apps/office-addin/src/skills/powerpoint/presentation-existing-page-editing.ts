@@ -24,6 +24,7 @@ import {
 } from './presentation-existing-page.js'
 import { readBoundedImage } from '../shared/import-media.js'
 import { replacePowerPointPictureMediaPackage } from './presentation-picture-package.js'
+import { replacePowerPointTextRangePackage } from './presentation-text-revision-package.js'
 import { readChartPackageBackup } from './presentation-chart-backup.js'
 import {
   validatePresentationExistingChange,
@@ -201,6 +202,24 @@ const tools: AgentToolDef[] = names.map((action) => ({
   },
 }))
 tools.unshift({
+  name: 'prepare_existing_presentation_text_revision',
+  description:
+    'Prepare an equal-length native text edit across formatting runs as a one-slide PPTX. This writes only to VFS; stage the returned PPTX with the existing page change flow.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      baseline_id: { type: 'string' },
+      slide_id: { type: 'string' },
+      shape_id: { type: 'string' },
+      start: { type: 'integer', minimum: 0 },
+      before: { type: 'string', minLength: 1, maxLength: 128 },
+      after: { type: 'string', minLength: 1, maxLength: 128 },
+    },
+    required: ['baseline_id', 'slide_id', 'shape_id', 'start', 'before', 'after'],
+    additionalProperties: false,
+  },
+})
+tools.unshift({
   name: 'prepare_existing_presentation_image_revision',
   description:
     'Prepare a one-slide PPTX with one native picture media replaced. This writes only to VFS; stage the returned PPTX with the existing page change flow.',
@@ -256,7 +275,7 @@ export function createPresentationExistingPageEditingSkill(
           )
     },
     systemPrompt:
-      'Existing page rebuild uses a validated one-slide VFS PPTX. For an ordinary embedded native picture, prepare_existing_presentation_image_revision creates a one-slide revision in VFS; then stage the returned path with picture_shape_id through the existing page change flow so post-write media can be read back. To restore a whole page from a completed single or batch existing-edit savepoint, call prepare_existing_presentation_original_page_restore for its exact change and slide; read a fresh page baseline, then stage using the returned path and restore_source_kind/restore_source_change_id, inspect both pages, and separately confirm commit. The edited page is backed up before stage and remains until commit; the restored page receives a new host slide ID. Preparation does not modify PowerPoint. An unverified image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. Inspect and resume interrupted insertion before further action; never replay unknown insertion. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
+      'Existing page rebuild uses a validated one-slide VFS PPTX. For an ordinary embedded native picture, prepare_existing_presentation_image_revision creates a one-slide revision in VFS; then stage the returned path with picture_shape_id through the existing page change flow so post-write media can be read back. For equal-length text spanning multiple formatting runs, prepare_existing_presentation_text_revision preserves each run and produces a one-slide VFS revision; stage that path through the same confirmed page change flow. To restore a whole page from a completed single or batch existing-edit savepoint, call prepare_existing_presentation_original_page_restore for its exact change and slide; read a fresh page baseline, then stage using the returned path and restore_source_kind/restore_source_change_id, inspect both pages, and separately confirm commit. The edited page is backed up before stage and remains until commit; the restored page receives a new host slide ID. Preparation does not modify PowerPoint. An unverified image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. Inspect and resume interrupted insertion before further action; never replay unknown insertion. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
     clear() {
       epoch++
       reviewCapture = undefined
@@ -405,6 +424,74 @@ export function createPresentationExistingPageEditingSkill(
             }),
             mutated: false,
             summary: '已准备原页包恢复来源，尚未修改演示文稿',
+          }
+        }
+        if (call.name === 'prepare_existing_presentation_text_revision') {
+          const input = call.input
+          if (
+            !id(input.baseline_id) ||
+            !host(input.slide_id) ||
+            typeof input.shape_id !== 'string' ||
+            !/^[1-9]\d{0,9}$/.test(input.shape_id) ||
+            !Number.isSafeInteger(input.start) ||
+            (input.start as number) < 0 ||
+            typeof input.before !== 'string' ||
+            typeof input.after !== 'string'
+          )
+            throw new Error('invalid_tool_input')
+          const baseline = options.baseline.snapshot(input.baseline_id)
+          if (
+            !baseline ||
+            baseline.documentId !== documentId ||
+            !baseline.scope.slideIds.includes(input.slide_id) ||
+            baseline.scope.shapeIds?.length
+          )
+            throw new Error('presentation_existing_scope_mismatch')
+          const original = await options.exportAdapter.exportPresentationPagePackage(
+            input.slide_id,
+            signal,
+          )
+          await current()
+          if (
+            original.slideId !== input.slide_id ||
+            !same(original.slideIds, baseline.context.slideIds)
+          )
+            throw new Error('presentation_baseline_changed')
+          const check = await options.baseline.executeTool(
+            {
+              id: 'page-text-check',
+              name: 'check_presentation_baseline',
+              input: { baseline_id: baseline.baselineId },
+            },
+            signal,
+          )
+          await current()
+          if (check.isError || JSON.parse(check.output).unchanged !== true)
+            throw new Error('presentation_baseline_changed')
+          const revision = await replacePowerPointTextRangePackage(
+            original.base64,
+            input.shape_id,
+            input.start as number,
+            input.before,
+            input.after,
+            signal,
+          )
+          await current()
+          const path = `/home/user/presentation-text-revision-${crypto.randomUUID()}.pptx`
+          options.vfs.writeFile(path, bytes(revision.base64))
+          return {
+            output: output({
+              path,
+              baselineId: baseline.baselineId,
+              slideId: input.slide_id,
+              shapeId: input.shape_id,
+              beforeDigest: revision.beforeDigest,
+              afterDigest: revision.afterDigest,
+              changedRuns: revision.changedRuns,
+              nextTool: 'stage_existing_presentation_page_change',
+            }),
+            mutated: false,
+            summary: '已准备保留格式的原生文字修订稿，尚未修改演示文稿',
           }
         }
         if (action === 'prepare') {
