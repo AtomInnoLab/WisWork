@@ -537,16 +537,18 @@ const tools = [
       additionalProperties: false,
     },
   },
-  ...(['inspect', 'resume', 'undo', 'release'] as const).map((action) => ({
+  ...(['inspect', 'resume', 'undo', 'release', 'reapply'] as const).map((action) => ({
     name: `${action}_slide_chart_values_change`,
     description:
       action === 'inspect'
         ? 'Inspect a durable chart value change against the current host package without writing.'
         : action === 'resume'
           ? 'Finalize a known interrupted chart value write after classifying the host package; never replay an unknown host write.'
-          : action === 'release'
-            ? 'Propose release of the PC backup only for a cancelled or undone chart change.'
-            : 'Propose confirmed restoration of the original backed-up chart package when the exact applied package is still current.',
+          : action === 'reapply'
+            ? 'Propose reapplication of an undone chart value change using retained numeric values and a readable original backup. Creates an independent savepoint linked to the old change and rejects modified restored pages.'
+            : action === 'release'
+              ? 'Propose release of the PC backup only for a cancelled or undone chart change.'
+              : 'Propose confirmed restoration of the original backed-up chart package when the exact applied package is still current.',
     inputSchema: {
       type: 'object',
       properties: { change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' } },
@@ -1477,10 +1479,12 @@ export function createPowerPointSkill(options: {
     values: string[][],
     explanation: string | undefined,
     signal?: AbortSignal,
+    reapply?: { source: PresentationExistingChartChange; check(s?: AbortSignal): Promise<void> },
   ): Promise<ToolExecution> {
     const durable = options.chartSavepoint
     if (!durable) throw new Error('office_api_unsupported')
     const documentId = await durable.documentId()
+    await reapply?.check(signal)
     const deck = await options.adapter.verifySlides(signal)
     const before = await options.adapter.exportSlidePackage(slideIndex, signal)
     const beforeSlideIds = deck.slides.map((slide) => slide.slideId)
@@ -1489,6 +1493,14 @@ export function createPowerPointSkill(options: {
     const beforeDigest = await presentationPackageDigest(before.base64, signal)
     const prepared = await updatePowerPointChartDataPackage(before.base64, shapeId, values, signal)
     const afterDigest = await presentationPackageDigest(prepared.base64, signal)
+    if (
+      reapply &&
+      (before.slideId !== reapply.source.restoredSlideId ||
+        beforeDigest !== reapply.source.beforePackageDigest ||
+        afterDigest !== reapply.source.afterPackageDigest)
+    )
+      throw new Error('presentation_existing_chart_manual_review')
+    await reapply?.check(signal)
     const edit = await captureChartValuePackageEdit(before.base64, prepared.base64, signal)
     let applied: typeof edit | undefined
     const changeId = crypto.randomUUID(),
@@ -1505,6 +1517,7 @@ export function createPowerPointSkill(options: {
       record = structuredClone(next)
     }
     const unchanged = async (s?: AbortSignal) => {
+      await reapply?.check(s)
       if ((await durable.documentId()) !== documentId) return false
       const host = await options.adapter.verifySlides(s)
       const current = await options.adapter.exportSlidePackage(slideIndex, s)
@@ -1517,11 +1530,12 @@ export function createPowerPointSkill(options: {
       )
     }
     const proposal = options.proposals.propose({
-      operation: 'update_slide_chart_values',
-      toolName: 'update_slide_chart_values',
+      operation: reapply ? 'reapply_slide_chart_values_change' : 'update_slide_chart_values',
+      toolName: reapply ? 'reapply_slide_chart_values_change' : 'update_slide_chart_values',
       title: explanation || 'Update native chart values',
       preview: {
         changeId,
+        ...(reapply ? { reapplies: reapply.source.changeId } : {}),
         slideIndex,
         shapeId,
         values,
@@ -1581,6 +1595,8 @@ export function createPowerPointSkill(options: {
             afterPackageDigest: afterDigest,
             backup,
             state: 'pending',
+            values: structuredClone(values),
+            ...(reapply ? { reapplies: reapply.source.changeId } : {}),
           })
         } catch (error) {
           // Only a confirmed absence of the first journal entry proves this backup is orphaned.
@@ -1631,7 +1647,11 @@ export function createPowerPointSkill(options: {
       },
     })
     return {
-      output: boundedJson(proposal),
+      output: boundedJson({
+        ...proposal,
+        changeId,
+        ...(reapply ? { reapplies: reapply.source.changeId } : {}),
+      }),
       mutated: false,
       summary: 'Proposed native chart values update',
     }
@@ -1683,6 +1703,41 @@ export function createPowerPointSkill(options: {
       if (JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(next))
         throw new Error('office_state_uncertain')
       record = structuredClone(next)
+    }
+    if (name === 'reapply_slide_chart_values_change') {
+      if (record.state !== 'undone' || !record.values || record.backupReleasedAt)
+        throw new Error('presentation_existing_chart_state_invalid')
+      const source = structuredClone(record)
+      const check = async (s?: AbortSignal) => {
+        const observed = await observe(s)
+        if (observed.status !== 'before' || observed.slideId !== source.restoredSlideId)
+          throw new Error('presentation_existing_chart_manual_review')
+        await readChartPackageBackup(
+          {
+            request: durable.request,
+            documentId: source.documentId,
+            hostSlideId: source.oldSlideId,
+            slideIds: source.beforeSlideIds,
+            backup: source.backup,
+            expectedPackageDigest: source.beforePackageDigest,
+          },
+          s,
+        )
+        if (
+          (await durable.documentId()) !== source.documentId ||
+          JSON.stringify(durable.readExistingChartChange(changeId)) !== JSON.stringify(source)
+        )
+          throw new Error('presentation_existing_chart_stale')
+      }
+      await check(signal)
+      return proposeChartValues(
+        source.slideIndex,
+        source.shapeId,
+        structuredClone(source.values!),
+        'Reapply native chart values',
+        signal,
+        { source, check },
+      )
     }
     if (name === 'release_slide_chart_values_change') {
       if (!['cancelled', 'undone'].includes(record.state) || record.backupReleasedAt)
@@ -1946,6 +2001,7 @@ export function createPowerPointSkill(options: {
             'resume_slide_chart_values_change',
             'undo_slide_chart_values_change',
             'release_slide_chart_values_change',
+            'reapply_slide_chart_values_change',
           ].includes(tool.name)) &&
         (masterXmlEditingSupported || tool.name !== 'edit_slide_master_xml') &&
         (nativeMasterEditingSupported ||
@@ -2677,6 +2733,7 @@ export function createPowerPointSkill(options: {
             'resume_slide_chart_values_change',
             'undo_slide_chart_values_change',
             'release_slide_chart_values_change',
+            'reapply_slide_chart_values_change',
           ].includes(call.name)
         ) {
           const input = exactRecord(call.input, ['change_id'])
