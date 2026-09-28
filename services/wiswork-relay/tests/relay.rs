@@ -8,7 +8,11 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::{Message, client::IntoClientRequest},
+    tungstenite::{
+        Message,
+        client::IntoClientRequest,
+        protocol::{CloseFrame, frame::coding::CloseCode},
+    },
 };
 use wiswork_relay::{Config, app};
 
@@ -321,6 +325,34 @@ async fn pc_socket_resumes_same_session_and_interrupted_request_is_not_replayed(
     assert_eq!(recv(&mut office).await["type"], "office.pc_online");
     send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":office_cap,"request_id":"new_request","capability_name":"agent.v1","body":{}})).await;
     assert_eq!(recv(&mut resumed).await["request_id"], "new_request");
+}
+
+#[tokio::test]
+async fn explicit_pc_close_revokes_only_its_sessions() {
+    let url = server().await;
+    let (mut office, mut pc, ready, pc_ready) = approved_v2_session(&url).await;
+    let (mut other_office, mut other_pc, other_ready, _) = approved_v2_session(&url).await;
+    let sid = ready["session_id"].as_str().unwrap();
+    let cap = pc_ready["capability"].as_str().unwrap();
+
+    pc.close(Some(CloseFrame {
+        code: CloseCode::Normal,
+        reason: "session_revoked".into(),
+    }))
+    .await
+    .unwrap();
+    assert_eq!(recv(&mut office).await["code"], "session_revoked");
+
+    let mut resumed = pc_socket(&url).await;
+    send(
+        &mut resumed,
+        json!({"version":2,"type":"pc.resume","session_id":sid,"capability":cap}),
+    )
+    .await;
+    assert_eq!(recv(&mut resumed).await["code"], "invalid_session");
+
+    send(&mut other_office, json!({"version":2,"type":"office.request","session_id":other_ready["session_id"],"capability":other_ready["capability"],"request_id":"still_live","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut other_pc).await["request_id"], "still_live");
 }
 
 #[tokio::test]

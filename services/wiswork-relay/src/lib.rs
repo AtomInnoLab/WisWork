@@ -398,6 +398,7 @@ async fn connection(
         .min(Duration::from_secs(60));
     let mut last_lease_renewal = Instant::now();
     heartbeat.tick().await;
+    let mut explicitly_revoked = false;
     loop {
         let message = tokio::select! {
             _ = tx.failed.notified() => break,
@@ -441,7 +442,13 @@ async fn connection(
                     last_lease_renewal = Instant::now();
                 }
             }
-            Message::Close(_) => break,
+            Message::Close(frame) => {
+                explicitly_revoked = subject.is_some()
+                    && frame.is_some_and(|frame| {
+                        frame.code == 1000 && frame.reason == "session_revoked"
+                    });
+                break;
+            }
             Message::Binary(_) => {
                 error(&tx, "binary_not_supported");
                 break;
@@ -452,7 +459,7 @@ async fn connection(
             }
         }
     }
-    cleanup(&app, id).await;
+    cleanup(&app, id, explicitly_revoked).await;
     drop(tx);
     let _ = writer.await;
 }
@@ -1776,7 +1783,7 @@ fn expire(s: &mut Store, ttl: Duration) {
     s.preauth_attempts
         .retain(|_, (started, _)| started.elapsed() <= ttl);
 }
-async fn cleanup(app: &App, conn: u64) {
+async fn cleanup(app: &App, conn: u64, explicitly_revoked: bool) {
     let mut s = app.inner.state.lock().await;
     s.connection_pairings.remove(&conn);
     s.connection_sessions.remove(&conn);
@@ -1809,7 +1816,7 @@ async fn cleanup(app: &App, conn: u64) {
     for id in ids {
         if s.sessions
             .get(&id)
-            .is_some_and(|x| x.pc == conn && x.version == PROTOCOL_V2)
+            .is_some_and(|x| x.pc == conn && x.version == PROTOCOL_V2 && !explicitly_revoked)
         {
             if let Some(x) = s.sessions.get_mut(&id) {
                 let active = x.active.take();
