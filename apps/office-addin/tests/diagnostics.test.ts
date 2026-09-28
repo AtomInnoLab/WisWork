@@ -5,6 +5,45 @@ import {
 } from '../src/diagnostics/office-diagnostics.js'
 
 describe('Office safe diagnostics', () => {
+  it('keeps validated presentation identifiers in local export and strips them from remote events', () => {
+    const sent: unknown[] = []
+    const diagnostics = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'build-123',
+      remoteEnabled: true,
+      send: (event) => {
+        sent.push(event)
+      },
+      randomUUID: () => '00000000-0000-4000-8000-000000000001',
+    })
+    diagnostics.startTrace()
+    diagnostics.setTool('run_presentation_production', {
+      project_id: 'project-1',
+      request_id: 'run-1',
+      page_id: 'page-3',
+      tool_call_id: 'call-1',
+      extra: 'private brief',
+    } as never)
+    expect(diagnostics.record({ phase: 'tool', errorCode: 'office_write_failed' })).toMatchObject({
+      presentation_context: {
+        project_id: 'project-1',
+        request_id: 'run-1',
+        page_id: 'page-3',
+        tool_call_id: 'call-1',
+      },
+    })
+    expect(diagnostics.exportJson()).toContain('"page_id": "page-3"')
+    expect(JSON.stringify(sent)).not.toContain('presentation_context')
+    expect(JSON.stringify(sent)).not.toContain('private brief')
+    diagnostics.setTool('read_document', { page_id: 'secret page title' })
+    expect(
+      diagnostics.record({ phase: 'tool', errorCode: 'office_read_failed' }),
+    ).not.toHaveProperty('presentation_context')
+    diagnostics.startTrace()
+    expect(
+      diagnostics.record({ phase: 'run', errorCode: 'agent_run_completed' }),
+    ).not.toHaveProperty('presentation_context')
+  })
   it('records a bounded run completion without document content', () => {
     const sent: unknown[] = []
     const diagnostics = createOfficeDiagnostics({

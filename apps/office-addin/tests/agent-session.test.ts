@@ -353,6 +353,59 @@ describe('Office agent session', () => {
     )
   })
 
+  it('links a PowerPoint tool call to local diagnostic project and page IDs', async () => {
+    const harness = transportHarness()
+    const diagnostics = {
+      startTrace: vi.fn(() => 'trace'),
+      setTool: vi.fn(),
+      record: vi.fn(),
+      clear: vi.fn(),
+    }
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [
+          {
+            name: 'run_presentation_production',
+            description: 'run',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        executeTool: vi.fn(async () => ({
+          output: 'office_write_failed',
+          isError: true,
+          summary: 'failed',
+        })),
+      },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+    session.send('private brief')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({
+      id: 'call-1',
+      name: 'run_presentation_production',
+      input: {
+        project_id: 'project-1',
+        request_id: 'run-1',
+        page_id: 'page-3',
+        private_text: 'secret',
+      },
+    })
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(diagnostics.setTool).toHaveBeenCalledWith('run_presentation_production', {
+        project_id: 'project-1',
+        request_id: 'run-1',
+        page_id: 'page-3',
+        tool_call_id: 'call-1',
+      }),
+    )
+    expect(JSON.stringify(diagnostics.setTool.mock.calls)).not.toContain('secret')
+  })
+
   it('waits for an ordinary tool completion checkpoint before the next request', async () => {
     const harness = transportHarness()
     let savePending!: () => void

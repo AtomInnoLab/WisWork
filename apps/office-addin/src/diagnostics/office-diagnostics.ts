@@ -8,6 +8,12 @@ export type DiagnosticPhase =
   'run' | 'tool' | 'proposal' | 'validate' | 'write' | 'verify' | 'recovery' | 'transport'
 export type DiagnosticOutcome = 'passed' | 'failed' | 'unsupported' | 'cancelled'
 export type VerificationStage = 'text' | 'body_shape' | 'content' | 'boundary'
+export interface PresentationDiagnosticContext {
+  project_id?: string
+  request_id?: string
+  page_id?: string
+  tool_call_id?: string
+}
 
 const ERROR_CODES = new Set([
   'agent_run_completed',
@@ -48,6 +54,7 @@ export interface OfficeDiagnosticEvent {
   verification_stage?: VerificationStage
   duration_ms: number
   requirement_sets: Readonly<Record<string, boolean>>
+  presentation_context?: Readonly<PresentationDiagnosticContext>
 }
 
 export interface OfficeDiagnosticSnapshot {
@@ -57,7 +64,7 @@ export interface OfficeDiagnosticSnapshot {
 
 export interface OfficeDiagnostics {
   startTrace(): string
-  setTool(name: string): void
+  setTool(name: string, context?: PresentationDiagnosticContext): void
   record(input: {
     phase: DiagnosticPhase
     errorCode: string
@@ -208,8 +215,27 @@ function requirementSets(value: Readonly<Record<string, boolean>> | undefined) {
   return Object.freeze(Object.fromEntries(entries) as Record<string, boolean>)
 }
 
+function presentationContext(value: PresentationDiagnosticContext | undefined) {
+  if (!value) return undefined
+  const allowed = ['project_id', 'request_id', 'page_id', 'tool_call_id'] as const
+  const safe = Object.fromEntries(
+    allowed.flatMap((key) =>
+      typeof value[key] === 'string' && /^[A-Za-z0-9_#-]{1,128}$/.test(value[key])
+        ? [[key, value[key]]]
+        : [],
+    ),
+  ) as PresentationDiagnosticContext
+  return Object.keys(safe).length ? Object.freeze(safe) : undefined
+}
+
 function freezeEvent(event: OfficeDiagnosticEvent): OfficeDiagnosticEvent {
-  return Object.freeze({ ...event, requirement_sets: Object.freeze({ ...event.requirement_sets }) })
+  return Object.freeze({
+    ...event,
+    requirement_sets: Object.freeze({ ...event.requirement_sets }),
+    ...(event.presentation_context
+      ? { presentation_context: Object.freeze({ ...event.presentation_context }) }
+      : {}),
+  })
 }
 
 export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagnostics {
@@ -226,6 +252,7 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
   let traceId: string | undefined
   let traceGeneration = 0
   let tool = 'unknown'
+  let context: Readonly<PresentationDiagnosticContext> | undefined
   let uploadFailureRecorded = false
 
   const local = (event: OfficeDiagnosticEvent) => {
@@ -245,6 +272,7 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
     delete derived.office_error_name
     delete derived.office_error_location
     delete derived.verification_stage
+    delete derived.presentation_context
     return derived
   }
   const upload = (event: OfficeDiagnosticEvent) => {
@@ -257,7 +285,8 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
     }
     const generation = traceGeneration
     try {
-      const result = options.send(event)
+      const { presentation_context: _localContext, ...remoteEvent } = event
+      const result = options.send(remoteEvent)
       void Promise.resolve(result).catch(() => {
         if (generation !== traceGeneration || uploadFailureRecorded) return
         uploadFailureRecorded = true
@@ -276,11 +305,13 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
       traceGeneration += 1
       traceId = randomUUID()
       tool = 'unknown'
+      context = undefined
       uploadFailureRecorded = false
       return traceId
     },
-    setTool(name) {
+    setTool(name, inputContext) {
       tool = identifier(name, 'unknown', 128)
+      context = presentationContext(inputContext)
     },
     record(input) {
       if (!traceId) {
@@ -305,6 +336,7 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
             ? Math.min(600_000, Math.trunc(input.durationMs!))
             : 0,
         requirement_sets: requirements,
+        ...(context ? { presentation_context: context } : {}),
       })
       if (encoder.encode(JSON.stringify(event)).byteLength > MAX_DIAGNOSTIC_EVENT_BYTES) {
         throw new Error('invalid_diagnostic_event')
@@ -325,6 +357,7 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
       events = []
       traceId = undefined
       tool = 'unknown'
+      context = undefined
       uploadFailureRecorded = false
     },
   }

@@ -1,6 +1,7 @@
 import {
   suspendToolExecution,
   type AgentSkill,
+  type AgentToolCall,
   type AgentTransport,
   type ToolExecution,
   type ToolExecutionOutcome,
@@ -22,7 +23,10 @@ import {
   type ProposalPresentationEvent,
   type ToolPresentationEvent,
 } from './presentation-state.js'
-import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
+import type {
+  OfficeDiagnostics,
+  PresentationDiagnosticContext,
+} from '../diagnostics/office-diagnostics.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
 
@@ -183,6 +187,22 @@ function diagnosticToolError(output: string): string {
       : 'agent_run_failed'
   } catch {
     return 'agent_run_failed'
+  }
+}
+
+function presentationDiagnosticContext(
+  call: AgentToolCall,
+): PresentationDiagnosticContext | undefined {
+  const string = (value: unknown) => (typeof value === 'string' ? value : undefined)
+  const projectId = string(call.input.project_id)
+  const requestId = string(call.input.request_id)
+  const pageId = string(call.input.page_id ?? call.input.host_slide_id ?? call.input.slide_id)
+  if (!projectId && !requestId && !pageId) return undefined
+  return {
+    tool_call_id: call.id,
+    ...(projectId ? { project_id: projectId } : {}),
+    ...(requestId ? { request_id: requestId } : {}),
+    ...(pageId ? { page_id: pageId } : {}),
   }
 }
 
@@ -499,12 +519,19 @@ export function createOfficeAgentSession(dependencies: {
       },
       onToolStart: (call) => {
         toolStartedAt.set(call.id, Date.now())
-        diagnose((diagnostics) => diagnostics.setTool(call.name))
+        diagnose((diagnostics) => {
+          const context = presentationDiagnosticContext(call)
+          if (context) diagnostics.setTool(call.name, context)
+          else diagnostics.setTool(call.name)
+        })
       },
       onToolExecuted: (event) => {
         if (event.execution.isError) {
           const errorCode = diagnosticToolError(event.execution.output)
-          diagnose((diagnostics) =>
+          diagnose((diagnostics) => {
+            const context = presentationDiagnosticContext(event.call)
+            if (context) diagnostics.setTool(event.call.name, context)
+            else diagnostics.setTool(event.call.name)
             diagnostics.record({
               phase: 'tool',
               errorCode,
@@ -515,8 +542,8 @@ export function createOfficeAgentSession(dependencies: {
                 0,
                 Date.now() - (toolStartedAt.get(event.call.id) ?? Date.now()),
               ),
-            }),
-          )
+            })
+          })
         }
         toolStartedAt.delete(event.call.id)
         appendPendingProposal()
