@@ -207,6 +207,7 @@ async function fixture() {
     return new Response(JSON.stringify(meta))
   })
   const adapter = {
+    captureUnchangedPageDigests: vi.fn(async () => []),
     reconcilePending: vi.fn(async () =>
       slideIds.length === 2
         ? ({ status: 'inserted', newSlideId: 'new' } as const)

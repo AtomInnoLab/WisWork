@@ -280,8 +280,28 @@ export function createPresentationPageReplacementSkill(
           const originalPackageDigest = await presentationPackageDigest(backup.base64, signal),
             replacementPackageDigest = await presentationPackageDigest(base64, signal)
           await current()
+          const untouchedSlideIds = receipt.checkpoint.completed
+            .map((item) => item.slideId)
+            .filter((slideId) => slideId !== m.hostSlideId)
+            .sort((a, b) => m.slideIds.indexOf(a) - m.slideIds.indexOf(b))
+          if (
+            untouchedSlideIds.length > 31 ||
+            untouchedSlideIds.some((slideId) => !m.slideIds.includes(slideId))
+          )
+            throw new Error('presentation_page_binding_invalid')
+          const untouchedSlideDigests = await options.adapter.captureUnchangedPageDigests(
+            untouchedSlideIds,
+            m.slideIds,
+            signal,
+          )
+          await current()
+          if (
+            untouchedSlideDigests.length !== untouchedSlideIds.length ||
+            untouchedSlideDigests.some((item, index) => item.slideId !== untouchedSlideIds[index])
+          )
+            throw new Error('presentation_page_binding_invalid')
           record = {
-            version: 1,
+            version: 2,
             changeId,
             documentId,
             projectId,
@@ -296,6 +316,7 @@ export function createPresentationPageReplacementSkill(
             sourceSlideId: page.sourceSlideId,
             oldSlideId: m.hostSlideId,
             beforeSlideIds: [...m.slideIds],
+            untouchedSlideDigests,
             state: 'pending',
           }
           if (!validatePresentationPageReplacement(record))

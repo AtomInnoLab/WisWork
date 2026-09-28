@@ -88,6 +88,9 @@ function setup() {
     },
   )
   const adapter = {
+    captureUnchangedPageDigests: vi.fn(
+      async (): Promise<{ slideId: string; digest: string }[]> => [],
+    ),
     reconcilePending: vi.fn(
       async (): Promise<{ status: 'baseline' | 'inserted' | 'conflict'; newSlideId?: string }> => ({
         status: 'baseline',
@@ -231,7 +234,13 @@ it('confirms staging, saves pending before insertion and inserted before staged;
   expect(f.adapter.stage).not.toHaveBeenCalled()
   expect(await f.confirm()).toEqual({ status: 'confirmed' })
   expect(f.write.mock.calls.map((c) => c[0].state)).toEqual(['pending', 'inserted', 'staged'])
-  expect(f.journal()).toMatchObject({ oldSlideId: 'host', newSlideId: 'new' })
+  expect(f.journal()).toMatchObject({ version: 2, oldSlideId: 'host', newSlideId: 'new' })
+  expect(f.adapter.captureUnchangedPageDigests).toHaveBeenCalledWith(
+    [],
+    ['original', 'host'],
+    undefined,
+  )
+  expect(f.journal()?.untouchedSlideDigests).toEqual([])
   expect(f.receipt.slideIds).toEqual(['host'])
   expect(f.proposals.pending()).toBeUndefined()
 })
@@ -309,6 +318,15 @@ it.each(['backup', 'revision', 'plan', 'title'])(
     expect(f.adapter.stage).not.toHaveBeenCalled()
   },
 )
+it('rejects an incomplete unchanged-page capture before proposing any host write', async () => {
+  const f = setup()
+  f.adapter.captureUnchangedPageDigests.mockResolvedValueOnce([
+    { slideId: 'foreign', digest: 'a'.repeat(64) },
+  ])
+  expect(await f.skill.executeTool(f.stage)).toMatchObject({ isError: true })
+  expect(f.proposals.pending()).toBeUndefined()
+  expect(f.adapter.stage).not.toHaveBeenCalled()
+})
 it('inspects an uncertain pending transaction without inserting or deleting', async () => {
   const f = setup()
   f.adapter.stage.mockRejectedValueOnce(new Error('office_state_uncertain'))

@@ -103,6 +103,41 @@ it('stages a single page after the old page, journals identity before validation
   await f.adapter.discard({ ...f.record, state: 'discard_pending' }, guard)
   expect(f.remove).toHaveBeenCalledTimes(1)
 })
+it('captures and rechecks unchanged generated pages during every replacement phase', async () => {
+  const f = await setup()
+  f.record.version = 2
+  f.record.untouchedSlideDigests = await f.adapter.captureUnchangedPageDigests(
+    ['before', 'after'],
+    f.record.beforeSlideIds,
+  )
+  expect(f.record.untouchedSlideDigests).toEqual([
+    { slideId: 'before', digest: await presentationPackageDigest(f.original) },
+    { slideId: 'after', digest: await presentationPackageDigest(f.original) },
+  ])
+  expect((await f.adapter.inspect(f.record)).status).toBe('baseline')
+  f.packages.after = f.replacement
+  expect((await f.adapter.inspect(f.record)).status).toBe('conflict')
+  await expect(f.adapter.stage(f.record, f.replacement, vi.fn(), vi.fn())).rejects.toThrow(
+    'office_concurrent_change',
+  )
+  expect(f.insert).not.toHaveBeenCalled()
+  f.packages.after = f.original
+  await f.adapter.stage(
+    f.record,
+    f.replacement,
+    async (newSlideId) => {
+      f.record = { ...f.record, state: 'inserted', newSlideId }
+    },
+    vi.fn(),
+  )
+  expect((await f.adapter.inspect(f.record)).status).toBe('staged')
+  f.packages.before = f.replacement
+  expect((await f.adapter.inspect(f.record)).status).toBe('conflict')
+  await expect(f.adapter.commit({ ...f.record, state: 'commit_pending' }, vi.fn())).rejects.toThrow(
+    'office_concurrent_change',
+  )
+  expect(f.remove).not.toHaveBeenCalled()
+})
 it('reconciles an exact pending insertion without issuing another host write', async () => {
   const f = await setup()
   expect(await f.adapter.reconcilePending(f.record)).toEqual({ status: 'baseline' })

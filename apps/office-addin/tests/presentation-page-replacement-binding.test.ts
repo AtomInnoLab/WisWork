@@ -70,6 +70,15 @@ it('validates strict bounded identity, original order and new page lifecycle', a
     { beforeSlideIds: [] },
     { beforeSlideIds: ['first'] },
     { beforeSlideIds: ['old', 'old'] },
+    { version: 2, untouchedSlideDigests: [{ slideId: 'old', digest: 'a'.repeat(64) }] },
+    { version: 2, untouchedSlideDigests: [{ slideId: 'last', digest: 'wrong' }] },
+    {
+      version: 2,
+      untouchedSlideDigests: [
+        { slideId: 'last', digest: 'a'.repeat(64) },
+        { slideId: 'first', digest: 'b'.repeat(64) },
+      ],
+    },
     { beforeSlideIds: Array.from({ length: 513 }, (_, i) => (i === 0 ? 'old' : String(i))) },
     { newSlideId: 'new' },
     { state: 'inserted' },
@@ -81,6 +90,21 @@ it('validates strict bounded identity, original order and new page lifecycle', a
     beforeSlideIds: ['old', ...Array.from({ length: 511 }, (_, i) => String(i) + '界'.repeat(250))],
   }
   expect(validatePresentationPageReplacement(large)).toBe(false)
+})
+it('accepts a bounded ordered digest list for untouched host pages', async () => {
+  const { record } = await fixture()
+  expect(
+    validatePresentationPageReplacement({
+      ...record,
+      version: 2,
+      untouchedSlideDigests: [
+        { slideId: 'first', digest: 'a'.repeat(64) },
+        { slideId: 'last', digest: 'b'.repeat(64) },
+      ],
+    }),
+  ).toBe(true)
+  expect(validatePresentationPageReplacement({ ...record, version: 2 })).toBe(false)
+  expect(validatePresentationPageReplacement({ ...record, untouchedSlideDigests: [] })).toBe(false)
 })
 it('persists monotonic lifecycle and idempotency; permits only discarded predecessor replacement', async () => {
   const f = await fixture()

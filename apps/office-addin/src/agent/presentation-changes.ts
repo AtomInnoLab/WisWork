@@ -139,7 +139,7 @@ function entry(kind: PresentationChangeEntry['kind'], record: RecordValue): Save
             : []
   } else if (kind === 'page') {
     const r = record as PresentationPageReplacement
-    before = `页面：${r.oldSlideId}\n包摘要：${r.originalPackageDigest}`
+    before = `页面：${r.oldSlideId}\n包摘要：${r.originalPackageDigest}${r.version === 2 ? `\n待复核的未改业务页摘要：${r.untouchedSlideDigests!.length} 页` : ''}`
     after = `页面：${r.newSlideId ?? '尚未记录'}\n包摘要：${r.replacementPackageDigest}${r.restoredSlideId ? `\n恢复页面：${r.restoredSlideId}\n恢复包摘要：${r.originalPackageDigest}` : ''}`
     actions = pageActions[r.state]
   } else {

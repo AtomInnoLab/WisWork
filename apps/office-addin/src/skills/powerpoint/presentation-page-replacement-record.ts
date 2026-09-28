@@ -2,7 +2,7 @@ import type { PresentationImportRecord } from './presentation-delivery.js'
 import { validPresentationImportRecord, validSourceSlideId } from './presentation-page-delivery.js'
 
 export interface PresentationPageReplacement {
-  version: 1
+  version: 1 | 2
   changeId: string
   documentId: string
   projectId: string
@@ -17,6 +17,8 @@ export interface PresentationPageReplacement {
   sourceSlideId: string
   oldSlideId: string
   beforeSlideIds: string[]
+  /** Package digests of imported pages outside the revision target, in host order. */
+  untouchedSlideDigests?: { slideId: string; digest: string }[]
   state:
     | 'pending'
     | 'inserted'
@@ -66,6 +68,7 @@ export function validatePresentationPageReplacement(
         'sourceSlideId',
         'oldSlideId',
         'beforeSlideIds',
+        'untouchedSlideDigests',
         'state',
         'newSlideId',
         'parentReceipt',
@@ -73,7 +76,7 @@ export function validatePresentationPageReplacement(
         'restoredSlideId',
       ].includes(key),
     ) &&
-    r.version === 1 &&
+    (r.version === 1 || r.version === 2) &&
     id(r.changeId, 128) &&
     id(r.projectId, 80) &&
     id(r.parentRequestId, 128) &&
@@ -96,6 +99,20 @@ export function validatePresentationPageReplacement(
     Array.from(r.beforeSlideIds).every(hostId) &&
     new Set(r.beforeSlideIds).size === r.beforeSlideIds.length &&
     r.beforeSlideIds.includes(r.oldSlideId) &&
+    (r.version === 1
+      ? r.untouchedSlideDigests === undefined
+      : Array.isArray(r.untouchedSlideDigests) &&
+        r.untouchedSlideDigests.length <= 31 &&
+        r.untouchedSlideDigests.every(
+          (item, index) =>
+            item &&
+            Object.keys(item).sort().join(',') === 'digest,slideId' &&
+            hostId(item.slideId) &&
+            item.slideId !== r.oldSlideId &&
+            digest(item.digest) &&
+            r.beforeSlideIds.indexOf(item.slideId) >
+              (index ? r.beforeSlideIds.indexOf(r.untouchedSlideDigests![index - 1]!.slideId) : -1),
+        )) &&
     [
       'pending',
       'inserted',
@@ -151,6 +168,9 @@ function validReceipts(r: PresentationPageReplacement): boolean {
   const p = parent.checkpoint,
     c = child.checkpoint
   const index = p.pageIds!.indexOf(r.pageId)
+  const otherSlideIds = p.completed
+    .filter((_, position) => position !== index)
+    .map((page) => page.slideId)
   return (
     index >= 0 &&
     p.artifactDigest === r.parentArtifactDigest &&
@@ -159,6 +179,11 @@ function validReceipts(r: PresentationPageReplacement): boolean {
     p.completed[index].slideId === r.oldSlideId &&
     c.completed[index].slideId === r.newSlideId &&
     c.sourceSlideIds[index] === r.sourceSlideId &&
+    (r.version === 1 ||
+      (r.untouchedSlideDigests!.length === otherSlideIds.length &&
+        otherSlideIds.every((id) =>
+          r.untouchedSlideDigests!.some((item) => item.slideId === id),
+        ))) &&
     p.completed.every(
       (page, i) =>
         hostId(page.slideId) &&
