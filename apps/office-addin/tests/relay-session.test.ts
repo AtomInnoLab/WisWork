@@ -191,6 +191,7 @@ describe('Office cloud relay session', () => {
         type: 'office.resumed',
         session_id: 'session_1',
         expires_in: 120,
+        pc_online: true,
         capabilities: ['agent.v1', 'presentation.v1'],
       }),
     )
@@ -199,6 +200,10 @@ describe('Office cloud relay session', () => {
       status: 'connected',
       capabilities: ['agent.v1', 'presentation.v1'],
     })
+    resumed.receive(JSON.stringify({ version: 2, type: 'office.pc_offline' }))
+    expect(session.snapshot().status).toBe('waiting_for_pc')
+    resumed.receive(JSON.stringify({ version: 2, type: 'office.pc_online' }))
+    expect(session.snapshot().status).toBe('connected')
     const pending = session.capabilityFetch('presentation.v1', { operation: 'status' })
     expect(frame(resumed, 1)).toMatchObject({
       type: 'office.request',
@@ -393,6 +398,7 @@ describe('Office cloud relay session', () => {
         type: 'office.resumed',
         session_id: 'session_1',
         expires_in: 120,
+        pc_online: true,
         capabilities: ['agent.v1'],
       }),
     )

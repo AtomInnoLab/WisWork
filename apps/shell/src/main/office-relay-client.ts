@@ -44,6 +44,8 @@ const RELAY_ERROR_CODES = new Set([
   'response_too_large',
   'role_not_allowed',
   'session_expired',
+  'session_active',
+  'invalid_session',
   'session_revoked',
   'unknown_type',
   'unsupported_host',
@@ -140,6 +142,8 @@ export function createOfficeRelayClient(options: {
   let approvalSentFor: string | null = null
   let pairingTimer: ReturnType<typeof setTimeout> | null = null
   let sessionTimer: ReturnType<typeof setTimeout> | null = null
+  let resumeTimer: ReturnType<typeof setTimeout> | null = null
+  let resumeAttempts = 0
 
   const setStatus = (value: OfficeRelayStatus) => {
     diagnostic = value
@@ -155,8 +159,10 @@ export function createOfficeRelayClient(options: {
   const clearTimers = () => {
     if (pairingTimer) clearTimeout(pairingTimer)
     if (sessionTimer) clearTimeout(sessionTimer)
+    if (resumeTimer) clearTimeout(resumeTimer)
     pairingTimer = null
     sessionTimer = null
+    resumeTimer = null
   }
   const rememberTerminalRequest = (requestId: string) => {
     if (terminalRequestIds.has(requestId)) return
@@ -180,6 +186,7 @@ export function createOfficeRelayClient(options: {
     claimedCode = null
     negotiationPending = false
     session = null
+    resumeAttempts = 0
     requestIds.clear()
     terminalRequestIds.clear()
     terminalRequestOrder.length = 0
@@ -344,6 +351,35 @@ export function createOfficeRelayClient(options: {
       return clear('protocol_violation', true)
     }
     const candidate = frame as Record<string, unknown>
+    if (
+      candidate.version === 2 &&
+      candidate.type === 'relay.error' &&
+      exact(candidate, ['version', 'type', 'code']) &&
+      candidate.code === 'session_active' &&
+      diagnostic === 'connecting' &&
+      session
+    ) {
+      socket?.close()
+      return
+    }
+    if (candidate.version === 2 && candidate.type === 'pc.resumed') {
+      if (
+        diagnostic !== 'connecting' ||
+        !session ||
+        !exact(candidate, ['version', 'type', 'session_id', 'expires_in', 'capabilities']) ||
+        candidate.session_id !== session.sessionId ||
+        !Number.isSafeInteger(candidate.expires_in) ||
+        Number(candidate.expires_in) < 1 ||
+        Number(candidate.expires_in) > 1_800 ||
+        JSON.stringify(candidate.capabilities) !== JSON.stringify(session.capabilities)
+      )
+        return clear('protocol_violation', true)
+      if (resumeTimer) clearTimeout(resumeTimer)
+      resumeTimer = null
+      resumeAttempts = 0
+      setStatus('paired')
+      return
+    }
     if (candidate.version === 2 && candidate.type === 'pc.negotiated') {
       if (
         !negotiateCapabilities ||
@@ -532,6 +568,73 @@ export function createOfficeRelayClient(options: {
     clear('protocol_violation', true)
   }
 
+  const resume = async () => {
+    if (!session || protocolVersion !== 2) return clear('relay_closed', false)
+    generation += 1
+    const owner = generation
+    cancelActive()
+    active = null
+    socket = null
+    setStatus('connecting')
+    let retryScheduled = false
+    const retry = () => {
+      if (owner !== generation || retryScheduled) return
+      retryScheduled = true
+      if (++resumeAttempts >= 10) return clear('network_error', true)
+      resumeTimer = setTimeout(() => void resume(), 1_000)
+    }
+    try {
+      const account = await options.getValidAccountStatus()
+      if (owner !== generation) return
+      if (!account.loggedIn) return clear('auth_required', true)
+      const token = await options.getAccessToken()
+      if (owner !== generation) return
+      if (!token || !/^[\x21-\x7e]+$/.test(token)) return clear('auth_required', true)
+      const next = connect(options.endpoint, token)
+      socket = next
+      next.addEventListener('message', (event) => receive(event, owner))
+      next.addEventListener('close', () => {
+        if (owner !== generation) return
+        if (diagnostic === 'paired') void resume()
+        else retry()
+      })
+      next.addEventListener('error', () => {
+        if (next.readyState < 2) next.close()
+        retry()
+      })
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error('relay_connection_timeout')),
+          CONNECT_TIMEOUT_MS,
+        )
+        next.addEventListener('open', () => {
+          clearTimeout(timeout)
+          resolve()
+        })
+        next.addEventListener('close', () => {
+          clearTimeout(timeout)
+          reject(new Error('relay_connection_failed'))
+        })
+        next.addEventListener('error', () => {
+          clearTimeout(timeout)
+          reject(new Error('relay_connection_failed'))
+        })
+      })
+      if (owner !== generation || !session) return
+      send({
+        version: 2,
+        type: 'pc.resume',
+        session_id: session.sessionId,
+        capability: session.capability,
+      })
+      resumeTimer = setTimeout(() => {
+        if (owner === generation && diagnostic === 'connecting') next.close()
+      }, CONNECT_TIMEOUT_MS)
+    } catch {
+      retry()
+    }
+  }
+
   return {
     async claim(code) {
       if (!/^\d{6}$/.test(code)) throw new Error('invalid_verification_code')
@@ -572,10 +675,13 @@ export function createOfficeRelayClient(options: {
       socket = next
       next.addEventListener('message', (event) => receive(event, owner))
       next.addEventListener('close', () => {
-        if (owner === generation) clear('relay_closed', false)
+        if (owner === generation) {
+          if (protocolVersion === 2 && session) void resume()
+          else clear('relay_closed', false)
+        }
       })
       next.addEventListener('error', () => {
-        if (owner === generation) clear('network_error', true)
+        if (owner === generation && next.readyState < 2) next.close()
       })
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(

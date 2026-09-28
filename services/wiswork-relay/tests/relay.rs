@@ -286,6 +286,44 @@ async fn office_socket_resumes_the_same_v2_session_without_new_pairing() {
 }
 
 #[tokio::test]
+async fn pc_socket_resumes_same_session_and_interrupted_request_is_not_replayed() {
+    let url = server().await;
+    let (mut office, mut pc, office_ready, pc_ready) = approved_v2_session(&url).await;
+    let sid = office_ready["session_id"].as_str().unwrap();
+    let office_cap = office_ready["capability"].as_str().unwrap();
+    let pc_cap = pc_ready["capability"].as_str().unwrap();
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":office_cap,"request_id":"interrupted","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "interrupted");
+    pc.close(None).await.unwrap();
+    assert_eq!(recv(&mut office).await["code"], "pc_offline");
+    assert_eq!(recv(&mut office).await["type"], "office.pc_offline");
+
+    let mut wrong = pc_socket_with_token(&url, "legitimate-test-token")
+        .await
+        .unwrap();
+    send(
+        &mut wrong,
+        json!({"version":2,"type":"pc.resume","session_id":sid,"capability":pc_cap}),
+    )
+    .await;
+    assert_eq!(recv(&mut wrong).await["code"], "invalid_capability");
+    wrong.close(None).await.unwrap();
+
+    let mut resumed = pc_socket(&url).await;
+    send(
+        &mut resumed,
+        json!({"version":2,"type":"pc.resume","session_id":sid,"capability":pc_cap}),
+    )
+    .await;
+    let ack = recv(&mut resumed).await;
+    assert_eq!(ack["type"], "pc.resumed");
+    assert_eq!(ack["session_id"], sid);
+    assert_eq!(recv(&mut office).await["type"], "office.pc_online");
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":office_cap,"request_id":"new_request","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut resumed).await["request_id"], "new_request");
+}
+
+#[tokio::test]
 async fn three_powerpoint_sessions_route_interleaved_requests_to_their_own_pcs() {
     let url = server().await;
     let mut sessions = Vec::new();
@@ -644,9 +682,9 @@ async fn check_v2_capability(capability: &str) {
     send(&mut pc, json!({"version":2,"type":"pc.done","session_id":office_ready["session_id"],"capability":pc_ready["capability"],"request_id":"web_request_2"})).await;
     assert_eq!(recv(&mut office).await["version"], 2);
     pc.close(None).await.unwrap();
-    let revoked = recv(&mut office).await;
-    assert_eq!(revoked["version"], 2);
-    assert_eq!(revoked["code"], "session_revoked");
+    let offline = recv(&mut office).await;
+    assert_eq!(offline["version"], 2);
+    assert_eq!(offline["type"], "office.pc_offline");
 }
 
 #[tokio::test]
@@ -802,8 +840,8 @@ async fn valid_activity_renews_idle_ttl_but_never_the_absolute_session_lifetime(
 #[tokio::test]
 async fn websocket_liveness_renews_an_idle_cowork_session() {
     let url = server_with_session_ttls(Some((
-        Duration::from_millis(120),
-        Duration::from_millis(500),
+        Duration::from_millis(1_000),
+        Duration::from_millis(3_000),
     )))
     .await;
     let mut office = socket(&url, ORIGIN).await;
@@ -828,9 +866,9 @@ async fn websocket_liveness_renews_an_idle_cowork_session() {
     let pc_ready = recv(&mut pc).await;
     let office_ready = recv(&mut office).await;
 
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
     pc.send(Message::Pong(Vec::new().into())).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
     send(&mut office, json!({"version":1,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"after_idle_heartbeat","body":{}})).await;
     assert_eq!(recv(&mut pc).await["request_id"], "after_idle_heartbeat");
     assert_eq!(pc_ready["session_id"], office_ready["session_id"]);

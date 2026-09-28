@@ -342,7 +342,18 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         state.status !== 'connecting' ||
         !resumeCredentials ||
         frameBytes > MAX_CONTROL_FRAME_BYTES ||
-        !exactKeys(frame, ['version', 'type', 'session_id', 'expires_in', 'capabilities']) ||
+        !(
+          exactKeys(frame, ['version', 'type', 'session_id', 'expires_in', 'capabilities']) ||
+          (exactKeys(frame, [
+            'version',
+            'type',
+            'session_id',
+            'expires_in',
+            'capabilities',
+            'pc_online',
+          ]) &&
+            typeof frame.pc_online === 'boolean')
+        ) ||
         frame.session_id !== resumeCredentials.sessionId ||
         !expiry(frame.expires_in, 1800) ||
         JSON.stringify(frame.capabilities) !== JSON.stringify(resumeCredentials.capabilities)
@@ -353,7 +364,17 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       negotiatedCapabilities = [...resumeCredentials.capabilities]
       settleConnect?.()
       settleConnect = undefined
-      publish({ status: 'connected', capabilities: Object.freeze([...negotiatedCapabilities]) })
+      publish({
+        status: frame.pc_online === false ? 'waiting_for_pc' : 'connected',
+        capabilities: Object.freeze([...negotiatedCapabilities]),
+      })
+      return
+    }
+    if (frame.type === 'office.pc_online') {
+      if (frameBytes > MAX_CONTROL_FRAME_BYTES || !exactKeys(frame, ['version', 'type']))
+        return protocolFailure()
+      if (sessionId && state.status === 'waiting_for_pc')
+        publish({ status: 'connected', capabilities: Object.freeze([...negotiatedCapabilities]) })
       return
     }
     if (

@@ -53,6 +53,75 @@ function setup(loggedIn = true) {
 }
 
 describe('Office relay PC client', () => {
+  it('reattaches an approved v2 session with a fresh token after socket loss', async () => {
+    const first = new FakeSocket()
+    const second = new FakeSocket()
+    const connect = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
+    const getAccessToken = vi
+      .fn()
+      .mockResolvedValueOnce('first-token')
+      .mockResolvedValueOnce('second-token')
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect,
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken,
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      negotiateCapabilities: true,
+      onPending() {},
+    })
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1))
+    first.open()
+    await claiming
+    first.message({
+      version: 2,
+      type: 'pc.negotiated',
+      pairing_version: 2,
+      capabilities: ['agent.v1'],
+    })
+    first.message({
+      version: 2,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'PowerPoint',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+      capabilities: ['agent.v1'],
+    })
+    await client.approve('pairing_12345678')
+    first.message({
+      version: 2,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+    })
+    expect(client.status()).toBe('paired')
+    first.close()
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(2))
+    expect(client.status()).toBe('connecting')
+    expect(connect).toHaveBeenNthCalledWith(2, expect.any(String), 'second-token')
+    second.open()
+    await vi.waitFor(() => expect(second.sent).toHaveLength(1))
+    expect(JSON.parse(second.sent[0]!)).toEqual({
+      version: 2,
+      type: 'pc.resume',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+    })
+    second.message({
+      version: 2,
+      type: 'pc.resumed',
+      session_id: 'session_12345678',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+    })
+    expect(client.status()).toBe('paired')
+    client.revoke('test_complete')
+  })
   it.each(['account', 'token'] as const)(
     'does not connect when revoked while awaiting %s validation',
     async (phase) => {
