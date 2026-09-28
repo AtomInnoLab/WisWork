@@ -57,6 +57,20 @@ describe('presentation contract and compiler', () => {
       })
     },
   )
+  it('starts native bar chart value axes at zero so differences are not visually exaggerated', async () => {
+    const deck = benchmarkDeck()
+    const chart = deck.slides[6]!.elements[1]!
+    if (chart.kind !== 'chart') throw new Error('invalid fixture')
+    chart.chartType = 'bar'
+    chart.categories = ['downside', 'base', 'upside']
+    chart.series[0]!.values = [371483, 402766, 422318]
+    const { bytes } = await compilePresentationDeck(deck)
+    const zip = await JSZip.loadAsync(bytes)
+    const chartPath = Object.keys(zip.files).find((path) => /^ppt\/charts\/chart\d+\.xml$/.test(path))
+    expect(chartPath).toBeDefined()
+    const xml = await zip.file(chartPath!)!.async('string')
+    expect(xml).toMatch(/<c:valAx>[\s\S]*?<c:scaling>[\s\S]*?<c:min val="0"\/>/)
+  })
   it('rejects compiled packages with missing or changed native page objects', async () => {
     const deck = benchmarkDeck()
     const { bytes } = await compilePresentationDeck(deck)

@@ -1,0 +1,50 @@
+{
+  "caseId": "PPT-P0-09",
+  "materialStatus": "candidate_pending_financial_review",
+  "asOf": "2024-10-31",
+  "source": {
+    "file": "apple-fy2024-q4-financial-statements.pdf",
+    "url": "https://www.apple.com/newsroom/pdfs/fy2024-q4/FY24_Q4_Consolidated_Financial_Statements.pdf",
+    "issuer": "Apple Inc.",
+    "published": "2024-10-31",
+    "periodEnd": "2024-09-28",
+    "page": 1,
+    "column": "Twelve Months Ended September 28, 2024",
+    "auditStatus": "unaudited"
+  },
+  "historical": {
+    "currency": "USD",
+    "unit": "millions",
+    "netSales": 391035,
+    "operatingIncome": 123216
+  },
+  "model": {
+    "authorship": "WisWork benchmark team hypothetical assumptions, not Apple guidance",
+    "period": "illustrative next twelve months after FY2024",
+    "rounding": "round-half-up to nearest USD million at each step",
+    "formulas": {
+      "scenarioNetSales": "round_half_up(historical.netSales * (10000 + salesGrowthBps) / 10000)",
+      "scenarioOperatingIncome": "round_half_up(scenarioNetSales * operatingMarginBps / 10000)"
+    },
+    "scenarios": [
+      { "id": "downside", "label": "下行假设", "salesGrowthBps": -500, "operatingMarginBps": 2950 },
+      { "id": "base", "label": "基准假设", "salesGrowthBps": 300, "operatingMarginBps": 3150 },
+      { "id": "upside", "label": "上行假设", "salesGrowthBps": 800, "operatingMarginBps": 3350 }
+    ]
+  },
+  "requiredSlides": [
+    "封面：历史披露与假设边界",
+    "目录与口径",
+    "2024 财年历史披露",
+    "情景输入与公式",
+    "三情景收入原生图表（百万美元）",
+    "三情景营业利润原生图表（百万美元）",
+    "敏感参数与不可推断事项",
+    "结论、局限与人工审阅"
+  ],
+  "mustNotClaim": [
+    "Apple 已披露或认可这三种情景",
+    "情景结果是已经发生的事实或投资回报承诺",
+    "用收入和营业利润模型推断净利润、现金流或股价"
+  ]
+}

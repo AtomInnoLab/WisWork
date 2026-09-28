@@ -559,6 +559,7 @@ export async function compilePresentationDeck(
             showTitle: false,
             chartColors: [deck.style.accentColor],
             showValue: true,
+            ...(el.chartType === 'bar' ? { valAxisMinVal: 0 } : {}),
             catAxisLabelFontFace: deck.style.fontFace,
             valAxisLabelFontFace: deck.style.fontFace,
             legendFontFace: deck.style.fontFace,
