@@ -82,7 +82,7 @@ it('does not expose an unknown tool error in the changes workbench', async () =>
   expect(controller.snapshot().error).toContain('操作未完成')
   expect(JSON.stringify(controller.snapshot())).not.toContain('PRIVATE-DOCUMENT-CONTENT')
 })
-it('links a single existing-change page backup and offers release only after undo', async () => {
+it('links a single existing-change page backup and offers reapply and release after undo', async () => {
   let record: PresentationExistingChange = {
     version: 1,
     changeId: 'single',
@@ -129,7 +129,7 @@ it('links a single existing-change page backup and offers release only after und
   })
   await controller.refresh()
   expect(controller.snapshot().backupAudit).toEqual({ active: 1, unmatched: 0 })
-  expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect', 'release'])
+  expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect', 'reapply', 'release'])
   await controller.run('existing:single', 'release')
   expect(executeTool).toHaveBeenCalledWith(
     expect.objectContaining({ name: 'release_existing_presentation_change' }),
