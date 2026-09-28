@@ -489,6 +489,57 @@ describe('AgentLoop', () => {
     )
   })
 
+  it('halts the run before another tool or provider turn on a fatal tool result', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'write-1', name: 'do_thing', input: {} })
+        cb.onToolCall({ id: 'write-2', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(),
+    ])
+    const executeTool = vi.fn(() => ({
+      output: 'checkpoint failed',
+      summary: 'Checkpoint unavailable',
+      isError: true,
+      fatalError: 'presentation_run_checkpoint_unavailable',
+    }))
+    const onError = vi.fn()
+    const loop = new AgentLoop({ transport, skill: makeSkill(executeTool), events: { onError } })
+    loop.run('write')
+    await flush()
+    await flush()
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(transport.requests).toHaveLength(1)
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError).toHaveBeenCalledWith('presentation_run_checkpoint_unavailable')
+    expect(loop.busy).toBe(false)
+  })
+
+  it('rejects an unbounded fatal error code as invalid tool output', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(),
+    ])
+    const onError = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => ({ output: 'bad', summary: 'bad', fatalError: 'x'.repeat(100) })),
+      events: { onError },
+    })
+    loop.run('read')
+    await flush()
+    await flush()
+    expect(transport.requests).toHaveLength(2)
+    expect(onError).not.toHaveBeenCalled()
+    expect((loop.messages[2] as Extract<AgentMessage, { role: 'tool' }>).results[0]?.output).toBe(
+      'invalid_tool_output',
+    )
+  })
+
   it('preserves model-visible tool image content in history for the next request', async () => {
     const image = { base64: 'iVBORw0KGgo=', mime: 'image/png' }
     const transport = scriptedTransport([

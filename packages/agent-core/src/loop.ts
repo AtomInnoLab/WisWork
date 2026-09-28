@@ -109,7 +109,10 @@ function isFinalToolExecution(value: unknown): value is ToolExecution {
     typeof execution.summary === 'string' &&
     (execution.isError === undefined || typeof execution.isError === 'boolean') &&
     (execution.mutated === undefined || typeof execution.mutated === 'boolean') &&
-    (execution.stopToolBatch === undefined || typeof execution.stopToolBatch === 'boolean')
+    (execution.stopToolBatch === undefined || typeof execution.stopToolBatch === 'boolean') &&
+    (execution.fatalError === undefined ||
+      (typeof execution.fatalError === 'string' &&
+        /^[a-z][a-z0-9_]{0,63}$/.test(execution.fatalError)))
   )
 }
 
@@ -797,6 +800,10 @@ export class AgentLoop<TSnapshot = unknown> {
         execution,
         snapshotBefore: firstMutation ? snapshot : undefined,
       })
+      if (execution.fatalError) {
+        this.failRun(execution.fatalError, generation)
+        return
+      }
       if (execution.stopToolBatch) stopToolBatch = true
     }
     this.history.push({ role: 'tool', results })

@@ -125,6 +125,12 @@ const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
     message: 'The Agent took too long to respond. Try again.',
     retryable: true,
   },
+  presentation_run_checkpoint_unavailable: {
+    code: 'presentation_run_checkpoint_unavailable',
+    message:
+      'The tool may have changed this presentation, but its completion record could not be saved. Inspect the document before starting another task.',
+    retryable: false,
+  },
 })
 
 const safeConfirmationError = (error: unknown): SafeSessionError => {
@@ -376,12 +382,25 @@ export function createOfficeAgentSession(dependencies: {
       const runId = activeRunId
       const epoch = sessionEpoch
       const currentRun = () => epoch === sessionEpoch && runId === activeRunId && !disposed
-      const checkpointCompleted = async () => {
+      const checkpointCompleted = async (): Promise<boolean> => {
         if (runId && currentRun() && dependencies.runCheckpoint?.tool)
-          await dependencies.runCheckpoint
-            .tool(runId, 'tool_completed', call.name)
-            .catch(() => undefined)
+          try {
+            await dependencies.runCheckpoint.tool(runId, 'tool_completed', call.name)
+          } catch {
+            return false
+          }
+        return true
       }
+      const checkpointed = async (result: ToolExecution): Promise<ToolExecution> =>
+        (await checkpointCompleted())
+          ? result
+          : {
+              output: JSON.stringify({ error: 'presentation_run_checkpoint_unavailable' }),
+              isError: true,
+              mutated: result.mutated,
+              summary: 'Run checkpoint unavailable',
+              fatalError: 'presentation_run_checkpoint_unavailable',
+            }
       if (runId && dependencies.runCheckpoint?.tool) {
         try {
           await dependencies.runCheckpoint.tool(runId, 'tool_pending', call.name)
@@ -392,6 +411,7 @@ export function createOfficeAgentSession(dependencies: {
             mutated: false,
             summary: 'Run checkpoint unavailable',
             stopToolBatch: true,
+            fatalError: 'presentation_run_checkpoint_unavailable',
           }
         }
       }
@@ -405,22 +425,13 @@ export function createOfficeAgentSession(dependencies: {
         }
       const outcome = await dependencies.skill.executeTool(call, signal)
       if ('kind' in outcome && outcome.kind === 'tool-execution-suspension')
-        return suspendToolExecution(
-          outcome.result.then(async (result) => {
-            await checkpointCompleted()
-            return result
-          }),
-        )
+        return suspendToolExecution(outcome.result.then(checkpointed))
       const proposal = proposals.pending()
       if (proposal)
         return suspendToolExecution(
-          finalProposalExecution(proposal.id, outcome, call.name).then(async (result) => {
-            await checkpointCompleted()
-            return result
-          }),
+          finalProposalExecution(proposal.id, outcome, call.name).then(checkpointed),
         )
-      await checkpointCompleted()
-      return outcome
+      return checkpointed(outcome)
     },
   }
   const clearConversation = () => {
@@ -490,7 +501,8 @@ export function createOfficeAgentSession(dependencies: {
         })
       },
       onError: (error) => {
-        finishCheckpoint()
+        if (error === 'presentation_run_checkpoint_unavailable') activeRunId = undefined
+        else finishCheckpoint()
         const safeError = safeRunError(error)
         diagnose((diagnostics) =>
           diagnostics.record({

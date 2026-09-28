@@ -237,6 +237,45 @@ describe('Office agent session', () => {
     await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
   })
 
+  it('halts after a completed tool when its final checkpoint cannot be saved', async () => {
+    const harness = transportHarness()
+    const finish = vi.fn(async () => undefined)
+    const executeTool = vi.fn(async () => ({
+      output: 'changed',
+      summary: 'Changed',
+      mutated: true,
+    }))
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'write', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool,
+      },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool: vi.fn(async (_id, phase) => {
+          if (phase === 'tool_completed') throw new Error('save failed')
+        }),
+        finish,
+      },
+    })
+    session.send('change')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'write-1', name: 'write', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(session.snapshot().error).toBe('presentation_run_checkpoint_unavailable'),
+    )
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(harness.stream).toHaveBeenCalledOnce()
+    expect(finish).not.toHaveBeenCalled()
+    expect(session.snapshot().retryable).toBe(false)
+  })
+
   it('does not execute an old tool after its pending checkpoint outlives the run', async () => {
     const harness = transportHarness()
     let releasePending!: () => void
@@ -323,6 +362,44 @@ describe('Office agent session', () => {
     expect(harness.stream).toHaveBeenCalledOnce()
     releaseCompleted()
     await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+  })
+
+  it('halts after approved work if its completion checkpoint fails', async () => {
+    const harness = transportHarness()
+    const proposals = proposalsHarness()
+    const finish = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'propose', description: 'propose', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => {
+          proposals.setPending()
+          return { output: 'prepared', summary: 'Prepared' }
+        }),
+      },
+      proposals: proposals.controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool: vi.fn(async (_id, phase) => {
+          if (phase === 'tool_completed') throw new Error('save failed')
+        }),
+        finish,
+      },
+    })
+    session.send('edit')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'proposal-tool', name: 'propose', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().proposal?.id).toBe('p1'))
+    await session.confirm('p1')
+    await vi.waitFor(() =>
+      expect(session.snapshot().error).toBe('presentation_run_checkpoint_unavailable'),
+    )
+    expect(harness.stream).toHaveBeenCalledOnce()
+    expect(finish).not.toHaveBeenCalled()
   })
 
   it('waits for a suspended tool result and its completion checkpoint', async () => {

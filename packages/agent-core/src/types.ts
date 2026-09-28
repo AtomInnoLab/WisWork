@@ -66,6 +66,8 @@ export interface ToolExecution {
    * the completed batch to the provider.
    */
   stopToolBatch?: boolean
+  /** Stop this run without another model request; value is a bounded internal error code. */
+  fatalError?: string
   /** short human-readable label for activity UI */
   summary: string
   /**
