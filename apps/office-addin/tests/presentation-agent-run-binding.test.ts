@@ -154,6 +154,115 @@ describe('presentation AgentRun checkpoint', () => {
     await checkpoint.finish('oversized-run')
   })
 
+  it('requires the local checkpoint to agree before offering a document-provided safe restart', async () => {
+    const values = new Map<string, string>()
+    const local = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => local.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        local.set(key, value)
+      },
+      removeItem: (key: string) => {
+        local.delete(key)
+      },
+    }
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => 'file:///deck.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    const checkpoint = createPresentationAgentRunCheckpoint(binding, id, storage)
+    await checkpoint.begin('run-1', 'Change this slide')
+    const [localKey] = local.keys()
+    const initial = local.get(localKey)!
+    for (const changed of [
+      { ...JSON.parse(initial), phase: 'tool_completed', toolName: 'read_presentation_plan' },
+      { ...JSON.parse(initial), restartSafe: false },
+    ]) {
+      local.set(localKey, JSON.stringify(changed))
+      expect(
+        createPresentationAgentRunCheckpoint(binding, id, storage).recovery()?.instruction,
+      ).toBe('')
+    }
+    local.set(localKey, 'invalid json')
+    expect(createPresentationAgentRunCheckpoint(binding, id, storage).recovery()?.instruction).toBe(
+      '',
+    )
+    local.set(localKey, initial)
+    await checkpoint.tool('run-1', 'tool_pending', 'write_presentation_page')
+    await checkpoint.tool('run-1', 'tool_completed', 'write_presentation_page', true)
+    const key = 'wiswork.presentation.agent-run.v1'
+    const actual = values.get(key)!
+    values.set(
+      key,
+      JSON.stringify({
+        ...JSON.parse(actual),
+        phase: 'tool_completed',
+        toolName: 'read_presentation_plan',
+        restartSafe: true,
+      }),
+    )
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(true)
+    expect(createPresentationAgentRunCheckpoint(binding, id, storage).recovery()?.restartSafe).toBe(
+      false,
+    )
+    values.set(key, actual)
+    expect(createPresentationAgentRunCheckpoint(binding, id, storage).recovery()?.restartSafe).toBe(
+      false,
+    )
+  })
+
+  it.each(['throws', 'silently drops'] as const)(
+    'fails closed when the browser %s the next local tool boundary',
+    async (failure) => {
+      const values = new Map<string, string>()
+      const local = new Map<string, string>()
+      let rejectWrites = false
+      const storage = {
+        getItem: (key: string) => local.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          if (rejectWrites) {
+            if (failure === 'throws') throw new Error('storage unavailable')
+            return
+          }
+          local.set(key, value)
+        },
+        removeItem: (key: string) => {
+          local.delete(key)
+        },
+      }
+      const binding = createPresentationDocumentBinding(
+        {
+          get: (key) => values.get(key),
+          set: (key, value) => {
+            values.set(key, value)
+          },
+          save: async () => undefined,
+          location: () => 'file:///deck.pptx',
+        },
+        () => 'doc-id',
+      )
+      const id = await binding.documentId()
+      const checkpoint = createPresentationAgentRunCheckpoint(binding, id, storage)
+      await checkpoint.begin('run-1', 'Read plan')
+      rejectWrites = true
+      await expect(
+        checkpoint.tool('run-1', 'tool_pending', 'read_presentation_plan'),
+      ).rejects.toThrow()
+      expect(binding.agentRunRecovery(id)?.phase).toBe('tool_pending')
+      expect(
+        createPresentationAgentRunCheckpoint(binding, id, storage).recovery()?.restartSafe,
+      ).toBe(false)
+    },
+  )
+
   it('sweeps expired orphan prompts when a different deck initializes', async () => {
     const values = new Map<string, string>()
     const local = new Map<string, string>([

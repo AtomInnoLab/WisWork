@@ -1687,6 +1687,7 @@ export function createPresentationAgentRunCheckpoint(
     Partial<Pick<Storage, 'key' | 'length'>>,
 ) {
   const runDocuments = new Map<string, string>()
+  const mirroredRuns = new Set<string>()
   const localKey = (runId: string) => `${AGENT_RUN_LOCAL_PREFIX}${runId}`
   const sweepExpiredPrompts = () => {
     if (!storage?.key || typeof storage.length !== 'number') return
@@ -1733,7 +1734,10 @@ export function createPresentationAgentRunCheckpoint(
       if (
         !value ||
         Array.isArray(value) ||
-        Object.keys(value).sort().join(',') !== 'documentId,expiresAt,instruction,runId' ||
+        Object.keys(value).sort().join(',') !==
+          (value.toolName === undefined
+            ? 'documentId,expiresAt,instruction,phase,restartSafe,runId'
+            : 'documentId,expiresAt,instruction,phase,restartSafe,runId,toolName') ||
         value.documentId !== boundDocumentId ||
         value.runId !== record.runId ||
         typeof value.expiresAt !== 'number' ||
@@ -1741,11 +1745,20 @@ export function createPresentationAgentRunCheckpoint(
         value.expiresAt <= Date.now() ||
         value.expiresAt > Date.now() + AGENT_RUN_LOCAL_TTL_MS ||
         typeof value.instruction !== 'string' ||
-        new TextEncoder().encode(value.instruction).byteLength > AGENT_RUN_INSTRUCTION_LIMIT
+        new TextEncoder().encode(value.instruction).byteLength > AGENT_RUN_INSTRUCTION_LIMIT ||
+        !['running', 'tool_pending', 'tool_completed'].includes(String(value.phase)) ||
+        typeof value.restartSafe !== 'boolean' ||
+        (value.toolName !== undefined && typeof value.toolName !== 'string')
       ) {
         storage.removeItem(localKey(record.runId))
         return record
       }
+      if (
+        value.phase !== record.phase ||
+        value.toolName !== record.toolName ||
+        value.restartSafe !== record.restartSafe
+      )
+        return { ...record, instruction: '', restartSafe: false }
       return { ...record, instruction: value.instruction }
     } catch {
       return record
@@ -1770,9 +1783,15 @@ export function createPresentationAgentRunCheckpoint(
             runId,
             instruction: recoverableInstruction,
             expiresAt: Date.now() + AGENT_RUN_LOCAL_TTL_MS,
+            phase: 'running',
+            restartSafe: true,
           })
-          if (new TextEncoder().encode(localRecord).byteLength <= AGENT_RUN_LOCAL_RECORD_LIMIT)
+          if (new TextEncoder().encode(localRecord).byteLength <= AGENT_RUN_LOCAL_RECORD_LIMIT) {
             storage.setItem(localKey(runId), localRecord)
+            if (storage.getItem(localKey(runId)) !== localRecord)
+              throw new Error('presentation_run_checkpoint_unavailable')
+            mirroredRuns.add(runId)
+          }
         }
       } catch {
         await binding.finishAgentRun(boundDocumentId, runId)
@@ -1809,7 +1828,50 @@ export function createPresentationAgentRunCheckpoint(
     ) {
       const id = runDocuments.get(runId)
       if (!id) throw new Error('presentation_run_checkpoint_unavailable')
+      let localRecord: Record<string, unknown> | undefined
+      if (mirroredRuns.has(runId)) {
+        try {
+          const raw = storage!.getItem(localKey(runId))
+          const current = binding.agentRunRecovery(id)
+          if (
+            !raw ||
+            !current ||
+            new TextEncoder().encode(raw).byteLength > AGENT_RUN_LOCAL_RECORD_LIMIT
+          )
+            throw new Error('presentation_run_checkpoint_unavailable')
+          localRecord = JSON.parse(raw) as Record<string, unknown>
+          if (
+            !localRecord ||
+            localRecord.documentId !== id ||
+            localRecord.runId !== runId ||
+            localRecord.phase !== current.phase ||
+            localRecord.toolName !== current.toolName ||
+            localRecord.restartSafe !== current.restartSafe
+          )
+            throw new Error('presentation_run_checkpoint_unavailable')
+        } catch {
+          throw new Error('presentation_run_checkpoint_unavailable')
+        }
+      }
       await binding.updateAgentRun(id, runId, phase, toolName, mutated)
+      if (localRecord) {
+        const current = binding.agentRunRecovery(id)
+        if (!current || current.runId !== runId)
+          throw new Error('presentation_run_checkpoint_unavailable')
+        try {
+          const raw = JSON.stringify({
+            ...localRecord,
+            phase: current.phase,
+            toolName: current.toolName,
+            restartSafe: current.restartSafe === true,
+          })
+          storage!.setItem(localKey(runId), raw)
+          if (storage!.getItem(localKey(runId)) !== raw)
+            throw new Error('presentation_run_checkpoint_unavailable')
+        } catch {
+          throw new Error('presentation_run_checkpoint_unavailable')
+        }
+      }
     },
     async finish(runId: string) {
       const id = runDocuments.get(runId)
@@ -1821,6 +1883,7 @@ export function createPresentationAgentRunCheckpoint(
         /* checkpoint is already cleared */
       }
       runDocuments.delete(runId)
+      mirroredRuns.delete(runId)
     },
   }
 }
