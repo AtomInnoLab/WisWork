@@ -216,6 +216,34 @@ describe('presentation page content precheck', () => {
       claimId: 'source-1',
     })
   })
+  it('accepts an explicitly rounded FX calculation without certifying source comparability', () => {
+    const { plan, deck, pageId } = fixture()
+    plan.claims[0]!.type = 'calculation'
+    plan.claims[0]!.calculation = {
+      formula: 'round(jpy / rate, 2)',
+      inputs: ['Sony FY2023 revenue, JPY millions', 'Sony FY2023 average JPY per USD'],
+      currency: 'USD',
+      unit: 'millions',
+      reproduction: {
+        bindings: [
+          { name: 'jpy', inputIndex: 0, value: 13020768, sourceId: 'source' },
+          { name: 'rate', inputIndex: 1, value: 144.4, sourceId: 'source' },
+        ],
+        expected: 90171.52,
+      },
+    }
+    deck.claims = presentationPlanClaims(plan)
+    expect(checkPresentationPageContent(plan, deck, pageId)).toMatchObject({
+      findings: [],
+      checks: conservative,
+    })
+    plan.claims[0]!.calculation.reproduction!.expected = 90171.53
+    deck.claims = presentationPlanClaims(plan)
+    expect(checkPresentationPageContent(plan, deck, pageId).findings).toContainEqual({
+      code: 'calculation_not_reproduced',
+      claimId: 'source-1',
+    })
+  })
   it('rejects unknown pages, invalid plans/decks and mismatched bindings', () => {
     const { plan, deck, pageId } = fixture()
     expect(() => checkPresentationPageContent(plan, deck, 'missing')).toThrow('not_found')

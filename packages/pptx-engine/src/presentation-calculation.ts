@@ -1,5 +1,19 @@
 import type { PresentationPlan } from './presentation-plan'
 
+/** Round the decimal form of a finite JS result, with ties away from zero. */
+function roundDecimal(value: number, places: number): number {
+  const match = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(Math.abs(value).toString())
+  if (!match) throw new Error('invalid_arithmetic')
+  const mantissa = BigInt(match[1]! + (match[2] ?? ''))
+  const shift = Number(match[3] ?? 0) - (match[2]?.length ?? 0) + places
+  const rounded =
+    shift >= 0
+      ? mantissa * 10n ** BigInt(shift)
+      : (mantissa + 10n ** BigInt(-shift) / 2n) / 10n ** BigInt(-shift)
+  if (rounded > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('invalid_arithmetic')
+  return Math.sign(value) * (Number(rounded) / 10 ** places)
+}
+
 export interface CalculationResult {
   claimId: string
   status:
@@ -33,7 +47,7 @@ export function reproducePresentationCalculation(
     const formula = claim.calculation!.formula
     const tokens: string[] = []
     const lex =
-      /\s*(?:(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)|([A-Za-z][A-Za-z0-9_]*)|([+*/()-]))/y
+      /\s*(?:(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)|([A-Za-z][A-Za-z0-9_]*)|([+*/(),-]))/y
     let offset = 0
     while (offset < formula.length) {
       if (!formula.slice(offset).trim()) break
@@ -61,6 +75,16 @@ export function reproducePresentationCalculation(
         const value = expression(depth + 1)
         if (tokens[cursor++] !== ')') unsupported()
         return value
+      }
+      if (token === 'round' && tokens[cursor] === '(') {
+        operation()
+        cursor++
+        const value = expression(depth + 1)
+        if (tokens[cursor++] !== ',') unsupported()
+        const places = expression(depth + 1)
+        if (tokens[cursor++] !== ')' || !Number.isInteger(places) || places < 0 || places > 6)
+          unsupported()
+        return arithmetic(roundDecimal(value, places))
       }
       if (token && /^(?:\d|\.)/.test(token)) return arithmetic(Number(token))
       if (token && bindings.has(token)) {

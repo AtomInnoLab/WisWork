@@ -34,6 +34,7 @@
     "period": "FY2023 annual average, year ended 2024-03-31",
     "jpyPerUsd": 144.4,
     "formula": "Sony JPY millions / 144.4 JPY per USD",
+    "reproductionFormula": "round(jpy / rate, 2)",
     "sonyUsdMillionsRounded2": 90171.52,
     "status": "illustrative_only"
   },

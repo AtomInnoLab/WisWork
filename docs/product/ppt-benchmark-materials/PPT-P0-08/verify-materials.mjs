@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import JSZip from 'jszip'
+import { reproducePresentationCalculation } from '@wiswork/pptx-engine/presentation-calculation'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const basis = JSON.parse(readFileSync(join(root, 'basis.json'), 'utf8'))
@@ -31,6 +32,23 @@ assert.equal(
   basis.illustrativeFx.sonyUsdMillionsRounded2,
 )
 assert.equal(basis.illustrativeFx.status, 'illustrative_only')
+assert.equal(
+  reproducePresentationCalculation({
+    id: 'sony-illustrative-fx',
+    type: 'calculation',
+    calculation: {
+      formula: basis.illustrativeFx.reproductionFormula,
+      reproduction: {
+        bindings: [
+          { name: 'jpy', value: basis.companies[1].valueMillions },
+          { name: 'rate', value: basis.illustrativeFx.jpyPerUsd },
+        ],
+        expected: basis.illustrativeFx.sonyUsdMillionsRounded2,
+      },
+    },
+  }).status,
+  'reproduced',
+)
 assert.equal(basis.comparison.likeForLikeUsdRevenueDifferenceMillions, null)
 assert.equal(basis.comparison.crossCompanyRevenueRanking, null)
 assert.match(basis.review, /^pending_/)
@@ -40,10 +58,17 @@ const applePage = execFileSync('pdftotext', ['-f', '32', '-l', '32', '-layout', 
 })
 assert.match(applePage, /Total net sales[^\n]*391,035/)
 const hashes = readFileSync(join(root, 'SHA256SUMS'), 'utf8').trim().split('\n')
-const files = ['apple-fy2024-form10k.pdf', 'basis.json', 'independent-recalc.csv', 'p0-08-reference.pptx']
+const files = [
+  'apple-fy2024-form10k.pdf',
+  'basis.json',
+  'independent-recalc.csv',
+  'p0-08-reference.pptx',
+]
 assert.equal(hashes.length, files.length)
 for (const [index, name] of files.entries()) {
-  const fileDigest = createHash('sha256').update(readFileSync(join(root, name))).digest('hex')
+  const fileDigest = createHash('sha256')
+    .update(readFileSync(join(root, name)))
+    .digest('hex')
   assert.equal(hashes[index], `${fileDigest}  ${name}`)
 }
 assert.equal(hashes[0], `${digest}  apple-fy2024-form10k.pdf`)
@@ -58,18 +83,51 @@ assert.deepEqual(rows[1].split(','), [
   String(basis.illustrativeFx.sonyUsdMillionsRounded2),
   'illustrative_only',
 ])
-assert.deepEqual(rows[2].split(','), ['like_for_like_revenue_difference', '', '', '', '', '', 'not_comparable'])
-assert.deepEqual(rows[3].split(','), ['cross_company_revenue_ranking', '', '', '', '', '', 'not_comparable'])
+assert.deepEqual(rows[2].split(','), [
+  'like_for_like_revenue_difference',
+  '',
+  '',
+  '',
+  '',
+  '',
+  'not_comparable',
+])
+assert.deepEqual(rows[3].split(','), [
+  'cross_company_revenue_ranking',
+  '',
+  '',
+  '',
+  '',
+  '',
+  'not_comparable',
+])
 const reference = await JSZip.loadAsync(readFileSync(join(root, 'p0-08-reference.pptx')))
-assert.equal(Object.keys(reference.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).length, 8)
-assert.equal(Object.keys(reference.files).filter((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name)).length, 2)
+assert.equal(
+  Object.keys(reference.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).length,
+  8,
+)
+assert.equal(
+  Object.keys(reference.files).filter((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name)).length,
+  2,
+)
 for (const [index, expected] of [
-  [`${basis.companies[0].metric}（百万美元）`, basis.companies[0].name, String(basis.companies[0].valueMillions)],
-  [`${basis.companies[1].metric}（百万日元）`, basis.companies[1].name, String(basis.companies[1].valueMillions)],
+  [
+    `${basis.companies[0].metric}（百万美元）`,
+    basis.companies[0].name,
+    String(basis.companies[0].valueMillions),
+  ],
+  [
+    `${basis.companies[1].metric}（百万日元）`,
+    basis.companies[1].name,
+    String(basis.companies[1].valueMillions),
+  ],
 ].entries()) {
   const xml = await reference.file(`ppt/charts/chart${index + 1}.xml`)?.async('string')
   assert.match(xml, /<c:valAx>[\s\S]*?<c:scaling>[\s\S]*?<c:min val="0"\/>/)
-  assert.deepEqual([...xml.matchAll(/<c:v>([^<]+)<\/c:v>/g)].map((match) => match[1]), expected)
+  assert.deepEqual(
+    [...xml.matchAll(/<c:v>([^<]+)<\/c:v>/g)].map((match) => match[1]),
+    expected,
+  )
 }
 const slide7 = await reference.file('ppt/slides/slide7.xml')?.async('string')
 assert.ok(slide7?.includes('同口径美元收入差额：空缺'))
@@ -98,4 +156,6 @@ assert.deepEqual(tableRows(slide7), [
   ['同口径美元收入差额', '', '财年、准则和范围不同'],
   ['跨公司收入排名', '', '换算不能消除口径差异'],
 ])
-console.log('PPT-P0-08 partial: Apple report, recalc, eight slides, native charts and blank comparison table verified; Sony PDF pending')
+console.log(
+  'PPT-P0-08 partial: Apple report, recalc, eight slides, native charts and blank comparison table verified; Sony PDF pending',
+)
