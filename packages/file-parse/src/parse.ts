@@ -62,6 +62,8 @@ export async function parseFileToText(filePath: string): Promise<ParsedFile> {
         return { ok: true, kind: 'text', text: await xlsxToText(await readFile(filePath)) }
       case 'pdf': {
         const pages = await pdfToPages(await readFile(filePath))
+        if (pages.every((page) => !page.trim()))
+          return { ok: false, kind: 'text', error: 'pdf_no_extractable_text' }
         const sections: NonNullable<ParsedFile['sections']> = []
         let offset = 0
         for (const [index, page] of pages.entries()) {

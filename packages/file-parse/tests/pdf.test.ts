@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseFileToText } from '../src/index'
 import { buildPdfFixture, writeFixture } from './helpers/fixtures'
+import { resolve } from 'node:path'
 
 describe('parseFileToText: pdf', () => {
   it('extracts page text via pdfjs', async () => {
@@ -25,5 +26,20 @@ describe('parseFileToText: pdf', () => {
     const result = await parseFileToText(path)
     expect(result.ok).toBe(false)
     expect(result.error).toBeTruthy()
+  })
+
+  it('reports an image-only research PDF as unreadable and accepts its text fallback', async () => {
+    const materials = resolve(import.meta.dirname, '../../../docs/product/ppt-benchmark-materials/PPT-P0-11')
+    const imageOnly = await parseFileToText(resolve(materials, 'deardorff-2020-image-only.pdf'))
+    expect(imageOnly).toMatchObject({ ok: false, kind: 'text', error: 'pdf_no_extractable_text' })
+
+    const source = await parseFileToText(resolve(materials, 'deardorff-2020-article.pdf'))
+    expect(source.ok).toBe(true)
+    expect(source.sections).toHaveLength(11)
+    expect(source.text).toContain('Assessing the impact of introductory')
+
+    const fallback = await parseFileToText(resolve(materials, 'deardorff-2020-assistive-text.txt'))
+    expect(fallback.ok).toBe(true)
+    expect(fallback.text).toContain('Assessing the impact of introductory')
   })
 })
