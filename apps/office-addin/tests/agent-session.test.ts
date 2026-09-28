@@ -377,6 +377,47 @@ describe('Office agent session', () => {
     expect(session.snapshot().retryable).toBe(false)
   })
 
+  it.each(['newTask', 'logout'] as const)(
+    'keeps the pending write checkpoint when %s resets a tool still executing',
+    async (action) => {
+      const harness = transportHarness()
+      let finishWrite!: (result: ToolExecution) => void
+      const executeTool = vi.fn(
+        () =>
+          new Promise<ToolExecution>((resolve) => {
+            finishWrite = resolve
+          }),
+      )
+      const begin = vi.fn(async () => undefined)
+      const tool = vi.fn(async () => undefined)
+      const finish = vi.fn(async () => undefined)
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: {
+          id: 'test',
+          systemPrompt: 'test',
+          tools: [{ name: 'write', description: 'write', inputSchema: { type: 'object' } }],
+          executeTool,
+        },
+        proposals: proposalsHarness().controller,
+        runCheckpoint: { interrupted: false, begin, tool, finish },
+      })
+      session.send('change')
+      await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+      harness.callbacks().onToolCall({ id: 'write-1', name: 'write', input: {} })
+      harness.callbacks().onDone()
+      await vi.waitFor(() => expect(executeTool).toHaveBeenCalledOnce())
+      expect(tool).toHaveBeenCalledWith(expect.any(String), 'tool_pending', 'write')
+
+      session[action]()
+      expect(finish).not.toHaveBeenCalled()
+      finishWrite({ output: 'changed', summary: 'Changed', mutated: true })
+      await Promise.resolve()
+      expect(tool).not.toHaveBeenCalledWith(expect.any(String), 'tool_completed', 'write', true)
+      expect(finish).not.toHaveBeenCalled()
+    },
+  )
+
   it('does not execute an old tool after its pending checkpoint outlives the run', async () => {
     const harness = transportHarness()
     let releasePending!: () => void

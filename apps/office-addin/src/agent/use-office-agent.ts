@@ -258,10 +258,12 @@ export function createOfficeAgentSession(dependencies: {
   let sessionEpoch = 0
   let pendingStart = false
   let activeRunId: string | undefined
+  const unsettledToolRuns = new Set<string>()
   const finishCheckpoint = () => {
     const id = activeRunId
     activeRunId = undefined
-    if (id) void dependencies.runCheckpoint?.finish(id).catch(() => undefined)
+    if (id && !unsettledToolRuns.has(id))
+      void dependencies.runCheckpoint?.finish(id).catch(() => undefined)
   }
   let activeAssistantId: string | undefined
   let lastInstruction = ''
@@ -390,9 +392,11 @@ export function createOfficeAgentSession(dependencies: {
       const epoch = sessionEpoch
       const currentRun = () => epoch === sessionEpoch && runId === activeRunId && !disposed
       const checkpointCompleted = async (mutated: boolean): Promise<boolean> => {
+        if (runId && !currentRun()) unsettledToolRuns.delete(runId)
         if (runId && currentRun() && dependencies.runCheckpoint?.tool)
           try {
             await dependencies.runCheckpoint.tool(runId, 'tool_completed', call.name, mutated)
+            unsettledToolRuns.delete(runId)
           } catch {
             return false
           }
@@ -411,6 +415,7 @@ export function createOfficeAgentSession(dependencies: {
       if (runId && dependencies.runCheckpoint?.tool) {
         try {
           await dependencies.runCheckpoint.tool(runId, 'tool_pending', call.name)
+          unsettledToolRuns.add(runId)
         } catch {
           return {
             output: JSON.stringify({ error: 'presentation_run_checkpoint_unavailable' }),
