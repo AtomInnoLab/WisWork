@@ -4,6 +4,7 @@ import { docxToText } from './docx'
 import { pdfToText } from './pdf'
 import { pptxToText } from './pptx'
 import { xlsxToText } from './xlsx'
+import { htmlToText } from './html'
 
 export type ParsedFileKind = 'text' | 'image' | 'unsupported'
 
@@ -24,18 +25,7 @@ const IMAGE_MIMES: Record<string, string> = {
   webp: 'image/webp',
 }
 
-const TEXT_EXTS = new Set([
-  'txt',
-  'md',
-  'markdown',
-  'csv',
-  'tsv',
-  'json',
-  'xml',
-  'html',
-  'htm',
-  'log',
-])
+const TEXT_EXTS = new Set(['txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'xml', 'log'])
 
 /** parse an attachment into plain text (or flag it as image / unsupported) */
 export async function parseFileToText(filePath: string): Promise<ParsedFile> {
@@ -43,6 +33,9 @@ export async function parseFileToText(filePath: string): Promise<ParsedFile> {
   const imageMime = IMAGE_MIMES[ext]
   if (imageMime) return { ok: true, kind: 'image', mime: imageMime }
   try {
+    if (ext === 'html' || ext === 'htm') {
+      return { ok: true, kind: 'text', text: htmlToText(await readFile(filePath, 'utf-8')) }
+    }
     if (TEXT_EXTS.has(ext)) {
       return { ok: true, kind: 'text', text: await readFile(filePath, 'utf-8') }
     }

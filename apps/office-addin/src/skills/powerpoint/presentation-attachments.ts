@@ -8,7 +8,8 @@ const CHUNK_BYTES = 128 * 1024
 const idValid = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 export const supportsPresentationAttachment = (name: string, includeImages = false) =>
-  /\.(pdf|docx|txt|md|csv|json)$/i.test(name) || (includeImages && isPresentationImage(name))
+  /\.(pdf|docx|txt|md|csv|json|html|htm)$/i.test(name) ||
+  (includeImages && isPresentationImage(name))
 const invalid = (): never => {
   throw new Error('presentation_response_invalid')
 }

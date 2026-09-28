@@ -10,7 +10,6 @@ describe('parseFileToText: plain-text formats', () => {
     ['sample.tsv', 'a\tb\tc\n1\t2\t3'],
     ['sample.json', '{"key":"value"}'],
     ['sample.xml', '<root><item>value</item></root>'],
-    ['sample.html', '<html><body><p>page</p></body></html>'],
   ]
 
   for (const [name, content] of cases) {
@@ -20,6 +19,19 @@ describe('parseFileToText: plain-text formats', () => {
       expect(result).toEqual({ ok: true, kind: 'text', text: content })
     })
   }
+
+  it.each(['html', 'htm'])('extracts visible webpage text from .%s', async (ext) => {
+    const path = writeFixture(
+      `page.${ext}`,
+      '<!doctype html><html><head><title>Quarterly report</title><style>.hidden{display:none}</style></head><body><h1>Results &amp; outlook</h1><p>Revenue <strong>grew</strong>.</p><script>secretToken()</script><p hidden>Hidden claim</p><p aria-hidden="true">Decorative label</p><nav>Menu</nav><main><p>Operating profit rose.</p></main></body></html>',
+    )
+    const result = await parseFileToText(path)
+    expect(result).toEqual({
+      ok: true,
+      kind: 'text',
+      text: 'Results & outlook\nRevenue grew.\nMenu\nOperating profit rose.',
+    })
+  })
 
   it('is case-insensitive on the extension', async () => {
     const path = writeFixture('UPPER.TXT', 'upper')

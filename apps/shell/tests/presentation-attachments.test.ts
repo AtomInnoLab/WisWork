@@ -95,6 +95,21 @@ describe('durable presentation attachments', () => {
       await call({ operation: 'attachment_read', attachmentId: id, offset: 0, maxChars: 100 }),
     ).toMatchObject({ text: 'Evidence DOCX' })
   })
+  it('stores a webpage snapshot as readable text while retaining the original HTML', async () => {
+    const { call } = await setup()
+    const html = Buffer.from(
+      '<html><body><h1>Public study</h1><p>Sample &amp; methods</p><script>private()</script></body></html>',
+    )
+    const id = await upload(call, html, 'study.html')
+    expect(await call({ operation: 'attachment_finish', attachmentId: id })).toMatchObject({
+      status: 'ready',
+      kind: 'text',
+      sha256: id,
+    })
+    expect(
+      await call({ operation: 'attachment_read', attachmentId: id, offset: 0, maxChars: 100 }),
+    ).toMatchObject({ text: 'Public study\nSample & methods', sourceUri: `attachment:${id}` })
+  })
   it('rejects conflicting chunks, wrong digest, unknown keys, unsafe names and unsupported files', async () => {
     const { call } = await setup()
     const id = await upload(call, Buffer.from('abc'))

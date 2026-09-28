@@ -60,7 +60,9 @@ function fileLimit(name: string) {
 function supported(name: string) {
   return (
     imageFile(name) ||
-    ['.pdf', '.docx', '.txt', '.md', '.csv', '.json'].includes(extname(name).toLowerCase())
+    ['.pdf', '.docx', '.txt', '.md', '.csv', '.json', '.html', '.htm'].includes(
+      extname(name).toLowerCase(),
+    )
   )
 }
 function sourceValid(value: unknown): value is string {
