@@ -44,15 +44,36 @@ it('changes a selected span across styled native runs without flattening their f
   expect(revised.beforeDigest).not.toBe(revised.afterDigest)
 })
 
-it('rejects stale text and length-changing revisions', async () => {
+it('supports a length-changing edit inside one native run and rejects stale text', async () => {
   const { zip, id } = await fixture()
   const source = await zip.generateAsync({ type: 'base64' })
   await expect(replacePowerPointTextRangePackage(source, id, 0, '错误', '替换')).rejects.toThrow(
     'presentation_baseline_changed',
   )
-  await expect(replacePowerPointTextRangePackage(source, id, 0, '科研', '新')).rejects.toThrow(
-    'invalid_tool_input',
+  const revised = await replacePowerPointTextRangePackage(source, id, 0, '科研', '研究组')
+  expect(revised.changedRuns).toBe(1)
+  const output = await JSZip.loadAsync(revised.base64, { base64: true })
+  expect(await output.file('ppt/slides/slide1.xml')!.async('string')).toContain(
+    '<a:t>研究组汇报</a:t>',
   )
+})
+
+it('rejects a length-changing edit across differently formatted runs', async () => {
+  const { zip, xml, shape, id } = await fixture()
+  const mixed = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:t>科研</a:t></a:r><a:r><a:rPr lang="zh-CN" b="1"/><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, mixed))
+  await expect(
+    replacePowerPointTextRangePackage(
+      await zip.generateAsync({ type: 'base64' }),
+      id,
+      1,
+      '研汇',
+      '主题页',
+    ),
+  ).rejects.toThrow('presentation_existing_target_unsupported')
 })
 
 it('escapes replacement text and rejects field-backed text', async () => {

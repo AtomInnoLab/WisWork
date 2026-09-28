@@ -72,7 +72,8 @@ export async function replacePowerPointTextRangePackage(
     typeof after !== 'string' ||
     !before.length ||
     before.length > 128 ||
-    before.length !== after.length ||
+    !after.length ||
+    after.length > 128 ||
     before === after ||
     /[\r\n\uD800-\uDFFF]/.test(before + after)
   )
@@ -101,23 +102,38 @@ export async function replacePowerPointTextRangePackage(
     fullText.slice(start, start + before.length) !== before
   )
     throw new Error('presentation_baseline_changed')
+  if (fullText.length - before.length + after.length > 12_000) fail()
   let cursor = 0
   let changedRuns = 0
   let rewritten = original
   const patches: Array<{ from: number; to: number; value: string }> = []
-  for (const run of runs) {
-    const first = Math.max(start, cursor)
-    const last = Math.min(start + before.length, cursor + run.text.length)
-    if (first < last) {
-      const local = first - cursor
-      const replacement =
-        run.text.slice(0, local) +
-        after.slice(first - start, last - start) +
-        run.text.slice(last - cursor)
-      patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
-      changedRuns++
+  if (before.length !== after.length) {
+    for (const run of runs) {
+      if (start >= cursor && start + before.length <= cursor + run.text.length) {
+        const local = start - cursor
+        const replacement = run.text.slice(0, local) + after + run.text.slice(local + before.length)
+        patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
+        changedRuns++
+        break
+      }
+      cursor += run.text.length
     }
-    cursor += run.text.length
+    if (!changedRuns) fail()
+  } else {
+    for (const run of runs) {
+      const first = Math.max(start, cursor)
+      const last = Math.min(start + before.length, cursor + run.text.length)
+      if (first < last) {
+        const local = first - cursor
+        const replacement =
+          run.text.slice(0, local) +
+          after.slice(first - start, last - start) +
+          run.text.slice(last - cursor)
+        patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
+        changedRuns++
+      }
+      cursor += run.text.length
+    }
   }
   if (!changedRuns) fail()
   for (const patch of patches.reverse())

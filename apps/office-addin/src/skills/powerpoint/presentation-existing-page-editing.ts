@@ -25,6 +25,7 @@ import {
 import { readBoundedImage } from '../shared/import-media.js'
 import { replacePowerPointPictureMediaPackage } from './presentation-picture-package.js'
 import { replacePowerPointTextRangePackage } from './presentation-text-revision-package.js'
+import { preparePowerPointCompositePagePackage } from './presentation-composite-revision-package.js'
 import { readChartPackageBackup } from './presentation-chart-backup.js'
 import {
   validatePresentationExistingChange,
@@ -76,6 +77,12 @@ const sha = async (value: Uint8Array) =>
     (x) => x.toString(16).padStart(2, '0'),
   ).join('')
 const output = (value: unknown) => JSON.stringify(value)
+const exact = (value: unknown, keys: string[]): value is Record<string, unknown> =>
+  !!value &&
+  typeof value === 'object' &&
+  !Array.isArray(value) &&
+  Object.keys(value).length === keys.length &&
+  Object.keys(value).every((key) => keys.includes(key))
 const CHUNK = 128 * 1024
 
 function projected(r: PresentationExistingPageChange): PresentationPageReplacement {
@@ -205,6 +212,47 @@ const tools: AgentToolDef[] = names.map((action) => ({
   },
 }))
 tools.unshift({
+  name: 'prepare_existing_presentation_composite_revision',
+  description:
+    'Prepare one editable, single-page PPTX revision with native text, geometry, and ordinary picture media changes on three distinct shapes. No host write. Stage the returned path once through the confirmed existing-page change flow for one durable backup and undo record.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      baseline_id: { type: 'string' },
+      slide_id: { type: 'string' },
+      text: {
+        type: 'object',
+        properties: {
+          shape_id: { type: 'string' },
+          start: { type: 'integer', minimum: 0 },
+          before: { type: 'string' },
+          after: { type: 'string' },
+        },
+        required: ['shape_id', 'start', 'before', 'after'],
+        additionalProperties: false,
+      },
+      geometry: {
+        type: 'object',
+        properties: {
+          shape_id: { type: 'string' },
+          before: { type: 'object' },
+          after: { type: 'object' },
+        },
+        required: ['shape_id', 'before', 'after'],
+        additionalProperties: false,
+      },
+      picture: {
+        type: 'object',
+        properties: { shape_id: { type: 'string' }, path: { type: 'string' } },
+        required: ['shape_id', 'path'],
+        additionalProperties: false,
+      },
+    },
+    required: ['baseline_id', 'slide_id', 'text', 'geometry', 'picture'],
+    additionalProperties: false,
+  },
+})
+tools.unshift({
   name: 'prepare_existing_presentation_text_revision',
   description:
     'Prepare an equal-length native text edit across formatting runs as a one-slide PPTX. This writes only to VFS; stage the returned PPTX with the existing page change flow.',
@@ -278,6 +326,7 @@ export function createPresentationExistingPageEditingSkill(
           )
     },
     systemPrompt:
+      'For one text, one geometry, and one ordinary embedded picture change on the same existing page, prepare_existing_presentation_composite_revision creates a single native page revision. Stage its returned path with picture_shape_id through the confirmed existing-page change flow so the three objects share one durable backup, commit, and undo record. A length-changing text replacement is supported only within one native text run. ' +
       'Existing page rebuild uses a validated one-slide VFS PPTX. For an ordinary embedded native picture, prepare_existing_presentation_image_revision creates a one-slide revision in VFS; then stage the returned path with picture_shape_id through the existing page change flow so post-write media can be read back. For equal-length text spanning multiple formatting runs, prepare_existing_presentation_text_revision preserves each run and produces a one-slide VFS revision; stage that path through the same confirmed page change flow. To restore a whole page from a completed single or batch existing-edit savepoint, call prepare_existing_presentation_original_page_restore for its exact change and slide; read a fresh page baseline, then stage using the returned path and restore_source_kind/restore_source_change_id, inspect both pages, and separately confirm commit. The edited page is backed up before stage and remains until commit; the restored page receives a new host slide ID. Preparation does not modify PowerPoint. An unverified image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. A pending insertion with unknown host ID must use reconcile_pending_existing_presentation_page_change before any retry; it only accepts an exact page/order/package match and does not replay a write. Inspect and resume recorded interrupted insertions before further action. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
     clear() {
       epoch++
@@ -495,6 +544,112 @@ export function createPresentationExistingPageEditingSkill(
             }),
             mutated: false,
             summary: '已准备保留格式的原生文字修订稿，尚未修改演示文稿',
+          }
+        }
+        if (call.name === 'prepare_existing_presentation_composite_revision') {
+          const input = call.input
+          if (
+            !id(input.baseline_id) ||
+            !host(input.slide_id) ||
+            !exact(input.text, ['shape_id', 'start', 'before', 'after']) ||
+            !exact(input.geometry, ['shape_id', 'before', 'after']) ||
+            !exact(input.picture, ['shape_id', 'path'])
+          )
+            throw new Error('invalid_tool_input')
+          const textEdit = input.text
+          const geometryEdit = input.geometry
+          const pictureEdit = input.picture
+          const shapeId = (value: unknown): value is string =>
+            typeof value === 'string' && /^[1-9]\d{0,9}$/.test(value)
+          const coordinates = (
+            value: unknown,
+          ): value is { left: number; top: number; width: number; height: number } =>
+            exact(value, ['left', 'top', 'width', 'height']) &&
+            Object.values(value).every((n) => typeof n === 'number' && Number.isFinite(n))
+          if (
+            !shapeId(textEdit.shape_id) ||
+            !Number.isSafeInteger(textEdit.start) ||
+            (textEdit.start as number) < 0 ||
+            typeof textEdit.before !== 'string' ||
+            typeof textEdit.after !== 'string' ||
+            !shapeId(geometryEdit.shape_id) ||
+            !coordinates(geometryEdit.before) ||
+            !coordinates(geometryEdit.after) ||
+            !shapeId(pictureEdit.shape_id) ||
+            typeof pictureEdit.path !== 'string' ||
+            new Set([textEdit.shape_id, geometryEdit.shape_id, pictureEdit.shape_id]).size !== 3
+          )
+            throw new Error('invalid_tool_input')
+          const baseline = options.baseline.snapshot(input.baseline_id)
+          if (
+            !baseline ||
+            baseline.documentId !== documentId ||
+            !baseline.scope.slideIds.includes(input.slide_id) ||
+            baseline.scope.shapeIds?.length
+          )
+            throw new Error('presentation_existing_scope_mismatch')
+          const image = await readBoundedImage(options.vfs, pictureEdit.path)
+          const original = await options.exportAdapter.exportPresentationPagePackage(
+            input.slide_id,
+            signal,
+          )
+          await current()
+          if (
+            original.slideId !== input.slide_id ||
+            !same(original.slideIds, baseline.context.slideIds)
+          )
+            throw new Error('presentation_baseline_changed')
+          const check = await options.baseline.executeTool(
+            {
+              id: 'page-composite-check',
+              name: 'check_presentation_baseline',
+              input: { baseline_id: baseline.baselineId },
+            },
+            signal,
+          )
+          await current()
+          if (check.isError || JSON.parse(check.output).unchanged !== true)
+            throw new Error('presentation_baseline_changed')
+          const revision = await preparePowerPointCompositePagePackage(
+            original.base64,
+            {
+              text: {
+                shapeId: textEdit.shape_id,
+                start: textEdit.start as number,
+                before: textEdit.before,
+                after: textEdit.after,
+              },
+              geometry: {
+                shapeId: geometryEdit.shape_id,
+                before: geometryEdit.before,
+                after: geometryEdit.after,
+              },
+              picture: { shapeId: pictureEdit.shape_id, image },
+            },
+            signal,
+          )
+          await current()
+          const path = `/home/user/presentation-composite-revision-${crypto.randomUUID()}.pptx`
+          options.vfs.writeFile(path, bytes(revision.base64))
+          return {
+            output: output({
+              path,
+              baselineId: baseline.baselineId,
+              slideId: input.slide_id,
+              beforeDigest: revision.beforeDigest,
+              afterDigest: revision.afterDigest,
+              changedRuns: revision.changedRuns,
+              mediaDigest: revision.mediaDigest,
+              nextTool: 'stage_existing_presentation_page_change',
+              nextInput: {
+                baseline_id: baseline.baselineId,
+                slide_id: input.slide_id,
+                path,
+                picture_shape_id: pictureEdit.shape_id,
+              },
+            }),
+            mutated: false,
+            summary: '已准备文字、几何和图片的单页组合修订稿，尚未修改演示文稿',
           }
         }
         if (action === 'prepare') {
