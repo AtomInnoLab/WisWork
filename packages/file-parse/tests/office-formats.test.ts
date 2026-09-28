@@ -17,6 +17,13 @@ describe('parseFileToText: docx', () => {
     expect(result.text).toContain('First paragraph hello docx')
     expect(result.text).toContain('Metric | Value')
     expect(result.text).toContain('Revenue | 100')
+    expect(result.sections?.[0]).toEqual({ locator: '第 1 段', start: 0, end: 15 })
+    expect(
+      result.sections?.find(
+        (section) =>
+          result.text!.slice(section.start, section.end) === 'First paragraph hello docx',
+      )?.locator,
+    ).toBe('第 2 段')
   })
 })
 

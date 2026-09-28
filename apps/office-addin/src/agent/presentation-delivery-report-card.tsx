@@ -88,7 +88,7 @@ function IssueList({
                 : issue.code === 'source_url_mismatch'
                   ? '网页快照与计划网址不匹配'
                   : issue.code === 'source_locator_mismatch'
-                    ? '计划页码与原文实际页码不匹配'
+                    ? '计划定位与原文实际位置不匹配'
                     : issue.code}{' '}
               · 主张 {issue.claimId}：
               {report.plan.claims.find((claim) => claim.id === issue.claimId)?.statement}

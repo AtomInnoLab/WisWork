@@ -240,7 +240,7 @@ export function createPresentationPlanningSkill(
                   : source.offset !== undefined || source.locator !== undefined) ||
                 (source.locator !== undefined &&
                   (typeof source.locator !== 'string' ||
-                    !/^第 [1-9]\d{0,5} 页$/.test(source.locator))) ||
+                    !/^第 [1-9]\d{0,5} (页|段)$/.test(source.locator))) ||
                 Object.keys(source).sort().join(',') !==
                   (source.status === 'found'
                     ? source.locator !== undefined

@@ -1112,7 +1112,12 @@ export function AgentWorkspace(props: {
                     <li key={file.attachmentId}>
                       {file.name} · {file.status}
                       {file.sectionCount !== undefined && (
-                        <span> · PDF {file.sectionCount} 页</span>
+                        <span>
+                          {' · '}
+                          {file.name.toLowerCase().endsWith('.pdf') ? 'PDF' : '资料'}{' '}
+                          {file.sectionCount}{' '}
+                          {file.name.toLowerCase().endsWith('.pdf') ? '页' : '段'}
+                        </span>
                       )}
                       {file.animationHandling === 'first_frame' && (
                         <p>已按你的选择从动画原件生成静态首帧；原件仍保存在 PC。</p>

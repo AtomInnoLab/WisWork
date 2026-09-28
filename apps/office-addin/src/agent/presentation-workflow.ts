@@ -175,7 +175,7 @@ export function presentationWorkflowSummary(
               excerpt_mismatch: '摘录不在原文中',
               excerpt_missing: '计划摘录为空',
               source_mismatch: '网页快照与计划网址不匹配',
-              locator_mismatch: '计划页码与 PDF 实际页码不匹配',
+              locator_mismatch: '计划定位与原文实际位置不匹配',
               ready: '旧版 PC 未核对摘录',
               excerpt_matched: '摘录已匹配',
             }[source.status]

@@ -25,7 +25,7 @@ import {
 import { checkPresentationPageContent } from '@wiswork/pptx-engine/presentation-content-check'
 import type { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { assertBrandLogoAsset } from './presentation-brand'
-import { canonicalPdfPageLocator, matchesFetchedSourceUrl } from './presentation-source-audit'
+import { canonicalSourceLocator, matchesFetchedSourceUrl } from './presentation-source-audit'
 
 const check = (signal: AbortSignal) => {
   if (signal.aborted) throw new Error('aborted')
@@ -64,23 +64,21 @@ export async function assertCitedPresentationSourcesReady(
               documentId,
               attachmentId,
               excerpt: source.excerpt,
-              ...(canonicalPdfPageLocator(source.locator)
-                ? { locator: canonicalPdfPageLocator(source.locator) }
+              ...(canonicalSourceLocator(source.locator)
+                ? { locator: canonicalSourceLocator(source.locator) }
                 : {}),
             },
             signal,
           )) as { attachmentId?: unknown; status?: unknown; offset?: unknown; locator?: unknown }
-          const plannedPage = /^第\s*(\d+)\s*页$/.exec(source.locator?.trim() ?? '')?.[1]
-          const observedPage =
-            typeof value.locator === 'string'
-              ? /^第\s*(\d+)\s*页$/.exec(value.locator)?.[1]
-              : undefined
+          const plannedLocator = canonicalSourceLocator(source.locator)
+          const observedLocator =
+            typeof value.locator === 'string' ? canonicalSourceLocator(value.locator) : undefined
           return (
             value.attachmentId === attachmentId &&
             value.status === 'found' &&
             Number.isSafeInteger(value.offset) &&
             Number(value.offset) >= 0 &&
-            (!plannedPage || !observedPage || plannedPage === observedPage)
+            (!plannedLocator || !observedLocator || plannedLocator === observedLocator)
           )
         } catch {
           check(signal)

@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import JSZip from 'jszip'
-import { buildPdfFixture } from '../../../packages/file-parse/tests/helpers/fixtures'
+import {
+  buildDocxFixture,
+  buildPdfFixture,
+} from '../../../packages/file-parse/tests/helpers/fixtures'
 import { createPresentationAttachmentService } from '../src/main/presentation-attachments'
 const dirs: string[] = []
 afterEach(async () => {
@@ -41,6 +44,35 @@ async function upload(
   return attachmentId
 }
 describe('durable presentation attachments', () => {
+  it.each([
+    [
+      'web.html',
+      () => Promise.resolve(Buffer.from('<p>Repeated evidence</p><p>Repeated evidence</p>')),
+    ],
+    ['report.docx', async () => Buffer.from(await buildDocxFixture())],
+  ])('indexes paragraphs in %s and returns their verified locators', async (name, content) => {
+    const { call } = await setup()
+    const id = await upload(call, await content(), name)
+    const saved = (await call({ operation: 'attachment_finish', attachmentId: id })) as {
+      sectionCount: number
+    }
+    expect(saved.sectionCount).toBeGreaterThan(1)
+    const excerpt = name.endsWith('.html') ? 'Repeated evidence' : 'First paragraph hello docx'
+    const expected = '第 2 段'
+    expect(
+      await call({
+        operation: 'attachment_match_excerpt',
+        attachmentId: id,
+        excerpt,
+        locator: expected,
+      }),
+    ).toMatchObject({ status: 'found', locator: expected })
+    expect(
+      await call({ operation: 'attachment_read', attachmentId: id, offset: 0, maxChars: 24000 }),
+    ).toMatchObject({
+      pageSpans: expect.arrayContaining([expect.objectContaining({ locator: expected })]),
+    })
+  })
   it('returns the PDF page locator for a matched excerpt and verifies the page index', async () => {
     const { call, userDataPath } = await setup()
     const id = await upload(
@@ -141,7 +173,15 @@ describe('durable presentation attachments', () => {
       source: 'https://8.8.8.8/study',
       sourceUrlHash: hash(url),
       kind: 'text',
+      sectionCount: 2,
     })
+    expect(
+      await call({
+        operation: 'attachment_match_excerpt',
+        attachmentId: first.attachmentId,
+        excerpt: 'Result & method',
+      }),
+    ).toMatchObject({ status: 'found', locator: '第 2 段' })
     expect((first as { retrievedAt?: number }).retrievedAt).toBeGreaterThan(0)
     expect(requests).toBe(1)
     expect(await call({ operation: 'attachment_import_webpage', url })).toMatchObject({

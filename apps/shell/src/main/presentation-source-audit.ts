@@ -3,9 +3,9 @@ import { presentationSourceAttachmentId } from '@wiswork/pptx-engine/presentatio
 import type { PresentationSourceAudit } from '@wiswork/pptx-engine/presentation-delivery-report'
 import { createHash } from 'node:crypto'
 
-export function canonicalPdfPageLocator(value: string | undefined): string | undefined {
-  const match = /^第\s*([1-9]\d{0,5})\s*页$/.exec(value?.trim() ?? '')
-  return match ? `第 ${Number(match[1])} 页` : undefined
+export function canonicalSourceLocator(value: string | undefined): string | undefined {
+  const match = /^第\s*([1-9]\d{0,5})\s*(页|段)$/.exec(value?.trim() ?? '')
+  return match ? `第 ${Number(match[1])} ${match[2]}` : undefined
 }
 
 /** A fetched snapshot must be attributed to the exact requested URL, including its query. */
@@ -49,8 +49,8 @@ export async function auditPresentationSources(
           documentId,
           attachmentId,
           excerpt: source.excerpt,
-          ...(canonicalPdfPageLocator(source.locator)
-            ? { locator: canonicalPdfPageLocator(source.locator) }
+          ...(canonicalSourceLocator(source.locator)
+            ? { locator: canonicalSourceLocator(source.locator) }
             : {}),
         },
         signal,
@@ -65,7 +65,7 @@ export async function auditPresentationSources(
         !['found', 'not_found', 'empty_excerpt', 'not_ready', 'unsupported'].includes(
           result.status,
         ) ||
-        (result.locator !== undefined && !/^第 [1-9]\d{0,5} 页$/.test(result.locator)) ||
+        (result.locator !== undefined && !/^第 [1-9]\d{0,5} (页|段)$/.test(result.locator)) ||
         (result.status === 'found'
           ? !Number.isSafeInteger(result.offset) || result.offset! < 0 || result.offset! > 1_000_000
           : result.offset !== undefined || result.locator !== undefined)

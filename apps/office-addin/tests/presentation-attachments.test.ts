@@ -412,6 +412,21 @@ it('preserves bounded PDF page spans while reading source text', async () => {
   expect(JSON.parse((await call()).output)).toMatchObject({ pageSpans: value.pageSpans })
   f.request.mockResolvedValue(
     new Response(
+      JSON.stringify({
+        ...value,
+        name: 'study.html',
+        text: 'First\nSecond',
+        totalChars: 12,
+        pageSpans: [
+          { locator: '第 1 段', start: 0, end: 5 },
+          { locator: '第 2 段', start: 6, end: 12 },
+        ],
+      }),
+    ),
+  )
+  expect(JSON.parse((await call()).output).pageSpans[1].locator).toBe('第 2 段')
+  f.request.mockResolvedValue(
+    new Response(
       JSON.stringify({ ...value, pageSpans: [{ locator: '第 1 页', start: 20, end: 30 }] }),
     ),
   )

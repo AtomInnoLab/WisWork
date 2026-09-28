@@ -1,4 +1,4 @@
-export { parseFileToText, type ParsedFile, type ParsedFileKind } from './parse'
+export { parseFileToText, paragraphSections, type ParsedFile, type ParsedFileKind } from './parse'
 export { docxToText } from './docx'
 export { pptxToText } from './pptx'
 export { xlsxToText } from './xlsx'

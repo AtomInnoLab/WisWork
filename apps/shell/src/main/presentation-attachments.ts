@@ -3,7 +3,12 @@ import { constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, rename, rm } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
-import { decodeHtmlBytes, htmlToText, parseFileToText } from '@wiswork/file-parse'
+import {
+  decodeHtmlBytes,
+  htmlToText,
+  paragraphSections,
+  parseFileToText,
+} from '@wiswork/file-parse'
 import { fetchRemoteImage, fetchWithSsrfGuard, isSafeRemoteUrl } from '@wiswork/electron-utils'
 import {
   inspectPresentationImage,
@@ -278,7 +283,7 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
     (m.sectionsDigest !== undefined || m.sectionCount !== undefined) &&
     (m.status !== 'ready' ||
       m.kind !== 'text' ||
-      extname(m.name).toLowerCase() !== '.pdf' ||
+      !['.pdf', '.docx', '.html', '.htm'].includes(extname(m.name).toLowerCase()) ||
       !isId(m.sectionsDigest) ||
       !integer(m.sectionCount, 1, 4096))
   )
@@ -335,7 +340,13 @@ async function cachedImage(dir: string, m: Metadata): Promise<Buffer> {
   return value
 }
 
-async function pdfSections(
+function sectionUnit(name: string): { unit: '页' | '段'; separator: number } {
+  return extname(name).toLowerCase() === '.pdf'
+    ? { unit: '页', separator: 2 }
+    : { unit: '段', separator: 1 }
+}
+
+async function textSections(
   dir: string,
   m: Metadata,
   text: string,
@@ -350,17 +361,18 @@ async function pdfSections(
     fail('invalid_state')
   }
   if (!Array.isArray(sections) || sections.length !== m.sectionCount) fail('invalid_state')
-  let previous = -2
+  const { unit, separator } = sectionUnit(m.name)
+  let previous = -separator
   for (const [index, section] of sections.entries()) {
     if (
       !section ||
       typeof section !== 'object' ||
       Array.isArray(section) ||
       Object.keys(section).sort().join(',') !== 'end,locator,start' ||
-      section.locator !== `第 ${index + 1} 页` ||
+      section.locator !== `第 ${index + 1} ${unit}` ||
       !integer(section.start, 0, text.length) ||
       !integer(section.end, section.start, text.length) ||
-      section.start !== previous + 2
+      section.start !== previous + separator
     )
       fail('invalid_state')
     previous = section.end
@@ -517,7 +529,7 @@ export function createPresentationAttachmentService(options: {
       fail('invalid_request')
     if (
       body.locator !== undefined &&
-      (typeof body.locator !== 'string' || !/^第 [1-9]\d{0,5} 页$/.test(body.locator))
+      (typeof body.locator !== 'string' || !/^第 [1-9]\d{0,5} (页|段)$/.test(body.locator))
     )
       fail('invalid_request')
     if (op === 'attachment_begin') {
@@ -628,6 +640,10 @@ export function createPresentationAttachmentService(options: {
           fail('parse_failed')
         }
         if (!text || text.length > TEXT_LIMIT) fail('parse_failed')
+        const sections = paragraphSections(text)
+        if (sections.length > 4096) fail('parse_failed')
+        const sectionsRaw = JSON.stringify(sections)
+        if (Buffer.byteLength(sectionsRaw) > 512 * 1024) fail('parse_failed')
         const attachmentId = hash(raw)
         if (entries.includes(attachmentId)) fail('remote_webpage_source_conflict')
         let declared = 0
@@ -652,6 +668,8 @@ export function createPresentationAttachmentService(options: {
           kind: 'text',
           totalChars: text.length,
           textDigest: hash(text),
+          sectionCount: sections.length,
+          sectionsDigest: hash(sectionsRaw),
           source: url.toString(),
           sourceUrlHash: urlHash,
           retrievedAt: Date.now(),
@@ -661,6 +679,7 @@ export function createPresentationAttachmentService(options: {
         try {
           await atomic(join(staging, 'raw.html'), raw)
           await atomic(join(staging, 'text.txt'), text)
+          await atomic(join(staging, 'sections.json'), sectionsRaw)
           await atomic(join(staging, 'metadata.json'), JSON.stringify(item))
           await rename(staging, join(doc, attachmentId))
         } finally {
@@ -1008,17 +1027,24 @@ export function createPresentationAttachmentService(options: {
         if (value.length !== m.totalChars || hash(value) !== m.textDigest) fail('invalid_state')
         checkAbort(signal)
         if (!(body.excerpt as string).trim()) return { attachmentId: id, status: 'empty_excerpt' }
-        const sections = await pdfSections(dir, m, value)
+        const sections = await textSections(dir, m, value)
         const excerpt = body.excerpt as string
         const preferred = sections?.find((item) => item.locator === body.locator)
-        const preferredOffset = preferred ? value.indexOf(excerpt, preferred.start) : -1
+        const matchedSection = (section: { start: number; end: number }) => {
+          const found = value.indexOf(excerpt, section.start)
+          return found >= 0 && found + excerpt.length <= section.end ? found : -1
+        }
+        const preferredOffset = preferred ? matchedSection(preferred) : -1
+        const section =
+          preferredOffset >= 0 ? preferred : sections?.find((item) => matchedSection(item) >= 0)
         const offset =
-          preferred && preferredOffset >= 0 && preferredOffset + excerpt.length <= preferred.end
+          preferredOffset >= 0
             ? preferredOffset
-            : value.indexOf(excerpt)
-        const section = sections?.find(
-          (item) => item.start <= offset && offset + excerpt.length <= item.end,
-        )
+            : section
+              ? matchedSection(section)
+              : sections
+                ? -1
+                : value.indexOf(excerpt)
         return offset < 0 || (sections && !section)
           ? { attachmentId: id, status: 'not_found' }
           : {
@@ -1107,20 +1133,21 @@ export function createPresentationAttachmentService(options: {
               let sectionsRaw: string | undefined
               if (parsed.sections) {
                 if (
-                  extname(m.name).toLowerCase() !== '.pdf' ||
+                  !['.pdf', '.docx', '.html', '.htm'].includes(extname(m.name).toLowerCase()) ||
                   parsed.sections.length < 1 ||
                   parsed.sections.length > 4096
                 )
                   fail('parse_failed')
                 sectionsRaw = JSON.stringify(parsed.sections)
                 if (Buffer.byteLength(sectionsRaw) > 512 * 1024) fail('parse_failed')
-                let previous = -2
+                const { unit, separator } = sectionUnit(m.name)
+                let previous = -separator
                 for (const [index, section] of parsed.sections.entries()) {
                   if (
-                    section.locator !== `第 ${index + 1} 页` ||
+                    section.locator !== `第 ${index + 1} ${unit}` ||
                     !integer(section.start, 0, parsed.text.length) ||
                     !integer(section.end, section.start, parsed.text.length) ||
-                    section.start !== previous + 2
+                    section.start !== previous + separator
                   )
                     fail('parse_failed')
                   previous = section.end
@@ -1227,7 +1254,7 @@ export function createPresentationAttachmentService(options: {
       const text = (await bytes(join(dir, 'text.txt'), TEXT_LIMIT * 4)).toString('utf8')
       if (text.length !== m.totalChars || hash(text) !== m.textDigest || body.offset > text.length)
         fail('invalid_state')
-      const sections = await pdfSections(dir, m, text)
+      const sections = await textSections(dir, m, text)
       const offset = body.offset as number
       const end = Math.min(text.length, offset + (body.maxChars as number))
       checkAbort(signal)

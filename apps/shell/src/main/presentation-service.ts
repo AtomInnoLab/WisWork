@@ -17,7 +17,7 @@ import {
 import { createPresentationAttachmentService } from './presentation-attachments'
 import {
   auditPresentationSources,
-  canonicalPdfPageLocator,
+  canonicalSourceLocator,
   matchesFetchedSourceUrl,
 } from './presentation-source-audit'
 import {
@@ -832,8 +832,8 @@ export function createPresentationService(options: {
                           documentId,
                           attachmentId: reference.attachmentId,
                           excerpt: reference.excerpt,
-                          ...(canonicalPdfPageLocator(reference.locator)
-                            ? { locator: canonicalPdfPageLocator(reference.locator) }
+                          ...(canonicalSourceLocator(reference.locator)
+                            ? { locator: canonicalSourceLocator(reference.locator) }
                             : {}),
                         },
                         signal,
@@ -852,9 +852,9 @@ export function createPresentationService(options: {
                       status = matchStatus
                       if (
                         matchStatus === 'excerpt_matched' &&
-                        canonicalPdfPageLocator(reference.locator) &&
+                        canonicalSourceLocator(reference.locator) &&
                         typeof match.locator === 'string' &&
-                        canonicalPdfPageLocator(reference.locator) !== match.locator
+                        canonicalSourceLocator(reference.locator) !== match.locator
                       )
                         status = 'locator_mismatch'
                     }

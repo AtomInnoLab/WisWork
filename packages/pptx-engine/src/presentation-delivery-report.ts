@@ -169,9 +169,15 @@ function seeds(
       if (audit?.status === 'not_ready') add('source_attachment_not_ready', sourceId)
       if (audit?.status === 'unsupported') add('source_attachment_unsupported', sourceId)
       if (audit?.status === 'source_mismatch') add('source_url_mismatch', sourceId)
-      const plannedPage = /^第\s*(\d+)\s*页$/.exec(source.locator?.trim() ?? '')?.[1]
-      const observedPage = audit?.locator ? /^第\s*(\d+)\s*页$/.exec(audit.locator)?.[1] : undefined
-      if (plannedPage && observedPage && plannedPage !== observedPage)
+      const plannedLocator = /^第\s*(\d+)\s*(页|段)$/.exec(source.locator?.trim() ?? '')
+      const observedLocator = audit?.locator
+        ? /^第\s*(\d+)\s*(页|段)$/.exec(audit.locator)
+        : undefined
+      if (
+        plannedLocator &&
+        observedLocator &&
+        (plannedLocator[1] !== observedLocator[1] || plannedLocator[2] !== observedLocator[2])
+      )
         add('source_locator_mismatch', sourceId)
       const excerpt = normalize(source.excerpt)
       if (!excerpt) add('source_excerpt_missing', sourceId)
@@ -281,7 +287,7 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
         (audit.status === 'found'
           ? !Number.isSafeInteger(audit.offset) || audit.offset! < 0 || audit.offset! > 1_000_000
           : audit.offset !== undefined || audit.locator !== undefined) ||
-        (audit.locator !== undefined && !/^第 [1-9]\d{0,5} 页$/.test(audit.locator))
+        (audit.locator !== undefined && !/^第 [1-9]\d{0,5} (页|段)$/.test(audit.locator))
       )
         invalid()
     }

@@ -17,6 +17,16 @@ export interface ParsedFile {
   sections?: { locator: string; start: number; end: number }[]
 }
 
+export function paragraphSections(text: string): NonNullable<ParsedFile['sections']> {
+  const sections: NonNullable<ParsedFile['sections']> = []
+  let start = 0
+  for (const [index, paragraph] of text.split('\n').entries()) {
+    sections.push({ locator: `第 ${index + 1} 段`, start, end: start + paragraph.length })
+    start += paragraph.length + 1
+  }
+  return sections
+}
+
 /** No text extraction for images: callers read raw bytes and go multimodal (see @wiswork/ai-provider images support) */
 const IMAGE_MIMES: Record<string, string> = {
   png: 'image/png',
@@ -35,14 +45,17 @@ export async function parseFileToText(filePath: string): Promise<ParsedFile> {
   if (imageMime) return { ok: true, kind: 'image', mime: imageMime }
   try {
     if (ext === 'html' || ext === 'htm') {
-      return { ok: true, kind: 'text', text: htmlToText(decodeHtmlBytes(await readFile(filePath))) }
+      const text = htmlToText(decodeHtmlBytes(await readFile(filePath)))
+      return { ok: true, kind: 'text', text, sections: paragraphSections(text) }
     }
     if (TEXT_EXTS.has(ext)) {
       return { ok: true, kind: 'text', text: await readFile(filePath, 'utf-8') }
     }
     switch (ext) {
-      case 'docx':
-        return { ok: true, kind: 'text', text: await docxToText(await readFile(filePath)) }
+      case 'docx': {
+        const text = await docxToText(await readFile(filePath))
+        return { ok: true, kind: 'text', text, sections: paragraphSections(text) }
+      }
       case 'pptx':
         return { ok: true, kind: 'text', text: await pptxToText(await readFile(filePath)) }
       case 'xlsx':
