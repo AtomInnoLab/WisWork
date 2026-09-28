@@ -61,6 +61,23 @@ describe('presentation page content precheck', () => {
     expect({ plan, deck }).toEqual(before)
     expect(parsePresentationPageContentCheck(report)).toEqual(report)
   })
+  it.each([
+    ['2026-02-28', '2026-03-01', 'source_as_of_earlier'],
+    ['2024-02-29', '2024-03-01', 'source_as_of_earlier'],
+    ['2025-03-01', '2025-02-28', 'source_as_of_differs'],
+    ['2025-02-29', '2025-03-01', 'source_as_of_differs'],
+    ['FY 2024', 'FY 2025', 'source_as_of_differs'],
+  ])('only orders valid exact calendar dates', (sourceDate, claimDate, code) => {
+    const { plan, deck, pageId } = fixture()
+    plan.claims[0]!.asOf = claimDate
+    plan.sources[0]!.asOf = sourceDate
+    deck.claims = presentationPlanClaims(plan)
+    expect(checkPresentationPageContent(plan, deck, pageId).findings).toContainEqual({
+      code,
+      claimId: 'source-1',
+      sourceId: 'source',
+    })
+  })
   it.each([undefined, ' \n '])('does not infer an unspecified claim asOf %j', (asOf) => {
     const { plan, deck, pageId } = fixture()
     if (asOf !== undefined) plan.claims[0]!.asOf = asOf

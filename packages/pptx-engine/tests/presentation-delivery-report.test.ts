@@ -79,6 +79,22 @@ function review(
   } as PresentationClaimReview
 }
 describe('delivery evidence report', () => {
+  it('reports an earlier exact source date without claiming independent timeliness verification', async () => {
+    const value = input()
+    value.plan.claims[0]!.asOf = '2026-09-28'
+    value.plan.sources[0]!.asOf = '2026-09-20'
+    value.deck.claims = presentationPlanClaims(value.plan)
+    const report = await buildPresentationDeliveryReport(value)
+    expect(report.pages[0]!.issues).toContainEqual(
+      expect.objectContaining({
+        code: 'source_as_of_earlier',
+        claimId: 'source-1',
+        sourceId: 'source',
+      }),
+    )
+    expect(report.checks.timeliness).toBe('not_verified')
+    expect(parsePresentationDeliveryReport(report)).toEqual(report)
+  })
   it('makes source dispositions stale when current attachment evidence disappears', async () => {
     const value = input()
     value.sourceAudit = [

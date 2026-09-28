@@ -9,6 +9,7 @@ import {
 } from './presentation-plan'
 import { parsePresentationDeck, type PresentationDeck } from './presentation'
 import { checkPresentationPageContent } from './presentation-content-check'
+import { sourceAsOfFinding } from './presentation-source-time'
 import {
   parsePresentationClaimReview,
   type PresentationClaimReview,
@@ -157,11 +158,8 @@ function seeds(
       const excerpt = normalize(source.excerpt)
       if (!excerpt) add('source_excerpt_missing', sourceId)
       if (!source.locator?.trim()) add('source_locator_missing', sourceId)
-      if (claim.asOf && normalize(claim.asOf)) {
-        if (!source.asOf || !normalize(source.asOf)) add('source_as_of_missing', sourceId)
-        else if (normalize(claim.asOf) !== normalize(source.asOf))
-          add('source_as_of_differs', sourceId)
-      }
+      const asOfFinding = sourceAsOfFinding(claim.asOf, source.asOf)
+      if (asOfFinding) add(asOfFinding, sourceId)
       if (claim.type === 'quote' && excerpt && !excerpt.includes(normalize(claim.statement)))
         add('quote_not_in_excerpt', sourceId)
       const relevant = report.reviews.filter(

@@ -181,6 +181,8 @@ const contentRecommendations = {
   source_excerpt_missing: '补充来源摘录，再核对其是否支持主张。',
   source_locator_missing: '补充页码、章节或其他可追溯定位。',
   source_as_of_missing: '主张指定了时点，但来源未注明；补充来源时点并核对适用范围。',
+  source_as_of_earlier:
+    '来源的明确日期早于主张的明确日期；核对是否有更新来源、报告期是否可比，以及主张是否需要改写。此提示不独立证明来源已经失效。',
   source_as_of_differs:
     '主张与来源的时点标记不同；核对报告期、适用范围或是否为合理的多期比较，标记不同不代表过期或事实错误。',
   quote_not_in_excerpt: '核对原文与引文，必要时修正引文或摘录；当前仅为字面比较。',

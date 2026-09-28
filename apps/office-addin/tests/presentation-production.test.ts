@@ -1309,6 +1309,7 @@ it('explains as-of metadata findings conservatively without changing session sta
   const findings = [
     { code: 'source_as_of_missing', claimId: 'c1', sourceId: 's1' },
     { code: 'source_as_of_differs', claimId: 'c1', sourceId: 's2' },
+    { code: 'source_as_of_earlier', claimId: 'c1', sourceId: 's3' },
   ]
   f.request.mockResolvedValue(
     new Response(JSON.stringify({ ...value, report: { ...value.report, findings } })),
@@ -1321,6 +1322,7 @@ it('explains as-of metadata findings conservatively without changing session sta
   expect(output.recommendations).toEqual([
     { code: 'source_as_of_missing', action: expect.stringContaining('时点') },
     { code: 'source_as_of_differs', action: expect.stringContaining('不代表过期') },
+    { code: 'source_as_of_earlier', action: expect.stringContaining('不独立证明') },
   ])
   expect(f.rememberProject).not.toHaveBeenCalled()
   expect(f.readReceipt).not.toHaveBeenCalled()

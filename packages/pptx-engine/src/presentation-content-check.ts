@@ -5,6 +5,7 @@ import {
   type PresentationPlan,
 } from './presentation-plan'
 import { array, choice, id, object, valid } from './presentation-schema'
+import { sourceAsOfFinding } from './presentation-source-time'
 
 export interface PresentationPageContentCheck {
   version: 1
@@ -17,6 +18,7 @@ export interface PresentationPageContentCheck {
       | 'source_locator_missing'
       | 'quote_not_in_excerpt'
       | 'source_as_of_missing'
+      | 'source_as_of_earlier'
       | 'source_as_of_differs'
       | 'calculation_not_reproduced'
     claimId: string
@@ -45,6 +47,7 @@ const reportSchema = object({
             'source_locator_missing',
             'quote_not_in_excerpt',
             'source_as_of_missing',
+            'source_as_of_earlier',
             'source_as_of_differs',
           ),
           claimId: id,
@@ -118,7 +121,6 @@ export function checkPresentationPageContent(
   for (const claimId of claimIds) {
     const claim = claims.get(claimId)!
     const statement = normalize(claim.statement)
-    const claimAsOf = normalize(claim.asOf ?? '')
     if (!statement || !visible.some((text) => text.includes(statement)))
       findings.push({ code: 'claim_text_not_found', claimId })
     for (const sourceId of claim.sourceIds) {
@@ -127,12 +129,8 @@ export function checkPresentationPageContent(
       if (!excerpt) findings.push({ code: 'source_excerpt_missing', claimId, sourceId })
       if (!source.locator?.trim())
         findings.push({ code: 'source_locator_missing', claimId, sourceId })
-      if (claimAsOf) {
-        const sourceAsOf = normalize(source.asOf ?? '')
-        if (!sourceAsOf) findings.push({ code: 'source_as_of_missing', claimId, sourceId })
-        else if (sourceAsOf !== claimAsOf)
-          findings.push({ code: 'source_as_of_differs', claimId, sourceId })
-      }
+      const asOfFinding = sourceAsOfFinding(claim.asOf, source.asOf)
+      if (asOfFinding) findings.push({ code: asOfFinding, claimId, sourceId })
       // Missing excerpts are already flagged; quote comparison needs supplied text.
       if (claim.type === 'quote' && excerpt && (!statement || !excerpt.includes(statement)))
         findings.push({ code: 'quote_not_in_excerpt', claimId, sourceId })

@@ -208,7 +208,7 @@ it('keeps as-of findings bound to the frozen plan across updates and restart wit
   const restarted = createPresentationService({ userDataPath: f.userDataPath, compile: f.compile })
   for (const [requestId, planRevision, code] of [
     ['missing-date', 2, 'source_as_of_missing'],
-    ['different-date', 3, 'source_as_of_differs'],
+    ['different-date', 3, 'source_as_of_earlier'],
   ] as const) {
     const request = { ...f.request, requestId }
     const report = decode(await f.service(request, new AbortController().signal))
