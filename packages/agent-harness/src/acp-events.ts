@@ -21,29 +21,6 @@ export function acpToolTitle(name: string): string {
   return words ? words[0]!.toUpperCase() + words.slice(1) : 'Agent tool'
 }
 
-const PRESENTATION_STAGES: ReadonlyArray<readonly [RegExp, string]> = [
-  [/^(?:restore|resume)_presentation_project$/, '项目恢复'],
-  [/^(?:save|read)_presentation_plan$/, '演示文稿计划'],
-  [
-    /^(?:start|pause|resume|cancel)_presentation_production_job$|^run_presentation_production$|^compile_deck_with_pptxgenjs$/,
-    '逐页制作',
-  ],
-  [
-    /^prepare_presentation_production_import$|^import_generated_presentation$|^read_presentation_import_status$/,
-    '页面导入',
-  ],
-  [
-    /^(?:capture_presentation_page_qa|record_presentation_page_review|read_presentation_qa|verify_slides|screenshot_slide)$/,
-    '页面审查',
-  ],
-  [/^(?:read|record|export)_presentation_(?:delivery_report|issue_action)$/, '内容证据'],
-  [
-    /^(?:list_presentation_attachments|read_presentation_attachment|audit_presentation_sources)$/,
-    '参考资料',
-  ],
-  [/^(?:edit|replace|restore|resume)_.*presentation_.*$|^list_presentation_changes$/, '页面修改'],
-]
-
 export type PresentationStage =
   | 'project_recovery'
   | 'planning'
@@ -53,26 +30,87 @@ export type PresentationStage =
   | 'evidence'
   | 'sources'
   | 'editing'
+  | 'research'
+  | 'style'
+  | 'assets'
+  | 'baseline'
+  | 'delivery'
+  | 'checkpoint'
 
-const PRESENTATION_STAGE_KEYS: readonly PresentationStage[] = [
-  'project_recovery',
-  'planning',
-  'production',
-  'import',
-  'review',
-  'evidence',
-  'sources',
-  'editing',
+const STAGE_LABELS: Readonly<Record<PresentationStage, string>> = {
+  project_recovery: '项目恢复',
+  planning: '演示文稿计划',
+  production: '逐页制作',
+  import: '页面导入',
+  review: '页面审查',
+  evidence: '内容证据',
+  sources: '参考资料',
+  editing: '页面修改',
+  research: '资料研究',
+  style: '视觉方向',
+  assets: '素材准备',
+  baseline: '文档基线',
+  delivery: '文件交付',
+  checkpoint: '保存点',
+}
+
+// Each pattern enumerates known actions and targets; unknown writes remain generic.
+const PRESENTATION_STAGES: ReadonlyArray<readonly [PresentationStage, RegExp]> = [
+  ['project_recovery', /^(?:restore|resume)_presentation_project$/],
+  [
+    'planning',
+    /^(?:(?:save|read)_presentation_plan|read_presentation_domain_skill|read_presentation_preference_candidates|save_presentation_preference|list_presentation_preferences|delete_presentation_preference)$/,
+  ],
+  [
+    'style',
+    /^(?:(?:save|read)_presentation_brand_kit|list_presentation_brand_kits|inspect_slide_masters|edit_slide_master|edit_slide_master_xml)$/,
+  ],
+  ['research', /^(?:web_search|web_fetch)$/],
+  ['assets', /^(?:image_search|insert-image)$/],
+  [
+    'sources',
+    /^(?:list_presentation_attachments|read_presentation_attachment|audit_presentation_sources)$/,
+  ],
+  [
+    'baseline',
+    /^(?:read_presentation_baseline(?:_page|_complex_page|_chart_source|_notes|_source_links|_rich_text)?|check_presentation_baseline(?:_windows)?|list_slide_shapes|read_slide_text|read_presentation_page|read_presentation_page_geometry)$/,
+  ],
+  ['checkpoint', /^(?:save|read)_presentation_page_backup$/],
+  ['delivery', /^export_presentation_pdf$/],
+  [
+    'import',
+    /^(?:prepare_presentation_production_import|import_generated_presentation|import_presentation_production|read_presentation_import_status|read_presentation_production_import_status|reconcile_presentation_production_import)$/,
+  ],
+  [
+    'production',
+    /^(?:(?:start|read|pause|resume|cancel)_presentation_production_job|(?:start|run|read)_presentation_production|compile_deck_with_pptxgenjs|rebuild_presentation_page|read_presentation_page_artifact|add_slide_ir_objects)$/,
+  ],
+  [
+    'review',
+    /^(?:capture_presentation_page_qa|record_presentation_page_review|read_presentation_qa|read_presentation_page_reviews|compare_presentation_page_structure|verify_slides|screenshot_slide|capture_existing_presentation_change|record_existing_presentation_change_review|capture_existing_presentation_batch_page|record_existing_presentation_batch_page_review|(?:capture|record)_existing_presentation_image_review|(?:capture|record)_existing_presentation_page_change|(?:list_presentation_review_comments|add_presentation_review_comment|resolve_presentation_review_comment))$/,
+  ],
+  [
+    'evidence',
+    /^(?:(?:read|export)_presentation_delivery_report|record_presentation_issue_action|(?:read|record)_presentation_claim_review|read_presentation_claim_evidence|check_presentation_page_content)$/,
+  ],
+  [
+    'editing',
+    /^(?:replace_presentation_page|list_presentation_changes|list_existing_presentation_changes|edit_existing_presentation_(?:text|text_range|geometry|table_cell|batch|table_batch)|(?:inspect|undo|resume|reapply|release)_existing_presentation_change|replace_existing_presentation_image|(?:inspect|resume|undo|reapply)_existing_presentation_image_change|(?:stage|reapply|inspect|reconcile|resume|commit|discard|undo|release)_existing_presentation_page_change|reconcile_pending_existing_presentation_page_change|prepare_existing_presentation_(?:composite_revision|text_revision|image_revision|original_page_restore)|(?:inspect|resume|undo|reapply|release)_existing_presentation_batch|(?:stage|inspect|reconcile|resume|discard|commit|undo)_presentation_page_replacement|(?:read|undo|inspect|resume)_presentation_(?:geometry|text)_change|(?:read|inspect|resume|undo)_presentation_image_replacement|edit_presentation_page_(?:text|geometry)|replace_presentation_page_image|edit_slide_(?:text|xml|chart)|update_slide_chart_values|(?:inspect|resume|undo|release|reapply)_slide_chart_values_change|duplicate_slide|execute_office_js)$/,
+  ],
 ]
 
+export function acpPresentationStageLabel(stage: PresentationStage): string {
+  return STAGE_LABELS[stage]
+}
+
 export function acpPresentationStage(name: string): PresentationStage | undefined {
-  const index = PRESENTATION_STAGES.findIndex(([pattern]) => pattern.test(name))
-  return index < 0 ? undefined : PRESENTATION_STAGE_KEYS[index]
+  return PRESENTATION_STAGES.find(([, pattern]) => pattern.test(name))?.[0]
 }
 
 /** User-facing activity only. Project completion still comes from persisted receipts. */
 export function acpToolActivity(name: string, state: 'running' | 'complete' | 'error'): string {
-  const stage = PRESENTATION_STAGES.find(([pattern]) => pattern.test(name))?.[1]
+  const key = acpPresentationStage(name)
+  const stage = key ? acpPresentationStageLabel(key) : undefined
   if (stage)
     return state === 'running'
       ? `正在处理${stage}…`

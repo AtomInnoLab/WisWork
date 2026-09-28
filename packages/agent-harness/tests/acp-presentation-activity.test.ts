@@ -1,5 +1,67 @@
 import { expect, it } from 'vitest'
-import { acpPresentationStage, acpToolActivity } from '../src/acp-events.js'
+import {
+  acpPresentationStage,
+  acpPresentationStageLabel,
+  acpToolActivity,
+} from '../src/acp-events.js'
+
+it('covers finite dynamically registered lifecycle actions', () => {
+  for (const action of [
+    'stage',
+    'reapply',
+    'inspect',
+    'reconcile',
+    'resume',
+    'commit',
+    'discard',
+    'undo',
+    'release',
+  ])
+    expect(acpPresentationStage(`${action}_existing_presentation_page_change`)).toBe('editing')
+  for (const action of ['capture', 'record'])
+    expect(acpPresentationStage(`${action}_existing_presentation_page_change`)).toBe('review')
+  for (const action of ['inspect', 'resume', 'undo', 'release', 'reapply'])
+    expect(acpPresentationStage(`${action}_slide_chart_values_change`)).toBe('editing')
+  for (const action of ['start', 'read', 'pause', 'resume', 'cancel'])
+    expect(acpPresentationStage(`${action}_presentation_production_job`)).toBe('production')
+})
+
+it('shares stage labels while reporting only tool-operation completion', () => {
+  expect(acpPresentationStageLabel('planning')).toBe('演示文稿计划')
+  expect(acpPresentationStageLabel('baseline')).toBe('文档基线')
+  for (const tool of [
+    'web_fetch',
+    'save_presentation_brand_kit',
+    'image_search',
+    'read_presentation_baseline',
+    'export_presentation_pdf',
+    'save_presentation_page_backup',
+  ]) {
+    const stage = acpPresentationStage(tool)!
+    expect(acpToolActivity(tool, 'complete')).toBe(`${acpPresentationStageLabel(stage)}操作已结束`)
+    expect(acpToolActivity(tool, 'error')).toBe(`${acpPresentationStageLabel(stage)}处理未完成`)
+  }
+})
+
+it.each([
+  ['import_presentation_production', 'import'],
+  ['capture_existing_presentation_batch_page', 'review'],
+  ['undo_slide_chart_values_change', 'editing'],
+  ['prepare_existing_presentation_composite_revision', 'editing'],
+  ['read_presentation_baseline_chart_source', 'baseline'],
+  ['web_search', 'research'],
+  ['image_search', 'assets'],
+  ['save_presentation_brand_kit', 'style'],
+  ['save_presentation_page_backup', 'checkpoint'],
+  ['export_presentation_pdf', 'delivery'],
+])('classifies registered %s as %s', (tool, stage) => {
+  expect(acpPresentationStage(tool)).toBe(stage)
+})
+
+it('does not infer a stage for unregistered presentation write names', () => {
+  expect(acpPresentationStage('replace_unknown_presentation_page')).toBeUndefined()
+  expect(acpPresentationStage('undo_existing_presentation_unknown_change')).toBeUndefined()
+})
 
 it('classifies persisted presentation work stages', () => {
   expect(acpPresentationStage('save_presentation_plan')).toBe('planning')
