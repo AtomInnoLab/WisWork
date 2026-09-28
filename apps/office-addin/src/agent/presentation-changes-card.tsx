@@ -73,9 +73,10 @@ export function PresentationChangesCard({
       {snapshot.error && <p role="alert">{snapshot.error}</p>}
       {snapshot.backupAudit && (
         <p role="status">
-          当前文档 PC 活动备份：{snapshot.backupAudit.active}/8；其中{' '}
+          当前文档 PC 活动备份：{snapshot.backupAudit.active} 份；其中{' '}
           {snapshot.backupAudit.unmatched}{' '}
-          份未在当前保存点历史中找到对应整页或图表记录，需人工核查，暂不自动删除。
+          份未在当前保存点历史中找到对应记录，需人工核查，暂不自动删除。
+          整页修改会保留原页和替换源页两份包。容量不足时，可检查并释放已撤销或已丢弃记录的备份；释放后无法重新应用。
         </p>
       )}
       {snapshot.phase === 'idle' && !snapshot.entries.length && (

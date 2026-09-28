@@ -236,11 +236,29 @@ function inspectionNotice(output: string): string {
 }
 function workbenchError(error: unknown): string {
   const code = error instanceof Error ? error.message : ''
-  if (code === 'presentation_existing_batch_backup_missing')
+  if (code === 'presentation_existing_backup_capacity')
+    return '本机 PC 保存点容量已满。请检查并释放已撤销或已丢弃记录的备份后重新发起；释放后无法重新应用，未自动重试。'
+  if (
+    [
+      'presentation_existing_batch_backup_missing',
+      'presentation_existing_backup_missing',
+      'presentation_image_backup_unavailable',
+      'presentation_image_backup_invalid',
+      'presentation_page_backup_unavailable',
+      'presentation_page_backup_invalid',
+      'presentation_page_backup_failed',
+      'presentation_chart_backup_invalid',
+    ].includes(code)
+  )
     return '原页备份不可用。请恢复 PC 连接并检查备份后重试；本次操作已停止。'
   if (
     [
       'presentation_existing_batch_conflict',
+      'presentation_existing_change_conflict',
+      'presentation_existing_image_conflict',
+      'presentation_existing_page_conflict',
+      'presentation_existing_page_manual_review',
+      'presentation_existing_chart_manual_review',
       'presentation_existing_preserved_changed',
       'presentation_existing_target_changed',
       'presentation_baseline_changed',

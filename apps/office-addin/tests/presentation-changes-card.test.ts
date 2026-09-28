@@ -4,6 +4,27 @@ import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 import { PresentationChangesCard } from '../src/agent/presentation-changes-card.js'
 import type { PresentationChangesController } from '../src/agent/presentation-changes.js'
+it('counts active backup packages without assuming a PC capacity limit', async () => {
+  const controller: PresentationChangesController = {
+    snapshot: () => ({ phase: 'idle', entries: [], backupAudit: { active: 16, unmatched: 1 } }),
+    subscribe: () => () => {},
+    run: vi.fn(),
+    refresh: vi.fn(),
+    clear: vi.fn(),
+  }
+  const container = document.createElement('div'),
+    root = createRoot(container)
+  try {
+    await act(async () => root.render(React.createElement(PresentationChangesCard, { controller })))
+    expect(container.textContent).toContain('活动备份：16 份')
+    expect(container.textContent).not.toContain('/8')
+    expect(container.textContent).not.toContain('/16')
+    expect(container.textContent).toContain('原页和替换源页两份')
+    expect(container.textContent).toContain('释放')
+  } finally {
+    await act(async () => root.unmount())
+  }
+})
 it('dispatches actual actions, escapes text and disables busy controls', async () => {
   const run = vi.fn(),
     refresh = vi.fn()

@@ -139,6 +139,27 @@ function setup() {
     },
   }
 }
+it.each([
+  ['presentation_existing_backup_capacity', '释放'],
+  ['presentation_existing_backup_missing', '原页备份不可用'],
+  ['presentation_image_backup_invalid', '备份不可用'],
+  ['presentation_page_backup_failed', '备份不可用'],
+  ['presentation_existing_image_conflict', '当前页面与保存点不一致'],
+  ['presentation_existing_chart_manual_review', '当前页面与保存点不一致'],
+  ['presentation_existing_page_conflict', '当前页面与保存点不一致'],
+  ['PRIVATE_CONTENT_SENTINEL', '操作未完成或保存点已变化'],
+])('maps saved-change error %s to an actionable safe message', async (code, message) => {
+  const s = setup()
+  s.executeTool.mockImplementationOnce(async () => ({
+    output: code,
+    summary: 'failed',
+    isError: true,
+  }))
+  await s.controller.refresh()
+  await s.controller.run('existing:change', 'undo')
+  expect(s.controller.snapshot().error).toContain(message)
+  expect(s.controller.snapshot().error).not.toContain(code)
+})
 it('shows offline existing history and dispatches by exact change ID without project identity', async () => {
   const s = setup()
   await s.controller.refresh()
