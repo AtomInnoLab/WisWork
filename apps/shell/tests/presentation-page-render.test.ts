@@ -1,8 +1,14 @@
 import { spawnSync } from 'node:child_process'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { benchmarkPlannedDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
-import { convertSinglePagePackageToPng } from '../src/main/presentation-page-render'
+import {
+  convertSinglePagePackageToPng,
+  readBoundedRenderedPng,
+} from '../src/main/presentation-page-render'
 
 const sofficeAvailable = spawnSync('soffice', ['--version'], { timeout: 5_000 }).status === 0
 
@@ -35,4 +41,32 @@ it.skipIf(!sofficeAvailable)('stops a running converter after cancellation', asy
   const rendering = convertSinglePagePackageToPng(bytes, controller.signal)
   setTimeout(() => controller.abort(), 50)
   await expect(rendering).rejects.toThrow('aborted')
+})
+
+it('rejects renderer output larger than the source cap before loading it', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wiswork-render-test-'))
+  try {
+    const path = join(dir, 'page.png')
+    await writeFile(path, Buffer.alloc(4 * 1024 * 1024 + 1))
+    await expect(readBoundedRenderedPng(path)).rejects.toThrow('renderer_unavailable')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('rejects compressed PNG dimensions beyond the decode cap', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wiswork-render-test-'))
+  try {
+    const path = join(dir, 'page.png')
+    const header = Buffer.alloc(33)
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(header)
+    header.writeUInt32BE(13, 8)
+    header.write('IHDR', 12)
+    header.writeUInt32BE(100_000, 16)
+    header.writeUInt32BE(1, 20)
+    await writeFile(path, header)
+    await expect(readBoundedRenderedPng(path)).rejects.toThrow('renderer_unavailable')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })

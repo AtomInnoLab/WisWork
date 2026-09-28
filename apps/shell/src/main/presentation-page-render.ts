@@ -1,10 +1,41 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, open, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const MAX_PNG_BYTES = 64 * 1024
+const MAX_RENDERED_PNG_BYTES = 4 * 1024 * 1024
+const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+
+/** Read no more than the renderer's file budget and reject oversized PNG dimensions before decode. */
+export async function readBoundedRenderedPng(path: string): Promise<Uint8Array> {
+  const handle = await open(path, 'r')
+  try {
+    const bytes = Buffer.alloc(MAX_RENDERED_PNG_BYTES + 1)
+    let length = 0
+    while (length < bytes.length) {
+      const part = await handle.read(bytes, length, bytes.length - length, length)
+      if (!part.bytesRead) break
+      length += part.bytesRead
+    }
+    if (
+      length < 33 ||
+      length > MAX_RENDERED_PNG_BYTES ||
+      !bytes.subarray(0, 8).equals(PNG_SIGNATURE) ||
+      bytes.readUInt32BE(8) !== 13 ||
+      bytes.toString('ascii', 12, 16) !== 'IHDR'
+    )
+      throw new Error('renderer_unavailable')
+    const width = bytes.readUInt32BE(16)
+    const height = bytes.readUInt32BE(20)
+    if (width < 1 || height < 1 || width > 8192 || height > 8192)
+      throw new Error('renderer_unavailable')
+    return bytes.subarray(0, length)
+  } finally {
+    await handle.close()
+  }
+}
 
 /** Optional local fallback for a validated single-slide PPTX; never claims PowerPoint fidelity. */
 export async function convertSinglePagePackageToPng(
@@ -46,8 +77,7 @@ export async function convertSinglePagePackageToPng(
       })
     })
     if (signal.aborted) throw new Error('aborted')
-    const raw = await readFile(join(dir, 'page.png'))
-    if (!raw.length || raw.length > 4 * 1024 * 1024) throw new Error('renderer_unavailable')
+    const raw = await readBoundedRenderedPng(join(dir, 'page.png'))
     return raw
   } catch (error) {
     if (error instanceof Error && error.message === 'aborted') throw error
