@@ -518,6 +518,8 @@ describe('Office cloud relay session', () => {
     'presentation.v1',
     'presentation-attachments.v1',
     'presentation-assets.v1',
+    'presentation-pdf.v1',
+    'presentation-production-pdf.v1',
   ] as const)('negotiates %s and blocks unnegotiated requests', async (capability) => {
     const socket = new FakeSocket()
     const session = createOfficeRelaySession({

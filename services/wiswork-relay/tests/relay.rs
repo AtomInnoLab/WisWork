@@ -687,6 +687,16 @@ async fn v2_negotiates_presentation_animation_frame_and_denies_unnegotiated_requ
     check_v2_capability("presentation-animation-frame.v1").await;
 }
 
+#[tokio::test]
+async fn v2_negotiates_compiled_pdf_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-pdf.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_production_pdf_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-production-pdf.v1").await;
+}
+
 async fn check_v2_capability(capability: &str) {
     let url = server().await;
     let mut office = socket(&url, ORIGIN).await;

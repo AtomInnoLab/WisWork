@@ -505,6 +505,7 @@ export function createPresentationProjectController(
     | 'request'
     | 'available'
     | 'pdfAvailable'
+    | 'productionPdfAvailable'
     | 'documentId'
     | 'lastProject'
     | 'selectedProduction'
@@ -770,7 +771,7 @@ export function createPresentationProjectController(
     const project = state.project
     if (
       tool === 'export_presentation_pdf' &&
-      (project.production!.status !== 'compiled' || !options.pdfAvailable?.())
+      (project.production!.status !== 'compiled' || !options.productionPdfAvailable?.())
     )
       return
     const requestId = project.production!.requestId
@@ -971,7 +972,7 @@ export function createPresentationProjectController(
     }
   }
   return {
-    pdfAvailable: () => options.available() && options.pdfAvailable?.() === true,
+    pdfAvailable: () => options.available() && options.productionPdfAvailable?.() === true,
     exportProductionPdf: () => deliveryAction('export_presentation_pdf'),
     auditSources,
     readDeliveryReport: () => deliveryAction('read_presentation_delivery_report'),

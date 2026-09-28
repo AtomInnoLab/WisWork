@@ -72,6 +72,7 @@ export interface PresentationGenerationOptions {
   attachmentsRequest?(body: unknown, signal?: AbortSignal): Promise<Response>
   request(body: unknown, signal?: AbortSignal): Promise<Response>
   pdfAvailable?(): boolean
+  productionPdfAvailable?(): boolean
   pdfRequest?(body: unknown, signal?: AbortSignal): Promise<Response>
   documentId(): Promise<string>
   lastProject(): string | undefined
@@ -94,6 +95,10 @@ export function createPresentationGenerationSkill(
   clear(): void
 } {
   const artifacts = new Map<string, CompiledPresentationArtifact>()
+  const pdfCapabilityAvailable = (source: unknown) =>
+    source === 'production'
+      ? options.productionPdfAvailable?.() === true
+      : options.pdfAvailable?.() === true
   let epoch = 0
   return {
     artifact: (projectId?: string) =>
@@ -107,7 +112,10 @@ export function createPresentationGenerationSkill(
     get tools() {
       return options.available()
         ? tools.filter(
-            (tool) => tool.name !== 'export_presentation_pdf' || options.pdfAvailable?.(),
+            (tool) =>
+              tool.name !== 'export_presentation_pdf' ||
+              pdfCapabilityAvailable('compiled') ||
+              pdfCapabilityAvailable('production'),
           )
         : []
     },
@@ -131,8 +139,7 @@ export function createPresentationGenerationSkill(
         if (call.inputError || call.truncated) throw new Error('invalid_tool_input')
         const value = call.input
         if (call.name === 'export_presentation_pdf') {
-          if (!options.pdfAvailable?.() || !options.pdfRequest)
-            throw new Error('presentation_pdf_unavailable')
+          if (!options.pdfRequest) throw new Error('presentation_pdf_unavailable')
           if (
             Object.keys(value).some(
               (key) => !['project_id', 'request_id', 'source'].includes(key),
@@ -144,9 +151,10 @@ export function createPresentationGenerationSkill(
               value.source !== 'production')
           )
             throw new Error('invalid_tool_input')
+          if (!pdfCapabilityAvailable(value.source)) throw new Error('presentation_pdf_unavailable')
           const documentId = await options.documentId()
           check()
-          if (!options.pdfAvailable()) throw new Error('presentation_pdf_unavailable')
+          if (!pdfCapabilityAvailable(value.source)) throw new Error('presentation_pdf_unavailable')
           const response = await options.pdfRequest(
             {
               operation: 'export_pdf',
@@ -178,7 +186,7 @@ export function createPresentationGenerationSkill(
           }
           if (
             result?.status !== 'exported' ||
-            result.source !== (value.source ?? 'compiled') ||
+            (result.source ?? 'compiled') !== (value.source ?? 'compiled') ||
             result.projectId !== value.project_id ||
             result.requestId !== value.request_id ||
             !Number.isSafeInteger(result.slideCount) ||
@@ -193,7 +201,7 @@ export function createPresentationGenerationSkill(
           if (!binary.startsWith('%PDF-') || !binary.slice(-1024).includes('%%EOF'))
             throw new Error('presentation_response_invalid')
           check()
-          if (!options.pdfAvailable()) throw new Error('presentation_pdf_unavailable')
+          if (!pdfCapabilityAvailable(value.source)) throw new Error('presentation_pdf_unavailable')
           if ((await options.documentId()) !== documentId)
             throw new Error('presentation_document_changed')
           check()
@@ -207,7 +215,7 @@ export function createPresentationGenerationSkill(
               projectId: value.project_id,
               requestId: value.request_id,
               status: 'exported',
-              source: result.source,
+              source: value.source ?? 'compiled',
               path,
               slideCount: result.slideCount,
               renderer: 'libreoffice',

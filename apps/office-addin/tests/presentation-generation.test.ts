@@ -46,6 +46,7 @@ function fixture() {
   const request = vi.fn(async () => response())
   const pdfRequest = vi.fn(async () => response())
   const pdfAvailable = vi.fn(() => true)
+  const productionPdfAvailable = vi.fn(() => true)
   const documentId = vi.fn(async () => 'document-1')
   const rememberProject = vi.fn(async () => undefined)
   const available = vi.fn(() => true)
@@ -54,12 +55,23 @@ function fixture() {
     request,
     pdfRequest,
     pdfAvailable,
+    productionPdfAvailable,
     documentId,
     rememberProject,
     lastProject: () => deck.id,
     available,
   })
-  return { skill, vfs, request, pdfRequest, pdfAvailable, documentId, rememberProject, available }
+  return {
+    skill,
+    vfs,
+    request,
+    pdfRequest,
+    pdfAvailable,
+    productionPdfAvailable,
+    documentId,
+    rememberProject,
+    available,
+  }
 }
 const compileCall = () => ({
   id: 'call-1',
@@ -135,9 +147,68 @@ describe('PowerPoint presentation generation', () => {
     expect(f.vfs.list('/home/user')).toContain('/home/user/generated/research-1.pdf')
   })
 
+  it('accepts the legacy compiled PDF receipt without a source field', async () => {
+    const f = fixture()
+    f.pdfRequest.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'exported',
+          projectId: deck.id,
+          requestId: 'request-1',
+          slideCount: 1,
+          pdfBase64: btoa('%PDF-1.4\n%%EOF\n'),
+        }),
+      ),
+    )
+    const result = await f.skill.executeTool({
+      id: 'legacy-pdf-call',
+      name: 'export_presentation_pdf',
+      input: { project_id: deck.id, request_id: 'request-1' },
+    })
+    expect(result.isError).not.toBe(true)
+    expect(result.output).toContain('"source":"compiled"')
+  })
+
+  it('rejects production PDF when only the legacy compiled PDF capability is available', async () => {
+    const f = fixture()
+    f.productionPdfAvailable.mockReturnValue(false)
+    const result = await f.skill.executeTool({
+      id: 'production-pdf-call',
+      name: 'export_presentation_pdf',
+      input: { project_id: deck.id, request_id: 'request-1', source: 'production' },
+    })
+    expect(result).toMatchObject({ isError: true, output: 'presentation_pdf_unavailable' })
+    expect(f.pdfRequest).not.toHaveBeenCalled()
+  })
+
+  it('exports production PDF when only the production PDF capability is available', async () => {
+    const f = fixture()
+    f.pdfAvailable.mockReturnValue(false)
+    f.pdfRequest.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: 'exported',
+          source: 'production',
+          projectId: deck.id,
+          requestId: 'request-1',
+          slideCount: 1,
+          pdfBase64: btoa('%PDF-1.4\n%%EOF\n'),
+        }),
+      ),
+    )
+    expect(f.skill.tools.map((tool) => tool.name)).toContain('export_presentation_pdf')
+    const result = await f.skill.executeTool({
+      id: 'production-only-pdf-call',
+      name: 'export_presentation_pdf',
+      input: { project_id: deck.id, request_id: 'request-1', source: 'production' },
+    })
+    expect(result.isError).not.toBe(true)
+  })
+
   it('hides PDF export on an older PC without its negotiated capability', async () => {
     const f = fixture()
     f.pdfAvailable.mockReturnValue(false)
+    f.productionPdfAvailable.mockReturnValue(false)
     expect(f.skill.tools.map((tool) => tool.name)).not.toContain('export_presentation_pdf')
     expect(
       await f.skill.executeTool({

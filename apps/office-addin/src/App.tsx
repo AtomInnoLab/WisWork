@@ -1434,6 +1434,8 @@ function ConfiguredApp() {
               'presentation-remote-images.v1',
               'presentation-asset-rights.v1',
               'presentation-animation-frame.v1',
+              'presentation-pdf.v1',
+              'presentation-production-pdf.v1',
             ],
           }),
     [transportMode],
@@ -1561,8 +1563,21 @@ function ConfiguredApp() {
                           snapshot.capabilities?.includes('presentation-pdf.v1') === true
                         )
                       },
+                      productionPdfAvailable: () => {
+                        const snapshot = bridge.snapshot()
+                        return (
+                          snapshot.status === 'connected' &&
+                          snapshot.capabilities?.includes('presentation-production-pdf.v1') === true
+                        )
+                      },
                       pdfRequest: (body: unknown, signal?: AbortSignal) =>
-                        bridge.capabilityFetch('presentation-pdf.v1', body, signal),
+                        bridge.capabilityFetch(
+                          (body as { source?: string })?.source === 'production'
+                            ? 'presentation-production-pdf.v1'
+                            : 'presentation-pdf.v1',
+                          body,
+                          signal,
+                        ),
                       assetsAvailable: () => {
                         const snapshot = bridge.snapshot()
                         return (

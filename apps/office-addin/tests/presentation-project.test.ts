@@ -22,6 +22,7 @@ function fixture() {
   const documentId = vi.fn(async () => 'document-1')
   const available = vi.fn(() => true)
   const pdfAvailable = vi.fn(() => true)
+  const productionPdfAvailable = vi.fn(() => true)
   const lastProject = vi.fn((): string | undefined => 'project-1')
   let saved: { projectId: string; documentId: string; requestId: string } | undefined
   const selectedProduction = vi.fn((projectId: string, boundDocumentId: string) =>
@@ -41,6 +42,7 @@ function fixture() {
       documentId,
       available,
       pdfAvailable,
+      productionPdfAvailable,
       lastProject,
       selectedProduction,
       rememberSelectedProduction,
@@ -54,6 +56,7 @@ function fixture() {
     documentId,
     available,
     pdfAvailable,
+    productionPdfAvailable,
     lastProject,
     selectedProduction,
     rememberSelectedProduction,
@@ -94,7 +97,7 @@ describe('presentation project controls', () => {
     )
     expect(f.controller.snapshot().deliveryNotice).toContain('PDF 预览已保存')
     f.executeTool.mockClear()
-    f.pdfAvailable.mockReturnValue(false)
+    f.productionPdfAvailable.mockReturnValue(false)
     await f.controller.exportProductionPdf?.()
     expect(f.executeTool).not.toHaveBeenCalled()
   })

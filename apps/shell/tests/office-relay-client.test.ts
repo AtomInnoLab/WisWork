@@ -811,6 +811,7 @@ describe('Office relay PC client', () => {
     'presentation-asset-rights.v1',
     'presentation-animation-frame.v1',
     'presentation-pdf.v1',
+    'presentation-production-pdf.v1',
   ])(
     'negotiates presentation only when provided and streams recoverable generation requests',
     async (capabilityName) => {
@@ -843,6 +844,7 @@ describe('Office relay PC client', () => {
         'presentation-asset-rights.v1',
         'presentation-animation-frame.v1',
         'presentation-pdf.v1',
+        'presentation-production-pdf.v1',
       ]
       expect(JSON.parse(socket.sent[0]!)).toEqual({
         version: 2,
@@ -871,13 +873,24 @@ describe('Office relay PC client', () => {
         capabilities,
       })
       for (const request_id of ['request_failure', 'request_success']) {
+        const body =
+          capabilityName === 'presentation-pdf.v1'
+            ? { operation: 'export_pdf', projectId: 'deck', requestId: 'first' }
+            : capabilityName === 'presentation-production-pdf.v1'
+              ? {
+                  operation: 'export_pdf',
+                  source: 'production',
+                  projectId: 'deck',
+                  requestId: 'first',
+                }
+              : { instruction: 'Create a deck' }
         socket.message({
           version: 2,
           type: 'relay.request',
           session_id: 'session_12345678',
           request_id,
           capability_name: capabilityName,
-          body: { instruction: 'Create a deck' },
+          body,
         })
         await vi.waitFor(() =>
           expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual(
@@ -890,7 +903,16 @@ describe('Office relay PC client', () => {
         expect(client.status()).toBe('paired')
       }
       expect(presentationProxy).toHaveBeenCalledWith(
-        { instruction: 'Create a deck' },
+        capabilityName === 'presentation-pdf.v1'
+          ? { operation: 'export_pdf', projectId: 'deck', requestId: 'first' }
+          : capabilityName === 'presentation-production-pdf.v1'
+            ? {
+                operation: 'export_pdf',
+                source: 'production',
+                projectId: 'deck',
+                requestId: 'first',
+              }
+            : { instruction: 'Create a deck' },
         expect.any(AbortSignal),
       )
       expect(proxy).not.toHaveBeenCalled()
@@ -909,6 +931,17 @@ describe('Office relay PC client', () => {
           request_id: 'wrong_remote_capability',
           capability_name: capabilityName,
           body: { operation: 'attachment_import_url', url: 'https://example.com/image.png' },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      if (capabilityName === 'presentation.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_pdf_capability',
+          capability_name: capabilityName,
+          body: { operation: 'export_pdf', projectId: 'deck', requestId: 'first' },
         })
         await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
       }
@@ -945,7 +978,23 @@ describe('Office relay PC client', () => {
           type: 'relay.request',
           session_id: 'session_12345678',
           request_id: 'wrong_pdf_capability',
-          capability_name: 'presentation.v1',
+          capability_name: 'presentation-pdf.v1',
+          body: {
+            operation: 'export_pdf',
+            source: 'production',
+            projectId: 'deck',
+            requestId: 'first',
+          },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      if (capabilityName === 'presentation-production-pdf.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_production_pdf_capability',
+          capability_name: 'presentation-production-pdf.v1',
           body: { operation: 'export_pdf', projectId: 'deck', requestId: 'first' },
         })
         await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
