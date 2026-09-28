@@ -10,6 +10,8 @@ function setup() {
       sequence: 1,
       legacy: false,
       kind: 'existing',
+      agentRunId: 'run-1',
+      toolCallId: 'call-1',
       record: {
         version: 1,
         changeId: 'change',
@@ -60,6 +62,7 @@ it('shows offline existing history and dispatches by exact change ID without pro
   expect(s.controller.snapshot().entries).toEqual([
     expect.objectContaining({
       id: 'existing:change',
+      origin: { agentRunId: 'run-1', toolCallId: 'call-1' },
       source: 'existing',
       kind: 'text',
       pageId: 'slide',

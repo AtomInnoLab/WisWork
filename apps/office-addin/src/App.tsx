@@ -248,6 +248,7 @@ export interface OfficeWorkspaceUi {
   readonly importProgress?: PresentationImportProgressController
   readonly qa?: PresentationQaController
   readonly changes?: PresentationChangesController
+  readonly interruptedChange?: { agentRunId: string; toolCallId: string }
   readonly durableAttachmentsAvailable?: () => boolean
   readonly durableImagesAvailable?: () => boolean
   readonly remoteImagesAvailable?: () => boolean
@@ -305,12 +306,14 @@ export function createOfficeWorkspaceUi(
   diagnostics?: Pick<OfficeDiagnostics, 'exportJson'>,
   clipboard: { writeText(value: string): Promise<void> } | undefined = globalThis.navigator
     ?.clipboard,
+  interruptedChange?: { agentRunId: string; toolCallId: string },
 ): OfficeWorkspaceUi {
   return Object.freeze({
     project: runtime.presentation,
     importProgress: runtime.importProgress,
     qa: runtime.qa,
     changes: runtime.changes,
+    interruptedChange,
     durableAttachmentsAvailable: runtime.durableAttachmentsAvailable,
     durableImagesAvailable: runtime.durableImagesAvailable,
     remoteImagesAvailable: runtime.remoteImagesAvailable,
@@ -1258,6 +1261,7 @@ export function AgentWorkspace(props: {
         {ui.changes && (
           <PresentationChangesCard
             controller={ui.changes}
+            interruptedChange={ui.interruptedChange}
             disabled={
               uploadPending ||
               state.busy ||
@@ -1508,6 +1512,7 @@ function ConfiguredApp() {
                     })(),
                   )
                 : undefined
+            const interruptedRun = runRecovery?.scrubFailed ? undefined : runCheckpoint?.recovery()
             const environment = officeDiagnosticEnvironment(activeHost)
             const diagnostics = createOfficeDiagnostics({
               host: activeHost,
@@ -1614,7 +1619,7 @@ function ConfiguredApp() {
                     runCheckpoint: {
                       interrupted: runRecovery!.interrupted,
                       scrubFailed: runRecovery!.scrubFailed,
-                      recovery: runRecovery!.scrubFailed ? undefined : runCheckpoint!.recovery(),
+                      recovery: interruptedRun,
                       validateDocument: async () =>
                         (await presentationBinding.documentId()) === boundPresentationDocumentId,
                       begin: runCheckpoint!.begin,
@@ -1624,7 +1629,18 @@ function ConfiguredApp() {
                   }
                 : {}),
             })
-            created = { runtime, session, ui: createOfficeWorkspaceUi(runtime, diagnostics) }
+            created = {
+              runtime,
+              session,
+              ui: createOfficeWorkspaceUi(
+                runtime,
+                diagnostics,
+                undefined,
+                interruptedRun?.changeReceipt && interruptedRun.toolCallId
+                  ? { agentRunId: interruptedRun.runId, toolCallId: interruptedRun.toolCallId }
+                  : undefined,
+              ),
+            }
             setWorkspace(created)
           }
           setStatus(

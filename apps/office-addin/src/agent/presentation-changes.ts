@@ -35,6 +35,7 @@ import {
 export type PresentationChangeAction =
   'inspect' | 'undo' | 'resume' | 'commit' | 'discard' | 'release'
 export interface PresentationChangeEntry {
+  origin?: { agentRunId: string; toolCallId: string }
   source?: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart'
   review?: PresentationExistingChange['review']
   reviews?: PresentationExistingBatch['reviews']
@@ -440,6 +441,9 @@ export function createPresentationChangesController(
             id: saved.id,
             sequence: saved.sequence,
             legacy: saved.legacy,
+            ...(saved.agentRunId && saved.toolCallId
+              ? { origin: { agentRunId: saved.agentRunId, toolCallId: saved.toolCallId } }
+              : {}),
             changeSet: presentationChangeSetSummary(saved),
           }
           row.historical = true

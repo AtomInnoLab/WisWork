@@ -73,6 +73,63 @@ it('dispatches actual actions, escapes text and disables busy controls', async (
     await act(async () => root.unmount())
   }
 })
+it('brings the interrupted call savepoint forward and exposes its host inspection action', async () => {
+  const refresh = vi.fn(async () => undefined)
+  const run = vi.fn(async () => undefined)
+  const controller: PresentationChangesController = {
+    snapshot: () => ({
+      phase: 'idle',
+      entries: [
+        {
+          id: 'other',
+          kind: 'text',
+          pageId: 'other',
+          state: 'applied',
+          before: '',
+          after: '',
+          actions: ['inspect'],
+        },
+        {
+          id: 'pending',
+          kind: 'text',
+          pageId: 'target',
+          state: 'pending',
+          before: '',
+          after: '',
+          actions: ['inspect', 'resume'],
+          origin: { agentRunId: 'run-1', toolCallId: 'call-1' },
+        },
+      ],
+    }),
+    subscribe: () => () => {},
+    refresh,
+    run,
+    clear: vi.fn(),
+  }
+  const container = document.createElement('div')
+  const root = createRoot(container)
+  try {
+    await act(async () =>
+      root.render(
+        React.createElement(PresentationChangesCard, {
+          controller,
+          interruptedChange: { agentRunId: 'run-1', toolCallId: 'call-1' },
+        }),
+      ),
+    )
+    expect(refresh).toHaveBeenCalledOnce()
+    const rows = Array.from(container.querySelectorAll('ol > li'))
+    expect(rows[0]?.textContent).toContain('上次中断的修改')
+    expect(rows[0]?.textContent).toContain('target')
+    expect(container.textContent).toContain('请逐项点击“检查”')
+    await act(async () =>
+      rows[0]?.querySelector<HTMLButtonElement>('button[aria-label="检查 target"]')?.click(),
+    )
+    expect(run).toHaveBeenCalledWith('pending', 'inspect')
+  } finally {
+    await act(async () => root.unmount())
+  }
+})
 it('offers actual undo/commit/discard buttons and reacts to controller updates', async () => {
   let listener = () => {},
     acting = false
@@ -175,19 +232,57 @@ it('shows persisted batch page reviews as historical evidence', async () => {
 it('separates captured, pending, passed and failed existing-page evidence', async () => {
   const capturedAt = '2026-09-24T00:00:00.000Z'
   const controller: PresentationChangesController = {
-    snapshot: () => ({ phase: 'idle', entries: [
-      { id: 'one', source: 'existing_page', kind: 'page', pageId: 'old', state: 'staged', before: 'old', after: 'new', actions: [],
-        visualPageIds: ['old', 'new'], visualCaptures: [{ hostSlideId: 'old', screenshotDigest: 'a'.repeat(64), capturedAt }] },
-      { id: 'two', source: 'existing_image', kind: 'image', pageId: 'slide', state: 'complete', before: 'old', after: 'new', actions: [],
-        visualPageIds: ['slide'], visualReviews: [{ hostSlideId: 'slide', screenshotDigest: 'b'.repeat(64), capturedAt, reviewedAt: capturedAt, status: 'fail', notes: 'crop' }] },
-    ] }),
-    subscribe: () => () => {}, run: vi.fn(), refresh: vi.fn(), clear: vi.fn(),
+    snapshot: () => ({
+      phase: 'idle',
+      entries: [
+        {
+          id: 'one',
+          source: 'existing_page',
+          kind: 'page',
+          pageId: 'old',
+          state: 'staged',
+          before: 'old',
+          after: 'new',
+          actions: [],
+          visualPageIds: ['old', 'new'],
+          visualCaptures: [{ hostSlideId: 'old', screenshotDigest: 'a'.repeat(64), capturedAt }],
+        },
+        {
+          id: 'two',
+          source: 'existing_image',
+          kind: 'image',
+          pageId: 'slide',
+          state: 'complete',
+          before: 'old',
+          after: 'new',
+          actions: [],
+          visualPageIds: ['slide'],
+          visualReviews: [
+            {
+              hostSlideId: 'slide',
+              screenshotDigest: 'b'.repeat(64),
+              capturedAt,
+              reviewedAt: capturedAt,
+              status: 'fail',
+              notes: 'crop',
+            },
+          ],
+        },
+      ],
+    }),
+    subscribe: () => () => {},
+    run: vi.fn(),
+    refresh: vi.fn(),
+    clear: vi.fn(),
   }
-  const container = document.createElement('div'), root = createRoot(container)
+  const container = document.createElement('div'),
+    root = createRoot(container)
   try {
     await act(async () => root.render(React.createElement(PresentationChangesCard, { controller })))
     expect(container.textContent).toContain('old：已采集 · 待判断')
     expect(container.textContent).toContain('new：待采集')
     expect(container.textContent).toContain('slide：未通过')
-  } finally { await act(async () => root.unmount()) }
+  } finally {
+    await act(async () => root.unmount())
+  }
 })

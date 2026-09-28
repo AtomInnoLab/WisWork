@@ -14,9 +14,11 @@ const labels: Record<PresentationChangeAction, string> = {
 export function PresentationChangesCard({
   controller,
   disabled = false,
+  interruptedChange,
 }: {
   controller: PresentationChangesController
   disabled?: boolean
+  interruptedChange?: { agentRunId: string; toolCallId: string }
 }) {
   const [snapshot, setSnapshot] = useState(() => controller.snapshot())
   useEffect(() => {
@@ -25,7 +27,22 @@ export function PresentationChangesCard({
     update()
     return unsubscribe
   }, [controller])
+  useEffect(() => {
+    if (interruptedChange) void controller.refresh()
+  }, [controller, interruptedChange])
   const busy = disabled || snapshot.phase !== 'idle'
+  const matchesInterrupted = (entry: (typeof snapshot.entries)[number]) =>
+    Boolean(
+      interruptedChange &&
+      entry.origin?.agentRunId === interruptedChange.agentRunId &&
+      entry.origin?.toolCallId === interruptedChange.toolCallId,
+    )
+  const matchingCount = interruptedChange ? snapshot.entries.filter(matchesInterrupted).length : 0
+  const entries = interruptedChange
+    ? [...snapshot.entries].sort(
+        (a, b) => Number(matchesInterrupted(b)) - Number(matchesInterrupted(a)),
+      )
+    : snapshot.entries
   return (
     <section className="presentation-project" aria-label="修改保存点工作台">
       <strong>修改差异与撤销</strong>
@@ -42,6 +59,13 @@ export function PresentationChangesCard({
       <button type="button" disabled={busy} onClick={() => void controller.refresh()}>
         刷新保存点
       </button>
+      {interruptedChange && snapshot.phase === 'idle' && (
+        <p role="status">
+          {matchingCount
+            ? `上次中断调用关联 ${matchingCount} 条保存点，已排在前面。请逐项点击“检查”核对当前宿主对象。`
+            : '尚未在当前工作台找到上次中断调用的保存点；请恢复对应任务后刷新。'}
+        </p>
+      )}
       {snapshot.phase === 'loading' && <p role="status">正在读取保存点…</p>}
       {snapshot.phase === 'acting' && <p role="status">正在检查并准备操作…</p>}
       {snapshot.notice && <p role="status">{snapshot.notice}</p>}
@@ -57,8 +81,9 @@ export function PresentationChangesCard({
         <p>当前文档或任务暂无可用保存点。</p>
       )}
       <ol>
-        {snapshot.entries.map((entry) => (
+        {entries.map((entry) => (
           <li key={entry.id}>
+            {matchesInterrupted(entry) && <p>上次中断的修改 · 待核对宿主现状</p>}
             <strong>
               {
                 {
