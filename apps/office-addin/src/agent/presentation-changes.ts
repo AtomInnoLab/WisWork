@@ -185,6 +185,32 @@ function inspectionNotice(output: string): string {
   try {
     if (output.length <= 256 * 1024) {
       const value = JSON.parse(output)
+      if (
+        value?.currentHostVerified === true &&
+        (value?.state === 'applying' || value?.state === 'undoing') &&
+        Array.isArray(value?.values) &&
+        value.values.length >= 2 &&
+        value.values.length <= 8 &&
+        value.values.every((item: unknown) =>
+          ['before', 'after', 'conflict'].includes(item as string),
+        ) &&
+        Number.isSafeInteger(value?.cursor) &&
+        value.cursor >= 0 &&
+        value.cursor <= value.values.length
+      ) {
+        const progress = `已持久记录 ${value.cursor}/${value.values.length} 步。`
+        if (value.values.includes('conflict'))
+          return `${progress} 目标现状与保存点冲突，需人工检查；未自动重放。`
+        if (value.state === 'applying' && value.values[value.cursor] === 'after')
+          return `${progress} 下一步目标已是修改后值，可能已写入但尚未持久记录；可选择继续或撤销，仍需确认提案。`
+        if (
+          value.state === 'undoing' &&
+          value.cursor > 0 &&
+          value.values[value.cursor - 1] === 'before'
+        )
+          return `${progress} 上一步目标已恢复原值，可能尚未持久记录；可继续撤销，仍需确认提案。`
+        return `${progress} 已核对目标现状；继续或撤销仍需确认提案。`
+      }
       const status = value?.inspection?.status ?? value?.status
       if (typeof status === 'string' && Object.hasOwn(messages, status)) {
         const receipts =
@@ -207,6 +233,22 @@ function inspectionNotice(output: string): string {
     /* Tool output is untrusted; keep unknown results out of the UI. */
   }
   return '检查已完成。操作资格仍以工具实时检查为准。'
+}
+function workbenchError(error: unknown): string {
+  const code = error instanceof Error ? error.message : ''
+  if (code === 'presentation_existing_batch_backup_missing')
+    return '原页备份不可用。请恢复 PC 连接并检查备份后重试；本次操作已停止。'
+  if (
+    [
+      'presentation_existing_batch_conflict',
+      'presentation_existing_preserved_changed',
+      'presentation_existing_target_changed',
+      'presentation_baseline_changed',
+    ].includes(code)
+  )
+    return '当前页面与保存点不一致。已停止后续写入；请刷新并检查已完成步骤及未修改区域。'
+  if (code === 'proposal_stale') return '页面在确认前发生变化。请刷新保存点并重新发起操作。'
+  return '操作未完成或保存点已变化，请刷新并检查；未自动重试。'
 }
 export function createPresentationChangesController(
   options: PresentationChangesOptions,
@@ -804,15 +846,15 @@ export function createPresentationChangesController(
           )
             throw new Error('stale')
         }
-        if (result.isError) throw new Error('tool')
+        if (result.isError) throw new Error(result.output.length <= 128 ? result.output : 'tool')
         notice =
           action === 'inspect'
             ? inspectionNotice(result.output)
             : action === 'release'
               ? '备份释放提案已创建，确认后执行。'
               : '操作请求已处理；如有待确认提案，请确认后执行。变更后需重新采集页面 QA。'
-      } catch {
-        error = '操作未完成或保存点已变化，请刷新并检查；未自动重试。'
+      } catch (cause) {
+        error = workbenchError(cause)
       } finally {
         if (ticket === generation) {
           abort = undefined

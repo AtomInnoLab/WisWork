@@ -75,6 +75,13 @@ it('reads only current records and clones snapshots; routes undo through the too
   )
   expect(JSON.stringify(controller.snapshot())).not.toContain('unsafe')
 })
+it('does not expose an unknown tool error in the changes workbench', async () => {
+  const { controller, executeTool } = await setup()
+  executeTool.mockRejectedValueOnce(new Error('PRIVATE-DOCUMENT-CONTENT'))
+  await controller.run(controller.snapshot().entries[0]!.id, 'undo')
+  expect(controller.snapshot().error).toContain('操作未完成')
+  expect(JSON.stringify(controller.snapshot())).not.toContain('PRIVATE-DOCUMENT-CONTENT')
+})
 it('links a single existing-change page backup and offers release only after undo', async () => {
   let record: PresentationExistingChange = {
     version: 1,
@@ -302,6 +309,19 @@ it('counts batch page savepoints as linked PC backups', async () => {
     operationCount: 2,
     actions: ['inspect', 'resume', 'undo'],
   })
+  executeTool.mockResolvedValueOnce({
+    output: JSON.stringify({
+      state: 'applying',
+      cursor: 1,
+      values: ['after', 'after'],
+      currentHostVerified: true,
+    }),
+    mutated: false,
+    summary: 'inspected',
+  })
+  await controller.run('existing_batch:batch', 'inspect')
+  expect(controller.snapshot().notice).toContain('下一步目标已是修改后值，可能已写入但尚未持久记录')
+  executeTool.mockRejectedValueOnce(new Error('presentation_existing_batch_backup_missing'))
   await controller.run('existing_batch:batch', 'undo')
   expect(executeTool).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -310,6 +330,15 @@ it('counts batch page savepoints as linked PC backups', async () => {
     }),
     expect.any(AbortSignal),
   )
+  expect(controller.snapshot().error).toContain('原页备份不可用')
+  executeTool.mockResolvedValueOnce(
+    Object.assign(
+      { output: 'presentation_existing_batch_conflict', mutated: false, summary: 'failed' },
+      { isError: true },
+    ),
+  )
+  await controller.run('existing_batch:batch', 'resume')
+  expect(controller.snapshot().error).toContain('当前页面与保存点不一致')
 })
 it('offers one chart backup release after cancellation and accepts the receipt update', async () => {
   let record: PresentationExistingChartChange = {
