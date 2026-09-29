@@ -34,7 +34,7 @@ export interface PresentationImportCheckpoint {
   artifactDigest: string
   sourceSlideIds: string[]
   baselineSlideIds: string[]
-  completed: { sourceSlideId: string; slideId: string; completedAt?: string }[]
+  completed: { sourceSlideId: string; slideId: string; completedAt?: string; startedAt?: string }[]
   inFlight?: { sourceSlideId: string; startedAt?: string }
 }
 export interface PresentationDeliveryOptions {

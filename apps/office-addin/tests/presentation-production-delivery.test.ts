@@ -428,6 +428,7 @@ it('accepts legacy undated import prefixes and validates later completion time o
   await f.confirm()
   const saved = structuredClone(f.receipts.get(presentationImportKey(f.artifact))!)
   delete saved.checkpoint!.completed[0]!.completedAt
+  delete saved.checkpoint!.completed[0]!.startedAt
   expect(validPresentationImportRecord(saved)).toBe(true)
   const reordered = structuredClone(saved)
   reordered.checkpoint!.completed[2]!.completedAt = '2020-01-01T00:00:00.000Z'

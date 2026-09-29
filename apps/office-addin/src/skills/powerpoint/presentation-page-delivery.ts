@@ -102,7 +102,9 @@ export function validPresentationImportRecord(value: unknown): value is Presenta
     if (
       !page ||
       typeof page !== 'object' ||
-      Object.keys(page).some((k) => !['sourceSlideId', 'slideId', 'completedAt'].includes(k)) ||
+      Object.keys(page).some(
+        (k) => !['sourceSlideId', 'slideId', 'completedAt', 'startedAt'].includes(k),
+      ) ||
       page.sourceSlideId !== c.sourceSlideIds[index] ||
       typeof page.slideId !== 'string' ||
       !page.slideId ||
@@ -110,6 +112,13 @@ export function validPresentationImportRecord(value: unknown): value is Presenta
       (index > 0 &&
         Boolean(c.completed[index - 1]?.completedAt) &&
         page.completedAt === undefined) ||
+      (Object.hasOwn(page, 'startedAt') &&
+        (!validTimestamp(page.startedAt) ||
+          !validTimestamp(page.completedAt) ||
+          page.startedAt > page.completedAt ||
+          (index > 0 &&
+            c.completed[index - 1]?.completedAt &&
+            page.startedAt < c.completed[index - 1]!.completedAt!))) ||
       (page.completedAt !== undefined &&
         (!validTimestamp(page.completedAt) ||
           (index > 0 &&
@@ -283,6 +292,9 @@ export function summarizePresentationImport(
         : {}),
       ...(index < completed && checkpoint?.completed[index]?.completedAt
         ? { completedAt: checkpoint.completed[index].completedAt }
+        : {}),
+      ...(index < completed && checkpoint?.completed[index]?.startedAt
+        ? { startedAt: checkpoint.completed[index].startedAt }
         : {}),
       ...(uncertain && index === completed && checkpoint?.inFlight?.startedAt
         ? { startedAt: checkpoint.inFlight.startedAt }
@@ -462,8 +474,15 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
             {
               sourceSlideId: checkpoint.inFlight.sourceSlideId,
               slideId: candidate,
+              ...(checkpoint.inFlight.startedAt
+                ? { startedAt: checkpoint.inFlight.startedAt }
+                : {}),
               completedAt: new Date(
-                Math.max(Date.now(), Date.parse(checkpoint.inFlight.startedAt ?? '') || 0),
+                Math.max(
+                  Date.now(),
+                  Date.parse(checkpoint.inFlight.startedAt ?? '') || 0,
+                  Date.parse(checkpoint.completed.at(-1)?.completedAt ?? '') || 0,
+                ),
               ).toISOString(),
             },
           ]
@@ -584,18 +603,13 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
               if (!same(actual.slideIds, slideIds) || actual.fingerprint !== baseline.fingerprint)
                 throw new Error('proposal_stale')
               const sourceSlideId = checkpoint.sourceSlideIds[checkpoint.completed.length]!
-              await save({
-                ...checkpoint,
-                inFlight: {
-                  sourceSlideId,
-                  startedAt: new Date(
-                    Math.max(
-                      Date.now(),
-                      Date.parse(checkpoint.completed.at(-1)?.completedAt ?? '') || 0,
-                    ),
-                  ).toISOString(),
-                },
-              })
+              const startedAt = new Date(
+                Math.max(
+                  Date.now(),
+                  Date.parse(checkpoint.completed.at(-1)?.completedAt ?? '') || 0,
+                ),
+              ).toISOString()
+              await save({ ...checkpoint, inFlight: { sourceSlideId, startedAt } })
               let receipt
               try {
                 await current(s)
@@ -636,9 +650,11 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
                   {
                     sourceSlideId,
                     slideId: receipt.slideIds[0]!,
+                    startedAt,
                     completedAt: new Date(
                       Math.max(
                         Date.now(),
+                        Date.parse(startedAt),
                         Date.parse(checkpoint.completed.at(-1)?.completedAt ?? '') || 0,
                       ),
                     ).toISOString(),

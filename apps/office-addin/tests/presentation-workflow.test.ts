@@ -559,7 +559,7 @@ it('refuses stale import and QA records and requests recheck after a page edit',
   }
   expect(
     presentationWorkflowSummary(selected, timedUncertain, qa)?.timeline.find(
-      (item) => item.id === `import-uncertain-${uncertain.pages[0]!.id}`,
+      (item) => item.scope === 'host_page_import' && item.type === 'host.import.uncertain',
     ),
   ).toMatchObject({
     at: '2026-09-24T00:02:00.000Z',
@@ -666,18 +666,21 @@ it('replays page import and historical QA times only for the current request', (
     ...imported,
     pages: imported.pages.map((page, index) => ({
       ...page,
+      slideId: `${256 + index}#`,
       completedAt: `2026-09-24T00:0${index}:00.000Z`,
     })),
   }
   const summary = presentationWorkflowSummary({ ...project, production }, timed, qa)!
-  expect(summary.timeline.filter((item) => item.id.startsWith('import-'))).toHaveLength(
+  expect(summary.timeline.filter((item) => item.scope === 'host_page_import')).toHaveLength(
     imported.pages.length,
   )
   expect(
-    summary.timeline.find((item) => item.id === `import-${imported.pages[0]!.id}`),
+    summary.timeline.find(
+      (item) => item.scope === 'host_page_import' && item.at === timed.pages[0]!.completedAt,
+    ),
   ).toMatchObject({
     at: timed.pages[0]!.completedAt,
-    text: expect.stringContaining('尚未完成视觉验收'),
+    text: expect.stringContaining('不代表视觉'),
   })
   expect(
     summary.timeline.find((item) => item.id === `review-${qa.pages[0]!.pageId}`)?.text,
@@ -687,7 +690,9 @@ it('replays page import and historical QA times only for the current request', (
       { ...project, production },
       { ...timed, requestId: 'old' },
       { ...qa, requestId: 'old' },
-    )?.timeline.some((event) => /^(import-|capture-|review-)/.test(event.id)),
+    )?.timeline.some(
+      (event) => event.scope === 'host_page_import' || /^(capture-|review-)/.test(event.id),
+    ),
   ).toBe(false)
 })
 

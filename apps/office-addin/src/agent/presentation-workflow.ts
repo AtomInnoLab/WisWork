@@ -141,6 +141,9 @@ export interface PresentationWorkflowSummary {
       | 'style.approved'
       | 'delivery.bundle.started'
       | 'delivery.bundle.ready'
+      | 'host.import.started'
+      | 'host.import.recorded'
+      | 'host.import.uncertain'
     scope?:
       | 'production_asset_resolution'
       | 'source_excerpt_audit'
@@ -149,8 +152,14 @@ export interface PresentationWorkflowSummary {
       | 'saved_style'
       | 'explicit_user_decision'
       | 'current_document_delivery_bundle'
+      | 'host_page_import'
     recordsLabel?: string
-    records?: { id: string; text: string; at: string }[]
+    records?: {
+      id: string
+      text: string
+      at: string
+      type?: 'host.import.started' | 'host.import.recorded'
+    }[]
   }[]
   attention: { id: string; text: string }[]
   pages: {
@@ -787,20 +796,55 @@ export function presentationWorkflowSummary(
       id: 'import',
       text: `导入检查点：${imported!.completed}/${imported!.total} 页${imported!.status === 'uncertain' ? '，有写入待核查' : ''}`,
     })
-    for (const page of imported!.pages)
-      if (page.state === 'complete' && page.completedAt)
-        timeline.push({
-          id: `import-${page.id}`,
-          text: `已记录导入页面 ${page.title}；尚未完成视觉验收`,
-          at: page.completedAt,
-        })
-    for (const page of imported!.pages)
-      if (page.state === 'uncertain' && page.startedAt)
-        timeline.push({
-          id: `import-uncertain-${page.id}`,
-          text: `页面 ${page.title} 的写入结果待核查；检查宿主页后再继续`,
+    const timestamp = (value: unknown): value is string =>
+      typeof value === 'string' &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
+      Number.isFinite(Date.parse(value)) &&
+      new Date(value).toISOString() === value
+    const hostId = (value: unknown): value is string =>
+      typeof value === 'string' && value.length > 0 && value.length <= 256
+    for (const page of imported!.pages) {
+      if (production!.projectId !== project.projectId) continue
+      const recorded = page.state === 'complete'
+      if (
+        (page.state !== 'complete' && page.state !== 'uncertain') ||
+        (page.slideId !== undefined && !hostId(page.slideId)) ||
+        (page.startedAt !== undefined && !timestamp(page.startedAt)) ||
+        (recorded &&
+          (!timestamp(page.completedAt) ||
+            !hostId(page.slideId) ||
+            (page.startedAt !== undefined && page.startedAt > page.completedAt))) ||
+        (!recorded && (page.completedAt !== undefined || !timestamp(page.startedAt)))
+      )
+        continue
+      const id = `host-import:${JSON.stringify([project.projectId, production!.requestId, page.id, page.slideId ?? null, ...(recorded ? [] : [page.startedAt])])}`
+      const records: NonNullable<PresentationWorkflowSummary['timeline'][number]['records']> = []
+      if (page.startedAt)
+        records.push({
+          id: `${id}:started`,
+          type: 'host.import.started',
           at: page.startedAt,
+          text: `页面 ${page.title} 的原宿主写入开始记录；无结束回执不能证明仍在执行。`,
         })
+      if (recorded)
+        records.push({
+          id: `${id}:recorded`,
+          type: 'host.import.recorded',
+          at: page.completedAt!,
+          text: `页面 ${page.title} 的导入结果已记录或核对认领；此为记录完成时间，不代表原宿主写入完成时刻或 QA 通过。`,
+        })
+      timeline.push({
+        id,
+        scope: 'host_page_import',
+        type: recorded ? 'host.import.recorded' : 'host.import.uncertain',
+        text: recorded
+          ? `已记录导入页面 ${page.title} · 宿主页 ${page.slideId}；不代表视觉或 QA 验收通过`
+          : `页面 ${page.title} 的写入结果待核查；检查宿主页后再继续，不自动重放写入`,
+        at: recorded ? page.completedAt : page.startedAt,
+        recordsLabel: '宿主页导入记录',
+        records,
+      })
+    }
   }
   if (qaMatches) {
     timeline.push({

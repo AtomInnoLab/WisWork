@@ -1,3 +1,8 @@
+import JSZip from 'jszip'
+import {
+  createPresentationProductionDeliverySkill,
+  validPresentationImportRecord,
+} from '../src/skills/powerpoint/presentation-page-delivery'
 import { expect, it, vi } from 'vitest'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import {
@@ -79,9 +84,15 @@ it('checkpoints each verified page and never reimports a completed deck', async 
   })
   const completed = f.receipts.get('project/request')!.checkpoint!.completed
   expect(completed.map((page) => page.completedAt)).toEqual([
-    expect.any(String), expect.any(String), expect.any(String),
+    expect.any(String),
+    expect.any(String),
+    expect.any(String),
   ])
-  expect(completed.every((page, index) => index === 0 || page.completedAt! >= completed[index - 1]!.completedAt!)).toBe(true)
+  expect(
+    completed.every(
+      (page, index) => index === 0 || page.completedAt! >= completed[index - 1]!.completedAt!,
+    ),
+  ).toBe(true)
   expect(await f.skill.executeTool(f.call)).toMatchObject({
     output: expect.stringContaining('already_imported'),
   })
@@ -116,10 +127,18 @@ it('preserves uncertainty across restart and refuses changed bytes or source IDs
   f.adapter.verify.mockResolvedValue(false)
   await expect(f.confirm()).rejects.toThrow('office_state_uncertain')
   expect(f.receipts.get('project/request')?.checkpoint?.inFlight).toMatchObject({
-    sourceSlideId: '256#', startedAt: expect.any(String),
+    sourceSlideId: '256#',
+    startedAt: expect.any(String),
   })
-  const progress = await f.skill.executeTool({ id: 'status', name: 'read_presentation_import_status', input: {} })
-  expect(JSON.parse(progress.output).pages[0]).toMatchObject({ state: 'uncertain', startedAt: expect.any(String) })
+  const progress = await f.skill.executeTool({
+    id: 'status',
+    name: 'read_presentation_import_status',
+    input: {},
+  })
+  expect(JSON.parse(progress.output).pages[0]).toMatchObject({
+    state: 'uncertain',
+    startedAt: expect.any(String),
+  })
   expect(await createPresentationDeliverySkill(f.options).executeTool(f.call)).toMatchObject({
     isError: true,
     output: 'presentation_import_uncertain',
@@ -168,7 +187,8 @@ it('restores the previous in-flight settings after a failed completed checkpoint
   await skill.executeTool(f.call)
   await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow()
   expect(binding.readReceipt('project/request')?.checkpoint?.inFlight).toMatchObject({
-    sourceSlideId: '256#', startedAt: expect.any(String),
+    sourceSlideId: '256#',
+    startedAt: expect.any(String),
   })
   expect(await skill.executeTool(f.call)).toMatchObject({
     isError: true,
@@ -248,7 +268,10 @@ it('blocks malformed checkpoint prefixes, duplicate host IDs and invalid source 
     { ...checkpoint, sourceSlideIds: ['4294967296#'] },
     { ...checkpoint, completed: [{ sourceSlideId: '257#', slideId: 'new' }] },
     { ...checkpoint, completed: [{ sourceSlideId: '256#', slideId: 'original' }] },
-    { ...checkpoint, completed: [{ sourceSlideId: '256#', slideId: 'new', completedAt: 'tomorrow' }] },
+    {
+      ...checkpoint,
+      completed: [{ sourceSlideId: '256#', slideId: 'new', completedAt: 'tomorrow' }],
+    },
     { ...checkpoint, inFlight: { sourceSlideId: '257#' } },
     { ...checkpoint, inFlight: { sourceSlideId: '256#', startedAt: 'tomorrow' } },
   ]) {
@@ -261,4 +284,140 @@ it('blocks malformed checkpoint prefixes, duplicate host IDs and invalid source 
     ).rejects.toThrow('presentation_import_state_invalid')
   }
   expect(settings.size).toBe(0)
+})
+it('preserves each actual reserved start on normal completion and after reopen, even if the clock rolls back', async () => {
+  const f = fixture()
+  let clock = Date.parse('2099-01-01T00:00:00.000Z')
+  const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock)
+  const original = f.adapter.insertPage.getMockImplementation()!
+  f.adapter.insertPage.mockImplementation(async (...args) => {
+    clock = Date.parse('2020-01-01T00:00:00.000Z')
+    return original(...args)
+  })
+  try {
+    await f.confirm()
+    const starts = f.writeReceipt.mock.calls
+      .map(([, record]) => record?.checkpoint?.inFlight?.startedAt)
+      .filter(Boolean)
+    const completed = f.receipts.get('project/request')!.checkpoint!.completed
+    expect(completed.map((page) => page.startedAt)).toEqual(starts)
+    expect(starts).toHaveLength(3)
+    expect(completed.every((page) => page.startedAt! <= page.completedAt!)).toBe(true)
+    const reopened = createPresentationDeliverySkill(f.options)
+    const result = await reopened.executeTool({
+      id: 'read',
+      name: 'read_presentation_import_status',
+      input: {},
+    })
+    expect(
+      JSON.parse(result.output).pages.map((page: { startedAt: string; completedAt: string }) => [
+        page.startedAt,
+        page.completedAt,
+      ]),
+    ).toEqual(completed.map((page) => [page.startedAt, page.completedAt]))
+  } finally {
+    spy.mockRestore()
+  }
+})
+it('retains the original start when read-only reconciliation claims a lost host ACK; legacy starts remain absent', async () => {
+  for (const legacy of [false, true]) {
+    const f = fixture(),
+      zip = new JSZip()
+    zip.file('ppt/slides/slide1.xml', '<page>synthetic</page>')
+    const source = await zip.generateAsync({ type: 'base64' })
+    const artifact = {
+      ...f.artifact,
+      pptxBase64: '',
+      planRevision: 1,
+      pagePptxBase64: [source, source, source],
+      pages: f.artifact.pages.map((page) => ({ ...page, sourceSlideId: '256#' })),
+    }
+    const options = { ...f.options, artifact: () => artifact }
+    const skill = createPresentationProductionDeliverySkill(options)
+    f.adapter.insertPage.mockImplementationOnce(async () => {
+      f.host.push('lost-host')
+      throw Error('office_state_uncertain')
+    })
+    const started = await skill.executeTool({
+      id: 'import',
+      name: 'import_presentation_production',
+      input: { project_id: 'project' },
+    })
+    expect(started.isError).not.toBe(true)
+    await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow(
+      'office_state_uncertain',
+    )
+    const pending = f.receipts.get('production/project/request')!
+    const originalStart = pending.checkpoint!.inFlight!.startedAt
+    if (legacy) delete pending.checkpoint!.inFlight!.startedAt
+    const reopened = createPresentationProductionDeliverySkill({
+      ...options,
+      adapter: { ...f.adapter, exportPage: async () => source },
+    })
+    const result = await reopened.executeTool({
+      id: 'reconcile',
+      name: 'reconcile_presentation_production_import',
+      input: {},
+    })
+    expect(result.isError, result.output).not.toBe(true)
+    const completed = f.receipts.get('production/project/request')!.checkpoint!.completed[0]!
+    if (legacy) {
+      expect(completed).not.toHaveProperty('startedAt')
+      expect(JSON.parse(result.output).pages[0]).not.toHaveProperty('startedAt')
+    } else {
+      expect(completed.startedAt).toBe(originalStart)
+      expect(JSON.parse(result.output).pages[0].startedAt).toBe(originalStart)
+    }
+    expect(completed.completedAt).toEqual(expect.any(String))
+    expect(f.adapter.insertPage).toHaveBeenCalledOnce()
+  }
+})
+it('strictly validates dual event timestamps and ordering without rejecting legacy completion records', () => {
+  const time = '2026-09-29T00:00:00.000Z',
+    later = '2026-09-29T00:00:01.000Z'
+  const page = { sourceSlideId: '256#', slideId: 'new', startedAt: time, completedAt: later }
+  const record = {
+    state: 'pending',
+    documentId: 'doc',
+    checkpoint: {
+      version: 1,
+      artifactDigest: 'a'.repeat(64),
+      sourceSlideIds: ['256#', '257#'],
+      baselineSlideIds: ['old'],
+      completed: [page],
+    },
+  }
+  expect(validPresentationImportRecord(record)).toBe(true)
+  for (const patch of [
+    { startedAt: '2026-09-29T00:00:00Z' },
+    { startedAt: '2026-02-30T00:00:00.000Z' },
+    { startedAt: undefined },
+    { startedAt: later, completedAt: time },
+    { completedAt: undefined },
+    { extra: true },
+  ])
+    expect(
+      validPresentationImportRecord({
+        ...record,
+        checkpoint: { ...record.checkpoint, completed: [{ ...page, ...patch }] },
+      }),
+    ).toBe(false)
+  expect(
+    validPresentationImportRecord({
+      ...record,
+      checkpoint: { ...record.checkpoint, completed: [{ sourceSlideId: '256#', slideId: 'new' }] },
+    }),
+  ).toBe(true)
+  expect(
+    validPresentationImportRecord({
+      ...record,
+      checkpoint: {
+        ...record.checkpoint,
+        completed: [
+          page,
+          { sourceSlideId: '257#', slideId: 'next', startedAt: time, completedAt: later },
+        ],
+      },
+    }),
+  ).toBe(false)
 })
