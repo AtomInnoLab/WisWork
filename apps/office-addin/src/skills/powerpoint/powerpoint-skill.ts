@@ -34,6 +34,7 @@ import {
   type PresentationExistingChartChange,
 } from './presentation-existing-chart.js'
 import { createPresentationNativeAddRestoration } from './presentation-native-add-restoration.js'
+import { createPresentationNativeAddRelease } from './presentation-native-add-release.js'
 import type { PresentationExistingPageChange } from './presentation-existing-page.js'
 import { createPresentationNativeAddExecution } from './presentation-native-add-execution.js'
 import { createPresentationNativeAddProposal } from './presentation-native-add-proposal.js'
@@ -646,6 +647,8 @@ function errorCode(error: unknown, write = false): string {
       'presentation_page_backup_cleanup_failed',
       'presentation_native_add_conflict',
       'presentation_native_add_pending',
+      'presentation_native_add_state_invalid',
+      'presentation_native_add_backup_release_failed',
       'presentation_existing_batch_missing',
       'presentation_existing_batch_stale',
       'presentation_existing_batch_state_invalid',
@@ -1433,6 +1436,23 @@ export function createPowerPointSkill(options: {
         adapter: options.adapter,
       })
     : undefined
+  const nativeRelease = options.nativeAddSavepoint
+    ? createPresentationNativeAddRelease({
+        ...options.nativeAddSavepoint,
+        proposals: options.proposals,
+      })
+    : undefined
+  const nativeReleaseTool: AgentToolDef = {
+    name: 'release_slide_ir_addition',
+    description:
+      'Propose irreversible release of the original PC page backup only after a native addition is durably undone. Requires separate confirmation. Does not modify PowerPoint or certify QA.',
+    inputSchema: {
+      type: 'object',
+      properties: { change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' } },
+      required: ['change_id'],
+      additionalProperties: false,
+    },
+  }
   const nativeRestoration =
     options.nativeAddSavepoint?.readExistingPageChange &&
     options.adapter.exportPresentationPagePackage
@@ -2091,6 +2111,7 @@ export function createPowerPointSkill(options: {
       ),
       ...(nativeExecution ? nativeTools : []),
       ...(nativeRestoration ? [nativeRestorationTool] : []),
+      ...(nativeRelease ? [nativeReleaseTool] : []),
     ],
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
@@ -2101,6 +2122,20 @@ export function createPowerPointSkill(options: {
         )
       try {
         assertNotCancelled(signal)
+        if (call.name === 'release_slide_ir_addition') {
+          if (!nativeRelease) throw new Error('office_api_unsupported')
+          const input = exactRecord(call.input, ['change_id'])
+          if (
+            typeof input.change_id !== 'string' ||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(input.change_id)
+          )
+            throw new Error('invalid_tool_input')
+          return {
+            output: boundedJson(await nativeRelease.propose(input.change_id, signal)),
+            mutated: false,
+            summary: 'Proposed irreversible original-page backup release',
+          }
+        }
         if (call.name === 'finalize_slide_ir_addition_restore') {
           if (!nativeRestoration) throw new Error('office_api_unsupported')
           const input = exactRecord(call.input, ['change_id', 'restoration_change_id'])

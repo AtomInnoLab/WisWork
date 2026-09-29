@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
 import { readFileSync } from 'node:fs'
 import { PNG } from 'pngjs'
+import { createPresentationChangesController } from '../src/agent/presentation-changes.js'
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill'
 import type { PowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter'
 import { validExistingBatchTransition } from '../src/skills/powerpoint/presentation-existing-batch'
@@ -411,6 +412,7 @@ async function fixture() {
   }
   return {
     skill,
+    baselineSnapshot: () => structuredClone(baselineSnapshot),
     reopen: () => {
       skill.clear()
       skill = create()
@@ -1247,17 +1249,51 @@ it('prepares a pending native-add V2 original page for separately confirmed rest
     }
   f.setBatchSourceRecord(record)
   f.setCurrentPage(f.source())
-  const prepared = await f.skill.executeTool({
-    id: 'prepare-native-restore',
-    name: 'prepare_existing_presentation_original_page_restore',
-    input: { source_kind: 'batch', change_id: 'native-add', slide_id: 'old' },
+  const controller = createPresentationChangesController({
+    available: () => false,
+    existingAvailable: () => true,
+    nativeRestorationAvailable: () => true,
+    nativeRestoreFinalizationAvailable: () => true,
+    artifact: () => undefined,
+    documentId: async () => 'doc',
+    listChangeHistory: () => [
+      {
+        id: 'existing_batch:native-add',
+        kind: 'existing_batch',
+        sequence: 1,
+        legacy: false,
+        record: f.readBatchSourceRecord(),
+      },
+      ...[...f.records.values()].map((page, index) => ({
+        id: `existing_page:${page.changeId}`,
+        kind: 'existing_page' as const,
+        sequence: index + 2,
+        legacy: false,
+        record: structuredClone(page),
+      })),
+    ],
+    executeTool: async (call, signal) => {
+      if (call.name === 'read_presentation_baseline')
+        return {
+          output: JSON.stringify({
+            ...f.baselineSnapshot(),
+            qaPassed: false,
+            coverage: { pagePackages: 'read' },
+          }),
+          mutated: false,
+          summary: 'Synthetic fresh baseline',
+        }
+      if (call.name === 'finalize_slide_ir_addition_restore')
+        return recovery!.executeTool(call, signal)
+      return f.skill.executeTool(call, signal)
+    },
   })
-  expect(prepared.isError, prepared.output).not.toBe(true)
-  const next = JSON.parse(prepared.output).nextInput
-  expect(f.preparedFiles.get(next.path)).toEqual(f.backup())
-  expect(f.adapter.stage).not.toHaveBeenCalled()
-  const staged = await f.call('stage', { baseline_id: 'baseline', ...next })
-  expect(staged.isError, staged.output).not.toBe(true)
+  await controller.refresh()
+  await controller.run('existing_batch:native-add', 'undo')
+  expect(controller.snapshot().error).toBeUndefined()
+  expect(controller.snapshot().notice).toContain('确认')
+  expect(f.preparedFiles.size).toBe(1)
+  expect([...f.preparedFiles.values()][0]).toEqual(f.backup())
   expect(f.adapter.stage).not.toHaveBeenCalled()
   await f.confirm()
   const restore = [...f.records.values()][0]!
@@ -1290,7 +1326,7 @@ it('prepares a pending native-add V2 original page for separately confirmed rest
     },
   })
   const close = () =>
-    recovery.executeTool({
+    recovery!.executeTool({
       id: 'finalize-native',
       name: 'finalize_slide_ir_addition_restore',
       input: { change_id: record.changeId, restoration_change_id: restore.changeId },
@@ -1307,6 +1343,16 @@ it('prepares a pending native-add V2 original page for separately confirmed rest
   expect(f.records.get(restore.changeId)?.state).toBe('applied')
   // The simulated host now exports the exact original package actually passed to the confirmed stage.
   f.setCurrentPage(binary(f.adapter.stage.mock.calls[0]![1]))
+  await controller.refresh()
+  expect(
+    controller.snapshot().entries.find((entry) => entry.id === 'existing_batch:native-add')
+      ?.actions,
+  ).toContain('finalize')
+  await controller.run('existing_batch:native-add', 'finalize')
+  expect(controller.snapshot().error).toBeUndefined()
+  expect(
+    controller.snapshot().entries.find((entry) => entry.id === 'existing_batch:native-add'),
+  ).toMatchObject({ state: 'undone', pageId: restore.newSlideId })
   const finalized = await close()
   expect(finalized.isError, finalized.output).not.toBe(true)
   expect(finalized.mutated).toBe(false)

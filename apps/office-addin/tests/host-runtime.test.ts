@@ -840,6 +840,8 @@ it('exposes existing-page rebuild and routes saved-page inspection through the r
       request: async () => new Response('{}'),
       lastProject: () => undefined,
       rememberProject: async () => {},
+      readExistingBatch: () => undefined,
+      writeExistingBatch: async () => {},
       readExistingPageChange: () => undefined,
       writeExistingPageChange: async () => {},
       readExistingChartChange: () => undefined,
@@ -856,6 +858,7 @@ it('exposes existing-page rebuild and routes saved-page inspection through the r
     expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
       'undo_existing_presentation_page_change',
     )
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain('release_slide_ir_addition')
     expect(runtime.changes).toBeDefined()
     expect(runtime.skill.tools.map((tool) => tool.name)).toEqual(
       expect.arrayContaining([

@@ -45,7 +45,7 @@ const nativeAdditionDescription = (record: PresentationNativeAddBatch) =>
     .join('\n')
 
 export type PresentationChangeAction =
-  'inspect' | 'undo' | 'resume' | 'reapply' | 'commit' | 'discard' | 'release'
+  'inspect' | 'undo' | 'resume' | 'reapply' | 'commit' | 'discard' | 'release' | 'finalize'
 export interface PresentationChangeEntry {
   checkpointCreatedAt?: string
   checkpointRestoredAt?: string
@@ -100,6 +100,9 @@ export interface PresentationChangesOptions {
     }[]
   >
   nativeAdditionAvailable?: () => boolean
+  nativeRestorationAvailable?: () => boolean
+  nativeReleaseAvailable?: () => boolean
+  nativeRestoreFinalizationAvailable?: () => boolean
   existingAvailable?: () => boolean
   available(): boolean
   artifact(): CompiledPresentationArtifact | undefined
@@ -116,6 +119,9 @@ type RecordValue =
   | PresentationPageReplacement
   | ImageReplacementRecord
 interface SavedEntry {
+  restorationChangeId?: string
+  restorationSlideId?: string
+  restorationCandidatesFingerprint?: string
   entry: PresentationChangeEntry
   record:
     | RecordValue
@@ -368,6 +374,42 @@ export function createPresentationChangesController(
       return selected
         .sort((a, b) => Number(a.legacy) - Number(b.legacy) || b.sequence - a.sequence)
         .map((saved) => {
+          const native =
+            saved.kind === 'existing_batch' && saved.record.version === 2 ? saved.record : undefined
+          const candidates = native
+            ? history.filter(
+                (item) =>
+                  item.kind === 'existing_page' &&
+                  item.record.state !== 'discarded' &&
+                  item.record.documentId === native.documentId &&
+                  item.record.restores?.sourceKind === 'batch' &&
+                  item.record.restores.sourceChangeId === native.changeId,
+              )
+            : []
+          const page =
+            candidates.length === 1 && candidates[0]!.kind === 'existing_page'
+              ? candidates[0]!.record
+              : undefined
+          const backup = native?.backups[0]
+          const restoration =
+            native &&
+            backup &&
+            !native.backupReleasedAt &&
+            ['applying', 'applied', 'undoing'].includes(native.state) &&
+            page &&
+            page.state === 'applied' &&
+            page.newSlideId &&
+            !page.reapplies &&
+            page.oldSlideId === native.hostSlideId &&
+            page.restores?.sourceHostSlideId === native.hostSlideId &&
+            page.restores.originalBackupId === backup.backupId &&
+            page.restores.originalPackageDigest === native.baselineDigest &&
+            page.replacementPackageDigest === native.baselineDigest &&
+            JSON.stringify(page.beforeSlideIds) === JSON.stringify(native.beforeSlideIds) &&
+            page.sourceBackup?.sha256 === backup.sha256 &&
+            page.sourceBackup.sizeBytes === backup.sizeBytes
+              ? page
+              : undefined
           const row: SavedEntry =
             saved.kind === 'existing_chart'
               ? {
@@ -487,13 +529,28 @@ export function createPresentationChangesController(
                               ? `原页备份已释放：${saved.record.backupReleasedAt}`
                               : '原页包已保存；原有对象须完整保留',
                             after: nativeAdditionDescription(saved.record),
-                            actions:
-                              options.nativeAdditionAvailable?.() &&
+                            actions: [
+                              ...(options.nativeAdditionAvailable?.() &&
                               ['applying', 'applied'].includes(saved.record.state)
                                 ? saved.record.state === 'applying'
-                                  ? ['inspect', 'resume']
-                                  : ['inspect']
-                                : [],
+                                  ? (['inspect', 'resume'] as PresentationChangeAction[])
+                                  : (['inspect'] as PresentationChangeAction[])
+                                : []),
+                              ...(options.nativeRestorationAvailable?.() &&
+                              !candidates.length &&
+                              !saved.record.backupReleasedAt &&
+                              ['applying', 'applied'].includes(saved.record.state)
+                                ? ['undo' as const]
+                                : []),
+                              ...(options.nativeReleaseAvailable?.() &&
+                              !saved.record.backupReleasedAt &&
+                              saved.record.state === 'undone'
+                                ? ['release' as const]
+                                : []),
+                              ...(options.nativeRestoreFinalizationAvailable?.() && restoration
+                                ? ['finalize' as const]
+                                : []),
+                            ],
                           },
                           record: copy(saved.record),
                           fingerprint: JSON.stringify(saved),
@@ -596,7 +653,10 @@ export function createPresentationChangesController(
             changeSet: presentationChangeSetSummary(saved),
           }
           row.historical = true
-          row.fingerprint = JSON.stringify(saved)
+          row.restorationChangeId = restoration?.changeId
+          row.restorationSlideId = restoration?.newSlideId
+          row.restorationCandidatesFingerprint = JSON.stringify(candidates)
+          row.fingerprint = JSON.stringify({ saved, candidates })
           return row
         })
     }
@@ -893,31 +953,168 @@ export function createPresentationChangesController(
                     }
                   : {}),
               }
-        let result = await options.executeTool(
-          {
-            id: `change-${ticket}`,
-            name:
-              selected.entry.source === 'existing_page'
-                ? `${action}_existing_presentation_page_change`
-                : selected.entry.source === 'existing_chart'
-                  ? `${action}_slide_chart_values_change`
-                  : selected.entry.source === 'existing_image'
-                    ? `${action}_existing_presentation_image_change`
-                    : selected.entry.source === 'existing_batch'
-                      ? (r as PresentationExistingBatch).version === 2
-                        ? `${action}_slide_ir_addition`
-                        : `${action}_existing_presentation_batch`
-                      : selected.entry.source === 'existing'
-                        ? `${action}_existing_presentation_change`
-                        : `${action}_presentation_${suffix}`,
-            input,
-          },
-          cancellation.signal,
-        )
+        if (action === 'finalize') {
+          if (!options.nativeRestoreFinalizationAvailable?.() || !selected.restorationChangeId)
+            throw new Error('stale')
+          input.restoration_change_id = selected.restorationChangeId
+        }
+        const nativeRestore =
+          selected.entry.source === 'existing_batch' &&
+          (r as PresentationExistingBatch).version === 2 &&
+          action === 'undo'
+        const restoreGuard = async () => {
+          if (ticket !== generation || cancellation.signal.aborted) throw new Error('stale')
+          const latest = (await read(copy(artifact), scope, ticket)).find(
+            (row) => row.entry.id === id,
+          )
+          if (
+            ticket !== generation ||
+            cancellation.signal.aborted ||
+            latest?.fingerprint !== selected.fingerprint
+          )
+            throw new Error('stale')
+        }
+        const restoreCall = async (name: string, toolInput: Record<string, unknown>) => {
+          await restoreGuard()
+          let response = await options.executeTool(
+            { id: `change-${ticket}-${name}`, name, input: toolInput },
+            cancellation.signal,
+          )
+          await restoreGuard()
+          if ('kind' in response && response.kind === 'tool-execution-suspension') {
+            response = await response.result
+            await restoreGuard()
+          }
+          if (
+            response.isError ||
+            response.mutated ||
+            typeof response.output !== 'string' ||
+            response.output.length > 512 * 1024
+          )
+            throw new Error('tool')
+          const value: unknown = JSON.parse(response.output)
+          if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('tool')
+          return {
+            response,
+            value: value as Record<string, unknown> & {
+              nextInput?: Record<string, unknown>
+              scope?: { slideIds?: unknown }
+              context?: { slideIds?: unknown }
+              pages?: { slideId?: unknown }[]
+              coverage?: { pagePackages?: unknown }
+            },
+          }
+        }
+        let result
+        if (nativeRestore) {
+          const native = r as PresentationNativeAddBatch
+          if (
+            !options.nativeRestorationAvailable?.() ||
+            native.backupReleasedAt ||
+            !['applying', 'applied'].includes(native.state)
+          )
+            throw new Error('stale')
+          const { value: prepared } = await restoreCall(
+            'prepare_existing_presentation_original_page_restore',
+            { source_kind: 'batch', change_id: native.changeId, slide_id: native.hostSlideId },
+          )
+          const next = prepared.nextInput
+          if (
+            prepared.slideId !== native.hostSlideId ||
+            prepared.sourceKind !== 'batch' ||
+            prepared.sourceChangeId !== native.changeId ||
+            prepared.packageDigest !== native.baselineDigest ||
+            prepared.nextTool !== 'stage_existing_presentation_page_change' ||
+            typeof prepared.path !== 'string' ||
+            !/^\/home\/user\/presentation-original-restore-[A-Za-z0-9_-]{1,128}\.pptx$/.test(
+              prepared.path,
+            ) ||
+            !next ||
+            Object.keys(next).length !== 4 ||
+            next.path !== prepared.path ||
+            next.slide_id !== native.hostSlideId ||
+            next.restore_source_kind !== 'batch' ||
+            next.restore_source_change_id !== native.changeId
+          )
+            throw new Error('tool')
+          const { value: baseline } = await restoreCall('read_presentation_baseline', {
+            scope: 'deck',
+            page_offset: native.slideIndex,
+            page_limit: 1,
+            package_integrity: true,
+          })
+          if (
+            typeof baseline.baselineId !== 'string' ||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(baseline.baselineId) ||
+            baseline.documentId !== native.documentId ||
+            JSON.stringify(baseline.scope?.slideIds) !== JSON.stringify([native.hostSlideId]) ||
+            JSON.stringify(baseline.context?.slideIds) !== JSON.stringify(native.beforeSlideIds) ||
+            !Array.isArray(baseline.pages) ||
+            baseline.pages.length !== 1 ||
+            baseline.pages[0]?.slideId !== native.hostSlideId ||
+            baseline.coverage?.pagePackages !== 'read' ||
+            baseline.qaPassed !== false ||
+            typeof baseline.contentDigest !== 'string' ||
+            !/^[a-f0-9]{64}$/.test(baseline.contentDigest)
+          )
+            throw new Error('tool')
+          const staged = await restoreCall('stage_existing_presentation_page_change', {
+            baseline_id: baseline.baselineId,
+            ...next,
+          })
+          if (
+            staged.value.status !== 'awaiting_confirmation' ||
+            staged.value.state !== 'pending' ||
+            staged.value.oldSlideId !== native.hostSlideId ||
+            staged.value.newSlideId !== undefined ||
+            typeof staged.value.proposalId !== 'string' ||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(staged.value.proposalId) ||
+            typeof staged.value.changeId !== 'string' ||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(staged.value.changeId)
+          )
+            throw new Error('tool')
+          result = staged.response
+        } else
+          result = await options.executeTool(
+            {
+              id: `change-${ticket}`,
+              name:
+                selected.entry.source === 'existing_page'
+                  ? `${action}_existing_presentation_page_change`
+                  : selected.entry.source === 'existing_chart'
+                    ? `${action}_slide_chart_values_change`
+                    : selected.entry.source === 'existing_image'
+                      ? `${action}_existing_presentation_image_change`
+                      : selected.entry.source === 'existing_batch'
+                        ? (r as PresentationExistingBatch).version === 2
+                          ? action === 'finalize'
+                            ? 'finalize_slide_ir_addition_restore'
+                            : `${action}_slide_ir_addition`
+                          : `${action}_existing_presentation_batch`
+                        : selected.entry.source === 'existing'
+                          ? `${action}_existing_presentation_change`
+                          : `${action}_presentation_${suffix}`,
+              input,
+            },
+            cancellation.signal,
+          )
         if ('kind' in result && result.kind === 'tool-execution-suspension')
           result = await result.result
         if (ticket !== generation) return
         if (!current(scope, await options.documentId())) throw new Error('stale')
+        if (action === 'finalize') {
+          if (result.isError || result.mutated || result.output.length > 64 * 1024)
+            throw new Error('tool')
+          const receipt = JSON.parse(result.output) as Record<string, unknown>
+          if (
+            receipt.changeId !== input.change_id ||
+            receipt.state !== 'undone' ||
+            receipt.restoredSlideId !== selected.restorationSlideId ||
+            receipt.historicalOnly !== true ||
+            receipt.visualQaVerified !== false
+          )
+            throw new Error('tool')
+        }
         if (
           selected.entry.source === 'existing' ||
           selected.entry.source === 'existing_batch' ||
@@ -929,6 +1126,16 @@ export function createPresentationChangesController(
             (row) => row.entry.id === id,
           )
           if (!latest || ticket !== generation) throw new Error('stale')
+          if (
+            action === 'finalize' &&
+            (latest.restorationCandidatesFingerprint !==
+              selected.restorationCandidatesFingerprint ||
+              latest.entry.state !== 'undone' ||
+              (latest.record as PresentationNativeAddBatch).restoredSlideId !==
+                selected.restorationSlideId ||
+              (latest.record as PresentationNativeAddBatch).inFlightIndex !== undefined)
+          )
+            throw new Error('stale')
           const core = (
             record:
               | RecordValue
@@ -952,6 +1159,16 @@ export function createPresentationChangesController(
               restoredSlideId?: string
               backupReleasedAt?: string
             }
+            if (
+              action === 'finalize' &&
+              selected.entry.source === 'existing_batch' &&
+              (record as PresentationExistingBatch).version === 2
+            ) {
+              const { inFlightIndex: _flight, ...immutable } = rest as typeof rest & {
+                inFlightIndex?: number
+              }
+              return JSON.stringify(immutable)
+            }
             return JSON.stringify(rest)
           }
           if (
@@ -961,12 +1178,15 @@ export function createPresentationChangesController(
             throw new Error('stale')
         }
         if (result.isError) throw new Error(result.output.length <= 128 ? result.output : 'tool')
-        notice =
-          action === 'inspect'
+        notice = nativeRestore
+          ? '原页恢复提案已创建；请确认暂存后检查两页，再分别确认替换。尚未恢复原页或标记撤销，变更后需重新采集 QA。'
+          : action === 'inspect'
             ? inspectionNotice(result.output)
-            : action === 'release'
-              ? '备份释放提案已创建，确认后执行。'
-              : '操作请求已处理；如有待确认提案，请确认后执行。变更后需重新采集页面 QA。'
+            : action === 'finalize'
+              ? '已请求核对恢复回执；撤销状态以真实持久记录为准，不代表页面 QA 通过。'
+              : action === 'release'
+                ? '备份释放提案已创建，确认后执行。'
+                : '操作请求已处理；如有待确认提案，请确认后执行。变更后需重新采集页面 QA。'
       } catch (cause) {
         error = workbenchError(cause)
       } finally {

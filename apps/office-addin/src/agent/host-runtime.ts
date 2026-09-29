@@ -1027,9 +1027,12 @@ export function createOfficeHostRuntime(
                       'inspect_slide_ir_addition',
                       'resume_slide_ir_addition',
                       'finalize_slide_ir_addition_restore',
+                      'release_slide_ir_addition',
                     ].includes(call.name) && hostSkill.tools.some((tool) => tool.name === call.name)
                   ? hostSkill
-                  : undefined
+                  : call.name === 'read_presentation_baseline' && baselineSkill
+                    ? baselineSkill
+                    : undefined
     return owner
       ? owner.executeTool(call, signal)
       : Promise.resolve({
@@ -1062,6 +1065,20 @@ export function createOfficeHostRuntime(
     changes = createPresentationChangesController({
       nativeAdditionAvailable: () =>
         hostSkill.tools.some((tool) => tool.name === 'inspect_slide_ir_addition'),
+      nativeRestorationAvailable: () =>
+        Boolean(
+          baselineSkill?.tools.some((tool) => tool.name === 'read_presentation_baseline') &&
+          existingPageEditing?.tools.some(
+            (tool) => tool.name === 'prepare_existing_presentation_original_page_restore',
+          ) &&
+          existingPageEditing?.tools.some(
+            (tool) => tool.name === 'stage_existing_presentation_page_change',
+          ),
+        ),
+      nativeReleaseAvailable: () =>
+        hostSkill.tools.some((tool) => tool.name === 'release_slide_ir_addition'),
+      nativeRestoreFinalizationAvailable: () =>
+        hostSkill.tools.some((tool) => tool.name === 'finalize_slide_ir_addition_restore'),
       available: options.presentation?.available ?? (() => false),
       existingAvailable: () =>
         Boolean(
