@@ -159,6 +159,7 @@ export interface PresentationWorkflowSummary {
       | 'qa.attempt.waiting'
       | 'qa.attempt.failed'
       | 'qa.attempt.cancelled'
+      | 'qa.attempt.closed'
     scope?:
       | 'production_asset_resolution'
       | 'source_excerpt_audit'
@@ -186,6 +187,7 @@ export interface PresentationWorkflowSummary {
         | 'qa.attempt.waiting'
         | 'qa.attempt.failed'
         | 'qa.attempt.cancelled'
+        | 'qa.attempt.closed'
     }[]
   }[]
   attention: { id: string; text: string }[]
@@ -975,6 +977,7 @@ export function presentationWorkflowSummary(
           waiting: '等待截图能力；可在能力恢复后按明确请求重试',
           failed: '采集未完成；请核对状态后再决定是否重试',
           cancelled: '采集已取消；未认证截图或页面状态',
+          closed: '未决记录已结束；不代表宿主操作已取消、截图或 QA 通过',
         }[attempt.status]
         const records: NonNullable<PresentationWorkflowSummary['timeline'][number]['records']> = [
           {

@@ -206,64 +206,112 @@ it('serializes concurrent transitions and poisons a save that changes the curren
   )
   expect(f.create().readQaAttempts('project/request')).toEqual([])
 })
-it('reserves enough terminal bytes for every accepted start at a full journal without any finished records', async () => {
-  const f = fixture('file://' + '界'.repeat(1000)),
-    doc = await f.binding.documentId()
-  const reserve =
-    2 +
-    ',"finishedAt":"0000-00-00T00:00:00.000Z"'.length +
-    ',"errorCode":"screenshot_unavailable"'.length
-  let count = 0
-  while (count < 64) {
-    try {
-      await f.binding.writeQaAttempt('project/request', attempt(doc, count))
-      count++
-    } catch (error) {
-      expect((error as Error).message).toBe('presentation_qa_attempt_history_full')
-      break
+it.each(['waiting', 'closed'] as const)(
+  'reserves enough terminal bytes for every accepted start at a full journal: %s',
+  async (status) => {
+    const f = fixture('file://' + '界'.repeat(1000)),
+      doc = await f.binding.documentId()
+    const reserve =
+      2 +
+      ',"finishedAt":"0000-00-00T00:00:00.000Z"'.length +
+      ',"errorCode":"screenshot_unavailable"'.length
+    let count = 0
+    while (count < 64) {
+      try {
+        await f.binding.writeQaAttempt('project/request', attempt(doc, count))
+        count++
+      } catch (error) {
+        expect((error as Error).message).toBe('presentation_qa_attempt_history_full')
+        break
+      }
     }
+    // Fill any remaining byte budget by updating the last accepted started identity in a synthetic journal.
+    const map = JSON.parse(f.values.get(attemptKey)!)
+    let raw = JSON.stringify(map)
+    for (const value of Object.values(map) as ReturnType<typeof attempt>[]) {
+      const room = 128 * 1024 - new TextEncoder().encode(raw).byteLength
+      if (room <= reserve * count) break
+      value.hostSlideId = 'h'.repeat(Math.min(256, 4 + room - reserve * count))
+      raw = JSON.stringify(map)
+    }
+    f.values.set(attemptKey, raw)
+    expect(new TextEncoder().encode(raw).byteLength + reserve * count).toBeLessThanOrEqual(
+      128 * 1024,
+    )
+    // The parser must ensure writes had already budgeted all pending terminal metadata.
+    const invalid = JSON.parse(raw)
+    for (const value of Object.values(invalid) as ReturnType<typeof attempt>[]) {
+      const room = 128 * 1024 - 10 - new TextEncoder().encode(JSON.stringify(invalid)).byteLength
+      if (room <= 0) break
+      value.hostSlideId = 'h'.repeat(Math.min(256, value.hostSlideId.length + room))
+    }
+    expect(new TextEncoder().encode(JSON.stringify(invalid)).byteLength).toBeLessThanOrEqual(
+      128 * 1024,
+    )
+    expect(
+      new TextEncoder().encode(JSON.stringify(invalid)).byteLength + reserve * count,
+    ).toBeGreaterThan(128 * 1024)
+    f.values.set(attemptKey, JSON.stringify(invalid))
+    expect(() => f.create().readQaAttempts('project/request')).toThrow(
+      'presentation_qa_attempt_state_invalid',
+    )
+    f.values.set(attemptKey, raw)
+    for (const a of f.create().readQaAttempts('project/request'))
+      await f.binding.writeQaAttempt('project/request', {
+        ...a,
+        status,
+        finishedAt: a.startedAt,
+        errorCode: status === 'closed' ? 'explicitly_closed' : 'screenshot_unavailable',
+      })
+    expect(f.create().readQaAttempts('project/request')).toHaveLength(count)
+    expect(
+      f
+        .create()
+        .readQaAttempts('project/request')
+        .every((a) => a.status === status),
+    ).toBe(true)
+  },
+)
+
+it('explicit close releases one full-journal slot, preserves other starts and rejects late completion', async () => {
+  const f = fixture(),
+    doc = await f.binding.documentId()
+  for (let i = 0; i < 64; i++) await f.binding.writeQaAttempt('project/request', attempt(doc, i))
+  const a = attempt(doc, 20)
+  const closed = {
+    ...a,
+    status: 'closed' as const,
+    finishedAt: a.startedAt,
+    errorCode: 'explicitly_closed' as const,
   }
-  // Fill any remaining byte budget by updating the last accepted started identity in a synthetic journal.
-  const map = JSON.parse(f.values.get(attemptKey)!)
-  let raw = JSON.stringify(map)
-  for (const value of Object.values(map) as ReturnType<typeof attempt>[]) {
-    const room = 128 * 1024 - new TextEncoder().encode(raw).byteLength
-    if (room <= reserve * count) break
-    value.hostSlideId = 'h'.repeat(Math.min(256, 4 + room - reserve * count))
-    raw = JSON.stringify(map)
-  }
-  f.values.set(attemptKey, raw)
-  expect(new TextEncoder().encode(raw).byteLength + reserve * count).toBeLessThanOrEqual(128 * 1024)
-  // The parser must ensure writes had already budgeted all pending terminal metadata.
-  const invalid = JSON.parse(raw)
-  for (const value of Object.values(invalid) as ReturnType<typeof attempt>[]) {
-    const room = 128 * 1024 - 10 - new TextEncoder().encode(JSON.stringify(invalid)).byteLength
-    if (room <= 0) break
-    value.hostSlideId = 'h'.repeat(Math.min(256, value.hostSlideId.length + room))
-  }
-  expect(new TextEncoder().encode(JSON.stringify(invalid)).byteLength).toBeLessThanOrEqual(
-    128 * 1024,
-  )
-  expect(
-    new TextEncoder().encode(JSON.stringify(invalid)).byteLength + reserve * count,
-  ).toBeGreaterThan(128 * 1024)
-  f.values.set(attemptKey, JSON.stringify(invalid))
-  expect(() => f.create().readQaAttempts('project/request')).toThrow(
-    'presentation_qa_attempt_state_invalid',
-  )
-  f.values.set(attemptKey, raw)
-  for (const a of f.create().readQaAttempts('project/request'))
-    await f.binding.writeQaAttempt('project/request', {
+  await f.binding.writeQaAttempt('project/request', closed)
+  const saves = f.save.mock.calls.length
+  await f.create().writeQaAttempt('project/request', closed)
+  expect(f.save).toHaveBeenCalledTimes(saves)
+  await expect(
+    f.binding.writeQaAttempt('project/request', {
       ...a,
-      status: 'waiting',
+      status: 'recorded',
       finishedAt: a.startedAt,
-      errorCode: 'screenshot_unavailable',
-    })
-  expect(f.create().readQaAttempts('project/request')).toHaveLength(count)
-  expect(
-    f
-      .create()
-      .readQaAttempts('project/request')
-      .every((a) => a.status === 'waiting'),
-  ).toBe(true)
+    }),
+  ).rejects.toThrow('presentation_qa_attempt_state_invalid')
+  await f.binding.writeQaAttempt('project/request', attempt(doc, 64))
+  expect(f.create().readQaAttempts('project/request')).toEqual(
+    Array.from({ length: 65 }, (_, i) => attempt(doc, i)).filter((a) => a.id !== closed.id),
+  )
+})
+it('rolls back a failed explicit close without losing the original start on reopen', async () => {
+  const f = fixture(),
+    a = attempt(await f.binding.documentId())
+  await f.binding.writeQaAttempt('project/request', a)
+  f.fail()
+  await expect(
+    f.binding.writeQaAttempt('project/request', {
+      ...a,
+      status: 'closed',
+      finishedAt: a.startedAt,
+      errorCode: 'explicitly_closed',
+    }),
+  ).rejects.toThrow('save_failed')
+  expect(f.create().readQaAttempts('project/request')).toEqual([a])
 })

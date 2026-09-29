@@ -10,7 +10,7 @@ export interface PresentationQaAttempt {
   pageId: string
   hostSlideId: string
   startedAt: string
-  status: 'started' | 'recorded' | 'waiting' | 'failed' | 'cancelled'
+  status: 'started' | 'recorded' | 'waiting' | 'failed' | 'cancelled' | 'closed'
   finishedAt?: string
   errorCode?:
     | 'screenshot_unavailable'
@@ -18,6 +18,7 @@ export interface PresentationQaAttempt {
     | 'cancelled'
     | 'publication_failed'
     | 'state_changed'
+    | 'explicitly_closed'
 }
 // Reserve the longest terminal status and fields before accepting a started record.
 export const PRESENTATION_QA_ATTEMPT_TERMINAL_RESERVE_BYTES =
@@ -70,7 +71,7 @@ export function parsePresentationQaAttempt(value: unknown): PresentationQaAttemp
     typeof v.artifactDigest !== 'string' ||
     !/^[a-f0-9]{64}$/.test(v.artifactDigest) ||
     !iso(v.startedAt) ||
-    !['started', 'recorded', 'waiting', 'failed', 'cancelled'].includes(String(v.status))
+    !['started', 'recorded', 'waiting', 'failed', 'cancelled', 'closed'].includes(String(v.status))
   )
     invalid()
   if (v.status === 'started') {
@@ -82,11 +83,13 @@ export function parsePresentationQaAttempt(value: unknown): PresentationQaAttemp
     } else if (
       v.status === 'waiting'
         ? v.errorCode !== 'screenshot_unavailable'
-        : v.status === 'cancelled'
-          ? v.errorCode !== 'cancelled'
-          : !['inspection_failed', 'publication_failed', 'state_changed'].includes(
-              String(v.errorCode),
-            )
+        : v.status === 'closed'
+          ? v.errorCode !== 'explicitly_closed'
+          : v.status === 'cancelled'
+            ? v.errorCode !== 'cancelled'
+            : !['inspection_failed', 'publication_failed', 'state_changed'].includes(
+                String(v.errorCode),
+              )
     )
       invalid()
   }
@@ -99,4 +102,20 @@ export function validatePresentationQaAttempt(value: unknown): value is Presenta
   } catch {
     return false
   }
+}
+
+/** Original start identity, independent of terminal bookkeeping and JSON property order. */
+export function presentationQaAttemptIdentity(a: PresentationQaAttempt): string {
+  return JSON.stringify([
+    a.version,
+    a.id,
+    a.source,
+    a.documentId,
+    a.projectId,
+    a.requestId,
+    a.artifactDigest,
+    a.pageId,
+    a.hostSlideId,
+    a.startedAt,
+  ])
 }

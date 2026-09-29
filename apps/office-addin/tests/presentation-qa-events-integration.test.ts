@@ -187,6 +187,11 @@ async function fixture() {
   const rows = () => workflow().timeline.filter((event) => event.scope === 'saved_page_qa')
   return {
     capture,
+    artifact,
+    key,
+    close: (
+      expected: import('../src/skills/powerpoint/presentation-qa-attempts.js').PresentationQaAttempt,
+    ) => skill.closeAttempt(expected),
     inspectionHost,
     attempts: () => binding.readQaAttempts(key),
     review,
@@ -288,4 +293,48 @@ it('reopens actual waiting screenshot attempts and retries only when explicitly 
   })
   expect(f.host).toEqual(['original', 'host-1', 'host-2'])
   expect(f.inspectionHost).toHaveBeenCalledTimes(3)
+})
+
+it('explicitly closes one of 64 actual durable unresolved attempts then accepts a fresh screenshot without replaying old ones', async () => {
+  const f = await fixture()
+  const digest = f.binding().readReceipt(f.key)!.checkpoint!.artifactDigest
+  for (let index = 0; index < 64; index++)
+    await f.binding().writeQaAttempt(f.key, {
+      version: 1,
+      id: `12345678-1234-4234-8234-${index.toString(16).padStart(12, '0')}`,
+      source: 'production',
+      documentId: f.artifact.documentId,
+      projectId: f.artifact.projectId,
+      requestId: f.artifact.requestId,
+      artifactDigest: digest,
+      pageId: 'one',
+      hostSlideId: 'host-1',
+      startedAt: '2026-09-29T00:00:00.000Z',
+      status: 'started',
+    })
+  f.reopen()
+  const unresolved = structuredClone(f.attempts())
+  expect((await f.capture('two')).output).toBe('presentation_qa_attempt_history_full')
+  expect(f.inspectionHost).not.toHaveBeenCalled()
+  const closed = await f.close(unresolved[0])
+  expect(closed).toMatchObject({
+    status: 'closed',
+    errorCode: 'explicitly_closed',
+    id: unresolved[0].id,
+  })
+  f.reopen()
+  expect(await f.close(unresolved[0])).toEqual(closed)
+  expect(f.attempts()).toHaveLength(64)
+  expect(f.attempts().filter((item) => item.status === 'started')).toEqual(unresolved.slice(1))
+  expect(f.inspectionHost).not.toHaveBeenCalled()
+  expect(f.workflow().timeline.filter((row) => row.type === 'qa.attempt.closed')).toHaveLength(1)
+  expect((await f.capture('two')).isError).not.toBe(true)
+  f.reopen()
+  expect(f.attempts()).toHaveLength(64)
+  expect(f.attempts().filter((item) => item.status === 'started')).toEqual(unresolved.slice(1))
+  expect(f.attempts().filter((item) => item.status === 'recorded')).toHaveLength(1)
+  expect(f.inspectionHost).toHaveBeenCalledTimes(1)
+  expect(f.host).toEqual(['original', 'host-1', 'host-2'])
+  expect(f.read().pages).toHaveLength(1)
+  expect(f.read().pages[0].visual.status).toBe('needs_review')
 })

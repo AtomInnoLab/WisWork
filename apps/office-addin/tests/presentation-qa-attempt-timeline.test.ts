@@ -186,3 +186,103 @@ it('shows attempt-only pending screenshots, folded click history and explicit re
     await act(async () => root.unmount())
   }
 })
+
+it('requires explicit confirmation to end a snapshot, prevents duplicate submission and hides raw failures', async () => {
+  const node = document.createElement('div'),
+    root = createRoot(node)
+  const { finishedAt: _end, errorCode: _error, ...base } = attempt()
+  const started = { ...base, status: 'started' as const }
+  let reject!: (reason: unknown) => void
+  const closeAttempt = vi.fn(
+    () =>
+      new Promise<PresentationQaAttempt>((_resolve, fail) => {
+        reject = fail
+      }),
+  )
+  const controller = {
+    read: () => undefined,
+    revision: () => 0,
+    subscribe: () => () => {},
+    attempts: () => [started],
+    closeAttempt,
+  } as unknown as PresentationQaController
+  const button = (label: string) =>
+    Array.from(node.querySelectorAll('button')).find((item) => item.textContent === label)!
+  try {
+    await act(async () => root.render(React.createElement(PresentationQaCard, { controller })))
+    await act(async () => button('结束未决记录').click())
+    expect(node.textContent).toContain('不会取消')
+    expect(closeAttempt).not.toHaveBeenCalled()
+    await act(async () => button('取消').click())
+    expect(button('确认结束记录')).toBeUndefined()
+    await act(async () => button('结束未决记录').click())
+    await act(async () => {
+      button('确认结束记录').click()
+      button('确认结束记录').click()
+    })
+    expect(closeAttempt).toHaveBeenCalledExactlyOnceWith(started)
+    expect(button('确认结束记录').disabled).toBe(true)
+    await act(async () => reject(Error('secret_sdk_error')))
+    expect(node.textContent).toContain('记录未能确认结束')
+    expect(node.textContent).not.toContain('secret_sdk_error')
+    await act(async () =>
+      root.render(React.createElement(PresentationQaCard, { controller, disabled: true })),
+    )
+    expect(button('确认结束记录').disabled).toBe(true)
+  } finally {
+    await act(async () => root.unmount())
+  }
+})
+
+it('shows successful metadata closure as readonly history without changing QA decisions', async () => {
+  const node = document.createElement('div'),
+    root = createRoot(node)
+  const { finishedAt: _end, errorCode: _error, ...base } = attempt()
+  let current: PresentationQaAttempt = { ...base, status: 'started' }
+  const closed: PresentationQaAttempt = {
+    ...base,
+    status: 'closed',
+    errorCode: 'explicitly_closed',
+    finishedAt,
+  }
+  const closeAttempt = vi.fn(async () => {
+    current = closed
+    return closed
+  })
+  const controller = {
+    read: () => undefined,
+    revision: () => 0,
+    subscribe: () => () => {},
+    attempts: () => [current],
+    closeAttempt,
+  } as unknown as PresentationQaController
+  const button = (label: string) =>
+    Array.from(node.querySelectorAll('button')).find((item) => item.textContent === label)!
+  try {
+    await act(async () => root.render(React.createElement(PresentationQaCard, { controller })))
+    await act(async () => button('结束未决记录').click())
+    await act(async () => button('确认结束记录').click())
+    expect(node.textContent).toContain('未决记录已结束')
+    expect(node.textContent).toContain('不代表宿主操作已取消')
+    expect(node.querySelectorAll('button')).toHaveLength(0)
+    expect(closeAttempt).toHaveBeenCalledOnce()
+    const timeline = events([closed])[0]!
+    expect(timeline).toMatchObject({
+      type: 'qa.attempt.closed',
+      at: finishedAt,
+      records: [
+        { type: 'qa.attempt.started', at: startedAt },
+        { type: 'qa.attempt.closed', at: finishedAt },
+      ],
+    })
+    const previous = presentationWorkflowSummary(project, undefined, undefined)!
+    const next = presentationWorkflowSummary(project, undefined, undefined, undefined, undefined, {
+      attempts: [closed],
+    })!
+    expect(next.pages).toEqual(previous.pages)
+    expect(next.stages).toEqual(previous.stages)
+    expect(next.nextTool).toEqual(previous.nextTool)
+  } finally {
+    await act(async () => root.unmount())
+  }
+})

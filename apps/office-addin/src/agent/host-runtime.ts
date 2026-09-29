@@ -923,6 +923,7 @@ export function createOfficeHostRuntime(
           available: () =>
             options.presentation!.available() && supportsNativePowerPointMasterEditing(),
           artifact: visibleArtifact,
+          attemptsAvailable: () => options.presentation!.available(),
           documentId: options.presentation.documentId,
           readReceipt: options.presentation.readReceipt,
           inspectPage: inspectQaPage!,
@@ -1089,6 +1090,13 @@ export function createOfficeHostRuntime(
       ? {
           ...(options.presentation?.readQaAttempts && options.presentation.writeQaAttempt
             ? {
+                closeAttempt: async (expected: PresentationQaAttempt) => {
+                  try {
+                    return await qaSkill.closeAttempt(expected)
+                  } finally {
+                    notifyQa()
+                  }
+                },
                 attempts: () => {
                   const artifact = visibleArtifact()
                   if (!artifact) return []

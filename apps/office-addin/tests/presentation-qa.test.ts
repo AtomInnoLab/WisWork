@@ -1012,3 +1012,121 @@ it('rejects invalid or other-artifact attempt history before returning it to the
   expect(result.isError).toBe(true)
   expect(f.inspectPage).not.toHaveBeenCalled()
 })
+
+it('explicitly closes an unresolved screenshot record without host calls and preserves the first close time on retry', async () => {
+  const f = setup()
+  const original = {
+    version: 1 as const,
+    id: '12345678-1234-4234-8234-123456789abc',
+    documentId: 'doc',
+    projectId: 'project',
+    requestId: 'request',
+    artifactDigest: createHash('sha256').update(f.artifact.pptxBase64).digest('hex'),
+    pageId: 'first',
+    hostSlideId: 'host1',
+    startedAt: '2026-09-29T00:00:00.000Z',
+    status: 'started' as const,
+  }
+  let stored: import('../src/skills/powerpoint/presentation-qa-attempts.js').PresentationQaAttempt =
+    original
+  const writeQaAttempt = vi.fn(async (_key, value) => {
+    stored = structuredClone(value)
+  })
+  const skill = createPresentationQaSkill({
+    ...f.options,
+    available: () => false,
+    attemptsAvailable: () => true,
+    readQaAttempts: () => [stored],
+    writeQaAttempt,
+  })
+  const closed = await skill.closeAttempt(original)
+  expect(closed).toMatchObject({
+    status: 'closed',
+    errorCode: 'explicitly_closed',
+    startedAt: original.startedAt,
+    id: original.id,
+  })
+  expect(closed.finishedAt! >= original.startedAt).toBe(true)
+  expect(await skill.closeAttempt(original)).toEqual(closed)
+  expect(writeQaAttempt).toHaveBeenCalledTimes(1)
+  expect(f.inspectPage).not.toHaveBeenCalled()
+  expect(f.writeQa).not.toHaveBeenCalled()
+  const availableSkill = createPresentationQaSkill({
+    ...f.options,
+    readQaAttempts: () => [stored],
+    writeQaAttempt,
+  })
+  expect(availableSkill.tools.length).toBeGreaterThan(0)
+  expect(availableSkill.tools.some((tool) => /close/.test(tool.name))).toBe(false)
+})
+
+it('refuses ending active screenshot work and later recorded results instead of rewriting them', async () => {
+  const f = setup()
+  const writes: import('../src/skills/powerpoint/presentation-qa-attempts.js').PresentationQaAttempt[] =
+    []
+  let release!: () => void
+  const ready = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const inspection = await f.options.inspectPage()
+  f.inspectPage.mockClear()
+  let started!: () => void
+  const began = new Promise<void>((resolve) => {
+    started = resolve
+  })
+  f.inspectPage.mockImplementationOnce(async () => {
+    started()
+    await ready
+    return inspection
+  })
+  const skill = createPresentationQaSkill({
+    ...f.options,
+    readQaAttempts: () => writes.slice(-1),
+    writeQaAttempt: async (_key, value) => {
+      writes.push(structuredClone(value))
+    },
+  })
+  const capture = skill.executeTool(f.capture)
+  await began
+  const original = writes[0]
+  await expect(skill.closeAttempt(original)).rejects.toThrow('presentation_qa_busy')
+  release()
+  expect((await capture).isError).not.toBe(true)
+  await expect(skill.closeAttempt(original)).rejects.toThrow('presentation_qa_attempt_stale')
+  expect(writes.map((value) => value.status)).toEqual(['started', 'recorded'])
+})
+
+it('keeps failed close attempts recoverable and rejects changed document or captured identity', async () => {
+  const f = setup()
+  let stored:
+    import('../src/skills/powerpoint/presentation-qa-attempts.js').PresentationQaAttempt | undefined
+  let allowClose = false
+  f.inspectPage.mockRejectedValueOnce(new Error('inspection failed'))
+  const writeQaAttempt = vi.fn(async (_key, value) => {
+    if (value.status !== 'started' && !(value.status === 'closed' && allowClose))
+      throw new Error('save_failed')
+    stored = structuredClone(value)
+  })
+  const skill = createPresentationQaSkill({
+    ...f.options,
+    readQaAttempts: () => (stored ? [stored] : []),
+    writeQaAttempt,
+  })
+  expect((await skill.executeTool(f.capture)).output).toBe('presentation_qa_attempt_unresolved')
+  const original = structuredClone(stored!)
+  await expect(skill.closeAttempt(original)).rejects.toThrow('save_failed')
+  expect(stored).toEqual(original)
+  allowClose = true
+  f.documentId.mockResolvedValueOnce('other-document')
+  await expect(skill.closeAttempt(original)).rejects.toThrow('presentation_document_changed')
+  await expect(skill.closeAttempt({ ...original, hostSlideId: 'changed-host' })).rejects.toThrow(
+    'presentation_qa_attempt_stale',
+  )
+  await expect(skill.closeAttempt({ ...original, artifactDigest: 'f'.repeat(64) })).rejects.toThrow(
+    'presentation_qa_attempt_stale',
+  )
+  expect(stored).toEqual(original)
+  expect((await skill.closeAttempt(original)).status).toBe('closed')
+  expect(f.inspectPage).toHaveBeenCalledTimes(1)
+  expect(f.writeQa).not.toHaveBeenCalled()
+})

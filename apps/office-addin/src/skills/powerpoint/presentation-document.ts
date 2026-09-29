@@ -1,5 +1,6 @@
 import {
   parsePresentationQaAttempt,
+  presentationQaAttemptIdentity,
   PRESENTATION_QA_ATTEMPT_TERMINAL_RESERVE_BYTES,
   type PresentationQaAttempt,
 } from './presentation-qa-attempts.js'
@@ -243,21 +244,8 @@ export function createPresentationDocumentBinding(
   let qaAttemptWriteFailed = false
   const qaAttemptKey = (a: PresentationQaAttempt) =>
     `${a.source === 'production' ? 'production/' : ''}${a.projectId}/${a.requestId}`
-  const qaAttemptIdentity = (a: PresentationQaAttempt) =>
-    JSON.stringify([
-      a.version,
-      a.id,
-      a.source,
-      a.documentId,
-      a.projectId,
-      a.requestId,
-      a.artifactDigest,
-      a.pageId,
-      a.hostSlideId,
-      a.startedAt,
-    ])
   const qaAttemptValue = (a: PresentationQaAttempt) =>
-    JSON.stringify([qaAttemptIdentity(a), a.status, a.finishedAt, a.errorCode])
+    JSON.stringify([presentationQaAttemptIdentity(a), a.status, a.finishedAt, a.errorCode])
   const qaAttemptBytes = (raw: string, records: Record<string, PresentationQaAttempt>) =>
     new TextEncoder().encode(raw).byteLength +
     Object.values(records).filter((a) => a.status === 'started').length *
@@ -1603,7 +1591,10 @@ export function createPresentationDocumentBinding(
         const records = readRawQaAttempts(),
           previousAttempt = records[attempt.id]
         if (previousAttempt) {
-          if (qaAttemptIdentity(attempt) !== qaAttemptIdentity(previousAttempt))
+          if (
+            presentationQaAttemptIdentity(attempt) !==
+            presentationQaAttemptIdentity(previousAttempt)
+          )
             throw Error('presentation_qa_attempt_state_invalid')
           if (qaAttemptValue(attempt) === qaAttemptValue(previousAttempt)) return
           if (previousAttempt.status !== 'started' || attempt.status === 'started')

@@ -1,5 +1,6 @@
 import {
   validatePresentationQaAttempt,
+  presentationQaAttemptIdentity,
   type PresentationQaAttempt,
 } from './presentation-qa-attempts.js'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
@@ -73,6 +74,7 @@ export interface PresentationQaOptions {
   ): Promise<{ slideId: string; base64: string }>
   readQa(key: string): PresentationQaRecord | undefined
   writeQa(key: string, record: PresentationQaRecord): Promise<void>
+  attemptsAvailable?(): boolean
   readQaAttempts?(key: string): PresentationQaAttempt[]
   writeQaAttempt?(key: string, attempt: PresentationQaAttempt): Promise<void>
   vfs: InMemoryVfs
@@ -409,6 +411,7 @@ export function presentationQaMutationScope(
 
 export function createPresentationQaSkill(options: PresentationQaOptions): AgentSkill & {
   clear(): void
+  closeAttempt(expected: PresentationQaAttempt): Promise<PresentationQaAttempt>
   beginMutation(hostSlideIds?: readonly string[]): void
   endMutation(): void
 } {
@@ -441,6 +444,84 @@ export function createPresentationQaSkill(options: PresentationQaOptions): Agent
     clear() {
       epoch++
       live.clear()
+    },
+    async closeAttempt(supplied) {
+      if (busy || mutationActive) throw new Error('presentation_qa_busy')
+      const expected = structuredClone(supplied)
+      if (
+        !options.readQaAttempts ||
+        !options.writeQaAttempt ||
+        !validatePresentationQaAttempt(expected) ||
+        (expected.status !== 'started' && expected.status !== 'closed')
+      )
+        throw new Error('presentation_qa_attempt_state_invalid')
+      busy = true
+      const captured = epoch
+      try {
+        const available = () => options.attemptsAvailable?.() ?? options.available()
+        if (!available()) throw new Error('presentation_unavailable')
+        const artifact = options.artifact(expected.projectId)
+        if (!artifact) throw new Error('presentation_restore_required')
+        const content = presentationArtifactContent(artifact)
+        const pages = JSON.stringify(artifact.pages)
+        const key = presentationImportKey(artifact)
+        const current = async () => {
+          if (captured !== epoch || !available()) throw new Error('presentation_qa_attempt_stale')
+          if (
+            (await options.documentId()) !== expected.documentId ||
+            artifact.documentId !== expected.documentId
+          )
+            throw new Error('presentation_document_changed')
+          if (
+            captured !== epoch ||
+            !available() ||
+            options.artifact(expected.projectId) !== artifact ||
+            presentationArtifactContent(artifact) !== content ||
+            JSON.stringify(artifact.pages) !== pages ||
+            presentationImportKey(artifact) !== key
+          )
+            throw new Error('presentation_qa_attempt_stale')
+        }
+        await current()
+        if (
+          expected.projectId !== artifact.projectId ||
+          expected.requestId !== artifact.requestId ||
+          expected.source !== (artifact.pagePptxBase64 !== undefined ? 'production' : undefined) ||
+          !artifact.pages?.some((page) => page.id === expected.pageId) ||
+          expected.artifactDigest !== (await digest(new TextEncoder().encode(content)))
+        )
+          throw new Error('presentation_qa_attempt_stale')
+        await current()
+        const stored = options.readQaAttempts(key).find((item) => item.id === expected.id)
+        if (
+          !validatePresentationQaAttempt(stored) ||
+          presentationQaAttemptIdentity(stored) !== presentationQaAttemptIdentity(expected)
+        )
+          throw new Error('presentation_qa_attempt_stale')
+        if (stored.status === 'closed') return structuredClone(stored)
+        if (stored.status !== 'started' || expected.status !== 'started')
+          throw new Error('presentation_qa_attempt_stale')
+        const closed: PresentationQaAttempt = {
+          ...stored,
+          status: 'closed',
+          errorCode: 'explicitly_closed',
+          finishedAt: new Date(Math.max(Date.now(), Date.parse(stored.startedAt))).toISOString(),
+        }
+        await current()
+        await options.writeQaAttempt(key, closed)
+        await current()
+        const saved = options.readQaAttempts(key).find((item) => item.id === closed.id)
+        if (
+          !validatePresentationQaAttempt(saved) ||
+          saved.status !== 'closed' ||
+          saved.finishedAt !== closed.finishedAt ||
+          presentationQaAttemptIdentity(saved) !== presentationQaAttemptIdentity(closed)
+        )
+          throw new Error('presentation_qa_attempt_stale')
+        return structuredClone(saved)
+      } finally {
+        busy = false
+      }
     },
     async executeTool(call, signal) {
       if (busy || mutationActive)

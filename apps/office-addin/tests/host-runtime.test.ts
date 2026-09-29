@@ -639,6 +639,16 @@ it('rejects an injected production attempt for the visible restored whole-deck a
     expect(() => runtime.qa!.attempts!()).toThrow('presentation_qa_attempt_state_invalid')
     productionSource = false
     expect(runtime.qa!.attempts!()).toHaveLength(1)
+    const listener = vi.fn()
+    runtime.qa!.subscribe(listener)
+    const expected = runtime.qa!.attempts!()[0]!
+    await expect(
+      runtime.qa!.closeAttempt!({ ...expected, documentId: 'other-doc' }),
+    ).rejects.toThrow('presentation_document_changed')
+    await expect(runtime.qa!.closeAttempt!({ ...expected, source: 'production' })).rejects.toThrow(
+      'presentation_qa_attempt_stale',
+    )
+    expect(listener).toHaveBeenCalledTimes(2)
   } finally {
     runtime.dispose()
   }

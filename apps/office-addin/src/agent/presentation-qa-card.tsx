@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useRef, useState, useSyncExternalStore } from 'react'
 import type { PresentationQaRecord } from '../skills/powerpoint/presentation-qa.js'
 import {
   validatePresentationQaAttempt,
@@ -7,6 +7,7 @@ import {
 export interface PresentationQaController {
   read(): PresentationQaRecord | undefined
   attempts?(): PresentationQaAttempt[]
+  closeAttempt?(expected: PresentationQaAttempt): Promise<PresentationQaAttempt>
   revision(): number
   subscribe(listener: () => void): () => void
 }
@@ -20,6 +21,10 @@ export function PresentationQaCard({
   disabled?: boolean
 }) {
   useSyncExternalStore(controller.subscribe, controller.revision, controller.revision)
+  const [pendingClose, setPendingClose] = useState<PresentationQaAttempt>()
+  const [closing, setClosing] = useState(false)
+  const [closeError, setCloseError] = useState(false)
+  const busy = useRef(false)
   let record: PresentationQaRecord | undefined
   let readError = false
   try {
@@ -60,6 +65,7 @@ export function PresentationQaCard({
                   waiting: '等待截图能力；可在能力恢复后按明确请求重试',
                   failed: '采集未完成，请核对状态后再决定是否重试',
                   cancelled: '采集已取消，未认证截图或页面状态',
+                  closed: '未决记录已结束；不代表宿主操作已取消或 QA 通过',
                 }[attempt.status]
               }
             </strong>
@@ -71,6 +77,61 @@ export function PresentationQaCard({
                 <time dateTime={attempt.finishedAt}>{attempt.finishedAt}</time> · 结束回执
               </p>
             )}
+            {attempt.status === 'started' &&
+              controller.closeAttempt &&
+              (pendingClose?.id === attempt.id ? (
+                <div>
+                  <p>只结束这条未决记录，不会取消实际宿主操作，也不代表截图或 QA 通过。</p>
+                  <button
+                    type="button"
+                    disabled={disabled || closing}
+                    onClick={() => {
+                      if (busy.current || disabled || !pendingClose) return
+                      const expected = structuredClone(pendingClose)
+                      if (JSON.stringify(expected) !== JSON.stringify(attempt)) {
+                        setCloseError(true)
+                        return
+                      }
+                      busy.current = true
+                      setClosing(true)
+                      setCloseError(false)
+                      void controller.closeAttempt!(expected)
+                        .then(
+                          () => setPendingClose(undefined),
+                          () => setCloseError(true),
+                        )
+                        .finally(() => {
+                          busy.current = false
+                          setClosing(false)
+                        })
+                    }}
+                  >
+                    确认结束记录
+                  </button>
+                  <button
+                    type="button"
+                    disabled={disabled || closing}
+                    onClick={() => {
+                      setPendingClose(undefined)
+                      setCloseError(false)
+                    }}
+                  >
+                    取消
+                  </button>
+                  {closeError && <p role="alert">记录未能确认结束；请刷新核对后再决定是否重试。</p>}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={disabled || closing}
+                  onClick={() => {
+                    setPendingClose(structuredClone(attempt))
+                    setCloseError(false)
+                  }}
+                >
+                  结束未决记录
+                </button>
+              ))}
           </li>
         ))}
       </ol>
