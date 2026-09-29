@@ -15,6 +15,7 @@ export type {
   ToolExecutionSuspension,
 } from './types'
 export { suspendToolExecution } from './types'
+export { parseAgentResumeMessages } from './resume.js'
 export { composeSkills } from './skill'
 export type { AgentSkill } from './skill'
 export { AgentLoop, COMPLETED_VIA_TOOLS_TEXT, sanitizeAgentPayload } from './loop'

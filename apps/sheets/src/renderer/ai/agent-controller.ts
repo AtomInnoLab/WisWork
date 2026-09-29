@@ -35,6 +35,9 @@ export const createAgentController = <TSnapshot>(
     run(instruction, images) {
       return inner?.run(instruction, images) ?? false
     },
+    resume(messages) {
+      return inner?.resume(messages) ?? false
+    },
     stop() {
       inner?.stop()
     },

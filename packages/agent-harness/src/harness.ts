@@ -4,6 +4,7 @@ import {
   type AgentLoopEvents,
   type AgentLoopOptions,
   type AgentMessage,
+  parseAgentResumeMessages,
 } from '@wiswork/agent-core'
 import type { SessionNotification } from '@agentclientprotocol/sdk'
 import { acpNotification, acpToolFinished, acpToolStarted } from './acp-events'
@@ -25,6 +26,7 @@ export interface AgentHarness<_TSnapshot> {
   /** Subscribe to ACP v1 `session/update` notifications for frontend presentation. */
   subscribeAcp(listener: (notification: SessionNotification) => void): () => void
   run(instruction: string, images?: AgentImage[]): boolean
+  resume(messages: readonly AgentMessage[]): boolean
   stop(): void
   reset(): void
   restore(messages: readonly AgentMessage[]): void
@@ -116,7 +118,7 @@ export function createAgentHarness<TSnapshot>(
       onTurnEnd: () => {
         if (!isCurrent(generation)) return
         finishMessage()
-        invoke(() => hostEvents?.onTurnEnd?.())
+        return hostEvents?.onTurnEnd?.()
       },
       onDone: (result) => {
         if (!isCurrent(generation)) return
@@ -175,6 +177,18 @@ export function createAgentHarness<TSnapshot>(
         }
       }
       return true
+    },
+    resume(messages) {
+      if (disposed || launchPending || loop.busy) return false
+      const restored = parseAgentResumeMessages(messages)
+      if (!restored) return false
+      const generation = currentSnapshot.generation + 1
+      loopOptions.events = eventsFor(generation)
+      launchPending = true
+      publish({ status: 'running', busy: true, generation })
+      if (!isCurrent(generation) || !launchPending) return false
+      launchPending = false
+      return loop.resume(restored)
     },
     stop() {
       if (disposed) return

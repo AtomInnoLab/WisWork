@@ -1,4 +1,5 @@
 import type { AgentSkill } from './skill'
+import { parseAgentResumeMessages } from './resume.js'
 import type {
   AgentImage,
   AgentMessage,
@@ -39,7 +40,7 @@ export interface AgentLoopEvents<TSnapshot> {
   onToolStart?(call: AgentToolCall): void
   onToolExecuted?(event: ToolExecutedEvent<TSnapshot>): void
   /** a turn requested tools and they ran; the loop is going back to the model */
-  onTurnEnd?(): void
+  onTurnEnd?(): void | Promise<void>
   onDone?(result: AgentRunResult): void
   onError?(error: string): void
 }
@@ -318,6 +319,49 @@ export class AgentLoop<TSnapshot = unknown> {
       }
     }
     this.trimHistory()
+  }
+
+  /** Resume a complete text checkpoint without adding a second user request. */
+  resume(messages: readonly AgentMessage[]): boolean {
+    if (this.running) return false
+    const restored = parseAgentResumeMessages(messages)
+    if (!restored) return false
+    this.history = restored
+    this.running = true
+    this.cancelled = false
+    this.mutationSeen = false
+    this.inputParseFails = 0
+    this.lastToolBatchSignature = ''
+    this.identicalToolBatches = 0
+    let userIndex = restored.length - 1
+    while (restored[userIndex]!.role !== 'user') userIndex--
+    this.runUserMsg = restored[userIndex]!
+    this.turns = restored.slice(userIndex).filter((message) => message.role === 'tool').length
+    for (const message of restored.slice(userIndex)) {
+      if (message.role !== 'assistant' || !message.toolCalls) continue
+      const signature = stableJson(
+        message.toolCalls.map((call) => ({
+          name: call.name,
+          input: call.input,
+          inputError: call.inputError,
+          truncated: call.truncated,
+        })),
+      )
+      this.identicalToolBatches =
+        signature === this.lastToolBatchSignature ? this.identicalToolBatches + 1 : 1
+      this.lastToolBatchSignature = signature
+    }
+    this.finalizing =
+      (this.options.maxTurns !== undefined && this.turns >= this.options.maxTurns) ||
+      this.identicalToolBatches >= MAX_IDENTICAL_TOOL_BATCHES
+    if (this.finalizing) this.history.push({ role: 'user', text: TURN_LIMIT_NOTE })
+    this.abortController = new AbortController()
+    try {
+      this.startTurn()
+    } catch (error) {
+      this.failRun(error, this.generation)
+    }
+    return true
   }
 
   /** images: inline attachments for this user turn (vision input; see AgentImage) */
@@ -827,14 +871,25 @@ export class AgentLoop<TSnapshot = unknown> {
     }
 
     this.turns++
+    // Long runs (e.g. page-by-page generation) over budget mid-way: truncate stale tool outputs so each turn doesn't resend a huge payload
+    this.squashStaleToolOutputs()
+    try {
+      await events?.onTurnEnd?.()
+    } catch (error) {
+      if (generation !== this.generation) return
+      if (!this.cancelled) throw error
+    }
+    if (generation !== this.generation) return
+    if (this.cancelled) {
+      this.running = false
+      this.runUserMsg = null
+      events?.onDone?.({ text: this.turnText, cancelled: true, turnLimit: false })
+      return
+    }
     if (this.options.maxTurns !== undefined && this.turns >= this.options.maxTurns) {
-      // Don't throw away the context already gathered: append one no-tools turn for a partial answer
       this.finalizing = true
       this.history.push({ role: 'user', text: TURN_LIMIT_NOTE })
     }
-    // Long runs (e.g. page-by-page generation) over budget mid-way: truncate stale tool outputs so each turn doesn't resend a huge payload
-    this.squashStaleToolOutputs()
-    events?.onTurnEnd?.()
     this.startTurn()
   }
 

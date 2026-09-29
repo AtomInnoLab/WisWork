@@ -46,6 +46,41 @@ function options(
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('createAgentHarness', () => {
+  it('resumes a paired tool checkpoint with normal lifecycle and no additional user request', () => {
+    const transport = manualTransport()
+    const stream = vi.spyOn(transport, 'stream')
+    const harness = createAgentHarness(options(transport))
+    const messages: AgentMessage[] = [
+      { role: 'user', text: 'Read' },
+      { role: 'assistant', text: '', toolCalls: [{ id: 'call', name: 'read', input: {} }] },
+      { role: 'tool', results: [{ id: 'call', name: 'read', output: 'Saved' }] },
+    ]
+    expect(harness.resume(messages.slice(0, 2))).toBe(false)
+    expect(harness.snapshot.busy).toBe(false)
+    expect(harness.resume(messages)).toBe(true)
+    expect(harness.snapshot).toMatchObject({ status: 'running', busy: true, generation: 1 })
+    expect(stream.mock.calls[0]![0].messages).toEqual(messages)
+    transport.callbacks[0]!.onDone()
+    expect(harness.snapshot).toMatchObject({ status: 'done', busy: false })
+    harness.dispose()
+    expect(harness.resume(messages)).toBe(false)
+  })
+  it('does not resume when a subscriber resets the launch', () => {
+    const transport = manualTransport()
+    const harness = createAgentHarness(options(transport))
+    harness.subscribe(() => {
+      if (harness.snapshot.busy) harness.reset()
+    })
+    expect(
+      harness.resume([
+        { role: 'user', text: 'Read' },
+        { role: 'assistant', text: '', toolCalls: [{ id: 'call', name: 'read', input: {} }] },
+        { role: 'tool', results: [{ id: 'call', name: 'read', output: 'Saved' }] },
+      ]),
+    ).toBe(false)
+    expect(transport.callbacks).toHaveLength(0)
+    expect(harness.snapshot.busy).toBe(false)
+  })
   it('publishes running and done state and rejects empty or concurrent runs', async () => {
     const transport = manualTransport()
     const harness = createAgentHarness(options(transport))
