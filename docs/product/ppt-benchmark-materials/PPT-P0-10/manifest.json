@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "caseId": "PPT-P0-10",
+  "candidateOnly": true,
+  "source": {
+    "officialUrl": "https://www.ipcc.ch/site/assets/uploads/sites/3/2022/03/SROCC_FullReport_FINAL.pdf",
+    "localPath": "/tmp/wiswork-p0-10-srocc-full-report.pdf",
+    "environmentOverride": "WISWORK_P0_10_PDF",
+    "bytes": 51870607,
+    "sha256": "cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+    "pdfPages": 766,
+    "assessmentYear": 2019,
+    "editionYear": 2022,
+    "literatureAcceptedThrough": "2019-05-15",
+    "doi": "10.1017/9781009157964"
+  },
+  "scopeHumanConfirmed": false,
+  "files": {
+    "README.md": "3a42f10adb5ab0799557f7958b90640988fd7585f9245247186d66cc7d5ef2b0",
+    "basis.json": "bd6261d251514062c33b7bfb15980001ed1e310280ebc304590cf78a5f23e7a4",
+    "reference-plan.json": "b7570dce459a96a33fee499d5543b516c39c4620ad33caecef8fc8a0c8de32be",
+    "reference-deck.json": "0f92d80715ee7a866a97682103deac10e9da0f0fd139dfb397cf8b107cdd43f8",
+    "p0-10-reference.pptx": "f8e151b036fd41ff0aea608fb26592c57f2f63e30f27dd3e8db82928575f3315",
+    "generate-reference.cjs": "3f6f68a366cfc04847cd0fe93606d6721c2501188c78abbca63cdd3439c3febb",
+    "verify-materials.mjs": "7229fadbb0b792e9c283775be124f2eca9326fa962554c078d2850ccbc29add6"
+  }
+}

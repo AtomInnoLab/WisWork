@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "caseId": "PPT-P0-05",
+  "analyticalAsOf": "2024-12-01",
+  "captureIsNotHistoricalSnapshot": true,
+  "status": "candidate_pending_review_and_actual_powerpoint",
+  "sources": [
+    {
+      "id": "google",
+      "file": "google-oracle-official.pdf",
+      "url": "https://www.supremecourt.gov/opinions/20pdf/18-956_new_0e04.pdf",
+      "docketUrl": "https://www.supremecourt.gov/docket/docketfiles/html/public/18-956.html",
+      "caseName": "Google LLC v. Oracle America, Inc.",
+      "docket": "18-956",
+      "court": "Supreme Court of the United States",
+      "decisionDate": "2021-04-05",
+      "judgmentIssuedDate": "2021-05-07",
+      "disposition": "reversed_and_remanded",
+      "pdfPages": 62,
+      "majorityPdfPages": [5, 40],
+      "majorityPrintedPages": [1, 36],
+      "artifactStatus": "official_slip_opinion_subject_to_formal_revision",
+      "bytes": 329629,
+      "sha256": "44159d1c4bea93306be8eefdfa7d43d0aa918380b0b7a8abc22e6c10649079e9",
+      "retrievedDate": "2026-09-29"
+    },
+    {
+      "id": "warhol",
+      "file": "warhol-goldsmith-official.pdf",
+      "url": "https://www.supremecourt.gov/opinions/22pdf/21-869_87ad.pdf",
+      "docketUrl": "https://www.supremecourt.gov/docket/docketfiles/html/public/21-869.html",
+      "caseName": "Andy Warhol Foundation for the Visual Arts, Inc. v. Goldsmith",
+      "docket": "21-869",
+      "court": "Supreme Court of the United States",
+      "decisionDate": "2023-05-18",
+      "judgmentIssuedDate": "2023-06-20",
+      "disposition": "affirmed",
+      "pdfPages": 87,
+      "majorityPdfPages": [7, 44],
+      "majorityPrintedPages": [1, 38],
+      "artifactStatus": "official_slip_opinion_subject_to_formal_revision",
+      "bytes": 1767072,
+      "sha256": "411513bf66427db806d1fcbaeb0c37cd0f35a509eb40506f417fa275ae4e343a",
+      "retrievedDate": "2026-09-29"
+    }
+  ],
+  "pending": [
+    "legal_review",
+    "privacy_review",
+    "embedded_image_rights_review",
+    "layout_review",
+    "actual_powerpoint_task"
+  ]
+}

@@ -1,0 +1,206 @@
+{
+  "version": 1,
+  "caseId": "PPT-P0-05",
+  "asOf": "2024-12-01",
+  "jurisdiction": "United States federal copyright law; Supreme Court",
+  "audience": "内部法律研究比较；非个案法律意见",
+  "sourcePositionConvention": "PDF物理页从1开始；正文印刷页与syllabus页独立编号。syllabus不是法院意见。",
+  "statements": [
+    {
+      "id": "g-facts",
+      "kind": "reported_facts",
+      "text": "Google案涉及Android重新实现Java接口声明代码；事实背景须与法院的法律评价分开。",
+      "refs": [
+        {
+          "sourceId": "google",
+          "pdfPages": [5, 14],
+          "printedPages": [1, 10],
+          "section": "I background and II procedural history (II starts PDF13 / printed9)"
+        }
+      ]
+    },
+    {
+      "id": "g-question",
+      "kind": "issue",
+      "text": "争点包括可版权性与合理使用；最高法院为本案分析假定可版权性，未裁定所有API均可或不可版权。",
+      "refs": [
+        {
+          "sourceId": "google",
+          "pdfPages": [18, 19],
+          "printedPages": [14, 15],
+          "section": "III B: questions presented (PDF18 / printed14) and copyrightability assumed only for argument (PDF19 / printed15); IV starts later on PDF19",
+          "anchors": [
+            {
+              "pdfPage": 18,
+              "text": "poses two questions"
+            },
+            {
+              "pdfPage": 19,
+              "text": "We shall assume"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "g-holding",
+      "kind": "court_judgment",
+      "text": "法院在该接口重新实现的具体情境下认定合理使用，撤销并发回。",
+      "refs": [
+        {
+          "sourceId": "google",
+          "pdfPages": [39, 40],
+          "printedPages": [35, 36],
+          "section": "VI: concluding analysis on PDF39 / printed35 and reversed/remanded order continuing PDF40 / printed36"
+        }
+      ]
+    },
+    {
+      "id": "w-facts",
+      "kind": "reported_facts",
+      "text": "Warhol案涉及基于Goldsmith摄影的Orange Prince及2016年杂志商业许可。",
+      "refs": [
+        {
+          "sourceId": "warhol",
+          "pdfPages": [7, 18],
+          "printedPages": [1, 12],
+          "section": "I: facts and procedure"
+        }
+      ]
+    },
+    {
+      "id": "w-holding",
+      "kind": "court_judgment",
+      "text": "法院就该商业许可用途认定第一因素不利于AWF并维持判决；本案审查范围不能当成所有用途的最终侵权结论。",
+      "refs": [
+        {
+          "sourceId": "warhol",
+          "pdfPages": [18, 19],
+          "printedPages": [12, 13],
+          "section": "II: specific use and first factor"
+        },
+        {
+          "sourceId": "warhol",
+          "pdfPages": [43, 44],
+          "printedPages": [37, 38],
+          "section": "end of II B on PDF43 / printed37; III conclusion on PDF44 / printed38"
+        }
+      ]
+    },
+    {
+      "id": "w-limit",
+      "kind": "express_limitation",
+      "text": "多数意见明确不评价原Prince Series的创作、展示或出售；不同用途需另行分析。",
+      "refs": [
+        {
+          "sourceId": "warhol",
+          "pdfPages": [27, 27],
+          "printedPages": [21, 21],
+          "section": "specific alleged use; footnotes 9-10"
+        }
+      ]
+    },
+    {
+      "id": "comparison",
+      "kind": "research_inference_not_holding",
+      "text": "两案结果不能仅归因于作品是否具有新含义：作品性质、具体用途及市场关系不同。该比较是待法律审阅的分析框架，不是法院对任意第三案的规则。",
+      "refs": [
+        {
+          "sourceId": "google",
+          "pdfPages": [26, 32],
+          "printedPages": [22, 28],
+          "section": "nature and purpose of API use"
+        },
+        {
+          "sourceId": "warhol",
+          "pdfPages": [27, 29],
+          "printedPages": [21, 23],
+          "section": "specific licensing use; discussion of Google"
+        }
+      ]
+    }
+  ],
+  "slides": [
+    {
+      "page": 1,
+      "title": "范围与来源",
+      "statementIds": [],
+      "purpose": "标注法域、as-of、两案号、官方来源、非个案建议及待审状态"
+    },
+    {
+      "page": 2,
+      "title": "Google：事实与程序",
+      "statementIds": ["g-facts"],
+      "purpose": "事实/程序时间线；不把事实叙述当法院法律判断"
+    },
+    {
+      "page": 3,
+      "title": "Google：争点与受限判断",
+      "statementIds": ["g-question", "g-holding"],
+      "purpose": "假定可版权性与具体合理使用判断分栏"
+    },
+    {
+      "page": 4,
+      "title": "Warhol：事实与程序",
+      "statementIds": ["w-facts"],
+      "purpose": "按具体许可使用列事实和程序"
+    },
+    {
+      "page": 5,
+      "title": "Warhol：判断与明确限定",
+      "statementIds": ["w-holding", "w-limit"],
+      "purpose": "第一因素与未评价用途分栏"
+    },
+    {
+      "page": 6,
+      "title": "两案比较矩阵",
+      "statementIds": ["comparison"],
+      "purpose": "作品/具体用途/审查问题/结果/限定逐栏比较，不添加胜负预测"
+    },
+    {
+      "page": 7,
+      "title": "差异归因与不得泛化",
+      "statementIds": ["g-question", "w-limit", "comparison"],
+      "purpose": "标明分析推论，禁止API一律自由、艺术变形一律侵权、商用一律不合理使用"
+    },
+    {
+      "page": 8,
+      "title": "核验与人工审阅清单",
+      "statementIds": [],
+      "purpose": "SHA、页码、syllabus/多数/异议区分、法律及隐私/图像权利/布局/PowerPoint实机待审"
+    }
+  ],
+  "comparisonRows": [
+    {
+      "dimension": "争议对象",
+      "google": "软件接口声明代码",
+      "warhol": "摄影衍生图像的特定杂志许可",
+      "statementIds": ["g-facts", "w-facts"]
+    },
+    {
+      "dimension": "审查范围",
+      "google": "假定可版权性后分析具体合理使用",
+      "warhol": "本案许可用途的第一因素",
+      "statementIds": ["g-question", "w-holding", "w-limit"]
+    },
+    {
+      "dimension": "程序结果",
+      "google": "撤销并发回",
+      "warhol": "维持",
+      "statementIds": ["g-holding", "w-holding"]
+    },
+    {
+      "dimension": "差异归因",
+      "google": "接口功能与重新实现情境须核对",
+      "warhol": "具体商业许可用途及市场关系须核对",
+      "statementIds": ["comparison"]
+    }
+  ],
+  "prohibitedGeneralizations": [
+    "所有API可以无许可复制",
+    "所有改编艺术均侵权或均合理使用",
+    "商业使用必然不能合理使用",
+    "仅凭新含义即可证明合理使用",
+    "两个裁判可代替任意第三案法律建议"
+  ]
+}

@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "historicalAsOf": "2024-12-01",
+  "basis": [
+    {
+      "id": "old-opening",
+      "sourceId": "old",
+      "pdfPage": 29,
+      "extractPath": "extracts/old-pdf-page-29.txt",
+      "offsetUnit": "utf16_code_unit",
+      "offset": 1117,
+      "text": "opinion or otherwise if:",
+      "window": {
+        "offset": 0,
+        "maxChars": 2719
+      },
+      "scope": "literal extraction only; professional/legal applicability not verified"
+    },
+    {
+      "id": "old-d",
+      "sourceId": "old",
+      "pdfPage": 29,
+      "extractPath": "extracts/old-pdf-page-29.txt",
+      "offsetUnit": "utf16_code_unit",
+      "offset": 1468,
+      "text": "(d) the expert has reliably applied the principles and meth-",
+      "window": {
+        "offset": 0,
+        "maxChars": 2719
+      },
+      "scope": "literal extraction only; professional/legal applicability not verified"
+    },
+    {
+      "id": "new-opening",
+      "sourceId": "historical",
+      "pdfPage": 30,
+      "extractPath": "extracts/historical-pdf-page-30.txt",
+      "offsetUnit": "utf16_code_unit",
+      "offset": 2680,
+      "text": "opinion or otherwise if the proponent demonstrates to the court\nthat it is more likely than not that:",
+      "window": {
+        "offset": 0,
+        "maxChars": 2782
+      },
+      "scope": "literal extraction only; professional/legal applicability not verified"
+    },
+    {
+      "id": "new-d",
+      "sourceId": "historical",
+      "pdfPage": 31,
+      "extractPath": "extracts/historical-pdf-page-31.txt",
+      "offsetUnit": "utf16_code_unit",
+      "offset": 403,
+      "text": "(d) the expert’s opinion reflects a reliable application of the\n     principles and methods to the facts of the case.",
+      "window": {
+        "offset": 0,
+        "maxChars": 2861
+      },
+      "scope": "literal extraction only; professional/legal applicability not verified"
+    },
+    {
+      "id": "effective-qualified",
+      "sourceId": "amendment",
+      "pdfPage": 194,
+      "extractPath": "extracts/amendment-pdf-page-194.txt",
+      "offsetUnit": "utf16_code_unit",
+      "offset": 354,
+      "text": "December 1, 2023, and shall govern in all proceedings thereafter commenced and, insofar as just\nand practicable, all proceedings then pending.",
+      "window": {
+        "offset": 0,
+        "maxChars": 710
+      },
+      "scope": "literal extraction only; professional/legal applicability not verified"
+    },
+    {
+      "id": "note-standard",
+      "sourceId": "amendment",
+      "pdfPage": 210,
+      "extractPath": "extracts/amendment-pdf-page-210.txt",
+      "offsetUnit": "utf16_code_unit",
+      "offset": 511,
+      "text": "requirements set forth in the rule. See Rule 104(a).",
+      "window": {
+        "offset": 0,
+        "maxChars": 1883
+      },
+      "scope": "literal extraction only; professional/legal applicability not verified"
+    },
+    {
+      "id": "note-weight-limit",
+      "sourceId": "amendment",
+      "pdfPage": 211,
+      "extractPath": "extracts/amendment-pdf-page-211.txt",
+      "offsetUnit": "utf16_code_unit",
+      "offset": 660,
+      "text": "Some challenges to expert testimony will raise\nmatters of weight rather than admissibility",
+      "window": {
+        "offset": 0,
+        "maxChars": 1950
+      },
+      "scope": "literal extraction only; professional/legal applicability not verified"
+    },
+    {
+      "id": "note-scope",
+      "sourceId": "amendment",
+      "pdfPage": 212,
+      "extractPath": "extracts/amendment-pdf-page-212.txt",
+      "offsetUnit": "utf16_code_unit",
+      "offset": 659,
+      "text": "that each expert opinion must stay within the bounds of what\ncan be concluded from a reliable application of the expert’s\nbasis and methodology.",
+      "window": {
+        "offset": 0,
+        "maxChars": 1893
+      },
+      "scope": "literal extraction only; professional/legal applicability not verified"
+    },
+    {
+      "id": "note-certainty-limit",
+      "sourceId": "amendment",
+      "pdfPage": 213,
+      "extractPath": "extracts/amendment-pdf-page-213.txt",
+      "offsetUnit": "utf16_code_unit",
+      "offset": 238,
+      "text": "This amendment does not, however, bar testimony that\ncomports with substantive law requiring opinions to a\nparticular degree of certainty.",
+      "window": {
+        "offset": 0,
+        "maxChars": 925
+      },
+      "scope": "literal extraction only; professional/legal applicability not verified"
+    },
+    {
+      "id": "note-procedure-limit",
+      "sourceId": "amendment",
+      "pdfPage": 213,
+      "extractPath": "extracts/amendment-pdf-page-213.txt",
+      "offsetUnit": "utf16_code_unit",
+      "offset": 386,
+      "text": "Nothing in the amendment imposes any new,\nspecific procedures.",
+      "window": {
+        "offset": 0,
+        "maxChars": 925
+      },
+      "scope": "literal extraction only; professional/legal applicability not verified"
+    }
+  ]
+}

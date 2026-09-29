@@ -1,0 +1,51 @@
+15                    FEDERAL RULES OF EVIDENCE                 Rule 704
+
+      (d) a person authorized by statute to be present.
+(As amended Mar. 2, 1987, eff. Oct. 1, 1987; Apr. 25, 1988, eff. Nov.
+1, 1988; Pub. L. 100–690, title VII, § 7075(a), Nov. 18, 1988, 102 Stat.
+4405; Apr. 24, 1998, eff. Dec. 1, 1998; Apr. 26, 2011, eff. Dec. 1, 2011.)
+
+      ARTICLE VII. OPINIONS AND EXPERT TESTIMONY
+Rule 701. Opinion Testimony by Lay Witnesses
+  If a witness is not testifying as an expert, testimony in the form
+of an opinion is limited to one that is:
+       (a) rationally based on the witness’s perception;
+       (b) helpful to clearly understanding the witness’s testimony
+    or to determining a fact in issue; and
+       (c) not based on scientific, technical, or other specialized
+    knowledge within the scope of Rule 702.
+(As amended Mar. 2, 1987, eff. Oct. 1, 1987; Apr. 17, 2000, eff. Dec.
+1, 2000; Apr. 26, 2011, eff. Dec. 1, 2011.)
+Rule 702. Testimony by Expert Witnesses
+  A witness who is qualified as an expert by knowledge, skill, ex-
+perience, training, or education may testify in the form of an
+opinion or otherwise if:
+      (a) the expert’s scientific, technical, or other specialized
+    knowledge will help the trier of fact to understand the evi-
+    dence or to determine a fact in issue;
+      (b) the testimony is based on sufficient facts or data;
+      (c) the testimony is the product of reliable principles and
+    methods; and
+      (d) the expert has reliably applied the principles and meth-
+    ods to the facts of the case.
+(As amended Apr. 17, 2000, eff. Dec. 1, 2000; Apr. 26, 2011, eff. Dec.
+1, 2011.)
+Rule 703. Bases of an Expert’s Opinion Testimony
+  An expert may base an opinion on facts or data in the case that
+the expert has been made aware of or personally observed. If ex-
+perts in the particular field would reasonably rely on those kinds
+of facts or data in forming an opinion on the subject, they need
+not be admissible for the opinion to be admitted. But if the facts
+or data would otherwise be inadmissible, the proponent of the
+opinion may disclose them to the jury only if their probative
+value in helping the jury evaluate the opinion substantially out-
+weighs their prejudicial effect.
+(As amended Mar. 2, 1987, eff. Oct. 1, 1987; Apr. 17, 2000, eff. Dec.
+1, 2000; Apr. 26, 2011, eff. Dec. 1, 2011.)
+Rule 704. Opinion on an Ultimate Issue
+  (a) IN GENERAL—NOT AUTOMATICALLY OBJECTIONABLE. An opin-
+ion is not objectionable just because it embraces an ultimate
+issue.
+  (b) EXCEPTION. In a criminal case, an expert witness must not
+state an opinion about whether the defendant did or did not have
+a mental state or condition that constitutes an element of the

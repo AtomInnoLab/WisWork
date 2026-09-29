@@ -1,0 +1,40 @@
+     2              FEDERAL RULES OF EVIDENCE
+
+
+
+
+16                  principles and methods to the facts of the
+
+17                  case.
+
+                            Committee Note
+
+            Rule 702 has been amended in two respects:
+
+              (1) First, the rule has been amended to clarify and
+     emphasize that expert testimony may not be admitted unless
+     the proponent demonstrates to the court that it is more likely
+     than not that the proffered testimony meets the admissibility
+     requirements set forth in the rule. See Rule 104(a). This is
+     the preponderance of the evidence standard that applies to
+     most of the admissibility requirements set forth in the
+     evidence rules. See Bourjaily v. United States, 483 U.S. 171,
+     175 (1987) (“The preponderance standard ensures that
+     before admitting evidence, the court will have found it more
+     likely than not that the technical issues and policy concerns
+     addressed by the Federal Rules of Evidence have been
+     afforded due consideration.”); Huddleston v. United States,
+     485 U.S. 681, 687 n.5 (1988) (“preliminary factual findings
+     under Rule 104(a) are subject to the preponderance-of-the-
+     evidence standard”). But many courts have held that the
+     critical questions of the sufficiency of an expert’s basis, and
+     the application of the expert’s methodology, are questions of
+     weight and not admissibility. These rulings are an incorrect
+     application of Rules 702 and 104(a).
+
+             There is no intent to raise any negative inference
+     regarding the applicability of the Rule 104(a) standard of
+     proof for other rules. The Committee concluded that
+     emphasizing the preponderance standard in Rule 702
+     specifically was made necessary by the courts that have
+     failed to apply correctly the reliability requirements of that

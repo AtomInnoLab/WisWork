@@ -1,0 +1,46 @@
+{
+  "caseId": "PPT-P0-08",
+  "checkedDate": "2026-09-29",
+  "status": "originals_not_frozen",
+  "localOriginalsComplete": false,
+  "browserReadIsNotOriginalBytes": true,
+  "attempts": [
+    {
+      "source": "sony-form20f",
+      "url": "https://www.sony.com/en/SonyInfo/IR/library/FY2023_20F_PDF.pdf",
+      "transport": "HTTPS via configured proxy",
+      "result": "HTTP 403"
+    },
+    {
+      "source": "sony-form20f",
+      "url": "https://www.sony.com/en/SonyInfo/IR/library/FY2023_20F_PDF.pdf",
+      "transport": "direct HTTPS",
+      "result": "HTTP 403"
+    },
+    {
+      "source": "sony-financial-results",
+      "url": "https://www.sony.com/en/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf",
+      "transport": "direct HTTPS with ordinary browser user agent",
+      "result": "HTTP 403"
+    },
+    {
+      "source": "sony-sec-same-report-html",
+      "url": "https://www.sec.gov/Archives/edgar/data/313838/000119312524167500/d797371d20f.htm",
+      "transport": "HTTPS via configured proxy",
+      "result": "TLS wrong version number"
+    },
+    {
+      "source": "sony-sec-same-report-html",
+      "url": "https://www.sec.gov/Archives/edgar/data/313838/000119312524167500/d797371d20f.htm",
+      "transport": "direct HTTPS",
+      "result": "HTTP 403"
+    }
+  ],
+  "pending": [
+    "freeze_official_sony_originals",
+    "verify_pdf_pages_and_values",
+    "financial_review",
+    "rights_review",
+    "actual_powerpoint_task"
+  ]
+}
