@@ -6,7 +6,7 @@
 
 严格整体仍 **64%（575/9）**，候选专业任务 **17/20**，真实专业任务 **0/20**。项目保留期已有只读活动证明、实际在途工作观察、同一项目锁内的二次资格核验、持久 `retention` 删除意图及 PC 双开关控制的本机每日扫描。默认策略 `null` 不删除；两个 PC 环境开关均须明确为 `1` 才启用定时执行。共享/未知内容、读写竞态、修改后的策略、运行中任务均跳过；中断后的原删除意图可按原 `deletionId` 恢复。Office 说明已对应改为“本机默认不自动清理，明确启用后定期执行”。所有执行验证仅用合成临时目录，未启用生产开关、未清理真实资料。
 
-本轮保留期相关四组联合 **61/61**，保留期双实例/恢复增补 **8/8**，Office 治理卡片 **2/2**；Shell/Office 类型与定向静态通过。上轮全量验证属于当时冻结源码，不冒称包含本轮新代码。匿名审计到期裁剪因自动审批认为属于不可逆历史事件删除，待用户对具体范围明确授权后实施；v2 兼容与永久墓碑设计已经写明。真实 Office 宿主和专业任务验收未进行，故不提高严格进度。参见[本阶段记录](./wiswork-ppt-agent-retention-execution-progress-2026-09-30.md)、[保留期实施计划](../superpowers/plans/2026-09-30-ppt-project-retention-execution.md)与[审计 v2 设计](../superpowers/plans/2026-09-30-ppt-project-audit-expiry-v2.md)。
+本轮保留期相关四组联合 **61/61**，保留期双实例/恢复增补 **8/8**，Office 治理卡片 **2/2**；Shell/Office 类型与定向静态通过。冻结源码完整 Shell **111 文件、1007 项通过**，六个关键源码摘要测试后全部一致；Office 默认关闭构建 `cc4fb06ce1a0` 成功，未部署。匿名审计到期裁剪因自动审批认为属于不可逆历史事件删除，待用户对具体范围明确授权后实施；v2 兼容与永久墓碑设计已经写明。真实 Office 宿主和专业任务验收未进行，故不提高严格进度。参见[本阶段记录](./wiswork-ppt-agent-retention-execution-progress-2026-09-30.md)、[保留期实施计划](../superpowers/plans/2026-09-30-ppt-project-retention-execution.md)与[审计 v2 设计](../superpowers/plans/2026-09-30-ppt-project-audit-expiry-v2.md)。
 
 另对旧待办 `execute_office_js` 的 PowerPoint 合法写入做只读源码再核对：纯添加进入 native-add v2，文字/几何/删除进入 native-modify v3，单项复制进入 slide-duplication v4；混合或缺持久能力的请求写前拒绝。本次未发现仍绕开保存点的该工具合法分支；未新跑相关测试，不把该结论扩展到其它 PowerPoint 工具、Word 同名入口或真实宿主。后续此入口的重点是三条事务的真实 PowerPoint 断线、ACK 丢失、重开和撤销验收。
 
