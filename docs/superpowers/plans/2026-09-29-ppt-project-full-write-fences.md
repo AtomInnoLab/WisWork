@@ -2,7 +2,7 @@
 
 ## 目标与当前状态
 
-依据原方案 §13.1 和 [保留期存储核对](./2026-09-29-ppt-project-retention-storage-inventory.md)，接通尚未受持久生命周期版本约束的项目入口。本文是可实施计划；代码保持当前冻结状态，不表示全入口栅栏、统一删除、定时保留期或用户确认界面已经完成，不提高整体 64% 完成度。
+依据原方案 §13.1 和 [保留期存储核对](./2026-09-29-ppt-project-retention-storage-inventory.md)，接通尚未受持久生命周期版本约束的项目入口。本文是可实施计划；已开始分单元实施；尚不表示全入口栅栏、统一删除、定时保留期或用户确认界面已经完成，不提高整体 64% 完成度。
 
 现有可复用基础：`PresentationLifecycleStore` 的独立控制命名空间、固定 revision 的 write/read lease、`PresentationStore.projectScope()` 的 metadata-only 归属证明、production 每次同步写 guard、后台 worker 的 abort/drain。`production_*` 已接线；纯读取缺少控制记录时保留 absence，不隐式初始化，后续出现任何控制记录会使旧读请求失效。`production_job_status` 可能追加恢复事件，仍按写入口处理。
 
@@ -125,3 +125,12 @@
 5. 每个资源执行器将来使用 deletionId + 固定删除 revision/原真实归属，不调用已经拒绝 deleting 的普通 write API来绕过栅栏。shared/unproven资源保留并返回 partial。
 
 此合同通过前，不接实际自动保留期清理。发布只合并已独立审查的 scoped commits；迁移保留 legacy 正文与控制 absence，不能批量扫全库补控制或绑定共享归属。回退不删除已写的 lifecycle/tombstone，也不能退到无 fence 的版本后允许项目重写；可暂时关闭受影响写能力并保留只读治理/恢复。最终验证包括 fresh Shell/store types、lint、受影响全套与实际服务 races；真实宿主/专业门禁和整体完成度仍按原方案另行评估。
+
+## 2026-09-29 实施检查点
+
+- 单元 1 已提交 `38ae1ce7`：显式创建 lease、首 await 前固定 revision/absence 的异步只读 lease、独立前台工作登记与真实 drain。实际新增 async 归属期间变更回归先 3 项失败后通过；独立 helper 20 项通过，连同工作登记与旧 jobs 合计 49 项通过。工作登记实际位于 `presentation-project-work.ts`，未另建调度器。
+- 单元 3 底层库已提交 `e7456054`：评论、人工观察和偏好的最终同步写入保护；源/目标导入分别守卫。独立相关 28 项通过。主 Service 接线尚待实施。
+- 单元 2 审计子模块已提交 `bfd0b859`：begin、成功 finish、失败 catch 的真实写入前保护。独立审查补出的动态 Error.message getter 在分类期间冻结回归已关闭，新旧合计 6 项通过。普通制作主路由及 PDF 正在实施，不能据子模块完成宣称全入口完成。
+- 单元 4A 研究存储、4B 团队授权写入正在实施。删除执行器、保留期定时清理及完整入口接线仍未完成。
+
+整体保持 **64%（575/9）**；上述工程检查点不替代真实宿主或专业任务验收。
