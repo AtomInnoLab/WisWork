@@ -24,6 +24,9 @@ async function mount(snapshot: PresentationResearchSnapshot) {
     selectProject: vi.fn(async () => {}),
     read: vi.fn(async () => {}),
     export: vi.fn(async () => {}),
+    deleteRecord: vi.fn(async () => {}),
+    retryDelete: vi.fn(async () => {}),
+    checkDeleteStatus: vi.fn(async () => {}),
     cancel: vi.fn(),
     clear: vi.fn(),
   }
@@ -80,4 +83,92 @@ it('hides old PCs and never labels a running record as active background researc
   })
   expect(f.node.textContent).toContain('缺少结束回执')
   expect(f.node.textContent).toContain('不表示后台仍在运行')
+})
+
+it('requires inline confirmation for finished archive cleanup and isolates document/project changes', async () => {
+  const summary = researchSummary()
+  const f = await mount({
+    phase: 'idle',
+    available: true,
+    cleanupAvailable: true,
+    projectId: 'research',
+    summary,
+  })
+  const button = (label: string) =>
+    Array.from(f.node.querySelectorAll('button')).find((item) => item.textContent === label)!
+  await act(async () => button('清理本机研究归档').click())
+  expect(f.controller.deleteRecord).not.toHaveBeenCalled()
+  expect(f.node.textContent).toContain('只删除本机这条已结束且未被引用的研究归档')
+  expect(f.node.textContent).toContain('原附件、PowerPoint 文稿、交付包与导出副本仍保留')
+  await act(async () => button('取消清理').click())
+  expect(f.controller.deleteRecord).not.toHaveBeenCalled()
+  await act(async () => button('清理本机研究归档').click())
+  await f.update({
+    phase: 'idle',
+    available: true,
+    cleanupAvailable: true,
+    projectId: 'other',
+    summary: { ...summary, projectId: 'other' },
+  })
+  expect(f.node.textContent).not.toContain('确认清理此归档')
+  expect(f.controller.deleteRecord).not.toHaveBeenCalled()
+  await f.update({
+    phase: 'idle',
+    available: true,
+    cleanupAvailable: true,
+    projectId: 'research',
+    summary,
+  })
+  await act(async () => button('清理本机研究归档').click())
+  await act(async () => button('确认清理此归档').click())
+  expect(f.controller.deleteRecord).toHaveBeenCalledWith('ledger1', summary.records[0]!.draftDigest)
+  const { finishedAt: _end, ...running } = summary.records[0]!
+  await f.update({
+    phase: 'idle',
+    available: true,
+    cleanupAvailable: true,
+    projectId: 'research',
+    summary: { ...summary, revision: 1, records: [{ ...running, state: 'running' }] },
+  })
+  expect(f.node.textContent).toContain('未收到结束回执，不能清理此归档')
+  expect(f.node.textContent).not.toContain('清理本机研究归档')
+  await f.update({
+    phase: 'idle',
+    available: true,
+    cleanupAvailable: false,
+    projectId: 'research',
+    summary,
+  })
+  expect(f.node.textContent).not.toContain('清理本机研究归档')
+})
+it('offers read-only receipt recovery and an explicit retry without claiming cancellation undoes cleanup', async () => {
+  const summary = researchSummary()
+  const f = await mount({
+    phase: 'idle',
+    available: true,
+    cleanupAvailable: true,
+    projectId: 'research',
+    summary,
+    deleteAttempt: {
+      documentId: 'doc',
+      projectId: 'research',
+      ledgerId: 'ledger1',
+      sequence: 1,
+      draftDigest: summary.records[0]!.draftDigest,
+      deleteId: 'delete1',
+      expectedRevision: 2,
+    },
+  })
+  const button = (label: string) =>
+    Array.from(f.node.querySelectorAll('button')).find((item) => item.textContent === label)!
+  await act(async () => button('读取删除回执').click())
+  expect(f.controller.checkDeleteStatus).toHaveBeenCalledOnce()
+  expect(f.controller.retryDelete).not.toHaveBeenCalled()
+  await act(async () => button('重试同一次清理').click())
+  expect(f.controller.retryDelete).not.toHaveBeenCalled()
+  await act(async () => button('确认重试同一次清理').click())
+  expect(f.controller.retryDelete).toHaveBeenCalledOnce()
+  await f.update({ ...f.controller.snapshot(), phase: 'deleting' })
+  expect(f.node.textContent).toContain('停止等待不承诺撤销已提交的清理')
+  expect(button('读取删除回执').disabled).toBe(true)
 })

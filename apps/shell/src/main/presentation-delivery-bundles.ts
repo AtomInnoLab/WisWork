@@ -206,7 +206,10 @@ async function validateBundleZip(raw: Buffer) {
 export function createPresentationDeliveryBundleService(options: { userDataPath: string }) {
   const root = join(resolve(options.userDataPath), 'presentation-delivery-bundles')
   const store = new PresentationStore(options.userDataPath)
-  return async (request: Record<string, unknown>, signal: AbortSignal): Promise<unknown> => {
+  const service = async (
+    request: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<unknown> => {
     check(signal)
     const fields: Record<string, string[]> = {
       delivery_bundle_begin: ['bundleId', 'sha256', 'sizeBytes', 'manifest'],
@@ -510,4 +513,33 @@ export function createPresentationDeliveryBundleService(options: { userDataPath:
       if (locks.get(project) === tail) locks.delete(project)
     }
   }
+  return Object.assign(service, {
+    async assertResearchCleanupAvailable(documentId: string, projectId: string) {
+      const project = join(root, hash(documentId), hash(projectId))
+      for (const path of [root, join(root, hash(documentId)), project]) {
+        try {
+          await directory(path, false)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+          throw new Error('invalid_state', { cause: error })
+        }
+      }
+      const entries = await readdir(project)
+      if (entries.length > 32 || entries.some((entry) => !digest(entry))) fail('invalid_state')
+      for (const entry of entries) {
+        const receipt = await metadata(join(project, entry))
+        if (
+          hash(receipt.bundleId) !== entry ||
+          receipt.documentId !== documentId ||
+          receipt.projectId !== projectId
+        )
+          fail('invalid_state')
+        if (
+          receipt.state !== 'ready' &&
+          receipt.manifest.files.some((file) => file.name === 'research.json')
+        )
+          fail('busy')
+      }
+    },
+  })
 }

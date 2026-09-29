@@ -2,6 +2,7 @@ import { createPresentationResearchSkill } from '../skills/powerpoint/presentati
 import {
   createPresentationResearchController,
   type PresentationResearchController,
+  type PresentationResearchDeleteAttempt,
 } from './presentation-research.js'
 import { createPresentationHostBundleSkill } from '../skills/powerpoint/presentation-host-bundle.js'
 import {
@@ -170,6 +171,11 @@ export function createOfficeHostRuntime(
   host: OfficeHost,
   options: {
     presentation?: Omit<PresentationGenerationOptions, 'vfs'> & {
+      readResearchDeleteAttempt?(documentId: string): unknown
+      writeResearchDeleteAttempt?(
+        documentId: string,
+        value: PresentationResearchDeleteAttempt | undefined,
+      ): void
       readExistingChange?(changeId: string): PresentationExistingChange | undefined
       readExistingBatch?(changeId: string): PresentationExistingBatch | undefined
       readExistingImageChange?(changeId: string): PresentationExistingImageChange | undefined
@@ -683,6 +689,8 @@ export function createOfficeHostRuntime(
           documentId: options.presentation.documentId,
           lastProject: options.presentation.lastProject,
           executeTool: researchSkill.executeTool,
+          readDeleteAttempt: options.presentation.readResearchDeleteAttempt,
+          writeDeleteAttempt: options.presentation.writeResearchDeleteAttempt,
         })
       : undefined
   const hostBundle =

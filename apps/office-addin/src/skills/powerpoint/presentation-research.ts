@@ -1,3 +1,4 @@
+import { readPresentationResearchCapabilities } from './presentation-research-capabilities.js'
 import { presentationProfessionalContextMissingFields } from '@wiswork/project-store/presentation-professional-context'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import {
@@ -147,13 +148,24 @@ export function createPresentationResearchSkill(options: Options): AgentSkill & 
       if ((await options.documentId()) !== documentId) throw Error('presentation_document_changed')
       check()
     }
+    let historyVersion: 2 | undefined
     const request = async (
       operation: string,
       fields: Record<string, unknown> = {},
       max = 512 * 1024,
     ): Promise<unknown> => {
       await current()
-      const response = await options.request({ operation, documentId, ...fields }, signal)
+      const response = await options.request(
+        {
+          operation,
+          documentId,
+          ...fields,
+          ...(historyVersion && ['research_list', 'research_build'].includes(operation)
+            ? { historyVersion }
+            : {}),
+        },
+        signal,
+      )
       await current()
       if (!response.ok) throw Error('presentation_service_unavailable')
       const text = await response.text()
@@ -172,15 +184,11 @@ export function createPresentationResearchSkill(options: Options): AgentSkill & 
     }
     const capability = async () => {
       try {
-        const result = (await request('research_capabilities', {}, 4096)) as Record<string, unknown>
-        if (
-          !result ||
-          Object.keys(result).sort().join(',') !== 'available,version' ||
-          result.version !== 1 ||
-          result.available !== true
+        const capabilities = await readPresentationResearchCapabilities((op, fields) =>
+          request(op, fields, 4096),
         )
-          throw Error('presentation_response_invalid')
-        return true
+        historyVersion = capabilities.historyVersion
+        return capabilities.available
       } catch (error) {
         if (error instanceof Error && error.message === 'presentation_upgrade_required')
           return false
@@ -353,8 +361,10 @@ export function createPresentationResearchSkill(options: Options): AgentSkill & 
           if (
             record.draftDigest !== expected ||
             canonicalPresentationValue(record.draft) !== canonicalPresentationValue(draft) ||
-            record.sequence > history.totalRecords ||
-            (record.sequence > history.totalRecords - history.records.length &&
+            record.sequence >
+              (history.version === 2 ? history.lastSequence : history.totalRecords) ||
+            (history.records.length > 0 &&
+              record.sequence >= history.records[0]!.sequence &&
               !history.records.some(
                 (r) =>
                   r.id === record.id &&

@@ -891,3 +891,54 @@ it('persists missing-context issues for an actual legal workflow even after supp
     f.close()
   }
 })
+
+it('negotiates cleanup history through actual Agent tools and never exposes a delete tool', async () => {
+  const f = await setup()
+  try {
+    expect(f.toolNames().some((name) => /research.*delete|delete.*research/.test(name))).toBe(false)
+    const built = await f.tool('build_research_ledger', {
+      project_id: f.plan.projectId,
+      ledger_id: 'unused-cleanup',
+      expected_revision: 2,
+      draft: f.draft,
+    })
+    expect(built.isError, built.output).toBeFalsy()
+    const result = JSON.parse(built.output)
+    const deleted = await f.raw('research_delete', {
+      ledgerId: result.record.id,
+      deleteId: 'cleanup-confirmed',
+      expectedRevision: result.history.revision,
+      expectedDraftDigest: result.record.draftDigest,
+    })
+    expect(deleted).toMatchObject({ ledgerId: 'unused-cleanup', revision: 5 })
+    expect(await f.raw('research_list')).toEqual({ error: 'upgrade_required' })
+    const listed = await f.tool('list_research_ledgers', { project_id: f.plan.projectId })
+    expect(listed.isError, listed.output).toBeFalsy()
+    expect(JSON.parse(listed.output)).toMatchObject({
+      version: 2,
+      lastSequence: 2,
+      totalRecords: 1,
+      revision: 5,
+    })
+    const next = await f.tool('build_research_ledger', {
+      project_id: f.plan.projectId,
+      ledger_id: 'after-cleanup',
+      expected_revision: 5,
+      draft: f.draft,
+    })
+    expect(next.isError, next.output).toBeFalsy()
+    expect(JSON.parse(next.output)).toMatchObject({
+      record: { sequence: 3 },
+      history: { version: 2, lastSequence: 3, totalRecords: 2, revision: 7 },
+    })
+    f.restart()
+    expect(await f.raw('research_delete_status', { deleteId: 'cleanup-confirmed' })).toEqual(
+      deleted,
+    )
+    const evidence = await f.tool('read_presentation_claim_evidence', f.input)
+    expect(evidence.isError, evidence.output).toBeFalsy()
+    expect(JSON.parse(evidence.output).research.record.id).toBe('research-a')
+  } finally {
+    f.close()
+  }
+})

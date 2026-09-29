@@ -1458,7 +1458,24 @@ export class PresentationStore {
     return structuredClone(finished)
   }
 
-  plan(projectId: string, documentId: string): PresentationPlanRecord | undefined {
+  plan(
+    projectId: string,
+    documentId: string,
+    requireCompleteHistory = false,
+  ): PresentationPlanRecord | undefined {
+    if (requireCompleteHistory) {
+      const directory = this.directory(projectId)
+      if (present(directory)) {
+        const names = readdirSync(directory)
+        if (!present(join(directory, 'project.json')) && names.length)
+          throw new Error('invalid_state')
+        if (
+          !present(join(directory, 'plan.json')) &&
+          names.some((name) => name.startsWith('plan-revision-'))
+        )
+          throw new Error('invalid_state')
+      }
+    }
     const directory = this.bind(projectId, documentId, false)
     if (!directory) return undefined
     const path = join(directory, 'plan.json')
@@ -1863,12 +1880,13 @@ export class PresentationStore {
       (record) => record.requestId === requestId,
     )
   }
-  history(projectId: string, documentId: string): PresentationReceipt[] {
+  history(projectId: string, documentId: string, includeAll = false): PresentationReceipt[] {
     const directory = this.bind(projectId, documentId, false)
     if (!directory) return []
-    return this.receipts(directory, projectId, documentId)
-      .sort((a, b) => b.sequence - a.sequence)
-      .slice(0, 20)
+    const records = this.receipts(directory, projectId, documentId).sort(
+      (a, b) => b.sequence - a.sequence,
+    )
+    return includeAll ? records : records.slice(0, 20)
   }
   latest(projectId: string, documentId: string): PresentationReceipt | undefined {
     const directory = this.bind(projectId, documentId, false)

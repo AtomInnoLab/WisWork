@@ -70,7 +70,7 @@ export interface PresentationResearchRecord {
     timeliness: 'not_verified'
   }
 }
-export interface PresentationResearchHistory {
+export interface PresentationResearchHistoryV1 {
   version: 1
   documentId: string
   projectId: string
@@ -78,11 +78,31 @@ export interface PresentationResearchHistory {
   totalRecords: number
   records: PresentationResearchRecord[]
 }
+export interface PresentationResearchHistoryV2 extends Omit<
+  PresentationResearchHistoryV1,
+  'version'
+> {
+  version: 2
+  lastSequence: number
+}
+export type PresentationResearchHistory =
+  PresentationResearchHistoryV1 | PresentationResearchHistoryV2
+export interface PresentationResearchDeleteReceipt {
+  version: 1
+  documentId: string
+  projectId: string
+  ledgerId: string
+  sequence: number
+  draftDigest: string
+  deleteId: string
+  deletedAt: string
+  revision: number
+}
 export type PresentationResearchSummaryRecord = Pick<
   PresentationResearchRecord,
   'id' | 'sequence' | 'draftDigest' | 'state' | 'startedAt' | 'finishedAt' | 'error'
 > & { sourceCount: number; factCount: number; conflictCount: number }
-export interface PresentationResearchSummary {
+export interface PresentationResearchSummaryV1 {
   version: 1
   documentId: string
   projectId: string
@@ -90,6 +110,15 @@ export interface PresentationResearchSummary {
   totalRecords: number
   records: PresentationResearchSummaryRecord[]
 }
+export interface PresentationResearchSummaryV2 extends Omit<
+  PresentationResearchSummaryV1,
+  'version'
+> {
+  version: 2
+  lastSequence: number
+}
+export type PresentationResearchSummary =
+  PresentationResearchSummaryV1 | PresentationResearchSummaryV2
 export type PresentationResearchHistorySummary = PresentationResearchSummary
 const textSchema = (maxLength: number, minLength = 0) => ({ type: 'string', minLength, maxLength })
 const idSchema = { ...textSchema(128, 1), pattern: '^[A-Za-z0-9_-]+$' }
@@ -347,7 +376,7 @@ export function parsePresentationResearchRecord(value: unknown): PresentationRes
     !text(r.documentId, 4096, 1) ||
     !id(r.projectId) ||
     !id(r.id) ||
-    !integer(r.sequence, 1, 128) ||
+    !integer(r.sequence, 1) ||
     !digest(r.draftDigest) ||
     !time(r.startedAt) ||
     !['running', 'completed', 'failed'].includes(r.state) ||
@@ -439,20 +468,68 @@ export function parsePresentationResearchRecord(value: unknown): PresentationRes
   }
   return structuredClone(r)
 }
-function envelope(value: unknown) {
-  if (!exact(value, ['version', 'documentId', 'projectId', 'revision', 'totalRecords', 'records']))
-    fail()
-  const h = value as PresentationResearchHistory
+export function parsePresentationResearchDeleteReceipt(
+  value: unknown,
+): PresentationResearchDeleteReceipt {
   if (
-    h.version !== 1 ||
+    !exact(value, [
+      'version',
+      'documentId',
+      'projectId',
+      'ledgerId',
+      'sequence',
+      'draftDigest',
+      'deleteId',
+      'deletedAt',
+      'revision',
+    ])
+  )
+    fail()
+  const r = value as PresentationResearchDeleteReceipt
+  if (
+    r.version !== 1 ||
+    !text(r.documentId, 4096, 1) ||
+    !id(r.projectId) ||
+    !id(r.ledgerId) ||
+    !id(r.deleteId) ||
+    !integer(r.sequence, 1) ||
+    !integer(r.revision, 1) ||
+    !digest(r.draftDigest) ||
+    !time(r.deletedAt)
+  )
+    fail()
+  return structuredClone(r)
+}
+function envelope(value: unknown) {
+  if (!object(value)) fail()
+  const v2 = value.version === 2
+  if (
+    !exact(value, [
+      'version',
+      'documentId',
+      'projectId',
+      'revision',
+      'totalRecords',
+      'records',
+      ...(v2 ? ['lastSequence'] : []),
+    ])
+  )
+    fail()
+  const h = value as unknown as PresentationResearchHistory
+  if (
+    (h.version !== 1 && h.version !== 2) ||
     !text(h.documentId, 4096, 1) ||
     !id(h.projectId) ||
-    !integer(h.revision, 0, 256) ||
     !integer(h.totalRecords, 0, 128) ||
-    h.revision < h.totalRecords ||
-    h.revision > 2 * h.totalRecords ||
+    !integer(h.revision, v2 ? 1 : 0, v2 ? Number.MAX_SAFE_INTEGER : 256) ||
     !Array.isArray(h.records) ||
     h.records.length !== Math.min(32, h.totalRecords)
+  )
+    fail()
+  if (
+    h.version === 1
+      ? h.revision < h.totalRecords || h.revision > 2 * h.totalRecords
+      : !integer(h.lastSequence, h.totalRecords)
   )
     fail()
   return h
@@ -469,7 +546,10 @@ function window(value: PresentationResearchHistory | PresentationResearchSummary
     )
       fail()
     if (
-      r.sequence !== value.totalRecords - value.records.length + i + 1 ||
+      (value.version === 1
+        ? r.sequence !== value.totalRecords - value.records.length + i + 1
+        : r.sequence > value.lastSequence ||
+          (i > 0 && r.sequence <= value.records[i - 1]!.sequence)) ||
       idsSeen.has(r.id) ||
       r.startedAt < last
     )
@@ -478,9 +558,14 @@ function window(value: PresentationResearchHistory | PresentationResearchSummary
     last = r.startedAt
     if (r.state !== 'running') completed++
   }
+  const base =
+    value.version === 1
+      ? value.totalRecords
+      : value.lastSequence + 2 * (value.lastSequence - value.totalRecords)
   if (
-    value.revision < value.totalRecords + completed ||
-    value.revision > value.totalRecords + completed + value.totalRecords - value.records.length
+    !Number.isSafeInteger(base) ||
+    value.revision < base + completed ||
+    value.revision > base + completed + value.totalRecords - value.records.length
   )
     fail()
 }
@@ -511,7 +596,7 @@ export function parsePresentationResearchSummary(value: unknown): PresentationRe
         ['finishedAt', 'error'],
       ) ||
       !id(r.id) ||
-      !integer(r.sequence, 1, 128) ||
+      !integer(r.sequence, 1) ||
       !digest(r.draftDigest) ||
       !['running', 'completed', 'failed'].includes(r.state) ||
       !time(r.startedAt) ||

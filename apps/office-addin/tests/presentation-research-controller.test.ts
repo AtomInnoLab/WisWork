@@ -53,14 +53,14 @@ it('probes and restores independent research before any plan or production exist
   await reopened.refresh()
   expect(reopened.snapshot().summary).toEqual(researchSummary())
   expect(f.request).toHaveBeenCalledWith(
-    { operation: 'research_capabilities', documentId: 'doc' },
+    { operation: 'research_capabilities', documentId: 'doc', includeCleanup: true },
     expect.any(AbortSignal),
   )
 })
 it('hides unsupported old PCs and does not interpret malformed capabilities as support', async () => {
   const f = fixture()
   for (const error of ['invalid_request', 'upgrade_required']) {
-    f.request.mockResolvedValueOnce(new Response(JSON.stringify({ error })))
+    f.request.mockImplementation(async () => new Response(JSON.stringify({ error })))
     await f.controller.refresh()
     expect(f.controller.snapshot().available).toBe(false)
   }

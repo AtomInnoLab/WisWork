@@ -7,6 +7,8 @@ import {
   parsePresentationResearchDraft,
   parsePresentationResearchRecord,
   parsePresentationResearchHistory,
+  parsePresentationResearchDeleteReceipt,
+  type PresentationResearchDeleteReceipt,
   summarizePresentationResearchHistory,
   presentationResearchChecks,
   type PresentationResearchDraft,
@@ -17,13 +19,26 @@ import {
 const LIMIT = 64 * 1024 * 1024
 const hash = (v: string) => createHash('sha256').update(v).digest('hex')
 const locks = new Map<string, Promise<void>>()
-interface State {
+interface StateV1 {
   version: 1
   documentId: string
   projectId: string
   revision: number
   totalRecords: number
   records: PresentationResearchRecord[]
+}
+interface StateV2 extends Omit<StateV1, 'version'> {
+  version: 2
+  lastSequence: number
+  tombstones: PresentationResearchDeleteReceipt[]
+}
+type State = StateV1 | StateV2
+function check(signal?: AbortSignal) {
+  if (signal?.aborted) throw new Error('aborted')
+}
+function validId(value: string) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value))
+    throw new Error('invalid_request')
 }
 export type PresentationResearchFinish =
   | { state: 'completed'; sources: PresentationResearchEvidence[] }
@@ -114,16 +129,19 @@ export class PresentationResearchStore {
       if (
         !state ||
         Object.keys(state).sort().join(',') !==
-          'documentId,projectId,records,revision,totalRecords,version' ||
+          (state.version === 2
+            ? 'documentId,lastSequence,projectId,records,revision,tombstones,totalRecords,version'
+            : 'documentId,projectId,records,revision,totalRecords,version') ||
         state.documentId !== documentId ||
         state.projectId !== projectId ||
-        state.version !== 1 ||
+        ![1, 2].includes(state.version) ||
         !Array.isArray(state.records) ||
         state.records.length !== state.totalRecords ||
         state.totalRecords > 128
       )
         throw new Error('invalid_state')
-      const seen = new Set<string>()
+      const seen = new Set<string>(),
+        sequences = new Set<number>()
       let completed = 0,
         last = ''
       for (const [index, r] of state.records.entries()) {
@@ -131,17 +149,60 @@ export class PresentationResearchStore {
         if (
           r.documentId !== documentId ||
           r.projectId !== projectId ||
-          r.sequence !== index + 1 ||
+          (state.version === 1
+            ? r.sequence !== index + 1
+            : r.sequence > state.lastSequence ||
+              (index > 0 && r.sequence <= state.records[index - 1]!.sequence)) ||
           seen.has(r.id) ||
           r.startedAt < last ||
           r.draftDigest !== hash(canonicalPresentationValue(r.draft))
         )
           throw new Error('invalid_state')
         seen.add(r.id)
+        sequences.add(r.sequence)
         last = r.startedAt
         if (r.state !== 'running') completed++
       }
-      if (state.revision !== state.totalRecords + completed) throw new Error('invalid_state')
+      if (state.version === 1) {
+        if (state.revision !== state.totalRecords + completed) throw new Error('invalid_state')
+      } else {
+        if (
+          !Number.isSafeInteger(state.lastSequence) ||
+          !Array.isArray(state.tombstones) ||
+          state.tombstones.length < 1 ||
+          state.tombstones.length > 4096 ||
+          state.lastSequence !== state.totalRecords + state.tombstones.length ||
+          state.revision !== state.lastSequence + completed + 2 * state.tombstones.length
+        )
+          throw new Error('invalid_state')
+        const deleteIds = new Set<string>()
+        let previousRevision = 0,
+          previousDate = '',
+          highestDeleted = 0
+        for (const [index, t] of state.tombstones.entries()) {
+          parsePresentationResearchDeleteReceipt(t)
+          highestDeleted = Math.max(highestDeleted, t.sequence)
+          if (
+            t.documentId !== documentId ||
+            t.projectId !== projectId ||
+            seen.has(t.ledgerId) ||
+            sequences.has(t.sequence) ||
+            deleteIds.has(t.deleteId) ||
+            t.sequence > state.lastSequence ||
+            t.revision <= previousRevision ||
+            t.revision < highestDeleted + 2 * (index + 1) ||
+            t.revision > Math.min(state.revision, 2 * state.lastSequence + index + 1) ||
+            t.deletedAt < previousDate
+          )
+            throw new Error('invalid_state')
+          seen.add(t.ledgerId)
+          sequences.add(t.sequence)
+          deleteIds.add(t.deleteId)
+          previousRevision = t.revision
+          previousDate = t.deletedAt
+        }
+        if (sequences.size !== state.lastSequence) throw new Error('invalid_state')
+      }
       this.toHistory(state)
       return state
     } catch {
@@ -149,7 +210,8 @@ export class PresentationResearchStore {
     }
   }
   private toHistory(state: State): PresentationResearchHistory {
-    return parsePresentationResearchHistory({ ...state, records: state.records.slice(-32) })
+    const { tombstones: _tombstones, ...history } = state as StateV2
+    return parsePresentationResearchHistory({ ...history, records: state.records.slice(-32) })
   }
   async history(documentId: string, projectId: string) {
     return this.toHistory(await this.load(documentId, projectId))
@@ -168,7 +230,11 @@ export class PresentationResearchStore {
     return record ? structuredClone(record) : null
   }
   async read(documentId: string, projectId: string, id: string) {
-    const record = (await this.load(documentId, projectId)).records.find((r) => r.id === id)
+    validId(id)
+    const state = await this.load(documentId, projectId)
+    if (state.version === 2 && state.tombstones.some((t) => t.ledgerId === id))
+      throw new Error('record_deleted')
+    const record = state.records.find((r) => r.id === id)
     if (!record) throw new Error('not_found')
     return structuredClone(record)
   }
@@ -176,7 +242,9 @@ export class PresentationResearchStore {
     documentId: string,
     projectId: string,
     change: (state: State) => T,
+    signal?: AbortSignal,
   ): Promise<T> {
+    check(signal)
     const project = this.path(documentId, projectId)
     const previous = locks.get(project) ?? Promise.resolve()
     let release!: () => void
@@ -186,7 +254,9 @@ export class PresentationResearchStore {
     locks.set(project, tail)
     await previous
     try {
+      check(signal)
       const state = await this.load(documentId, projectId)
+      check(signal)
       const result = change(state)
       this.toHistory(state)
       await directory(this.root, true)
@@ -201,6 +271,7 @@ export class PresentationResearchStore {
         if (!s.isFile() || s.isSymbolicLink()) throw new Error('invalid_state')
         await rm(path)
       }
+      check(signal)
       const raw = JSON.stringify({ state, checksum: hash(JSON.stringify(state)) })
       if (Buffer.byteLength(raw) > LIMIT) throw new Error('quota_exceeded')
       const tmp = join(project, 'state.json.' + randomUUID() + '.tmp')
@@ -212,6 +283,7 @@ export class PresentationResearchStore {
         } finally {
           await f.close()
         }
+        check(signal)
         await rename(tmp, join(project, 'state.json'))
         if (process.platform !== 'win32') {
           const d = await open(project, constants.O_RDONLY | constants.O_NOFOLLOW)
@@ -230,6 +302,92 @@ export class PresentationResearchStore {
       if (locks.get(project) === tail) locks.delete(project)
     }
   }
+  private lastTime(state: State) {
+    return (
+      [
+        ...state.records.flatMap((r) =>
+          r.finishedAt ? [r.startedAt, r.finishedAt] : [r.startedAt],
+        ),
+        ...(state.version === 2 ? state.tombstones.map((t) => t.deletedAt) : []),
+      ]
+        .sort()
+        .at(-1) ?? ''
+    )
+  }
+  async deletedReceipt(
+    documentId: string,
+    projectId: string,
+    deleteId: string,
+  ): Promise<PresentationResearchDeleteReceipt> {
+    validId(deleteId)
+    const state = await this.load(documentId, projectId)
+    const receipt =
+      state.version === 2 ? state.tombstones.find((t) => t.deleteId === deleteId) : undefined
+    if (!receipt) throw new Error('not_found')
+    return structuredClone(receipt)
+  }
+  deleteRecord(
+    documentId: string,
+    projectId: string,
+    expectedRevision: number,
+    deleteId: string,
+    ledgerId: string,
+    expectedDraftDigest: string,
+    signal?: AbortSignal,
+  ): Promise<PresentationResearchDeleteReceipt> {
+    validId(deleteId)
+    validId(ledgerId)
+    if (
+      !Number.isSafeInteger(expectedRevision) ||
+      expectedRevision < 0 ||
+      typeof expectedDraftDigest !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(expectedDraftDigest)
+    )
+      throw new Error('invalid_request')
+    return this.update(
+      documentId,
+      projectId,
+      (state) => {
+        if (state.version === 2) {
+          const receipt = state.tombstones.find((t) => t.deleteId === deleteId)
+          if (receipt) {
+            if (receipt.ledgerId !== ledgerId || receipt.draftDigest !== expectedDraftDigest)
+              throw new Error('request_conflict')
+            return receipt
+          }
+          if (state.tombstones.some((t) => t.ledgerId === ledgerId))
+            throw new Error('record_deleted')
+        }
+        if (state.revision !== expectedRevision) throw new Error('revision_conflict')
+        const record = state.records.find((r) => r.id === ledgerId)
+        if (!record) throw new Error('not_found')
+        if (record.draftDigest !== expectedDraftDigest) throw new Error('request_conflict')
+        if (record.state === 'running') throw new Error('record_running')
+        if (state.version === 2 && state.tombstones.length >= 4096)
+          throw new Error('cleanup_quota_exceeded')
+        const receipt = parsePresentationResearchDeleteReceipt({
+          version: 1,
+          documentId,
+          projectId,
+          ledgerId,
+          sequence: record.sequence,
+          draftDigest: record.draftDigest,
+          deleteId,
+          deletedAt: [new Date().toISOString(), this.lastTime(state)].sort().at(-1)!,
+          revision: state.revision + 1,
+        })
+        if (state.version === 1)
+          Object.assign(state, { version: 2, lastSequence: state.totalRecords, tombstones: [] })
+        const next = state as StateV2
+        next.records = next.records.filter((r) => r.id !== ledgerId)
+        next.totalRecords--
+        next.revision++
+        next.tombstones.push(receipt)
+        return receipt
+      },
+      signal,
+    )
+  }
   begin(
     documentId: string,
     projectId: string,
@@ -242,6 +400,8 @@ export class PresentationResearchStore {
     return this.update(documentId, projectId, (state) => {
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
         throw new Error('invalid_request')
+      if (state.version === 2 && state.tombstones.some((t) => t.ledgerId === id))
+        throw new Error('record_deleted')
       const existing = state.records.find((r) => r.id === id)
       if (existing) {
         if (existing.draftDigest !== draftDigest) throw new Error('request_conflict')
@@ -249,17 +409,13 @@ export class PresentationResearchStore {
       }
       if (state.revision !== expectedRevision) throw new Error('revision_conflict')
       if (state.totalRecords >= 128) throw new Error('quota_exceeded')
-      const last =
-        state.records
-          .flatMap((r) => (r.finishedAt ? [r.startedAt, r.finishedAt] : [r.startedAt]))
-          .sort()
-          .at(-1) ?? ''
+      const last = this.lastTime(state)
       const record = parsePresentationResearchRecord({
         version: 1,
         documentId,
         projectId,
         id,
-        sequence: state.totalRecords + 1,
+        sequence: (state.version === 2 ? state.lastSequence : state.totalRecords) + 1,
         draftDigest,
         draft: parsed,
         state: 'running',
@@ -268,6 +424,7 @@ export class PresentationResearchStore {
       })
       state.records.push(record)
       state.totalRecords++
+      if (state.version === 2) state.lastSequence++
       state.revision++
       return { record, created: true }
     })
@@ -282,7 +439,12 @@ export class PresentationResearchStore {
         throw new Error('invalid_state')
       const index = state.records.findIndex((r) => r.id === id),
         r = state.records[index]
-      if (!r) throw new Error('not_found')
+      if (!r)
+        throw new Error(
+          state.version === 2 && state.tombstones.some((t) => t.ledgerId === id)
+            ? 'record_deleted'
+            : 'not_found',
+        )
       if (r.state !== 'running') {
         const old = {
           state: r.state,
@@ -296,7 +458,7 @@ export class PresentationResearchStore {
       const next = parsePresentationResearchRecord({
         ...r,
         ...result,
-        finishedAt: [new Date().toISOString(), r.startedAt].sort().at(-1)!,
+        finishedAt: [new Date().toISOString(), this.lastTime(state)].sort().at(-1)!,
       })
       state.records[index] = next
       state.revision++

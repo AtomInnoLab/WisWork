@@ -48,6 +48,20 @@ import { presentationSourceAuditHistory } from '@wiswork/project-store/presentat
 
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
+async function acquireProjectLock(root: string, projectId: string): Promise<() => void> {
+  const key = `${resolve(root)}\0${projectId}`
+  const previous = locks.get(key) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((done) => {
+    release = done
+  })
+  locks.set(key, current)
+  await previous
+  return () => {
+    release()
+    if (locks.get(key) === current) locks.delete(key)
+  }
+}
 const errorCodes = new Set([
   'busy',
   'issue_changed',
@@ -57,6 +71,11 @@ const errorCodes = new Set([
   'revision_conflict',
   'research_binding_invalid',
   'research_unavailable',
+  'upgrade_required',
+  'record_deleted',
+  'record_running',
+  'record_protected',
+  'cleanup_quota_exceeded',
   'acceptance_capacity',
   'plan_revision_unavailable',
   'page_locked',
@@ -126,12 +145,41 @@ export function createPresentationService(options: {
   const pageBackups = createPresentationPageBackupService(options)
   const existingPageBackups = createPresentationExistingPageBackupService(options)
   const attachments = createPresentationAttachmentService(options)
+  const store = new PresentationStore(options.userDataPath)
+  const deliveryBundles = createPresentationDeliveryBundleService(options)
   const research = createPresentationResearchService({
     userDataPath: options.userDataPath,
     attachments,
+    acquireProjectLock: (projectId) => acquireProjectLock(options.userDataPath, projectId),
+    assertRecordUnprotected: async (documentId, projectId, ledgerId, signal) => {
+      const plans: unknown[] = []
+      const current = store.plan(projectId, documentId, true)
+      if (current) {
+        plans.push(current.plan)
+        for (const event of current.revisions ?? []) {
+          const revision = store.planRevision(projectId, documentId, event.revision)
+          if (!revision) throw new Error('invalid_state')
+          plans.push(revision.plan)
+        }
+      }
+      for (const record of store.productionHistory(projectId, documentId))
+        plans.push(record.plan.plan)
+      for (const receipt of store.history(projectId, documentId, true))
+        if (receipt.plan) plans.push(receipt.plan.plan)
+      for (const value of plans) {
+        let plan: ReturnType<typeof parsePresentationPlan>
+        try {
+          plan = parsePresentationPlan(value)
+        } catch {
+          throw new Error('invalid_state')
+        }
+        if (plan.projectId !== projectId) throw new Error('invalid_state')
+        if (plan.research?.ledgerId === ledgerId) throw new Error('record_protected')
+      }
+      await deliveryBundles.assertResearchCleanupAvailable(documentId, projectId)
+      checkAbort(signal)
+    },
   })
-  const deliveryBundles = createPresentationDeliveryBundleService(options)
-  const store = new PresentationStore(options.userDataPath)
   const researchStore = new PresentationResearchStore(options.userDataPath)
   const brandLibrary = new PresentationBrandLibrary(options.userDataPath)
   const preferenceLibrary = new PresentationPreferenceLibrary(options.userDataPath)
@@ -157,8 +205,19 @@ export function createPresentationService(options: {
       const request = body as Record<string, unknown>
       if (typeof request.operation === 'string' && request.operation.startsWith('research_'))
         return boundedResponse(await research(request, signal))
-      if (typeof request.operation === 'string' && request.operation.startsWith('delivery_bundle_'))
-        return boundedResponse(await deliveryBundles(request, signal))
+      if (
+        typeof request.operation === 'string' &&
+        request.operation.startsWith('delivery_bundle_')
+      ) {
+        assertPresentationId(request.projectId)
+        const release = await acquireProjectLock(options.userDataPath, request.projectId as string)
+        try {
+          checkAbort(signal)
+          return boundedResponse(await deliveryBundles(request, signal))
+        } finally {
+          release()
+        }
+      }
       if (request.operation === 'export_pdf') {
         if (
           Object.keys(request).some(
@@ -717,13 +776,7 @@ export function createPresentationService(options: {
       if (plan && plan.projectId !== projectId) throw new Error('invalid_plan')
       if (deck && deck.id !== projectId) throw new Error('invalid_request')
       const key = `${resolve(options.userDataPath)}\0${projectId}`
-      const previous = locks.get(key) ?? Promise.resolve()
-      let release!: () => void
-      const current = new Promise<void>((done) => {
-        release = done
-      })
-      locks.set(key, current)
-      await previous
+      const release = await acquireProjectLock(options.userDataPath, projectId)
       try {
         checkAbort(signal)
         if (presentationJobOperations.includes(request.operation as string)) {
@@ -1287,7 +1340,6 @@ export function createPresentationService(options: {
         return response
       } finally {
         release()
-        if (locks.get(key) === current) locks.delete(key)
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : ''

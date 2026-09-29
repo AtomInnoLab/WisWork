@@ -36,6 +36,30 @@ export function PresentationResearchCard({
     () => controller.snapshot(),
   )
   const [project, setProject] = useState('')
+  const [cleanupTarget, setCleanupTarget] = useState<{
+    projectId: string
+    documentId: string
+    ledgerId: string
+    draftDigest: string
+  }>()
+  const [retryConfirm, setRetryConfirm] = useState(false)
+  useEffect(() => {
+    setCleanupTarget((target) =>
+      target &&
+      snapshot.cleanupAvailable &&
+      target.projectId === snapshot.projectId &&
+      target.documentId === snapshot.summary?.documentId &&
+      snapshot.summary.records.some(
+        (item) =>
+          item.id === target.ledgerId &&
+          item.draftDigest === target.draftDigest &&
+          item.state !== 'running',
+      )
+        ? target
+        : undefined,
+    )
+    setRetryConfirm(false)
+  }, [snapshot.projectId, snapshot.summary, snapshot.cleanupAvailable, snapshot.deleteAttempt])
   useEffect(() => {
     void controller.refresh()
     return () => controller.cancel()
@@ -50,7 +74,18 @@ export function PresentationResearchCard({
         <summary>资料研究账本</summary>
         <p>研究可先于制作计划整理；记录完成不代表主张支持；不代表来源权威性或时效通过。</p>
         <p>记录时间是研究整理操作时间；网页快照时间来自原资料，不表示本次重新抓取。</p>
-        {busy && <p role="status">正在读取或导出研究记录…</p>}
+        {busy && (
+          <p role="status">
+            {snapshot.phase === 'deleting'
+              ? '正在提交研究归档清理…'
+              : snapshot.phase === 'checkingDelete'
+                ? '正在只读核对删除回执…'
+                : '正在读取或导出研究记录…'}
+          </p>
+        )}
+        {(snapshot.phase === 'deleting' || snapshot.phase === 'checkingDelete') && (
+          <p>停止等待不承诺撤销已提交的清理；可随后读取删除回执，勿自动重发。</p>
+        )}
         {snapshot.error && <p role="alert">{snapshot.error}</p>}
         {snapshot.notice && <p role="status">{snapshot.notice}</p>}
         <button type="button" disabled={blocked} onClick={() => void controller.refresh()}>
@@ -60,6 +95,49 @@ export function PresentationResearchCard({
           <button type="button" onClick={() => controller.cancel()}>
             停止等待研究记录
           </button>
+        )}
+        {snapshot.cleanupAvailable && snapshot.deleteAttempt && (
+          <div aria-label="待核对清理尝试">
+            <p>此清理尝试尚待核对。读取回执只查本机状态，不会再次删除。</p>
+            <button
+              type="button"
+              disabled={blocked}
+              onClick={() => void controller.checkDeleteStatus()}
+            >
+              读取删除回执
+            </button>
+            <button type="button" disabled={blocked} onClick={() => setRetryConfirm(true)}>
+              重试同一次清理
+            </button>
+            {retryConfirm && (
+              <div>
+                <p>
+                  明确重试仍使用原记录、删除身份与版本；只清理本机研究归档，原附件、PowerPoint
+                  文稿、交付包与导出副本仍保留。
+                </p>
+                <button
+                  type="button"
+                  disabled={blocked}
+                  onClick={() => {
+                    setRetryConfirm(false)
+                    void controller.retryDelete()
+                  }}
+                >
+                  确认重试同一次清理
+                </button>
+                <button type="button" onClick={() => setRetryConfirm(false)}>
+                  取消重试
+                </button>
+              </div>
+            )}
+            <details>
+              <summary>清理恢复身份</summary>
+              <p>
+                原研究 #{snapshot.deleteAttempt.sequence} · {snapshot.deleteAttempt.ledgerId}
+                ；删除身份：{snapshot.deleteAttempt.deleteId}
+              </p>
+            </details>
+          </div>
         )}
         <details>
           <summary>选择已有研究项目</summary>
@@ -90,7 +168,7 @@ export function PresentationResearchCard({
         {snapshot.summary && (
           <>
             <p>
-              累计 {snapshot.summary.totalRecords} 条整理记录；显示最近{' '}
+              现存 {snapshot.summary.totalRecords} 条整理记录；显示最近{' '}
               {snapshot.summary.records.length} 条
               {snapshot.summary.totalRecords > snapshot.summary.records.length
                 ? '，更早记录可请 Agent 按记录 ID 读取'
@@ -145,6 +223,53 @@ export function PresentationResearchCard({
                   >
                     导出研究 JSON 与 Markdown
                   </button>
+                  {snapshot.cleanupAvailable &&
+                    (item.state === 'running' ? (
+                      <p>未收到结束回执，不能清理此归档。</p>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          disabled={blocked || !!snapshot.deleteAttempt}
+                          onClick={() =>
+                            setCleanupTarget({
+                              projectId: snapshot.projectId!,
+                              documentId: snapshot.summary!.documentId,
+                              ledgerId: item.id,
+                              draftDigest: item.draftDigest,
+                            })
+                          }
+                        >
+                          清理本机研究归档
+                        </button>
+                        {cleanupTarget?.ledgerId === item.id && (
+                          <div aria-label="确认研究归档清理">
+                            <p>
+                              只删除本机这条已结束且未被引用的研究归档；若仍被计划或冻结任务引用，本机会拒绝清理。原附件、PowerPoint
+                              文稿、交付包与导出副本仍保留。
+                            </p>
+                            <button
+                              type="button"
+                              disabled={blocked || !!snapshot.deleteAttempt}
+                              onClick={() => {
+                                const target = cleanupTarget
+                                setCleanupTarget(undefined)
+                                if (
+                                  target.projectId === snapshot.projectId &&
+                                  target.documentId === snapshot.summary?.documentId
+                                )
+                                  void controller.deleteRecord(target.ledgerId, target.draftDigest)
+                              }}
+                            >
+                              确认清理此归档
+                            </button>
+                            <button type="button" onClick={() => setCleanupTarget(undefined)}>
+                              取消清理
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    ))}
                   <details>
                     <summary>记录详情</summary>
                     <p>记录 ID：{item.id}</p>
