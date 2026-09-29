@@ -1,3 +1,7 @@
+import {
+  registerPresentationProjectWork,
+  type PresentationProjectWork,
+} from './presentation-project-work'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   constants,
@@ -103,13 +107,16 @@ export class PresentationTeamStore {
     assertWritable?.()
     const path = this.path(next.teamId, true),
       temporary = path + '.' + randomUUID() + '.tmp'
+    let created = false
     try {
       assertWritable?.()
       writeFileSync(temporary, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+      created = true
       assertWritable?.()
       renameSync(temporary, path)
+      created = false
     } finally {
-      rmSync(temporary, { force: true })
+      if (created) rmSync(temporary, { force: true })
     }
     return structuredClone(parsed)
   }
@@ -135,7 +142,9 @@ export function createPresentationTeamService(options: Options) {
     projectId: string,
     mode: 'read' | 'write',
     signal: AbortSignal,
+    register?: (scope: Readonly<{ documentId: string; projectId: string }>) => AbortSignal,
   ) => {
+    signal = register?.({ documentId, projectId }) ?? signal
     const lease = options.captureProjectLease?.(
       Object.freeze({ documentId, projectId }),
       mode,
@@ -188,276 +197,293 @@ export function createPresentationTeamService(options: Options) {
     } catch {
       return fail('access_denied')
     }
-    const operation = body.operation
-    if (!['team_identity', 'team_project_read', 'team_plan_read'].includes(String(operation))) {
-      let expected: PresentationTeamContext
-      try {
-        expected = parsePresentationTeamContext(body.expectedIdentity)
-      } catch {
-        return fail('access_denied')
+    let work: PresentationProjectWork | undefined
+    const register = (scope: Readonly<{ documentId: string; projectId: string }>) => {
+      if (options.captureProjectLease) {
+        work = registerPresentationProjectWork({
+          scope: { root: options.userDataPath, ...scope },
+          signal,
+        })
+        signal = work.signal
       }
-      if (
-        expected.version !== context.version ||
-        expected.actorSubject !== context.actorSubject ||
-        expected.pcSubject !== context.pcSubject
-      )
-        return fail('access_denied')
+      return signal
     }
-    if (operation === 'team_identity') {
-      exact(body, ['operation'])
-      return { identity: context }
-    }
-    if (operation === 'team_plan_read') {
-      exact(body, ['operation', 'documentId', 'projectId', 'planRevision'])
-      if (context.actorSubject !== context.pcSubject) return fail('access_denied')
-      if (
-        typeof body.documentId !== 'string' ||
-        !body.documentId ||
-        body.documentId.length > 4096 ||
-        typeof body.projectId !== 'string' ||
-        !/^[A-Za-z0-9_-]{1,80}$/.test(body.projectId)
-      )
-        return fail('invalid_request')
-      snapshot(body.documentId, body.projectId, body.planRevision)
-      const guard = capture(body.documentId, body.projectId, 'read', signal)
-      guard()
-      const release = await options.acquireProjectLock(body.projectId)
-      try {
-        check(signal)
-        guard()
-        const saved = snapshot(body.documentId, body.projectId, body.planRevision)
-        guard()
-        return { projectId: body.projectId, ...saved }
-      } finally {
-        release()
-      }
-    }
-    if (operation === 'team_project_create') {
-      exact(body, ['operation', 'documentId', 'projectId', 'planRevision', 'expectedIdentity'])
-      if (context.actorSubject !== context.pcSubject) return fail('access_denied')
-      if (
-        typeof body.documentId !== 'string' ||
-        !body.documentId ||
-        body.documentId.length > 4096 ||
-        typeof body.projectId !== 'string' ||
-        !/^[A-Za-z0-9_-]{1,80}$/.test(body.projectId)
-      )
-        return fail('invalid_request')
-      const doc = body.documentId,
-        project = body.projectId
-      snapshot(doc, project, body.planRevision)
-      const guard = capture(doc, project, 'write', signal)
-      guard()
-      const release = await options.acquireProjectLock(project)
-      try {
-        check(signal)
-        guard()
-        const publishedPlan = snapshot(doc, project, body.planRevision),
-          id = teamId(context.pcSubject, doc, project),
-          existing = store.read(id)
-        if (existing) {
-          if (
-            existing.ownerSubject !== context.pcSubject ||
-            existing.documentId !== doc ||
-            existing.projectId !== project ||
-            canonical(existing.publishedPlan) !== canonical(publishedPlan)
-          )
-            return fail('revision_conflict')
-          return { team: existing }
-        }
-        const now = new Date().toISOString()
-        return {
-          team: store.write(
-            {
-              version: 1,
-              teamId: id,
-              documentId: doc,
-              projectId: project,
-              ownerSubject: context.pcSubject,
-              revision: 1,
-              createdAt: now,
-              updatedAt: now,
-              publishedPlan,
-              members: [],
-              comments: [],
-            },
-            undefined,
-            guard,
-          ),
-        }
-      } finally {
-        release()
-      }
-    }
-    const expectedKeys: Record<string, string[]> = {
-      team_project_read: ['operation', 'teamId'],
-      team_member_set: ['operation', 'teamId', 'expectedRevision', 'memberSubject', 'role'],
-      team_member_revoke: ['operation', 'teamId', 'expectedRevision', 'memberSubject'],
-      team_plan_publish: ['operation', 'teamId', 'expectedRevision', 'planRevision'],
-      team_comment_add: ['operation', 'teamId', 'expectedRevision', 'planRevision', 'comment'],
-      team_comment_resolve: ['operation', 'teamId', 'expectedRevision', 'commentId'],
-    }
-    if (typeof operation !== 'string' || !expectedKeys[operation]) return fail('invalid_request')
-    exact(body, [
-      ...expectedKeys[operation]!,
-      ...(operation === 'team_project_read' ? [] : ['expectedIdentity']),
-    ])
-    let ledger = authorized(body.teamId, context)
-    if (
-      operation !== 'team_project_read' &&
-      ['team_plan_publish', 'team_member_set', 'team_member_revoke'].includes(operation)
-    )
-      owner(ledger, context)
-    else if (
-      operation !== 'team_project_read' &&
-      context.actorSubject !== ledger.ownerSubject &&
-      !ledger.members.some((m) => m.subject === context.actorSubject && m.role === 'reviewer')
-    )
-      return fail('access_denied')
-    const guard = capture(
-      ledger.documentId,
-      ledger.projectId,
-      operation === 'team_project_read' ? 'read' : 'write',
-      signal,
-    )
-    guard()
-    if (operation === 'team_project_read') return { team: ledger }
-    const release = await options.acquireProjectLock(ledger.projectId)
     try {
-      guard()
-      ledger = authorized(body.teamId, context)
-      guard()
-      const commit = (next: PresentationTeamLedger) => {
-        check(signal)
-        if (ledger.revision === Number.MAX_SAFE_INTEGER) return fail('quota_exceeded')
-        return {
-          team: store.write(
-            {
-              ...next,
-              revision: ledger.revision + 1,
-              updatedAt: new Date(
-                Math.max(
-                  Date.now(),
-                  Date.parse(ledger.updatedAt),
-                  ...next.comments.map((comment) => Date.parse(comment.updatedAt)),
-                ),
-              ).toISOString(),
-            },
-            ledger,
-            guard,
-          ),
+      const operation = body.operation
+      if (!['team_identity', 'team_project_read', 'team_plan_read'].includes(String(operation))) {
+        let expected: PresentationTeamContext
+        try {
+          expected = parsePresentationTeamContext(body.expectedIdentity)
+        } catch {
+          return fail('access_denied')
         }
-      }
-      const cas = () => {
-        if (body.expectedRevision !== ledger.revision) return fail('revision_conflict')
-      }
-      if (operation === 'team_plan_publish') {
-        owner(ledger, context)
-        cas()
-        const publishedPlan = snapshot(ledger.documentId, ledger.projectId, body.planRevision)
-        if (publishedPlan.revision < ledger.publishedPlan.revision) return fail('revision_conflict')
-        return commit({ ...ledger, publishedPlan })
-      }
-      if (operation === 'team_member_set' || operation === 'team_member_revoke') {
-        owner(ledger, context)
-        cas()
-        if (!subject(body.memberSubject) || body.memberSubject === ledger.ownerSubject)
-          return fail('invalid_request')
-        const members = ledger.members.filter((m) => m.subject !== body.memberSubject)
-        if (operation === 'team_member_set') {
-          if (body.role !== 'reviewer' && body.role !== 'viewer') return fail('invalid_request')
-          members.push({ subject: body.memberSubject as string, role: body.role })
-          if (members.length > 32) return fail('quota_exceeded')
-        } else if (members.length === ledger.members.length) return fail('not_found')
-        return commit({ ...ledger, members })
-      }
-      const role =
-        context.actorSubject === ledger.ownerSubject
-          ? 'owner'
-          : ledger.members.find((m) => m.subject === context.actorSubject)?.role
-      if (role !== 'owner' && role !== 'reviewer') return fail('access_denied')
-      if (operation === 'team_comment_add') {
-        if (!body.comment || typeof body.comment !== 'object' || Array.isArray(body.comment))
-          return fail('invalid_request')
-        const comment = body.comment as Record<string, unknown>
-        exact(comment, ['id', 'targetKind', 'targetId', 'text'])
         if (
-          typeof comment.id !== 'string' ||
-          !/^[A-Za-z0-9_-]{1,128}$/.test(comment.id) ||
-          typeof comment.targetId !== 'string' ||
-          !/^[A-Za-z0-9_-]{1,128}$/.test(comment.targetId) ||
-          !['slide', 'claim', 'source'].includes(String(comment.targetKind)) ||
-          typeof comment.text !== 'string' ||
-          !comment.text.trim() ||
-          comment.text.length > 2000 ||
-          Array.from(comment.text).some(
-            (c) => c.charCodeAt(0) < 32 || (c.charCodeAt(0) >= 127 && c.charCodeAt(0) <= 159),
-          ) ||
-          !integer(body.planRevision)
+          expected.version !== context.version ||
+          expected.actorSubject !== context.actorSubject ||
+          expected.pcSubject !== context.pcSubject
+        )
+          return fail('access_denied')
+      }
+      if (operation === 'team_identity') {
+        exact(body, ['operation'])
+        return { identity: context }
+      }
+      if (operation === 'team_plan_read') {
+        exact(body, ['operation', 'documentId', 'projectId', 'planRevision'])
+        if (context.actorSubject !== context.pcSubject) return fail('access_denied')
+        if (
+          typeof body.documentId !== 'string' ||
+          !body.documentId ||
+          body.documentId.length > 4096 ||
+          typeof body.projectId !== 'string' ||
+          !/^[A-Za-z0-9_-]{1,80}$/.test(body.projectId)
         )
           return fail('invalid_request')
-        const existing = ledger.comments.find((c) => c.id === comment.id)
-        if (existing) {
-          if (
-            existing.authorSubject !== context.actorSubject ||
-            existing.targetKind !== comment.targetKind ||
-            existing.targetId !== comment.targetId ||
-            existing.text !== comment.text ||
-            existing.planRevision !== body.planRevision
-          )
+        snapshot(body.documentId, body.projectId, body.planRevision)
+        const guard = capture(body.documentId, body.projectId, 'read', signal, register)
+        guard()
+        const release = await options.acquireProjectLock(body.projectId)
+        try {
+          check(signal)
+          guard()
+          const saved = snapshot(body.documentId, body.projectId, body.planRevision)
+          guard()
+          return { projectId: body.projectId, ...saved }
+        } finally {
+          release()
+        }
+      }
+      if (operation === 'team_project_create') {
+        exact(body, ['operation', 'documentId', 'projectId', 'planRevision', 'expectedIdentity'])
+        if (context.actorSubject !== context.pcSubject) return fail('access_denied')
+        if (
+          typeof body.documentId !== 'string' ||
+          !body.documentId ||
+          body.documentId.length > 4096 ||
+          typeof body.projectId !== 'string' ||
+          !/^[A-Za-z0-9_-]{1,80}$/.test(body.projectId)
+        )
+          return fail('invalid_request')
+        const doc = body.documentId,
+          project = body.projectId
+        snapshot(doc, project, body.planRevision)
+        const guard = capture(doc, project, 'write', signal, register)
+        guard()
+        const release = await options.acquireProjectLock(project)
+        try {
+          check(signal)
+          guard()
+          const publishedPlan = snapshot(doc, project, body.planRevision),
+            id = teamId(context.pcSubject, doc, project),
+            existing = store.read(id)
+          if (existing) {
+            if (
+              existing.ownerSubject !== context.pcSubject ||
+              existing.documentId !== doc ||
+              existing.projectId !== project ||
+              canonical(existing.publishedPlan) !== canonical(publishedPlan)
+            )
+              return fail('revision_conflict')
+            return { team: existing }
+          }
+          const now = new Date().toISOString()
+          return {
+            team: store.write(
+              {
+                version: 1,
+                teamId: id,
+                documentId: doc,
+                projectId: project,
+                ownerSubject: context.pcSubject,
+                revision: 1,
+                createdAt: now,
+                updatedAt: now,
+                publishedPlan,
+                members: [],
+                comments: [],
+              },
+              undefined,
+              guard,
+            ),
+          }
+        } finally {
+          release()
+        }
+      }
+      const expectedKeys: Record<string, string[]> = {
+        team_project_read: ['operation', 'teamId'],
+        team_member_set: ['operation', 'teamId', 'expectedRevision', 'memberSubject', 'role'],
+        team_member_revoke: ['operation', 'teamId', 'expectedRevision', 'memberSubject'],
+        team_plan_publish: ['operation', 'teamId', 'expectedRevision', 'planRevision'],
+        team_comment_add: ['operation', 'teamId', 'expectedRevision', 'planRevision', 'comment'],
+        team_comment_resolve: ['operation', 'teamId', 'expectedRevision', 'commentId'],
+      }
+      if (typeof operation !== 'string' || !expectedKeys[operation]) return fail('invalid_request')
+      exact(body, [
+        ...expectedKeys[operation]!,
+        ...(operation === 'team_project_read' ? [] : ['expectedIdentity']),
+      ])
+      let ledger = authorized(body.teamId, context)
+      if (
+        operation !== 'team_project_read' &&
+        ['team_plan_publish', 'team_member_set', 'team_member_revoke'].includes(operation)
+      )
+        owner(ledger, context)
+      else if (
+        operation !== 'team_project_read' &&
+        context.actorSubject !== ledger.ownerSubject &&
+        !ledger.members.some((m) => m.subject === context.actorSubject && m.role === 'reviewer')
+      )
+        return fail('access_denied')
+      const guard = capture(
+        ledger.documentId,
+        ledger.projectId,
+        operation === 'team_project_read' ? 'read' : 'write',
+        signal,
+        register,
+      )
+      guard()
+      if (operation === 'team_project_read') return { team: ledger }
+      const release = await options.acquireProjectLock(ledger.projectId)
+      try {
+        guard()
+        ledger = authorized(body.teamId, context)
+        guard()
+        const commit = (next: PresentationTeamLedger) => {
+          check(signal)
+          if (ledger.revision === Number.MAX_SAFE_INTEGER) return fail('quota_exceeded')
+          return {
+            team: store.write(
+              {
+                ...next,
+                revision: ledger.revision + 1,
+                updatedAt: new Date(
+                  Math.max(
+                    Date.now(),
+                    Date.parse(ledger.updatedAt),
+                    ...next.comments.map((comment) => Date.parse(comment.updatedAt)),
+                  ),
+                ).toISOString(),
+              },
+              ledger,
+              guard,
+            ),
+          }
+        }
+        const cas = () => {
+          if (body.expectedRevision !== ledger.revision) return fail('revision_conflict')
+        }
+        if (operation === 'team_plan_publish') {
+          owner(ledger, context)
+          cas()
+          const publishedPlan = snapshot(ledger.documentId, ledger.projectId, body.planRevision)
+          if (publishedPlan.revision < ledger.publishedPlan.revision)
             return fail('revision_conflict')
-          return { team: ledger }
+          return commit({ ...ledger, publishedPlan })
+        }
+        if (operation === 'team_member_set' || operation === 'team_member_revoke') {
+          owner(ledger, context)
+          cas()
+          if (!subject(body.memberSubject) || body.memberSubject === ledger.ownerSubject)
+            return fail('invalid_request')
+          const members = ledger.members.filter((m) => m.subject !== body.memberSubject)
+          if (operation === 'team_member_set') {
+            if (body.role !== 'reviewer' && body.role !== 'viewer') return fail('invalid_request')
+            members.push({ subject: body.memberSubject as string, role: body.role })
+            if (members.length > 32) return fail('quota_exceeded')
+          } else if (members.length === ledger.members.length) return fail('not_found')
+          return commit({ ...ledger, members })
+        }
+        const role =
+          context.actorSubject === ledger.ownerSubject
+            ? 'owner'
+            : ledger.members.find((m) => m.subject === context.actorSubject)?.role
+        if (role !== 'owner' && role !== 'reviewer') return fail('access_denied')
+        if (operation === 'team_comment_add') {
+          if (!body.comment || typeof body.comment !== 'object' || Array.isArray(body.comment))
+            return fail('invalid_request')
+          const comment = body.comment as Record<string, unknown>
+          exact(comment, ['id', 'targetKind', 'targetId', 'text'])
+          if (
+            typeof comment.id !== 'string' ||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(comment.id) ||
+            typeof comment.targetId !== 'string' ||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(comment.targetId) ||
+            !['slide', 'claim', 'source'].includes(String(comment.targetKind)) ||
+            typeof comment.text !== 'string' ||
+            !comment.text.trim() ||
+            comment.text.length > 2000 ||
+            Array.from(comment.text).some(
+              (c) => c.charCodeAt(0) < 32 || (c.charCodeAt(0) >= 127 && c.charCodeAt(0) <= 159),
+            ) ||
+            !integer(body.planRevision)
+          )
+            return fail('invalid_request')
+          const existing = ledger.comments.find((c) => c.id === comment.id)
+          if (existing) {
+            if (
+              existing.authorSubject !== context.actorSubject ||
+              existing.targetKind !== comment.targetKind ||
+              existing.targetId !== comment.targetId ||
+              existing.text !== comment.text ||
+              existing.planRevision !== body.planRevision
+            )
+              return fail('revision_conflict')
+            return { team: ledger }
+          }
+          cas()
+          const plan = ledger.publishedPlan.plan
+          if (
+            body.planRevision !== ledger.publishedPlan.revision ||
+            !(
+              comment.targetKind === 'slide'
+                ? plan.slides
+                : comment.targetKind === 'claim'
+                  ? plan.claims
+                  : plan.sources
+            ).some((item) => item.id === comment.targetId)
+          )
+            return fail('invalid_request')
+          if (ledger.comments.length >= 128) return fail('quota_exceeded')
+          const now = new Date(Math.max(Date.now(), Date.parse(ledger.updatedAt))).toISOString()
+          return commit({
+            ...ledger,
+            comments: [
+              ...ledger.comments,
+              {
+                id: comment.id,
+                targetKind: comment.targetKind as 'slide' | 'claim' | 'source',
+                targetId: comment.targetId,
+                authorSubject: context.actorSubject,
+                text: comment.text,
+                planRevision: body.planRevision as number,
+                state: 'open',
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+          })
         }
         cas()
-        const plan = ledger.publishedPlan.plan
-        if (
-          body.planRevision !== ledger.publishedPlan.revision ||
-          !(
-            comment.targetKind === 'slide'
-              ? plan.slides
-              : comment.targetKind === 'claim'
-                ? plan.claims
-                : plan.sources
-          ).some((item) => item.id === comment.targetId)
-        )
+        if (typeof body.commentId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.commentId))
           return fail('invalid_request')
-        if (ledger.comments.length >= 128) return fail('quota_exceeded')
+        const comment = ledger.comments.find((c) => c.id === body.commentId)
+        if (!comment) return fail('not_found')
+        if (role !== 'owner' && comment.authorSubject !== context.actorSubject)
+          return fail('access_denied')
+        if (comment.state !== 'open') return fail('invalid_state')
         const now = new Date(Math.max(Date.now(), Date.parse(ledger.updatedAt))).toISOString()
         return commit({
           ...ledger,
-          comments: [
-            ...ledger.comments,
-            {
-              id: comment.id,
-              targetKind: comment.targetKind as 'slide' | 'claim' | 'source',
-              targetId: comment.targetId,
-              authorSubject: context.actorSubject,
-              text: comment.text,
-              planRevision: body.planRevision as number,
-              state: 'open',
-              createdAt: now,
-              updatedAt: now,
-            },
-          ],
+          comments: ledger.comments.map((c) =>
+            c.id === comment.id ? { ...c, state: 'resolved', updatedAt: now } : c,
+          ),
         })
+      } finally {
+        release()
       }
-      cas()
-      if (typeof body.commentId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.commentId))
-        return fail('invalid_request')
-      const comment = ledger.comments.find((c) => c.id === body.commentId)
-      if (!comment) return fail('not_found')
-      if (role !== 'owner' && comment.authorSubject !== context.actorSubject)
-        return fail('access_denied')
-      if (comment.state !== 'open') return fail('invalid_state')
-      const now = new Date(Math.max(Date.now(), Date.parse(ledger.updatedAt))).toISOString()
-      return commit({
-        ...ledger,
-        comments: ledger.comments.map((c) =>
-          c.id === comment.id ? { ...c, state: 'resolved', updatedAt: now } : c,
-        ),
-      })
     } finally {
-      release()
+      work?.finish()
     }
   }
 }

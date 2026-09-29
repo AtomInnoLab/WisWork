@@ -14,6 +14,7 @@ import {
   capturePresentationProjectWriteLease,
   capturePresentationProjectReadLease,
   capturePresentationProjectCreationLease,
+  capturePresentationProjectAsyncReadLease,
 } from './presentation-project-write-lease'
 import {
   createPresentationProjectLifecycleService,
@@ -226,15 +227,44 @@ export function createPresentationService(options: {
   fetchPage?: (url: string, signal: AbortSignal) => Promise<Response | null>
 }): (body: unknown, signal: AbortSignal, context?: PresentationTeamContext) => Promise<Uint8Array> {
   const lifecycle = createPresentationProjectLifecycleService(options)
-  const pageBackups = createPresentationPageBackupService(options)
   const existingPageBackups = createPresentationExistingPageBackupService(options)
   const packageBackups = createPresentationPackageBackupService(options)
   const masterBackups = createPresentationMasterBackupService(options)
   const attachments = createPresentationAttachmentService(options)
   const store = new PresentationStore(options.userDataPath)
   const lifecycleStore = new PresentationLifecycleStore(options.userDataPath)
+  const captureFactoryLease = (
+    scope: Readonly<{ documentId: string; projectId: string }>,
+    mode: 'read' | 'write',
+    signal: AbortSignal,
+  ) => {
+    const input = {
+      store: lifecycleStore,
+      scope,
+      signal,
+      readExistingProject: () => store.projectScope(scope.projectId, scope.documentId),
+    }
+    if (mode === 'read') return capturePresentationProjectReadLease(input)
+    const lease = capturePresentationProjectWriteLease(input)
+    return { assertCurrent: lease.assertWritable }
+  }
+  const pageBackups = createPresentationPageBackupService({
+    ...options,
+    captureProjectLease: ({ scope, operation, signal }) => {
+      const input = {
+        store: lifecycleStore,
+        scope,
+        signal,
+        readExistingProject: () => store.projectScope(scope.projectId, scope.documentId),
+      }
+      return ['page_backup_status', 'page_backup_read'].includes(operation)
+        ? capturePresentationProjectReadLease(input)
+        : capturePresentationProjectWriteLease(input)
+    },
+  })
   const team = createPresentationTeamService({
     userDataPath: options.userDataPath,
+    captureProjectLease: captureFactoryLease,
     readPlan: (documentId, projectId) => {
       const record = store.plan(projectId, documentId)
       return record
@@ -243,10 +273,72 @@ export function createPresentationService(options: {
     },
     acquireProjectLock: (projectId) => acquireProjectLock(options.userDataPath, projectId),
   })
-  const deliveryBundles = createPresentationDeliveryBundleService(options)
+  const deliveryBundles = createPresentationDeliveryBundleService({
+    ...options,
+    captureProjectLease: captureFactoryLease,
+    acquireProjectLock: (projectId) => acquireProjectLock(options.userDataPath, projectId),
+  })
   const research = createPresentationResearchService({
     userDataPath: options.userDataPath,
     attachments,
+    captureProjectLease: async ({ scope, operation, signal }) => {
+      if (operation === 'research_build')
+        return capturePresentationProjectCreationLease({ store: lifecycleStore, scope, signal })
+      const readOnly = [
+        'research_list',
+        'research_latest',
+        'research_read',
+        'research_delete_status',
+      ].includes(operation)
+      let empty = false
+      let initialRevision: number | undefined
+      try {
+        initialRevision = lifecycleStore.read(scope)?.revision
+      } catch (error) {
+        if (!readOnly || !(error instanceof Error) || error.message !== 'document_mismatch')
+          throw error
+        const summary = await researchStore.summary(scope.documentId, scope.projectId)
+        checkAbort(signal)
+        if (summary.totalRecords) throw error
+        return Object.freeze({
+          scope,
+          revision: undefined,
+          assertCurrent: () => checkAbort(signal),
+        })
+      }
+      const assertInitial = () => {
+        checkAbort(signal)
+        if (initialRevision === undefined) {
+          if (lifecycleStore.read(scope) !== undefined) throw Error('revision_conflict')
+        } else lifecycleStore.assertActive(scope, initialRevision)
+      }
+      const readLease = await capturePresentationProjectAsyncReadLease({
+        store: lifecycleStore,
+        scope,
+        signal,
+        readExistingProject: async () => {
+          const project = store.projectScope(scope.projectId, scope.documentId)
+          if (project) return project
+          const summary = await researchStore.summary(scope.documentId, scope.projectId)
+          empty = summary.totalRecords === 0
+          return empty ? undefined : scope
+        },
+      }).catch((error) => {
+        if (readOnly && empty && error instanceof Error && error.message === 'project_not_found') {
+          assertInitial()
+          return Object.freeze({ scope, revision: initialRevision, assertCurrent: assertInitial })
+        }
+        throw error
+      })
+      readLease.assertCurrent()
+      if (readOnly) return readLease
+      return capturePresentationProjectWriteLease({
+        store: lifecycleStore,
+        scope,
+        signal,
+        readExistingProject: () => scope,
+      })
+    },
     acquireProjectLock: (projectId) => acquireProjectLock(options.userDataPath, projectId),
     assertRecordUnprotected: async (documentId, projectId, ledgerId, signal) => {
       const plans: unknown[] = []
@@ -323,14 +415,7 @@ export function createPresentationService(options: {
         typeof request.operation === 'string' &&
         request.operation.startsWith('delivery_bundle_')
       ) {
-        assertPresentationId(request.projectId)
-        const release = await acquireProjectLock(options.userDataPath, request.projectId as string)
-        try {
-          checkAbort(signal)
-          return boundedResponse(await deliveryBundles(request, signal))
-        } finally {
-          release()
-        }
+        return boundedResponse(await deliveryBundles(request, signal))
       }
       if (request.operation === 'export_pdf') {
         if (

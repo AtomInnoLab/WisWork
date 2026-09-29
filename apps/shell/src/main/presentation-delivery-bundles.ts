@@ -240,6 +240,7 @@ async function validateBundleZip(raw: Buffer) {
 }
 export function createPresentationDeliveryBundleService(options: {
   userDataPath: string
+  acquireProjectLock?(projectId: string): Promise<() => void>
   captureProjectLease?(
     scope: Readonly<{ documentId: string; projectId: string }>,
     mode: 'read' | 'write',
@@ -300,6 +301,7 @@ export function createPresentationDeliveryBundleService(options: {
       signal,
     })
     signal = work.signal
+    let releaseProject: (() => void) | undefined
     try {
       const lease = options.captureProjectLease?.(
         Object.freeze({ projectId: accepted.projectId, documentId: accepted.documentId }),
@@ -311,6 +313,8 @@ export function createPresentationDeliveryBundleService(options: {
         lease?.assertCurrent()
         check(signal)
       }
+      guard()
+      releaseProject = await options.acquireProjectLock?.(projectId)
       guard()
       const project = join(root, hash(documentId), hash(projectId))
       const previous = locks.get(project) ?? Promise.resolve()
@@ -635,6 +639,7 @@ export function createPresentationDeliveryBundleService(options: {
         if (locks.get(project) === tail) locks.delete(project)
       }
     } finally {
+      releaseProject?.()
       work.finish()
     }
   }
