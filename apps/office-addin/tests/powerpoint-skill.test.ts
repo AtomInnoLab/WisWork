@@ -186,6 +186,120 @@ async function durableCompatibility(
   }
 }
 
+async function durableDuplicationCompatibility(
+  fake: PowerPointAdapter,
+  proposals: ReturnType<typeof createStructuredProposalController>,
+) {
+  const { createPresentationSlideDuplicationSkill } =
+    await import('../src/skills/powerpoint/presentation-slide-duplication')
+  const { readUntilConverged } = await import('../src/skills/shared/office-write-transaction')
+  const root = mkdtempSync(join(tmpdir(), 'ppt-copy-compat-'))
+  durableRoots.push(root)
+  const service = createPresentationService({ userDataPath: root })
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const original = Buffer.from((await compilePresentationDeck(deck)).bytes).toString('base64')
+  const changedDeck = structuredClone(deck)
+  changedDeck.slides[0]!.elements = [
+    { kind: 'text', id: 'changed', x: 1, y: 1, w: 2, h: 1, text: 'Source changed', fontSize: 20 },
+  ]
+  const changed = Buffer.from((await compilePresentationDeck(changedDeck)).bytes).toString('base64')
+  let source = original,
+    order = ['slide-1'],
+    toolName = 'duplicate_slide'
+  const values = new Map<string, string>()
+  const binding = createPresentationDocumentBinding(
+    {
+      get: (key) => values.get(key),
+      set: (key, value) => {
+        values.set(key, value)
+      },
+      save: async () => {},
+      location: () => 'copy-compat',
+    },
+    () => 'copy-compat-doc',
+  )
+  fake.snapshotSlide = vi.fn(async () => ({ slideId: 'slide-1', fingerprint: 'source' }))
+  fake.exportPresentationPagePackage = vi.fn(async (slideId) => ({
+    slideId,
+    slideIds: [...order],
+    base64: source,
+  }))
+  const pageAdapter: import('../src/skills/powerpoint/browser-presentation-page-replacement-adapter').PresentationPageReplacementAdapter =
+    {
+      captureUnchangedPageDigests: vi.fn(),
+      commit: vi.fn(),
+      undo: vi.fn(),
+      reconcilePending: vi.fn(async () =>
+        order.length === 1
+          ? { status: 'baseline' as const }
+          : { status: 'inserted' as const, newSlideId: order[1] },
+      ),
+      inspect: vi.fn(async (record) => ({
+        status:
+          record.newSlideId && order.includes(record.newSlideId)
+            ? ('staged' as const)
+            : ('baseline' as const),
+        slideIds: [...order],
+      })),
+      stage: vi.fn(async (record, _base64, onInserted, assertCurrent, signal) => {
+        await assertCurrent()
+        expect(binding.readExistingBatch(record.changeId)).toMatchObject({
+          version: 4,
+          state: 'applying',
+          inFlightIndex: 0,
+        })
+        const result =
+          toolName === 'duplicate_slide'
+            ? await fake.duplicateSlide(0, signal)
+            : await fake.executeDeclarative([{ op: 'duplicate_slide', slide_index: 0 }], signal)
+        const id = 'slideId' in result ? result.slideId : result.insertedSlideId
+        if (!id) throw Error('office_verify_failed')
+        order = ['slide-1', id]
+        const observed = await readUntilConverged({
+          read: () => fake.listSlideShapes(1, signal),
+          accept: (actual) => actual.slideId === id,
+          signal,
+        })
+        if (observed.slideId !== id) throw Error('office_verify_failed')
+        await assertCurrent()
+        await onInserted(id)
+      }),
+      discard: vi.fn(async (_record, assertCurrent) => {
+        await assertCurrent()
+        order = ['slide-1']
+      }),
+    }
+  const controller = createPresentationSlideDuplicationSkill({
+    adapter: fake,
+    pageAdapter,
+    proposals,
+    available: () => true,
+    documentId: binding.documentId,
+    request: async (body, signal) =>
+      new Response(
+        Buffer.from(await service(body, signal ?? new AbortController().signal)).toString('utf8'),
+      ),
+    readExistingBatch: binding.readExistingBatch,
+    writeExistingBatch: binding.writeExistingBatch,
+  })
+  const skill = createPowerPointSkill({
+    adapter: fake,
+    proposals,
+    durableDuplicate: (index, explanation, signal, name) => {
+      toolName = name ?? 'duplicate_slide'
+      return controller.propose(index, explanation, signal, name)
+    },
+  })
+  return {
+    skill,
+    binding,
+    changeSource: () => {
+      source = changed
+    },
+  }
+}
+
 describe('PowerPoint compatibility skill', () => {
   it('exposes native master inspection and editing with exact schemas', () => {
     const skill = createPowerPointSkill({
@@ -589,12 +703,10 @@ describe('PowerPoint compatibility skill', () => {
       ),
     })
     const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const f = await durableDuplicationCompatibility(fake, proposals)
+    const skill = f.skill
     await skill.executeTool(call('duplicate_slide', { slide_index: 0 }))
-    ;(fake.snapshotSlide as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      slideId: 'slide-1',
-      fingerprint: 'changed',
-    })
+    f.changeSource()
     await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
     expect(fake.duplicateSlide).not.toHaveBeenCalled()
 
@@ -1377,7 +1489,7 @@ describe('PowerPoint compatibility skill', () => {
         .mockResolvedValue({ slideId: 'copy', slideIndex: 1, shapes: [] }),
     })
     const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const { skill } = await durableDuplicationCompatibility(fake, proposals)
 
     await skill.executeTool(call('duplicate_slide', { slide_index: 0 }))
     await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
@@ -1397,7 +1509,7 @@ describe('PowerPoint compatibility skill', () => {
       }),
     })
     const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const { skill } = await durableDuplicationCompatibility(fake, proposals)
 
     await skill.executeTool(
       call('execute_office_js', {
@@ -3119,3 +3231,57 @@ it('tracks offline, online and disconnected durable text capability without rebu
   expect(durableTextEdit).toHaveBeenCalledOnce()
   expect(fake.editSlideText).not.toHaveBeenCalled()
 })
+
+it.each(['duplicate_slide', 'execute_office_js'] as const)(
+  'routes %s duplication through the durable insertion binding with its original tool identity',
+  async (name) => {
+    const fake = adapter(),
+      proposals = createStructuredProposalController()
+    const durableDuplicate = vi.fn().mockResolvedValue({
+      proposalId: 'durable-proposal',
+      changeId: 'durable-copy',
+      status: 'awaiting_confirmation',
+    })
+    const skill = createPowerPointSkill({
+      adapter: fake,
+      proposals,
+      durableDuplicate,
+    } as Parameters<typeof createPowerPointSkill>[0])
+    const input =
+      name === 'duplicate_slide'
+        ? { slide_index: 0, explanation: 'Copy original' }
+        : {
+            program: { version: 1, operations: [{ op: 'duplicate_slide', slide_index: 0 }] },
+            explanation: 'Copy original',
+          }
+    const result = await skill.executeTool(call(name, input))
+    expect(result.isError, result.output).not.toBe(true)
+    expect(JSON.parse(result.output)).toEqual({
+      proposalId: 'durable-proposal',
+      changeId: 'durable-copy',
+      status: 'awaiting_confirmation',
+    })
+    expect(durableDuplicate).toHaveBeenCalledWith(0, 'Copy original', undefined, name)
+    expect(fake.duplicateSlide).not.toHaveBeenCalled()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
+    expect(proposals.pending()).toBeUndefined()
+  },
+)
+it.each(['duplicate_slide', 'execute_office_js'] as const)(
+  'refuses %s duplication without durable PC savepoint support',
+  async (name) => {
+    const fake = adapter(),
+      proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const input =
+      name === 'duplicate_slide'
+        ? { slide_index: 0 }
+        : { program: { version: 1, operations: [{ op: 'duplicate_slide', slide_index: 0 }] } }
+    const result = await skill.executeTool(call(name, input))
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('presentation_existing_persistence_unavailable')
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.duplicateSlide).not.toHaveBeenCalled()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
+  },
+)

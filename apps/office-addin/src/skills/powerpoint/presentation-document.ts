@@ -815,6 +815,7 @@ export function createPresentationDocumentBinding(
         entry.kind !== 'existing_page' ||
         source.kind !== 'existing_batch' ||
         source.record.version === 1 ||
+        source.record.version === 4 ||
         !entry.record.restores ||
         entry.record.restores.sourceKind !== 'batch' ||
         source.record.changeId !== entry.record.restores.sourceChangeId ||

@@ -1020,3 +1020,108 @@ it('lists ordered historical text records and routes the selected change ID', as
     expect.any(AbortSignal),
   )
 })
+
+it.each(['applying', 'applied', 'undoing', 'undone'] as const)(
+  'projects a durable %s slide duplication without confusing it with an object addition',
+  async (state) => {
+    const record = {
+      version: 4,
+      kind: 'native_slide_duplicate',
+      changeId: 'copy',
+      documentId: 'doc',
+      baselineId: 'baseline',
+      baselineDigest: 'a'.repeat(64),
+      hostSlideId: 'source',
+      slideIndex: 0,
+      sourceSlideId: '256#',
+      beforeSlideIds: ['source', 'other'],
+      scope: { slideIds: ['source'] },
+      intent: 'Copy source',
+      preserved: ['Original page'],
+      validation: ['Package readback'],
+      risk: 'high',
+      backups: [
+        {
+          hostSlideId: 'source',
+          backupId: 'backup',
+          sha256: 'b'.repeat(64),
+          sizeBytes: 120,
+          packageDigest: 'a'.repeat(64),
+        },
+      ],
+      operations: [{ op: 'duplicate_slide', slide_index: 0 }],
+      nextIndex: state === 'applying' ? 0 : 1,
+      ...(state === 'applying' ? { inFlightIndex: 0 } : { insertedSlideId: 'new-copy' }),
+      state,
+    } as unknown as PresentationExistingBatch
+    const executeTool = vi.fn(async () => ({
+      output: JSON.stringify({ status: 'inserted', qaPassed: false }),
+      mutated: false,
+      summary: 'checked',
+    }))
+    const controller = createPresentationChangesController({
+      available: () => false,
+      existingAvailable: () => true,
+      slideDuplicationAvailable: () => true,
+      artifact: () => undefined,
+      documentId: async () => 'doc',
+      listChangeHistory: () => [
+        { id: 'existing_batch:copy', kind: 'existing_batch', sequence: 1, legacy: false, record },
+      ],
+      executeTool,
+    } as Parameters<typeof createPresentationChangesController>[0])
+    await controller.refresh()
+    expect(controller.snapshot().error).toBeUndefined()
+    const row = controller.snapshot().entries[0]!
+    expect(row).toMatchObject({
+      kind: 'duplication',
+      affectedPageCount: state === 'applying' ? 1 : 2,
+      cursor: state === 'applying' ? 0 : 1,
+      operationCount: 1,
+    })
+    expect(row.before).toContain('source')
+    expect(row.changeSet?.scope.slideIds).toEqual(
+      state === 'applying' ? ['source'] : ['source', 'new-copy'],
+    )
+    expect(row.after).toContain(state === 'applying' ? '尚未记录' : 'new-copy')
+    expect(row.actions).toEqual(
+      state === 'applying'
+        ? ['inspect', 'reconcile']
+        : state === 'undone'
+          ? ['inspect']
+          : ['inspect', 'undo'],
+    )
+    for (const action of row.actions) {
+      await controller.run(row.id, action)
+      expect(executeTool).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          name: `${action}_slide_duplication`,
+          input: { change_id: 'copy' },
+        }),
+        expect.any(AbortSignal),
+      )
+      expect(controller.snapshot().error).toBeUndefined()
+    }
+    if (state === 'applying') {
+      delete (
+        record as import('../src/skills/powerpoint/presentation-existing-batch').PresentationSlideDuplicationBatch
+      ).inFlightIndex
+      await controller.refresh()
+      expect(controller.snapshot().entries[0]!.actions).toEqual(['inspect', 'reconcile'])
+    }
+    if (state === 'applied') {
+      executeTool.mockResolvedValueOnce({
+        output: JSON.stringify({
+          status: 'unavailable',
+          hostStatus: 'unavailable',
+          qaPassed: false,
+          historicalOnly: true,
+        }),
+        mutated: false,
+        summary: 'checked',
+      })
+      await controller.run(row.id, 'inspect')
+      expect(controller.snapshot().notice).toContain('当前页面包暂不可核对')
+    }
+  },
+)

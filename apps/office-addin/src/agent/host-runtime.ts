@@ -1,3 +1,4 @@
+import { createPresentationSlideDuplicationSkill } from '../skills/powerpoint/presentation-slide-duplication.js'
 import { createPresentationNativeModifyRestorationSkill } from '../skills/powerpoint/presentation-native-modify-restoration.js'
 import { createPresentationNativeModifySkill } from '../skills/powerpoint/presentation-native-modify.js'
 import { createPresentationManualObservationSkill } from '../skills/powerpoint/presentation-manual-observations.js'
@@ -288,6 +289,7 @@ export function createOfficeHostRuntime(
   let nativeModify: ReturnType<typeof createPresentationNativeModifySkill> | undefined
   let nativeModifyRestoration:
     ReturnType<typeof createPresentationNativeModifyRestorationSkill> | undefined
+  let slideDuplication: ReturnType<typeof createPresentationSlideDuplicationSkill> | undefined
   let legacyTextEpoch = 0
   let mutationStarted = false
   const readNativeLocks = (
@@ -318,14 +320,16 @@ export function createOfficeHostRuntime(
             // Local preference and review writes do not touch the host deck or its QA state.
             if (
               proposal.toolName === proposal.operation &&
-              (([
-                'save_presentation_preference',
-                'delete_presentation_preference',
-                'import_presentation_preference',
-                'save_presentation_observed_preference',
-                'delete_presentation_edit_observation',
-              ].includes(proposal.operation) &&
-                proposal.impact.host === 'local_preference') ||
+              ((proposal.operation === 'reconcile_slide_duplication' &&
+                proposal.impact.host === 'local_checkpoint') ||
+                ([
+                  'save_presentation_preference',
+                  'delete_presentation_preference',
+                  'import_presentation_preference',
+                  'save_presentation_observed_preference',
+                  'delete_presentation_edit_observation',
+                ].includes(proposal.operation) &&
+                  proposal.impact.host === 'local_preference') ||
                 ([
                   'add_presentation_review_comment',
                   'resolve_presentation_review_comment',
@@ -348,6 +352,7 @@ export function createOfficeHostRuntime(
             existingEditing?.beginMutation()
             existingBatchEditing?.beginMutation()
             nativeModify?.beginMutation()
+            slideDuplication?.beginMutation()
             qaSkill?.beginMutation(hostSlideIds)
             mutationStarted = Boolean(qaSkill)
             await localBinding?.invalidateQa?.(hostSlideIds)
@@ -363,6 +368,7 @@ export function createOfficeHostRuntime(
             existingEditing?.endMutation()
             existingBatchEditing?.endMutation()
             nativeModify?.endMutation()
+            slideDuplication?.endMutation()
             if (mutationStarted) {
               mutationStarted = false
               qaSkill!.endMutation()
@@ -396,6 +402,11 @@ export function createOfficeHostRuntime(
         vfs,
         nativeMasterEditingSupported: supportsNativePowerPointMasterEditing(),
         platform: options.platform ?? currentOfficePlatform(),
+        durableDuplicate: async (slideIndex, explanation, signal, toolName) => {
+          if (!slideDuplication || !options.presentation?.available())
+            throw new Error('presentation_existing_persistence_unavailable')
+          return slideDuplication.propose(slideIndex, explanation, signal, toolName)
+        },
         durableModify: async (operations, explanation, signal) => {
           if (!nativeModify || !options.presentation?.available())
             throw new Error('presentation_existing_persistence_unavailable')
@@ -712,12 +723,35 @@ export function createOfficeHostRuntime(
       exportPresentationPagePackage: (slideId, signal) =>
         powerPointAdapter.exportPresentationPagePackage(slideId, signal),
     })
+  if (
+    powerPointAdapter &&
+    options.presentation?.request &&
+    localBinding?.readExistingBatch &&
+    localBinding.writeExistingBatch
+  )
+    slideDuplication = createPresentationSlideDuplicationSkill({
+      adapter: powerPointAdapter,
+      pageAdapter: new BrowserPresentationPageReplacementAdapter(),
+      documentId: localBinding.documentId,
+      available: options.presentation.available,
+      request: options.presentation.request,
+      proposals,
+      readExistingBatch: localBinding.readExistingBatch,
+      writeExistingBatch: async (record, expected) => {
+        try {
+          await localBinding.writeExistingBatch!(record, expected)
+        } finally {
+          void changes?.refresh()
+        }
+      },
+    })
   const composedBase = composeOfficeSkills(hostSkill, shared, [
     ...extensions,
     ...(baselineSkill ? [baselineSkill] : []),
     ...(existingEditing ? [existingEditing] : []),
     ...(existingBatchEditing ? [existingBatchEditing] : []),
     ...(nativeModify ? [nativeModify] : []),
+    ...(slideDuplication ? [slideDuplication] : []),
     ...(nativeModifyRestoration ? [nativeModifyRestoration] : []),
     ...(existingImageEditing ? [existingImageEditing] : []),
     ...(existingPageEditing ? [existingPageEditing] : []),
@@ -1190,33 +1224,35 @@ export function createOfficeHostRuntime(
         })
       : undefined
   const dispatchChangeTool: AgentSkill['executeTool'] = (call, signal) => {
-    const owner = nativeModifyRestoration?.tools.some((tool) => tool.name === call.name)
-      ? nativeModifyRestoration
-      : nativeModify?.tools.some((tool) => tool.name === call.name)
-        ? nativeModify
-        : existingEditing?.tools.some((tool) => tool.name === call.name)
-          ? existingEditing
-          : existingBatchEditing?.tools.some((tool) => tool.name === call.name)
-            ? existingBatchEditing
-            : existingImageEditing?.tools.some((tool) => tool.name === call.name)
-              ? existingImageEditing
-              : existingPageEditing?.tools.some((tool) => tool.name === call.name)
-                ? existingPageEditing
-                : pageEditing?.tools.some((tool) => tool.name === call.name)
-                  ? pageEditing
-                  : pageReplacement?.tools.some((tool) => tool.name === call.name)
-                    ? pageReplacement
-                    : [
-                          'inspect_slide_ir_addition',
-                          'resume_slide_ir_addition',
-                          'finalize_slide_ir_addition_restore',
-                          'release_slide_ir_addition',
-                        ].includes(call.name) &&
-                        hostSkill.tools.some((tool) => tool.name === call.name)
-                      ? hostSkill
-                      : call.name === 'read_presentation_baseline' && baselineSkill
-                        ? baselineSkill
-                        : undefined
+    const owner = slideDuplication?.tools.some((tool) => tool.name === call.name)
+      ? slideDuplication
+      : nativeModifyRestoration?.tools.some((tool) => tool.name === call.name)
+        ? nativeModifyRestoration
+        : nativeModify?.tools.some((tool) => tool.name === call.name)
+          ? nativeModify
+          : existingEditing?.tools.some((tool) => tool.name === call.name)
+            ? existingEditing
+            : existingBatchEditing?.tools.some((tool) => tool.name === call.name)
+              ? existingBatchEditing
+              : existingImageEditing?.tools.some((tool) => tool.name === call.name)
+                ? existingImageEditing
+                : existingPageEditing?.tools.some((tool) => tool.name === call.name)
+                  ? existingPageEditing
+                  : pageEditing?.tools.some((tool) => tool.name === call.name)
+                    ? pageEditing
+                    : pageReplacement?.tools.some((tool) => tool.name === call.name)
+                      ? pageReplacement
+                      : [
+                            'inspect_slide_ir_addition',
+                            'resume_slide_ir_addition',
+                            'finalize_slide_ir_addition_restore',
+                            'release_slide_ir_addition',
+                          ].includes(call.name) &&
+                          hostSkill.tools.some((tool) => tool.name === call.name)
+                        ? hostSkill
+                        : call.name === 'read_presentation_baseline' && baselineSkill
+                          ? baselineSkill
+                          : undefined
     return owner
       ? owner.executeTool(call, signal)
       : Promise.resolve({
@@ -1247,6 +1283,7 @@ export function createOfficeHostRuntime(
         options.presentation.listImageReplacements))
   )
     changes = createPresentationChangesController({
+      slideDuplicationAvailable: () => Boolean(slideDuplication),
       nativeModifyAvailable: () => Boolean(nativeModify),
       nativeModifyFinalizeAvailable: () => Boolean(nativeModifyRestoration),
       nativeAdditionAvailable: () =>
@@ -1552,6 +1589,7 @@ export function createOfficeHostRuntime(
         existingEditing?.clear()
         existingBatchEditing?.clear()
         nativeModify?.clear()
+        slideDuplication?.clear()
         nativeModifyRestoration?.clear()
         existingImageEditing?.clear()
         existingPageEditing?.clear()

@@ -1,3 +1,4 @@
+import { createStructuredProposalController } from '../src/agent/proposal-controller'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { benchmarkPlannedDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
 import { createPresentationExistingPageBackupService } from '../../shell/src/main/presentation-existing-page-backups'
@@ -1322,5 +1323,34 @@ it.each([false, true])(
     } finally {
       runtime.dispose()
     }
+  },
+)
+
+it.each(['duplicate_slide', 'execute_office_js', 'undo_slide_duplication'])(
+  'uses only proven page identities for %s duplication QA invalidation',
+  async (name) => {
+    const { presentationMutationScope } =
+      await import('../src/skills/powerpoint/presentation-mutation-scope')
+    const proposals = createStructuredProposalController()
+    const targets = name === 'undo_slide_duplication' ? ['source', 'copy'] : ['source']
+    const proposal = proposals.propose({
+      operation: name,
+      toolName: name,
+      title: 'Copy',
+      preview: { qaScope: { basis: 'slide_duplication_savepoint', hostSlideIds: targets } },
+      impact: { host: 'powerpoint', targets, count: 1 },
+      fingerprint: 'source',
+      validate: () => true,
+      execute: async () => {},
+    })
+    expect(presentationMutationScope(proposal)).toEqual(targets)
+    expect(presentationMutationScope({ ...proposal, preview: {} })).toBeUndefined()
+    expect(
+      presentationMutationScope({
+        ...proposal,
+        preview: { qaScope: { basis: 'slide_duplication_savepoint', hostSlideIds: ['unrelated'] } },
+      }),
+    ).toBeUndefined()
+    expect(presentationMutationScope({ ...proposal, toolName: 'unknown' })).toBeUndefined()
   },
 )

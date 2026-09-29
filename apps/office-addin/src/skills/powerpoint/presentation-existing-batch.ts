@@ -117,8 +117,36 @@ export interface PresentationNativeModifyBatch {
   reviews?: PresentationTargetBatch['reviews']
   backupReleasedAt?: string
 }
+export interface PresentationSlideDuplicationBatch {
+  version: 4
+  kind: 'native_slide_duplicate'
+  changeId: string
+  documentId: string
+  baselineId: string
+  baselineDigest: string
+  hostSlideId: string
+  slideIndex: number
+  sourceSlideId: string
+  beforeSlideIds: string[]
+  scope: { slideIds: string[] }
+  intent: string
+  preserved: string[]
+  validation: string[]
+  risk: 'high'
+  backups: NonNullable<PresentationTargetBatch['backups']>
+  operations: [{ op: 'duplicate_slide'; slide_index: number }]
+  nextIndex: 0 | 1
+  inFlightIndex?: 0
+  insertedSlideId?: string
+  state: 'applying' | 'applied' | 'undoing' | 'undone'
+  reviews?: PresentationTargetBatch['reviews']
+  backupReleasedAt?: string
+}
 export type PresentationExistingBatch =
-  PresentationTargetBatch | PresentationNativeAddBatch | PresentationNativeModifyBatch
+  | PresentationTargetBatch
+  | PresentationNativeAddBatch
+  | PresentationNativeModifyBatch
+  | PresentationSlideDuplicationBatch
 
 const bytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).byteLength
 const id = (v: unknown) => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v)
@@ -717,19 +745,23 @@ function nativeAddReservedBytes(r: PresentationNativeAddBatch) {
 export function validatePresentationExistingBatch(v: unknown): v is PresentationExistingBatch {
   return (
     record(v) &&
-    (v.version === 3
-      ? validateNativeModifyBatch(v)
-      : v.version === 2
-        ? validateNativeAddBatch(v)
-        : validateTargetBatch(v))
+    (v.version === 4
+      ? validateSlideDuplicationBatch(v)
+      : v.version === 3
+        ? validateNativeModifyBatch(v)
+        : v.version === 2
+          ? validateNativeAddBatch(v)
+          : validateTargetBatch(v))
   )
 }
 export const existingBatchReservedBytes = (r: PresentationExistingBatch) =>
-  r.version === 3
-    ? nativeModifyReservedBytes(r)
-    : r.version === 2
-      ? nativeAddReservedBytes(r)
-      : targetBatchReservedBytes(r)
+  r.version === 4
+    ? slideDuplicationReservedBytes(r)
+    : r.version === 3
+      ? nativeModifyReservedBytes(r)
+      : r.version === 2
+        ? nativeAddReservedBytes(r)
+        : targetBatchReservedBytes(r)
 export function validExistingBatchTransition(
   before: PresentationExistingBatch | undefined,
   after: PresentationExistingBatch,
@@ -739,6 +771,8 @@ export function validExistingBatchTransition(
     (before && !validatePresentationExistingBatch(before))
   )
     return false
+  if (after.version === 4) return validSlideDuplicationTransition(before, after)
+  if (before?.version === 4) return false
   if (after.version === 3) return validNativeModifyTransition(before, after)
   if (before?.version === 3) return false
   if (after.version === 1)
@@ -1100,5 +1134,244 @@ function nativeModifyReservedBytes(r: PresentationNativeModifyBatch) {
     256 -
     bytes(r.reviews ?? []) -
     bytes(r.restoredSlideIds ?? {})
+  )
+}
+
+function validateSlideDuplicationBatch(value: Record<string, unknown>): boolean {
+  const r = value as unknown as PresentationSlideDuplicationBatch
+  const hash = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+  const allowed = [
+    'version',
+    'kind',
+    'changeId',
+    'documentId',
+    'baselineId',
+    'baselineDigest',
+    'hostSlideId',
+    'slideIndex',
+    'sourceSlideId',
+    'beforeSlideIds',
+    'scope',
+    'intent',
+    'preserved',
+    'validation',
+    'risk',
+    'backups',
+    'operations',
+    'nextIndex',
+    'inFlightIndex',
+    'insertedSlideId',
+    'state',
+    'reviews',
+    'backupReleasedAt',
+  ]
+  if (
+    Object.keys(value).some((key) => !allowed.includes(key)) ||
+    r.version !== 4 ||
+    r.kind !== 'native_slide_duplicate' ||
+    !id(r.changeId) ||
+    !id(r.baselineId) ||
+    !boundedText(r.documentId, 4096) ||
+    !hash(r.baselineDigest) ||
+    !hostId(r.hostSlideId) ||
+    !Number.isInteger(r.slideIndex) ||
+    !uniqueIds(r.beforeSlideIds, 512) ||
+    r.slideIndex < 0 ||
+    r.beforeSlideIds[r.slideIndex] !== r.hostSlideId ||
+    typeof r.sourceSlideId !== 'string' ||
+    !/^([1-9][0-9]{0,9})#$/.test(r.sourceSlideId) ||
+    Number(r.sourceSlideId.slice(0, -1)) < 256 ||
+    Number(r.sourceSlideId.slice(0, -1)) > 4294967295 ||
+    !record(r.scope) ||
+    Object.keys(r.scope).join(',') !== 'slideIds' ||
+    !Array.isArray(r.scope.slideIds) ||
+    r.scope.slideIds.length !== 1 ||
+    r.scope.slideIds[0] !== r.hostSlideId ||
+    !boundedText(r.intent, 300) ||
+    !labels(r.preserved, 20) ||
+    !labels(r.validation, 20) ||
+    r.risk !== 'high' ||
+    !Array.isArray(r.backups) ||
+    r.backups.length !== 1 ||
+    !Array.isArray(r.operations) ||
+    r.operations.length !== 1 ||
+    !record(r.operations[0]) ||
+    Object.keys(r.operations[0]).sort().join(',') !== 'op,slide_index' ||
+    r.operations[0].op !== 'duplicate_slide' ||
+    r.operations[0].slide_index !== r.slideIndex ||
+    ![0, 1].includes(r.nextIndex) ||
+    !['applying', 'applied', 'undoing', 'undone'].includes(r.state)
+  )
+    return false
+  const b = r.backups[0]
+  if (
+    !record(b) ||
+    Object.keys(b).sort().join(',') !== 'backupId,hostSlideId,packageDigest,sha256,sizeBytes' ||
+    b.hostSlideId !== r.hostSlideId ||
+    !id(b.backupId) ||
+    !hash(b.sha256) ||
+    b.packageDigest !== r.baselineDigest ||
+    !Number.isSafeInteger(b.sizeBytes) ||
+    b.sizeBytes < 1 ||
+    b.sizeBytes > 8 * 1024 * 1024
+  )
+    return false
+  if (
+    r.inFlightIndex !== undefined &&
+    (r.inFlightIndex !== 0 || r.state !== 'applying' || r.nextIndex !== 0)
+  )
+    return false
+  if (
+    r.insertedSlideId !== undefined &&
+    (!hostId(r.insertedSlideId) || r.beforeSlideIds.includes(r.insertedSlideId))
+  )
+    return false
+  if (
+    r.state === 'applying' &&
+    (r.nextIndex !== 0 || (r.insertedSlideId !== undefined && r.inFlightIndex !== 0))
+  )
+    return false
+  if (
+    r.state !== 'applying' &&
+    !(r.state === 'undone' && r.nextIndex === 0 && r.insertedSlideId === undefined) &&
+    (r.nextIndex !== 1 || r.inFlightIndex !== undefined || !hostId(r.insertedSlideId))
+  )
+    return false
+  if (r.backupReleasedAt !== undefined && (r.state !== 'undone' || !timestamp(r.backupReleasedAt)))
+    return false
+  if (
+    r.reviews !== undefined &&
+    (!Array.isArray(r.reviews) ||
+      r.reviews.length !== 1 ||
+      r.reviews.some(
+        (review) =>
+          !record(review) ||
+          Object.keys(review).sort().join(',') !==
+            'capturedAt,hostSlideId,notes,reviewedAt,screenshotDigest,status' ||
+          review.hostSlideId !== r.insertedSlideId ||
+          !hash(review.screenshotDigest) ||
+          !timestamp(review.capturedAt) ||
+          !timestamp(review.reviewedAt) ||
+          Date.parse(review.capturedAt) > Date.parse(review.reviewedAt) ||
+          !['pass', 'fail'].includes(review.status) ||
+          typeof review.notes !== 'string' ||
+          review.notes.length > 2000,
+      ))
+  )
+    return false
+  return bytes(r) + slideDuplicationReservedBytes(r) <= 192 * 1024
+}
+function slideDuplicationReservedBytes(r: PresentationSlideDuplicationBatch) {
+  const maximal = {
+    ...r,
+    state: 'applying',
+    nextIndex: 1,
+    inFlightIndex: 0,
+    insertedSlideId: '\ud800'.repeat(256),
+    backupReleasedAt: '9999-12-31T23:59:59.999Z',
+    reviews: [
+      {
+        hostSlideId: '\ud800'.repeat(256),
+        screenshotDigest: 'f'.repeat(64),
+        capturedAt: '9999-12-31T23:59:59.999Z',
+        reviewedAt: '9999-12-31T23:59:59.999Z',
+        status: 'pass',
+        notes: '\u0001'.repeat(2000),
+      },
+    ],
+  }
+  return Math.max(0, bytes(maximal) - bytes(r))
+}
+function validSlideDuplicationTransition(
+  before: PresentationExistingBatch | undefined,
+  after: PresentationSlideDuplicationBatch,
+) {
+  if (!before)
+    return (
+      after.state === 'applying' &&
+      after.nextIndex === 0 &&
+      after.inFlightIndex === undefined &&
+      after.insertedSlideId === undefined &&
+      after.reviews === undefined &&
+      after.backupReleasedAt === undefined
+    )
+  if (before.version !== 4) return false
+  const core = (r: PresentationSlideDuplicationBatch) =>
+    JSON.stringify({
+      ...r,
+      state: undefined,
+      nextIndex: undefined,
+      inFlightIndex: undefined,
+      insertedSlideId: undefined,
+      reviews: undefined,
+      backupReleasedAt: undefined,
+    })
+  if (
+    core(before) !== core(after) ||
+    (before.insertedSlideId !== undefined && before.insertedSlideId !== after.insertedSlideId)
+  )
+    return false
+  const reviewsSame = JSON.stringify(before.reviews) === JSON.stringify(after.reviews)
+  if (!reviewsSame)
+    return (
+      before.state === 'applied' &&
+      after.state === 'applied' &&
+      before.nextIndex === after.nextIndex &&
+      before.insertedSlideId === after.insertedSlideId &&
+      before.inFlightIndex === after.inFlightIndex &&
+      before.backupReleasedAt === after.backupReleasedAt &&
+      after.reviews?.length === 1
+    )
+  if (before.backupReleasedAt !== after.backupReleasedAt)
+    return (
+      before.state === 'undone' &&
+      after.state === 'undone' &&
+      before.backupReleasedAt === undefined &&
+      timestamp(after.backupReleasedAt) &&
+      before.nextIndex === after.nextIndex &&
+      before.insertedSlideId === after.insertedSlideId
+    )
+  if (
+    before.state === 'applying' &&
+    (before.inFlightIndex === 0 || before.inFlightIndex === undefined) &&
+    before.nextIndex === 0 &&
+    before.insertedSlideId === undefined &&
+    after.state === 'undone' &&
+    after.nextIndex === 0 &&
+    after.insertedSlideId === undefined &&
+    after.inFlightIndex === undefined
+  )
+    return true
+  if (
+    before.state === 'applying' &&
+    after.state === 'applying' &&
+    before.nextIndex === after.nextIndex
+  ) {
+    if (before.inFlightIndex === undefined && after.inFlightIndex === 0)
+      return before.insertedSlideId === undefined && after.insertedSlideId === undefined
+    return (
+      before.inFlightIndex === 0 &&
+      after.inFlightIndex === 0 &&
+      before.insertedSlideId === undefined &&
+      hostId(after.insertedSlideId)
+    )
+  }
+  if (
+    before.state === 'applying' &&
+    before.inFlightIndex === 0 &&
+    after.state === 'applied' &&
+    after.nextIndex === 1 &&
+    after.inFlightIndex === undefined
+  )
+    return hostId(after.insertedSlideId)
+  if (
+    before.nextIndex !== after.nextIndex ||
+    before.insertedSlideId !== after.insertedSlideId ||
+    before.inFlightIndex !== after.inFlightIndex
+  )
+    return false
+  return (
+    (before.state === 'applied' && after.state === 'undoing') ||
+    (before.state === 'undoing' && after.state === 'undone')
   )
 }

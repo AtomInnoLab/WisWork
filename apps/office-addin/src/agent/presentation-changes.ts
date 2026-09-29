@@ -4,6 +4,7 @@ import type {
   PresentationTargetBatch,
   PresentationNativeAddBatch,
   PresentationNativeModifyBatch,
+  PresentationSlideDuplicationBatch,
 } from '../skills/powerpoint/presentation-existing-batch.js'
 import type { PresentationExistingImageChange } from '../skills/powerpoint/presentation-existing-image.js'
 import type { PresentationExistingPageChange } from '../skills/powerpoint/presentation-existing-page.js'
@@ -46,7 +47,15 @@ const nativeAdditionDescription = (record: PresentationNativeAddBatch) =>
     .join('\n')
 
 export type PresentationChangeAction =
-  'inspect' | 'undo' | 'resume' | 'reapply' | 'commit' | 'discard' | 'release' | 'finalize'
+  | 'inspect'
+  | 'undo'
+  | 'resume'
+  | 'reconcile'
+  | 'reapply'
+  | 'commit'
+  | 'discard'
+  | 'release'
+  | 'finalize'
 export interface PresentationChangeEntry {
   checkpointCreatedAt?: string
   checkpointRestoredAt?: string
@@ -74,6 +83,7 @@ export interface PresentationChangeEntry {
     | 'chart'
     | 'addition'
     | 'modification'
+    | 'duplication'
   pageId: string
   state: string
   before: string
@@ -109,6 +119,7 @@ export interface PresentationChangesOptions {
       sizeBytes: number
     }[]
   >
+  slideDuplicationAvailable?: () => boolean
   nativeModifyAvailable?: () => boolean
   nativeModifyFinalizeAvailable?: () => boolean
   nativeAdditionAvailable?: () => boolean
@@ -228,6 +239,22 @@ function inspectionNotice(output: string): string {
     if (output.length <= 256 * 1024) {
       const value = JSON.parse(output)
       if (
+        value?.historicalOnly === true &&
+        value?.qaPassed === false &&
+        ['baseline', 'inserted', 'conflict', 'unavailable'].includes(value?.status) &&
+        ['baseline', 'staged', 'conflict', 'unavailable'].includes(value?.hostStatus)
+      ) {
+        const message =
+          value.status === 'inserted'
+            ? '已核对复制页内容及位置；回执状态以持久记录为准。'
+            : value.status === 'baseline'
+              ? '当前原页序及源页内容已核对；未自动复制、删除或认领回执。'
+              : value.status === 'conflict'
+                ? '当前页序或页面内容与保存点不一致，请检查页面。'
+                : '当前页面包暂不可核对，请恢复宿主读取能力后重试。'
+        return message + ' 此检查不代表页面 QA 通过。'
+      }
+      if (
         value?.visualQaVerified === false &&
         Number.isSafeInteger(value?.operationCount) &&
         value.operationCount >= 1 &&
@@ -293,6 +320,8 @@ function inspectionNotice(output: string): string {
 }
 function workbenchError(error: unknown): string {
   const code = error instanceof Error ? error.message : ''
+  if (code === 'presentation_slide_duplication_pending')
+    return '复制回执尚未确定，请检查并明确核对新页身份。未自动重放复制或删除。'
   if (code === 'presentation_native_add_pending')
     return '尚未确认写入完成，保留原页备份与未决记录。未自动重放；请检查页面，必要时使用原页包恢复流程。'
   if (code === 'presentation_existing_backup_capacity')
@@ -597,156 +626,190 @@ export function createPresentationChangesController(
                       fingerprint: JSON.stringify(saved),
                     }
                   : saved.kind === 'existing_batch'
-                    ? saved.record.version === 3
+                    ? saved.record.version === 4
                       ? {
                           entry: {
                             id: saved.id,
                             source: 'existing_batch',
-                            kind: 'modification',
-                            pageId: saved.record.scope.slideIds[0]!,
+                            kind: 'duplication',
+                            pageId: saved.record.insertedSlideId ?? saved.record.hostSlideId,
                             state: saved.record.state,
                             cursor: saved.record.nextIndex,
-                            operationCount: saved.record.operations.length,
-                            affectedPageCount: saved.record.scope.slideIds.length,
-                            before: saved.record.backupReleasedAt
-                              ? `原页备份已释放：${saved.record.backupReleasedAt}`
-                              : `${saved.record.backups.length} 页原始 PPTX 已保存`,
-                            after: saved.record.operations
-                              .map(
-                                (op, index) =>
-                                  `${index + 1}. ${op.op}: ${saved.record.beforeSlideIds![op.slide_index]}/${op.shape_id}${op.op === 'set_shape_text' ? `\n新文字：${op.text}` : op.op === 'set_shape_geometry' ? `\n新几何（pt）：${JSON.stringify({ left: op.left, top: op.top, width: op.width, height: op.height })}` : '\n删除目标对象；原页包保留用于恢复'}`,
-                              )
-                              .join('\n'),
+                            operationCount: 1,
+                            affectedPageCount: saved.record.insertedSlideId ? 2 : 1,
+                            before: `源页面：${saved.record.hostSlideId}\n原页包摘要：${saved.record.baselineDigest}`,
+                            after:
+                              saved.record.state === 'undone' && !saved.record.insertedSlideId
+                                ? '未创建复制页面；原页序已核对'
+                                : `复制页面：${saved.record.insertedSlideId ?? '尚未记录创建身份'}\n原页仍保留；复制页须单独复核`,
                             reviews: copy(saved.record.reviews),
-                            actions: [
-                              ...(options.nativeModifyAvailable?.() ? ['inspect' as const] : []),
-                              ...(options.nativeModifyAvailable?.() &&
-                              saved.record.state === 'applying' &&
-                              saved.record.inFlightIndex === undefined &&
-                              !candidates.length
-                                ? ['resume' as const]
-                                : []),
-                              ...(options.nativeRestorationAvailable?.() &&
-                              genericCanContinueRestore
-                                ? ['undo' as const]
-                                : []),
-                              ...(options.nativeModifyFinalizeAvailable?.() &&
-                              genericAllRestored &&
-                              ['applying', 'applied', 'undoing'].includes(saved.record.state)
-                                ? ['finalize' as const]
-                                : []),
-                            ],
+                            actions: options.slideDuplicationAvailable?.()
+                              ? [
+                                  'inspect' as const,
+                                  ...(saved.record.state === 'applying'
+                                    ? ['reconcile' as const]
+                                    : []),
+                                  ...(['applied', 'undoing'].includes(saved.record.state) &&
+                                  !saved.record.backupReleasedAt
+                                    ? ['undo' as const]
+                                    : []),
+                                ]
+                              : [],
                           },
                           record: copy(saved.record),
-                          fingerprint: JSON.stringify({ saved, candidates }),
-                          ...(genericCanContinueRestore && genericUnrestored
-                            ? {
-                                genericRestoreTarget: {
-                                  hostSlideId: genericUnrestored.hostSlideId,
-                                  slideIndex: genericUnrestored.slideIndex,
-                                  beforeSlideIds: genericOrder,
-                                  packageDigest: saved.record.backups.find(
-                                    (backup) =>
-                                      backup.hostSlideId === genericUnrestored.hostSlideId,
-                                  )!.packageDigest,
-                                },
-                              }
-                            : {}),
-                          ...(genericAllRestored
-                            ? {
-                                genericRestoredSlideIds: Object.fromEntries(
-                                  saved.record.scope.slideIds.map((id) => [
-                                    id,
-                                    genericApplied.find((page) => page.oldSlideId === id)!
-                                      .newSlideId!,
-                                  ]),
-                                ),
-                                genericRestorationChangeIds: genericApplied.map(
-                                  (page) => page.changeId,
-                                ),
-                              }
-                            : {}),
+                          fingerprint: JSON.stringify(saved),
                         }
-                      : saved.record.version === 2
+                      : saved.record.version === 3
                         ? {
                             entry: {
                               id: saved.id,
                               source: 'existing_batch',
-                              kind: 'addition',
-                              pageId: saved.record.restoredSlideId ?? saved.record.hostSlideId,
+                              kind: 'modification',
+                              pageId: saved.record.scope.slideIds[0]!,
                               state: saved.record.state,
                               cursor: saved.record.nextIndex,
                               operationCount: saved.record.operations.length,
-                              affectedPageCount: 1,
+                              affectedPageCount: saved.record.scope.slideIds.length,
                               before: saved.record.backupReleasedAt
                                 ? `原页备份已释放：${saved.record.backupReleasedAt}`
-                                : '原页包已保存；原有对象须完整保留',
-                              after: nativeAdditionDescription(saved.record),
+                                : `${saved.record.backups.length} 页原始 PPTX 已保存`,
+                              after: saved.record.operations
+                                .map(
+                                  (op, index) =>
+                                    `${index + 1}. ${op.op}: ${saved.record.beforeSlideIds![op.slide_index]}/${op.shape_id}${op.op === 'set_shape_text' ? `\n新文字：${op.text}` : op.op === 'set_shape_geometry' ? `\n新几何（pt）：${JSON.stringify({ left: op.left, top: op.top, width: op.width, height: op.height })}` : '\n删除目标对象；原页包保留用于恢复'}`,
+                                )
+                                .join('\n'),
+                              reviews: copy(saved.record.reviews),
                               actions: [
-                                ...(options.nativeAdditionAvailable?.() &&
-                                ['applying', 'applied'].includes(saved.record.state)
-                                  ? saved.record.state === 'applying'
-                                    ? (['inspect', 'resume'] as PresentationChangeAction[])
-                                    : (['inspect'] as PresentationChangeAction[])
+                                ...(options.nativeModifyAvailable?.() ? ['inspect' as const] : []),
+                                ...(options.nativeModifyAvailable?.() &&
+                                saved.record.state === 'applying' &&
+                                saved.record.inFlightIndex === undefined &&
+                                !candidates.length
+                                  ? ['resume' as const]
                                   : []),
                                 ...(options.nativeRestorationAvailable?.() &&
-                                !candidates.length &&
-                                !saved.record.backupReleasedAt &&
-                                ['applying', 'applied'].includes(saved.record.state)
+                                genericCanContinueRestore
                                   ? ['undo' as const]
                                   : []),
-                                ...(options.nativeReleaseAvailable?.() &&
-                                !saved.record.backupReleasedAt &&
-                                saved.record.state === 'undone'
-                                  ? ['release' as const]
-                                  : []),
-                                ...(options.nativeRestoreFinalizationAvailable?.() && restoration
+                                ...(options.nativeModifyFinalizeAvailable?.() &&
+                                genericAllRestored &&
+                                ['applying', 'applied', 'undoing'].includes(saved.record.state)
                                   ? ['finalize' as const]
                                   : []),
                               ],
                             },
                             record: copy(saved.record),
-                            fingerprint: JSON.stringify(saved),
+                            fingerprint: JSON.stringify({ saved, candidates }),
+                            ...(genericCanContinueRestore && genericUnrestored
+                              ? {
+                                  genericRestoreTarget: {
+                                    hostSlideId: genericUnrestored.hostSlideId,
+                                    slideIndex: genericUnrestored.slideIndex,
+                                    beforeSlideIds: genericOrder,
+                                    packageDigest: saved.record.backups.find(
+                                      (backup) =>
+                                        backup.hostSlideId === genericUnrestored.hostSlideId,
+                                    )!.packageDigest,
+                                  },
+                                }
+                              : {}),
+                            ...(genericAllRestored
+                              ? {
+                                  genericRestoredSlideIds: Object.fromEntries(
+                                    saved.record.scope.slideIds.map((id) => [
+                                      id,
+                                      genericApplied.find((page) => page.oldSlideId === id)!
+                                        .newSlideId!,
+                                    ]),
+                                  ),
+                                  genericRestorationChangeIds: genericApplied.map(
+                                    (page) => page.changeId,
+                                  ),
+                                }
+                              : {}),
                           }
-                        : {
-                            entry: {
-                              id: saved.id,
-                              source: 'existing_batch',
-                              kind: saved.record.operations[0].kind,
-                              pageId: saved.record.operations[0].hostSlideId,
-                              state: saved.record.state,
-                              cursor: saved.record.cursor,
-                              operationCount: saved.record.operations.length,
-                              reviews: copy(saved.record.reviews),
-                              affectedPageCount: new Set(
-                                saved.record.operations.map((op) => op.hostSlideId),
-                              ).size,
-                              before: saved.record.operations
-                                .map(
-                                  (op) =>
-                                    `${op.hostSlideId}/${op.shapeId}${op.kind === 'table_cell' ? `[${op.rowIndex},${op.columnIndex}]` : ''}: ${JSON.stringify(op.before)}`,
-                                )
-                                .join('\n'),
-                              after: saved.record.operations
-                                .map(
-                                  (op) =>
-                                    `${op.hostSlideId}/${op.shapeId}${op.kind === 'table_cell' ? `[${op.rowIndex},${op.columnIndex}]` : ''}: ${JSON.stringify(op.after)}`,
-                                )
-                                .join('\n'),
-                              actions:
-                                saved.record.state === 'applied'
-                                  ? ['inspect', 'undo']
-                                  : saved.record.state === 'undone'
-                                    ? saved.record.backups?.length && !saved.record.backupReleasedAt
-                                      ? ['inspect', 'reapply', 'release']
-                                      : ['inspect']
-                                    : saved.record.state === 'applying'
-                                      ? ['inspect', 'resume', 'undo']
-                                      : ['inspect', 'resume'],
-                            },
-                            record: copy(saved.record),
-                            fingerprint: JSON.stringify(saved),
-                          }
+                        : saved.record.version === 2
+                          ? {
+                              entry: {
+                                id: saved.id,
+                                source: 'existing_batch',
+                                kind: 'addition',
+                                pageId: saved.record.restoredSlideId ?? saved.record.hostSlideId,
+                                state: saved.record.state,
+                                cursor: saved.record.nextIndex,
+                                operationCount: saved.record.operations.length,
+                                affectedPageCount: 1,
+                                before: saved.record.backupReleasedAt
+                                  ? `原页备份已释放：${saved.record.backupReleasedAt}`
+                                  : '原页包已保存；原有对象须完整保留',
+                                after: nativeAdditionDescription(saved.record),
+                                actions: [
+                                  ...(options.nativeAdditionAvailable?.() &&
+                                  ['applying', 'applied'].includes(saved.record.state)
+                                    ? saved.record.state === 'applying'
+                                      ? (['inspect', 'resume'] as PresentationChangeAction[])
+                                      : (['inspect'] as PresentationChangeAction[])
+                                    : []),
+                                  ...(options.nativeRestorationAvailable?.() &&
+                                  !candidates.length &&
+                                  !saved.record.backupReleasedAt &&
+                                  ['applying', 'applied'].includes(saved.record.state)
+                                    ? ['undo' as const]
+                                    : []),
+                                  ...(options.nativeReleaseAvailable?.() &&
+                                  !saved.record.backupReleasedAt &&
+                                  saved.record.state === 'undone'
+                                    ? ['release' as const]
+                                    : []),
+                                  ...(options.nativeRestoreFinalizationAvailable?.() && restoration
+                                    ? ['finalize' as const]
+                                    : []),
+                                ],
+                              },
+                              record: copy(saved.record),
+                              fingerprint: JSON.stringify(saved),
+                            }
+                          : {
+                              entry: {
+                                id: saved.id,
+                                source: 'existing_batch',
+                                kind: saved.record.operations[0].kind,
+                                pageId: saved.record.operations[0].hostSlideId,
+                                state: saved.record.state,
+                                cursor: saved.record.cursor,
+                                operationCount: saved.record.operations.length,
+                                reviews: copy(saved.record.reviews),
+                                affectedPageCount: new Set(
+                                  saved.record.operations.map((op) => op.hostSlideId),
+                                ).size,
+                                before: saved.record.operations
+                                  .map(
+                                    (op) =>
+                                      `${op.hostSlideId}/${op.shapeId}${op.kind === 'table_cell' ? `[${op.rowIndex},${op.columnIndex}]` : ''}: ${JSON.stringify(op.before)}`,
+                                  )
+                                  .join('\n'),
+                                after: saved.record.operations
+                                  .map(
+                                    (op) =>
+                                      `${op.hostSlideId}/${op.shapeId}${op.kind === 'table_cell' ? `[${op.rowIndex},${op.columnIndex}]` : ''}: ${JSON.stringify(op.after)}`,
+                                  )
+                                  .join('\n'),
+                                actions:
+                                  saved.record.state === 'applied'
+                                    ? ['inspect', 'undo']
+                                    : saved.record.state === 'undone'
+                                      ? saved.record.backups?.length &&
+                                        !saved.record.backupReleasedAt
+                                        ? ['inspect', 'reapply', 'release']
+                                        : ['inspect']
+                                      : saved.record.state === 'applying'
+                                        ? ['inspect', 'resume', 'undo']
+                                        : ['inspect', 'resume'],
+                              },
+                              record: copy(saved.record),
+                              fingerprint: JSON.stringify(saved),
+                            }
                     : saved.kind === 'existing'
                       ? {
                           entry: {
@@ -1265,15 +1328,17 @@ export function createPresentationChangesController(
                     : selected.entry.source === 'existing_image'
                       ? `${action}_existing_presentation_image_change`
                       : selected.entry.source === 'existing_batch'
-                        ? (r as PresentationExistingBatch).version === 3
-                          ? action === 'finalize'
-                            ? 'finalize_native_modify_restore'
-                            : `${action}_native_modify_batch`
-                          : (r as PresentationExistingBatch).version === 2
+                        ? (r as PresentationExistingBatch).version === 4
+                          ? `${action}_slide_duplication`
+                          : (r as PresentationExistingBatch).version === 3
                             ? action === 'finalize'
-                              ? 'finalize_slide_ir_addition_restore'
-                              : `${action}_slide_ir_addition`
-                            : `${action}_existing_presentation_batch`
+                              ? 'finalize_native_modify_restore'
+                              : `${action}_native_modify_batch`
+                            : (r as PresentationExistingBatch).version === 2
+                              ? action === 'finalize'
+                                ? 'finalize_slide_ir_addition_restore'
+                                : `${action}_slide_ir_addition`
+                              : `${action}_existing_presentation_batch`
                         : selected.entry.source === 'existing'
                           ? `${action}_existing_presentation_change`
                           : `${action}_presentation_${suffix}`,
@@ -1337,6 +1402,21 @@ export function createPresentationChangesController(
               | PresentationExistingPageChange
               | PresentationExistingChartChange,
           ) => {
+            if (
+              selected.entry.source === 'existing_batch' &&
+              (record as PresentationExistingBatch).version === 4
+            ) {
+              const value = record as PresentationSlideDuplicationBatch
+              return JSON.stringify({
+                ...value,
+                state: undefined,
+                nextIndex: undefined,
+                inFlightIndex: undefined,
+                insertedSlideId: undefined,
+                reviews: undefined,
+                backupReleasedAt: undefined,
+              })
+            }
             if (
               selected.entry.source === 'existing_batch' &&
               (record as PresentationExistingBatch).version === 3

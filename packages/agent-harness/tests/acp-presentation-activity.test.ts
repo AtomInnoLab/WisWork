@@ -132,3 +132,16 @@ it('does not infer unregistered generic edit action suffixes', () => {
   expect(acpPresentationStage('approve_native_modify_batch')).toBeUndefined()
   expect(acpPresentationStage('capture_native_modify_page_untrusted')).toBeUndefined()
 })
+
+it.each([
+  ['inspect_slide_duplication', 'editing'],
+  ['reconcile_slide_duplication', 'editing'],
+  ['undo_slide_duplication', 'editing'],
+  ['capture_slide_duplication_page', 'review'],
+  ['record_slide_duplication_page_review', 'review'],
+])('classifies durable duplication tool %s as %s', (name, stage) => {
+  expect(acpPresentationStage(name)).toBe(stage)
+})
+it('does not classify an unregistered duplication action', () => {
+  expect(acpPresentationStage('replay_slide_duplication')).toBeUndefined()
+})

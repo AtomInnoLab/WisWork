@@ -373,7 +373,7 @@ export function createPresentationExistingEditingSkill(options: Options): AgentS
                             ...new Set(
                               e.record.version === 3
                                 ? e.record.scope.slideIds
-                                : e.record.version === 2
+                                : e.record.version === 2 || e.record.version === 4
                                   ? [e.record.hostSlideId]
                                   : e.record.operations.map((op) => op.hostSlideId),
                             ),

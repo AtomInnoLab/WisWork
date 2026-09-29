@@ -8,7 +8,6 @@ import { parsePresentationDeck, PRESENTATION_DECK_SCHEMA } from '@wiswork/pptx-e
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
 import { parseDeclarativeProgram } from '../shared/declarative-program.js'
-import { readUntilConverged } from '../shared/office-write-transaction.js'
 import { readBoundedImage } from '../shared/import-media.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
@@ -449,7 +448,7 @@ const tools = [
   {
     name: 'execute_office_js',
     description:
-      'Execute a confirmation-gated bounded declarative PowerPoint program. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields. Native additions require a durable paired-PC savepoint; use one page of pure additions with explicit styling, or validated SlideIR. Mixed modification/addition and multi-page addition programs are rejected before writing. Supported operations are set_shape_text, set_shape_geometry, add_text_box, add_geometric_shape, add_native_table (bounded string cells), delete_shape, and duplicate_slide (it must be the only operation).',
+      'Execute a confirmation-gated bounded declarative PowerPoint program. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields. Native additions, modifications, and duplication require a durable paired-PC savepoint; use one page of pure additions with explicit styling, or validated SlideIR. Mixed modification/addition and multi-page addition programs are rejected before writing. Supported operations are set_shape_text, set_shape_geometry, add_text_box, add_geometric_shape, add_native_table (bounded string cells), delete_shape, and duplicate_slide (it must be the only operation).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -594,7 +593,8 @@ const tools = [
   },
   {
     name: 'duplicate_slide',
-    description: 'Propose duplicating a slide immediately after its source.',
+    description:
+      'Propose duplicating a slide immediately after its source with a durable paired-PC savepoint and recoverable receipt.',
     inputSchema: {
       type: 'object',
       properties: slideProperties,
@@ -623,13 +623,6 @@ function assertNotCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error('cancelled')
 }
 
-async function verifyPowerPointReadback(
-  verify: () => Promise<boolean>,
-  signal?: AbortSignal,
-): Promise<void> {
-  const verified = await readUntilConverged({ read: verify, accept: Boolean, signal })
-  if (!verified) throw new Error('office_verify_failed')
-}
 function boundedJson(value: unknown): string {
   const result = JSON.stringify(value)
   if (new TextEncoder().encode(result).byteLength > MAX_POWERPOINT_RESULT_BYTES)
@@ -1416,6 +1409,12 @@ export function createPowerPointSkill(options: {
       expected: PresentationExistingBatch | undefined,
     ): Promise<void>
   }
+  durableDuplicate?(
+    slideIndex: number,
+    explanation?: string,
+    signal?: AbortSignal,
+    toolName?: 'duplicate_slide' | 'execute_office_js',
+  ): Promise<{ proposalId: string; changeId: string; status: string }>
   durableModify?(
     operations: import('./presentation-existing-batch.js').NativeModifyOperation[],
     explanation?: string,
@@ -2395,40 +2394,19 @@ export function createPowerPointSkill(options: {
         }
         if (call.name === 'duplicate_slide') {
           const input = slideInput(call.input)
-          await options.adapter.verifySlides(signal)
-          const snapshot = await options.adapter.snapshotSlide(input.slide_index, signal)
-          let insertedSlideId: string | undefined
-          const proposal = options.proposals.propose({
-            operation: 'duplicate_slide',
-            toolName: call.name,
-            title: input.explanation || 'Duplicate slide',
-            preview: { slideIndex: input.slide_index, slideId: snapshot.slideId },
-            impact: { host: 'powerpoint', targets: [snapshot.slideId], count: 1 },
-            fingerprint: snapshot.fingerprint,
-            before: snapshot,
-            validate: async (confirmSignal) =>
-              (await options.adapter.snapshotSlide(input.slide_index, confirmSignal))
-                .fingerprint === snapshot.fingerprint,
-            execute: async (confirmSignal) => {
-              insertedSlideId = (
-                await options.adapter.duplicateSlide(input.slide_index, confirmSignal)
-              ).slideId
-            },
-            verify: async (confirmSignal) => {
-              if (!insertedSlideId) throw new Error('office_verify_failed')
-              await verifyPowerPointReadback(async () => {
-                const inserted = await options.adapter.listSlideShapes(
-                  input.slide_index + 1,
-                  confirmSignal,
-                )
-                return inserted.slideId === insertedSlideId
-              }, confirmSignal)
-            },
-          })
+          if (!options.durableDuplicate)
+            throw new Error('presentation_existing_persistence_unavailable')
           return {
-            output: boundedJson(proposal),
+            output: boundedJson(
+              await options.durableDuplicate(
+                input.slide_index,
+                input.explanation,
+                signal,
+                call.name,
+              ),
+            ),
             mutated: false,
-            summary: 'Proposed PowerPoint slide duplication',
+            summary: 'Proposed durable PowerPoint slide duplication',
           }
         }
         if (call.name === 'execute_office_js' || call.name === 'add_slide_ir_objects') {
@@ -2574,49 +2552,19 @@ export function createPowerPointSkill(options: {
               summary: 'Proposed durable declarative PowerPoint modification',
             }
           }
-          // Duplication is a separate insertion transaction; its durable route is tracked independently.
-          const operation = program.operations[0]!
-          await options.adapter.verifySlides(signal)
-          const snapshot = await options.adapter.snapshotSlide(operation.slide_index, signal)
-          let insertedSlideId: string | undefined
-          const proposal = options.proposals.propose({
-            operation: call.name,
-            toolName: call.name,
-            title: input.explanation || 'Duplicate PowerPoint slide',
-            preview: { version: 1, operations: program.operations },
-            impact: { host: 'powerpoint', targets: [snapshot.slideId], count: 1 },
-            fingerprint: fingerprint(snapshot.fingerprint),
-            code: input.code,
-            before: { slides: [snapshot], texts: [] },
-            after: { operations: program.operations },
-            validate: async (confirmSignal) => {
-              const current = await options.adapter.snapshotSlide(
-                operation.slide_index,
-                confirmSignal,
-              )
-              return (
-                current.slideId === snapshot.slideId && current.fingerprint === snapshot.fingerprint
-              )
-            },
-            execute: async (confirmSignal) => {
-              insertedSlideId = (
-                await options.adapter.executeDeclarative(program.operations, confirmSignal)
-              ).insertedSlideId
-            },
-            verify: async (confirmSignal) => {
-              if (!insertedSlideId) throw new Error('office_verify_failed')
-              await verifyPowerPointReadback(
-                async () =>
-                  (await options.adapter.listSlideShapes(operation.slide_index + 1, confirmSignal))
-                    .slideId === insertedSlideId,
-                confirmSignal,
-              )
-            },
-          })
+          if (!options.durableDuplicate)
+            throw new Error('presentation_existing_persistence_unavailable')
           return {
-            output: boundedJson(proposal),
+            output: boundedJson(
+              await options.durableDuplicate(
+                program.operations[0]!.slide_index,
+                input.explanation,
+                signal,
+                'execute_office_js',
+              ),
+            ),
             mutated: false,
-            summary: 'Proposed declarative PowerPoint duplication',
+            summary: 'Proposed durable declarative PowerPoint duplication',
           }
         }
         if (call.name === 'edit_slide_master') {

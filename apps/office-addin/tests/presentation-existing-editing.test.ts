@@ -2798,3 +2798,183 @@ it('refuses the generic modification route without a paired PC instead of exposi
   expect((f.getRuntime().proposals as StructuredProposalController).pending()).toBeUndefined()
   expect(write).not.toHaveBeenCalled()
 })
+
+it.each([
+  { name: 'duplicate_slide', lostAck: false, noCopy: false },
+  { name: 'execute_office_js', lostAck: false, noCopy: false },
+  { name: 'duplicate_slide', lostAck: true, noCopy: false },
+  { name: 'duplicate_slide', lostAck: true, noCopy: true },
+] as const)(
+  'persists $name duplication and recovers after reopen (lost ACK: $lostAck)',
+  async ({ name, lostAck, noCopy }) => {
+    const f = await fixture(true)
+    const deck = benchmarkDeck()
+    deck.slides = [deck.slides[0]!]
+    const compiled = await compilePresentationDeck(deck)
+    const base64 = Buffer.from(compiled.bytes).toString('base64')
+    let order = ['slide', 'other']
+    const packages = new Map([
+      ['slide', base64],
+      ['other', base64],
+    ])
+    vi.spyOn(BrowserPowerPointAdapter.prototype, 'snapshotSlide').mockImplementation(
+      async (index) => ({ slideId: order[index]!, fingerprint: `stable-${order[index]}` }),
+    )
+    vi.spyOn(
+      BrowserPowerPointAdapter.prototype,
+      'exportPresentationPagePackage',
+    ).mockImplementation(async (slideId) => {
+      if (!packages.has(slideId)) throw Error('office_read_failed')
+      return { slideId, slideIds: [...order], base64: packages.get(slideId)! }
+    })
+    const replacement = BrowserPresentationPageReplacementAdapter.prototype
+    vi.spyOn(replacement, 'inspect').mockImplementation(async (record) => ({
+      status: order.includes(record.newSlideId ?? '') ? 'staged' : 'baseline',
+      slideIds: [...order],
+    }))
+    vi.spyOn(replacement, 'reconcilePending').mockImplementation(async () =>
+      order.includes('copy') ? { status: 'inserted', newSlideId: 'copy' } : { status: 'baseline' },
+    )
+    const inserted = vi
+      .spyOn(replacement, 'stage')
+      .mockImplementation(async (record, packageBase64, onInserted, assertCurrent) => {
+        await assertCurrent()
+        const saved = f
+          .binding()
+          .listChangeHistory()
+          .find((e) => e.kind === 'existing_batch')!.record
+        expect(saved).toMatchObject({
+          version: 4,
+          state: 'applying',
+          inFlightIndex: 0,
+          nextIndex: 0,
+        })
+        expect(f.backupReadCount()).toBeGreaterThan(0)
+        expect(f.readyBackups()).toBe(1)
+        if (noCopy) throw Error('office_state_uncertain')
+        order.splice(order.indexOf(record.oldSlideId) + 1, 0, 'copy')
+        packages.set('copy', packageBase64)
+        if (lostAck) throw Error('office_state_uncertain')
+        await onInserted('copy')
+      })
+    const removed = vi
+      .spyOn(replacement, 'discard')
+      .mockImplementation(async (record, assertCurrent) => {
+        await assertCurrent()
+        expect(
+          f
+            .binding()
+            .listChangeHistory()
+            .find((e) => e.kind === 'existing_batch')!.record.state,
+        ).toBe('undoing')
+        order = order.filter((id) => id !== record.newSlideId)
+        packages.delete(record.newSlideId!)
+      })
+    const oldWrite = vi.spyOn(BrowserPowerPointAdapter.prototype, 'duplicateSlide')
+    const proposed = await f.call(
+      name,
+      name === 'duplicate_slide'
+        ? { slide_index: 0 }
+        : { program: { version: 1, operations: [{ op: 'duplicate_slide', slide_index: 0 }] } },
+    )
+    expect(proposed.isError, proposed.output).not.toBe(true)
+    const changeId = JSON.parse(proposed.output).changeId as string
+    expect(inserted).not.toHaveBeenCalled()
+    if (lostAck) await expect(f.confirm()).rejects.toThrow('office_state_uncertain')
+    else await f.confirm()
+    expect(order).toEqual(noCopy ? ['slide', 'other'] : ['slide', 'copy', 'other'])
+    expect(f.invalidateQa).toHaveBeenCalledWith(['slide'])
+    f.reopen()
+    await f.getRuntime().changes!.refresh()
+    const row = f
+      .getRuntime()
+      .changes!.snapshot()
+      .entries.find((e) => e.id === `existing_batch:${changeId}`)!
+    expect(row.kind).toBe('duplication')
+    expect(row.actions).toContain(lostAck ? 'reconcile' : 'undo')
+    if (lostAck) {
+      expect(f.binding().readExistingBatch(changeId)).toMatchObject({
+        state: 'applying',
+        inFlightIndex: 0,
+      })
+      const invalidations = f.invalidateQa.mock.calls.length
+      await f.getRuntime().changes!.run(row.id, 'reconcile')
+      expect(f.getRuntime().changes!.snapshot().error).toBeUndefined()
+      expect(inserted).toHaveBeenCalledTimes(1)
+      await f.confirm()
+      expect(f.invalidateQa).toHaveBeenCalledTimes(invalidations)
+    }
+    if (noCopy) {
+      expect(f.binding().readExistingBatch(changeId)).toMatchObject({
+        version: 4,
+        state: 'undone',
+        nextIndex: 0,
+      })
+      expect(f.binding().readExistingBatch(changeId)).not.toHaveProperty('insertedSlideId')
+      expect(f.binding().readExistingBatch(changeId)).not.toHaveProperty('inFlightIndex')
+      expect(removed).not.toHaveBeenCalled()
+      f.reopen()
+      await f.getRuntime().changes!.refresh()
+      const closed = f
+        .getRuntime()
+        .changes!.snapshot()
+        .entries.find((e) => e.id === row.id)!
+      expect(closed.actions).toEqual(['inspect'])
+      expect(closed.after).toContain('未创建复制页面')
+      const inspected = await f.call('inspect_slide_duplication', { change_id: changeId })
+      expect(JSON.parse(inspected.output)).toMatchObject({
+        status: 'baseline',
+        currentPackageMatches: true,
+        qaPassed: false,
+      })
+      return
+    }
+    expect(f.binding().readExistingBatch(changeId)).toMatchObject({
+      version: 4,
+      state: 'applied',
+      insertedSlideId: 'copy',
+      nextIndex: 1,
+    })
+    await f.getRuntime().changes!.refresh()
+    await f.getRuntime().changes!.run(row.id, 'undo')
+    expect(f.getRuntime().changes!.snapshot().error).toBeUndefined()
+    expect(removed).not.toHaveBeenCalled()
+    await f.confirm()
+    expect(order).toEqual(['slide', 'other'])
+    expect(removed).toHaveBeenCalledTimes(1)
+    expect(f.invalidateQa).toHaveBeenLastCalledWith(['slide', 'copy'])
+    expect(inserted).toHaveBeenCalledTimes(1)
+    expect(oldWrite).not.toHaveBeenCalled()
+    expect(f.binding().readExistingBatch(changeId)).toMatchObject({
+      state: 'undone',
+      insertedSlideId: 'copy',
+    })
+    const wrongRestore = await f.call('prepare_existing_presentation_original_page_restore', {
+      source_kind: 'batch',
+      change_id: changeId,
+      slide_id: 'slide',
+    })
+    expect(wrongRestore.isError).toBe(true)
+    expect(wrongRestore.output).toContain('presentation_original_restore_source_invalid')
+    f.reopen()
+    const inspection = await f.call('inspect_slide_duplication', { change_id: changeId })
+    expect(inspection.isError, inspection.output).not.toBe(true)
+    expect(JSON.parse(inspection.output)).toMatchObject({ qaPassed: false })
+  },
+)
+it.each(['duplicate_slide', 'execute_office_js'] as const)(
+  'blocks the actual %s duplication route when PC capability is unavailable',
+  async (name) => {
+    const f = await fixture(false)
+    const result = await f.call(
+      name,
+      name === 'duplicate_slide'
+        ? { slide_index: 0 }
+        : { program: { version: 1, operations: [{ op: 'duplicate_slide', slide_index: 0 }] } },
+    )
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('presentation_existing_persistence_unavailable')
+    expect(f.getRuntime().proposals.pending()).toBeUndefined()
+    expect(f.binding().listChangeHistory()).toEqual([])
+  },
+)

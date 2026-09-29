@@ -364,6 +364,7 @@ it('refuses an invalid later target before any earlier host write or backup', as
   expect(f.request).not.toHaveBeenCalled()
 })
 
+// Eight real PC backups and per-step package proofs need room under the full-suite worker load.
 it('keeps deck indices beyond 31 and eight distinct page scopes', async () => {
   const f = await fixture(50)
   const operations = Array.from({ length: 8 }, (_, i) => ({ ...textOp, slide_index: 40 + i }))
@@ -374,7 +375,7 @@ it('keeps deck indices beyond 31 and eight distinct page scopes', async () => {
   expect(f.adapter.executeDeclarative.mock.calls.map(([ops]) => ops[0].slide_index)).toEqual([
     40, 41, 42, 43, 44, 45, 46, 47,
   ])
-})
+}, 15_000)
 
 it('snapshots capture scope before asynchronous package guards', async () => {
   const f = await fixture(),

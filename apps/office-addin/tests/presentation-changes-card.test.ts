@@ -451,3 +451,49 @@ it('routes the saved single reapply button by its exact history ID', async () =>
     await act(async () => root.unmount())
   }
 })
+
+it('shows an uncertain copied page with an explicit reconciliation action and no replay control', async () => {
+  const run = vi.fn()
+  const controller: PresentationChangesController = {
+    snapshot: () => ({
+      phase: 'idle',
+      entries: [
+        {
+          id: 'copy',
+          source: 'existing_batch',
+          kind: 'duplication',
+          pageId: 'source',
+          state: 'applying',
+          before: 'Source retained',
+          after: 'Copy identity uncertain',
+          actions: ['inspect', 'reconcile'],
+        },
+      ],
+    }),
+    subscribe: () => () => {},
+    run,
+    refresh: vi.fn(),
+    clear: vi.fn(),
+  }
+  const container = document.createElement('div'),
+    root = createRoot(container)
+  try {
+    await act(async () => root.render(React.createElement(PresentationChangesCard, { controller })))
+    expect(container.textContent).toContain('源页面与复制页面身份')
+    expect(container.textContent).toContain('Copy identity uncertain')
+    expect(run).not.toHaveBeenCalled()
+    expect(
+      Array.from(container.querySelectorAll('button')).some(
+        (button) => button.textContent === '继续',
+      ),
+    ).toBe(false)
+    await act(async () =>
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent === '核对复制回执')!
+        .click(),
+    )
+    expect(run).toHaveBeenCalledWith('copy', 'reconcile')
+  } finally {
+    await act(async () => root.unmount())
+  }
+})

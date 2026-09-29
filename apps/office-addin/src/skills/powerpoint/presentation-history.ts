@@ -33,10 +33,13 @@ export function presentationChangeSetSummary(
   if (entry.kind === 'existing_batch') {
     const record = entry.record
     return {
-      scope: record.scope,
+      scope:
+        record.version === 4 && record.insertedSlideId
+          ? { slideIds: [record.hostSlideId, record.insertedSlideId] }
+          : record.scope,
       intent: record.intent,
       operations:
-        record.version === 3
+        record.version === 3 || record.version === 4
           ? record.operations.map((op) => ({
               kind: 'existing_batch' as const,
               pageId: record.beforeSlideIds[op.slide_index]!,

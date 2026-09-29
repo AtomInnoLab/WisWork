@@ -5,6 +5,7 @@ import type {
 } from './presentation-changes.js'
 const labels: Record<PresentationChangeAction, string> = {
   inspect: '检查',
+  reconcile: '核对复制回执',
   undo: '撤销',
   resume: '继续',
   reapply: '重新应用',
@@ -98,6 +99,7 @@ export function PresentationChangesCard({
                   page: '整页身份与摘要差异（非视觉 diff）',
                   addition: '新增页面内容与已记录的对象身份',
                   modification: '原生修改步骤与原页保存点（非视觉 diff）',
+                  duplication: '源页面与复制页面身份（非视觉 diff）',
                   chart: '图表数据与页面包摘要差异（非视觉 diff）',
                 }[entry.kind]
               }

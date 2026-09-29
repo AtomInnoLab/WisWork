@@ -97,6 +97,34 @@ export function presentationMutationScope(proposal: StructuredProposal): string[
       }
     }
   }
+  // Duplication saves one source page; removal also proves the owned copied page.
+  if (
+    ['duplicate_slide', 'execute_office_js', 'undo_slide_duplication'].includes(
+      proposal.operation,
+    ) &&
+    proposal.operation === proposal.toolName &&
+    proposal.impact.host === 'powerpoint' &&
+    proposal.impact.count === 1 &&
+    proposal.impact.targets.length >= 1 &&
+    proposal.impact.targets.length <= (proposal.operation === 'undo_slide_duplication' ? 2 : 1)
+  ) {
+    const scope = proposal.preview.qaScope
+    if (
+      scope &&
+      typeof scope === 'object' &&
+      !Array.isArray(scope) &&
+      Object.keys(scope).sort().join(',') === 'basis,hostSlideIds' &&
+      (scope as Record<string, unknown>).basis === 'slide_duplication_savepoint' &&
+      JSON.stringify((scope as Record<string, unknown>).hostSlideIds) ===
+        JSON.stringify(proposal.impact.targets)
+    ) {
+      try {
+        hostSlideIds = [...presentationQaMutationScope(proposal.impact.targets)!]
+      } catch {
+        hostSlideIds = undefined
+      }
+    }
+  }
   // Only the native master tool derives this scope from a complete, revalidated
   // host dependency snapshot. XML/package edits and generic labels remain unknown.
   if (

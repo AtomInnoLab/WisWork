@@ -399,6 +399,7 @@ export function createPresentationExistingPageEditingSkill(
             !savedRecord ||
             savedRecord.documentId !== documentId ||
             savedRecord.changeId !== changeId ||
+            (kind === 'batch' && (savedRecord as PresentationExistingBatch).version === 4) ||
             !(kind === 'single'
               ? validatePresentationExistingChange(savedRecord)
               : validatePresentationExistingBatch(savedRecord)) ||
