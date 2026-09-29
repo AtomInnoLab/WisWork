@@ -3,9 +3,13 @@ import type { AgentSkill } from '@wiswork/agent-core'
 import { createPresentationResearchController } from '../src/agent/presentation-research.js'
 import { researchRecord, researchSummary } from './presentation-research-fixture.js'
 function fixture() {
-  const request = vi.fn(
-    async (_body: unknown, _signal?: AbortSignal) =>
-      new Response(JSON.stringify({ version: 1, available: true })),
+  const summaryReply = vi.fn(async () => researchSummary())
+  const request = vi.fn(async (body: unknown, _signal?: AbortSignal) =>
+    Response.json(
+      (body as { operation: string }).operation === 'research_list'
+        ? await summaryReply()
+        : { version: 1, available: true },
+    ),
   )
   const executeTool = vi.fn<AgentSkill['executeTool']>(async (call) => ({
     output: JSON.stringify(
@@ -28,6 +32,7 @@ function fixture() {
   }
   return {
     request,
+    summaryReply,
     executeTool,
     documentId,
     options,
@@ -70,6 +75,11 @@ it('hides unsupported old PCs and does not interpret malformed capabilities as s
     expect(f.controller.snapshot().available).toBe(false)
   }
   expect(f.executeTool).not.toHaveBeenCalled()
+  expect(
+    f.request.mock.calls.some(
+      ([body]) => (body as { operation: string }).operation === 'research_list',
+    ),
+  ).toBe(false)
   f.request.mockResolvedValueOnce(
     new Response(JSON.stringify({ version: 1, available: true, raw: 'private' })),
   )
@@ -142,18 +152,19 @@ it('stops capability waits before dispatching a tool and rejects wrong-project s
   finish(new Response(JSON.stringify({ version: 1, available: true })))
   await pending
   expect(f.executeTool).not.toHaveBeenCalled()
-  f.executeTool.mockResolvedValueOnce({
-    output: JSON.stringify({ ...researchSummary(), projectId: 'other' }),
-    mutated: false,
-    summary: 'invalid',
-  })
+  expect(
+    f.request.mock.calls.some(
+      ([body]) => (body as { operation: string }).operation === 'research_list',
+    ),
+  ).toBe(false)
+  f.summaryReply.mockResolvedValueOnce({ ...researchSummary(), projectId: 'other' })
   await f.controller.refresh()
   expect(f.controller.snapshot().summary).toBeUndefined()
 })
 
 it('keeps confirmed research capability visible and refreshable after the initial list response is lost', async () => {
   const f = fixture()
-  f.executeTool.mockRejectedValueOnce(new Error('private-network-detail'))
+  f.summaryReply.mockRejectedValueOnce(new Error('private-network-detail'))
   await f.controller.refresh()
   expect(f.controller.snapshot().available).toBe(true)
   expect(f.controller.snapshot().error).toContain('刷新本机记录')

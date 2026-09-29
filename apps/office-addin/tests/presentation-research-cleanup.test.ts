@@ -18,6 +18,7 @@ function fixture() {
   })
   const request = vi.fn(async (raw: unknown, _signal?: AbortSignal) => {
     const body = raw as Record<string, unknown>
+    if (body.operation === 'research_list') return Response.json(summary)
     if (body.operation === 'research_capabilities')
       return new Response(
         JSON.stringify({
@@ -62,6 +63,7 @@ function fixture() {
     documentId,
     executeTool,
     receipt,
+    getSummary: () => summary,
     setSummary: (value: typeof summary) => {
       summary = value
     },
@@ -107,6 +109,7 @@ it('recovers a lost ACK by status only and retains an explicit fixed retry when 
   let attempt!: Record<string, unknown>
   f.request.mockImplementation(async (raw) => {
     const body = raw as Record<string, unknown>
+    if (body.operation === 'research_list') return Response.json(f.getSummary())
     if (body.operation === 'research_delete') {
       attempt = body
       throw new Error('private-response')
@@ -134,6 +137,7 @@ it('recovers a lost ACK by status only and retains an explicit fixed retry when 
   const bodies: unknown[] = []
   g.request.mockImplementation(async (raw) => {
     const body = raw as Record<string, unknown>
+    if (body.operation === 'research_list') return Response.json(g.getSummary())
     if (body.operation === 'research_delete') {
       bodies.push(body)
       throw new Error('lost')
@@ -196,6 +200,7 @@ it('rejects forged receipts and keeps deletion failures safe and actionable', as
     await f.controller.refresh()
     f.request.mockImplementation(async (raw) => {
       const body = raw as Record<string, unknown>
+      if (body.operation === 'research_list') return Response.json(f.getSummary())
       if (body.operation === 'research_capabilities')
         return new Response(
           JSON.stringify({
@@ -280,6 +285,7 @@ it('persists only bounded identity and recovers after taskpane reopen by receipt
   let acknowledged = false
   f.request.mockImplementation(async (raw) => {
     const body = raw as Record<string, unknown>
+    if (body.operation === 'research_list') return Response.json(f.getSummary())
     if (body.operation === 'research_capabilities')
       return new Response(
         JSON.stringify({
@@ -362,6 +368,7 @@ it('clears proven no-commit rejects so refreshing permits a newly confirmed atte
     const writes = vi.fn()
     f.request.mockImplementation(async (raw, signal) => {
       const body = raw as Record<string, unknown>
+      if (body.operation === 'research_list') return Response.json(f.getSummary())
       if (body.operation !== 'research_delete') return original(raw, signal)
       if (first) {
         first = false

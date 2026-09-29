@@ -157,6 +157,41 @@ export function createPresentationResearchController(options: {
       recoveryAvailable: state.recoveryAvailable,
     })
   }
+  const readSummary = async (
+    documentId: string,
+    projectId: string,
+    signal: AbortSignal,
+    current: () => Promise<void>,
+    cleanupAvailable: boolean | undefined,
+  ) => {
+    await current()
+    const response = await options.request(
+      {
+        operation: 'research_list',
+        documentId,
+        projectId,
+        ...(cleanupAvailable ? { historyVersion: 2 } : {}),
+      },
+      signal,
+    )
+    await current()
+    if (!response.ok) throw Error('presentation_service_unavailable')
+    const text = await response.text()
+    await current()
+    if (new TextEncoder().encode(text).byteLength > 64 * 1024)
+      throw Error('presentation_response_invalid')
+    const value = JSON.parse(text)
+    if (value && Object.keys(value).length === 1 && typeof value.error === 'string') {
+      if (['invalid_request', 'upgrade_required'].includes(value.error))
+        throw Error('presentation_upgrade_required')
+      throw Error('presentation_response_invalid')
+    }
+    const summary = parsePresentationResearchSummary(value)
+    if (summary.documentId !== documentId || summary.projectId !== projectId)
+      throw Error('presentation_response_invalid')
+    await current()
+    return summary
+  }
   const run = async (kind: 'list' | 'read' | 'export', ledgerId?: string) => {
     if (active) return
     if (ledgerId !== undefined && !idValid(ledgerId)) return
@@ -238,8 +273,12 @@ export function createPresentationResearchController(options: {
           throw new Error('presentation_response_invalid')
         return JSON.parse(result.output) as unknown
       }
-      const summary = parsePresentationResearchSummary(
-        await execute('list_research_ledgers', { project_id: projectId }, 64 * 1024),
+      const summary = await readSummary(
+        documentId,
+        projectId,
+        controller.signal,
+        current,
+        capability.cleanupAvailable,
       )
       if (summary.documentId !== documentId || summary.projectId !== projectId)
         throw new Error('presentation_response_invalid')
@@ -455,20 +494,13 @@ export function createPresentationResearchController(options: {
         notice: '本机研究归档已清理；原附件、PowerPoint 文稿、交付包与导出副本仍保留。',
         error: undefined,
       })
-      const result = await options.executeTool(
-        {
-          id: `research-delete-list-${captured}`,
-          name: 'list_research_ledgers',
-          input: { project_id: attempt.projectId },
-        },
+      const summary = await readSummary(
+        documentId,
+        attempt.projectId,
         controller.signal,
+        check,
+        previous.cleanupAvailable,
       )
-      await check()
-      if (result.isError || new TextEncoder().encode(result.output).byteLength > 64 * 1024)
-        throw new Error('presentation_response_invalid')
-      const summary = parsePresentationResearchSummary(JSON.parse(result.output))
-      if (summary.documentId !== documentId || summary.projectId !== attempt.projectId)
-        throw new Error('presentation_response_invalid')
       publish({ ...state, summary, phase: 'idle' })
     } catch (error) {
       if (captured !== epoch) return
@@ -651,20 +683,13 @@ export function createPresentationResearchController(options: {
           notice: '原研究记录已结束；不证明由本次操作结束。草稿、附件与原记录保留，读取不会重跑。',
           error: undefined,
         })
-        const result = await options.executeTool(
-          {
-            id: `research-abandon-list-${captured}`,
-            name: 'list_research_ledgers',
-            input: { project_id: attempt.projectId },
-          },
+        const summary = await readSummary(
+          documentId,
+          attempt.projectId,
           controller.signal,
+          check,
+          previous.cleanupAvailable,
         )
-        await check()
-        if (result.isError || new TextEncoder().encode(result.output).length > 64 * 1024)
-          throw new Error('presentation_response_invalid')
-        const summary = parsePresentationResearchSummary(JSON.parse(result.output))
-        if (summary.documentId !== documentId || summary.projectId !== attempt.projectId)
-          throw new Error('presentation_response_invalid')
         publish({ ...state, summary })
       }
     } catch (error) {

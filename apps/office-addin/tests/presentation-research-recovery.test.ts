@@ -16,8 +16,10 @@ function fixture() {
   const writeAbandonAttempt = vi.fn((_doc: string, value: unknown) => {
     saved = value
   })
+  const summaryReply = vi.fn(async () => summary)
   const request = vi.fn(async (body: unknown) => {
     const op = (body as { operation: string }).operation
+    if (op === 'research_list') return Response.json(await summaryReply())
     return new Response(
       JSON.stringify(
         op === 'research_capabilities'
@@ -49,6 +51,7 @@ function fixture() {
   return {
     options,
     summary,
+    summaryReply,
     running,
     terminal,
     request,
@@ -90,6 +93,7 @@ it('lost ACK and reopening recover only by exact readonly read, retaining origin
   await f.controller.refresh()
   f.request.mockImplementation(async (body) => {
     const op = (body as { operation: string }).operation
+    if (op === 'research_list') return Response.json(await f.summaryReply())
     if (op === 'research_abandon') throw new Error('lost')
     return new Response(
       JSON.stringify(
@@ -112,7 +116,7 @@ it('lost ACK and reopening recover only by exact readonly read, retaining origin
   await reopened.refresh()
   expect(
     f.request.mock.calls.slice(before).map(([body]) => (body as { operation: string }).operation),
-  ).toEqual(['research_capabilities', 'research_read'])
+  ).toEqual(['research_capabilities', 'research_list', 'research_read'])
   expect(reopened.snapshot().abandonAttempt?.ledgerId).toBe('ledger1')
   Object.assign(f.summary, { version: 2, lastSequence: 2, revision: 4 })
   await reopened.retryAbandon()
@@ -172,8 +176,15 @@ it('safe no-commit rejection releases metadata so fresh explicit confirmation ca
   Object.assign(f.summary, { version: 2, lastSequence: 2, revision: 4 })
   await f.controller.refresh()
   await f.controller.abandonRecord('ledger1', f.running.draftDigest)
+  const writes = f.request.mock.calls.filter(
+    ([body]) => (body as { operation: string }).operation === 'research_abandon',
+  )
+  expect(writes.at(-1)).toEqual([
+    expect.objectContaining({ operation: 'research_abandon', expectedRevision: 4 }),
+    expect.any(AbortSignal),
+  ])
   expect(f.request).toHaveBeenLastCalledWith(
-    expect.objectContaining({ expectedRevision: 4 }),
+    expect.objectContaining({ operation: 'research_list' }),
     expect.any(AbortSignal),
   )
 })
@@ -214,9 +225,9 @@ it('refreshes real summary revision after terminal read and clears summary if re
     const f = fixture()
     await f.controller.refresh()
     const latest = researchSummary()
-    f.options.executeTool.mockImplementation(async () => {
+    f.summaryReply.mockImplementation(async () => {
       if (fail) throw new Error('list unavailable')
-      return { output: JSON.stringify(latest), mutated: false, summary: '研究' }
+      return latest
     })
     await f.controller.abandonRecord('ledger1', f.running.draftDigest)
     expect(f.controller.snapshot().abandonRecord).toEqual(f.terminal)
