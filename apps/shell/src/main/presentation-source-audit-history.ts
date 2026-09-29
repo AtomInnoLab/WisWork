@@ -9,6 +9,7 @@ export async function handlePresentationSourceAudit(
   store: PresentationStore,
   attachments: (body: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>,
   signal: AbortSignal,
+  assertWritable?: () => void,
 ): Promise<unknown> {
   const projectId = request.projectId as string,
     documentId = request.documentId as string
@@ -18,6 +19,7 @@ export async function handlePresentationSourceAudit(
     if (!audit) throw new Error('not_found')
     return { projectId, documentId, audit }
   }
+  assertWritable?.()
   const run = store.beginSourceAudit(projectId, documentId, auditId ?? randomUUID())
   if (run.state === 'failed') throw new Error(run.error)
   let completed: PresentationSourceAuditRun = run
@@ -33,8 +35,10 @@ export async function handlePresentationSourceAudit(
         signal,
       )
       if (signal.aborted) throw new Error('aborted')
+      assertWritable?.()
       completed = store.finishSourceAudit(projectId, documentId, run.id, { sources })
     } catch (error) {
+      assertWritable?.()
       const code =
         signal.aborted || (error instanceof Error && error.message === 'aborted')
           ? 'aborted'
@@ -43,6 +47,7 @@ export async function handlePresentationSourceAudit(
             : 'source_unavailable'
       // Preserve an interrupted run bound to another revision; a fresh audit needs a fresh ID.
       if (error instanceof Error && error.message === 'request_conflict') throw error
+      assertWritable?.()
       store.finishSourceAudit(projectId, documentId, run.id, { error: code })
       throw new Error(code, { cause: error })
     }
