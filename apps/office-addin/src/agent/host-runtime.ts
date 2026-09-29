@@ -1,3 +1,5 @@
+import { presentationMutationScope } from '../skills/powerpoint/presentation-mutation-scope.js'
+import { readPresentationNativeLocks } from '../skills/powerpoint/presentation-native-locks.js'
 import { createPresentationExistingEditingSkill } from '../skills/powerpoint/presentation-existing-editing.js'
 import { createPresentationExistingBatchEditingSkill } from '../skills/powerpoint/presentation-existing-batch-editing.js'
 import { createPresentationExistingImageEditingSkill } from '../skills/powerpoint/presentation-existing-image-editing.js'
@@ -33,7 +35,6 @@ import type { ImageReplacementRecord } from '../skills/powerpoint/presentation-i
 import { createPresentationPageEditingSkill } from '../skills/powerpoint/presentation-page-editing.js'
 import {
   createPresentationQaSkill,
-  presentationQaMutationScope,
   type PresentationQaRecord,
 } from '../skills/powerpoint/presentation-qa.js'
 import type { PresentationQaController } from './presentation-qa-card.js'
@@ -245,11 +246,31 @@ export function createOfficeHostRuntime(
     ReturnType<typeof createPresentationExistingImageEditingSkill> | undefined
   let existingPageEditing: ReturnType<typeof createPresentationExistingPageEditingSkill> | undefined
   let mutationStarted = false
+  const readNativeLocks = (
+    proposal: Parameters<typeof readPresentationNativeLocks>[1],
+    signal: AbortSignal,
+  ) =>
+    readPresentationNativeLocks(
+      {
+        ...localBinding!,
+        available: options.presentation?.available ?? (() => false),
+        request:
+          options.presentation?.request ??
+          (async () => {
+            throw new Error('presentation_lock_review_unavailable')
+          }),
+        hostSlideIds: async (readSignal) =>
+          (await createBrowserPresentationImportAdapter().snapshot(readSignal)).slideIds,
+      },
+      proposal,
+      signal,
+    )
   const proposals = createStructuredProposalController(
     options.diagnostics,
     host === 'powerpoint'
       ? {
-          beforeWrite: async (proposal) => {
+          review: readNativeLocks,
+          beforeWrite: async (proposal, signal) => {
             // Local preference and review writes do not touch the host deck or its QA state.
             if (
               proposal.toolName === proposal.operation &&
@@ -266,107 +287,19 @@ export function createOfficeHostRuntime(
               return
             // Only these internally constructed operations resolve a stable host page before
             // proposing. Generic script/index-based impact labels cannot prove their write scope.
-            const target = proposal.impact.targets[0]
-            let hostSlideIds =
-              [
-                'edit_existing_presentation_text',
-                'edit_existing_presentation_geometry',
-                'undo_existing_presentation_change',
-                'resume_existing_presentation_change',
-                'reapply_existing_presentation_change',
-                'replace_existing_presentation_image',
-                'resume_existing_presentation_image_change',
-                'reapply_existing_presentation_image_change',
-                'undo_existing_presentation_image_change',
-                'stage_existing_presentation_page_change',
-                'reapply_existing_presentation_page_change',
-                'resume_existing_presentation_page_change',
-                'commit_existing_presentation_page_change',
-                'discard_existing_presentation_page_change',
-                'undo_existing_presentation_page_change',
-                'stage_presentation_page_replacement',
-                'resume_presentation_page_replacement',
-                'discard_presentation_page_replacement',
-                'commit_presentation_page_replacement',
-                'undo_presentation_page_replacement',
-                'edit_presentation_page_text',
-                'undo_presentation_text_change',
-                'resume_presentation_text_change',
-                'edit_presentation_page_geometry',
-                'undo_presentation_geometry_change',
-                'resume_presentation_geometry_change',
-                'undo_presentation_image_replacement',
-                'replace_presentation_page_image',
-                'resume_presentation_image_replacement',
-              ].includes(proposal.operation) &&
-              proposal.operation === proposal.toolName &&
-              proposal.impact.host === 'powerpoint' &&
-              proposal.impact.count === 1 &&
-              proposal.impact.targets.length === 1 &&
-              typeof target === 'string' &&
-              target.length > 0 &&
-              target.length <= 256 &&
-              !Array.from(target).some(
-                (char) =>
-                  char.charCodeAt(0) < 32 ||
-                  (char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159),
-              )
-                ? [target]
-                : undefined
-            if (
-              [
-                'edit_existing_presentation_batch',
-                'resume_existing_presentation_batch',
-                'reapply_existing_presentation_batch',
-                'undo_existing_presentation_batch',
-              ].includes(proposal.operation) &&
-              proposal.operation === proposal.toolName &&
-              proposal.impact.host === 'powerpoint' &&
-              proposal.impact.count >= 2 &&
-              proposal.impact.count <= 8 &&
-              proposal.impact.targets.length >= 1 &&
-              proposal.impact.targets.length <= 8
-            ) {
-              try {
-                hostSlideIds = [...presentationQaMutationScope(proposal.impact.targets)!]
-              } catch {
-                hostSlideIds = undefined
-              }
-            }
-            // Only the native master tool derives this scope from a complete, revalidated
-            // host dependency snapshot. XML/package edits and generic labels remain unknown.
-            if (
-              proposal.operation === 'edit_slide_master' &&
-              proposal.toolName === proposal.operation &&
-              proposal.impact.host === 'powerpoint'
-            ) {
-              const scope = proposal.preview.qaScope
-              if (
-                scope &&
-                typeof scope === 'object' &&
-                !Array.isArray(scope) &&
-                Object.keys(scope).length === 2 &&
-                Object.keys(scope).every((key) => ['basis', 'hostSlideIds'].includes(key)) &&
-                (scope as Record<string, unknown>).basis === 'native_master_layout' &&
-                Array.isArray((scope as Record<string, unknown>).hostSlideIds)
-              ) {
-                try {
-                  hostSlideIds = [
-                    ...presentationQaMutationScope(
-                      (scope as { hostSlideIds: string[] }).hostSlideIds,
-                    )!,
-                  ]
-                } catch {
-                  hostSlideIds = undefined
-                }
-              }
-            }
+            const hostSlideIds = presentationMutationScope(proposal)
             existingEditing?.beginMutation()
             existingBatchEditing?.beginMutation()
             qaSkill?.beginMutation(hostSlideIds)
             mutationStarted = Boolean(qaSkill)
             await localBinding?.invalidateQa?.(hostSlideIds)
             notifyQa()
+            const fresh = await readNativeLocks(proposal, signal)
+            if (
+              fresh?.token !==
+              (proposal.lockReview?.state === 'ready' ? proposal.lockReview.token : undefined)
+            )
+              throw new Error('presentation_lock_review_stale')
           },
           afterWrite: () => {
             existingEditing?.endMutation()

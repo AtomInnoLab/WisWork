@@ -582,6 +582,7 @@ it('invalidates exactly the affected host pages when confirming batch reapply', 
       validate: () => true,
       execute: () => {},
     })
+    await vi.waitFor(() => expect(proposals.pending()?.lockReview?.state).not.toBe('checking'))
     await proposals.confirm(proposal.id)
     expect(invalidateQa).toHaveBeenCalledExactlyOnceWith(['slide-2', 'slide-1'])
   } finally {
@@ -808,6 +809,7 @@ it.each([
       validate: () => true,
       execute: () => {},
     })
+    await vi.waitFor(() => expect(proposals.pending()?.lockReview?.state).not.toBe('checking'))
     await proposals.confirm(proposal.id)
     expect(invalidateQa).toHaveBeenCalledExactlyOnceWith(['slide-2'])
   } finally {

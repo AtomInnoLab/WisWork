@@ -1,3 +1,4 @@
+import { confirmReviewed } from './presentation-lock-review-fixture.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime'
@@ -95,6 +96,8 @@ it.each([false, true])(
           invalidateQa: invalidations,
           request: async (body) => {
             const operation = (body as { operation: string }).operation
+            if (operation === 'get_plan')
+              return new Response(JSON.stringify({ error: 'not_found' }))
             return new Response(
               JSON.stringify(
                 operation === 'production_status'
@@ -143,11 +146,11 @@ it.each([false, true])(
       expect(edit.isError, edit.output).not.toBe(true)
       if (failSaves) {
         failState = 'applied'
-        await expect(runtime.proposals.confirm(runtime.proposals.pending()!.id)).rejects.toThrow(
-          'save_failed',
-        )
+        await expect(
+          confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id),
+        ).rejects.toThrow('save_failed')
         expect(binding.readGeometryChange()?.state).toBe('pending')
-      } else await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+      } else await confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id)
       expect(geometry).toEqual(after)
       runtime.dispose()
       runtime = create()
@@ -166,7 +169,7 @@ it.each([false, true])(
           input: { page_id: 'second' },
         })
         expect(result.isError, result.output).not.toBe(true)
-        await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+        await confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id)
       }
       if (failSaves) {
         await recover()
@@ -195,16 +198,16 @@ it.each([false, true])(
       expect(runtime.proposals.pending()?.operation).toBe('undo_presentation_geometry_change')
       if (failSaves) {
         failState = 'undone'
-        await expect(runtime.proposals.confirm(runtime.proposals.pending()!.id)).rejects.toThrow(
-          'save_failed',
-        )
+        await expect(
+          confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id),
+        ).rejects.toThrow('save_failed')
         expect(binding.readGeometryChange()?.state).toBe('undo_pending')
         runtime.dispose()
         runtime = create()
         expect((await runtime.skill.executeTool(prepare)).isError).not.toBe(true)
         await recover()
         expect(binding.readGeometryChange()?.state).toBe('undone')
-      } else await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+      } else await confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id)
       expect(geometry).toEqual(before)
       expect(writes).toHaveBeenCalledTimes(2)
       expect(invalidations.mock.calls).toEqual(

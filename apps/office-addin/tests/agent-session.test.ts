@@ -24,6 +24,52 @@ function transportHarness() {
   return { transport, cancel, stream, callbacks: () => callbacks! }
 }
 
+it('updates the existing approval event when an asynchronous lock review becomes ready', async () => {
+  const harness = transportHarness()
+  let finish!: (value: { state: 'ready'; token: string; pages: [] }) => void
+  const proposals = createStructuredProposalController(undefined, {
+    review: () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+    beforeWrite: async () => {},
+    afterWrite: () => {},
+  })
+  const session = createOfficeAgentSession({
+    transport: harness.transport,
+    proposals,
+    skill: {
+      id: 'test',
+      systemPrompt: '',
+      tools: [],
+      executeTool: async () => ({ output: '', summary: 'Read only' }),
+    },
+  })
+  try {
+    proposals.propose({
+      operation: 'edit',
+      title: 'Edit',
+      preview: {},
+      impact: { host: 'powerpoint', count: 1, targets: ['host'] },
+      fingerprint: 'fp',
+      validate: () => true,
+      execute: () => {},
+    })
+    const event = session.snapshot().timeline.find((item) => item.kind === 'proposal')!
+    expect(event).toMatchObject({ proposal: { lockReview: { state: 'checking' } } })
+    await Promise.resolve()
+    finish({ state: 'ready', token: 'fresh', pages: [] })
+    await vi.waitFor(() =>
+      expect(session.snapshot().timeline.find((item) => item.id === event.id)).toMatchObject({
+        proposal: { lockReview: { state: 'ready' } },
+      }),
+    )
+    expect(session.snapshot().timeline.filter((item) => item.kind === 'proposal')).toHaveLength(1)
+  } finally {
+    session.dispose()
+  }
+})
+
 function proposalsHarness() {
   let pending:
     | { id: string; operation: 'replace'; before: string; value: string; fingerprint: string }

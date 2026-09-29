@@ -1,3 +1,4 @@
+import { confirmReviewed } from './presentation-lock-review-fixture.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime'
@@ -911,7 +912,7 @@ async function fixture() {
   }
   const confirm = () => {
     const proposals = runtime.proposals as StructuredProposalController
-    return proposals.confirm(proposals.pending()!.id)
+    return confirmReviewed(proposals, proposals.pending()!.id)
   }
   const records = () =>
     bind()
@@ -1969,7 +1970,7 @@ it('keeps proposals stale after clearing the session and rejects out-of-scope sh
   const proposals = f.getRuntime().proposals as StructuredProposalController
   const id = proposals.pending()!.id
   f.getRuntime().clearSession()
-  await expect(proposals.confirm(id)).rejects.toThrow('proposal_missing')
+  await expect(confirmReviewed(proposals, id)).rejects.toThrow('proposal_missing')
   expect(f.editText).not.toHaveBeenCalled()
 })
 it('recovers an interrupted undo after reopening without writing the host twice', async () => {

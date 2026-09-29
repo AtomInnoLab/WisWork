@@ -180,6 +180,7 @@ export function proposalPresentation(proposal: DisplayProposal) {
           : previewSummary(proposal.preview),
     // Declarative code is an internal safety protocol, not user-facing review content.
     code: undefined,
+    ...(!legacy && proposal.lockReview ? { lockReview: proposal.lockReview } : {}),
   }
 }
 
@@ -501,6 +502,28 @@ function ProposalReview(props: {
         {presentation.preview && <p className="proposal-copy">{presentation.preview}</p>}
       </details>
       {event.error && <p className="error-text">{event.error}</p>}
+      {presentation.lockReview && (
+        <div className="proposal-lock-review" role="status">
+          {presentation.lockReview.state === 'checking' ? (
+            <p>正在核对当前锁页，完成后可确认。</p>
+          ) : presentation.lockReview.state === 'unavailable' ? (
+            <p>锁页状态无法可靠核对，请拒绝此提案并在连接或页面身份恢复后重新生成。</p>
+          ) : (
+            presentation.lockReview.pages.length > 0 && (
+              <>
+                <p>本次修改可能影响以下锁定页面。确认即允许本次覆盖，页面保持锁定。</p>
+                <ul>
+                  {presentation.lockReview.pages.map((page) => (
+                    <li key={`${page.projectId}/${page.pageId}`}>
+                      {page.title}（{page.slideIds.length} 个宿主副本）
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )
+          )}
+        </div>
+      )}
       {canReview && (
         <div className="actions">
           <button
@@ -513,10 +536,18 @@ function ProposalReview(props: {
           </button>
           <button
             type="button"
-            disabled={props.applying}
+            disabled={
+              props.applying ||
+              (presentation.lockReview !== undefined && presentation.lockReview.state !== 'ready')
+            }
             onClick={() => props.confirm(event.proposal.id)}
           >
-            {props.applying ? 'Applying…' : 'Confirm change'}
+            {props.applying
+              ? 'Applying…'
+              : presentation.lockReview?.state === 'ready' &&
+                  presentation.lockReview.pages.length > 0
+                ? '确认本次覆盖锁页'
+                : 'Confirm change'}
           </button>
         </div>
       )}

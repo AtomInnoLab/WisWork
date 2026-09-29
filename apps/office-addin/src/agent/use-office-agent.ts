@@ -80,6 +80,21 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
     message: '文档内容已发生变化，刚才的修改未应用。',
     retryable: true,
   },
+  presentation_lock_review_pending: {
+    code: 'presentation_lock_review_pending',
+    message: '正在核对锁页状态，请等待核对完成。',
+    retryable: false,
+  },
+  presentation_lock_review_unavailable: {
+    code: 'presentation_lock_review_unavailable',
+    message: '无法可靠核对锁页状态，本次修改未应用。请恢复连接或页面身份后重新生成提案。',
+    retryable: false,
+  },
+  presentation_lock_review_stale: {
+    code: 'presentation_lock_review_stale',
+    message: '锁页、计划或页面身份已变化，本次修改未应用。请重新读取并生成提案。',
+    retryable: false,
+  },
   presentation_existing_backup_capacity: {
     code: 'presentation_existing_backup_capacity',
     message:
@@ -396,6 +411,15 @@ export function createOfficeAgentSession(dependencies: {
       )
   const appendPendingProposal = () => {
     const proposal = proposals.pending()
+    const existing =
+      proposal &&
+      state.timeline.find((event) => event.kind === 'proposal' && event.proposal.id === proposal.id)
+    if (existing?.kind === 'proposal' && existing.state === 'pending') {
+      replace(existing.id, (event) =>
+        event.kind === 'proposal' ? { ...event, proposal: proposal! } : event,
+      )
+      return
+    }
     if (
       proposal &&
       !state.timeline.some(
@@ -452,21 +476,23 @@ export function createOfficeAgentSession(dependencies: {
       }
     }
     if (decision.status === 'failed') {
-      if (decision.error === 'proposal_stale') staleTools.add(toolName)
+      const stale =
+        decision.error === 'proposal_stale' ||
+        ['presentation_lock_review_stale', 'presentation_lock_review_unavailable'].includes(
+          decision.error,
+        )
+      if (stale) staleTools.add(toolName)
       return {
         output: JSON.stringify({
           proposalId,
           status: 'failed',
           error: decision.error,
-          instruction:
-            decision.error === 'proposal_stale'
-              ? 'Do not retry this write in the current turn.'
-              : undefined,
+          instruction: stale ? 'Do not retry this write in the current turn.' : undefined,
         }),
         isError: true,
         mutated: false,
         summary: 'Approved change failed',
-        stopToolBatch: decision.error === 'proposal_stale',
+        stopToolBatch: stale,
       }
     }
     return {

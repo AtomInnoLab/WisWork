@@ -22,6 +22,7 @@ export interface ProposalImpact {
 }
 
 export interface StructuredProposal {
+  lockReview?: PresentationLockReview
   id: string
   operation: string
   toolName?: string
@@ -34,7 +35,16 @@ export interface StructuredProposal {
   code?: string
 }
 
-export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id'> {
+export type PresentationLockReview =
+  | { state: 'checking' }
+  | { state: 'unavailable' }
+  | {
+      state: 'ready'
+      token: string
+      pages: { projectId: string; pageId: string; title: string; slideIds: string[] }[]
+    }
+
+export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id' | 'lockReview'> {
   validate(signal?: AbortSignal): boolean | Promise<boolean>
   execute(signal?: AbortSignal): void | Promise<void>
   verify?(signal?: AbortSignal): void | Promise<void>
@@ -53,6 +63,10 @@ interface ProposalDecisionLifecycle {
 }
 
 export interface StructuredProposalWriteHooks {
+  review?(
+    proposal: StructuredProposal,
+    signal: AbortSignal,
+  ): Promise<Extract<PresentationLockReview, { state: 'ready' }> | undefined>
   beforeWrite(proposal: StructuredProposal, signal: AbortSignal): Promise<void>
   afterWrite(): void
 }
@@ -101,6 +115,9 @@ const PROPOSAL_ERROR_CODES = new Set([
   'office_concurrent_change',
   'office_state_uncertain',
   'presentation_existing_backup_capacity',
+  'presentation_lock_review_pending',
+  'presentation_lock_review_unavailable',
+  'presentation_lock_review_stale',
 ])
 
 function stableProposalError(error: unknown): string {
@@ -190,6 +207,7 @@ export function createStructuredProposalController(
         snapshot: StructuredProposal
         request: StructuredProposalRequest
         decision: ProposalDecisionLifecycle
+        reviewController?: AbortController
       }
     | undefined
   let confirming: AbortController | undefined
@@ -202,6 +220,7 @@ export function createStructuredProposalController(
     decision.resolve(value)
   }
   const invalidate = (status: 'rejected' | 'cancelled') => {
+    current?.reviewController?.abort()
     if (current) settle(current.decision, { status })
     current = undefined
     confirming?.abort()
@@ -239,6 +258,7 @@ export function createStructuredProposalController(
       )
         invalidProposal()
       const publicValue = snapshot({
+        ...(hooks?.review ? { lockReview: { state: 'checking' as const } } : {}),
         id: crypto.randomUUID(),
         operation: request.operation,
         toolName: request.toolName,
@@ -250,8 +270,13 @@ export function createStructuredProposalController(
         after: request.after,
         code: request.code,
       })
+      // Reserve room for the failure state even when the original preview fills the budget.
+      if (hooks?.review) snapshot({ ...publicValue, lockReview: { state: 'unavailable' } })
       diagnose(() => diagnostics?.setTool(request.toolName ?? request.operation))
-      if (current) settle(current.decision, { status: 'cancelled' })
+      if (current) {
+        current.reviewController?.abort()
+        settle(current.decision, { status: 'cancelled' })
+      }
       let resolve!: (value: ProposalDecision) => void
       const promise = new Promise<ProposalDecision>((next) => {
         resolve = next
@@ -261,6 +286,27 @@ export function createStructuredProposalController(
         request: { ...request },
         decision: { promise, resolve, settled: false },
       }
+      if (hooks?.review) {
+        const pending = current
+        const reviewController = new AbortController()
+        pending.reviewController = reviewController
+        void Promise.resolve()
+          .then(() => hooks.review!(publicValue, reviewController.signal))
+          .then((review) => {
+            if (current !== pending || reviewController.signal.aborted) return
+            const { lockReview: _previous, ...value } = pending.snapshot
+            pending.snapshot = snapshot({ ...value, ...(review ? { lockReview: review } : {}) })
+            publish()
+          })
+          .catch(() => {
+            if (current !== pending || reviewController.signal.aborted) return
+            pending.snapshot = snapshot({
+              ...pending.snapshot,
+              lockReview: { state: 'unavailable' },
+            })
+            publish()
+          })
+      }
       publish()
       return snapshot(publicValue)
     },
@@ -268,6 +314,10 @@ export function createStructuredProposalController(
       if (confirming) throw new Error('proposal_confirmation_in_progress')
       const proposal = current
       if (!proposal || proposal.snapshot.id !== id) throw new Error('proposal_missing')
+      if (proposal.snapshot.lockReview?.state === 'checking')
+        throw new Error('presentation_lock_review_pending')
+      if (proposal.snapshot.lockReview?.state === 'unavailable')
+        throw new Error('presentation_lock_review_unavailable')
       current = undefined
       publish()
       const controller = new AbortController()

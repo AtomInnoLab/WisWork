@@ -1,3 +1,4 @@
+import { confirmReviewed } from '../../office-addin/tests/presentation-lock-review-fixture.js'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -884,9 +885,9 @@ it('prepares real page files and resumes confirmed Office import without mixing 
     expect(prepared.isError, prepared.output).not.toBe(true)
     expect(runtime.importProgress!.read()).toMatchObject({ total: 8, completed: 0 })
     expect((await runtime.skill.executeTool(importCall)).isError).not.toBe(true)
-    await expect(runtime.proposals.confirm(runtime.proposals.pending()!.id)).rejects.toThrow(
-      'cancelled',
-    )
+    await expect(
+      confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id),
+    ).rejects.toThrow('cancelled')
     expect(hostIds).toHaveLength(4)
     expect(binding.readReceipt(`${f.deck.id}/run`)).toBeUndefined()
     expect(binding.readReceipt(`production/${f.deck.id}/run`)?.checkpoint).toMatchObject({
@@ -906,7 +907,7 @@ it('prepares real page files and resumes confirmed Office import without mixing 
     expect((await runtime.skill.executeTool(prepare)).isError).not.toBe(true)
     expect(runtime.importProgress!.read()).toMatchObject({ completed: 3, status: 'partial' })
     expect((await runtime.skill.executeTool(importCall)).isError).not.toBe(true)
-    await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+    await confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id)
     expect(hostIds).toHaveLength(9)
     expect(insert).toHaveBeenCalledTimes(8)
     expect(runtime.importProgress!.read()).toMatchObject({ completed: 8, status: 'complete' })
@@ -943,7 +944,7 @@ it('prepares real page files and resumes confirmed Office import without mixing 
       },
     })
     expect(edit.isError, edit.output).not.toBe(true)
-    await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+    await confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id)
     expect(editText.mock.calls[0]?.slice(0, 2)).toEqual(['host-2', 'title'])
     expect(pageText).toBe('after')
     expect(runtime.qa!.read()!.pages.map((p) => p.recheckRequired)).toEqual([undefined, true])
@@ -965,7 +966,7 @@ it('prepares real page files and resumes confirmed Office import without mixing 
       input: { project_id: f.deck.id },
     })
     expect(switchSource.isError, switchSource.output).not.toBe(true)
-    await expect(runtime.proposals.confirm(pendingId)).rejects.toThrow('proposal_stale')
+    await expect(confirmReviewed(runtime.proposals, pendingId)).rejects.toThrow('proposal_stale')
     expect(pageText).toBe('after')
     expect(runtime.qa!.read()).toBeUndefined()
     const old = await runtime.skill.executeTool({

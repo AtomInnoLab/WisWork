@@ -1,3 +1,4 @@
+import { confirmReviewed } from './presentation-lock-review-fixture.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -117,22 +118,24 @@ async function fixture(withSecondPage = false, withImageBackup = false) {
               ),
             ),
           ),
-        request: async () =>
-          new Response(
-            JSON.stringify({
-              projectId: 'project',
-              requestId: 'request',
-              status: 'compiled',
-              pptxBase64,
-              report: { deckId: 'project', slideCount: withSecondPage ? 2 : 1 },
-              pages: [
-                { id: 'page1', title: 'Page', sourceSlideId: '256#' },
-                ...(withSecondPage
-                  ? [{ id: 'page2', title: 'Page 2', sourceSlideId: '257#' }]
-                  : []),
-              ],
-            }),
-          ),
+        request: async (body: unknown) =>
+          (body as { operation: string }).operation === 'get_plan'
+            ? new Response(JSON.stringify({ error: 'not_found' }))
+            : new Response(
+                JSON.stringify({
+                  projectId: 'project',
+                  requestId: 'request',
+                  status: 'compiled',
+                  pptxBase64,
+                  report: { deckId: 'project', slideCount: withSecondPage ? 2 : 1 },
+                  pages: [
+                    { id: 'page1', title: 'Page', sourceSlideId: '256#' },
+                    ...(withSecondPage
+                      ? [{ id: 'page2', title: 'Page 2', sourceSlideId: '257#' }]
+                      : []),
+                  ],
+                }),
+              ),
       },
     })
   const runtime = createRuntime()
@@ -223,7 +226,7 @@ it('invalidates before a confirmed edit, blocks concurrent QA, and requires fres
       finish = resolve
     })
   })
-  const pending = f.proposals.confirm(id)
+  const pending = confirmReviewed(f.proposals, id)
   await vi.waitFor(() => expect(f.edit).toHaveBeenCalledOnce())
   expect((await f.capture()).output).toBe('presentation_qa_busy')
   // Simulate the queued Office write and then reconcile its text readback.
@@ -244,7 +247,7 @@ it('prevents document writes when QA invalidation cannot be saved', async () => 
   const f = await fixture(),
     id = await f.propose()
   f.save.mockRejectedValueOnce(new Error('save_failed'))
-  await expect(f.proposals.confirm(id)).rejects.toThrow('save_failed')
+  await expect(confirmReviewed(f.proposals, id)).rejects.toThrow('save_failed')
   expect(f.edit).not.toHaveBeenCalled()
   expect(f.page().recheckRequired).toBeUndefined()
   expect((await f.review(f.digest)).output).toBe('presentation_qa_capture_required')
@@ -255,7 +258,7 @@ it('retains recheck status after uncertain host write failure and releases the Q
   const f = await fixture(),
     id = await f.propose()
   f.edit.mockRejectedValueOnce(new Error('office_state_uncertain'))
-  await expect(f.proposals.confirm(id)).rejects.toThrow('office_state_uncertain')
+  await expect(confirmReviewed(f.proposals, id)).rejects.toThrow('office_state_uncertain')
   expect(f.page().recheckRequired).toBe(true)
   expect((await f.review(f.digest)).output).toBe('presentation_qa_capture_required')
   expect((await f.capture()).isError).not.toBe(true)
@@ -322,7 +325,7 @@ it('routes a business-page text edit through its host ID and then fresh QA', asy
     text: 'unrelated',
     paragraphs: ['unrelated'],
   })
-  await f.proposals.confirm(f.proposals.pending()!.id)
+  await confirmReviewed(f.proposals, f.proposals.pending()!.id)
   expect(host.edit).toHaveBeenCalledOnce()
   expect(f.edit).not.toHaveBeenCalled()
   expect(BrowserPowerPointAdapter.prototype.readSlideText).not.toHaveBeenCalled()
@@ -351,7 +354,7 @@ it.each(['deleted', 'restored'] as const)(
       })
       expect(restored.isError).not.toBe(true)
     }
-    await expect(f.proposals.confirm(id)).rejects.toThrow()
+    await expect(confirmReviewed(f.proposals, id)).rejects.toThrow()
     expect(host.edit).not.toHaveBeenCalled()
     expect(f.edit).not.toHaveBeenCalled()
     expect(f.page().recheckRequired).toBeUndefined()
@@ -416,7 +419,7 @@ it('moves and resizes a stable page object through confirmation and new QA witho
   })
   expect(proposal.isError, proposal.output).not.toBe(true)
   expect(f.proposals.pending()?.after).toEqual(next)
-  await f.proposals.confirm(f.proposals.pending()!.id)
+  await confirmReviewed(f.proposals, f.proposals.pending()!.id)
   expect(host.edit).toHaveBeenCalledOnce()
   expect(f.edit).not.toHaveBeenCalled()
   expect(BrowserPowerPointAdapter.prototype.readSlideText).not.toHaveBeenCalled()
@@ -450,7 +453,7 @@ it('preserves a manual geometry change made after proposing layout adjustments',
   expect(proposal.isError, proposal.output).not.toBe(true)
   const id = f.proposals.pending()!.id
   host.moveManually()
-  await expect(f.proposals.confirm(id)).rejects.toThrow('proposal_stale')
+  await expect(confirmReviewed(f.proposals, id)).rejects.toThrow('proposal_stale')
   expect(host.edit).not.toHaveBeenCalled()
   expect(f.page().recheckRequired).toBeUndefined()
   f.runtime.dispose()
@@ -515,7 +518,7 @@ it.each([false, true])(
       input: { page_id: 'page1', shape_id: 'old', path: '/home/user/replacement.png' },
     }
     expect((await f.runtime.skill.executeTool(call)).isError).not.toBe(true)
-    const confirmation = f.proposals.confirm(f.proposals.pending()!.id)
+    const confirmation = confirmReviewed(f.proposals, f.proposals.pending()!.id)
     if (interrupted) await expect(confirmation).rejects.toThrow('office_write_uncertain')
     else await confirmation
     expect(f.binding.readImageReplacement(key)).toMatchObject({
@@ -619,11 +622,11 @@ it.each(['ready_to_finish', 'already_applied', 'completion_save_failed'] as cons
       expect(result.isError, result.output).not.toBe(true)
       return proposals.pending()!.id
     }
-    const confirmed = proposals.confirm(await propose())
+    const confirmed = confirmReviewed(proposals, await propose())
     if (scenario === 'completion_save_failed') {
       await expect(confirmed).rejects.toThrow('save_failed')
       expect(f.binding.readImageReplacement(key)?.state).toBe('pending')
-      await proposals.confirm(await propose())
+      await confirmReviewed(proposals, await propose())
     } else await confirmed
     expect(f.binding.readImageReplacement(key)).toMatchObject({
       state: 'complete',
@@ -644,7 +647,7 @@ it('keeps another page review and live capture valid after a stable page text ed
     host = stablePageHost(f)
   const previous = structuredClone(f.secondPage())
   expect((await host.propose()).isError).not.toBe(true)
-  await f.proposals.confirm(f.proposals.pending()!.id)
+  await confirmReviewed(f.proposals, f.proposals.pending()!.id)
   expect(f.page().recheckRequired).toBe(true)
   expect(f.secondPage()).toEqual(previous)
   expect((await f.review(f.digest)).output).toBe('presentation_qa_capture_required')
@@ -654,7 +657,7 @@ it('keeps another page review and live capture valid after a stable page text ed
 })
 it('still invalidates every page for an index-based operation with uncertain impact', async () => {
   const f = await fixture(true)
-  await f.proposals.confirm(await f.propose())
+  await confirmReviewed(f.proposals, await f.propose())
   expect(f.page().recheckRequired).toBe(true)
   expect(f.secondPage().recheckRequired).toBe(true)
   expect((await f.review(f.secondDigest!, 'page2')).output).toBe('presentation_qa_capture_required')
@@ -672,7 +675,7 @@ it('does not trust a stable tool label on a general script proposal', async () =
     validate: () => true,
     execute: () => {},
   })
-  await f.proposals.confirm(proposal.id)
+  await confirmReviewed(f.proposals, proposal.id)
   expect(f.page().recheckRequired).toBe(true)
   expect(f.secondPage().recheckRequired).toBe(true)
   f.runtime.dispose()
@@ -696,7 +699,7 @@ it.each([{ scope: ['host'] }, { scope: [] }])(
         expect(f.page().recheckRequired).toBe(scope.length ? true : undefined)
       },
     })
-    await f.proposals.confirm(proposal.id)
+    await confirmReviewed(f.proposals, proposal.id)
     expect(f.secondPage()).toEqual(previous)
     expect((await f.review(f.secondDigest!, 'page2')).isError).not.toBe(true)
     if (!scope.length) {
@@ -723,7 +726,7 @@ it.each([
     validate: () => true,
     execute: () => {},
   })
-  await f.proposals.confirm(proposal.id)
+  await confirmReviewed(f.proposals, proposal.id)
   expect(f.page().recheckRequired).toBe(true)
   expect(f.secondPage().recheckRequired).toBe(true)
   f.runtime.dispose()
@@ -833,7 +836,7 @@ it.each(['theme', 'layout', 'different_master', 'unused_master', 'unknown'] as c
         ? { basis: 'document' }
         : { basis: 'native_master_layout', hostSlideIds: affected },
     )
-    await f.proposals.confirm(proposal.id)
+    await confirmReviewed(f.proposals, proposal.id)
     expect(native.execute).toHaveBeenCalledOnce()
     for (const [index, entry] of [f.page(), f.secondPage()].entries()) {
       if (affected.includes(entry.hostSlideId)) expect(entry.recheckRequired).toBe(true)
@@ -874,7 +877,7 @@ it.each(['before_confirm', 'during_save', 'save_failed'] as const)(
         native.change(next)
       })
     else f.save.mockRejectedValueOnce(new Error('save_failed'))
-    await expect(f.proposals.confirm(proposal.id)).rejects.toThrow(
+    await expect(confirmReviewed(f.proposals, proposal.id)).rejects.toThrow(
       scenario === 'save_failed' ? 'save_failed' : 'proposal_stale',
     )
     expect(native.execute).not.toHaveBeenCalled()
@@ -890,7 +893,7 @@ it('restores text differences after reopening and undoes from the workbench with
     host = stablePageHost(f)
   const unrelated = structuredClone(f.secondPage())
   expect((await host.propose()).isError).not.toBe(true)
-  await f.proposals.confirm(f.proposals.pending()!.id)
+  await confirmReviewed(f.proposals, f.proposals.pending()!.id)
   await f.runtime.changes!.refresh()
   expect(
     f.runtime.changes!.snapshot().entries.find((entry) => entry.kind === 'text'),
@@ -908,7 +911,7 @@ it('restores text differences after reopening and undoes from the workbench with
     await reopened.changes!.run(entry.id, 'undo')
     expect(host.edit).toHaveBeenCalledOnce()
     expect(reopened.proposals.pending()?.operation).toBe('undo_presentation_text_change')
-    await reopened.proposals.confirm(reopened.proposals.pending()!.id)
+    await confirmReviewed(reopened.proposals, reopened.proposals.pending()!.id)
     await reopened.changes!.refresh()
     expect(host.edit).toHaveBeenCalledTimes(2)
     expect(host.edit.mock.calls[1]!.slice(0, 4)).toEqual(['host', 'shape', 'before', 'after'])
@@ -932,7 +935,7 @@ it('recovers a text completion-save failure from the workbench without repeating
   })
   try {
     await host.propose()
-    await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow(
+    await expect(confirmReviewed(f.proposals, f.proposals.pending()!.id)).rejects.toThrow(
       'completion_save_failed',
     )
     await f.runtime.changes!.refresh()
@@ -943,7 +946,7 @@ it('recovers a text completion-save failure from the workbench without repeating
     expect(f.proposals.pending()).toBeUndefined()
     await f.runtime.changes!.run(entry.id, 'resume')
     expect(f.proposals.pending()?.operation).toBe('resume_presentation_text_change')
-    await f.proposals.confirm(f.proposals.pending()!.id)
+    await confirmReviewed(f.proposals, f.proposals.pending()!.id)
     await f.runtime.changes!.refresh()
     expect(host.edit).toHaveBeenCalledOnce()
     expect(
@@ -959,7 +962,7 @@ it('keeps manual text changes intact when undo is requested from a historical wo
     host = stablePageHost(f)
   try {
     await host.propose()
-    await f.proposals.confirm(f.proposals.pending()!.id)
+    await confirmReviewed(f.proposals, f.proposals.pending()!.id)
     await f.runtime.changes!.refresh()
     const entry = f.runtime.changes!.snapshot().entries.find((entry) => entry.kind === 'text')!
     host.read.mockResolvedValue({
@@ -1078,7 +1081,7 @@ it.each([
   })
   expect(proposed.isError, proposed.output).not.toBe(true)
   expect(native).not.toHaveBeenCalled()
-  await f.proposals.confirm(f.proposals.pending()!.id)
+  await confirmReviewed(f.proposals, f.proposals.pending()!.id)
   expect(f.binding.readImageReplacement(key)?.state).toBe('complete')
   // A fresh QA capture clears the target's stale flag before testing undo invalidation.
   const capture = await f.capture()
@@ -1115,7 +1118,7 @@ it.each([
         throw new Error('save_failed')
       }
     })
-    const confirmation = runtime.proposals.confirm(runtime.proposals.pending()!.id)
+    const confirmation = confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id)
     if (scenario === 'receipt_failed' || scenario === 'undo_interrupted') {
       await expect(confirmation).rejects.toThrow(
         scenario === 'receipt_failed' ? 'save_failed' : 'office_state_uncertain',
@@ -1126,7 +1129,7 @@ it.each([
       await runtime.changes!.run(pending.id, 'inspect')
       expect(inspectRecovery).toHaveBeenCalled()
       await runtime.changes!.run(pending.id, 'resume')
-      await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+      await confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id)
       expect(finishRecovery).toHaveBeenCalledOnce()
     } else await confirmation
     expect(native).toHaveBeenCalledTimes(2)
@@ -1169,7 +1172,7 @@ it.each([false, true])(
         input: { page_id: 'page1', ...input },
       })
       expect(result.isError, result.output).not.toBe(true)
-      await f.proposals.confirm(f.proposals.pending()!.id)
+      await confirmReviewed(f.proposals, f.proposals.pending()!.id)
     }
     await edit('edit_presentation_page_text', { shape_id: 'shape', text: 'after' })
     const first = f.binding.readTextChange()!
@@ -1225,14 +1228,14 @@ it.each([false, true])(
             throw new Error('save_failed')
           }
         })
-        const confirmation = runtime.proposals.confirm(runtime.proposals.pending()!.id)
+        const confirmation = confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id)
         if (failReceipt && id === first.changeId) {
           await expect(confirmation).rejects.toThrow('save_failed')
           expect(f.binding.readTextChange(first.changeId)?.state).toBe('undo_pending')
           await runtime.changes!.refresh()
           await runtime.changes!.run(`text:${first.changeId}`, 'inspect')
           await runtime.changes!.run(`text:${first.changeId}`, 'resume')
-          await runtime.proposals.confirm(runtime.proposals.pending()!.id)
+          await confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id)
         } else await confirmation
       }
       expect(f.binding.listChangeHistory()).toHaveLength(3)

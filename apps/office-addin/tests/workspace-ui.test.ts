@@ -303,6 +303,49 @@ describe('Office Agent workspace UI', () => {
     expect(html).not.toContain('<pre')
   })
 
+  it('disables approval until lock review succeeds and displays explicit locked-page coverage', () => {
+    const base = {
+      id: 'locked-proposal',
+      operation: 'edit_existing_presentation_text',
+      title: 'Edit locked page',
+      preview: {},
+      impact: { host: 'powerpoint', targets: ['host'], count: 1 },
+      fingerprint: 'fp',
+    }
+    for (const state of ['checking', 'unavailable', 'ready'] as const) {
+      const lockReview =
+        state === 'ready'
+          ? {
+              state,
+              token: 'secret-token',
+              pages: [
+                { projectId: 'p', pageId: 'page', title: '财务结论', slideIds: ['host', 'copy'] },
+              ],
+            }
+          : { state }
+      const value = { ...base, lockReview }
+      const html = workspaceMarkup(
+        {
+          proposal: value,
+          timeline: [{ id: 'lock-event', kind: 'proposal', state: 'pending', proposal: value }],
+        },
+        undefined,
+        'powerpoint',
+      )
+      const dom = new DOMParser().parseFromString(html, 'text/html')
+      const button = Array.from(dom.querySelectorAll('button')).find((item) =>
+        ['Confirm change', '确认本次覆盖锁页'].includes(item.textContent!),
+      )!
+      expect(button.disabled).toBe(state !== 'ready')
+      expect(html).not.toContain('secret-token')
+      if (state === 'ready') {
+        expect(html).toContain('财务结论')
+        expect(html).toContain('2 个宿主副本')
+        expect(html).toContain('页面保持锁定')
+      }
+    }
+  })
+
   it('renders Markdown only for assistant timeline messages', () => {
     const html = workspaceMarkup({
       timeline: Object.freeze([
