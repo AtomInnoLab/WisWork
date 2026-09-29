@@ -11,6 +11,7 @@ import {
   truncateSync,
   renameSync,
   readFileSync,
+  readdirSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -505,3 +506,25 @@ it.each(['dynamic', 'throwing'] as const)(
     expect(reads).toBe(1)
   },
 )
+
+it('reads an empty 4096-character research document scope without creating or deleting files and rejects overflow', async () => {
+  const root = fixture(),
+    documentId = 'd'.repeat(4096)
+  expect(
+    await inspectPresentationProjectInventory({ userDataPath: root, documentId, projectId: 'p' }),
+  ).toMatchObject({
+    complete: true,
+    deletionPerformed: false,
+    resources: [],
+    totals: { fileCount: 0, bytes: 0 },
+  })
+  expect(readdirSync(root, { recursive: true })).toEqual([])
+  await expect(
+    inspectPresentationProjectInventory({
+      userDataPath: root,
+      documentId: 'd'.repeat(4097),
+      projectId: 'p',
+    }),
+  ).rejects.toThrow('invalid_request')
+  expect(readdirSync(root, { recursive: true })).toEqual([])
+})

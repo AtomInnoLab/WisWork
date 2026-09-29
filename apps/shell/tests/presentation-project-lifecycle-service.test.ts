@@ -131,3 +131,42 @@ it('reads hostile error messages once and suppresses a throwing accessor', () =>
     ),
   ).toEqual({ error: 'invalid_state' })
 })
+
+it('supports all governance operations at the research document boundary without leaking audit identity', () => {
+  const f = fixture(),
+    documentId = 'd'.repeat(4096)
+  const body = (operation: string, extra: Record<string, unknown> = {}) =>
+    request(operation, { documentId, ...extra })
+  expect(f.service(body('project_lifecycle_read'))).toEqual({ lifecycle: null })
+  expect(f.service(body('project_lifecycle_initialize'))).toMatchObject({
+    lifecycle: { documentId, revision: 0 },
+  })
+  const policy = { contentRetentionDays: 30, auditRetentionDays: null }
+  const updated = f.service(body('project_lifecycle_set_policy', { expectedRevision: 0, policy }))
+  expect(updated).toMatchObject({ lifecycle: { documentId, revision: 1, policy } })
+  const reopened = createPresentationProjectLifecycleService({ userDataPath: f.root })
+  expect(reopened(body('project_lifecycle_read'))).toEqual(updated)
+  const audit = reopened(body('project_lifecycle_export_audit'))
+  expect(audit).toMatchObject({
+    audit: { version: 1, events: [{ action: 'created' }, { action: 'policy_updated' }] },
+  })
+  expect(JSON.stringify(audit)).not.toContain(documentId)
+  expect(JSON.stringify(audit)).not.toContain(scope.projectId)
+  expect(JSON.stringify(audit)).not.toContain(f.root)
+  for (const operation of [
+    'project_lifecycle_initialize',
+    'project_lifecycle_read',
+    'project_lifecycle_set_policy',
+    'project_lifecycle_export_audit',
+  ]) {
+    expect(
+      reopened(
+        body(operation, {
+          documentId: 'd'.repeat(4097),
+          ...(operation === 'project_lifecycle_set_policy' ? { expectedRevision: 1, policy } : {}),
+        }),
+      ),
+    ).toEqual({ error: 'invalid_request' })
+  }
+  expect(reopened(body('project_lifecycle_read'))).toEqual(updated)
+})

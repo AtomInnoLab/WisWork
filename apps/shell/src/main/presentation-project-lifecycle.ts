@@ -67,7 +67,7 @@ export function createPresentationProjectLifecycleService(options: { userDataPat
         !/^[A-Za-z0-9_-]{1,128}$/.test(request.projectId) ||
         typeof request.documentId !== 'string' ||
         !request.documentId.trim() ||
-        request.documentId.length > 2048
+        request.documentId.length > 4096
       )
         invalid()
       const scope = { projectId: request.projectId, documentId: request.documentId }

@@ -31,7 +31,7 @@ function ownedScope(input: PresentationProjectWorkScope): Readonly<PresentationP
     root.includes('\0') ||
     typeof documentId !== 'string' ||
     !documentId.trim() ||
-    documentId.length > 2048 ||
+    documentId.length > 4096 ||
     Array.from(documentId).some(
       (char) => char.charCodeAt(0) < 32 || (char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159),
     )

@@ -79,7 +79,7 @@ export async function inspectPresentationProjectInventory(options: {
       !options.userDataPath ||
       typeof documentId !== 'string' ||
       !documentId.trim() ||
-      documentId.length > 2048 ||
+      documentId.length > 4096 ||
       typeof projectId !== 'string' ||
       !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)
     )

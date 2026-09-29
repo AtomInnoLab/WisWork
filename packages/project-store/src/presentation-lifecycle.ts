@@ -144,7 +144,7 @@ function scope(value: PresentationLifecycleScope) {
     !id(value.projectId) ||
     typeof value.documentId !== 'string' ||
     !value.documentId.trim() ||
-    value.documentId.length > 2048 ||
+    value.documentId.length > 4096 ||
     Array.from(value.documentId).some(
       (char) => char.charCodeAt(0) < 32 || (char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159),
     )
