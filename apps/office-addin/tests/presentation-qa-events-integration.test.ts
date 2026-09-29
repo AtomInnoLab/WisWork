@@ -5,6 +5,7 @@ import { createPresentationQaSkill } from '../src/skills/powerpoint/presentation
 import { createPresentationProductionDeliverySkill } from '../src/skills/powerpoint/presentation-page-delivery.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { presentationWorkflowSummary } from '../src/agent/presentation-workflow.js'
+import { createOfficeDiagnostics } from '../src/diagnostics/office-diagnostics.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
 import type {
   CompiledPresentationArtifact,
@@ -337,4 +338,66 @@ it('explicitly closes one of 64 actual durable unresolved attempts then accepts 
   expect(f.host).toEqual(['original', 'host-1', 'host-2'])
   expect(f.read().pages).toHaveLength(1)
   expect(f.read().pages[0].visual.status).toBe('needs_review')
+})
+
+it('exports reopened waiting and explicit-close records only with requested local diagnostic context', async () => {
+  const f = await fixture()
+  f.inspectionHost.mockRejectedValueOnce(
+    Object.assign(new Error('private host error'), { code: 'Timeout' }),
+  )
+  expect(JSON.parse((await f.capture('one')).output).status).toBe('waiting_screenshot')
+  const { finishedAt: _finish, errorCode: _error, ...pending } = f.attempts()[0]
+  const started = {
+    ...pending,
+    status: 'started' as const,
+    id: '12345678-1234-4234-8234-123456789abc',
+  }
+  await f.binding().writeQaAttempt(f.key, started)
+  const closed = await f.close(started)
+  expect((await f.capture('two')).isError).not.toBe(true)
+  f.reopen()
+  const history = structuredClone(f.attempts())
+  const provider = vi.fn(() => f.attempts())
+  const send = vi.fn()
+  const diagnostics = createOfficeDiagnostics({
+    host: 'powerpoint',
+    build: 'integration-build',
+    remoteEnabled: true,
+    remoteSamplePercent: 100,
+    send,
+  })
+  diagnostics.setTool('capture_presentation_page_qa', {
+    project_id: f.artifact.projectId,
+    page_id: 'one',
+  })
+  diagnostics.record({ phase: 'verify', errorCode: 'office_read_failed' })
+  const standard = JSON.parse(diagnostics.exportJson({ screenshotAttempts: provider }))
+  expect(provider).not.toHaveBeenCalled()
+  expect(standard).not.toHaveProperty('local_presentation_qa_attempts')
+  const local = JSON.parse(
+    diagnostics.exportJson({ includeLocalContext: true, screenshotAttempts: provider }),
+  )
+  expect(local.local_presentation_qa_attempts).toMatchObject({
+    scope: 'retained_visible_presentation_task',
+    status: 'available',
+    record_count: 3,
+    unresolved_count: 0,
+  })
+  expect(local.local_presentation_qa_attempts.attempts).toEqual(history)
+  expect(
+    local.local_presentation_qa_attempts.attempts.find(
+      (item: { id: string }) => item.id === closed.id,
+    ),
+  ).toEqual(closed)
+  expect(JSON.stringify(local)).not.toContain('private host error')
+  expect(send).toHaveBeenCalledTimes(1)
+  expect(JSON.stringify(send.mock.calls)).not.toContain('local_presentation_qa_attempts')
+  diagnostics.clear()
+  const cleared = JSON.parse(
+    diagnostics.exportJson({ includeLocalContext: true, screenshotAttempts: provider }),
+  )
+  expect(cleared.events).toEqual([])
+  expect(cleared.local_presentation_qa_attempts.attempts).toEqual(history)
+  expect(f.inspectionHost).toHaveBeenCalledTimes(2)
+  expect(f.host).toEqual(['original', 'host-1', 'host-2'])
 })

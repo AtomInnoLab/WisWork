@@ -18,6 +18,8 @@ import {
 } from '../src/App.js'
 import type { OfficeAgentSession, OfficeAgentSnapshot } from '../src/agent/use-office-agent.js'
 import type { OfficeHostRuntime } from '../src/agent/host-runtime.js'
+import { createOfficeDiagnostics } from '../src/diagnostics/office-diagnostics.js'
+import type { PresentationQaAttempt } from '../src/skills/powerpoint/presentation-qa-attempts.js'
 
 const proposal = {
   id: 'proposal-1',
@@ -601,8 +603,73 @@ describe('Office Agent workspace UI', () => {
     expect(ui).not.toHaveProperty('proposals')
     await expect(ui.copyDiagnostics!()).resolves.toBeUndefined()
     expect(writeText).toHaveBeenCalledWith('{"version":1}')
+    expect(diagnostics.exportJson).toHaveBeenLastCalledWith()
     await expect(ui.copyDiagnosticsWithContext!()).resolves.toBeUndefined()
     expect(writeText).toHaveBeenCalledWith('{"version":1,"context":true}')
+    expect(diagnostics.exportJson).toHaveBeenLastCalledWith({ includeLocalContext: true })
+  })
+
+  it('reads local screenshot attempts only for an explicit contextual diagnostic copy', async () => {
+    const closed: PresentationQaAttempt = {
+      version: 1,
+      id: '12345678-1234-4234-8234-123456789abc',
+      source: 'production',
+      documentId: 'doc',
+      projectId: 'project',
+      requestId: 'run',
+      pageId: 'page',
+      hostSlideId: 'new-slide',
+      artifactDigest: 'a'.repeat(64),
+      startedAt: '2026-09-29T00:00:00.000Z',
+      status: 'closed',
+      finishedAt: '2026-09-29T00:01:00.000Z',
+      errorCode: 'explicitly_closed',
+    }
+    let fail = false
+    const attempts = vi.fn(() => {
+      if (fail) throw Error('secret SDK failure')
+      return [closed]
+    })
+    const runtime = {
+      vfs: { list: () => [] },
+      skills: { list: () => [] },
+      qa: { attempts },
+    } as unknown as OfficeHostRuntime
+    const send = vi.fn()
+    const diagnostics = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'test',
+      localDocumentId: 'doc',
+      remoteEnabled: true,
+      send,
+    })
+    diagnostics.startTrace()
+    diagnostics.setTool('run_presentation_production', { project_id: 'project', request_id: 'run' })
+    diagnostics.record({ phase: 'tool', errorCode: 'office_write_failed' })
+    const sentBefore = send.mock.calls.length
+    const writeText = vi.fn(async (_value: string) => {})
+    const ui = createOfficeWorkspaceUi(runtime, diagnostics, { writeText })
+    expect(attempts).not.toHaveBeenCalled()
+    await ui.copyDiagnostics!()
+    expect(attempts).not.toHaveBeenCalled()
+    expect(writeText.mock.calls.at(-1)![0]).not.toContain('local_presentation_qa_attempts')
+    await ui.copyDiagnosticsWithContext!()
+    expect(attempts).toHaveBeenCalledOnce()
+    const available = JSON.parse(writeText.mock.calls.at(-1)![0])
+    expect(available.local_presentation_qa_attempts).toMatchObject({
+      scope: 'retained_visible_presentation_task',
+      status: 'available',
+      attempts: [closed],
+      record_count: 1,
+      unresolved_count: 0,
+    })
+    fail = true
+    await ui.copyDiagnosticsWithContext!()
+    const unavailable = JSON.parse(writeText.mock.calls.at(-1)![0])
+    expect(unavailable.local_presentation_qa_attempts).toMatchObject({ status: 'unavailable' })
+    expect(JSON.stringify(unavailable)).not.toContain('secret SDK failure')
+    expect(JSON.stringify(unavailable.local_presentation_qa_attempts)).not.toContain(closed.id)
+    expect(send).toHaveBeenCalledTimes(sentBefore)
   })
 
   it('offers a direct copy-diagnostics action without exposing diagnostic state', () => {

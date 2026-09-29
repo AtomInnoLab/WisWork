@@ -1,3 +1,7 @@
+import {
+  parsePresentationQaAttempt,
+  type PresentationQaAttempt,
+} from '../skills/powerpoint/presentation-qa-attempts.js'
 import type { OfficeHost } from '../office-document.js'
 import { acpPresentationStage, type PresentationStage } from '@wiswork/agent-harness'
 
@@ -76,7 +80,10 @@ export interface OfficeDiagnostics {
     durationMs?: number
   }): OfficeDiagnosticEvent
   snapshot(): OfficeDiagnosticSnapshot
-  exportJson(options?: { includeLocalContext?: boolean }): string
+  exportJson(options?: {
+    includeLocalContext?: boolean
+    screenshotAttempts?: () => PresentationQaAttempt[]
+  }): string
   clear(): void
 }
 
@@ -251,6 +258,33 @@ function freezeEvent(event: OfficeDiagnosticEvent): OfficeDiagnosticEvent {
   })
 }
 
+function localScreenshotAttempts(provider: () => PresentationQaAttempt[]) {
+  const scope = 'retained_visible_presentation_task' as const
+  try {
+    const supplied = provider()
+    if (!Array.isArray(supplied) || supplied.length > 64) throw Error('invalid')
+    const attempts = Array.from(supplied, parsePresentationQaAttempt)
+    const ids = new Set(attempts.map((a) => a.id))
+    const task = (a: PresentationQaAttempt) =>
+      JSON.stringify([a.documentId, a.source, a.projectId, a.requestId, a.artifactDigest])
+    if (
+      ids.size !== attempts.length ||
+      attempts.some((a) => task(a) !== task(attempts[0]!)) ||
+      encoder.encode(JSON.stringify(attempts)).byteLength > 128 * 1024
+    )
+      throw Error('invalid')
+    return {
+      scope,
+      status: 'available' as const,
+      attempts,
+      record_count: attempts.length,
+      unresolved_count: attempts.filter((a) => a.status === 'started').length,
+    }
+  } catch {
+    return { scope, status: 'unavailable' as const }
+  }
+}
+
 export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagnostics {
   const samplePercent = options.remoteSamplePercent ?? 100
   if (!Number.isInteger(samplePercent) || samplePercent < 0 || samplePercent > 100)
@@ -375,11 +409,32 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
         exportOptions?.includeLocalContext === true
           ? events
           : events.map(({ presentation_context: _localContext, ...event }) => event)
-      const value = JSON.stringify(
-        { version: 1, trace_id: traceId, events: exportedEvents },
-        null,
-        2,
-      )
+      const attempts =
+        exportOptions?.includeLocalContext === true && exportOptions.screenshotAttempts
+          ? localScreenshotAttempts(exportOptions.screenshotAttempts)
+          : undefined
+      let omitted = 0
+      const serialize = () =>
+        JSON.stringify(
+          {
+            version: 1,
+            trace_id: traceId,
+            events: exportedEvents.slice(omitted),
+            ...(attempts ? { local_presentation_qa_attempts: attempts } : {}),
+            ...(omitted ? { omitted_event_count: omitted } : {}),
+          },
+          null,
+          2,
+        )
+      let value = serialize()
+      while (
+        attempts &&
+        encoder.encode(value).byteLength > MAX_DIAGNOSTIC_EXPORT_BYTES &&
+        omitted < exportedEvents.length
+      ) {
+        omitted++
+        value = serialize()
+      }
       if (encoder.encode(value).byteLength > MAX_DIAGNOSTIC_EXPORT_BYTES)
         throw new Error('diagnostic_export_too_large')
       return value

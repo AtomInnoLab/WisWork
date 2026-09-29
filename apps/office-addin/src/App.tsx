@@ -386,7 +386,14 @@ export function createOfficeWorkspaceUi(
           copyDiagnosticsWithContext: async () => {
             if (!clipboard || typeof clipboard.writeText !== 'function')
               throw new Error('diagnostic_copy_failed')
-            await clipboard.writeText(diagnostics.exportJson({ includeLocalContext: true }))
+            await clipboard.writeText(
+              diagnostics.exportJson({
+                includeLocalContext: true,
+                ...(runtime.qa?.attempts
+                  ? { screenshotAttempts: () => runtime.qa!.attempts!() }
+                  : {}),
+              }),
+            )
           },
         }
       : {}),
