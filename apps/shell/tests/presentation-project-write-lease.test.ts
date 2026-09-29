@@ -6,6 +6,7 @@ import { PresentationLifecycleStore } from '@wiswork/project-store'
 import {
   capturePresentationProjectWriteLease,
   capturePresentationProjectReadLease,
+  capturePresentationProjectCreationLease,
 } from '../src/main/presentation-project-write-lease'
 const roots: string[] = []
 afterEach(() => {
@@ -160,3 +161,133 @@ it('read leases do not establish ownership for missing projects', () => {
   ).toThrow('project_not_found')
   expect(readdirSync(f.root)).toEqual([])
 })
+
+it('creates preserving lifecycle control before any new project content', () => {
+  const f = fixture(),
+    lease = capturePresentationProjectCreationLease(f)
+  expect(lease.revision).toBe(0)
+  lease.assertWritable()
+  expect(f.store.read(f.scope)?.policy).toEqual({
+    contentRetentionDays: null,
+    auditRetentionDays: null,
+  })
+  expect(readdirSync(f.root)).toEqual(['presentation-project-lifecycles'])
+  f.scope.projectId = 'foreign'
+  lease.assertWritable()
+  expect(lease.scope.projectId).toBe('p')
+})
+it('creation never revives deleting/deleted controls or rebinds another document', () => {
+  const f = fixture()
+  capturePresentationProjectCreationLease(f)
+  expect(() =>
+    capturePresentationProjectCreationLease({ ...f, scope: { ...f.scope, documentId: 'foreign' } }),
+  ).toThrow('document_mismatch')
+  f.store.beginDeletion(f.scope, 0, {
+    deletionId: 'delete',
+    reason: 'user',
+    resources: [{ resourceId: 'own', kind: 'project', ownership: 'project_exclusive' }],
+  })
+  expect(() => capturePresentationProjectCreationLease(f)).toThrow('project_deleting')
+  f.store.recordDeletionResult(f.scope, 1, {
+    deletionId: 'delete',
+    resourceId: 'own',
+    status: 'removed',
+  })
+  f.store.finishDeletion(f.scope, 2, 'delete')
+  expect(() =>
+    capturePresentationProjectCreationLease({
+      ...f,
+      store: new PresentationLifecycleStore(f.root),
+    }),
+  ).toThrow('project_deleted')
+  expect(() =>
+    capturePresentationProjectCreationLease({ ...f, scope: { ...f.scope, documentId: 'foreign' } }),
+  ).toThrow('document_mismatch')
+})
+it('cancelled creation cannot establish control and existing creation keeps its original revision', () => {
+  const f = fixture(),
+    controller = new AbortController()
+  controller.abort()
+  expect(() =>
+    capturePresentationProjectCreationLease({ ...f, signal: controller.signal }),
+  ).toThrow('aborted')
+  expect(readdirSync(f.root)).toEqual([])
+  const lease = capturePresentationProjectCreationLease(f)
+  f.store.setPolicy(f.scope, 0, { contentRetentionDays: 1, auditRetentionDays: null })
+  expect(() => lease.assertWritable()).toThrow('revision_conflict')
+})
+
+it.each([false, true])(
+  'async read captures revision before ownership proof (control=%s)',
+  async (controlled) => {
+    const f = fixture()
+    if (controlled) f.store.initialize(f.scope)
+    let resolveProof!: (scope: typeof f.scope) => void
+    const proof = new Promise<typeof f.scope>((resolve) => {
+      resolveProof = resolve
+    })
+    const module = await import('../src/main/presentation-project-write-lease')
+    const pending = module.capturePresentationProjectAsyncReadLease({
+      ...f,
+      readExistingProject: () => proof,
+    })
+    if (!controlled) f.store.initialize(f.scope)
+    else f.store.setPolicy(f.scope, 0, { contentRetentionDays: 1, auditRetentionDays: null })
+    resolveProof(f.scope)
+    await expect(pending).rejects.toThrow('revision_conflict')
+  },
+)
+it('async legacy proof stays readonly and owns scope before await', async () => {
+  const f = fixture()
+  let resolveProof!: (scope: typeof f.scope) => void
+  const proof = new Promise<typeof f.scope>((resolve) => {
+    resolveProof = resolve
+  })
+  const module = await import('../src/main/presentation-project-write-lease')
+  const pending = module.capturePresentationProjectAsyncReadLease({
+    ...f,
+    readExistingProject: () => proof,
+  })
+  f.scope.projectId = 'foreign'
+  resolveProof({ projectId: 'p', documentId: 'doc' })
+  const lease = await pending
+  lease.assertCurrent()
+  expect(lease.scope.projectId).toBe('p')
+  expect(readdirSync(f.root)).toEqual([])
+})
+
+it('async ownership proof rejects cancellation without creating control', async () => {
+  const f = fixture(),
+    controller = new AbortController()
+  let resolveProof!: (scope: typeof f.scope) => void
+  const proof = new Promise<typeof f.scope>((resolve) => {
+    resolveProof = resolve
+  })
+  const { capturePresentationProjectAsyncReadLease } =
+    await import('../src/main/presentation-project-write-lease')
+  const pending = capturePresentationProjectAsyncReadLease({
+    ...f,
+    signal: controller.signal,
+    readExistingProject: () => proof,
+  })
+  controller.abort()
+  resolveProof({ ...f.scope })
+  await expect(pending).rejects.toThrow('aborted')
+  expect(readdirSync(f.root)).toEqual([])
+})
+it.each([
+  undefined,
+  { projectId: 'foreign', documentId: 'doc' },
+  { projectId: 'p', documentId: 'foreign' },
+])(
+  'async ownership proof rejects missing or foreign project without control (%j)',
+  async (existing) => {
+    const f = fixture()
+    const { capturePresentationProjectAsyncReadLease } =
+      await import('../src/main/presentation-project-write-lease')
+    await expect(
+      capturePresentationProjectAsyncReadLease({ ...f, readExistingProject: async () => existing }),
+    ).rejects.toThrow('project_not_found')
+    expect(readdirSync(f.root)).toEqual([])
+  },
+)
