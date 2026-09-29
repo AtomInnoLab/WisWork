@@ -1,3 +1,4 @@
+import { masterXmlFixture, cleanupMasterXmlFixtures } from './helpers/master-xml-fixture.js'
 import {
   nativeMasterFixture,
   cleanupNativeMasterFixtures,
@@ -87,6 +88,7 @@ const call = (name: string, input: Record<string, unknown> = {}) => ({ id: 'call
 
 const durableRoots: string[] = []
 afterEach(() => {
+  cleanupMasterXmlFixtures()
   cleanupNativeMasterFixtures()
   for (const root of durableRoots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -782,6 +784,7 @@ describe('PowerPoint compatibility skill', () => {
         adapter: fake,
         proposals: controller,
         durablePackage: async () => ({ id: 'durable-proposal' }),
+        durableMasterXml: async () => ({ id: 'durable-master-proposal' }),
       })
       await expect(scoped.executeTool(call(name, input))).resolves.toMatchObject({
         mutated: false,
@@ -791,7 +794,7 @@ describe('PowerPoint compatibility skill', () => {
     }
   })
 
-  it('delegates slide/chart XML and retains semantic verification for the legacy master XML path', async () => {
+  it('delegates slide/chart/master XML to their durable factories', async () => {
     const zip = new JSZip()
     zip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
     zip.file('ppt/charts/chart1.xml', '<c:chart xmlns:c="urn:c"/>')
@@ -864,14 +867,15 @@ describe('PowerPoint compatibility skill', () => {
         adapter: fake,
         proposals,
         durablePackage: async () => ({ id: 'durable-proposal' }),
+        durableMasterXml: async () => ({ id: 'durable-master-proposal' }),
       })
       await expect(skill.executeTool(call(name, input))).resolves.toMatchObject({
         mutated: false,
         summary: expect.stringContaining('Proposed'),
       })
-      if (name === 'edit_slide_master_xml') await proposals.confirm(proposals.pending()!.id)
+      expect(proposals.pending()).toBeUndefined()
     }
-    expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(1)
+    expect(fake.replaceSlidePackage).not.toHaveBeenCalled()
   })
 
   it('confirms one synchronized chart value edit and rejects package drift', async () => {
@@ -1124,90 +1128,44 @@ describe('PowerPoint compatibility skill', () => {
     expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(2)
   })
 
-  it('rejects unrelated master package drift even when targeted XML is unchanged', async () => {
-    const first = new JSZip()
-    first.file('ppt/slideMasters/slideMaster1.xml', '<p:sldMaster xmlns:p="urn:p"/>')
-    first.file('docProps/core.xml', '<core modified="one"/>')
-    const second = new JSZip()
-    second.file('ppt/slideMasters/slideMaster1.xml', '<p:sldMaster xmlns:p="urn:p"/>')
-    second.file('docProps/core.xml', '<core modified="two"/>')
-    let current = await first.generateAsync({ type: 'base64' })
-    const confirmSnapshot = await second.generateAsync({ type: 'base64' })
-    let exports = 0
-    const fake = adapter({
-      exportSlidePackage: vi.fn().mockImplementation(() => {
-        exports += 1
-        const base64 = exports === 2 || exports === 3 ? confirmSnapshot : current
-        return Promise.resolve({ slideId: 's1', base64, fingerprint: `volatile-${exports}` })
-      }),
-      replaceSlidePackage: vi.fn().mockImplementation((_index, base64) => {
-        current = base64
-        return Promise.resolve({ slideId: 's1' })
-      }),
-    })
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
-
-    await skill.executeTool(
-      call('edit_slide_master_xml', {
-        program: {
-          version: 1,
-          operations: [
-            {
-              op: 'replace_xml',
-              path: 'ppt/slideMasters/slideMaster1.xml',
-              xml: '<p:sldMaster xmlns:p="urn:p"><p:cSld/></p:sldMaster>',
-            },
-          ],
-        },
-      }),
-    )
-    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
-    expect(fake.replaceSlidePackage).not.toHaveBeenCalled()
-  })
-
-  it('does not overwrite a target XML change between validation and execution', async () => {
-    const original = new JSZip()
-    original.file('ppt/slideMasters/slideMaster1.xml', '<p:sldMaster xmlns:p="urn:p"/>')
-    const changed = new JSZip()
-    changed.file(
-      'ppt/slideMasters/slideMaster1.xml',
-      '<p:sldMaster xmlns:p="urn:p"><p:changed-by-user/></p:sldMaster>',
-    )
-    const originalBase64 = await original.generateAsync({ type: 'base64' })
-    const changedBase64 = await changed.generateAsync({ type: 'base64' })
-    let exports = 0
-    const fake = adapter({
-      exportSlidePackage: vi.fn().mockImplementation(() => {
-        exports += 1
-        return Promise.resolve({
-          slideId: 's1',
-          base64: exports < 3 ? originalBase64 : changedBase64,
-          fingerprint: `volatile-${exports}`,
-        })
-      }),
-      replaceSlidePackage: vi.fn(),
-    })
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
-    await skill.executeTool(
-      call('edit_slide_master_xml', {
-        program: {
-          version: 1,
-          operations: [
-            {
-              op: 'replace_xml',
-              path: 'ppt/slideMasters/slideMaster1.xml',
-              xml: '<p:sldMaster xmlns:p="urn:p"><p:cSld/></p:sldMaster>',
-            },
-          ],
-        },
-      }),
-    )
-
-    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
-    expect(fake.replaceSlidePackage).not.toHaveBeenCalled()
-  })
+  it.each(['unrelated', 'target'])(
+    'rejects %s master package drift through the durable savepoint',
+    async (kind) => {
+      const f = await masterXmlFixture(3)
+      const fake = adapter({ replaceSlidePackage: vi.fn() })
+      const skill = createPowerPointSkill({
+        adapter: fake,
+        proposals: f.proposals,
+        durableMasterXml: (replacements) => f.propose(replacements),
+      })
+      await skill.executeTool(
+        call('edit_slide_master_xml', {
+          program: {
+            version: 1,
+            operations: [
+              {
+                op: 'replace_xml',
+                path: 'ppt/slideMasters/slideMaster1.xml',
+                xml: f.originalMaster.replace('name="original"', 'name="edited"'),
+              },
+            ],
+          },
+        }),
+      )
+      const changed = await JSZip.loadAsync(f.original, { base64: true })
+      changed.file(
+        kind === 'unrelated' ? 'docProps/core.xml' : 'ppt/slideMasters/slideMaster1.xml',
+        kind === 'unrelated'
+          ? '<core modified="two"/>'
+          : f.originalMaster.replace('name="original"', 'name="user"'),
+      )
+      f.packages.set('s0', await changed.generateAsync({ type: 'base64' }))
+      await expect(f.confirm()).rejects.toThrow()
+      expect(fake.replaceSlidePackage).not.toHaveBeenCalled()
+      expect(f.adapter.stage).not.toHaveBeenCalled()
+      expect(f.adapter.applyLayout).not.toHaveBeenCalled()
+    },
+  )
 
   it('executes confirmed declarative text through a durable savepoint and verifies actual changed text', async () => {
     let text = 'Hello'

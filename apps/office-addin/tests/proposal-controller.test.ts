@@ -699,3 +699,42 @@ it('preserves the stable backup capacity code in a failed proposal decision', as
     error: 'presentation_existing_backup_capacity',
   })
 })
+
+it('keeps all 600 mutation targets in a bounded proposal snapshot', () => {
+  const controller = createStructuredProposalController()
+  const targets = Array.from({ length: 600 }, (_, i) => `page-${i}`)
+  const proposal = controller.propose({
+    operation: 'edit_slide_master_xml',
+    toolName: 'edit_slide_master_xml',
+    title: 'Change master with complete page scope',
+    preview: { qaScope: { basis: 'master_xml_savepoint', hostSlideIds: targets } },
+    impact: { host: 'powerpoint', targets, count: 600 },
+    fingerprint: 'master-proof',
+    validate: async () => true,
+    execute: async () => {},
+  })
+  targets[599] = 'mutated-alias'
+  expect(proposal.impact.targets).toHaveLength(600)
+  expect(proposal.impact.targets[599]).toBe('page-599')
+  expect(controller.pending()!.impact.targets).toEqual(proposal.impact.targets)
+})
+
+it('rejects oversized target snapshots before replacing the pending proposal', () => {
+  const controller = createStructuredProposalController()
+  expect(() =>
+    controller.propose({
+      operation: 'edit_slide_master_xml',
+      title: 'Oversized master scope',
+      preview: {},
+      impact: {
+        host: 'powerpoint',
+        targets: Array.from({ length: 600 }, (_, i) => `${i}-${'x'.repeat(200)}`),
+        count: 600,
+      },
+      fingerprint: 'master-proof',
+      validate: async () => true,
+      execute: async () => {},
+    }),
+  ).toThrow('invalid_tool_input')
+  expect(controller.pending()).toBeUndefined()
+})

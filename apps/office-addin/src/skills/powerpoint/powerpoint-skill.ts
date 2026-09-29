@@ -14,7 +14,6 @@ import {
 } from './browser-powerpoint-adapter.js'
 import {
   captureChartValuePackageEdit,
-  editPowerPointPackage,
   presentationPackageDigest,
   verifyImportedPowerPointPackage,
   verifyPowerPointPackageInputs,
@@ -582,6 +581,7 @@ function errorCode(error: unknown, write = false): string {
       'presentation_package_invalid',
       'presentation_package_missing',
       'presentation_package_persistence_unavailable',
+      'presentation_master_xml_persistence_unavailable',
       'presentation_package_qa_stale',
       'presentation_package_stale',
       'presentation_package_state_invalid',
@@ -1188,6 +1188,11 @@ export function createPowerPointSkill(options: {
     explanation?: string,
     signal?: AbortSignal,
   ): Promise<unknown>
+  durableMasterXml?(
+    replacements: XmlReplacement[],
+    explanation?: string,
+    signal?: AbortSignal,
+  ): Promise<unknown>
   durableMaster?(
     operations: PowerPointMasterOperation[],
     explanation?: string,
@@ -1293,127 +1298,28 @@ export function createPowerPointSkill(options: {
   const masterXmlEditingSupported = options.platform?.toLowerCase() !== 'mac'
   const nativeMasterEditingSupported = options.nativeMasterEditingSupported !== false
   async function proposePackageEdit(
-    toolName: string,
+    _toolName: string,
     kind: PackageEditKind,
     slideIndex: number,
     replacements: XmlReplacement[],
     explanation: string | undefined,
     signal?: AbortSignal,
   ): Promise<ToolExecution> {
-    if (kind === 'slide' || kind === 'chart') {
+    let proposal: unknown
+    if (kind === 'master') {
+      if (!options.durableMasterXml)
+        throw new Error('presentation_master_xml_persistence_unavailable')
+      proposal = await options.durableMasterXml(structuredClone(replacements), explanation, signal)
+    } else {
       if (!options.durablePackage) throw new Error('presentation_package_persistence_unavailable')
-      const proposal = await options.durablePackage(
+      proposal = await options.durablePackage(
         kind,
         slideIndex,
         structuredClone(replacements),
         explanation,
         signal,
       )
-      return {
-        output: boundedJson(proposal),
-        mutated: false,
-        summary: `Proposed PowerPoint ${kind} XML edit`,
-      }
     }
-    const deck = await options.adapter.verifySlides(signal)
-    // Copy SDK results immediately: adapters can return live objects or reused arrays.
-    const before = structuredClone(await options.adapter.exportSlidePackage(slideIndex, signal))
-    const beforeDigest = await presentationPackageDigest(before.base64, signal)
-    const readOrder = async (s?: AbortSignal) => {
-      if (!options.adapter.readSlideOrder) return undefined
-      const order = [...(await options.adapter.readSlideOrder(s))]
-      if (
-        !order.length ||
-        new Set(order).size !== order.length ||
-        order.some(
-          (id) =>
-            typeof id !== 'string' ||
-            !id.trim() ||
-            id.length > 256 ||
-            [...id].some(
-              (c) => c.charCodeAt(0) < 32 || (c.charCodeAt(0) >= 127 && c.charCodeAt(0) <= 159),
-            ),
-        )
-      )
-        throw new Error('office_read_failed')
-      return order
-    }
-    const beforeSlideIds = await readOrder(signal)
-    if (beforeSlideIds && beforeSlideIds[slideIndex] !== before.slideId)
-      throw new Error('proposal_stale')
-    const freshPackage = async (s?: AbortSignal) => {
-      const current = structuredClone(await options.adapter.exportSlidePackage(slideIndex, s))
-      if (
-        current.slideId !== before.slideId ||
-        (await presentationPackageDigest(current.base64, s)) !== beforeDigest
-      )
-        throw new Error('proposal_stale')
-      const order = await readOrder(s)
-      if (JSON.stringify(order) !== JSON.stringify(beforeSlideIds))
-        throw new Error('proposal_stale')
-      return current
-    }
-    const edited = await editPowerPointPackage(before.base64, kind, replacements, signal)
-    let applied: Awaited<ReturnType<typeof editPowerPointPackage>> | undefined
-    const proposal = options.proposals.propose({
-      operation: toolName,
-      toolName,
-      title: explanation || `Edit PowerPoint ${kind} XML`,
-      preview: {
-        kind,
-        slideIndex,
-        changedPaths: edited.changedPaths,
-        beforeHashes: edited.beforeHashes,
-        afterHashes: edited.afterHashes,
-      },
-      impact: {
-        host: 'powerpoint',
-        targets:
-          kind === 'master'
-            ? deck.slides.map((slide) => `slide:${slide.slideId}`)
-            : edited.changedPaths,
-        count: kind === 'master' ? deck.slides.length : edited.changedPaths.length,
-      },
-      fingerprint: before.fingerprint,
-      before: { slideId: before.slideId, hashes: edited.beforeHashes },
-      after: { hashes: edited.afterHashes },
-      code: JSON.stringify({
-        version: 1,
-        operations: replacements.map((item) => ({ op: 'replace_xml', ...item })),
-      }),
-      validate: async (confirmSignal) => {
-        try {
-          await freshPackage(confirmSignal)
-          return true
-        } catch (error) {
-          assertNotCancelled(confirmSignal)
-          if (error instanceof Error && error.message === 'proposal_stale') return false
-          throw error
-        }
-      },
-      execute: async (confirmSignal) => {
-        const current = await freshPackage(confirmSignal)
-        applied = await editPowerPointPackage(current.base64, kind, replacements, confirmSignal)
-        await options.adapter.replaceSlidePackage(
-          slideIndex,
-          applied.base64,
-          kind === 'master',
-          applied,
-          confirmSignal,
-          {
-            slideId: before.slideId,
-            packageDigest: beforeDigest,
-            ...(beforeSlideIds ? { slideIds: [...beforeSlideIds] } : {}),
-          },
-        )
-      },
-      verify: async (confirmSignal) => {
-        if (!applied) throw new Error('office_verify_failed')
-        const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
-        if (!(await verifyImportedPowerPointPackage(current.base64, applied, confirmSignal)))
-          throw new Error('office_verify_failed')
-      },
-    })
     return {
       output: boundedJson(proposal),
       mutated: false,

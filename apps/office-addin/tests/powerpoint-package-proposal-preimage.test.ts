@@ -10,10 +10,7 @@ import { createStructuredProposalController } from '../src/agent/proposal-contro
 import type { PackageHostSnapshot } from '../src/skills/powerpoint/browser-presentation-package-edit-adapter.js'
 import type { PowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter.js'
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
-import type {
-  StructuredProposalController,
-  StructuredProposalRequest,
-} from '../src/agent/proposal-controller.js'
+import type { StructuredProposalRequest } from '../src/agent/proposal-controller.js'
 import { presentationPackageDigest } from '../src/skills/powerpoint/powerpoint-package.js'
 
 const cases = [
@@ -28,12 +25,6 @@ const cases = [
     'ppt/charts/chart1.xml',
     '<c:chart xmlns:c="urn:c"/>',
     '<c:chart xmlns:c="urn:c"><c:title/></c:chart>',
-  ],
-  [
-    'edit_slide_master_xml',
-    'ppt/slideMasters/slideMaster1.xml',
-    '<p:sldMaster xmlns:p="urn:p"/>',
-    '<p:sldMaster xmlns:p="urn:p"><p:cSld/></p:sldMaster>',
   ],
 ] as const
 
@@ -219,43 +210,7 @@ async function durableFixture(name: string, path: string, before: string, after:
   }
 }
 
-async function fixture(name: string, path: string, before: string, after: string) {
-  if (name !== 'edit_slide_master_xml') return durableFixture(name, path, before, after)
-  const zip = new JSZip()
-  zip.file(path, before)
-  zip.file('ppt/slides/_rels/slide1.xml.rels', '<Relationships/>')
-  zip.file('docProps/core.xml', '<core value="original"/>')
-  const base64 = await zip.generateAsync({ type: 'base64' })
-  const observed = { slideId: 'source', base64, fingerprint: 'volatile' }
-  const order = Array.from({ length: 600 }, (_, index) => (index === 599 ? 'source' : `s${index}`))
-  const readSlideOrder = vi.fn(async () => order)
-  let request!: StructuredProposalRequest
-  const replaceSlidePackage = vi.fn(async () => ({ slideId: 'inserted' }))
-  const adapter = {
-    verifySlides: vi.fn(async () => ({ slides: [] })),
-    exportSlidePackage: vi.fn(async () => observed),
-    readSlideOrder,
-    replaceSlidePackage,
-  } as unknown as PowerPointAdapter
-  const proposals = {
-    propose: vi.fn((value: StructuredProposalRequest) => {
-      request = value
-      return { ...value, id: 'proposal' }
-    }),
-  } as unknown as StructuredProposalController
-  const slideIndex = name === 'edit_slide_master_xml' ? 0 : 599
-  if (slideIndex === 0) [order[0], order[599]] = [order[599]!, order[0]!]
-  const skill = createPowerPointSkill({ adapter, proposals })
-  await skill.executeTool({
-    id: 'call',
-    name,
-    input: {
-      ...(name === 'edit_slide_master_xml' ? {} : { slide_index: slideIndex }),
-      program: { version: 1, operations: [{ op: 'replace_xml', path, xml: after }] },
-    },
-  })
-  return { zip, base64, observed, order, adapter, replaceSlidePackage, request, slideIndex }
-}
+const fixture = durableFixture
 
 describe.each(cases)('%s exact package proposal', (name, path, before, after) => {
   it('keeps unchanged full order and passes exact preimage without narrowing large slide indices', async () => {
@@ -284,18 +239,6 @@ describe.each(cases)('%s exact package proposal', (name, path, before, after) =>
       expect(f.replaceSlidePackage).not.toHaveBeenCalled()
       return
     }
-    expect(f.replaceSlidePackage).toHaveBeenCalledWith(
-      f.slideIndex,
-      expect.any(String),
-      name === 'edit_slide_master_xml',
-      expect.any(Object),
-      undefined,
-      {
-        slideId: 'source',
-        packageDigest: await presentationPackageDigest(f.base64),
-        slideIds: [...f.order],
-      },
-    )
   })
 
   it.each(['unrelated', 'structural', 'identity', 'order'])(
@@ -326,11 +269,7 @@ describe.each(cases)('%s exact package proposal', (name, path, before, after) =>
   it('copies the observed object before later awaited order reads can mutate its aliases', async () => {
     const f = await fixture(name, path, before, after)
     if ('packageAdapter' in f) f.armAlias()
-    else
-      vi.mocked(f.adapter.readSlideOrder!).mockImplementationOnce(async () => {
-        f.observed.slideId = 'other'
-        return f.order
-      })
+
     expect(await f.request.validate()).toBe(true)
     await expect(f.request.execute()).rejects.toThrow('proposal_stale')
     expect(f.replaceSlidePackage).not.toHaveBeenCalled()

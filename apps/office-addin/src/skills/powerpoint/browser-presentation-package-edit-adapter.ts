@@ -74,7 +74,10 @@ async function sync(context: PowerPoint.RequestContext, signal?: AbortSignal) {
   await context.sync()
   check(signal)
 }
-async function order(context: PowerPoint.RequestContext, signal?: AbortSignal): Promise<string[]> {
+export async function readPowerPointPackageHostOrder(
+  context: PowerPoint.RequestContext,
+  signal?: AbortSignal,
+): Promise<string[]> {
   const slides = context.presentation.slides
   if (typeof slides.getCount !== 'function' || typeof slides.load !== 'function')
     throw Error('office_api_unsupported')
@@ -94,12 +97,12 @@ async function order(context: PowerPoint.RequestContext, signal?: AbortSignal): 
   return ids
 }
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
-async function inspect(
+export async function inspectPowerPointPackageHost(
   context: PowerPoint.RequestContext,
   exports: readonly string[],
   signal?: AbortSignal,
 ): Promise<PackageHostSnapshot> {
-  const slideIds = await order(context, signal)
+  const slideIds = await readPowerPointPackageHostOrder(context, signal)
   if (exports.some((target) => !slideIds.includes(target))) throw Error('invalid_tool_input')
   const pages: PackageHostSnapshot['pages'] = []
   for (const slideId of slideIds) {
@@ -112,7 +115,8 @@ async function inspect(
     const digest = await presentationPackageDigest(base64, signal)
     pages.push({ slideId, digest, ...(exports.includes(slideId) ? { base64 } : {}) })
   }
-  if (!same(await order(context, signal), slideIds)) throw Error('proposal_stale')
+  if (!same(await readPowerPointPackageHostOrder(context, signal), slideIds))
+    throw Error('proposal_stale')
   return { slideIds, pages }
 }
 export async function readPackageSourceSlideId(
@@ -167,12 +171,12 @@ export async function readPackageSourceSlideId(
   if (slidePaths.length !== 1 || matches.length !== 1) throw Error('invalid_tool_input')
   return `${entry['@_id']}#`
 }
-async function preflight(
+export async function assertPowerPointPackageHostPreimage(
   context: PowerPoint.RequestContext,
   before: PackageHostSnapshot,
   signal?: AbortSignal,
 ) {
-  const current = await inspect(context, [], signal)
+  const current = await inspectPowerPointPackageHost(context, [], signal)
   if (
     !same(current.slideIds, before.slideIds) ||
     current.pages.some((page, i) => page.digest !== before.pages[i]!.digest)
@@ -185,7 +189,7 @@ export class BrowserPresentationPackageEditAdapter {
     const exports = structuredClone(exportIds)
     exports.forEach(id)
     check(signal)
-    return runtime().run((context) => inspect(context, exports, signal))
+    return runtime().run((context) => inspectPowerPointPackageHost(context, exports, signal))
   }
   async stage(
     request: PackageStageRequest,
@@ -205,7 +209,7 @@ export class BrowserPresentationPackageEditAdapter {
     await beforeWrite()
     check(signal)
     return runtime().run(async (context) => {
-      await preflight(context, before, signal)
+      await assertPowerPointPackageHostPreimage(context, before, signal)
       if (typeof context.presentation.insertSlidesFromBase64 !== 'function')
         throw Error('office_api_unsupported')
       check(signal)
@@ -220,7 +224,7 @@ export class BrowserPresentationPackageEditAdapter {
       } catch (cause) {
         throw Error('office_state_uncertain', { cause })
       }
-      const after = await order(context, signal),
+      const after = await readPowerPointPackageHostOrder(context, signal),
         added = after.filter((value) => !before.slideIds.includes(value))
       const expected = [...before.slideIds]
       if (added.length !== 1) throw Error('office_state_uncertain')
@@ -245,7 +249,7 @@ export class BrowserPresentationPackageEditAdapter {
     await beforeWrite()
     check(signal)
     await runtime().run(async (context) => {
-      await preflight(context, before, signal)
+      await assertPowerPointPackageHostPreimage(context, before, signal)
       const slide = context.presentation.slides.getItem(owned.slideId)
       if (typeof slide.delete !== 'function') throw Error('office_api_unsupported')
       check(signal)
@@ -258,7 +262,7 @@ export class BrowserPresentationPackageEditAdapter {
       }
       if (
         !same(
-          await order(context, signal),
+          await readPowerPointPackageHostOrder(context, signal),
           before.slideIds.filter((value) => value !== owned.slideId),
         )
       )

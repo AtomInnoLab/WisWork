@@ -1,4 +1,9 @@
 import {
+  validatePresentationMasterXmlChange,
+  validMasterXmlTransition,
+  type PresentationMasterXmlChange,
+} from './presentation-master-xml-change.js'
+import {
   validatePresentationPackageChange,
   validPackageTransition,
   type PresentationPackageChange,
@@ -83,6 +88,7 @@ const EXISTING_BATCH_KEY = 'wiswork.presentation.existing-batch.v1'
 const EXISTING_IMAGE_KEY = 'wiswork.presentation.existing-image.v1'
 const EXISTING_PAGE_KEY = 'wiswork.presentation.existing-page.v1'
 const EXISTING_CHART_KEY = 'wiswork.presentation.existing-chart.v1'
+const MASTER_XML_KEY = 'wiswork.presentation.master-xml.v1'
 const PACKAGE_XML_KEY = 'wiswork.presentation.package-xml.v1'
 const NATIVE_MASTER_KEY = 'wiswork.presentation.native-master.v1'
 const HISTORY_KEY = 'wiswork.presentation.change-history.v1'
@@ -531,6 +537,23 @@ export function createPresentationDocumentBinding(
       throw new Error('presentation_package_state_invalid')
     return value
   }
+  let masterXmlWriteFailed = false
+  const readRawMasterXmlChange = (): PresentationMasterXmlChange | undefined => {
+    if (masterXmlWriteFailed) throw new Error('presentation_master_xml_state_invalid')
+    const raw = settings.get(MASTER_XML_KEY)
+    if (raw === undefined || raw === null || raw === '') return undefined
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 192 * 1024)
+      throw new Error('presentation_master_xml_state_invalid')
+    let value: unknown
+    try {
+      value = JSON.parse(raw)
+    } catch {
+      throw new Error('presentation_master_xml_state_invalid')
+    }
+    if (!validatePresentationMasterXmlChange(value))
+      throw new Error('presentation_master_xml_state_invalid')
+    return value
+  }
   let nativeMasterWriteFailed = false
   const readRawNativeMasterChange = (): PresentationNativeMasterChange | undefined => {
     if (nativeMasterWriteFailed) throw new Error('presentation_native_master_state_invalid')
@@ -655,6 +678,7 @@ export function createPresentationDocumentBinding(
     existing_chart: readRawExistingChart(),
     native_master: readRawNativeMasterChange(),
     package_xml: readRawPackageChange(),
+    master_xml: readRawMasterXmlChange(),
     text: readRawTextChange(),
     geometry: readRawGeometryChange(),
     page: readRawPageReplacement(),
@@ -677,6 +701,7 @@ export function createPresentationDocumentBinding(
         'existing_chart',
         'native_master',
         'package_xml',
+        'master_xml',
       ] as const) {
         const record = heads[kind]
         if (!record) continue
@@ -733,6 +758,7 @@ export function createPresentationDocumentBinding(
             'existing_chart',
             'native_master',
             'package_xml',
+            'master_xml',
           ].includes(k),
       )
     )
@@ -757,6 +783,7 @@ export function createPresentationDocumentBinding(
       'existing_chart',
       'native_master',
       'package_xml',
+      'master_xml',
     ] as const) {
       const head = h.entries.find((e) => e.id === h.heads[kind])
       if ((head && head.kind !== kind) || (!head && h.entries.some((e) => e.kind === kind)))
@@ -841,6 +868,11 @@ export function createPresentationDocumentBinding(
     readHistory()
     return raw
   }
+  const readMasterXmlChange = (changeId: string): PresentationMasterXmlChange | undefined =>
+    readHistory().entries.find(
+      (entry): entry is Extract<PresentationHistoryEntry, { kind: 'master_xml' }> =>
+        entry.kind === 'master_xml' && entry.record.changeId === changeId,
+    )?.record
   const saveWithHistory = async (
     key: string,
     serialized: string,
@@ -865,14 +897,15 @@ export function createPresentationDocumentBinding(
       ...(previousEntry?.checkpointRestoredAt
         ? { checkpointRestoredAt: previousEntry.checkpointRestoredAt }
         : (entry.record.state === 'undone' ||
-              (entry.kind === 'package_xml' && entry.record.state === 'discarded')) &&
+              (['package_xml', 'master_xml'].includes(entry.kind) &&
+                entry.record.state === 'discarded')) &&
             previousEntry &&
             previousEntry.record.state !== entry.record.state
           ? { checkpointRestoredAt: at }
           : {}),
     }
     const unresolved = (e: PresentationHistoryEntry) =>
-      (e.kind === 'package_xml' && Boolean(e.record.pending)) ||
+      ((e.kind === 'package_xml' || e.kind === 'master_xml') && Boolean(e.record.pending)) ||
       !['applied', 'undone', 'discarded', 'complete', 'cancelled'].includes(e.record.state)
     // A recovery may journal its own replacement while the source write remains uncertain.
     // The exception is tied to the exact original backup; unrelated pending work still blocks.
@@ -1058,6 +1091,46 @@ export function createPresentationDocumentBinding(
           },
           () => {
             packageWriteFailed = true
+          },
+        )
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
+    readMasterXmlChange,
+    writeMasterXmlChange(
+      record: PresentationMasterXmlChange,
+      expectedRecord: PresentationMasterXmlChange | undefined,
+    ) {
+      const snapshot = structuredClone(record),
+        expected = structuredClone(expectedRecord)
+      const write = async () => {
+        if (
+          !validatePresentationMasterXmlChange(snapshot) ||
+          (expected !== undefined && !validatePresentationMasterXmlChange(expected))
+        )
+          throw new Error('presentation_master_xml_state_invalid')
+        if ((await documentId()) !== snapshot.documentId)
+          throw new Error('presentation_document_changed')
+        const prior = readMasterXmlChange(snapshot.changeId)
+        if (JSON.stringify(prior) !== JSON.stringify(expected))
+          throw new Error('presentation_master_xml_stale')
+        if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
+        if (!validMasterXmlTransition(prior, snapshot))
+          throw new Error('presentation_master_xml_state_invalid')
+        await saveWithHistory(
+          MASTER_XML_KEY,
+          JSON.stringify(snapshot),
+          {
+            id: historyEntryId('master_xml', snapshot),
+            kind: 'master_xml',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            masterXmlWriteFailed = true
           },
         )
       }
@@ -2001,7 +2074,8 @@ export function createPresentationDocumentBinding(
         total: entries.length,
         unresolved: entries.filter(
           (entry) =>
-            (entry.kind === 'package_xml' && Boolean(entry.record.pending)) ||
+            ((entry.kind === 'package_xml' || entry.kind === 'master_xml') &&
+              Boolean(entry.record.pending)) ||
             !['applied', 'undone', 'discarded', 'complete', 'cancelled'].includes(
               entry.record.state,
             ),

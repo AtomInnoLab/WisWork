@@ -22,6 +22,24 @@ export interface PresentationChangeSetSummary {
 export function presentationChangeSetSummary(
   entry: PresentationHistoryEntry,
 ): PresentationChangeSetSummary {
+  if (entry.kind === 'master_xml')
+    return {
+      scope: {
+        slideIds: [],
+        affectedPageCount: entry.record.scope.affectedPageCount,
+        pageIdsSource: 'pc_snapshot',
+      },
+      intent: entry.record.intent,
+      operations: [{ kind: 'master_xml', pageId: entry.record.sourceSlideId }],
+      preserved: ['全部依赖原页、布局关联及完整顺序需按PC保存点核对'],
+      validation: [
+        '全部母版/布局内容映射',
+        '逐页持久回执与完整撤销证明',
+        '临时页清理与未验证母版库存需单独核对',
+        '受影响页面截图复核',
+      ],
+      risk: 'high',
+    }
   if (entry.kind === 'package_xml')
     return {
       scope: { slideIds: [entry.record.sourceSlideId], affectedPageCount: 1 },
@@ -173,6 +191,7 @@ export async function selectPresentationHistory(
         | 'existing_chart'
         | 'native_master'
         | 'package_xml'
+        | 'master_xml'
     }
   >[]
 > {
@@ -211,6 +230,7 @@ export async function selectPresentationHistory(
             | 'existing_chart'
             | 'native_master'
             | 'package_xml'
+            | 'master_xml'
         }
       > =>
         e.kind !== 'existing' &&
@@ -219,7 +239,8 @@ export async function selectPresentationHistory(
         e.kind !== 'existing_page' &&
         e.kind !== 'existing_chart' &&
         e.kind !== 'native_master' &&
-        e.kind !== 'package_xml',
+        e.kind !== 'package_xml' &&
+        e.kind !== 'master_xml',
     )
     .filter((e) => {
       const r = e.record

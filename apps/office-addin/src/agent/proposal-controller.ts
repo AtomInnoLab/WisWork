@@ -253,7 +253,6 @@ export function createStructuredProposalController(
         request.impact.host.length > 32 ||
         !Number.isSafeInteger(request.impact.count) ||
         request.impact.count < 0 ||
-        request.impact.targets.length > 256 ||
         request.impact.targets.some((target) => !target || target.length > 512)
       )
         invalidProposal()
