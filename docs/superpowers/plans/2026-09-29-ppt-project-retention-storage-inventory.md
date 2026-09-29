@@ -14,6 +14,7 @@
 | presentation-acquisition-history/<documentHash>.json                                | 仅文档                            | 含远程来源和附件结果；需按引用处理，不能把来源审查当保密审计                                                        |
 | presentation-existing-page-backups/<documentHash>及.released                        | 仅文档                            | 修改事务仍引用原页；需项目关联与未决保护，不能为删一个项目清空整文档                                                |
 | presentation-master-backups/<documentHash>/<changeHash>                             | 仅文档+修改事务                   | snapshot、全部原页、图片与逐项回执证明；当前不含项目独占归属，未决/恢复事务和共享引用须保护，不可按当前项目猜测删除 |
+| presentation-package-backups/<documentHash>/<changeHash>                            | 仅文档+XML修改事务                | 原始/准备包、完整页序摘要、阶段证明及历史复核；无项目独占归属，未决与恢复引用须保护，不能按当前项目猜测删除         |
 | presentation-brand-kits                                                             | 用户全局共享                      | 本项目引用解除；无授权不删除全局品牌资源                                                                            |
 
 ## 实施顺序

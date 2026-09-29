@@ -1,10 +1,10 @@
-# 旧 XML 修改持久恢复实施单元（只读核对）
+# 旧 XML 修改持久恢复实施计划
 
-2026-09-29；依据原方案 §6.4/§14.2。母版原生修改交付后续，本文不计为 XML 恢复实现完成。
+2026-09-29；依据原方案 §6.4/§14.2。母版原生修改交付后续；Unit 1 页面/图表本轮已实现并验证，Unit 2/3 母版 XML 待实施。
 
-Scope: edit_slide_xml / edit_slide_chart / edit_slide_master_xml. Preserve tool names, version-1 declarative replace_xml schema, 1–32 unique paths, existing 32 KiB program and package limits, chart data/link protection, master layout relationship identity protection, and Mac master-XML exclusion. No implementation or expensive tests run.
+Scope: edit_slide_xml / edit_slide_chart / edit_slide_master_xml. Preserve tool names, version-1 declarative replace_xml schema, 1–32 unique paths, existing 32 KiB program and package limits, chart data/link protection, master layout relationship identity protection, and Mac master-XML exclusion. 本文建立时未实施；Unit 1 本轮已实现，最终验证与边界见阶段报告。Unit 2/3 尚未实现。
 
-## Current concrete gap
+## 实施前缺口（Unit 1 已迁移页面/图表，母版 XML 仍待迁移）
 
 powerpoint-skill.ts proposePackageEdit validates the source ID, complete source package digest and full order, but stores before/applied only in the closure. replaceSlidePackage imports + deletes the source in one Office batch, may perform native recovery writes in catch, and for master applies the imported primary master's layouts to all old source-master pages in another batch. originalLayouts / originalLayoutIds / affectedLayouts are RAM maps. A lost callback/ACK or reopen has no persistent page/master/layout phase receipts.
 
@@ -47,3 +47,11 @@ There is no existing adapter operation for deleting a newly created unused maste
 ## Required tests (synthetic local PC + real document binding + native SDK mocks)
 
 Preserve current schema/allowlist tests and 600-page/end-index cases. Inject failure before backup, after backup, before intent, at import callback, after actual insert before ACK, after actual delete before ACK, after each layout step/receipt and each inverse step. Reopen inspect -> explicit reconcile/restore -> no repeated insert/delete/apply. Include two original masters with duplicate layout names/different IDs, several source-master layouts, every dependent page beyond index 20, all unchanged other-master pages, external package/layout/theme/master/order drift, original master disappearance, imported layout reorder/missing layout, absent source, ambiguous candidate, no-op XML, cancellation/disconnect/document switch/CAS after final await, source identity distinct from native ID, per-phase bounded storage reservation, screenshots historical only, exact affected-page QA. Mac has no master XML tool and no hidden fallback. Full content + package/dependency/order closure is required before claiming undone; real Office host verification remains separate.
+
+## Unit 1 实施状态（2026-09-29）
+
+页面/图表 XML 已接专有 package_xml 账本、presentation-package-backups.v1 六项配对 PC 操作、完整页序/全页 SHA 证明和独立 SDK 插入/删除阶段。原页与准备包先存 PC 并再次读验，持久 pending 后才写入；实际新页 ID 回执和未知结果仅观察/显式核对，无异常自动逆写。恢复按原包插入、证明、删除已应用页闭合。Document/CAS/settings、工作台、历史、准确受影响 QA、截图历史复核与 Runtime 真实确认链已接入。
+
+导入所有条目按完整解压字节证明所有权，保留已允许的背景规范化；新增真实同长 FNV 碰撞反例，旧 matcher 接受但新所有权证明拒绝。600 页末页及 32 图表 XML 路径在合成本地 PC 测试验证；不作为真实 Office 验收。
+
+最终证据参见 docs/product/wiswork-ppt-agent-xml-page-chart-durable-recovery-progress-2026-09-29.md。**母版 XML 尚沿用旧内存闭包，Unit 2/3 继续待实施**；不能将页面/图表恢复计为母版依赖、布局或完整母版库存恢复。
