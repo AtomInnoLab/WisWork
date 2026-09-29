@@ -1114,3 +1114,65 @@ it('binds report actions to the selected request, CAS revision, and clears late 
   expect(controller.snapshot().deliveryReport).toBeUndefined()
   expect(controller.snapshot().project).toBeUndefined()
 })
+it.each(['valid', 'foreign-document', 'foreign-task', 'unsafe-error'] as const)(
+  'restores only bounded matching asset events (%s)',
+  async (kind) => {
+    const f = fixture()
+    const production = {
+      projectId: 'project-1',
+      requestId: 'pages',
+      planRevision: 1,
+      status: 'compiled',
+      compiledCount: 1,
+      total: 1,
+      pages: [{ id: 'slide-1', title: '研究结论', state: 'compiled', attempt: 1 }],
+    }
+    const assetHistory = {
+      version: 1,
+      scope: 'production_asset_resolution',
+      projectId: 'project-1',
+      documentId: kind === 'foreign-document' ? 'foreign' : 'document-1',
+      requestId: kind === 'foreign-task' ? 'foreign' : 'pages',
+      inputDigest: 'a'.repeat(64),
+      planDigest: 'b'.repeat(64),
+      revision: 2,
+      events: [
+        {
+          type: 'asset.fetching',
+          pageId: 'slide-1',
+          assetId: 'image',
+          attempt: 1,
+          sequence: 1,
+          createdAt: '2026-09-29T00:00:00.000Z',
+        },
+        {
+          type: kind === 'unsafe-error' ? 'asset.rejected' : 'asset.ready',
+          ...(kind === 'unsafe-error' ? { error: '/private/source.png' } : {}),
+          pageId: 'slide-1',
+          assetId: 'image',
+          attempt: 1,
+          sequence: 2,
+          createdAt: '2026-09-29T00:01:00.000Z',
+        },
+      ],
+    }
+    f.request.mockImplementation(
+      async (body) =>
+        new Response(
+          JSON.stringify(
+            (body as { operation: string }).operation === 'status'
+              ? { ...project, production, assetHistory }
+              : { error: 'invalid_request' },
+          ),
+        ),
+    )
+    await f.controller.refresh()
+    const restored = f.controller.snapshot().project!
+    expect(restored.projectId).toBe('project-1')
+    if (kind === 'valid') expect(restored.assetHistory).toEqual(assetHistory)
+    else {
+      expect(restored.assetHistory).toBeUndefined()
+      expect(restored.assetHistoryUnavailable).toBe(true)
+    }
+  },
+)

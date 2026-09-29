@@ -1053,3 +1053,63 @@ it('retains bounded saved run failure reasons alongside page grouping', () => {
     at: '2026-09-24T00:00:08.000Z',
   })
 })
+it('folds asset resolution by task and page without claiming verification or live work', () => {
+  const assetHistory = {
+    version: 1 as const,
+    scope: 'production_asset_resolution' as const,
+    projectId: project.projectId,
+    documentId: 'doc',
+    requestId: production.requestId,
+    inputDigest: 'a'.repeat(64),
+    planDigest: 'b'.repeat(64),
+    revision: 2,
+    events: [
+      {
+        type: 'asset.fetching' as const,
+        pageId: production.pages[0]!.id,
+        assetId: 'image',
+        attempt: 1,
+        sequence: 1,
+        createdAt: '2026-09-29T00:00:00.000Z',
+      },
+      {
+        type: 'asset.ready' as const,
+        pageId: production.pages[0]!.id,
+        assetId: 'image',
+        attempt: 1,
+        sequence: 2,
+        createdAt: '2026-09-29T00:01:00.000Z',
+      },
+    ],
+  }
+  const summary = presentationWorkflowSummary(
+    { ...project, production, assetHistory },
+    undefined,
+    undefined,
+  )!
+  const events = summary.timeline.filter((event) => event.scope === 'production_asset_resolution')
+  expect(events).toHaveLength(1)
+  expect(events[0]).toMatchObject({
+    type: 'asset.ready',
+    at: assetHistory.events[1]!.createdAt,
+    text: expect.stringContaining('未核验'),
+  })
+  expect(
+    presentationWorkflowSummary(
+      { ...project, production, assetHistory: { ...assetHistory, requestId: 'foreign' } },
+      undefined,
+      undefined,
+    )!.timeline.some((event) => event.scope === 'production_asset_resolution'),
+  ).toBe(false)
+  expect(
+    presentationWorkflowSummary(
+      {
+        ...project,
+        production,
+        assetHistory: { ...assetHistory, revision: 1, events: assetHistory.events.slice(0, 1) },
+      },
+      undefined,
+      undefined,
+    )!.timeline.find((event) => event.type === 'asset.fetching')!.text,
+  ).toContain('不能证明仍在执行')
+})

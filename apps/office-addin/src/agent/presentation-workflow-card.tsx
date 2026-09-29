@@ -118,7 +118,9 @@ export function PresentationWorkflowCard({
               {event.at ? <time dateTime={event.at}>{event.at}</time> : null} {event.text}
               {event.records && (
                 <details>
-                  <summary>核对历史 · {event.records.length} 次</summary>
+                  <summary>
+                    {event.recordsLabel ?? '核对历史'} · {event.records.length} 条
+                  </summary>
                   <ol>
                     {event.records.map((record) => (
                       <li key={record.id}>

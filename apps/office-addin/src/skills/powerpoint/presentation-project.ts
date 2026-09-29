@@ -1,3 +1,7 @@
+import {
+  parsePresentationAssetLedger,
+  type PresentationAssetLedger,
+} from '@wiswork/project-store/presentation-asset-events'
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import {
   parsePresentationDeliveryReport,
@@ -59,6 +63,8 @@ export interface PresentationProductionTask {
   }
 }
 export interface PresentationProjectStatus {
+  assetHistory?: PresentationAssetLedger
+  assetHistoryUnavailable?: boolean
   planAcceptance?: PresentationPlanAcceptanceLedger
   planAcceptanceUnavailable?: boolean
   planAcceptanceCurrent?: PresentationPlanAcceptance
@@ -553,8 +559,32 @@ async function parseStatus(value: unknown, projectId: string): Promise<Presentat
         p.checks.roundTrip !== 'not_run'))
   )
     throw new Error('presentation_response_invalid')
+  let assetHistory: PresentationAssetLedger | undefined
+  let assetHistoryUnavailable = p?.assetHistoryUnavailable === true
+  if (p?.assetHistory !== undefined) {
+    try {
+      assetHistory = parsePresentationAssetLedger(p.assetHistory)
+      if (
+        assetHistory.projectId !== projectId ||
+        !p.production ||
+        assetHistory.requestId !== p.production.requestId ||
+        assetHistory.events.some(
+          (event) =>
+            !p.production!.pages.some(
+              (page) => page.id === event.pageId && page.attempt >= event.attempt,
+            ),
+        )
+      )
+        throw new Error('invalid_state')
+    } catch {
+      assetHistory = undefined
+      assetHistoryUnavailable = true
+    }
+  }
   // Copy only the bounded public projection; never retain arbitrary server fields or binary data.
   return {
+    ...(assetHistory ? { assetHistory } : {}),
+    ...(assetHistoryUnavailable ? { assetHistoryUnavailable: true } : {}),
     ...(planAcceptance ? { planAcceptance } : {}),
     ...(planAcceptanceUnavailable ? { planAcceptanceUnavailable: true } : {}),
     ...(sourceAuditHistory ? { sourceAuditHistory } : {}),
@@ -1053,6 +1083,14 @@ export function createPresentationProjectController(
         if ((await options.documentId()) !== documentId)
           throw new Error('presentation_document_changed')
         check()
+      }
+      if (
+        project.assetHistory &&
+        (project.assetHistory.documentId !== documentId ||
+          project.assetHistory.requestId !== project.production?.requestId)
+      ) {
+        delete project.assetHistory
+        project.assetHistoryUnavailable = true
       }
       projectDocument = documentId
       if (project.planAcceptance && !project.planAcceptanceUnavailable) {

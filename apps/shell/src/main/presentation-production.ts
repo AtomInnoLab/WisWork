@@ -501,24 +501,53 @@ export async function handlePresentationProduction(
       let assetBytes = 0
       for (const asset of deck.assets.filter((asset) => assetIds.has(asset.id))) {
         check(signal)
-        let resolved: PresentationInlineAsset
-        if ('attachmentId' in asset) {
-          try {
-            resolved = {
-              ...((await attachments(
-                { operation: 'attachment_asset', documentId, attachmentId: asset.attachmentId },
-                signal,
-              )) as PresentationInlineAsset),
-              id: asset.id,
+        store.appendProductionAsset(projectId, documentId, runningRecord.requestId, {
+          type: 'asset.fetching',
+          pageId: slide.id,
+          assetId: asset.id,
+          attempt,
+        })
+        try {
+          let resolved: PresentationInlineAsset
+          if ('attachmentId' in asset) {
+            try {
+              resolved = {
+                ...((await attachments(
+                  { operation: 'attachment_asset', documentId, attachmentId: asset.attachmentId },
+                  signal,
+                )) as PresentationInlineAsset),
+                id: asset.id,
+              }
+            } catch {
+              check(signal)
+              throw new Error('asset_unavailable')
             }
-          } catch {
-            check(signal)
-            throw new Error('asset_unavailable')
-          }
-        } else resolved = asset
-        assetBytes += Buffer.byteLength(resolved.base64, 'base64')
-        if (assetBytes > 8 * 1024 * 1024) throw new Error('output_too_large')
-        assets.push(resolved)
+          } else resolved = asset
+          assetBytes += Buffer.byteLength(resolved.base64, 'base64')
+          if (assetBytes > 8 * 1024 * 1024) throw new Error('output_too_large')
+          assets.push(resolved)
+          check(signal)
+          store.appendProductionAsset(projectId, documentId, runningRecord.requestId, {
+            type: 'asset.ready',
+            pageId: slide.id,
+            assetId: asset.id,
+            attempt,
+          })
+        } catch (error) {
+          const code = signal.aborted
+            ? 'aborted'
+            : error instanceof Error && error.message === 'output_too_large'
+              ? 'output_too_large'
+              : 'asset_unavailable'
+          store.appendProductionAsset(projectId, documentId, runningRecord.requestId, {
+            type: 'asset.rejected',
+            pageId: slide.id,
+            assetId: asset.id,
+            attempt,
+            error: code,
+          })
+          throw new Error(code, { cause: error })
+        }
       }
       check(signal)
       if (plan.brandKit?.logo && assets.some((asset) => asset.id === plan.brandKit!.logo!.assetId))

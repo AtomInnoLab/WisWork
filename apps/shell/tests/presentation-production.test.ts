@@ -524,6 +524,20 @@ it('isolates an unavailable image to its referencing page and serializes duplica
     f.call('production_run', { requestId: 'run' }),
   ])
   expect(f.compile).toHaveBeenCalledTimes(7)
+  const history = (await f.call('status')).assetHistory
+  expect(history.scope).toBe('production_asset_resolution')
+  expect(
+    history.events.filter((event: { type: string }) => event.type === 'asset.rejected'),
+  ).toHaveLength(3)
+  expect(history.events.at(-1)).toMatchObject({
+    type: 'asset.rejected',
+    pageId: affected[0]!.id,
+    error: 'asset_unavailable',
+    attempt: 3,
+  })
+  expect(new PresentationStore(f.userDataPath).productionAssets(deck.id, 'doc', 'run')).toEqual(
+    history,
+  )
 })
 it.each(['legacy', 'url_snapshot'] as const)(
   'isolates a missing %s source to its citing page and retries after upload',

@@ -121,6 +121,9 @@ export interface PresentationWorkflowSummary {
     text: string
     at?: string
     type?:
+      | 'asset.fetching'
+      | 'asset.ready'
+      | 'asset.rejected'
       | 'research.started'
       | 'research.completed'
       | 'research.failed'
@@ -129,7 +132,13 @@ export interface PresentationWorkflowSummary {
       | 'style.proposed'
       | 'plan.approved'
       | 'style.approved'
-    scope?: 'source_excerpt_audit' | 'saved_plan' | 'saved_style' | 'explicit_user_decision'
+    scope?:
+      | 'production_asset_resolution'
+      | 'source_excerpt_audit'
+      | 'saved_plan'
+      | 'saved_style'
+      | 'explicit_user_decision'
+    recordsLabel?: string
     records?: { id: string; text: string; at: string }[]
   }[]
   attention: { id: string; text: string }[]
@@ -490,6 +499,52 @@ export function presentationWorkflowSummary(
         text: `用户接受计划第 ${record.planRevision} 版的样式${current ? '（当前版本）' : '（历史决定）'}；页面视觉效果仍需审查`,
       })
     }
+  }
+  if (project.assetHistoryUnavailable)
+    attention.push({
+      id: 'asset-history-unavailable',
+      text: '素材解析记录不可读，页面制作状态仍可查看。',
+    })
+  const assets = project.assetHistory
+  if (
+    assets &&
+    !project.assetHistoryUnavailable &&
+    assets.projectId === project.projectId &&
+    assets.requestId === project.production?.requestId
+  ) {
+    const groups = new Map<string, typeof assets.events>()
+    for (const event of assets.events) {
+      const key = JSON.stringify([event.pageId, event.assetId])
+      groups.set(key, [...(groups.get(key) ?? []), event])
+    }
+    const labels = {
+      'asset.fetching': '开始解析（仅有开始记录不能证明仍在执行）',
+      'asset.ready': '素材字节就绪（许可、版权与页面质量未核验）',
+      'asset.rejected': '素材解析失败',
+    }
+    for (const [key, events] of groups) {
+      const latest = events.at(-1)!
+      const title =
+        project.production?.pages.find((page) => page.id === latest.pageId)?.title ?? latest.pageId
+      timeline.push({
+        id: `asset:${assets.requestId}:${key}`,
+        type: latest.type,
+        scope: 'production_asset_resolution',
+        at: latest.createdAt,
+        text: `页面 ${title} · 素材 ${latest.assetId} · 第 ${latest.attempt} 次 · ${labels[latest.type]}`,
+        recordsLabel: '素材解析记录',
+        records: events.map((event) => ({
+          id: `asset:${assets.requestId}:${key}:${event.sequence}`,
+          at: event.createdAt,
+          text: `第 ${event.attempt} 次 · ${labels[event.type]}${event.error ? ' · ' + { asset_unavailable: '素材不可用', output_too_large: '素材超出容量', aborted: '已停止' }[event.error] : ''}`,
+        })),
+      })
+    }
+    if (assets.revision > assets.events.length)
+      attention.push({
+        id: 'asset-history-truncated',
+        text: '素材解析仅保留最近 128 条事件，较早记录未展示。',
+      })
   }
   const sourceHistory = project.sourceAuditHistory
   if (project.sourceAuditHistoryUnavailable) {

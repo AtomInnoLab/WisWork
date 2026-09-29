@@ -15,6 +15,12 @@ import {
   type PresentationProductionJobEventInput,
 } from './presentation-job.js'
 import { createHash, randomUUID } from 'node:crypto'
+import { parsePresentationDeck } from '@wiswork/pptx-engine/presentation'
+import {
+  parsePresentationAssetLedger,
+  type PresentationAssetLedger,
+  type PresentationAssetEventInput,
+} from './presentation-asset-events.js'
 import {
   parsePresentationPlanAcceptances,
   type PresentationPlanAcceptanceLedger,
@@ -1126,6 +1132,92 @@ export class PresentationStore {
       frozen,
     )
     return frozen
+  }
+  productionAssets(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+  ): PresentationAssetLedger {
+    const production = this.production(projectId, documentId, requestId)
+    if (!production) throw new Error('not_found')
+    const path = join(this.directory(projectId), `asset-events-${digest(requestId)}.json`)
+    if (!present(path))
+      return parsePresentationAssetLedger({
+        version: 1,
+        scope: 'production_asset_resolution',
+        projectId,
+        documentId,
+        requestId,
+        inputDigest: production.inputDigest,
+        planDigest: production.planDigest,
+        revision: 0,
+        events: [],
+      })
+    const value = this.read(path) as PresentationAssetLedger & { ledgerDigest: string }
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      throw new Error('invalid_state')
+    const { ledgerDigest, ...content } = value
+    const ledger = parsePresentationAssetLedger(content)
+    const deck = parsePresentationDeck(production.deck)
+    if (
+      ledger.projectId !== projectId ||
+      ledger.documentId !== documentId ||
+      ledger.requestId !== requestId ||
+      ledger.inputDigest !== production.inputDigest ||
+      ledger.planDigest !== production.planDigest ||
+      ledgerDigest !== jsonDigest(ledger, 128 * 1024, 'invalid_state') ||
+      ledger.events.some((event) => {
+        const page = deck.slides.find((page) => page.id === event.pageId)
+        return (
+          !page ||
+          !page.elements.some(
+            (element) => element.kind === 'image' && element.assetId === event.assetId,
+          ) ||
+          !deck.assets.some((asset) => asset.id === event.assetId) ||
+          event.attempt >
+            (production.pages.find((page) => page.pageId === event.pageId)?.attempt ?? 0)
+        )
+      })
+    )
+      throw new Error('invalid_state')
+    return ledger
+  }
+  appendProductionAsset(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+    event: PresentationAssetEventInput,
+  ): PresentationAssetLedger {
+    const ledger = this.productionAssets(projectId, documentId, requestId)
+    const production = this.production(projectId, documentId, requestId)!
+    const deck = parsePresentationDeck(production.deck)
+    const page = production.pages.find((page) => page.pageId === event.pageId),
+      slide = deck.slides.find((page) => page.id === event.pageId)
+    if (
+      !page ||
+      page.state !== 'building' ||
+      page.attempt !== event.attempt ||
+      !slide?.elements.some(
+        (element) => element.kind === 'image' && element.assetId === event.assetId,
+      ) ||
+      !deck.assets.some((asset) => asset.id === event.assetId)
+    )
+      throw new Error('invalid_state')
+    const now = new Date().toISOString(),
+      last = ledger.events.at(-1)?.createdAt ?? ''
+    const next = parsePresentationAssetLedger({
+      ...ledger,
+      revision: ledger.revision + 1,
+      events: [
+        ...ledger.events,
+        { ...event, sequence: ledger.revision + 1, createdAt: now < last ? last : now },
+      ].slice(-128),
+    })
+    this.write(join(this.directory(projectId), `asset-events-${digest(requestId)}.json`), {
+      ...next,
+      ledgerDigest: jsonDigest(next, 128 * 1024, 'output_too_large'),
+    })
+    return next
   }
   planAcceptances(projectId: string, documentId: string): PresentationPlanAcceptanceLedger {
     const directory = this.bind(projectId, documentId, false)

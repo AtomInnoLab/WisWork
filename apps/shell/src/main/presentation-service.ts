@@ -879,6 +879,20 @@ export function createPresentationService(options: {
           const production = productionRecord
             ? presentationProductionSummary(productionRecord)
             : undefined
+          let assetStatus: Record<string, unknown> = {}
+          if (productionRecord) {
+            try {
+              assetStatus = {
+                assetHistory: store.productionAssets(
+                  projectId,
+                  documentId,
+                  productionRecord.requestId,
+                ),
+              }
+            } catch {
+              assetStatus = { assetHistoryUnavailable: true }
+            }
+          }
           const savedPlan = store.plan(projectId, documentId)
           const plan = savedPlan
             ? {
@@ -1017,6 +1031,7 @@ export function createPresentationService(options: {
               ...commentStatus,
               ...sourceAuditStatus,
               ...acceptanceStatus,
+              ...assetStatus,
               ...preparationStatus,
             })
           }
@@ -1046,6 +1061,7 @@ export function createPresentationService(options: {
             ...commentStatus,
             ...sourceAuditStatus,
             ...acceptanceStatus,
+            ...assetStatus,
             ...preparationStatus,
             ...(checks
               ? {
