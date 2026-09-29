@@ -10,6 +10,8 @@ NASA NTRS 的[NACA 研究备忘录 L50B01](https://ntrs.nasa.gov/citations/19930
 
 共享 PDF 解析器已用该真实扫描件回归：识别 30 个源页定位，第 2 页文本段保持零长度，第 3 页标题可定位。该结果只证明页码和提取覆盖如实传递，不证明 OCR 内容准确。
 
+跨组件回归又以同一 12.9 MB 扫描 PDF 经 Office 附件客户端分块上传至真实 PC 服务，重建 PC 服务后由 Agent 附件列表读取，保留 `sectionCount: 30` 和 `pagesWithoutExtractedText: [2]`。Taskpane 根据该字段提示该页缺文字并请求补料；这是本地模拟客户端与真实服务的工程证据，不是 PowerPoint 宿主验收。
+
 ## 三份原工程输入与来源
 
 | 文件 | 用途 | 核验结果 |

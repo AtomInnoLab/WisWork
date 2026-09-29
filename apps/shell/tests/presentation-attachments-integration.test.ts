@@ -382,6 +382,48 @@ it('recovers a lost acknowledgement then exposes real DOCX text to the Agent aft
   expect(JSON.parse(read.output).sourceUri).toBe(`attachment:${attachment.attachmentId}`)
 })
 
+it('retains the unreadable page of the real P0-11 NACA scan through PC restart and Agent listing', async () => {
+  const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-p0-11-scan-'))
+  roots.push(userDataPath)
+  const bytes = readFileSync(
+    new URL(
+      '../../../docs/product/ppt-benchmark-materials/PPT-P0-11/naca-rm-l50b01-1950-real-scan.pdf',
+      import.meta.url,
+    ),
+  )
+  const attachmentId = createHash('sha256').update(bytes).digest('hex')
+  let service = createPresentationService({ userDataPath })
+  const options = {
+    available: () => true,
+    documentId: async () => 'p0-11-scan-document',
+    request: async (body: unknown, abort?: AbortSignal) =>
+      new Response(Buffer.from(await service(body, abort ?? signal()))),
+    vfs: new InMemoryVfs(),
+  }
+  let client = createPresentationAttachmentSkill(options)
+  await client.upload(
+    'naca-rm-l50b01-1950-real-scan.pdf',
+    Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)),
+  )
+  client.clear()
+  service = createPresentationService({ userDataPath })
+  client = createPresentationAttachmentSkill({ ...options, vfs: new InMemoryVfs() })
+  const listed = await client.executeTool({
+    id: 'list',
+    name: 'list_presentation_attachments',
+    input: {},
+  })
+  expect(listed.isError, listed.output).not.toBe(true)
+  expect(JSON.parse(listed.output).attachments).toEqual([
+    expect.objectContaining({
+      attachmentId,
+      status: 'ready',
+      sectionCount: 30,
+      pagesWithoutExtractedText: [2],
+    }),
+  ])
+}, 60_000)
+
 it('resumes the frozen P0-16 real PDF after a lost first chunk acknowledgement and PC restart', async () => {
   const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-p0-16-upload-'))
   roots.push(userDataPath)
