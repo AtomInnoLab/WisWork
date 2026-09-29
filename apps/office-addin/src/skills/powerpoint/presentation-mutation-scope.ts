@@ -128,7 +128,9 @@ export function presentationMutationScope(proposal: StructuredProposal): string[
   // Only the native master tool derives this scope from a complete, revalidated
   // host dependency snapshot. XML/package edits and generic labels remain unknown.
   if (
-    proposal.operation === 'edit_slide_master' &&
+    ['edit_slide_master', 'resume_slide_master_change', 'undo_slide_master_change'].includes(
+      proposal.operation,
+    ) &&
     proposal.toolName === proposal.operation &&
     proposal.impact.host === 'powerpoint'
   ) {

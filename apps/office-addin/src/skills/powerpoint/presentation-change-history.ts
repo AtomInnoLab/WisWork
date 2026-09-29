@@ -1,4 +1,9 @@
 import {
+  validatePresentationNativeMasterChange,
+  nativeMasterReservedBytes,
+  type PresentationNativeMasterChange,
+} from './presentation-native-master-change.js'
+import {
   validatePresentationExistingChange,
   existingChangeReservedBytes,
   type PresentationExistingChange,
@@ -41,6 +46,7 @@ import {
   type PresentationPageReplacement,
 } from './presentation-page-replacement-record.js'
 type Records = {
+  native_master: PresentationNativeMasterChange
   existing: PresentationExistingChange
   existing_image: PresentationExistingImageChange
   existing_page: PresentationExistingPageChange
@@ -109,25 +115,27 @@ export function validatePresentationHistoryEntry(
   )
     return false
   const valid =
-    e.kind === 'text'
-      ? validatePresentationTextChange(e.record)
-      : e.kind === 'geometry'
-        ? validatePresentationGeometryChange(e.record)
-        : e.kind === 'image'
-          ? validateImageReplacementRecord(e.record)
-          : e.kind === 'existing_batch'
-            ? validatePresentationExistingBatch(e.record)
-            : e.kind === 'existing_image'
-              ? validatePresentationExistingImageChange(e.record)
-              : e.kind === 'existing_page'
-                ? validatePresentationExistingPageChange(e.record)
-                : e.kind === 'existing_chart'
-                  ? validatePresentationExistingChartChange(e.record)
-                  : e.kind === 'existing'
-                    ? validatePresentationExistingChange(e.record)
-                    : e.kind === 'page'
-                      ? validatePresentationPageReplacement(e.record)
-                      : false
+    e.kind === 'native_master'
+      ? validatePresentationNativeMasterChange(e.record)
+      : e.kind === 'text'
+        ? validatePresentationTextChange(e.record)
+        : e.kind === 'geometry'
+          ? validatePresentationGeometryChange(e.record)
+          : e.kind === 'image'
+            ? validateImageReplacementRecord(e.record)
+            : e.kind === 'existing_batch'
+              ? validatePresentationExistingBatch(e.record)
+              : e.kind === 'existing_image'
+                ? validatePresentationExistingImageChange(e.record)
+                : e.kind === 'existing_page'
+                  ? validatePresentationExistingPageChange(e.record)
+                  : e.kind === 'existing_chart'
+                    ? validatePresentationExistingChartChange(e.record)
+                    : e.kind === 'existing'
+                      ? validatePresentationExistingChange(e.record)
+                      : e.kind === 'page'
+                        ? validatePresentationPageReplacement(e.record)
+                        : false
   return valid && e.id === historyEntryId(e.kind, e.record)
 }
 export interface PresentationHistoryEnvelope {
@@ -142,7 +150,8 @@ export interface PresentationHistoryEnvelope {
       | 'existing_batch'
       | 'existing_image'
       | 'existing_page'
-      | 'existing_chart',
+      | 'existing_chart'
+      | 'native_master',
       string
     >
   >
@@ -160,6 +169,7 @@ export const presentationHistoryBytes = (history: PresentationHistoryEnvelope) =
       'existing_image',
       'existing_page',
       'existing_chart',
+      'native_master',
     ] as const
   ).reduce(
     (sum, kind) =>
@@ -179,23 +189,25 @@ export const presentationHistoryBytes = (history: PresentationHistoryEnvelope) =
             }),
           ).byteLength - 1
         : 0) +
-      (e.kind === 'existing_batch'
-        ? existingBatchReservedBytes(e.record)
-        : e.kind === 'existing_image'
-          ? existingImageReservedBytes(e.record)
-          : e.kind === 'existing_page'
-            ? existingPageReservedBytes(e.record)
-            : e.kind === 'existing_chart'
-              ? existingChartReservedBytes(e.record)
-              : e.kind === 'existing'
-                ? existingChangeReservedBytes(e.record)
-                : e.kind === 'page'
-                  ? Math.max(
-                      0,
-                      192 * 1024 - new TextEncoder().encode(JSON.stringify(e.record)).byteLength,
-                    )
-                  : e.kind === 'image'
-                    ? imageReplacementReservedBytes(e.record)
-                    : 'undo_pending'.length - e.record.state.length),
+      (e.kind === 'native_master'
+        ? nativeMasterReservedBytes(e.record)
+        : e.kind === 'existing_batch'
+          ? existingBatchReservedBytes(e.record)
+          : e.kind === 'existing_image'
+            ? existingImageReservedBytes(e.record)
+            : e.kind === 'existing_page'
+              ? existingPageReservedBytes(e.record)
+              : e.kind === 'existing_chart'
+                ? existingChartReservedBytes(e.record)
+                : e.kind === 'existing'
+                  ? existingChangeReservedBytes(e.record)
+                  : e.kind === 'page'
+                    ? Math.max(
+                        0,
+                        192 * 1024 - new TextEncoder().encode(JSON.stringify(e.record)).byteLength,
+                      )
+                    : e.kind === 'image'
+                      ? imageReplacementReservedBytes(e.record)
+                      : 'undo_pending'.length - e.record.state.length),
     0,
   )

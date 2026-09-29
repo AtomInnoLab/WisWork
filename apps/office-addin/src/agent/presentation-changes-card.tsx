@@ -100,6 +100,7 @@ export function PresentationChangesCard({
                   addition: '新增页面内容与已记录的对象身份',
                   modification: '原生修改步骤与原页保存点（非视觉 diff）',
                   duplication: '源页面与复制页面身份（非视觉 diff）',
+                  master: '母版字段、共享依赖与恢复回执（非视觉 diff）',
                   chart: '图表数据与页面包摘要差异（非视觉 diff）',
                 }[entry.kind]
               }
@@ -126,15 +127,17 @@ export function PresentationChangesCard({
               </details>
             )}
             <p>
-              {entry.source === 'existing_batch'
-                ? '现稿批量 · '
-                : entry.source === 'existing_image'
-                  ? '现稿图片 · '
-                  : entry.source === 'existing_page'
-                    ? '现稿整页 · '
-                    : entry.source === 'existing'
-                      ? '现稿 · '
-                      : ''}
+              {entry.source === 'native_master'
+                ? '母版共享样式 · '
+                : entry.source === 'existing_batch'
+                  ? '现稿批量 · '
+                  : entry.source === 'existing_image'
+                    ? '现稿图片 · '
+                    : entry.source === 'existing_page'
+                      ? '现稿整页 · '
+                      : entry.source === 'existing'
+                        ? '现稿 · '
+                        : ''}
               页面：{entry.pageId} · 状态：
               {entry.state}
             </p>
@@ -154,7 +157,10 @@ export function PresentationChangesCard({
                   {entry.changeSet.risk === 'high' ? '高' : '中'}
                 </p>
                 <p>
-                  范围：{entry.changeSet.scope.slideIds.length} 页
+                  范围：
+                  {entry.changeSet.scope.affectedPageCount ??
+                    entry.changeSet.scope.slideIds.length}{' '}
+                  页
                   {entry.changeSet.scope.shapeIds
                     ? ` · ${entry.changeSet.scope.shapeIds.length} 个对象`
                     : ''}
@@ -223,10 +229,12 @@ export function PresentationChangesCard({
                 key={action}
                 type="button"
                 disabled={busy}
-                aria-label={`${labels[action]} ${entry.pageId}`}
+                aria-label={`${action === 'reconcile' && entry.kind === 'master' ? '核对母版回执' : labels[action]} ${entry.pageId}`}
                 onClick={() => void controller.run(entry.id, action)}
               >
-                {labels[action]}
+                {action === 'reconcile' && entry.kind === 'master'
+                  ? '核对母版回执'
+                  : labels[action]}
               </button>
             ))}
           </li>

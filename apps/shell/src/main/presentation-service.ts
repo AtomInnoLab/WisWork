@@ -21,6 +21,7 @@ import {
 import { parsePresentationClaimReview } from '@wiswork/pptx-engine/presentation-claim-review'
 import { createPresentationPageBackupService } from './presentation-page-backups'
 import { createPresentationExistingPageBackupService } from './presentation-existing-page-backups'
+import { createPresentationMasterBackupService } from './presentation-master-backups'
 import {
   assertCitedPresentationSourcesReady,
   handlePresentationProduction,
@@ -68,6 +69,8 @@ async function acquireProjectLock(root: string, projectId: string): Promise<() =
   }
 }
 const errorCodes = new Set([
+  'presentation_master_backup_invalid',
+  'presentation_master_backup_capacity',
   'access_denied',
   'busy',
   'issue_changed',
@@ -151,6 +154,7 @@ export function createPresentationService(options: {
 }): (body: unknown, signal: AbortSignal, context?: PresentationTeamContext) => Promise<Uint8Array> {
   const pageBackups = createPresentationPageBackupService(options)
   const existingPageBackups = createPresentationExistingPageBackupService(options)
+  const masterBackups = createPresentationMasterBackupService(options)
   const attachments = createPresentationAttachmentService(options)
   const store = new PresentationStore(options.userDataPath)
   const team = createPresentationTeamService({
@@ -566,6 +570,17 @@ export function createPresentationService(options: {
           throw error
         }
       }
+      if (
+        [
+          'master_backup_begin',
+          'master_backup_chunk',
+          'master_backup_finish',
+          'master_backup_status',
+          'master_backup_read',
+          'master_backup_list',
+        ].includes(request.operation as string)
+      )
+        return boundedResponse(await masterBackups(request, signal))
       if (
         [
           'existing_page_backup_begin',

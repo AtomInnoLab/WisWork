@@ -1,8 +1,4 @@
-import {
-  affectedStyleSlideIds,
-  parsePowerPointStyleDependencies,
-  type PowerPointStyleDependencies,
-} from './presentation-style-dependencies.js'
+import { MASTER_PATTERN_TYPES, masterOperationKey } from './presentation-master-program.js'
 import type { AgentSkill, AgentToolDef, ToolExecution } from '@wiswork/agent-core'
 import { parsePresentationDeck, PRESENTATION_DECK_SCHEMA } from '@wiswork/pptx-engine/presentation'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
@@ -15,7 +11,6 @@ import {
   MAX_POWERPOINT_RESULT_BYTES,
   type PowerPointDeclarativeOperation,
   type PowerPointMasterOperation,
-  type PowerPointMasterState,
 } from './browser-powerpoint-adapter.js'
 import {
   captureChartValuePackageEdit,
@@ -46,62 +41,6 @@ import { officeOperationsForSlideIR } from './presentation-office-ir.js'
 const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
-const MASTER_PATTERN_TYPES = [
-  'Percent5',
-  'Percent10',
-  'Percent20',
-  'Percent25',
-  'Percent30',
-  'Percent40',
-  'Percent50',
-  'Percent60',
-  'Percent70',
-  'Percent75',
-  'Percent80',
-  'Percent90',
-  'Horizontal',
-  'Vertical',
-  'LightHorizontal',
-  'LightVertical',
-  'DarkHorizontal',
-  'DarkVertical',
-  'NarrowHorizontal',
-  'NarrowVertical',
-  'DashedHorizontal',
-  'DashedVertical',
-  'Cross',
-  'DownwardDiagonal',
-  'UpwardDiagonal',
-  'LightDownwardDiagonal',
-  'LightUpwardDiagonal',
-  'DarkDownwardDiagonal',
-  'DarkUpwardDiagonal',
-  'WideDownwardDiagonal',
-  'WideUpwardDiagonal',
-  'DashedDownwardDiagonal',
-  'DashedUpwardDiagonal',
-  'DiagonalCross',
-  'SmallCheckerBoard',
-  'LargeCheckerBoard',
-  'SmallGrid',
-  'LargeGrid',
-  'DottedGrid',
-  'SmallConfetti',
-  'LargeConfetti',
-  'HorizontalBrick',
-  'DiagonalBrick',
-  'SolidDiamond',
-  'OutlinedDiamond',
-  'DottedDiamond',
-  'Plaid',
-  'Sphere',
-  'Weave',
-  'Divot',
-  'Shingle',
-  'Wave',
-  'Trellis',
-  'ZigZag',
-] as const
 const PROGRAM_TOOLS = new Set([
   'execute_office_js',
   'add_slide_ir_objects',
@@ -637,6 +576,14 @@ function errorCode(error: unknown, write = false): string {
       'office_api_unsupported',
       'office_concurrent_change',
       'presentation_existing_persistence_unavailable',
+      'presentation_master_backup_invalid',
+      'presentation_master_backup_capacity',
+      'presentation_native_master_inverse_unproven',
+      'presentation_native_master_package_unproven',
+      'presentation_native_master_conflict',
+      'presentation_native_master_state_invalid',
+      'presentation_native_master_stale',
+      'presentation_native_master_write_uncertain',
       'presentation_page_backup_cleanup_failed',
       'presentation_native_add_conflict',
       'presentation_native_add_pending',
@@ -846,191 +793,6 @@ async function prepareMasterProgram(value: unknown, vfs?: InMemoryVfs): Promise<
     } as typeof fill
   }
   return copy
-}
-
-function projectedMasterState(
-  before: PowerPointMasterState,
-  operations: PowerPointMasterOperation[],
-): PowerPointMasterState {
-  const value = structuredClone(before)
-  for (const operation of operations) {
-    const master = value.masters.find((item) => item.id === operation.master_id)
-    if (!master) throw new Error('invalid_tool_input')
-    if (operation.op === 'set_master_background') {
-      if (operation.fill.type === 'solid')
-        master.background = {
-          type: 'Solid',
-          color: operation.fill.color,
-          transparency: operation.fill.transparency,
-        }
-      else if (operation.fill.type === 'gradient')
-        master.background = {
-          type: 'Gradient',
-          gradientType: operation.fill.gradient_type,
-        } as PowerPointMasterState['masters'][number]['background']
-      else if (operation.fill.type === 'pattern')
-        master.background = {
-          type: 'Pattern',
-          pattern: operation.fill.pattern,
-          foregroundColor: operation.fill.foreground_color,
-          backgroundColor: operation.fill.background_color,
-        } as PowerPointMasterState['masters'][number]['background']
-      else
-        master.background = {
-          type: 'PictureOrTexture',
-          pictureTransparency: operation.fill.transparency,
-        }
-    } else if (operation.op === 'set_master_theme_color')
-      master.themeColors[operation.theme_color] = operation.color
-    else {
-      const layout = master.layouts.find((item) => item.id === operation.layout_id)
-      if (!layout) throw new Error('invalid_tool_input')
-      layout.isMasterBackgroundFollowed = operation.follow_master
-      layout.areBackgroundGraphicsHidden = !operation.show_master_graphics
-    }
-  }
-  return value
-}
-
-function masterOperationKey(operation: PowerPointMasterOperation): string {
-  if (operation.op === 'set_master_background') return `${operation.master_id}:background`
-  if (operation.op === 'set_master_theme_color')
-    return `${operation.master_id}:theme:${operation.theme_color}`
-  return `${operation.master_id}:layout:${operation.layout_id}:background-following`
-}
-
-function normalizedColor(value: unknown): unknown {
-  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : value
-}
-
-function masterOperationValue(
-  state: PowerPointMasterState,
-  operation: PowerPointMasterOperation,
-): unknown {
-  const master = state.masters.find((item) => item.id === operation.master_id)
-  if (!master) return undefined
-  if (operation.op === 'set_master_background') {
-    const background = master.background
-    return {
-      type: background.type.toLowerCase(),
-      ...(background.color === undefined ? {} : { color: normalizedColor(background.color) }),
-      ...(background.transparency === undefined ? {} : { transparency: background.transparency }),
-      ...(background.gradientType === undefined
-        ? {}
-        : { gradientType: background.gradientType.toLowerCase() }),
-      ...(background.pattern === undefined ? {} : { pattern: background.pattern.toLowerCase() }),
-      ...(background.foregroundColor === undefined
-        ? {}
-        : { foregroundColor: normalizedColor(background.foregroundColor) }),
-      ...(background.backgroundColor === undefined
-        ? {}
-        : { backgroundColor: normalizedColor(background.backgroundColor) }),
-      ...(background.pictureTransparency === undefined
-        ? {}
-        : { pictureTransparency: background.pictureTransparency }),
-    }
-  }
-  if (operation.op === 'set_master_theme_color')
-    return normalizedColor(master.themeColors[operation.theme_color])
-  const layout = master.layouts.find((item) => item.id === operation.layout_id)
-  return layout
-    ? {
-        follow_master: layout.isMasterBackgroundFollowed,
-        show_master_graphics: !layout.areBackgroundGraphicsHidden,
-      }
-    : undefined
-}
-
-function affectedMasterFingerprint(
-  state: PowerPointMasterState,
-  operations: PowerPointMasterOperation[],
-): string {
-  return fingerprint(
-    JSON.stringify(
-      operations.map((operation) => [
-        masterOperationKey(operation),
-        masterOperationValue(state, operation),
-      ]),
-    ),
-  )
-}
-
-function sameMasterOperationValue(
-  actual: PowerPointMasterState,
-  expected: PowerPointMasterState,
-  operation: PowerPointMasterOperation,
-): boolean {
-  return (
-    JSON.stringify(masterOperationValue(actual, operation)) ===
-    JSON.stringify(masterOperationValue(expected, operation))
-  )
-}
-
-function inverseMasterOperation(
-  before: PowerPointMasterState,
-  operation: PowerPointMasterOperation,
-): PowerPointMasterOperation {
-  const master = before.masters.find((item) => item.id === operation.master_id)
-  if (!master) throw new Error('invalid_tool_input')
-  if (operation.op === 'set_master_background') {
-    const type = master.background.type.toLowerCase()
-    if (
-      type === 'solid' &&
-      typeof master.background.color === 'string' &&
-      typeof master.background.transparency === 'number'
-    )
-      return {
-        op: 'set_master_background',
-        master_id: operation.master_id,
-        fill: {
-          type: 'solid',
-          color: master.background.color,
-          transparency: master.background.transparency,
-        },
-      }
-    if (type === 'gradient' && typeof master.background.gradientType === 'string')
-      return {
-        op: 'set_master_background',
-        master_id: operation.master_id,
-        fill: { type: 'gradient', gradient_type: master.background.gradientType },
-      }
-    if (
-      type === 'pattern' &&
-      typeof master.background.pattern === 'string' &&
-      typeof master.background.foregroundColor === 'string' &&
-      typeof master.background.backgroundColor === 'string'
-    )
-      return {
-        op: 'set_master_background',
-        master_id: operation.master_id,
-        fill: {
-          type: 'pattern',
-          pattern: master.background.pattern,
-          foreground_color: master.background.foregroundColor,
-          background_color: master.background.backgroundColor,
-        },
-      }
-    throw new Error('office_api_unsupported')
-  }
-  if (operation.op === 'set_master_theme_color') {
-    const color = master.themeColors[operation.theme_color]
-    if (!color) throw new Error('office_api_unsupported')
-    return {
-      op: operation.op,
-      master_id: operation.master_id,
-      theme_color: operation.theme_color,
-      color,
-    }
-  }
-  const layout = master.layouts.find((item) => item.id === operation.layout_id)
-  if (!layout) throw new Error('invalid_tool_input')
-  return {
-    op: operation.op,
-    master_id: operation.master_id,
-    layout_id: operation.layout_id,
-    follow_master: layout.isMasterBackgroundFollowed,
-    show_master_graphics: !layout.areBackgroundGraphicsHidden,
-  }
 }
 
 function exactRecord(value: unknown, keys: string[]): Record<string, unknown> {
@@ -1409,6 +1171,11 @@ export function createPowerPointSkill(options: {
       expected: PresentationExistingBatch | undefined,
     ): Promise<void>
   }
+  durableMaster?(
+    operations: PowerPointMasterOperation[],
+    explanation?: string,
+    signal?: AbortSignal,
+  ): Promise<ReturnType<StructuredProposalController['propose']>>
   durableDuplicate?(
     slideIndex: number,
     explanation?: string,
@@ -2623,139 +2390,13 @@ export function createPowerPointSkill(options: {
           const operationKeys = operations.map(masterOperationKey)
           if (new Set(operationKeys).size !== operationKeys.length)
             throw invalidToolInput('program.operations')
-          let dependencies: PowerPointStyleDependencies | undefined
-          if (options.adapter.inspectStyleDependencies) {
-            try {
-              dependencies = parsePowerPointStyleDependencies(
-                await options.adapter.inspectStyleDependencies(signal),
-              )
-            } catch (error) {
-              assertNotCancelled(signal)
-              if (
-                error instanceof Error &&
-                (error.message === 'cancelled' || error.name === 'AbortError')
-              )
-                throw error
-            }
-          }
-          assertNotCancelled(signal)
-          const before = await options.adapter.inspectSlideMasters(signal)
-          assertNotCancelled(signal)
-          const after = projectedMasterState(before, operations)
-          for (const operation of operations) inverseMasterOperation(before, operation)
-          const targets = [
-            ...new Set(operations.map((operation) => `master:${operation.master_id}`)),
-          ]
-          const proposal = options.proposals.propose({
-            operation: call.name,
-            toolName: call.name,
-            title: (input.explanation as string | undefined) || 'Edit PowerPoint slide master',
-            preview: {
-              qaScope: dependencies
-                ? {
-                    basis: 'native_master_layout',
-                    hostSlideIds: affectedStyleSlideIds(dependencies, operations),
-                  }
-                : { basis: 'document' },
-              operations: operations.map((operation) => ({
-                ...operation,
-                ...(operation.op === 'set_master_background' &&
-                operation.fill.type === 'picture_or_texture'
-                  ? { fill: { ...operation.fill, image_base64: '[image]' } }
-                  : {}),
-              })),
-            },
-            impact: { host: 'powerpoint', targets, count: targets.length },
-            fingerprint: affectedMasterFingerprint(before, operations),
-            before,
-            after,
-            validate: async (s) => {
-              if (
-                dependencies &&
-                (!options.adapter.inspectStyleDependencies ||
-                  JSON.stringify(
-                    parsePowerPointStyleDependencies(
-                      await options.adapter.inspectStyleDependencies(s),
-                    ),
-                  ) !== JSON.stringify(dependencies))
-              )
-                return false
-              assertNotCancelled(s)
-              return (
-                affectedMasterFingerprint(
-                  await options.adapter.inspectSlideMasters(s),
-                  operations,
-                ) === affectedMasterFingerprint(before, operations)
-              )
-            },
-            execute: async (s) => {
-              let currentExpected = before
-              const applied: Array<{
-                before: PowerPointMasterState
-                after: PowerPointMasterState
-                inverse: PowerPointMasterOperation
-                operation: PowerPointMasterOperation
-              }> = []
-              try {
-                for (const operation of operations) {
-                  const stepBefore = currentExpected
-                  const nextExpected = projectedMasterState(currentExpected, [operation])
-                  const inverse = inverseMasterOperation(stepBefore, operation)
-                  try {
-                    await options.adapter.executeMasterOperations([operation], s)
-                  } catch (error) {
-                    const actual = await options.adapter.inspectSlideMasters()
-                    if (sameMasterOperationValue(actual, nextExpected, operation)) {
-                      applied.push({ before: stepBefore, after: nextExpected, inverse, operation })
-                      currentExpected = nextExpected
-                    } else if (!sameMasterOperationValue(actual, currentExpected, operation)) {
-                      throw new Error('office_state_uncertain', { cause: error })
-                    }
-                    throw error
-                  }
-                  const actual = await options.adapter.inspectSlideMasters(s)
-                  if (!sameMasterOperationValue(actual, nextExpected, operation)) {
-                    if (!sameMasterOperationValue(actual, stepBefore, operation))
-                      applied.push({ before: stepBefore, after: nextExpected, inverse, operation })
-                    throw new Error('office_verify_failed')
-                  }
-                  applied.push({ before: stepBefore, after: nextExpected, inverse, operation })
-                  currentExpected = nextExpected
-                }
-              } catch (error) {
-                for (const step of [...applied].reverse()) {
-                  const actual = await options.adapter.inspectSlideMasters()
-                  if (sameMasterOperationValue(actual, step.before, step.operation)) continue
-                  if (!sameMasterOperationValue(actual, step.after, step.operation))
-                    throw new Error('office_concurrent_change', { cause: error })
-                  try {
-                    await options.adapter.executeMasterOperations([step.inverse])
-                  } catch (recoveryError) {
-                    throw new Error('office_recovery_failed', { cause: recoveryError })
-                  }
-                  const restoredStep = await options.adapter.inspectSlideMasters()
-                  if (!sameMasterOperationValue(restoredStep, step.before, step.operation))
-                    throw new Error('office_recovery_failed', { cause: error })
-                }
-                const restored = await options.adapter.inspectSlideMasters()
-                if (
-                  affectedMasterFingerprint(restored, operations) !==
-                  affectedMasterFingerprint(before, operations)
-                )
-                  throw new Error('office_recovery_failed', { cause: error })
-                throw error
-              }
-            },
-            verify: async (s) => {
-              if (
-                affectedMasterFingerprint(
-                  await options.adapter.inspectSlideMasters(s),
-                  operations,
-                ) !== affectedMasterFingerprint(after, operations)
-              )
-                throw new Error('office_verify_failed')
-            },
-          })
+          if (!options.durableMaster)
+            throw new Error('presentation_existing_persistence_unavailable')
+          const proposal = await options.durableMaster(
+            operations,
+            input.explanation as string | undefined,
+            signal,
+          )
           return {
             output: boundedJson(proposal),
             mutated: false,

@@ -1777,6 +1777,7 @@ function ConfiguredApp() {
               'presentation-animation-frame.v1',
               'presentation-pdf.v1',
               'presentation-production-pdf.v1',
+              'presentation-master-backups.v1',
             ],
           }),
     [transportMode],
@@ -1933,6 +1934,15 @@ function ConfiguredApp() {
                       },
                       request: (body: unknown, signal?: AbortSignal) =>
                         bridge.capabilityFetch('presentation.v1', body, signal),
+                      masterBackupAvailable: () => {
+                        const snapshot = bridge.snapshot()
+                        return (
+                          snapshot.status === 'connected' &&
+                          snapshot.capabilities?.includes('presentation-master-backups.v1') === true
+                        )
+                      },
+                      masterBackupRequest: (body: unknown, signal?: AbortSignal) =>
+                        bridge.capabilityFetch('presentation-master-backups.v1', body, signal),
                       pdfAvailable: () => {
                         const snapshot = bridge.snapshot()
                         return (

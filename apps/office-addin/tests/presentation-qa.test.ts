@@ -594,7 +594,7 @@ it('rejects invalid mutation scopes without losing live evidence or acquiring a 
     ['bad\n'],
     ['bad\x7f'],
     ['x'.repeat(257)],
-    Array.from({ length: 101 }, (_, i) => String(i)),
+    Array.from({ length: 1024 }, (_, i) => String(i).padStart(256, 'x')),
     null,
   ])
     expect(() => f.skill.beginMutation(scope as string[])).toThrow('invalid_tool_input')
@@ -606,6 +606,16 @@ it('rejects invalid mutation scopes without losing live evidence or acquiring a 
       input: { page_id: 'first', screenshot_digest, outcome: 'pass', notes: 'Unchanged' },
     }),
   ).not.toHaveProperty('isError', true)
+})
+it('accepts complete master dependency scopes beyond 100 and 512 pages', async () => {
+  const f = setup()
+  await f.skill.executeTool(f.capture)
+  expect(() => f.skill.beginMutation(Array.from({ length: 600 }, (_, i) => `s${i}`))).not.toThrow()
+  expect(await f.skill.executeTool(f.capture)).toMatchObject({
+    isError: true,
+    output: 'presentation_qa_busy',
+  })
+  f.skill.endMutation()
 })
 it('preserves live evidence for an unmatched maximum-sized scope', async () => {
   const f = setup()

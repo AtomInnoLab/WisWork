@@ -22,6 +22,7 @@ import {
 } from './presentation-existing-change.js'
 import { validatePresentationExistingBatch } from './presentation-existing-batch.js'
 import { validatePresentationExistingImageChange } from './presentation-existing-image.js'
+import { validatePresentationNativeMasterChange } from './presentation-native-master-change.js'
 import { validatePresentationExistingPageChange } from './presentation-existing-page.js'
 import type { PresentationHistoryEntry } from './presentation-change-history.js'
 import { inspectPowerPointTableCellPackage } from './presentation-complex-page-package.js'
@@ -311,12 +312,20 @@ export function createPresentationExistingEditingSkill(options: Options): AgentS
               e,
             ): e is Extract<
               PresentationHistoryEntry,
-              { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' }
+              {
+                kind:
+                  | 'existing'
+                  | 'existing_batch'
+                  | 'existing_image'
+                  | 'existing_page'
+                  | 'native_master'
+              }
             > =>
               (e.kind === 'existing' ||
                 e.kind === 'existing_batch' ||
                 e.kind === 'existing_image' ||
-                e.kind === 'existing_page') &&
+                e.kind === 'existing_page' ||
+                e.kind === 'native_master') &&
               e.record.documentId === documentId,
           )
           if (
@@ -327,7 +336,9 @@ export function createPresentationExistingEditingSkill(options: Options): AgentS
                   ? !validatePresentationExistingBatch(e.record)
                   : e.kind === 'existing_image'
                     ? !validatePresentationExistingImageChange(e.record)
-                    : !validatePresentationExistingPageChange(e.record),
+                    : e.kind === 'native_master'
+                      ? !validatePresentationNativeMasterChange(e.record)
+                      : !validatePresentationExistingPageChange(e.record),
             )
           )
             throw new Error('presentation_existing_change_invalid')
@@ -339,60 +350,73 @@ export function createPresentationExistingEditingSkill(options: Options): AgentS
               documentId,
               currentHostVerified: false,
               changes: entries.map((e) =>
-                e.kind === 'existing_page'
+                e.kind === 'native_master'
                   ? {
                       changeId: e.record.changeId,
-                      kind: 'page',
-                      oldSlideId: e.record.oldSlideId,
-                      newSlideId: e.record.newSlideId ?? null,
-                      restoredSlideId: e.record.restoredSlideId ?? null,
+                      kind: 'native_master',
                       state: e.record.state,
+                      nextIndex: e.record.nextIndex,
+                      pending: Boolean(e.record.pending),
+                      masterIds: e.record.scope.masterIds,
+                      affectedPageCount: e.record.scope.affectedPageCount,
                       sequence: e.sequence,
                       currentHostVerified: false,
                     }
-                  : e.kind === 'existing_image'
+                  : e.kind === 'existing_page'
                     ? {
                         changeId: e.record.changeId,
-                        kind: 'image',
-                        hostSlideId: e.record.hostSlideId,
-                        oldShapeId: e.record.oldShapeId,
-                        insertedShapeId: e.record.insertedShapeId ?? null,
-                        restoredShapeId: e.record.restoredShapeId ?? null,
+                        kind: 'page',
+                        oldSlideId: e.record.oldSlideId,
+                        newSlideId: e.record.newSlideId ?? null,
+                        restoredSlideId: e.record.restoredSlideId ?? null,
                         state: e.record.state,
                         sequence: e.sequence,
                         currentHostVerified: false,
                       }
-                    : e.kind === 'existing_batch'
+                    : e.kind === 'existing_image'
                       ? {
                           changeId: e.record.changeId,
-                          kind: 'batch',
-                          state: e.record.state,
-                          cursor: e.record.version !== 1 ? e.record.nextIndex : e.record.cursor,
-                          operationCount: e.record.operations.length,
-                          hostSlideIds: [
-                            ...new Set(
-                              e.record.version === 3
-                                ? e.record.scope.slideIds
-                                : e.record.version === 2 || e.record.version === 4
-                                  ? [e.record.hostSlideId]
-                                  : e.record.operations.map((op) => op.hostSlideId),
-                            ),
-                          ],
-                          sequence: e.sequence,
-                          historicalReviews: e.record.version !== 1 ? [] : (e.record.reviews ?? []),
-                        }
-                      : {
-                          changeId: e.record.changeId,
-                          kind: e.record.kind,
+                          kind: 'image',
                           hostSlideId: e.record.hostSlideId,
-                          shapeId: e.record.shapeId,
-                          ...(e.record.kind === 'table_cell'
-                            ? { rowIndex: e.record.rowIndex, columnIndex: e.record.columnIndex }
-                            : {}),
+                          oldShapeId: e.record.oldShapeId,
+                          insertedShapeId: e.record.insertedShapeId ?? null,
+                          restoredShapeId: e.record.restoredShapeId ?? null,
                           state: e.record.state,
                           sequence: e.sequence,
-                          historicalReview: e.record.review ?? null,
-                        },
+                          currentHostVerified: false,
+                        }
+                      : e.kind === 'existing_batch'
+                        ? {
+                            changeId: e.record.changeId,
+                            kind: 'batch',
+                            state: e.record.state,
+                            cursor: e.record.version !== 1 ? e.record.nextIndex : e.record.cursor,
+                            operationCount: e.record.operations.length,
+                            hostSlideIds: [
+                              ...new Set(
+                                e.record.version === 3
+                                  ? e.record.scope.slideIds
+                                  : e.record.version === 2 || e.record.version === 4
+                                    ? [e.record.hostSlideId]
+                                    : e.record.operations.map((op) => op.hostSlideId),
+                              ),
+                            ],
+                            sequence: e.sequence,
+                            historicalReviews:
+                              e.record.version !== 1 ? [] : (e.record.reviews ?? []),
+                          }
+                        : {
+                            changeId: e.record.changeId,
+                            kind: e.record.kind,
+                            hostSlideId: e.record.hostSlideId,
+                            shapeId: e.record.shapeId,
+                            ...(e.record.kind === 'table_cell'
+                              ? { rowIndex: e.record.rowIndex, columnIndex: e.record.columnIndex }
+                              : {}),
+                            state: e.record.state,
+                            sequence: e.sequence,
+                            historicalReview: e.record.review ?? null,
+                          },
               ),
             }),
             mutated: false,

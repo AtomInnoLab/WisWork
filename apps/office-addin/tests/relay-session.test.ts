@@ -143,105 +143,111 @@ describe('Office cloud relay session', () => {
     expect(session.snapshot()).toEqual({ status: 'expired' })
   })
 
-  it('reattaches a v2 PowerPoint session after socket loss and leaves it on explicit disconnect', async () => {
-    const first = new FakeSocket(),
-      resumed = new FakeSocket()
-    const sockets = [first, resumed]
-    const session = createOfficeRelaySession({
-      createSocket: () => sockets.shift()!,
-      capabilities: ['agent.v1', 'presentation.v1'],
-      randomUUID: () => 'request_after_resume',
-    })
-    const paired = session.connect('powerpoint')
-    first.open()
-    first.receive(
-      JSON.stringify({
+  it.each(['presentation.v1', 'presentation-master-backups.v1'] as const)(
+    'reattaches a v2 PowerPoint %s session after socket loss and leaves it on explicit disconnect',
+    async (capabilityName) => {
+      const first = new FakeSocket(),
+        resumed = new FakeSocket()
+      const sockets = [first, resumed]
+      const session = createOfficeRelaySession({
+        createSocket: () => sockets.shift()!,
+        capabilities: ['agent.v1', capabilityName],
+        randomUUID: () => 'request_after_resume',
+      })
+      const paired = session.connect('powerpoint')
+      first.open()
+      first.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'office.created',
+          pairing_id: 'pair_1',
+          verification_code: '123456',
+          expires_in: 120,
+        }),
+      )
+      first.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'office.approved',
+          session_id: 'session_1',
+          capability: 'cap_1',
+          expires_in: 1800,
+          capabilities: ['agent.v1', capabilityName],
+        }),
+      )
+      await paired
+      expect(session.diagnosticSessionId()).toBe('session_1')
+      first.close()
+      expect(session.snapshot().status).toBe('offline')
+      expect(session.diagnosticSessionId()).toBe('session_1')
+      const reconnecting = session.connect('powerpoint')
+      resumed.open()
+      expect(frame(resumed, 0)).toEqual({
         version: 2,
-        type: 'office.created',
-        pairing_id: 'pair_1',
-        verification_code: '123456',
-        expires_in: 120,
-      }),
-    )
-    first.receive(
-      JSON.stringify({
-        version: 2,
-        type: 'office.approved',
+        type: 'office.resume',
         session_id: 'session_1',
         capability: 'cap_1',
-        expires_in: 1800,
-        capabilities: ['agent.v1', 'presentation.v1'],
-      }),
-    )
-    await paired
-    expect(session.diagnosticSessionId()).toBe('session_1')
-    first.close()
-    expect(session.snapshot().status).toBe('offline')
-    expect(session.diagnosticSessionId()).toBe('session_1')
-    const reconnecting = session.connect('powerpoint')
-    resumed.open()
-    expect(frame(resumed, 0)).toEqual({
-      version: 2,
-      type: 'office.resume',
-      session_id: 'session_1',
-      capability: 'cap_1',
-      host: 'PowerPoint',
-    })
-    resumed.receive(
-      JSON.stringify({
-        version: 2,
-        type: 'office.resumed',
+        host: 'PowerPoint',
+      })
+      resumed.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'office.resumed',
+          session_id: 'session_1',
+          expires_in: 120,
+          pc_online: true,
+          capabilities: ['agent.v1', capabilityName],
+        }),
+      )
+      await reconnecting
+      expect(session.diagnosticSessionId()).toBe('session_1')
+      expect(session.snapshot()).toEqual({
+        status: 'connected',
+        capabilities: ['agent.v1', capabilityName],
+      })
+      resumed.receive(JSON.stringify({ version: 2, type: 'office.pc_offline' }))
+      expect(session.snapshot().status).toBe('waiting_for_pc')
+      resumed.receive(JSON.stringify({ version: 2, type: 'office.pc_online' }))
+      expect(session.snapshot().status).toBe('connected')
+      const pending = session.capabilityFetch(capabilityName, {
+        operation:
+          capabilityName === 'presentation-master-backups.v1' ? 'master_backup_status' : 'status',
+      })
+      expect(frame(resumed, 1)).toMatchObject({
+        type: 'office.request',
         session_id: 'session_1',
-        expires_in: 120,
-        pc_online: true,
-        capabilities: ['agent.v1', 'presentation.v1'],
-      }),
-    )
-    await reconnecting
-    expect(session.diagnosticSessionId()).toBe('session_1')
-    expect(session.snapshot()).toEqual({
-      status: 'connected',
-      capabilities: ['agent.v1', 'presentation.v1'],
-    })
-    resumed.receive(JSON.stringify({ version: 2, type: 'office.pc_offline' }))
-    expect(session.snapshot().status).toBe('waiting_for_pc')
-    resumed.receive(JSON.stringify({ version: 2, type: 'office.pc_online' }))
-    expect(session.snapshot().status).toBe('connected')
-    const pending = session.capabilityFetch('presentation.v1', { operation: 'status' })
-    expect(frame(resumed, 1)).toMatchObject({
-      type: 'office.request',
-      session_id: 'session_1',
-      capability: 'cap_1',
-      request_id: 'request_after_resume',
-    })
-    resumed.receive(
-      JSON.stringify({
-        version: 2,
-        type: 'relay.start',
-        session_id: 'session_1',
+        capability: 'cap_1',
         request_id: 'request_after_resume',
-        status: 200,
-        content_type: 'application/json',
-      }),
-    )
-    resumed.receive(
-      JSON.stringify({
+      })
+      resumed.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'relay.start',
+          session_id: 'session_1',
+          request_id: 'request_after_resume',
+          status: 200,
+          content_type: 'application/json',
+        }),
+      )
+      resumed.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'relay.done',
+          session_id: 'session_1',
+          request_id: 'request_after_resume',
+        }),
+      )
+      expect(await (await pending).text()).toBe('')
+      session.disconnect()
+      expect(session.diagnosticSessionId()).toBeUndefined()
+      expect(frame(resumed, 2)).toEqual({
         version: 2,
-        type: 'relay.done',
+        type: 'office.leave',
         session_id: 'session_1',
-        request_id: 'request_after_resume',
-      }),
-    )
-    expect(await (await pending).text()).toBe('')
-    session.disconnect()
-    expect(session.diagnosticSessionId()).toBeUndefined()
-    expect(frame(resumed, 2)).toEqual({
-      version: 2,
-      type: 'office.leave',
-      session_id: 'session_1',
-      capability: 'cap_1',
-    })
-  })
+        capability: 'cap_1',
+      })
+    },
+  )
 
   it('aborts an active request when the paired PC explicitly revokes the session', async () => {
     const socket = new FakeSocket()
@@ -1265,4 +1271,121 @@ it('refuses a team capability combined with any private workspace capability bef
     expect(session.snapshot().status).toBe('offline')
   }
   expect(createSocket).not.toHaveBeenCalled()
+})
+
+it('negotiates master backups and preserves bounded streamed response and missing-cap failure', async () => {
+  const socket = new FakeSocket(),
+    session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1', 'presentation-master-backups.v1'],
+    })
+  const pending = session.connect('powerpoint')
+  socket.open()
+  expect(frame(socket, 0).capabilities).toEqual(['agent.v1', 'presentation-master-backups.v1'])
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.created',
+      pairing_id: 'pair',
+      verification_code: '123456',
+      expires_in: 120,
+    }),
+  )
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.approved',
+      session_id: 'session',
+      capability: 'secret',
+      expires_in: 1800,
+      capabilities: ['agent.v1', 'presentation-master-backups.v1'],
+    }),
+  )
+  await pending
+  const responsePending = session.capabilityFetch('presentation-master-backups.v1', {
+    operation: 'master_backup_status',
+    documentId: 'doc',
+    changeId: 'change',
+    key: 'snapshot',
+  })
+  const request = frame(socket, 1)
+  expect(request).toMatchObject({
+    capability_name: 'presentation-master-backups.v1',
+    body: { operation: 'master_backup_status' },
+  })
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'relay.start',
+      session_id: 'session',
+      request_id: request.request_id,
+      status: 200,
+      content_type: 'application/json',
+    }),
+  )
+  const response = await responsePending
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'relay.chunk',
+      session_id: 'session',
+      request_id: request.request_id,
+      sequence: 0,
+      data: btoa('{}'),
+    }),
+  )
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'relay.done',
+      session_id: 'session',
+      request_id: request.request_id,
+    }),
+  )
+  expect(await response.text()).toBe('{}')
+  session.disconnect()
+  const oldSocket = new FakeSocket(),
+    old = createOfficeRelaySession({
+      createSocket: () => oldSocket,
+      capabilities: ['agent.v1', 'presentation-master-backups.v1'],
+    })
+  const connected = old.connect('powerpoint')
+  oldSocket.open()
+  oldSocket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.created',
+      pairing_id: 'pair',
+      verification_code: '123456',
+      expires_in: 120,
+    }),
+  )
+  oldSocket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.approved',
+      session_id: 'session',
+      capability: 'secret',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+    }),
+  )
+  await connected
+  await expect(
+    old.capabilityFetch('presentation-master-backups.v1', { operation: 'master_backup_status' }),
+  ).rejects.toThrow('relay_capability_unavailable')
+  expect(oldSocket.sent).toHaveLength(1)
+  old.disconnect()
+})
+it('filters master backup capability from non-PowerPoint handshakes', async () => {
+  const socket = new FakeSocket(),
+    session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1', 'presentation-master-backups.v1'],
+    })
+  const pending = session.connect('word')
+  socket.open()
+  expect(frame(socket, 0).capabilities).toEqual(['agent.v1'])
+  session.disconnect()
+  await pending
 })

@@ -323,7 +323,7 @@ it('rejects invalid explicit scopes without turning them into full-deck invalida
     ['x'.repeat(257)],
     ['bad\n'],
     ['bad\x7f'],
-    Array.from({ length: 101 }, (_, i) => String(i)),
+    Array.from({ length: 1100 }, (_, i) => `${i}-${'x'.repeat(250)}`),
     [null],
     null,
   ]) {
@@ -332,6 +332,17 @@ it('rejects invalid explicit scopes without turning them into full-deck invalida
     ).rejects.toThrow('invalid_tool_input')
     expect(f.binding.readQa('project/request-1')).toEqual(value)
   }
+})
+it('invalidates complete 600-page scopes within the explicit byte budget', async () => {
+  const f = fixture(),
+    value = record(await f.binding.documentId())
+  value.pages.push({ ...structuredClone(value.pages[0]!), pageId: 'page600', hostSlideId: '599' })
+  await f.binding.writeQa('project/request-1', value)
+  await f.binding.invalidateQa(Array.from({ length: 600 }, (_, i) => String(i)))
+  expect(f.binding.readQa('project/request-1')!.pages.map((page) => page.recheckRequired)).toEqual([
+    true,
+    true,
+  ])
 })
 it('rolls back a failed scoped save without invalidating unrelated pages', async () => {
   const f = fixture(),

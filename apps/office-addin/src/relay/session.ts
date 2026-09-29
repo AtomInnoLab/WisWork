@@ -85,6 +85,7 @@ export type OfficeRelayCapability =
   | 'presentation-animation-frame.v1'
   | 'presentation-pdf.v1'
   | 'presentation-production-pdf.v1'
+  | 'presentation-master-backups.v1'
 
 interface Dependencies {
   getTeamAccessToken?: () => Promise<string | null>
@@ -309,7 +310,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
           (value, index, values) =>
             typeof value === 'string' &&
             requestedCapabilities.includes(value as OfficeRelayCapability) &&
-            (value !== 'presentation-team.v1' || activeHost === 'powerpoint') &&
+            (!['presentation-team.v1', 'presentation-master-backups.v1'].includes(value) ||
+              activeHost === 'powerpoint') &&
             values.indexOf(value) === index,
         )
           ? (frame.capabilities as OfficeRelayCapability[])
@@ -592,7 +594,10 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
                         ? {
                             capabilities: requestedCapabilities.filter(
                               (name) =>
-                                name !== 'presentation-team.v1' || activeHost === 'powerpoint',
+                                ![
+                                  'presentation-team.v1',
+                                  'presentation-master-backups.v1',
+                                ].includes(name) || activeHost === 'powerpoint',
                             ),
                           }
                         : {}),

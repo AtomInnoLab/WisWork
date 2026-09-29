@@ -63,7 +63,7 @@ const PRESENTATION_STAGES: ReadonlyArray<readonly [PresentationStage, RegExp]> =
   ],
   [
     'style',
-    /^(?:(?:save|read)_presentation_brand_kit|list_presentation_brand_kits|inspect_slide_masters|edit_slide_master|edit_slide_master_xml)$/,
+    /^(?:(?:save|read)_presentation_brand_kit|list_presentation_brand_kits|inspect_slide_masters|edit_slide_master|edit_slide_master_xml|(?:inspect|resume|undo|reconcile)_slide_master_change)$/,
   ],
   [
     'research',
@@ -93,7 +93,7 @@ const PRESENTATION_STAGES: ReadonlyArray<readonly [PresentationStage, RegExp]> =
   ],
   [
     'review',
-    /^(?:capture_presentation_page_qa|record_presentation_page_review|read_presentation_qa|read_presentation_page_reviews|compare_presentation_page_structure|verify_slides|screenshot_slide|capture_existing_presentation_change|record_existing_presentation_change_review|capture_existing_presentation_batch_page|record_existing_presentation_batch_page_review|(?:capture|record)_existing_presentation_image_review|(?:capture|record)_existing_presentation_page_change|capture_native_modify_page|record_native_modify_page_review|capture_slide_duplication_page|record_slide_duplication_page_review|(?:list_presentation_review_comments|add_presentation_review_comment|resolve_presentation_review_comment))$/,
+    /^(?:capture_presentation_page_qa|record_presentation_page_review|read_presentation_qa|read_presentation_page_reviews|compare_presentation_page_structure|verify_slides|screenshot_slide|capture_existing_presentation_change|record_existing_presentation_change_review|capture_existing_presentation_batch_page|record_existing_presentation_batch_page_review|(?:capture|record)_existing_presentation_image_review|(?:capture|record)_existing_presentation_page_change|capture_native_modify_page|record_native_modify_page_review|capture_slide_duplication_page|record_slide_duplication_page_review|capture_slide_master_page|record_slide_master_page_review|(?:list_presentation_review_comments|add_presentation_review_comment|resolve_presentation_review_comment))$/,
   ],
   [
     'evidence',

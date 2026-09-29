@@ -389,7 +389,10 @@ export function presentationQaMutationScope(
   hostSlideIds?: readonly string[],
 ): Set<string> | undefined {
   if (hostSlideIds === undefined) return undefined
-  if (!Array.isArray(hostSlideIds) || hostSlideIds.length > 100)
+  if (
+    !Array.isArray(hostSlideIds) ||
+    new TextEncoder().encode(JSON.stringify(hostSlideIds)).byteLength > 256 * 1024
+  )
     throw new Error('invalid_tool_input')
   const ids = Array.from(hostSlideIds)
   if (

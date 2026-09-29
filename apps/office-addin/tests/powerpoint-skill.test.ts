@@ -1,3 +1,7 @@
+import {
+  nativeMasterFixture,
+  cleanupNativeMasterFixtures,
+} from './helpers/native-master-fixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -83,6 +87,7 @@ const call = (name: string, input: Record<string, unknown> = {}) => ({ id: 'call
 
 const durableRoots: string[] = []
 afterEach(() => {
+  cleanupNativeMasterFixtures()
   for (const root of durableRoots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 /** Real durable package storage and document receipts; native SDK writes remain deterministic mocks. */
@@ -356,55 +361,36 @@ describe('PowerPoint compatibility skill', () => {
     expect(programSchema.properties.operations.items).toHaveProperty('anyOf')
   })
 
-  it('proposes one native master edit and verifies semantic readback', async () => {
-    let state = await adapter().inspectSlideMasters()
-    const fake = adapter({
-      inspectSlideMasters: vi.fn().mockImplementation(() => Promise.resolve(state)),
-      executeMasterOperations: vi.fn().mockImplementation(async () => {
-        state = {
-          masters: [
-            {
-              ...state.masters[0],
-              background: { type: 'Solid', color: '#000000', transparency: 0 },
-            },
-          ],
-        }
-      }),
+  it('routes native master editing through durable savepoints and semantic receipts', async () => {
+    const f = await nativeMasterFixture()
+    const skill = createPowerPointSkill({
+      adapter: f.adapter,
+      proposals: f.proposals,
+      durableMaster: f.proposeWith,
     })
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
-    await expect(
-      skill.executeTool(
-        call('edit_slide_master', {
-          program: {
-            version: 2,
-            operations: [
-              {
-                op: 'set_master_background',
-                master_id: 'master-1',
-                fill: { type: 'solid', color: '#000000', transparency: 0 },
-              },
-            ],
-          },
-        }),
-      ),
-    ).resolves.toMatchObject({ mutated: false, summary: 'Proposed native PowerPoint master edit' })
-    expect(proposals.pending()?.impact).toMatchObject({ count: 1, targets: ['master:master-1'] })
-    await proposals.confirm(proposals.pending()!.id)
-    expect(fake.executeMasterOperations).toHaveBeenCalledOnce()
+    const result = await skill.executeTool(
+      call('edit_slide_master', {
+        program: { version: 2, operations: [f.op] },
+        explanation: 'Update master',
+      }),
+    )
+    expect(result).toMatchObject({
+      mutated: false,
+      summary: 'Proposed native PowerPoint master edit',
+    })
+    expect(f.proposals.pending()?.impact).toMatchObject({ count: 1, targets: ['master:m0'] })
+    expect(f.proposals.pending()?.preview).toMatchObject({
+      qaScope: { basis: 'native_master_layout', hostSlideIds: ['s0'] },
+    })
+    await f.confirm()
+    expect(f.adapter.executeMasterOperations).toHaveBeenCalledOnce()
+    expect([...f.data.values()][0]).toMatchObject({ state: 'applied', nextIndex: 1 })
   })
 
-  it('derives native QA scope and blocks dependency drift after persistence', async () => {
-    let slides = [{ slideId: 's1', masterId: 'master-1', layoutId: 'layout-1' }]
-    const fake = adapter({ inspectStyleDependencies: vi.fn(async () => ({ slides })) })
-    const proposals = createStructuredProposalController(undefined, {
-      beforeWrite: async () => {
-        slides = [...slides, { slideId: 's2', masterId: 'master-1', layoutId: 'layout-1' }]
-      },
-      afterWrite: vi.fn(),
-    })
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
-    await skill.executeTool(
+  it('refuses native master writes without persistent backup support', async () => {
+    const fake = adapter(),
+      proposals = createStructuredProposalController()
+    const result = await createPowerPointSkill({ adapter: fake, proposals }).executeTool(
       call('edit_slide_master', {
         program: {
           version: 2,
@@ -419,133 +405,76 @@ describe('PowerPoint compatibility skill', () => {
         },
       }),
     )
-    expect(proposals.pending()?.preview).toMatchObject({
-      qaScope: { basis: 'native_master_layout', hostSlideIds: ['s1'] },
+    expect(result).toMatchObject({
+      isError: true,
+      output: 'presentation_existing_persistence_unavailable',
     })
-    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+    expect(proposals.pending()).toBeUndefined()
     expect(fake.executeMasterOperations).not.toHaveBeenCalled()
   })
 
   it.each(['unsupported', 'invalid', 'empty', 'cancelled'])(
-    'handles %s initial dependencies conservatively',
+    'refuses %s incomplete dependencies before preparing a native write',
     async (mode) => {
-      const inspectStyleDependencies = vi.fn(async () => {
+      const f = await nativeMasterFixture()
+      f.adapter.inspectStyleDependencies = vi.fn(async () => {
         if (mode === 'unsupported') throw new Error('office_api_unsupported')
         if (mode === 'cancelled') throw new Error('cancelled')
         return mode === 'invalid' ? { slides: [{ slideId: 'x' }] } : { slides: [] }
-      })
-      const proposals = createStructuredProposalController()
-      const fake = adapter({
-        inspectStyleDependencies:
-          inspectStyleDependencies as unknown as PowerPointAdapter['inspectStyleDependencies'],
-      })
-      const result = await createPowerPointSkill({ adapter: fake, proposals }).executeTool(
-        call('edit_slide_master', {
-          program: {
-            version: 2,
-            operations: [
-              {
-                op: 'set_master_theme_color',
-                master_id: 'master-1',
-                theme_color: 'Dark1',
-                color: '#112233',
-              },
-            ],
-          },
-        }),
-      )
-      if (mode === 'cancelled') {
-        expect(result).toMatchObject({ isError: true, output: 'cancelled' })
-        expect(proposals.pending()).toBeUndefined()
-      } else
-        expect(proposals.pending()?.preview).toMatchObject({
-          qaScope:
-            mode === 'empty'
-              ? { basis: 'native_master_layout', hostSlideIds: [] }
-              : { basis: 'document' },
-        })
+      }) as unknown as PowerPointAdapter['inspectStyleDependencies']
+      const result = await createPowerPointSkill({
+        adapter: f.adapter,
+        proposals: f.proposals,
+        durableMaster: f.proposeWith,
+      }).executeTool(call('edit_slide_master', { program: { version: 2, operations: [f.op] } }))
+      expect(result.isError).toBe(true)
+      expect(f.proposals.pending()).toBeUndefined()
+      expect(f.adapter.executeMasterOperations).not.toHaveBeenCalled()
     },
   )
 
-  it.each(['drift', 'read failure'])('blocks %s at first confirmation validation', async (mode) => {
-    const inspectStyleDependencies = vi.fn().mockResolvedValueOnce({
-      slides: [{ slideId: 's1', masterId: 'master-1', layoutId: 'layout-1' }],
-    })
-    if (mode === 'drift') inspectStyleDependencies.mockResolvedValue({ slides: [] })
-    else inspectStyleDependencies.mockRejectedValue(new Error('office_read_failed'))
-    const fake = adapter({ inspectStyleDependencies })
-    const beforeWrite = vi.fn()
-    const proposals = createStructuredProposalController(undefined, {
-      beforeWrite,
-      afterWrite: vi.fn(),
-    })
-    await createPowerPointSkill({ adapter: fake, proposals }).executeTool(
-      call('edit_slide_master', {
-        program: {
-          version: 2,
-          operations: [
-            {
-              op: 'set_master_theme_color',
-              master_id: 'master-1',
-              theme_color: 'Dark1',
-              color: '#112233',
-            },
-          ],
-        },
-      }),
-    )
-    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow()
-    expect(beforeWrite).not.toHaveBeenCalled()
-    expect(fake.executeMasterOperations).not.toHaveBeenCalled()
+  it.each(['drift', 'read failure'])('blocks dependency %s on confirmation', async (mode) => {
+    const f = await nativeMasterFixture()
+    await createPowerPointSkill({
+      adapter: f.adapter,
+      proposals: f.proposals,
+      durableMaster: f.proposeWith,
+    }).executeTool(call('edit_slide_master', { program: { version: 2, operations: [f.op] } }))
+    if (mode === 'drift') f.dependencies.slides[0]!.masterId = 'm1'
+    else
+      f.adapter.inspectStyleDependencies = vi.fn(async () => {
+        throw Error('office_read_failed')
+      })
+    await expect(f.confirm()).rejects.toThrow()
+    expect(f.adapter.executeMasterOperations).not.toHaveBeenCalled()
+    expect(f.data.size).toBe(0)
   })
 
-  it('recovers an already verified native master operation when a later operation fails', async () => {
-    const original = await adapter().inspectSlideMasters()
-    const state = structuredClone(original)
-    let writes = 0
-    const fake = adapter({
-      inspectSlideMasters: vi
-        .fn()
-        .mockImplementation(() => Promise.resolve(structuredClone(state))),
-      executeMasterOperations: vi.fn().mockImplementation(async (operations) => {
-        writes += 1
-        const operation = operations[0]
-        if (writes === 2) throw new Error('office_write_failed')
-        if (operation.op === 'set_master_background' && operation.fill.type === 'solid')
-          state.masters[0]!.background = {
-            type: 'Solid',
-            color: operation.fill.color,
-            transparency: operation.fill.transparency,
-          }
-        if (operation.op === 'set_master_theme_color')
-          state.masters[0]!.themeColors[operation.theme_color] = operation.color
-      }),
+  it('keeps failed master writes pending instead of automatically replaying inverse edits', async () => {
+    const f = await nativeMasterFixture()
+    const second = { ...f.op, theme_color: 'Accent2' as const }
+    f.setBeforeWrite(() => {
+      if (vi.mocked(f.adapter.executeMasterOperations).mock.calls.length === 2)
+        f.setHost('before_failure')
     })
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
-    await skill.executeTool(
-      call('edit_slide_master', {
-        program: {
-          version: 2,
-          operations: [
-            {
-              op: 'set_master_background',
-              master_id: 'master-1',
-              fill: { type: 'solid', color: '#000000', transparency: 0 },
-            },
-            {
-              op: 'set_master_theme_color',
-              master_id: 'master-1',
-              theme_color: 'Light1',
-              color: '#EEEEEE',
-            },
-          ],
-        },
-      }),
+    const result = await createPowerPointSkill({
+      adapter: f.adapter,
+      proposals: f.proposals,
+      durableMaster: f.proposeWith,
+    }).executeTool(
+      call('edit_slide_master', { program: { version: 2, operations: [f.op, second] } }),
     )
-    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_write_failed')
-    expect(state).toEqual(original)
-    expect(fake.executeMasterOperations).toHaveBeenCalledTimes(3)
+    expect(result.isError).not.toBe(true)
+    await expect(f.confirm()).rejects.toThrow()
+    expect(f.adapter.executeMasterOperations).toHaveBeenCalledTimes(2)
+    expect(f.native().masters[0]!.themeColors.Accent1).toBe('#000000')
+    const saved = [...f.data.values()][0]!
+    expect(saved).toMatchObject({
+      state: 'applying',
+      nextIndex: 1,
+      pending: { direction: 'forward', index: 1 },
+    })
+    expect(saved.receipts).toHaveLength(1)
   })
 
   it('does not advertise or execute master package edits on PowerPoint for Mac', async () => {
@@ -1562,7 +1491,7 @@ describe('PowerPoint compatibility skill', () => {
 })
 
 describe('browser PowerPoint adapter', () => {
-  it.each(['complete', 'empty', 'missing', 'duplicate', 'overflow', 'cancelled'])(
+  it.each(['complete', 'empty', 'missing', 'duplicate', 'large', 'cancelled'])(
     'reads %s complete native style dependencies',
     async (mode) => {
       const slide = { id: 's1', slideMaster: { id: 'm1' }, layout: { id: 'l1' } }
@@ -1573,8 +1502,8 @@ describe('browser PowerPoint adapter', () => {
             ? [{ ...slide, layout: undefined }]
             : mode === 'duplicate'
               ? [slide, slide]
-              : mode === 'overflow'
-                ? Array.from({ length: 101 }, (_, index) => ({ ...slide, id: String(index) }))
+              : mode === 'large'
+                ? Array.from({ length: 600 }, (_, index) => ({ ...slide, id: String(index) }))
                 : [slide]
       const slides = { items, load: vi.fn() }
       const controller = new AbortController()
@@ -1591,9 +1520,18 @@ describe('browser PowerPoint adapter', () => {
         PowerPoint: { run },
       })
       const result = new BrowserPowerPointAdapter().inspectStyleDependencies(controller.signal)
-      if (mode === 'complete' || mode === 'empty') {
+      if (mode === 'complete' || mode === 'empty' || mode === 'large') {
         await expect(result).resolves.toEqual({
-          slides: mode === 'empty' ? [] : [{ slideId: 's1', masterId: 'm1', layoutId: 'l1' }],
+          slides:
+            mode === 'empty'
+              ? []
+              : mode === 'large'
+                ? Array.from({ length: 600 }, (_, index) => ({
+                    slideId: String(index),
+                    masterId: 'm1',
+                    layoutId: 'l1',
+                  })).sort((a, b) => (a.slideId < b.slideId ? -1 : a.slideId > b.slideId ? 1 : 0))
+                : [{ slideId: 's1', masterId: 'm1', layoutId: 'l1' }],
         })
         expect(slides.load).toHaveBeenCalledWith('items/id,items/slideMaster/id,items/layout/id')
       } else

@@ -16,7 +16,12 @@ export function parsePowerPointStyleDependencies(value: unknown): PowerPointStyl
     return item
   }
   const input = record(value, ['slides'])
-  if (!Array.isArray(input.slides) || input.slides.length > 100) return fail()
+  // Bound the complete serialized graph instead of silently limiting its page count.
+  if (
+    !Array.isArray(input.slides) ||
+    new TextEncoder().encode(JSON.stringify(input)).byteLength > 8 * 1024 * 1024
+  )
+    return fail()
   const ids = new Set<string>()
   const slides = Array.from(input.slides, (raw) => {
     const item = record(raw, ['slideId', 'masterId', 'layoutId'])

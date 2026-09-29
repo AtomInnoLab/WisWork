@@ -1,0 +1,366 @@
+import { createHash } from 'node:crypto'
+import {
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  mkdirSync,
+  writeFileSync,
+  renameSync,
+  readFileSync,
+  constants,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, expect, it, vi } from 'vitest'
+import { createPresentationMasterBackupService } from '../src/main/presentation-master-backups'
+import { createPresentationService } from '../src/main/presentation-service'
+import {
+  saveMasterBackup,
+  readMasterBackup,
+} from '../../office-addin/src/skills/powerpoint/presentation-master-backup'
+const race = vi.hoisted(() => ({
+  open: undefined as undefined | ((path: string, flags: number) => void),
+  syncOpen: undefined as undefined | ((path: string, flags: number) => void),
+  sync: undefined as undefined | ((path: string) => void),
+}))
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {
+    ...actual,
+    openSync: (
+      path: Parameters<typeof actual.openSync>[0],
+      flags: Parameters<typeof actual.openSync>[1],
+      mode?: number,
+    ) => {
+      race.syncOpen?.(String(path), Number(flags))
+      return actual.openSync(path, flags, mode)
+    },
+  }
+})
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    open: async (
+      path: Parameters<typeof actual.open>[0],
+      flags: Parameters<typeof actual.open>[1],
+      mode?: number,
+    ) => {
+      race.open?.(String(path), Number(flags))
+      const handle = await actual.open(path, flags, mode)
+      const sync = handle.sync.bind(handle)
+      handle.sync = async () => {
+        await sync()
+        race.sync?.(String(path))
+      }
+      return handle
+    },
+  }
+})
+
+const roots: string[] = []
+afterEach(() => {
+  race.open = undefined
+  race.syncOpen = undefined
+  race.sync = undefined
+})
+afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })))
+const sha = (v: string | Buffer) => createHash('sha256').update(v).digest('hex')
+function fixture() {
+  const root = mkdtempSync(join(tmpdir(), 'master-backup-'))
+  roots.push(root)
+  const scope = { documentId: 'document-1', changeId: 'change-1', key: 'snapshot' },
+    raw = Buffer.from('native snapshot exact bytes')
+  const service = createPresentationMasterBackupService({ userDataPath: root })
+  const call = (
+    operation: string,
+    extra: Record<string, unknown> = {},
+    signal = new AbortController().signal,
+  ) => service({ operation, ...scope, ...extra }, signal)
+  const begin = () => call('master_backup_begin', { sha256: sha(raw), sizeBytes: raw.length })
+  return { root, scope, raw, call, begin }
+}
+it('persists exact blobs and recovers chunk/finish ACK replay after restart', async () => {
+  const f = fixture()
+  await f.begin()
+  const chunk = { offset: 0, base64: f.raw.toString('base64') }
+  await f.call('master_backup_chunk', chunk)
+  await f.call('master_backup_chunk', chunk)
+  expect(await f.call('master_backup_finish')).toMatchObject({
+    ...f.scope,
+    status: 'ready',
+    receivedBytes: f.raw.length,
+  })
+  expect(await f.begin()).toMatchObject({ status: 'ready' })
+  expect(await f.call('master_backup_finish')).toMatchObject({ status: 'ready' })
+  const read = (await createPresentationMasterBackupService({ userDataPath: f.root })(
+    { operation: 'master_backup_read', ...f.scope, offset: 0, length: f.raw.length },
+    new AbortController().signal,
+  )) as { base64: string }
+  expect(Buffer.from(read.base64, 'base64')).toEqual(f.raw)
+})
+it('rejects altered scopes, overlap, malformed requests, unready reads and corrupted bytes', async () => {
+  const f = fixture()
+  await f.begin()
+  await expect(
+    f.call('master_backup_begin', { sha256: sha('other'), sizeBytes: f.raw.length }),
+  ).rejects.toThrow('presentation_master_backup_invalid')
+  await expect(f.call('master_backup_read', { offset: 0, length: 1 })).rejects.toThrow(
+    'presentation_master_backup_invalid',
+  )
+  await f.call('master_backup_chunk', { offset: 0, base64: f.raw.toString('base64') })
+  await expect(
+    f.call('master_backup_chunk', {
+      offset: 0,
+      base64: Buffer.from('different').toString('base64'),
+    }),
+  ).rejects.toThrow('presentation_master_backup_invalid')
+  await expect(f.call('master_backup_status', { key: '../snapshot' })).rejects.toThrow(
+    'presentation_master_backup_invalid',
+  )
+  await expect(
+    f.call('master_backup_begin', { sizeBytes: 8 * 1024 * 1024 + 1, sha256: sha('x') }),
+  ).rejects.toThrow('presentation_master_backup_invalid')
+  await f.call('master_backup_finish')
+  writeFileSync(
+    join(
+      f.root,
+      'presentation-master-backups',
+      sha(f.scope.documentId),
+      sha(JSON.stringify([f.scope.changeId, f.scope.key])),
+      'blob',
+    ),
+    Buffer.alloc(f.raw.length),
+  )
+  await expect(f.call('master_backup_status')).rejects.toThrow('presentation_master_backup_invalid')
+})
+it('supports over sixteen blobs and lists without truncation through PC service', async () => {
+  const f = fixture()
+  for (let i = 0; i < 20; i++)
+    await f.call('master_backup_begin', { key: `page-${i}`, sha256: sha('a'), sizeBytes: 1 })
+  const response = await createPresentationService({ userDataPath: f.root })(
+    { operation: 'master_backup_list', documentId: f.scope.documentId, changeId: f.scope.changeId },
+    new AbortController().signal,
+  )
+  expect(JSON.parse(Buffer.from(response).toString()).backups).toHaveLength(20)
+})
+it('serializes conflicts and snapshots caller fields before awaiting', async () => {
+  const f = fixture(),
+    service = createPresentationMasterBackupService({ userDataPath: f.root })
+  const body = {
+    operation: 'master_backup_begin',
+    ...f.scope,
+    sha256: sha(f.raw),
+    sizeBytes: f.raw.length,
+  }
+  const first = service(body, new AbortController().signal)
+  body.key = 'image-1'
+  await first
+  expect(await f.call('master_backup_status')).toMatchObject({ key: 'snapshot' })
+  const settled = await Promise.allSettled([
+    f.call('master_backup_begin', { key: 'page-1', sha256: sha('a'), sizeBytes: 1 }),
+    f.call('master_backup_begin', { key: 'page-1', sha256: sha('b'), sizeBytes: 1 }),
+  ])
+  expect(settled.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+})
+it('refuses symlink roots and cancellation', async () => {
+  const f = fixture(),
+    target = join(f.root, 'outside')
+  mkdirSync(target)
+  symlinkSync(target, join(f.root, 'presentation-master-backups'), 'dir')
+  await expect(f.begin()).rejects.toThrow('presentation_master_backup_invalid')
+  const abort = new AbortController()
+  abort.abort()
+  await expect(f.call('master_backup_status', {}, abort.signal)).rejects.toThrow('aborted')
+})
+it('reserves the full 2 GiB document quota without blocking existing status at capacity', async () => {
+  const f = fixture()
+  await f.begin()
+  const document = join(f.root, 'presentation-master-backups', sha(f.scope.documentId))
+  // Synthetic metadata fills reserved capacity without allocating 2 GiB test data.
+  for (let i = 0; i < 256; i++) {
+    const m = {
+      documentId: f.scope.documentId,
+      changeId: 'capacity',
+      key: `page-${i}`,
+      sha256: sha('x'),
+      sizeBytes: i === 255 ? 8 * 1024 * 1024 - f.raw.length : 8 * 1024 * 1024,
+      status: 'uploading',
+    }
+    const dir = join(document, sha(JSON.stringify([m.changeId, m.key])))
+    mkdirSync(dir)
+    writeFileSync(join(dir, 'metadata.json'), JSON.stringify(m))
+  }
+  await expect(
+    f.call('master_backup_begin', { key: 'image-1', sha256: sha('a'), sizeBytes: 1 }),
+  ).rejects.toThrow('presentation_master_backup_capacity')
+  expect(await f.call('master_backup_status')).toMatchObject({ key: 'snapshot', receivedBytes: 0 })
+})
+it('rejects symlink blob data and exact request field expansion', async () => {
+  const f = fixture()
+  await f.begin()
+  await expect(f.call('master_backup_status', { extra: true })).rejects.toThrow(
+    'presentation_master_backup_invalid',
+  )
+  const dir = join(
+    f.root,
+    'presentation-master-backups',
+    sha(f.scope.documentId),
+    sha(JSON.stringify([f.scope.changeId, f.scope.key])),
+  )
+  rmSync(join(dir, 'blob'))
+  writeFileSync(join(f.root, 'foreign'), 'secret')
+  symlinkSync(join(f.root, 'foreign'), join(dir, 'blob'))
+  await expect(f.call('master_backup_status')).rejects.toThrow('presentation_master_backup_invalid')
+})
+
+it('roundtrips browser client through actual PC service and immutable ready receipts', async () => {
+  const f = fixture(),
+    service = createPresentationService({ userDataPath: f.root })
+  const request = async (body: unknown, signal?: AbortSignal) =>
+    new Response(Buffer.from(await service(body, signal ?? new AbortController().signal)), {
+      status: 200,
+    })
+  const bytes = Uint8Array.from({ length: 300000 }, (_, i) => i % 251)
+  const scope = { request, documentId: f.scope.documentId, changeId: f.scope.changeId }
+  const backup = await saveMasterBackup({ ...scope, key: 'image-1', bytes })
+  expect(await readMasterBackup({ ...scope, backup })).toEqual(bytes)
+  expect(await saveMasterBackup({ ...scope, key: 'image-1', bytes })).toEqual(backup)
+})
+
+function substitute(f: ReturnType<typeof fixture>) {
+  const parent = join(
+    f.root,
+    'presentation-master-backups',
+    sha(f.scope.documentId),
+    sha(JSON.stringify([f.scope.changeId, f.scope.key])),
+  )
+  const foreign = join(f.root, 'foreign')
+  mkdirSync(foreign)
+  writeFileSync(join(foreign, 'blob'), Buffer.alloc(0))
+  writeFileSync(join(foreign, 'metadata.json'), 'foreign')
+  renameSync(parent, parent + '-old')
+  symlinkSync(foreign, parent, 'dir')
+  return foreign
+}
+it.each(['chunk', 'read', 'finish', 'publish'])(
+  'refuses persistent parent substitution during %s without foreign bytes',
+  async (scenario) => {
+    const f = fixture()
+    await f.begin()
+    if (scenario !== 'chunk') {
+      await f.call('master_backup_chunk', { offset: 0, base64: f.raw.toString('base64') })
+    }
+    if (scenario === 'read') await f.call('master_backup_finish')
+    let foreign: string | undefined
+    if (scenario === 'publish')
+      race.sync = (path) => {
+        if (path.endsWith('.tmp')) {
+          race.sync = undefined
+          foreign = substitute(f)
+        }
+      }
+    else
+      race.open = (path, flags) => {
+        const trigger =
+          scenario === 'chunk'
+            ? flags === (constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW)
+            : scenario === 'read'
+              ? path.endsWith('/blob')
+              : path.endsWith('.tmp')
+        if (trigger) {
+          race.open = undefined
+          foreign = substitute(f)
+          if (scenario === 'read') writeFileSync(join(foreign, 'blob'), f.raw)
+        }
+      }
+    const operation =
+      scenario === 'chunk'
+        ? 'master_backup_chunk'
+        : scenario === 'read'
+          ? 'master_backup_read'
+          : 'master_backup_finish'
+    const extra =
+      scenario === 'chunk'
+        ? { offset: 0, base64: f.raw.toString('base64') }
+        : scenario === 'read'
+          ? { offset: 0, length: f.raw.length }
+          : {}
+    await expect(f.call(operation, extra)).rejects.toThrow('presentation_master_backup_invalid')
+    expect(foreign).toBeDefined()
+    expect(readFileSync(join(foreign!, 'blob'))).toEqual(
+      scenario === 'read' ? f.raw : Buffer.alloc(0),
+    )
+    expect(readFileSync(join(foreign!, 'metadata.json')).toString()).toBe('foreign')
+  },
+)
+it('keeps verified own blobs readable without scanning unrelated metadata; allocation still validates all reservations', async () => {
+  const f = fixture()
+  await f.begin()
+  await f.call('master_backup_chunk', { offset: 0, base64: f.raw.toString('base64') })
+  await f.call('master_backup_finish')
+  await f.call('master_backup_begin', { key: 'page-1', sha256: sha('a'), sizeBytes: 1 })
+  const unrelated = join(
+    f.root,
+    'presentation-master-backups',
+    sha(f.scope.documentId),
+    sha(JSON.stringify([f.scope.changeId, 'page-1'])),
+    'metadata.json',
+  )
+  writeFileSync(unrelated, 'corrupt unrelated metadata')
+  expect(await f.call('master_backup_status')).toMatchObject({ status: 'ready' })
+  expect(
+    await f.call('master_backup_chunk', { offset: 0, base64: f.raw.toString('base64') }),
+  ).toMatchObject({ status: 'ready' })
+  expect(await f.call('master_backup_finish')).toMatchObject({ status: 'ready' })
+  expect(await f.call('master_backup_read', { offset: 0, length: f.raw.length })).toMatchObject({
+    base64: f.raw.toString('base64'),
+  })
+  await expect(
+    f.call('master_backup_begin', { key: 'page-2', sha256: sha('b'), sizeBytes: 1 }),
+  ).rejects.toThrow('presentation_master_backup_invalid')
+  await expect(
+    createPresentationMasterBackupService({ userDataPath: f.root })(
+      {
+        operation: 'master_backup_list',
+        documentId: f.scope.documentId,
+        changeId: f.scope.changeId,
+      },
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow('presentation_master_backup_invalid')
+})
+it('checks full bounded quota metadata without one asynchronous descriptor open per reservation', async () => {
+  const f = fixture()
+  for (let i = 0; i < 4; i++)
+    await f.call('master_backup_begin', { key: `page-${i}`, sha256: sha('a'), sizeBytes: 1 })
+  let asynchronousMetadataOpens = 0
+  race.open = (path) => {
+    if (path.endsWith('/metadata.json')) asynchronousMetadataOpens++
+  }
+  await f.call('master_backup_begin', { key: 'page-4', sha256: sha('a'), sizeBytes: 1 })
+  expect(asynchronousMetadataOpens).toBe(0)
+})
+
+it('refuses parent substitution at synchronous metadata open even with an identical valid record', async () => {
+  const f = fixture()
+  await f.begin()
+  const original = join(
+    f.root,
+    'presentation-master-backups',
+    sha(f.scope.documentId),
+    sha(JSON.stringify([f.scope.changeId, f.scope.key])),
+    'metadata.json',
+  )
+  const value = readFileSync(original)
+  let foreign: string | undefined
+  race.syncOpen = (path) => {
+    if (path.endsWith('/metadata.json')) {
+      race.syncOpen = undefined
+      foreign = substitute(f)
+      writeFileSync(join(foreign, 'metadata.json'), value)
+    }
+  }
+  await expect(f.call('master_backup_status')).rejects.toThrow('presentation_master_backup_invalid')
+  expect(readFileSync(join(foreign!, 'metadata.json'))).toEqual(value)
+})

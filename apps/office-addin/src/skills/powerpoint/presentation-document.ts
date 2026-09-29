@@ -1,4 +1,9 @@
 import {
+  validatePresentationNativeMasterChange,
+  validNativeMasterTransition,
+  type PresentationNativeMasterChange,
+} from './presentation-native-master-change.js'
+import {
   parsePresentationQaAttempt,
   presentationQaAttemptIdentity,
   PRESENTATION_QA_ATTEMPT_TERMINAL_RESERVE_BYTES,
@@ -73,6 +78,7 @@ const EXISTING_BATCH_KEY = 'wiswork.presentation.existing-batch.v1'
 const EXISTING_IMAGE_KEY = 'wiswork.presentation.existing-image.v1'
 const EXISTING_PAGE_KEY = 'wiswork.presentation.existing-page.v1'
 const EXISTING_CHART_KEY = 'wiswork.presentation.existing-chart.v1'
+const NATIVE_MASTER_KEY = 'wiswork.presentation.native-master.v1'
 const HISTORY_KEY = 'wiswork.presentation.change-history.v1'
 const TEXT_KEY = 'wiswork.presentation.text-change.v1'
 const GEOMETRY_KEY = 'wiswork.presentation.geometry-change.v1'
@@ -502,6 +508,23 @@ export function createPresentationDocumentBinding(
       throw new Error('presentation_existing_chart_state_invalid')
     return value
   }
+  let nativeMasterWriteFailed = false
+  const readRawNativeMasterChange = (): PresentationNativeMasterChange | undefined => {
+    if (nativeMasterWriteFailed) throw new Error('presentation_native_master_state_invalid')
+    const raw = settings.get(NATIVE_MASTER_KEY)
+    if (raw === undefined || raw === null || raw === '') return undefined
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 192 * 1024)
+      throw new Error('presentation_native_master_state_invalid')
+    let value: unknown
+    try {
+      value = JSON.parse(raw)
+    } catch {
+      throw new Error('presentation_native_master_state_invalid')
+    }
+    if (!validatePresentationNativeMasterChange(value))
+      throw new Error('presentation_native_master_state_invalid')
+    return value
+  }
   let pageReplacementWriteFailed = false
   type Overrides = Record<string, PresentationImportRecord | null>
   const replacementKeys = (r: PresentationPageReplacement) => [
@@ -607,6 +630,7 @@ export function createPresentationDocumentBinding(
     existing_image: readRawExistingImage(),
     existing_page: readRawExistingPage(),
     existing_chart: readRawExistingChart(),
+    native_master: readRawNativeMasterChange(),
     text: readRawTextChange(),
     geometry: readRawGeometryChange(),
     page: readRawPageReplacement(),
@@ -627,6 +651,7 @@ export function createPresentationDocumentBinding(
         'existing_image',
         'existing_page',
         'existing_chart',
+        'native_master',
       ] as const) {
         const record = heads[kind]
         if (!record) continue
@@ -681,6 +706,8 @@ export function createPresentationDocumentBinding(
             'existing_image',
             'existing_page',
             'existing_chart',
+            'native_master',
+            'native_master',
           ].includes(k),
       )
     )
@@ -703,6 +730,7 @@ export function createPresentationDocumentBinding(
       'existing_image',
       'existing_page',
       'existing_chart',
+      'native_master',
     ] as const) {
       const head = h.entries.find((e) => e.id === h.heads[kind])
       if ((head && head.kind !== kind) || (!head && h.entries.some((e) => e.kind === kind)))
@@ -771,6 +799,11 @@ export function createPresentationDocumentBinding(
     readHistory().entries.find(
       (e): e is Extract<PresentationHistoryEntry, { kind: 'existing_chart' }> =>
         e.kind === 'existing_chart' && e.record.changeId === changeId,
+    )?.record
+  const readNativeMasterChange = (changeId: string): PresentationNativeMasterChange | undefined =>
+    readHistory().entries.find(
+      (entry): entry is Extract<PresentationHistoryEntry, { kind: 'native_master' }> =>
+        entry.kind === 'native_master' && entry.record.changeId === changeId,
     )?.record
   const readPageReplacement = () => {
     const raw = readRawPageReplacement()
@@ -944,12 +977,61 @@ export function createPresentationDocumentBinding(
   }
   return {
     documentId,
+    assertDocumentId(expected: string): void {
+      const id = settings.get(ID_KEY)
+      if (
+        unsavedId !== undefined ||
+        !validId(id) ||
+        JSON.stringify([id, settings.location()]) !== expected
+      )
+        throw new Error('presentation_document_changed')
+    },
     listChangeHistory: () => structuredClone(readHistory().entries),
     readExistingChange,
     readExistingBatch,
     readExistingImageChange,
     readExistingPageChange,
     readExistingChartChange,
+    readNativeMasterChange,
+    writeNativeMasterChange(
+      record: PresentationNativeMasterChange,
+      expectedRecord: PresentationNativeMasterChange | undefined,
+    ) {
+      const snapshot = structuredClone(record),
+        expected = structuredClone(expectedRecord)
+      const write = async () => {
+        if (
+          !validatePresentationNativeMasterChange(snapshot) ||
+          (expected !== undefined && !validatePresentationNativeMasterChange(expected))
+        )
+          throw new Error('presentation_native_master_state_invalid')
+        if ((await documentId()) !== snapshot.documentId)
+          throw new Error('presentation_document_changed')
+        const prior = readNativeMasterChange(snapshot.changeId)
+        if (JSON.stringify(prior) !== JSON.stringify(expected))
+          throw new Error('presentation_native_master_stale')
+        if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
+        if (!validNativeMasterTransition(prior, snapshot))
+          throw new Error('presentation_native_master_state_invalid')
+        await saveWithHistory(
+          NATIVE_MASTER_KEY,
+          JSON.stringify(snapshot),
+          {
+            id: historyEntryId('native_master', snapshot),
+            kind: 'native_master',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            nativeMasterWriteFailed = true
+          },
+        )
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
     writeExistingChartChange(
       record: PresentationExistingChartChange,
       expectedChange: PresentationExistingChartChange | undefined,

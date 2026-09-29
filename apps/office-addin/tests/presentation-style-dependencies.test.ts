@@ -16,6 +16,20 @@ describe('native presentation style dependencies', () => {
     expect(parsed.slides[0]).not.toBe(slides[1])
     expect(parsePowerPointStyleDependencies({ slides: [] })).toEqual({ slides: [] })
   })
+  it('retains the complete dependency graph beyond old 100/512 page windows', () => {
+    const large = Array.from({ length: 600 }, (_, i) => ({
+      slideId: `s${i}`,
+      masterId: 'm1',
+      layoutId: 'l1',
+    }))
+    const parsed = parsePowerPointStyleDependencies({ slides: large })
+    expect(parsed.slides).toHaveLength(600)
+    expect(
+      affectedStyleSlideIds(parsed, [
+        { op: 'set_master_theme_color', master_id: 'm1', theme_color: 'Accent1', color: '#FFFFFF' },
+      ]),
+    ).toHaveLength(600)
+  })
   it('resolves master/theme references and exact master/layout pairs', () => {
     const snapshot = { slides }
     const theme = {
@@ -51,7 +65,6 @@ describe('native presentation style dependencies', () => {
     { slides: new Array(1) },
     { slides: [], extra: true },
     { slides: [slides[0], slides[0]] },
-    { slides: Array.from({ length: 101 }, (_, i) => ({ ...slides[0], slideId: String(i) })) },
     ...['slideId', 'masterId', 'layoutId'].flatMap((key) =>
       [undefined, '', ' ', 'x'.repeat(257), 'a\u0000', 'a\u007f'].map((value) => ({
         slides: [{ ...slides[0], [key]: value }],

@@ -75,6 +75,14 @@ const RELAY_ERROR_CODES = new Set([
 ])
 const TERMINAL_REQUEST_CACHE_SIZE = 64
 const PRODUCTION_RELAY_ENDPOINT = 'wss://office.8-216-134-194.sslip.io/office-relay'
+const MASTER_BACKUP_OPERATIONS = new Set([
+  'master_backup_begin',
+  'master_backup_chunk',
+  'master_backup_finish',
+  'master_backup_status',
+  'master_backup_read',
+  'master_backup_list',
+])
 const V2_CAPABILITIES = ['agent.v1', 'web-search.v1', 'web-fetch.v1', 'image-search.v1'] as const
 
 export interface RelaySocket {
@@ -160,6 +168,7 @@ export function createOfficeRelayClient(options: {
       'presentation-animation-frame.v1',
       'presentation-pdf.v1',
       'presentation-production-pdf.v1',
+      'presentation-master-backups.v1',
     )
   if (options.presentationProxy && options.supportsTeamPresentation === true)
     offeredCapabilities.push('presentation-team.v1')
@@ -263,6 +272,11 @@ export function createOfficeRelayClient(options: {
       if (
         typeof capabilityName !== 'string' ||
         !session.capabilities.includes(capabilityName) ||
+        (capabilityName === 'presentation-master-backups.v1'
+          ? session.host !== 'PowerPoint' ||
+            !MASTER_BACKUP_OPERATIONS.has(frame.body.operation as string)
+          : typeof frame.body.operation === 'string' &&
+            frame.body.operation.startsWith('master_backup_')) ||
         (capabilityName === 'presentation-team.v1'
           ? options.supportsTeamPresentation !== true ||
             session.host !== 'PowerPoint' ||
@@ -304,7 +318,8 @@ export function createOfficeRelayClient(options: {
         capabilityName === 'presentation-asset-rights.v1' ||
         capabilityName === 'presentation-animation-frame.v1' ||
         capabilityName === 'presentation-pdf.v1' ||
-        capabilityName === 'presentation-production-pdf.v1'
+        capabilityName === 'presentation-production-pdf.v1' ||
+        capabilityName === 'presentation-master-backups.v1'
           ? !options.presentationProxy
           : capabilityName !== 'agent.v1' && !options.retrievalProxy)
       )
@@ -325,7 +340,8 @@ export function createOfficeRelayClient(options: {
                 capabilityName === 'presentation-asset-rights.v1' ||
                 capabilityName === 'presentation-animation-frame.v1' ||
                 capabilityName === 'presentation-pdf.v1' ||
-                capabilityName === 'presentation-production-pdf.v1'
+                capabilityName === 'presentation-production-pdf.v1' ||
+                capabilityName === 'presentation-master-backups.v1'
                   ? capabilityName === 'presentation-team.v1'
                     ? await options.presentationProxy!(
                         frame.body,

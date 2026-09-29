@@ -1,3 +1,5 @@
+import JSZip from 'jszip'
+import { createPresentationMasterBackupService } from '../../shell/src/main/presentation-master-backups'
 import { createStructuredProposalController } from '../src/agent/proposal-controller'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { benchmarkPlannedDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
@@ -115,12 +117,25 @@ async function fixture(withSecondPage = false, withImageBackup = false) {
       expect(expected).toBe(text)
       text = next
     })
+  const masterRoot = mkdtempSync(join(tmpdir(), 'wiswork-master-qa-'))
+  imageRoots.push(masterRoot)
+  const masterService = createPresentationMasterBackupService({ userDataPath: masterRoot })
   const createRuntime = () =>
     createOfficeHostRuntime('powerpoint', {
       imageAdapterOverrideForTests: true,
       presentation: {
         ...createPresentationDocumentBinding(settings, () => 'doc'),
         available: () => true,
+        masterBackupAvailable: () => true,
+        masterBackupRequest: async (body, signal) =>
+          new Response(
+            JSON.stringify(
+              await masterService(
+                body as Record<string, unknown>,
+                signal ?? new AbortController().signal,
+              ),
+            ),
+          ),
         attachmentsAvailable: () => withImageBackup,
         assetsAvailable: () => withImageBackup,
         attachmentsRequest: async (body, signal) =>
@@ -755,15 +770,22 @@ it('does not trust a stable tool label on a general script proposal', async () =
   f.runtime.dispose()
 })
 
-it.each([{ scope: ['host'] }, { scope: [] }])(
-  'uses the native master dependency scope $scope for saved and live QA',
-  async ({ scope }) => {
+it.each(
+  ['edit_slide_master', 'resume_slide_master_change', 'undo_slide_master_change'].flatMap(
+    (operation) => [
+      { operation, scope: ['host'] },
+      { operation, scope: [] },
+    ],
+  ),
+)(
+  'uses $operation native master dependency scope $scope for saved and live QA',
+  async ({ operation, scope }) => {
     const f = await fixture(true)
     const previous = structuredClone(f.secondPage())
     const beforeSave = f.save.mock.calls.length
     const proposal = f.proposals.propose({
-      operation: 'edit_slide_master',
-      toolName: 'edit_slide_master',
+      operation,
+      toolName: operation,
       title: 'Native master edit',
       preview: { qaScope: { basis: 'native_master_layout', hostSlideIds: scope } },
       impact: { host: 'powerpoint', targets: ['master:master1'], count: 1 },
@@ -848,6 +870,53 @@ function nativeStyleHost(dependencies: { slideId: string; masterId: string; layo
           }
       }
     })
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'readSlideOrder').mockImplementation(async () =>
+    stylePages.map((page) => page.slideId),
+  )
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'exportSlidePackage').mockImplementation(
+    async (index) => {
+      const dependency = slides[index]!,
+        master = masterState.masters.find((m) => m.id === dependency.masterId)!,
+        layout = master.layouts.find((l) => l.id === dependency.layoutId)!
+      const zip = new JSZip()
+      const rel = (type: string, target: string) =>
+        `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/${type}" Target="${target}"/></Relationships>`
+      zip.file(
+        'ppt/slides/slide1.xml',
+        '<p:sld xmlns:p="urn:p"><p:cSld><p:spTree/></p:cSld></p:sld>',
+      )
+      zip.file(
+        'ppt/slides/_rels/slide1.xml.rels',
+        rel('slideLayout', '../slideLayouts/slideLayout1.xml'),
+      )
+      zip.file(
+        'ppt/slideLayouts/slideLayout1.xml',
+        `<p:sldLayout xmlns:p="urn:p" showMasterSp="${!layout.areBackgroundGraphicsHidden}"><p:cSld>${layout.isMasterBackgroundFollowed ? '' : '<p:bg><p:bgPr/></p:bg>'}<p:spTree/></p:cSld></p:sldLayout>`,
+      )
+      zip.file(
+        'ppt/slideLayouts/_rels/slideLayout1.xml.rels',
+        rel('slideMaster', '../slideMasters/slideMaster1.xml'),
+      )
+      zip.file(
+        'ppt/slideMasters/slideMaster1.xml',
+        `<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="${master.background.color!.slice(1)}"/></a:solidFill></p:bgPr></p:bg><p:spTree/></p:cSld></p:sldMaster>`,
+      )
+      zip.file('ppt/slideMasters/_rels/slideMaster1.xml.rels', rel('theme', '../theme/theme1.xml'))
+      zip.file(
+        'ppt/theme/theme1.xml',
+        `<a:theme xmlns:a="urn:a"><a:themeElements><a:clrScheme name="Office"><a:lt1><a:srgbClr val="${master.themeColors.Light1!.slice(1)}"/></a:lt1><a:dk1><a:srgbClr val="${master.themeColors.Dark1!.slice(1)}"/></a:dk1></a:clrScheme><a:fontScheme/></a:themeElements></a:theme>`,
+      )
+      zip.file(
+        '[Content_Types].xml',
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/></Types>',
+      )
+      return {
+        slideId: dependency.slideId,
+        base64: await zip.generateAsync({ type: 'base64' }),
+        fingerprint: 'fixture',
+      }
+    },
+  )
   return {
     inspect,
     execute,
@@ -898,18 +967,25 @@ it.each(['theme', 'layout', 'different_master', 'unused_master', 'unknown'] as c
           }
         : { ...themeOperation, master_id: scenario === 'unused_master' ? 'unused' : 'master1' }
     const before = [structuredClone(f.page()), structuredClone(f.secondPage())]
+    if (scenario === 'unknown' || scenario === 'unused_master') {
+      const result = await f.runtime.skill.executeTool({
+        id: 'style',
+        name: 'edit_slide_master',
+        input: { program: { version: 2, operations: [operation] } },
+      })
+      expect(result.isError).toBe(true)
+      expect(f.proposals.pending()).toBeUndefined()
+      expect(native.execute).not.toHaveBeenCalled()
+      expect([f.page(), f.secondPage()]).toEqual(before)
+      f.runtime.dispose()
+      return
+    }
     const proposal = await proposeStyle(f, operation)
-    const affected =
-      scenario === 'unused_master'
-        ? []
-        : scenario === 'theme' || scenario === 'unknown'
-          ? ['host', 'host-2']
-          : ['host']
-    expect(proposal.preview.qaScope).toEqual(
-      scenario === 'unknown'
-        ? { basis: 'document' }
-        : { basis: 'native_master_layout', hostSlideIds: affected },
-    )
+    const affected = scenario === 'theme' ? ['host', 'host-2'] : ['host']
+    expect(proposal.preview.qaScope).toEqual({
+      basis: 'native_master_layout',
+      hostSlideIds: affected,
+    })
     await confirmReviewed(f.proposals, proposal.id)
     expect(native.execute).toHaveBeenCalledOnce()
     for (const [index, entry] of [f.page(), f.secondPage()].entries()) {

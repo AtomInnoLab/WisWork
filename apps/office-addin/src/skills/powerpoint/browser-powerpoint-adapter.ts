@@ -1,3 +1,4 @@
+import { masterOperationKey, masterStateValuesFingerprint } from './presentation-master-program.js'
 import {
   parsePowerPointStyleDependencies,
   type PowerPointStyleDependencies,
@@ -137,6 +138,13 @@ export type PowerPointMasterOperation =
       show_master_graphics: boolean
     }
 
+export interface PowerPointMasterExecutionPreimage {
+  before: PowerPointMasterState
+  operations: PowerPointMasterOperation[]
+  slideIds: string[]
+  dependencies: PowerPointStyleDependencies
+}
+
 export interface PresentationPageGeometry {
   left: number
   top: number
@@ -241,6 +249,9 @@ export interface PowerPointAdapter {
   executeMasterOperations(
     operations: PowerPointMasterOperation[],
     signal?: AbortSignal,
+    preimage?: PowerPointMasterExecutionPreimage,
+    beforeWrite?: () => Promise<void>,
+    writeGuard?: () => void,
   ): Promise<void>
   screenshotSlide(
     slideIndex: number,
@@ -805,6 +816,137 @@ function geometryApplied(
   return geometryFields.every((key) => Math.abs(current[key] - target[key]) <= 0.01)
 }
 
+async function inspectMasterState(
+  context: RuntimeRecord,
+  signal?: AbortSignal,
+  beforeFinalSync?: () => void,
+): Promise<PowerPointMasterState> {
+  const presentation = context.presentation as RuntimeRecord
+  const masters = presentation.slideMasters as RuntimeRecord
+  if (!masters || typeof masters.load !== 'function') throw new Error('office_api_unsupported')
+  ;(masters.load as (properties: string) => void)(
+    'items/id,items/name,items/layouts/items/id,items/layouts/items/name',
+  )
+  await sync(context, signal)
+  const masterItems = (masters.items as RuntimeRecord[]) ?? []
+  if (masterItems.length > 32) throw new Error('office_read_failed')
+  const themeSlots = [
+    'Accent1',
+    'Accent2',
+    'Accent3',
+    'Accent4',
+    'Accent5',
+    'Accent6',
+    'Dark1',
+    'Dark2',
+    'Light1',
+    'Light2',
+    'Hyperlink',
+    'FollowedHyperlink',
+  ]
+  const pending = masterItems.map((master) => {
+    const fill = (master.background as RuntimeRecord)?.fill as RuntimeRecord | undefined
+    if (!fill || typeof fill.load !== 'function') throw new Error('office_api_unsupported')
+    ;(fill.load as (properties: string) => void)('type')
+    const solid =
+      typeof fill.getSolidFillOrNullObject === 'function'
+        ? (fill.getSolidFillOrNullObject as () => RuntimeRecord)()
+        : undefined
+    if (solid) (solid.load as (properties: string[]) => void)(['color', 'transparency'])
+    const gradient =
+      typeof fill.getGradientFillOrNullObject === 'function'
+        ? (fill.getGradientFillOrNullObject as () => RuntimeRecord)()
+        : undefined
+    if (gradient) (gradient.load as (properties: string[]) => void)(['type'])
+    const pattern =
+      typeof fill.getPatternFillOrNullObject === 'function'
+        ? (fill.getPatternFillOrNullObject as () => RuntimeRecord)()
+        : undefined
+    if (pattern)
+      (pattern.load as (properties: string[]) => void)([
+        'pattern',
+        'foregroundColor',
+        'backgroundColor',
+      ])
+    const picture =
+      typeof fill.getPictureOrTextureFillOrNullObject === 'function'
+        ? (fill.getPictureOrTextureFillOrNullObject as () => RuntimeRecord)()
+        : undefined
+    if (picture) (picture.load as (properties: string[]) => void)(['transparency'])
+    const scheme = master.themeColorScheme as RuntimeRecord
+    const colors = Object.fromEntries(
+      themeSlots.map((slot) => [
+        slot,
+        (scheme.getThemeColor as (slot: string) => RuntimeRecord)(slot),
+      ]),
+    )
+    const layouts = ((master.layouts as RuntimeRecord)?.items as RuntimeRecord[]) ?? []
+    if (layouts.length > 128) throw new Error('office_read_failed')
+    for (const layout of layouts) {
+      const background = layout.background as RuntimeRecord
+      ;(background.load as (properties: string[]) => void)([
+        'isMasterBackgroundFollowed',
+        'areBackgroundGraphicsHidden',
+      ])
+      const layoutFill = background.fill as RuntimeRecord
+      if (!layoutFill || typeof layoutFill.load !== 'function')
+        throw new Error('office_api_unsupported')
+      ;(layoutFill.load as (properties: string) => void)('type')
+    }
+    return { master, fill, solid, gradient, pattern, picture, colors, layouts }
+  })
+  beforeFinalSync?.()
+  await sync(context, signal)
+  return {
+    masters: pending.map(
+      ({ master, fill, solid, gradient, pattern, picture, colors, layouts }) => ({
+        id: string(master.id),
+        name: string(master.name),
+        background: {
+          type: string(fill.type, 64),
+          ...(solid && !solid.isNullObject && typeof solid.color === 'string'
+            ? { color: solid.color }
+            : {}),
+          ...(solid && !solid.isNullObject && typeof solid.transparency === 'number'
+            ? { transparency: solid.transparency }
+            : {}),
+          ...(gradient && !gradient.isNullObject && typeof gradient.type === 'string'
+            ? { gradientType: gradient.type }
+            : {}),
+          ...(pattern && !pattern.isNullObject && typeof pattern.pattern === 'string'
+            ? { pattern: pattern.pattern }
+            : {}),
+          ...(pattern && !pattern.isNullObject && typeof pattern.foregroundColor === 'string'
+            ? { foregroundColor: pattern.foregroundColor }
+            : {}),
+          ...(pattern && !pattern.isNullObject && typeof pattern.backgroundColor === 'string'
+            ? { backgroundColor: pattern.backgroundColor }
+            : {}),
+          ...(picture && !picture.isNullObject && typeof picture.transparency === 'number'
+            ? { pictureTransparency: picture.transparency }
+            : {}),
+        },
+        themeColors: Object.fromEntries(
+          Object.entries(colors).map(([slot, result]) => [
+            slot,
+            string((result as RuntimeRecord).value, 64),
+          ]),
+        ),
+        layouts: layouts.map((layout) => {
+          const background = layout.background as RuntimeRecord
+          return {
+            id: string(layout.id),
+            name: string(layout.name),
+            isMasterBackgroundFollowed: Boolean(background.isMasterBackgroundFollowed),
+            areBackgroundGraphicsHidden: Boolean(background.areBackgroundGraphicsHidden),
+            background: { type: string((background.fill as RuntimeRecord).type, 64) },
+          }
+        }),
+      }),
+    ),
+  }
+}
+
 export class BrowserPowerPointAdapter implements PowerPointAdapter {
   private async runScreenshot<T>(
     minimumVersion: '1.8' | '1.10',
@@ -848,8 +990,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         'items/id,items/slideMaster/id,items/layout/id',
       )
       await sync(context, signal)
-      if (!Array.isArray(slides.items) || slides.items.length > 100)
-        throw new Error('office_read_failed')
+      if (!Array.isArray(slides.items)) throw new Error('office_read_failed')
       return parsePowerPointStyleDependencies({
         slides: (slides.items as RuntimeRecord[]).map((slide) => ({
           slideId: slide.id,
@@ -862,142 +1003,85 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
 
   async inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState> {
     cancelled(signal)
-    return this.run('1.10', async (context) => {
-      const presentation = context.presentation as RuntimeRecord
-      const masters = presentation.slideMasters as RuntimeRecord
-      if (!masters || typeof masters.load !== 'function') throw new Error('office_api_unsupported')
-      ;(masters.load as (properties: string) => void)(
-        'items/id,items/name,items/layouts/items/id,items/layouts/items/name',
-      )
-      await sync(context, signal)
-      const masterItems = (masters.items as RuntimeRecord[]) ?? []
-      if (masterItems.length > 32) throw new Error('office_read_failed')
-      const themeSlots = [
-        'Accent1',
-        'Accent2',
-        'Accent3',
-        'Accent4',
-        'Accent5',
-        'Accent6',
-        'Dark1',
-        'Dark2',
-        'Light1',
-        'Light2',
-        'Hyperlink',
-        'FollowedHyperlink',
-      ]
-      const pending = masterItems.map((master) => {
-        const fill = (master.background as RuntimeRecord)?.fill as RuntimeRecord | undefined
-        if (!fill || typeof fill.load !== 'function') throw new Error('office_api_unsupported')
-        ;(fill.load as (properties: string) => void)('type')
-        const solid =
-          typeof fill.getSolidFillOrNullObject === 'function'
-            ? (fill.getSolidFillOrNullObject as () => RuntimeRecord)()
-            : undefined
-        if (solid) (solid.load as (properties: string[]) => void)(['color', 'transparency'])
-        const gradient =
-          typeof fill.getGradientFillOrNullObject === 'function'
-            ? (fill.getGradientFillOrNullObject as () => RuntimeRecord)()
-            : undefined
-        if (gradient) (gradient.load as (properties: string[]) => void)(['type'])
-        const pattern =
-          typeof fill.getPatternFillOrNullObject === 'function'
-            ? (fill.getPatternFillOrNullObject as () => RuntimeRecord)()
-            : undefined
-        if (pattern)
-          (pattern.load as (properties: string[]) => void)([
-            'pattern',
-            'foregroundColor',
-            'backgroundColor',
-          ])
-        const picture =
-          typeof fill.getPictureOrTextureFillOrNullObject === 'function'
-            ? (fill.getPictureOrTextureFillOrNullObject as () => RuntimeRecord)()
-            : undefined
-        if (picture) (picture.load as (properties: string[]) => void)(['transparency'])
-        const scheme = master.themeColorScheme as RuntimeRecord
-        const colors = Object.fromEntries(
-          themeSlots.map((slot) => [
-            slot,
-            (scheme.getThemeColor as (slot: string) => RuntimeRecord)(slot),
-          ]),
-        )
-        const layouts = ((master.layouts as RuntimeRecord)?.items as RuntimeRecord[]) ?? []
-        if (layouts.length > 128) throw new Error('office_read_failed')
-        for (const layout of layouts) {
-          const background = layout.background as RuntimeRecord
-          ;(background.load as (properties: string[]) => void)([
-            'isMasterBackgroundFollowed',
-            'areBackgroundGraphicsHidden',
-          ])
-          const layoutFill = background.fill as RuntimeRecord
-          if (!layoutFill || typeof layoutFill.load !== 'function')
-            throw new Error('office_api_unsupported')
-          ;(layoutFill.load as (properties: string) => void)('type')
-        }
-        return { master, fill, solid, gradient, pattern, picture, colors, layouts }
-      })
-      await sync(context, signal)
-      return {
-        masters: pending.map(
-          ({ master, fill, solid, gradient, pattern, picture, colors, layouts }) => ({
-            id: string(master.id),
-            name: string(master.name),
-            background: {
-              type: string(fill.type, 64),
-              ...(solid && !solid.isNullObject && typeof solid.color === 'string'
-                ? { color: solid.color }
-                : {}),
-              ...(solid && !solid.isNullObject && typeof solid.transparency === 'number'
-                ? { transparency: solid.transparency }
-                : {}),
-              ...(gradient && !gradient.isNullObject && typeof gradient.type === 'string'
-                ? { gradientType: gradient.type }
-                : {}),
-              ...(pattern && !pattern.isNullObject && typeof pattern.pattern === 'string'
-                ? { pattern: pattern.pattern }
-                : {}),
-              ...(pattern && !pattern.isNullObject && typeof pattern.foregroundColor === 'string'
-                ? { foregroundColor: pattern.foregroundColor }
-                : {}),
-              ...(pattern && !pattern.isNullObject && typeof pattern.backgroundColor === 'string'
-                ? { backgroundColor: pattern.backgroundColor }
-                : {}),
-              ...(picture && !picture.isNullObject && typeof picture.transparency === 'number'
-                ? { pictureTransparency: picture.transparency }
-                : {}),
-            },
-            themeColors: Object.fromEntries(
-              Object.entries(colors).map(([slot, result]) => [
-                slot,
-                string((result as RuntimeRecord).value, 64),
-              ]),
-            ),
-            layouts: layouts.map((layout) => {
-              const background = layout.background as RuntimeRecord
-              return {
-                id: string(layout.id),
-                name: string(layout.name),
-                isMasterBackgroundFollowed: Boolean(background.isMasterBackgroundFollowed),
-                areBackgroundGraphicsHidden: Boolean(background.areBackgroundGraphicsHidden),
-                background: { type: string((background.fill as RuntimeRecord).type, 64) },
-              }
-            }),
-          }),
-        ),
-      }
-    })
+    return this.run('1.10', (context) => inspectMasterState(context, signal))
   }
 
   async executeMasterOperations(
     operations: PowerPointMasterOperation[],
     signal?: AbortSignal,
+    preimage?: PowerPointMasterExecutionPreimage,
+    beforeWrite?: () => Promise<void>,
+    writeGuard?: () => void,
   ): Promise<void> {
+    const ownedOperations = structuredClone(operations),
+      ownedPreimage = preimage && structuredClone(preimage)
     cancelled(signal)
     await this.run('1.10', async (context) => {
       const masters = (context.presentation as RuntimeRecord).slideMasters as RuntimeRecord
       if (typeof masters.getItem !== 'function') throw new Error('office_api_unsupported')
-      for (const operation of operations) {
+      await beforeWrite?.()
+      cancelled(signal)
+      if (ownedPreimage) {
+        const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+        if (typeof slides.load !== 'function' || typeof slides.getCount !== 'function')
+          throw new Error('office_api_unsupported')
+        let count: RuntimeRecord | undefined
+        const actual = await inspectMasterState(context, signal, () => {
+          count = (slides.getCount as () => RuntimeRecord)()
+          ;(slides.load as (properties: string) => void)(
+            'items/id,items/slideMaster/id,items/layout/id',
+          )
+          ;(masters.load as (properties: string) => void)(
+            'items/id,items/name,items/layouts/items/id,items/layouts/items/name',
+          )
+        })
+        if (
+          !Array.isArray(slides.items) ||
+          count?.value !== slides.items.length ||
+          !Number.isSafeInteger(count?.value) ||
+          (count!.value as number) < 1
+        )
+          throw new Error('proposal_stale')
+        const order = (slides.items as RuntimeRecord[]).map((slide) => slide.id)
+        const dependencies = parsePowerPointStyleDependencies({
+          slides: (slides.items as RuntimeRecord[]).map((slide) => ({
+            slideId: slide.id,
+            masterId: (slide.slideMaster as RuntimeRecord | undefined)?.id,
+            layoutId: (slide.layout as RuntimeRecord | undefined)?.id,
+          })),
+        })
+        if (
+          JSON.stringify(order) !== JSON.stringify(ownedPreimage.slideIds) ||
+          JSON.stringify(dependencies) !==
+            JSON.stringify(parsePowerPointStyleDependencies(ownedPreimage.dependencies)) ||
+          masterStateValuesFingerprint(actual) !==
+            masterStateValuesFingerprint(ownedPreimage.before) ||
+          JSON.stringify(
+            (masters.items as RuntimeRecord[]).map((master) => ({
+              id: master.id,
+              layouts: ((master.layouts as RuntimeRecord).items as RuntimeRecord[]).map(
+                (layout) => layout.id,
+              ),
+            })),
+          ) !==
+            JSON.stringify(
+              actual.masters.map((master) => ({
+                id: master.id,
+                layouts: master.layouts.map((layout) => layout.id),
+              })),
+            ) ||
+          ownedOperations.some(
+            (op) =>
+              !ownedPreimage.operations.some(
+                (expected) => masterOperationKey(op) === masterOperationKey(expected),
+              ),
+          )
+        )
+          throw new Error('proposal_stale')
+      }
+      writeGuard?.()
+      cancelled(signal)
+      for (const operation of ownedOperations) {
         cancelled(signal)
         const master = (masters.getItem as (id: string) => RuntimeRecord)(operation.master_id)
         if (operation.op === 'set_master_theme_color') {

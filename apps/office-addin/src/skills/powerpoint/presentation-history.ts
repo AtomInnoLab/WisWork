@@ -6,7 +6,13 @@ import {
   type PresentationHistoryEntry,
 } from './presentation-change-history.js'
 export interface PresentationChangeSetSummary {
-  scope: { slideIds: string[]; shapeIds?: string[] }
+  scope: {
+    slideIds: string[]
+    shapeIds?: string[]
+    masterIds?: string[]
+    affectedPageCount?: number
+    pageIdsSource?: 'pc_snapshot'
+  }
   intent: string
   operations: { kind: PresentationHistoryEntry['kind']; pageId: string }[]
   preserved: string[]
@@ -16,6 +22,23 @@ export interface PresentationChangeSetSummary {
 export function presentationChangeSetSummary(
   entry: PresentationHistoryEntry,
 ): PresentationChangeSetSummary {
+  if (entry.kind === 'native_master')
+    return {
+      scope: {
+        slideIds: [],
+        masterIds: [...entry.record.scope.masterIds],
+        affectedPageCount: entry.record.scope.affectedPageCount,
+        pageIdsSource: 'pc_snapshot',
+      },
+      intent: entry.record.intent,
+      operations: entry.record.operations.map((op) => ({
+        kind: 'native_master' as const,
+        pageId: `master:${op.master_id}`,
+      })),
+      preserved: ['原页面身份与顺序', '完整受影响页原包和母版字段已存PC保存点；具体页ID需只读检查'],
+      validation: ['完整依赖与目标字段回读', '原包和逐项回执核对', '受影响页面截图复核'],
+      risk: 'high',
+    }
   if (entry.kind === 'existing')
     return {
       scope: { slideIds: [entry.record.hostSlideId], shapeIds: [entry.record.shapeId] },
@@ -132,7 +155,15 @@ export async function selectPresentationHistory(
 ): Promise<
   Exclude<
     PresentationHistoryEntry,
-    { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart' }
+    {
+      kind:
+        | 'existing'
+        | 'existing_batch'
+        | 'existing_image'
+        | 'existing_page'
+        | 'existing_chart'
+        | 'native_master'
+    }
   >[]
 > {
   if (
@@ -163,14 +194,20 @@ export async function selectPresentationHistory(
         PresentationHistoryEntry,
         {
           kind:
-            'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart'
+            | 'existing'
+            | 'existing_batch'
+            | 'existing_image'
+            | 'existing_page'
+            | 'existing_chart'
+            | 'native_master'
         }
       > =>
         e.kind !== 'existing' &&
         e.kind !== 'existing_batch' &&
         e.kind !== 'existing_image' &&
         e.kind !== 'existing_page' &&
-        e.kind !== 'existing_chart',
+        e.kind !== 'existing_chart' &&
+        e.kind !== 'native_master',
     )
     .filter((e) => {
       const r = e.record

@@ -497,3 +497,63 @@ it('shows an uncertain copied page with an explicit reconciliation action and no
     await act(async () => root.unmount())
   }
 })
+
+it('shows complete master dependency count and dispatches receipt reconciliation without claiming QA', async () => {
+  const run = vi.fn()
+  const controller: PresentationChangesController = {
+    snapshot: () => ({
+      phase: 'idle',
+      entries: [
+        {
+          id: 'native_master:master',
+          source: 'native_master',
+          kind: 'master',
+          pageId: 'master:m1',
+          state: 'applying',
+          before: 'Original fields',
+          after: 'Pending receipt',
+          affectedPageCount: 600,
+          operationCount: 32,
+          cursor: 1,
+          actions: ['inspect', 'reconcile'],
+          changeSet: {
+            intent: 'Master style',
+            scope: {
+              slideIds: [],
+              masterIds: ['m1'],
+              affectedPageCount: 600,
+              pageIdsSource: 'pc_snapshot',
+            },
+            operations: [],
+            preserved: [],
+            validation: [],
+            risk: 'high',
+          },
+        },
+      ],
+    }),
+    subscribe: () => () => {},
+    run,
+    refresh: vi.fn(),
+    clear: vi.fn(),
+  }
+  const container = document.createElement('div'),
+    root = createRoot(container)
+  try {
+    await act(async () => root.render(React.createElement(PresentationChangesCard, { controller })))
+    expect(container.textContent).toContain('600')
+    expect(container.textContent).toContain('母版共享样式')
+    expect(container.textContent).not.toContain('历史截图复核：通过')
+    await act(async () =>
+      Array.from(container.querySelectorAll('button'))
+        .find((b) => b.textContent === '核对母版回执')!
+        .click(),
+    )
+    expect(run).toHaveBeenCalledWith('native_master:master', 'reconcile')
+    expect(
+      Array.from(container.querySelectorAll('button')).some((b) => b.textContent === '继续'),
+    ).toBe(false)
+  } finally {
+    await act(async () => root.unmount())
+  }
+})

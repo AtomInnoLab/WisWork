@@ -703,12 +703,22 @@ async fn v2_negotiates_production_pdf_and_denies_unnegotiated_requests() {
     check_v2_capability("presentation-production-pdf.v1").await;
 }
 
+#[tokio::test]
+async fn v2_negotiates_master_backups_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-master-backups.v1").await;
+}
+
 async fn check_v2_capability(capability: &str) {
     let url = server().await;
+    let host = if capability == "presentation-master-backups.v1" {
+        "PowerPoint"
+    } else {
+        "Word"
+    };
     let mut office = socket(&url, ORIGIN).await;
     send(
         &mut office,
-        json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1",capability,"web-fetch.v1","future-capability.v9"]}),
+        json!({"version":2,"type":"office.create","host":host,"capabilities":["agent.v1",capability,"web-fetch.v1","future-capability.v9"]}),
     )
     .await;
     let created = recv(&mut office).await;
@@ -1486,4 +1496,70 @@ async fn team_session_rejects_all_private_capability_combinations_before_pairing
         assert_eq!(error["type"], "relay.error");
         assert_eq!(error["code"], "invalid_capabilities");
     }
+}
+
+#[tokio::test]
+async fn master_backup_capability_budget_accepts_sixteen_and_rejects_seventeen() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    let caps = json!([
+        "agent.v1",
+        "web-search.v1",
+        "web-fetch.v1",
+        "image-search.v1",
+        "presentation.v1",
+        "presentation-attachments.v1",
+        "presentation-assets.v1",
+        "presentation-remote-images.v1",
+        "presentation-webpages.v1",
+        "presentation-asset-rights.v1",
+        "presentation-animation-frame.v1",
+        "presentation-pdf.v1",
+        "presentation-production-pdf.v1",
+        "presentation-master-backups.v1",
+        "future-one.v1",
+        "future-two.v1"
+    ]);
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":caps}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    assert_eq!(created["type"], "office.created");
+    let mut pc = pc_socket(&url).await;
+    send(&mut pc,json!({"version":2,"type":"pc.negotiate","verification_code":created["verification_code"],"capabilities":caps})).await;
+    let negotiated = recv(&mut pc).await;
+    assert_eq!(negotiated["type"], "pc.negotiated");
+    assert_eq!(negotiated["capabilities"].as_array().unwrap().len(), 14);
+    assert!(
+        negotiated["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("presentation-master-backups.v1"))
+    );
+    let mut oversized = caps.as_array().unwrap().clone();
+    oversized.push(json!("future-three.v1"));
+    let mut other = socket(&url, ORIGIN).await;
+    send(
+        &mut other,
+        json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":oversized}),
+    )
+    .await;
+    assert_eq!(recv(&mut other).await["code"], "invalid_frame");
+}
+#[tokio::test]
+async fn old_pc_without_master_backups_cannot_forward_master_requests() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["agent.v1","presentation-master-backups.v1"]})).await;
+    let created = recv(&mut office).await;
+    let mut pc = pc_socket(&url).await;
+    send(&mut pc,json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":["agent.v1"]})).await;
+    let claimed = recv(&mut pc).await;
+    send(&mut pc,json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"]})).await;
+    recv(&mut pc).await;
+    let ready = recv(&mut office).await;
+    send(&mut office,json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"missing_master","capability_name":"presentation-master-backups.v1","body":{"operation":"master_backup_status"}})).await;
+    assert_eq!(recv(&mut office).await["code"], "capability_not_negotiated");
 }
