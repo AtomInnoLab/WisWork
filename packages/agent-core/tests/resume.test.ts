@@ -24,6 +24,18 @@ function fixture(onTurnEnd?: () => Promise<void>) {
   return { loop, stream, executeTool, onDone, onError, callbacks: () => callbacks }
 }
 describe('completed tool conversation resume', () => {
+  it('keeps a previous completed batch when a stopped turn has no closing assistant message', () => {
+    const f = fixture()
+    const later: AgentMessage[] = [
+      ...history,
+      { role: 'user', text: 'Follow up after stopping' },
+      { role: 'assistant', text: '', toolCalls: [{ id: 'read-2', name: 'read', input: {} }] },
+      { role: 'tool', results: [{ id: 'read-2', name: 'read', output: 'latest evidence' }] },
+    ]
+    expect(f.loop.resume(later)).toBe(true)
+    expect(f.stream.mock.calls[0]![0].messages.slice(0, 6)).toEqual(later)
+    expect(f.executeTool).not.toHaveBeenCalled()
+  })
   it('continues from saved results without duplicating the instruction or executing old tools', () => {
     const f = fixture()
     expect(f.loop.resume(history)).toBe(true)

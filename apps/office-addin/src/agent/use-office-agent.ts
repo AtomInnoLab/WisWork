@@ -679,13 +679,16 @@ export function createOfficeAgentSession(dependencies: {
           safeError.retryable &&
           (!dependencies.runCheckpoint || (transient && Boolean(safeRecovery())))
         const message =
-          dependencies.runCheckpoint && transient && !retryable
-            ? '运行已中断，检查点已保留。请核对项目、页面和写入记录；不能重跑可能已写入的原请求。'
-            : dependencies.runCheckpoint && transient
-              ? readRecovery()?.messages
-                ? '服务暂时中断，读取结果已保留。可在核对当前文档后主动继续，已完成读取不自动重放。'
-                : '服务暂时中断，运行阶段已保留。可在核对当前文档后主动重新运行安全请求；未自动重放。'
-              : safeError.message
+          error === 'presentation_run_checkpoint_unavailable' &&
+          readRecovery()?.restartSafe === true
+            ? '读取结果未能保存，后续模型请求已停止，运行检查点已保留。请检查本机浏览器存储，重新打开后核对文档并恢复任务。'
+            : dependencies.runCheckpoint && transient && !retryable
+              ? '运行已中断，检查点已保留。请核对项目、页面和写入记录；不能重跑可能已写入的原请求。'
+              : dependencies.runCheckpoint && transient
+                ? readRecovery()?.messages
+                  ? '服务暂时中断，读取结果已保留。可在核对当前文档后主动继续，已完成读取不自动重放。'
+                  : '服务暂时中断，运行阶段已保留。可在核对当前文档后主动重新运行安全请求；未自动重放。'
+                : safeError.message
         diagnose((diagnostics) => {
           diagnostics.setTool('agent_run')
           diagnostics.record({

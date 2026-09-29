@@ -55,7 +55,7 @@ export function parseAgentResumeMessages(value: unknown): AgentMessage[] | undef
           !keys(message, ['role', 'text']) ||
           typeof message.text !== 'string' ||
           !message.text.trim() ||
-          (index > 0 && messages[index - 1]?.role !== 'assistant')
+          (index > 0 && !['assistant', 'tool'].includes(messages[index - 1]!.role))
         )
           return undefined
       } else if (message.role === 'assistant') {
