@@ -1,10 +1,10 @@
 # 旧 XML 修改持久恢复实施计划
 
-2026-09-29；依据原方案 §6.4/§14.2。母版原生修改交付后续；Unit 1 页面/图表本轮已实现并验证，Unit 2/3 母版 XML 待实施。
+2026-09-29；依据原方案 §6.4/§14.2。母版原生修改交付后续；Unit 1 页面/图表本轮已实现并验证，Unit 2/3 母版 XML 已实现主要接线，最终 600 页撤销内存验证仍待闭合。
 
-Scope: edit_slide_xml / edit_slide_chart / edit_slide_master_xml. Preserve tool names, version-1 declarative replace_xml schema, 1–32 unique paths, existing 32 KiB program and package limits, chart data/link protection, master layout relationship identity protection, and Mac master-XML exclusion. 本文建立时未实施；Unit 1 本轮已实现，最终验证与边界见阶段报告。Unit 2/3 尚未实现。
+Scope: edit_slide_xml / edit_slide_chart / edit_slide_master_xml. Preserve tool names, version-1 declarative replace_xml schema, 1–32 unique paths, existing 32 KiB program and package limits, chart data/link protection, master layout relationship identity protection, and Mac master-XML exclusion. 本文建立时未实施；Unit 1 本轮已实现，最终验证与边界见阶段报告。Unit 2/3 已迁移到专有持久事务；本批仍等待最终压力验证。
 
-## 实施前缺口（Unit 1 已迁移页面/图表，母版 XML 仍待迁移）
+## 实施前缺口（历史基线，页面/图表及母版 XML 已迁移）
 
 powerpoint-skill.ts proposePackageEdit validates the source ID, complete source package digest and full order, but stores before/applied only in the closure. replaceSlidePackage imports + deletes the source in one Office batch, may perform native recovery writes in catch, and for master applies the imported primary master's layouts to all old source-master pages in another batch. originalLayouts / originalLayoutIds / affectedLayouts are RAM maps. A lost callback/ACK or reopen has no persistent page/master/layout phase receipts.
 
@@ -54,4 +54,20 @@ Preserve current schema/allowlist tests and 600-page/end-index cases. Inject fai
 
 导入所有条目按完整解压字节证明所有权，保留已允许的背景规范化；新增真实同长 FNV 碰撞反例，旧 matcher 接受但新所有权证明拒绝。600 页末页及 32 图表 XML 路径在合成本地 PC 测试验证；不作为真实 Office 验收。
 
-最终证据参见 docs/product/wiswork-ppt-agent-xml-page-chart-durable-recovery-progress-2026-09-29.md。**母版 XML 尚沿用旧内存闭包，Unit 2/3 继续待实施**；不能将页面/图表恢复计为母版依赖、布局或完整母版库存恢复。
+最终证据参见 docs/product/wiswork-ppt-agent-xml-page-chart-durable-recovery-progress-2026-09-29.md。**上述为 Unit 1 交付时的范围；母版 XML 后续已迁移独立 master_xml 账本，最终压力测试仍待闭合**；不能将页面/图表恢复计为母版依赖、布局或完整母版库存恢复。
+
+## Unit 2/3 布局映射探测补充（2026-09-29）
+
+已核对本机 Office SDK 类型及官方 Slide/SlideLayout API：布局没有直接导出包的方法；不能以 native 集合顺序、名称或包路径冒充实际布局身份。完整映射需要每个 native layout 的真实代表包，包内 source-layout-master 关系、完整有序 layout 图与内容证明共同确定身份。
+
+已使用的布局优先复用原依赖页代表包。无代表页的原布局、新导入母版布局及重建原母版布局，均在用户确认且完整原页备份读验之后，使用独立临时原包副本逐布局 applyLayout/export 探测。先持久 stage 意图/实际临时页ID，再逐 applyLayout pending/证明/回执；探测后删除临时副本并证明全部受保护页面与顺序。禁止在原source、正式替换source或正式恢复source上探测，因为重新应用旧layout可能不能恢复 placeholder/page payload。
+
+原包探测、导入包探测及恢复包探测各有自己的实际三ID槽位及恢复阶段。ACK未知不重放、不隐藏逆写；只能基于完整包/实际布局/页序证明显式补齐回执。所有引入母版（包括临时副本可能带入的母版）均记录在PC证明链，未验证unusedmaster清理时保持 inventoryCleanupVerified=false。完整600依赖与多布局范围保留；大映射/回执链在PC不可变证明中，settings保持紧凑游标和引用，禁止新增512页上限。
+
+参考：[Office Slide applyLayout/exportAsBase64](https://learn.microsoft.com/en-us/javascript/api/powerpoint/powerpoint.slide?view=powerpoint-js-preview)、[Office SlideLayout API](https://learn.microsoft.com/en-us/javascript/api/powerpoint/powerpoint.slidelayout?view=powerpoint-js-preview)。
+
+## Unit 3 未证明内容的显式恢复补充（2026-09-29）
+
+原方案 §6.4/§14.2 要求覆盖完整受影响页并保留写前保存点。布局写入造成正文/备注变化时，不得认领成功。已知写目标及其他已持久归属的受影响页均可进入单独高风险原包恢复；先核完整当前 ID/顺序归属、所有未受影响页 SHA/依赖闭合，再保存当前全部受影响页包及原包差异引用。提案明确实际覆盖范围及内容有差异的已知页数量，用户确认后才把元数据核对为 recovery_required 并对所有有差异的已知页做原包 fallback。存在未知插入 ID、未受影响页变化或无法证明的顺序时拒绝认领和删除。
+
+单目标恢复亦保存当前坏页内容作为写前保存点；不能用当前 SHA 代替可恢复的包。当前包留存不等于已实现通用 redo，也不使历史截图成为当前 QA。不能把普通第三方漂移自动归因于已知写入或静默覆盖。
