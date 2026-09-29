@@ -168,13 +168,22 @@ export async function handlePresentationProduction(
     store: PresentationStore
     compile: typeof compilePresentationDeck
     readResearch?: PresentationResearchReader
+    assertWritable?: () => void
     shouldStop?: () => boolean
     onPage?: (record: PresentationProductionRecord, page: PresentationProductionPage) => void
     attachments: (request: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
   },
   signal: AbortSignal,
 ) {
+  request = structuredClone(request)
+  options = { ...options }
   const { store, compile, attachments } = options
+  const assertWritable = options.assertWritable
+  const beforeWrite = () => {
+    check(signal)
+    assertWritable?.()
+    check(signal)
+  }
   const projectId = request.projectId as string,
     documentId = request.documentId as string,
     requestId = request.requestId as string | undefined
@@ -228,6 +237,7 @@ export async function handlePresentationProduction(
           throw new Error('evidence_locator_mismatch')
       }
       check(signal)
+      beforeWrite()
       saved = store.saveClaimReview(projectId, documentId, requestId!, request.reviewId as string, {
         pageId: evidence.pageId,
         claimId: evidence.claimId,
@@ -304,6 +314,7 @@ export async function handlePresentationProduction(
     )
     check(signal)
     researchValidated = true
+    beforeWrite()
     record = store.deriveProduction(
       projectId,
       documentId,
@@ -332,6 +343,7 @@ export async function handlePresentationProduction(
     )
     check(signal)
     researchValidated = true
+    beforeWrite()
     record = store.beginProduction(
       projectId,
       documentId,
@@ -558,10 +570,12 @@ export async function handlePresentationProduction(
     const current = runningRecord.pages.find((p) => p.pageId === slide.id)!
     if (current.state === 'compiled') return
     const attempt = current.attempt + 1
+    beforeWrite()
     runningRecord = store.updateProductionPage(runningRecord, slide.id, {
       state: 'building',
       attempt,
     })
+    beforeWrite()
     options.onPage?.(
       runningRecord,
       runningRecord.pages.find((page) => page.pageId === slide.id)!,
@@ -584,6 +598,7 @@ export async function handlePresentationProduction(
       let assetBytes = 0
       for (const asset of deck.assets.filter((asset) => assetIds.has(asset.id))) {
         check(signal)
+        beforeWrite()
         store.appendProductionAsset(projectId, documentId, runningRecord.requestId, {
           type: 'asset.fetching',
           pageId: slide.id,
@@ -610,6 +625,7 @@ export async function handlePresentationProduction(
           if (assetBytes > 8 * 1024 * 1024) throw new Error('output_too_large')
           assets.push(resolved)
           check(signal)
+          beforeWrite()
           store.appendProductionAsset(projectId, documentId, runningRecord.requestId, {
             type: 'asset.ready',
             pageId: slide.id,
@@ -622,6 +638,7 @@ export async function handlePresentationProduction(
             : error instanceof Error && error.message === 'output_too_large'
               ? 'output_too_large'
               : 'asset_unavailable'
+          beforeWrite()
           store.appendProductionAsset(projectId, documentId, runningRecord.requestId, {
             type: 'asset.rejected',
             pageId: slide.id,
@@ -661,11 +678,13 @@ export async function handlePresentationProduction(
             : 'compile_failed'
     }
     if (failure) {
+      beforeWrite()
       runningRecord = store.updateProductionPage(runningRecord, slide.id, {
         state: 'failed',
         attempt,
         error: failure,
       })
+      beforeWrite()
       options.onPage?.(
         runningRecord,
         runningRecord.pages.find((page) => page.pageId === slide.id)!,
@@ -675,6 +694,7 @@ export async function handlePresentationProduction(
     }
     // Storage errors are not transient compiler failures: stop rather than running ahead of receipts.
     try {
+      beforeWrite()
       runningRecord = store.updateProductionPage(runningRecord, slide.id, {
         state: 'compiled',
         attempt,
@@ -682,12 +702,14 @@ export async function handlePresentationProduction(
       })
     } catch (error) {
       if (!(error instanceof Error) || error.message !== 'output_too_large') throw error
+      beforeWrite()
       runningRecord = store.updateProductionPage(runningRecord, slide.id, {
         state: 'failed',
         attempt,
         error: 'output_too_large',
       })
     }
+    beforeWrite()
     options.onPage?.(
       runningRecord,
       runningRecord.pages.find((page) => page.pageId === slide.id)!,

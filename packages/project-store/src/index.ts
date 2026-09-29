@@ -44,3 +44,22 @@ export type {
   PresentationIssueAction,
   PresentationIssueLedger,
 } from './presentation-issue.js'
+export {
+  PresentationLifecycleStore,
+  DEFAULT_PRESENTATION_RETENTION_POLICY,
+  PRESENTATION_LIFECYCLE_RESOURCE_KINDS,
+  MAX_PRESENTATION_LIFECYCLE_BYTES,
+  parsePresentationLifecycle,
+} from './presentation-lifecycle.js'
+export type {
+  PresentationRetentionPolicy,
+  PresentationLifecycleScope,
+  PresentationLifecycleRecord,
+  PresentationLifecycleResource,
+  PresentationLifecycleResourceKind,
+  PresentationLifecycleResourceStatus,
+  PresentationLifecycleResultCode,
+  PresentationDeletionIntent,
+  PresentationDeletionResult,
+  PresentationLifecycleAuditEvent,
+} from './presentation-lifecycle.js'

@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import type { PresentationStore } from '@wiswork/project-store'
 import type { PresentationProductionJobEventInput } from '@wiswork/project-store/presentation-job'
 import {
@@ -6,7 +7,27 @@ import {
 } from './presentation-production'
 
 // One Electron main process owns these workers, including across service instances.
-const workers = new Map<string, { requestId: string }>()
+const workers = new Map<
+  string,
+  {
+    requestId: string
+    projectId: string
+    documentId: string
+    controller: AbortController
+    settled: Promise<void>
+  }
+>()
+export async function stopPresentationWorkers(scope: {
+  root: string
+  projectId: string
+  documentId: string
+}): Promise<void> {
+  const key = `${resolve(scope.root)}\0${scope.projectId}`
+  const entry = workers.get(key)
+  if (!entry || entry.projectId !== scope.projectId || entry.documentId !== scope.documentId) return
+  entry.controller.abort()
+  await entry.settled
+}
 export const presentationJobOperations = [
   'production_job_start',
   'production_job_status',
@@ -25,7 +46,16 @@ export function handlePresentationJob(
   request: Record<string, unknown>,
   options: Parameters<typeof handlePresentationProduction>[1] & { store: PresentationStore },
 ) {
+  request = structuredClone(request)
+  options = { ...options }
   const { store } = options
+  const controller = new AbortController()
+  const assertWritable = options.assertWritable
+  const beforeWrite = () => {
+    if (controller.signal.aborted) throw new Error('aborted')
+    assertWritable?.()
+    if (controller.signal.aborted) throw new Error('aborted')
+  }
   const projectId = request.projectId as string,
     documentId = request.documentId as string,
     requestId = request.requestId as string
@@ -36,8 +66,16 @@ export function handlePresentationJob(
   }
   production() // Validate document binding before inspecting a process-wide worker.
   const read = () => store.productionJob(projectId, documentId, requestId)
-  const append = (event: PresentationProductionJobEventInput) =>
-    store.appendProductionJobEvent(projectId, documentId, requestId, read()?.revision ?? 0, event)
+  const append = (event: PresentationProductionJobEventInput) => {
+    beforeWrite()
+    return store.appendProductionJobEvent(
+      projectId,
+      documentId,
+      requestId,
+      read()?.revision ?? 0,
+      event,
+    )
+  }
   let job = read()
   const worker = workers.get(key)
   if (!worker || worker.requestId !== requestId) {
@@ -56,11 +94,10 @@ export function handlePresentationJob(
       )
         throw new Error('invalid_state')
       job = append({ type: 'run.started' })
-      const entry = { requestId }
+      const entry = { requestId, projectId, documentId, controller, settled: Promise.resolve() }
       workers.set(key, entry)
-      const controller = new AbortController()
       // Schedule after acceptance; the client's AbortSignal never belongs to the worker.
-      void Promise.resolve().then(async () => {
+      entry.settled = Promise.resolve().then(async () => {
         try {
           await handlePresentationProduction(
             { ...request, operation: 'production_run' },

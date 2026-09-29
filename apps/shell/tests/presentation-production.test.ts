@@ -489,9 +489,13 @@ it('requires a matching saved plan and preserves an old job snapshot after plan 
 it('stops subsequent pages on cancellation and keeps earlier completed pages for resume', async () => {
   const controller = new AbortController()
   let calls = 0
+  let beforeCancellation: unknown
   const compile = vi.fn(async (input: unknown) => {
     const result = await compilePresentationDeck(input)
-    if (++calls === 2) controller.abort()
+    if (++calls === 2) {
+      beforeCancellation = new PresentationStore(f.userDataPath).production(f.deck.id, 'doc', 'run')
+      controller.abort()
+    }
     return result
   })
   const f = await setup(compile)
@@ -500,8 +504,12 @@ it('stops subsequent pages on cancellation and keeps earlier completed pages for
     error: 'aborted',
   })
   const status = await f.call('production_status', { requestId: 'run' })
-  expect(status).toMatchObject({ compiledCount: 1, status: 'partial' })
-  expect(status.pages[1]).toMatchObject({ state: 'failed', error: 'aborted', attempt: 1 })
+  expect(status).toMatchObject({ compiledCount: 1, status: 'building' })
+  expect(status.pages[1]).toMatchObject({ state: 'building', attempt: 1 })
+  expect(status.pages[1].error).toBeUndefined()
+  expect(new PresentationStore(f.userDataPath).production(f.deck.id, 'doc', 'run')).toEqual(
+    beforeCancellation,
+  )
   expect(status.pages[2]).toMatchObject({ state: 'pending', attempt: 0 })
   expect(compile).toHaveBeenCalledTimes(2)
   expect(await f.call('production_run', { requestId: 'run' })).toMatchObject({ status: 'compiled' })
@@ -1195,3 +1203,58 @@ it('derives a frozen single-page revision, reuses seven exact artifacts, and ret
     runtime.dispose()
   }
 })
+
+it.each([false, true])(
+  'fences asset success and failure receipts after lifecycle deletion (%s)',
+  async (reject) => {
+    const { PresentationLifecycleStore } = await import('@wiswork/project-store')
+    const { handlePresentationProduction } = await import('../src/main/presentation-production')
+    const f = await setup(),
+      store = new PresentationStore(f.userDataPath)
+    const deck = structuredClone(f.deck)
+    const originalAsset = deck.assets[0]!
+    deck.assets = deck.assets.map((asset) => ({ id: asset.id, attachmentId: 'f'.repeat(64) }))
+    await f.call('production_begin', { requestId: 'asset-fence', planRevision: 1, deck })
+    const lifecycle = new PresentationLifecycleStore(f.userDataPath),
+      scope = { projectId: deck.id, documentId: 'doc' }
+    lifecycle.initialize(scope)
+    let release!: () => void, enter!: () => void
+    const gate = new Promise<void>((r) => {
+        release = r
+      }),
+      entered = new Promise<void>((r) => {
+        enter = r
+      })
+    const run = handlePresentationProduction(
+      { ...scope, operation: 'production_run', requestId: 'asset-fence' },
+      {
+        store,
+        compile: f.compile,
+        assertWritable: () => lifecycle.assertActive(scope, 0),
+        attachments: async () => {
+          enter()
+          await gate
+          if (reject) throw Error('fetch failed')
+          return originalAsset
+        },
+      },
+      new AbortController().signal,
+    )
+    const settled = run.then(
+      () => null,
+      (error) => error,
+    )
+    await entered
+    const before = store.production(deck.id, 'doc', 'asset-fence'),
+      assets = store.productionAssets(deck.id, 'doc', 'asset-fence')
+    lifecycle.beginDeletion(scope, 0, {
+      deletionId: 'delete',
+      reason: 'user',
+      resources: [{ resourceId: 'project', kind: 'project', ownership: 'project_exclusive' }],
+    })
+    release()
+    expect(await settled).toBeInstanceOf(Error)
+    expect(store.production(deck.id, 'doc', 'asset-fence')).toEqual(before)
+    expect(store.productionAssets(deck.id, 'doc', 'asset-fence')).toEqual(assets)
+  },
+)

@@ -578,3 +578,109 @@ it('records a real font failure in the background page event and resumes without
   )
   expect(compile).toHaveBeenCalledTimes(3)
 })
+
+it.each([false, true])('fences compiler completion after deletion (%s)', async (reject) => {
+  const { PresentationLifecycleStore } = await import('@wiswork/project-store')
+  const jobs = await import('../src/main/presentation-jobs')
+  const gate = deferred(),
+    entered = deferred()
+  const compile = vi.fn(async (input: unknown) => {
+    entered.resolve()
+    await gate.promise
+    if (reject) throw new Error('compiler failed')
+    return compilePresentationDeck(input)
+  })
+  const f = await setup(compile),
+    store = new PresentationStore(f.userDataPath)
+  const lifecycle = new PresentationLifecycleStore(f.userDataPath),
+    scope = { projectId: f.deck.id, documentId: 'doc' }
+  lifecycle.initialize(scope)
+  const key = `${f.userDataPath}\0${f.deck.id}`
+  jobs.handlePresentationJob(
+    key,
+    { ...scope, requestId: 'run', operation: 'production_job_start' },
+    {
+      store,
+      compile,
+      attachments: async () => ({}),
+      assertWritable: () => lifecycle.assertActive(scope, 0),
+    },
+  )
+  await entered.promise
+  const before = store.production(f.deck.id, 'doc', 'run'),
+    job = store.productionJob(f.deck.id, 'doc', 'run')
+  lifecycle.beginDeletion(scope, 0, {
+    deletionId: 'delete',
+    reason: 'user',
+    resources: [{ resourceId: 'project', kind: 'project', ownership: 'project_exclusive' }],
+  })
+  gate.resolve()
+  await vi.waitFor(() => expect(jobs.hasPresentationWorker(key)).toBe(false))
+  expect(store.production(f.deck.id, 'doc', 'run')).toEqual(before)
+  expect(store.productionJob(f.deck.id, 'doc', 'run')).toEqual(job)
+})
+
+it('stops and waits for scoped workers without late cancellation receipts', async () => {
+  const jobs = await import('../src/main/presentation-jobs')
+  const gate = deferred(),
+    entered = deferred()
+  const compile = vi.fn(async (input: unknown) => {
+    entered.resolve()
+    await gate.promise
+    return compilePresentationDeck(input)
+  })
+  const f = await setup(compile),
+    store = new PresentationStore(f.userDataPath)
+  jobs.handlePresentationJob(
+    `${f.userDataPath}\0${f.deck.id}`,
+    {
+      operation: 'production_job_start',
+      projectId: f.deck.id,
+      documentId: 'doc',
+      requestId: 'run',
+    },
+    { store, compile, attachments: async () => ({}) },
+  )
+  await entered.promise
+  const before = store.production(f.deck.id, 'doc', 'run'),
+    job = store.productionJob(f.deck.id, 'doc', 'run')
+  let drained = false
+  const wait = jobs
+    .stopPresentationWorkers({ root: f.userDataPath, projectId: f.deck.id, documentId: 'doc' })
+    .then(() => {
+      drained = true
+    })
+  await Promise.resolve()
+  expect(drained).toBe(false)
+  gate.resolve()
+  await wait
+  expect(drained).toBe(true)
+  expect(new PresentationStore(f.userDataPath).production(f.deck.id, 'doc', 'run')).toEqual(before)
+  expect(store.productionJob(f.deck.id, 'doc', 'run')).toEqual(job)
+})
+
+it('freezes scheduled worker requests before caller mutation', async () => {
+  const jobs = await import('../src/main/presentation-jobs')
+  const f = await setup(),
+    store = new PresentationStore(f.userDataPath)
+  const request = {
+    operation: 'production_job_start',
+    projectId: f.deck.id,
+    documentId: 'doc',
+    requestId: 'run',
+  }
+  const key = `${f.userDataPath}\0${f.deck.id}`
+  jobs.handlePresentationJob(key, request, {
+    store,
+    compile: f.compile,
+    attachments: async () => ({}),
+  })
+  request.projectId = 'foreign'
+  request.documentId = 'foreign'
+  request.requestId = 'foreign'
+  await vi.waitFor(() => expect(jobs.hasPresentationWorker(key)).toBe(false))
+  expect(store.productionJob(f.deck.id, 'doc', 'run')?.state).toBe('completed')
+  expect(
+    store.production(f.deck.id, 'doc', 'run')?.pages.every((p) => p.state === 'compiled'),
+  ).toBe(true)
+})

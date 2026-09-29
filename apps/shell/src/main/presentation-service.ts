@@ -1,3 +1,7 @@
+import {
+  createPresentationProjectLifecycleService,
+  presentationProjectLifecycleOperations,
+} from './presentation-project-lifecycle'
 import { PresentationManualObservationLibrary } from './presentation-manual-observations'
 import { buildPresentationFeedbackComparison } from '@wiswork/pptx-engine/presentation-feedback-comparison'
 import { parsePresentationProductionFeedbackPages } from '@wiswork/project-store/presentation-feedback'
@@ -155,6 +159,7 @@ export function createPresentationService(options: {
   fetchImage?: (url: string, signal: AbortSignal) => Promise<Response | null>
   fetchPage?: (url: string, signal: AbortSignal) => Promise<Response | null>
 }): (body: unknown, signal: AbortSignal, context?: PresentationTeamContext) => Promise<Uint8Array> {
+  const lifecycle = createPresentationProjectLifecycleService(options)
   const pageBackups = createPresentationPageBackupService(options)
   const existingPageBackups = createPresentationExistingPageBackupService(options)
   const packageBackups = createPresentationPackageBackupService(options)
@@ -229,6 +234,10 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
+      if (
+        presentationProjectLifecycleOperations.some((operation) => operation === request.operation)
+      )
+        return boundedResponse(lifecycle(request))
       if (typeof request.operation === 'string' && request.operation.startsWith('team_'))
         return boundedResponse(await team(request, context, signal))
       if (typeof request.operation === 'string' && request.operation.startsWith('research_'))
@@ -1609,8 +1618,14 @@ export function createPresentationService(options: {
         release()
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : ''
-      return encode({ error: errorCodes.has(message) ? message : 'compile_failed' })
+      let code = 'compile_failed'
+      try {
+        const message = error instanceof Error ? error.message : undefined
+        if (typeof message === 'string' && errorCodes.has(message)) code = message
+      } catch {
+        /* Only finite error codes are sent to the paired client. */
+      }
+      return encode({ error: code })
     }
   }
 }
