@@ -1,0 +1,1251 @@
+ I   L-
+
+                                                                                         RM L50BOl
+
+
+
+
+                    NACA
+
+RESEARCH MEMORANDUM
+ PRELIIvTINARY INVESTIGATION OF CONSTANT-GEOMETRY,
+
+      VARIABLE MACH NUMBER, SUPERSONIC TUNNEL
+
+                  WITH POROUS WALLS
+
+          By William J. Nelson and Paul L. Klevatt
+
+             Langley Aeronautical Laboratory
+              Langley Air Force.J3 ase, Va r _ ~ FROM THr FILES OF
+
+                                         NAT!    l   mil''''' '( l r   ,.'       < -("     RC   U 10
+
+
+
+
+                                 _r:..           _ _It.'      __
+
+                                                     r'uuL (An ~             i   UL[, BL A )ORESSED
+                                  A~ f    IL ( ••
+
+
+                                         N TI') AL ADVISflRY COM .1ITrEE FOR AERONAUT
+                                         llil2 H "rR, n. N W.
+                                                   ~. ,,~ t._ C.
+
+
+
+
+     NATIONAL ADVISORY COMMITTEE
+           FOR AERONAUTICS
+                     WASHINGTON
+                        May 3, 1950
+Ie
+     NACA RM L50BOl
+
+                  NATIONAL ADVISORY COMMITTEE FOR AERONAUTICS
+
+
+                                RESEARCH MEMORANDUM
+
+
+                PRELThlINARY INVESTIGATION OF CONSTANT-GEOMETRY,
+
+                      VARIABLE MACH NUMBER, SUPERSONIC TUNNEL
+
+                                WITH POROUS WALLS
+
+                      By William J. Nelson and Paul L. Klevatt
+
+
+                                       SUMMARY
+
+
+          A method of generating variable M~ch number supersonic flow in a
+     channel of fixed geometry by the removal of air through uniform porous
+     walls is discussed. Calculated porosity distributions are presented
+     for several minimum-length nozzles designed to operate at Mach numbers
+     up to 2.0. The axial pressure gradient has been calculated for several
+     constant-porosity walls over a range of Mach numbers. The applicability
+     of these calculations to a two - dimensional tunnel is illustrated by
+     comparison of calculated and experimentally determined pressure gradients
+     in the 2~- by ~-inch channe l at Mach numbers in the range covered in the
+     present tests, 0.99 to 1.17. Schlieren photographs of the flow in the
+     experimental channel are also presented .
+
+
+
+                                   INTRODUCTION
+
+
+          The development of variable Mach number supersonic wind tunnels
+     has received a great deal of attention during recent years. Several
+     schemes for varying the Mach number by changing the tunnel geometry
+     have been tried. These include moving nozzle blocks (references 1, 2,
+     and 3) and flexible walls (references 4 and 5). Another type of vari-
+     able Mach number wind tunnel being investigated by the National Advisory
+     Committee for Aeronautics and others utilizes a series of longitudinal
+     slots in fixed tunnel walls . In these fixed-geometry tunnels the Mach
+     number is varied by changing the pressure in the slots relative to the
+2                                                           NACA RM L50BOI
+
+the stream stagnation pressure.      Preliminary results of this work are
+available in references 6 to 9.
+
+     The present investigation is a continuation of the slotted-tunnel
+work but utilizes porous metallic wa lls rather than a finite number of
+passages as employed in the slotted tunnels. Either the slotted or the
+porous-wall tunnels offer the possibility of avoidance of transonic
+choking in addition to variation of the supersonic Mach number with fixed
+geometry. Research on both possibilities is in progress, but the present
+paper is concerned only with the problem of variable supersonic Mach
+number. This report contains a simplified analysis of the tunnel-wall
+characteristics required to generate shock-free supersonic flow in min~
+mum distance together with calculated and experimental pressure distri-
+butions along a constant-cross -section channel with walls of known porosity.
+All calculations were based upon the methods which are discussed in refer-
+ence 10 using tabular data from reference 11. The experimental data pre-
+sented were obtained in a symmetrical channel of rectangular cros s sec-
+tion   (2~ by ~ inches).      This work was done under steady-flow conditions
+with air supplied at elevated pressures while atmospheric pressure was
+maintained in the area surrounding the tunnel. The work was initiated
+at the Langley internal aerodynamics section in the summer of 1948 and
+is continuing.
+
+
+                                   SYMBOLS
+
+a           sonic v elocity
+
+g           acceleration due to gravity
+
+p           local static pressure
+
+            local pressure differenc e across porous surfac e
+
+M           local Mach number
+
+v           velocity
+
+            angle of flow relative to wall
+
+            ratio of specific heats
+
+p           mass density
+
+v           cumulative sum of expansive deviations of stream from
+               dire ction of flow at M = 1.0
+
+x           distanc e along porous section
+NACA RM L50BOI                                                               3
+
+h            height of channel
+
+
+Subscripts
+
+D            design condition
+
+o            stagnation condition
+
+n            component normal to porous wall
+
+
+                                 ANALYSIS
+
+     The difference in Mach number between any two points in a two-
+dimensional supersonic tunnel bears a uni~ue relationship to the cumu-
+lative sum of the angular deviations to which the stream has been
+subjected between those points. A complete discussion of the relation-
+ship between the Mach number and stream deviation can be found in
+reference 10, chapter 2 . If the direction of flow at M = 1.00 is taken
+as a basis of reference, this relationship may be expressed as
+
+
+
+
+The generation of supersonic Mach numbers in conventional tunnels is
+accomplished by accelerating the air stream in a Laval type nozzle; the
+rate of acceleration and therefore the length of the tunnel being
+determined by the curvature of the walls. In a symmetrical, minimum-
+Ipngth, shock-free nozzle, one-half the design stream deviation v D
+corresponding to the final Mach number      MD   is produced by increasing
+the angle between the wall and the center line of the stream at a point;
+the remaining deviation, a result of the initial stream curvature along
+the opposite wall, produces a realinement of the flow to the tunnel
+center line. For the purposes of this analysis only the flow in the
+lower half of a symmetrical nozzle will be considered, thus, for the Mach
+number range under discussion, all characteristics with positive slope
+are defined as part of the first family expansion while those character-
+istics with negative slope are from the second family expansion, figure 1.
+
+     Shock-fr3e nozzles . - By initiating the first family expansion at a
+point and curving the wall downstream of this point to correspond to the
+4                                                        NACA RM L50BOl
+
+
+direction of flow througn the second family expansion, the design Mach
+number will be reached in the minimum distance with continuous acceler-
+ation of the stream. The resulting nozzle is of the general type shown
+in the characteristic diagram of figure 1. Along the tunnel wall the
+velocity component normal to the tunnel axis increases from 0 to a maxi-
+mum at a value corresponding to vD/2 at the point of initial turning;
+continued acceleration of the stream beyond this point is accomplished
+by curvature of the streamlines in the opposite direction with resulting
+reduction in the normal component to zero. The magnitude of these
+velocity components is shown for several minimum-length nozzles in
+figure 2(a). The curves, drawn as a function of v, are for completeness
+presented for both first and second family expansions although the region
+of practical interest is limited to that section of the curves drawn
+double weight. If the solid wall is replaced by a porous wall parallel
+to the plane of symmetry, the velocity component normal to the tunnel
+axis becomes the component normal to this wall; if the porosity of the
+wall is such that this flow may pass through the wall, minimum-length
+nozzle flow will be realized. The pressure variation as a function of v
+is also shown in figure 2(a).
+
+     The rate of flow through any porous material is determined by the
+pressure difference across it and by its loss characteristics; thus, any
+flow distribution can be obtained by a suitable matching of the pressure
+differential across the material and its loss characteristics. The
+following analysis is based upon maintaining a constant-pressure chamber
+outside the porous wall and varying its resistance to flow to obtain the
+desired normal flow rate . Since the final pressure reached in the channel
+will be equal to that in the chamber outside the porous wall, the pressure
+increment across the wall at any point will be equal to the difference
+between the local static pressure and that corresponding to the design
+Mach number. This difference, for the shock-free nozzles of figure 2(a),
+is plotted in figure 2(b).
+
+
+acr08:h:tV::::i::e:~::::::dn:~at:U:::ew:::':::e::ev~~:B~~:i:::::::e
+                                                      ~~
+as a function of v in figure 3(a). As in the preceding figures, the
+first and second family expansions are differentiated by weight of line.
+For minimum-length nozzles, in which only the variation across the second
+family expansion is pertinent, the total change in the ordinate is rela-
+tively small until the higher Mach numbers are reached. To show the
+range of porOSities that will be required for materials across which the
+pressure drop varies linearly with pgV and pgv2, corresponding curves
+NACA RM L50BOl                                                                       5
+
+
+
+of   P~:~
+     6p Po
+             and   ::   (:~y are also presented, figures 3(b) and 3(c).
+                    6p/po
+                                                                drawn for the
+As in figur e 3(a), these curve s are, for comp letene ss,
+                                                secon d.   From  a compa rison
+first famil y expan sion as well as for the
+                                              a  given   Mach numbe  r, a mate rial
+of these curve s it is appar ent that, for                                  tially
+                                                   pgv    remai ns  essen
+for which the relati onshi p betwe en 6p and                                   than
+                                                      the  ideal   poros  ity
+const ant offer s a much close r appro ximat ion to                       ial  the
+                                                    the   latte r  mater
+one in which 6p varie s with pgy2, since in
+                                                                  corres ponds to
+propo rtion ality const ant decre ases to OJ this condi tion
+a solid wall at the nozzl e exit.
+                                                                  l to the
+      Curve s of the ratio of the weigh t flow compo nent norma
+porou s wall to the press ure drop acros s it, PBVn /6P, as
+                                                              obtain ed from
+                                                              distan ce along
+figur e 3(b), are prese nted in figur e 4 as a funct ion of
+                                                             te at Mach numbe rs
+the nozzl e for minim um-le ngth nozzl es desig ned to opera
+                                                           assum ed const ant
+of 1.1, 1.2, 1.5, and 2.0. For these curve s To was
+                                                              ants in the
+at 500 0 R. From a consi derat ion of the stagn ation const
+                                                            the poros ity
+ordin ates of figur es 5(a) to 5(c), it can be seen that
+                                                             . The lengt h of
+varie s as the squar e root of the stagn ation tempe rature
+                                                                ximat ely equal
+nozzl e requi red to gener ate a Mach numbe r of 1.10 is appro
+                                                               be requi red to
+to one-h alf the tunne l heigh t; incre asing distan ces will
+attai n highe r Mach numbe rs (x = h for M = 1.5 and
+                                                           x ~2h for
+M = 2.0).
+                                                                   ion of
+      Corre spond ing curve s based upon press ure drop as a funct
+PBVn 2 have not been prepa red since it is appar ent from figur e 3(c) that
+                                                              Altho ugh it is
+shock -free flows will requi re a wide range of poros ity.
+                                                             it appea rs
+possi ble to attai n good flow with such chara cteris tics,
+                                                               s which the
+proba ble that over a range of Mach numbe rs mate rials acros de the more
+                                                           provi
+press ure drop varie s linea rly with the mass flow will
+satisf actor y solut ion.
+                                                                         prece ding
+      Press ure distri butio n with const ant poros ity.- In the
+                                                                       super sonic
+sectio n it was obser ved that the attain ment of shock -free
+                                          res  a  presc  ribed   rate    of air flow
+flow in a porou s-wal led chann el requi
+                                          also   shown   that,   for   a  minimum-
+acros s the chann el bound ary . It was
+                                            of   air  remov  al  varie   d appro xi-
+lengt h nozzl e, the requi red local rate                                      press ure
+                                              ence    betwe  en  the   local
+matel y with the first power of the differ                                 determ ine
+                                                   Mach   numbe   r.   To
+and the press ure corres pondi ng to the final                               ity, the
+                                              calcu  lated   ideal    porOS
+the signi fican ce of depar tures from the
+                                                                    ional chann el
+press ure gradi ent along the cente r line of a two-d imens
+                                                 has  been   calcu   lated . The
+with walls of const ant poros ity pgYn/ 6P
+                                               lated    ideal   poros   ity is shown
+signi fican ce of depar tures from the calcu                                cente r
+                                            ure   gradi  ent  along    the
+in figur es 5(a) to 5(c) where the press
+6                                                       NACA RM L50BOl
+
+
+
+line of a two-dimensional channel has been determined for walls across
+which the weight flow to pressure difference at To = 500 0 was 0.0055,
+0.011, ar..d 0.018. The pressures along a channel with walls of known
+porosity were determined by iteration. The normal component of the
+weight flow rate, pgvn' was determined for assumed values of V by
+placing pgVn = pgMa sin 5 and again from the known porosity by multi-
+plying pgVn /6p by the pressure difference corresponding to the assumed
+values of V. At e~ui librium, the value of pgVn is independent of the
+method of calculation; the corresponding flow angle r elative to the wall
+was then de t ermined from the intersection of the two curves of pgvn
+against V. By r epeating this process, the pressure distribution through-
+out the l ength of the channel was determined.
+
+     The curves presented in figure 5 show that for   pgVn = 0.0055 the
+                                                       6P
+distance re~uired to reach a Mach number of 1.10 is approximately one-
+half the tunnel height greater than that re~uired for the minimum-length
+nozzle of figure 4; for all higher Mach numbers the added distanc e
+re~uired to reach e~uilibrium flow is much greater.  Increasing the
+porosity to 0.011 (fig. 5(b)) appreciably reduces the distance re~uired
+to reach e~ui librium for all Mach numbers; M = 1.10 is reached in
+approximately the same distance re~uired by the minimum-length shock-free
+nozzle; greater than minimum length is re~uired, however, for all greater
+Mach numbers and since the length of the tunnel would be determined by
+the maximum Mach number to be reached, this porosity also is too small.
+At a value of pgVn = 0.018, figure 5(c), the initial expansion is
+                 6p
+slightly excessive for Mach numbers below 1.20 but the extent of the
+over-expansion is small. For higher Mach numbers the distance re~uired
+to reach e~uilibrium is somewhat in excess of the minimum although Mach
+                                   x                              pgVn
+numbers up to 1.5 are reached in Ii < 2.0. At higher values of     6p
+the initial expansion at low Mach numbers is greater than that re~uired
+for minimum length and subse~uent compression is stronger; higher values
+of M can be attained, however, in very short nozzles.
+
+
+                                APPARATUS
+
+     The general arrangement of the experimental apparatus showing a view
+of the test channel, the porous upper and lower walls, and the pressure
+tube used in making the static-pressure surveys is presented as figure 6.
+The contraction ratio of the entranc e bell ahead of the test section was
+approximately 70:1. The 2~- by ~-inch rectangular cross section of the
+                                                                            o
+NACA RM L50BOI                                                          7
+
+channel was constant throughout the porous region. Detailed picture s
+of the porous walls are presented as figure 7. These surfac e s were
+ s elected c ommercial grade sintered bronze sheets consisting of ther-
+mally b onded bronze particles approximately 0.005 inch in diameter
+rolled to a thickness of 0.08 inch. The pi eces used in this investigation
+had the smoothest surface finish of any samples readily available. The
+surface corresponded roughly to the surface of 120 wet-or-dry paper.
+s tructural stiffness was provided by three longitudinal bars tapered to
+it-inch width at the point of contact with the sintered bronze; lateral
+support was provided at the ends only.
+         1
+     The S-inch-diameter pitot-static tube used in making the static-
+pre ssure surveys had four static orifices 0.031 inch in diameter; the
+total-pressure opening was 0.050 inch in diameter. Stagnation pressure
+and temperature were recorded at a point upstream of the entrance bell.
+A schli eren optical system, with 6-inch - diameter mirrors and a spark
+light sourc e which produced intermittent flashes of approximately
+10 microseconds, was used in photographing the flow.
+
+
+                 EXPERIMENTAL RESULTS AND DISCUSSION
+
+
+       The foregoing analysis has shown the desirability of a porous
+material that approximates a linear variation of PBVn with ~p for
+use in gene rating uniform supersonic flows. Such materials, however,
+were not available for use in this investigation. An experimental check
+of this method of calculation was therefore attempted using the material
+at hand and calculating the pressure distribution from an experimentally
+determined calibration. The air flow through the sintered bronze is
+shown as a function of the pressure difference across the material in
+figure 8. The apparatus used in the calibration is shown schematically
+in the upper part of this figure. In applying this calibration it has
+been assumed that the loss characteristics are a function of the velocity
+component normal to the surface and are completely independent of any
+component parallel to the surface . The calculated pressure gradients are
+compared in figure 9 with the experimental pressure distributions at
+supersonic Mach numbers up to 1.17; this limit was established by the
+pressure ratios available with existing equipment and does not represent
+a tunnel limitation. Corresponding schlieren photographs of the flow are
+pre s ented in figure 10.
+
+     In general, the experimental data are consistent with the calculated
+curves. Differences in absolute values of the pressure ratio as deter-
+mined from calculation and experiment are, at the forward end of the
+nozzl e , attributed to failure of the calculations to allow for
+8                                                          NACA RM L50EOl
+
+
+nonuniformity of flow at this point. The abrupt turn assumed in the
+calculations can be realized only in the absence of boundary layer at
+the entrance section since the presence of a layer of subsonic air at
+the point of turning will appreciably reduce the rate at which the flow
+direction may be changed. Evidence of nonuniform flow at the tunnel
+inlet can be found in the schlieren photographs at the left side of
+figure 10, where multiple shocks ahead of the porous floor    li
+                                                              ~ -0.4
+reach into the flow but do not completely span the channel. Experimen-
+tally determined velocity profiles at the inlet indicated that the
+displacement thickness of the boundary layer was approximately 0.02 inch
+for these tests. From one-dimensional considerations it can be shown
+that removal of this boundary layer alone will produce a Mach number of
+approximately 1.10 in the tunnel; the experimental curves would not,
+therefore, be expected to follow closely the calculated curves at the
+Mach numbers below 1.10. The reduction of the differences at the forward
+end of the channel between the experimental and calculated curves at
+M > 1.1 is attributed both to the reduction in boundary-layer thickness
+and the increase in magnitude of the initial turn. The measured pressure
+ratios indicate that the flow at the center line of the main stream was
+supersonic ahead of the porous surface for the tests at M = 1.08
+and 1.17; this is ascribed to a thinning of the boundary layer ahead of
+the porous material .
+
+     Maximum deviations in Mach number of ±0.01 are indicated by the
+experimental pressure distributions. Surface roughness is especially
+critical in this type of tunnel since supersonic velocities occur very
+close to the surface as a result of removal of substantial part of the
+air adjacent to the walls. The presence of the many Mach waves in the
+schlieren photographs is a result of the roughness of the sintered bronze
+floor . Parallelism of these waves gives some indication of the uniform
+velocity existing throughout the test regions. Normal shocks in the
+downstream section of the tunnel were caused by flow restriction at the
+end of the porous region where the walls were again solid.
+
+
+                              CONCLUSIONS
+
+
+     The following conclusions are based upon the results of this pre-
+liminary investigation of the porosity requirements for a variable Mach
+number supersonic tunnel of fixed geometry:
+
+     From analysis:
+
+          (1) Shock - f r ee Bupersonic flows can be obtained in a tube of
+     constant cross section by removal of air through porous walls to a
+2C
+     NACA RM L50]301                                                          9
+
+          constant-pressure chamber by proper distribution of porosity along
+          the tunnel.
+
+               (2) The porosity requirements for shock-free nozzles vary with
+          distance along the channel, Mach number, and with stagnation tem-
+          perature.
+
+               (3) Flows possessing only small compressions can be obtained
+          in a constant-cross-section channel by removal of air across walls
+          of constant porosity to a chamber of constant pressure.
+
+          From experiment:
+
+               (1) The measured pressure distributions are consistent with
+          the c alcula ted re sul t 8 •
+
+               (2) The rate of expansion at the tunnel inlet is appreciably
+          reduced by the presence of the boundary layer ahead of the porous
+          material.
+
+               (3) Flows with Mach number variati ons of ±0.01 along the center
+          line of a fixed-geometry tunnel were obtained throughout the speed
+          range of the tests (M = 0.99 to 1.17) by r emoval of air through
+          commercial grade sintered bronze walls.
+
+
+
+     Langley Aeronautical Laboratory
+          National Advisory Committee for Aeronautics
+               Langley Air Force ]3ase, Va.
+
+
+
+
+,
+10                                                             NACA RM L50BOl
+
+
+                                 REFERENCES
+
+
+ 1. Evvard, John C., and Wyatt, DeMar~uis D.: Investigation of a
+       Variable Mach Number Supersonic Tunnel wi th Nonintersecting
+       Characteristics. NACA RM E8J13, 1948.
+
+ 2. Allen, H. Julian: The Asymmetric Adjustable Supersonic Nozzle for
+       Wind -Tunnel Application . NACA RM ASE17, 1948.
+
+ 3. Frick, Charles W., and Olson, Robert N.: Flow Studies in the
+       Asymmetric Adjustable Nozzle of the Ames 6- by 6 -Foot Supersonic
+       Wind Tunnel. NACA RM A9E24, 1949.
+
+ 4 . Cooper, Morton, Smith, Norman F., and Kainer, Julian H.: A Pressure-
+        Distribution Investigation of a Supersonic Aircraft Fuselage and
+        Calibration of the Mach Number 1.59 Nozzle in the Langley 4- by
+        4-Foot Supersonic Tunnel . NACA RM L9E27a, 1949.
+
+ 5. Puckett, Allen E. : Performanc e of the 12-Inch Wind Tunnel .
+      Memo . 4- 52, J et Propulsion Lab., CIT, 1949.
+
+ 6 . Wright, Ray H., and Ward, Vernon G.: NACATransonic Wind-Tunnel
+       Test Sections. NACA RM L8J06, 1948.
+
+ 7 . Nelson, William J., and Bloetscher, Frederick: Preliminary Investi -
+        gation of a Vari able Mach Number Two-Dimensional Supersonic Tunnel
+        of Fixed Geometr y . NACA RM L9D29a, 1949.
+
+ 8 . Bates , George P.: Preliminary Investigation of 3- Inch Slotted
+        Transonic Wind-Tunnel Test Sections. NACA RM L9D18, 1949.
+
+ 9 . Scroggs , A. M.:   Data Repor t - Boeing Wind Tunnel Test No . 115 -
+                                                           1
+       Test No .1 of the Slotted Test Sections in the -- Scale Model
+                                                        20
+       Wind Tunnel . Document No . D- 9400, Boeing Airplane Co .,
+       Jan. 27 , 1949 ·
+10. Ferri , Antonio : Elements of Aer odynami c s of Supersonic Flow.
+       The Macmillan Co ., 1949 .
+
+11. Burcher, Marie A.:     Compressible Flow Tables for Air.    NACA TN 1592,
+       1948 .
+
+
+
+
+                                                                                ,
+             o                                                    X/A          ~
+                                                                                             ~
+                                                                                             (")
+
+                             N0551Q     CQntc?y //nQ                                         :t>
+                                                 -       7\
+                                                                                             ~
+
+
+
+T
+                                                                                             t-<
+                                                                                             '(g
+                                                                                              ~
+
+                                      7                       \
+                                                                                             f-'
+
+                  lines                                                  M"MD,IO
+h/z
+                               \                                           -v=-vn
+  AIr Flow
+         •
+    M=!O
+
+
+                           ""'Iz
+
+                Norma/
+                   c ompon en ,
+                               V(?/oc~ty?:..-- ---~-IL _________
+                                             \
+                                                        _
+                                                                 wai7--
+                                                          J"l \ Porou/,
+~-- 7J N~----~----r1V;-
+             "'
+              ~ . ~
+           __________                                \            V     Vn \       \   ~
+
+                             -- ---------- - -   ~IVO/<!I!.l ~d n033YZ                 \ _
+
+                          Figure 1.- Characteristic diagram.                                 f-'
+                                                                                             f-'
+12                                                                       NAeA RM L50B01
+
+
+
+
+  t)
+~
+:s .3D
+-"
+ ~
+
+-+2
+-t .20
+ \:)
+
+
+ ()
+ c:::
+-t-
+ c::
+ ~
+ c::
+ <;:)
+               /0
+ ~
+ ~
+:::J-,
+
+
+
+~
+ -
+-+-
+ \.)
+               0
+~                    M=/./
+
+
+               .60
+
+ ~
+ ~ .5O
+       Q'
+  --h          4D
+   ~
+       ~       .50
+        :::J
+
+   ~ .20
+  c:s:
+                             5          /0         15       20         25           30
+                             Totol flow devlotlon from M=/.Q ,), deqrees
+
+
+                               (a)      Vn/a o   and   p/Po   against   V.
+
+                         Figure 2.- Flow conditions for shock-free nozzles .
+    NACA RM L50BOl                                                      13
+
+
+
+
+           o          5          ro            ~          M        ~    30
+                     Total flow dr?vlofion from M -= /. 0, V, de9r~es
+
+
+                               (b)         6.p/Po   against   V.
+
+                                     Figure 2.- Concluded .
+
+
+
+
+•
+14                                                                  NACA RM L50BOl
+
+
+
+
+      4.0
+
+
+
+
+      30
+
+
+
+
+     M=/I
+       o
+            o       5           10           /5           ZO           25        30
+                          Total flow d2VIOtlon from M-=/O, ~ deg.
+
+
+
+                            (a)
+
+
+                Figure 3. - Porosity requirement for shock-free flow.
+
+
+
+
+                                                                                      •
+
+
+
+
+                                                                                          J
+   NACA RM L50B01                                                                         15
+
+
+
+
+           /00
+
+           .90                                       MD=ZO
+
+           .80
+
+           .70
+
+           .60
+
+~ ~ .50
+:§~
+~\:lS <J    40
+             M=/./
+           .30
+
+           .20
+
+           .10
+
+            o
+                 o   Z   4   6    8      m a     U    M    M W           II   U   U   M
+                             Totol flow devlotlOn from M =! 0, degrees
+
+
+
+                                            ~Vn/ao
+                                 (b)        Po       against     V.
+                                             6P/Po
+                                       Figure 3 .- Continued.
+16                                                            NACA RM L50B01
+
+
+
+
+     .25
+
+
+
+
+     .20
+
+
+
+
+     .05
+
+
+
+
+           5             /0          /5            20           Z5        30
+               Totol flow devlOflOn from M= 10, V, degrees
+
+
+
+                              ~ (vn/a o)
+                                           2
+
+                   (c)                         against   v.
+                                6.p/Po
+
+                          Figure   3.- Concluded .
+                                                                                                                   t.)
+                                                                                                                   (J
+
+
+
+
+                                                                                                           ~
+                                                                                                           (")
+                                                                                                           :x>
+                .030 r                                                                                     ~
+                                                                                                           t-1
+                                                                                                           \Jl
+                                                                                                            0
+                                                                                                           b:J
+                                                                                      Mn                   0
+                                                                                                           f-'
+                .OZSr                                                                 2.0
+
+
+
+
+       ~.;
+                .020
+                       I
+                                 ----                         1. 5
+
+
+
+
+        Q,.
+                                            1.2
+        ~
+        .,a
+        .....   .0/5   L
+         ...
+         a
+        p..
+                           ______    1 .1
+                       I
+                .010
+
+
+                .005 ~
+
+                                                                                 ~
+                 o               I                      I
+
+
+
+                       o        .5                    10                    15       2.0
+                                      Dilltance along porous section, x/b
+
+
+
+Figure 4.- Required porosity distribution for minimum-length shock-free nozzles.           To   500 0 R.
+
+
+                                                                                                            f-'
+                                                                                                           -..;]
+~
+
+
+
+
+                                                                                                                                               f-'
+                                            .5S                                                                                                co
+                                                                                                                            100
+
+                                            .50                                                                             I.D5
+
+                                                      \       ~
+                                                                                                     MD = 1.10
+                                                                                                                            ! /()
+                                     p.0
+                                    'p;
+                                     o~
+                                    .....
+                                    +'
+                                     ~
+                                     f! 40
+                                            .45
+                                                          \
+                                                                          ----                      M = 1.20                /./5
+
+                                                                                                                            IZO ,;
+                                                                                                                                    :i
+
+                                                                                                                                     III
+                                                                                                                                    .D
+
+
+                                     6lCD                                                                                   lZ5 .cg
+                                                                                                                                     <.>
+                                     f!                                                                                             ~
+                                     Po.
+
+
+                                            .35 L                                       ,            M = 1.50
+                                                                                                                        /.3[)
+                                                                                                                            135
+                                                                                                                        1.40
+                                            .30
+                                                                                                                        145
+                                                                                                                    ~ ,ISO
+                                            .25
+                                                  o           .5                     /.0                       /s      20
+                                                                         Distance along porous section, x/b
+
+
+
+                                                                                                                                               ~
+                                                                   (a)         ( PVng)         05~0 = 0 .0055.                                 f;;
+                                                                               \ 6p 500             0
+                                                                                                                                               ~
+                                                                                                                                               ~
+
+                                                                                                                                               ~
+                             Figure 5 .- Theoretical cente r-line pressure distributi ons for several Mach numbers and a                       ~
+                                                              constant PVn g/6p . To = 500 0 R.                                                f-'
+
+
+
+
+                                                                                                                                           ,
+I
+I
+L, ~,   _ _ _ ' __ , _ _ _ . __, _ _ _ , _ , _ _ _
+                       - - - - - - - - - - - - -- -
+                                                                                                                                    -~
+
+
+"
+
+
+                                                                                                                             ~
+                                                                                                                             0
+                                                                                                                             ~
+             .55 r
+                                                                                                                             ~
+                                                                                                               j()()         t-<
+                                                                                                                             '(:g
+                                                                                                                             tJ:j
+             .50 ~ \                                                                                      ~ !O5              0
+                                                                                                                             f-'
+                                                                                Mn :: 1.10
+                                                                                                               /./0
+         0   45
+    'i                                                                                                         !IS      x
+     o'
+                                                                                     M=l.20                             .:
+    ..,on
+                                                                                                               120 j
+     ~       .40
+      ~                                                                                                        / 25 ~
+     '1.:"
+    '"                                                                                                         /. 3[)
+             .35
+                                                                                                               /35
+                                                                                             M or 1.50
+                                                                                                               140
+             .30 ~                                                       '----                                 1.45
+                                                                                                               /.50
+                                                                                              ~
+             .25 1
+                   0                .5                     /.0                       /.5                 2.0
+                                                Distance along porous section, x/h
+
+
+
+                                         (b )         ( PVng)      ~500 = 0 . 011 .
+                                                         L.p 500       To
+
+                                                Figure 5 .- Continue d .
+                                                                                                                             f-'
+                                                                                                                             \0
+r ...   --. ~--                     - - - - --- - - - --- - - - - -------- - - - - - - ---- -
+
+
+
+
+                                                                                                                                   f\)
+                                                                                                                                   0
+
+
+
+                              .55                                                  :
+                                                                                                                    100
+                                                                              MD   =1.05
+                              .50                                                                                   /Q5                  I
+                                                                                       M • 1.10
+                                                                                                                II!)                     I
+                              45                                                                                                         I
+                                                                                                                115 ~,..                 I
+                          o
+                  ..e:                                                                    M • 1.20                        .8             r
+                   Po.
+                                                                                                                120 g                    II
+                  ~.          40                                                                                          ..c::
+                                                                                                                           0
+
+                   f                                                                                            /.25 ;;!
+                   f
+                   .,:>
+                                                                                                                                         I
+                  "                                                                                             130                      I
+                  ~           .35                                                                                                        I
+                                                                                                                /35
+                                                                                                                1.40
+                                                                                                                                         !
+                              .30                                                                 M=1.5O
+                                                                                                                                         I
+                                                                                                                145
+                                                                                                                150                      I
+                                                                                                           ~                             I
+                              .25                                                                                                        I
+                                    o                .5                   10                           15      20                        I
+                                                              Distance along porous section, x/h                                  ~
+                                                                                                                                  0
+                                                                                                                                  ~      I
+                                                                                                                                  ~      I
+                                                      (c)         (PVng)           ~oo = 0 . 018 .                                t:-i
+                                                                                                                                  \J]
+                                                                                                                                         I
+                                                                  \ 6p 500              To                                        0
+                                                                                                                                  ~
+                                                                                                                                  I-'
+                                                            Figure 5 .- Conclu ded .
+
+
+          .   •
+L _______ _
+                                         -   -~   - - -- - - -- - --   --- - -~        -- --- --
+                                                             ----------l
+                                                                        I
+•
+
+                                                                 ~
+                                                                 ~
+                                                                 ~
+                                                                 t-'
+                                                                 '(g
+                                                                  ~
+                                                                 f-'
+
+
+
+
+    Figure 6 .- General arrangement of experimental setup.        I\)
+                                                                  I-'
+I I
+  I
+  I
+  I
+
+
+
+
+  I
+  I
+NACA RM L50OO1                                                                          23
+
+
+
+
+                           o       1    2      3     4     5<
+                               o            INCHES
+
+
+
+
+                       (a) Top view of sintered-br onze floor .
+
+
+
+
+            (b) Photomicrogr am o f s intered floor e nlarged 25 di ameters .
+
+
+
+
+        (c) Bottom vie w of s i nte re d- bronze floor showing l a tera l support s .
+
+               Figure 7.- Por ou s sintered-bronze floor .
+                                                                     I
+                                                                     I
+                                                                     I
+                                                                     I
+                                                               ..    1
+
+                                                                     1
+
+                                                                     I
+                                                                     (
+                                                                     I
+
+
+L
+                                                                     1
+                                                                     I
+    -- -- - --- - - - - - - - - - --- - ___ - ________. ________ J
+                                                                                                                                         ~
+                                                                                                                                         (J
+                                   "
+
+
+                                                                                                                                   ~
+                                                                                                                                   (')
+                                                                                                                                   ~
+
+             N
+             i--..
+                                                                                                                                   ~
+             '1....                                                                                                                t-1
+                                                                                                                                   ~
+                                                                                                                                   ~
+                                                                                                                                   f-J
+
+
+
+
+              ~'
+             -t-:.
+               ~
+               ~
+             ~ .80
+             ~
+             "t .60
+                 ~
+                 ......
+                 ~
+             540
+
+
+
+
+                          ./0                                                        I
+                            I.()                              10          ZO        40                    lc{)
+                                                            Pr{Js5Ur(? dlfferentlO/, L1P, Ib/ft Z
+
+                                   Figure 8 .- Porosity calibrat ion of sintered bronze u sed in walls of experimental channel .   f\)
+                                                                                                                                   \Jl
+
+
+
+
+L - - - __
+                                                                                                                                                                                                                                                          ,
+                                                                                                                                                                                                                                                          I
+                                                                                                                                                                                                                                                          I
+                                                                                                                                                                                                                                                          I
+                                                                                                                                                                                                                                                          I
+       26                                                                                                                                                                                                            NACA RM L50BOl
+
+                                   . '" . ~ . . ' "'-c. .   oJ   •   ~ . "'f.· · ;'" ~' , If   • ,_, ' "    • ,' ,' ... ......, ' , •   "\~ ". ,   , ' . \ ) '}'   ~t, " .. " : ' oj, " ,I ~ " , " " I , , • ,I ' ~' !" "', , " oJ ~
+
+
+
+
+                     .6                                                                                                                                                  t m.o re t i ca1
+                                                                                                                                                      <)                 expe r l!ne ntal
+
+                                                                                                           101    0. <;'9                                                                                                        <>     95
+                     .5                                                                               To           2490 F
+                                                                                                                                                                                                              0        <>
+                              <> <> <> <> <> <> <>                      <>
+                                                   <> <> <> <> <> <> <>                                                                                                                                                                /.00
+
+                     .5°0                                        .5                                                       1.0                                                        1.5                                       2.0
+                                                                                       Distance along porou3 sec tion t x/h
+
+                     .6
+
+                     .5                                                                                                                                                                                                          <>
+                                                                                                                                 101
+                                                                                                                                 To
+                                                                                                                                          l. lJ5
+                                                                                                                                           2560 F
+                                                                                                                                                                                                               <> <>                   100
+                                      (:)
+                 0
+
+             '" .5
+            ";>:
+                                              <> <> <> <> <> <>                                                                                                                                     <>                                 105
+            ...o'
+            +'
+             f!                                                                                                                                                                                                                        ! I{)
+             !!
+             il
+                     45
+                       0                                         .5                                                        /.0                                                        /.5                                      2.0         II:
+             !!"                                                                      Distance along porous section, x/h                                                                                                                       .:
+             '"
+             ~                                                                                                                                                                                                                             .!
+                                                                                                                                                                                                                                           ..,~
+            !i
+            .....
+             .                                                                                                                                                                                                                                 U
+
+             .
+            +'
+             c
+             u
+                                                                                                                                                                                                                                           :!
+                     .5
+                                                                                                                                                                                                                                       / 00
+                                                                                                                           101         1 . 08
+                     .5                       <> <>             To 261 F                                                                     0                                                                                         105
+                                                    <> <> <> <> <> <> <>                                                                                                                                                         <>
+                                                                                                                                                                                                                                       /10
+                     .4 5
+                          0                                 .5                                                              ).0                                                      /")                                       2.0
+                                                                                      Distance along porous section, x/h
+
+                                                                                                                                                                                                   ~
+                                                                                                                                                                                                                                       100
+
+                                                                                                                                                                                                                                       105
+                              <>
+                                      <>
+                                                                                                                                                                                    101    1.17                                        I/O
+                                                                                                                                                                                   To      261 0 F
+
+                                                                                                                                                                                                                                       I/S
+                                                                                                                                                                                                                        <> 0
+                                                                                                                                                                                                                                       /20          .!)
+
+
+                                                                 .5                                                        /0                                                        1.5                                        2.0
+                                                                                      Di8tance along poroue s ection, x/h
+
+
+
+
+            Figur e 9 .- Pressure distribut i on along c enter line of                                                                                                                                              2i - l~ - inCh
+                                                                                                                                                                                                                                 by
+                                                                                               porous -wall tunnel.
+
+l   -~-----               -----~--------~-                                                                           - -                ------ ---- - -                                                            - - - - -_ _ _ _ _ _ _ _ _ _ J
+                                                                                                          -~----- ,
+
+
+
+
+NACA RM L50BOl                                                                                       27
+
+
+
+
+              p'
+                            0·5205                  0 · 5203                     0.5202
+              PO
+
+
+
+
+              p'
+                       == 0.4936                    0 . 4938                     0 . 4930
+              Po
+
+
+
+
+                         0 . 4603                  0 . 4610
+
+
+
+
+                         0 . 4077                 0 . 4053                      0.4032
+
+
+         II        I   II     I   IIIII      II I I II I III I I I     I   II    I   II     I   II
+       -.8         -.4            o     .4   .6    1.0   1.4   1.8      2.0      2.4        2.8
+                                      Distance along porous section, x/h
+
+Figure 10 . - Schlieren photographs of flow along                     2i - 4~
+                                                                           by        - inch porous -
+                                                 wall tunnel .                                  ~
+NACA-Langley - 4-15-55 - 75
+lI
+ I
+
