@@ -1,6 +1,11 @@
+import { registerPresentationProjectWork } from './presentation-project-work'
+import type {
+  PresentationProjectReadLease,
+  PresentationProjectWriteLease,
+} from './presentation-project-write-lease'
 import { createHash, randomUUID } from 'node:crypto'
-import { constants } from 'node:fs'
-import { lstat, mkdir, open, readdir, rename, rm } from 'node:fs/promises'
+import { constants, renameSync } from 'node:fs'
+import { lstat, mkdir, open, readdir, rm } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
 import { PresentationStore, assertPresentationId } from '@wiswork/project-store'
@@ -75,57 +80,83 @@ function validBegin(value: Record<string, unknown>) {
   )
     fail('invalid_request')
 }
-async function directory(path: string) {
-  try {
-    await mkdir(path, { mode: 0o700 })
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+async function directory(path: string, create = false, guard?: () => void) {
+  if (create) {
+    guard?.()
+    try {
+      await mkdir(path, { mode: 0o700 })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+    guard?.()
   }
-  const info = await lstat(path)
+  let info
+  try {
+    info = await lstat(path)
+  } catch (error) {
+    if (!create && (error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  guard?.()
   if (!info.isDirectory() || info.isSymbolicLink()) fail('invalid_state')
+  return true
 }
-async function syncDirectory(path: string) {
+async function syncDirectory(path: string, guard?: () => void) {
   // Windows does not expose directory fsync through Node; file fsync is still required.
   if (process.platform === 'win32') return
+  guard?.()
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
+    guard?.()
     await handle.sync()
   } finally {
     await handle.close()
   }
 }
-async function bytes(path: string, limit: number) {
+async function bytes(path: string, limit: number, guard?: () => void) {
+  guard?.()
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
+    guard?.()
     const stat = await handle.stat()
+    guard?.()
     if (!stat.isFile() || stat.size > limit) fail('invalid_state')
-    return await handle.readFile()
+    const raw = await handle.readFile()
+    guard?.()
+    return raw
   } finally {
     await handle.close()
   }
 }
-async function atomic(path: string, value: string | Buffer) {
+async function atomic(path: string, value: string | Buffer, guard: () => void, publish = guard) {
   const temporary = `${path}.${randomUUID()}.tmp`
-  const handle = await open(
-    temporary,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-    0o600,
-  )
+  let created = false
   try {
-    await handle.writeFile(value)
-    await handle.sync()
+    guard()
+    const handle = await open(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    )
+    created = true
+    try {
+      guard()
+      await handle.writeFile(value)
+      guard()
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    publish()
+    renameSync(temporary, path)
+    created = false
+    await syncDirectory(dirname(path), guard)
   } finally {
-    await handle.close()
-  }
-  try {
-    await rename(temporary, path)
-    await syncDirectory(dirname(path))
-  } finally {
-    await rm(temporary, { force: true })
+    if (created) await rm(temporary, { force: true })
   }
 }
 async function metadata(dir: string): Promise<Metadata> {
-  await directory(dir)
+  if (!(await directory(dir))) fail('not_found')
   try {
     const value = JSON.parse(
       (await bytes(join(dir, 'metadata.json'), 256 * 1024)).toString(),
@@ -249,7 +280,18 @@ export async function validateSinglePageBackupPackage(raw: Buffer) {
     fail('unsupported_file')
   }
 }
-export function createPresentationPageBackupService(options: { userDataPath: string }) {
+export function createPresentationPageBackupService(optionsValue: {
+  userDataPath: string
+  captureProjectLease?: (input: {
+    scope: Readonly<{ documentId: string; projectId: string }>
+    operation: string
+    signal: AbortSignal
+  }) =>
+    | PresentationProjectReadLease
+    | PresentationProjectWriteLease
+    | Promise<PresentationProjectReadLease | PresentationProjectWriteLease>
+}) {
+  const options = { ...optionsValue }
   const root = join(resolve(options.userDataPath), 'presentation-page-backups'),
     store = new PresentationStore(options.userDataPath)
   function binding(projectId: string, documentId: string, requestId: string, pageId: string) {
@@ -303,168 +345,278 @@ export function createPresentationPageBackupService(options: { userDataPath: str
       projectId = body.projectId as string,
       documentId = body.documentId as string,
       backupId = body.backupId as string
-    const project = join(root, hash(projectId)),
-      dir = join(project, hash(backupId)),
-      previous = locks.get(project) ?? Promise.resolve()
-    let release!: () => void
-    const tail = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    locks.set(project, tail)
-    await previous
+    assertPresentationId(projectId)
+    assertPresentationId(backupId)
+    if (typeof documentId !== 'string' || !documentId.length || documentId.length > 2048)
+      fail('invalid_request')
+    if (op === 'page_backup_begin') validBegin(body)
+    if (
+      op === 'page_backup_chunk' &&
+      (!integer(body.offset, 0, LIMIT) ||
+        typeof body.base64 !== 'string' ||
+        body.base64.length > Math.ceil(CHUNK / 3) * 4 ||
+        !body.base64.length ||
+        Buffer.from(body.base64, 'base64').length > CHUNK ||
+        Buffer.from(body.base64, 'base64').toString('base64') !== body.base64)
+    )
+      fail('invalid_request')
+    if (
+      op === 'page_backup_read' &&
+      (!integer(body.offset, 0, LIMIT) || !integer(body.length, 1, CHUNK))
+    )
+      fail('invalid_request')
+    store.production(projectId, documentId)
+    let expectedLineage =
+      op === 'page_backup_begin'
+        ? Object.freeze(
+            binding(projectId, documentId, body.requestId as string, body.pageId as string),
+          )
+        : undefined
+    let boundRequestId = op === 'page_backup_begin' ? (body.requestId as string) : undefined
+    let boundPageId = op === 'page_backup_begin' ? (body.pageId as string) : undefined
+    const scope = Object.freeze({ documentId, projectId })
+    const work = options.captureProjectLease
+      ? registerPresentationProjectWork({ scope: { root: options.userDataPath, ...scope }, signal })
+      : undefined
+    signal = work?.signal ?? signal
+    let lease: PresentationProjectReadLease | PresentationProjectWriteLease | undefined
+    const assertCurrent = () => {
+      check(signal)
+      if (lease) {
+        if ('assertWritable' in lease) lease.assertWritable()
+        else lease.assertCurrent()
+      }
+      check(signal)
+    }
+    const assertLineage = () => {
+      if (expectedLineage) {
+        const current = binding(projectId, documentId, boundRequestId!, boundPageId!)
+        if (JSON.stringify(current) !== JSON.stringify(expectedLineage)) fail('invalid_state')
+      }
+    }
+    const assertWritable = () => {
+      assertCurrent()
+      if (lease && !('assertWritable' in lease)) fail('access_denied')
+    }
+    const assertPublish = () => {
+      assertWritable()
+      assertLineage()
+      assertWritable()
+    }
     try {
-      check(signal)
-      // Check project/document ownership even before looking up backup paths.
-      store.production(projectId, documentId)
-      await directory(root)
-      await directory(project)
-      const entries = await readdir(project)
-      if (entries.length > 8 || entries.some((entry) => !digest(entry))) fail('invalid_state')
-      const exists = entries.includes(hash(backupId))
-      if (!exists && op !== 'page_backup_begin') fail('not_found')
-      if (!exists) {
-        const lineage = binding(
-          projectId,
-          documentId,
-          body.requestId as string,
-          body.pageId as string,
-        )
-        if (entries.length >= 8) fail('quota_exceeded')
-        const m: Metadata = {
-          backupId,
-          projectId,
-          documentId,
-          requestId: body.requestId as string,
-          pageId: body.pageId as string,
-          hostSlideId: body.hostSlideId as string,
-          slideIds: body.slideIds as string[],
-          sha256: body.sha256 as string,
-          sizeBytes: body.sizeBytes as number,
-          ...lineage,
-          status: 'uploading',
-        }
-        const staging = join(root, `.tmp-${randomUUID()}`)
-        await directory(staging)
+      const captured = options.captureProjectLease?.({ scope, operation: op, signal })
+      lease = captured instanceof Promise ? await captured : captured
+      assertCurrent()
+      const run = async () => {
+        const project = join(root, hash(projectId)),
+          dir = join(project, hash(backupId)),
+          previous = locks.get(project) ?? Promise.resolve()
+        let release!: () => void
+        const tail = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        locks.set(project, tail)
+        await previous
         try {
-          await atomic(join(staging, 'raw.pptx'), Buffer.alloc(0))
-          await atomic(join(staging, 'metadata.json'), JSON.stringify(m))
-          check(signal)
-          await rename(staging, dir)
-          await syncDirectory(project)
-        } finally {
-          await rm(staging, { recursive: true, force: true })
-        }
-        return { ...m, receivedBytes: 0 }
-      }
-      let m = await metadata(dir)
-      if (m.backupId !== backupId || m.projectId !== projectId) fail('invalid_state')
-      if (m.documentId !== documentId) fail('document_mismatch')
-      const lineage = binding(projectId, documentId, m.requestId, m.pageId)
-      if (
-        lineage.parentRequestId !== m.parentRequestId ||
-        lineage.parentInputDigest !== m.parentInputDigest ||
-        lineage.inputDigest !== m.inputDigest
-      )
-        fail('invalid_state')
-      const path = join(dir, 'raw.pptx'),
-        raw = await bytes(path, LIMIT),
-        received = raw.length
-      if (received > m.sizeBytes || (m.status === 'ready' && received !== m.sizeBytes))
-        fail('invalid_state')
-      if (m.status === 'ready' && hash(raw) !== m.sha256) fail('digest_mismatch')
-      if (op === 'page_backup_begin') {
-        if (
-          beginFields.some(
-            (key) => JSON.stringify(body[key]) !== JSON.stringify(m[key as keyof Metadata]),
+          assertCurrent()
+          assertLineage()
+          // Check project/document ownership even before looking up backup paths.
+          store.production(projectId, documentId)
+          if (
+            !(await directory(
+              root,
+              op === 'page_backup_begin',
+              op === 'page_backup_begin' ? assertWritable : assertCurrent,
+            )) ||
+            !(await directory(
+              project,
+              op === 'page_backup_begin',
+              op === 'page_backup_begin' ? assertWritable : assertCurrent,
+            ))
           )
-        )
-          fail('request_conflict')
-        return { ...m, receivedBytes: received }
-      }
-      if (op === 'page_backup_chunk') {
-        if (
-          !integer(body.offset, 0, m.sizeBytes) ||
-          typeof body.base64 !== 'string' ||
-          body.base64.length > Math.ceil(CHUNK / 3) * 4
-        )
-          fail('invalid_request')
-        const chunk = Buffer.from(body.base64, 'base64'),
-          offset = body.offset
-        if (
-          !chunk.length ||
-          chunk.length > CHUNK ||
-          chunk.toString('base64') !== body.base64 ||
-          offset + chunk.length > m.sizeBytes
-        )
-          fail('invalid_request')
-        if (offset > received) fail('request_conflict')
-        const overlap = Math.min(chunk.length, received - offset)
-        if (!raw.subarray(offset, offset + overlap).equals(chunk.subarray(0, overlap)))
-          fail('request_conflict')
-        check(signal)
-        if (overlap < chunk.length) {
-          const handle = await open(
-            path,
-            constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW,
-          )
-          try {
-            const stat = await handle.stat()
-            if (!stat.isFile() || stat.size !== received) fail('invalid_state')
-            await handle.writeFile(chunk.subarray(overlap))
-            await handle.sync()
-          } finally {
-            await handle.close()
+            fail('not_found')
+          assertCurrent()
+          const entries = await readdir(project)
+          assertCurrent()
+          if (entries.length > 8 || entries.some((entry) => !digest(entry))) fail('invalid_state')
+          const exists = entries.includes(hash(backupId))
+          if (!exists && op !== 'page_backup_begin') fail('not_found')
+          if (!exists) {
+            const lineage = binding(
+              projectId,
+              documentId,
+              body.requestId as string,
+              body.pageId as string,
+            )
+            if (entries.length >= 8) fail('quota_exceeded')
+            const m: Metadata = {
+              backupId,
+              projectId,
+              documentId,
+              requestId: body.requestId as string,
+              pageId: body.pageId as string,
+              hostSlideId: body.hostSlideId as string,
+              slideIds: body.slideIds as string[],
+              sha256: body.sha256 as string,
+              sizeBytes: body.sizeBytes as number,
+              ...lineage,
+              status: 'uploading',
+            }
+            const staging = join(root, `.tmp-${randomUUID()}`)
+            assertWritable()
+            let created = false
+            try {
+              await mkdir(staging, { mode: 0o700 })
+              created = true
+              assertWritable()
+              await atomic(join(staging, 'raw.pptx'), Buffer.alloc(0), assertWritable)
+              await atomic(join(staging, 'metadata.json'), JSON.stringify(m), assertWritable)
+              assertPublish()
+              renameSync(staging, dir)
+              created = false
+              await syncDirectory(project, assertWritable)
+            } finally {
+              if (created) await rm(staging, { recursive: true, force: true })
+            }
+            return { ...m, receivedBytes: 0 }
           }
+          let m = await metadata(dir)
+          assertCurrent()
+          if (m.backupId !== backupId || m.projectId !== projectId) fail('invalid_state')
+          if (m.documentId !== documentId) fail('document_mismatch')
+          boundRequestId = m.requestId
+          boundPageId = m.pageId
+          const lineage = binding(projectId, documentId, m.requestId, m.pageId)
+          if (
+            lineage.parentRequestId !== m.parentRequestId ||
+            lineage.parentInputDigest !== m.parentInputDigest ||
+            lineage.inputDigest !== m.inputDigest
+          )
+            fail('invalid_state')
+          expectedLineage = Object.freeze(lineage)
+          const path = join(dir, 'raw.pptx'),
+            raw = await bytes(path, LIMIT, assertCurrent),
+            received = raw.length
+          if (received > m.sizeBytes || (m.status === 'ready' && received !== m.sizeBytes))
+            fail('invalid_state')
+          if (m.status === 'ready' && hash(raw) !== m.sha256) fail('digest_mismatch')
+          if (op === 'page_backup_begin') {
+            if (
+              beginFields.some(
+                (key) => JSON.stringify(body[key]) !== JSON.stringify(m[key as keyof Metadata]),
+              )
+            )
+              fail('request_conflict')
+            return { ...m, receivedBytes: received }
+          }
+          if (op === 'page_backup_chunk') {
+            if (
+              !integer(body.offset, 0, m.sizeBytes) ||
+              typeof body.base64 !== 'string' ||
+              body.base64.length > Math.ceil(CHUNK / 3) * 4
+            )
+              fail('invalid_request')
+            const chunk = Buffer.from(body.base64, 'base64'),
+              offset = body.offset
+            if (
+              !chunk.length ||
+              chunk.length > CHUNK ||
+              chunk.toString('base64') !== body.base64 ||
+              offset + chunk.length > m.sizeBytes
+            )
+              fail('invalid_request')
+            if (offset > received) fail('request_conflict')
+            const overlap = Math.min(chunk.length, received - offset)
+            if (!raw.subarray(offset, offset + overlap).equals(chunk.subarray(0, overlap)))
+              fail('request_conflict')
+            check(signal)
+            if (overlap < chunk.length) {
+              assertWritable()
+              const handle = await open(
+                path,
+                constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW,
+              )
+              try {
+                assertWritable()
+                const stat = await handle.stat()
+                assertWritable()
+                if (!stat.isFile() || stat.size !== received) fail('invalid_state')
+                assertPublish()
+                await handle.writeFile(chunk.subarray(overlap))
+                assertWritable()
+                await handle.sync()
+              } finally {
+                await handle.close()
+              }
+            }
+            return { ...m, receivedBytes: Math.max(received, offset + chunk.length) }
+          }
+          if (op === 'page_backup_finish') {
+            if (received !== m.sizeBytes) fail('invalid_state')
+            if (hash(raw) !== m.sha256) fail('digest_mismatch')
+            await validateSinglePageBackupPackage(raw)
+            assertWritable()
+            if (m.status !== 'ready') {
+              m = { ...m, status: 'ready' }
+              await atomic(
+                join(dir, 'metadata.json'),
+                JSON.stringify(m),
+                assertWritable,
+                assertPublish,
+              )
+            }
+          }
+          if (op === 'page_backup_read') {
+            if (!integer(body.offset, 0, m.sizeBytes) || !integer(body.length, 1, CHUNK))
+              fail('invalid_request')
+            if (m.status !== 'ready') fail('page_not_ready')
+            check(signal)
+            return {
+              backupId,
+              offset: body.offset,
+              sizeBytes: m.sizeBytes,
+              sha256: m.sha256,
+              base64: raw.subarray(body.offset, body.offset + body.length).toString('base64'),
+            }
+          }
+          check(signal)
+          return { ...m, receivedBytes: received }
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            [
+              'invalid_request',
+              'invalid_state',
+              'document_mismatch',
+              'request_conflict',
+              'not_found',
+              'aborted',
+              'output_too_large',
+              'quota_exceeded',
+              'digest_mismatch',
+              'unsupported_file',
+              'page_not_ready',
+              'revision_conflict',
+              'project_deleting',
+              'project_deleted',
+              'project_not_found',
+              'access_denied',
+            ].includes(error.message)
+          )
+            throw error
+          return fail('invalid_state')
+        } finally {
+          release()
+          if (locks.get(project) === tail) locks.delete(project)
         }
-        return { ...m, receivedBytes: Math.max(received, offset + chunk.length) }
       }
-      if (op === 'page_backup_finish') {
-        if (received !== m.sizeBytes) fail('invalid_state')
-        if (hash(raw) !== m.sha256) fail('digest_mismatch')
-        await validateSinglePageBackupPackage(raw)
-        check(signal)
-        if (m.status !== 'ready') {
-          m = { ...m, status: 'ready' }
-          await atomic(join(dir, 'metadata.json'), JSON.stringify(m))
-        }
-      }
-      if (op === 'page_backup_read') {
-        if (!integer(body.offset, 0, m.sizeBytes) || !integer(body.length, 1, CHUNK))
-          fail('invalid_request')
-        if (m.status !== 'ready') fail('page_not_ready')
-        check(signal)
-        return {
-          backupId,
-          offset: body.offset,
-          sizeBytes: m.sizeBytes,
-          sha256: m.sha256,
-          base64: raw.subarray(body.offset, body.offset + body.length).toString('base64'),
-        }
-      }
-      check(signal)
-      return { ...m, receivedBytes: received }
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        [
-          'invalid_request',
-          'invalid_state',
-          'document_mismatch',
-          'request_conflict',
-          'not_found',
-          'aborted',
-          'output_too_large',
-          'quota_exceeded',
-          'digest_mismatch',
-          'unsupported_file',
-          'page_not_ready',
-        ].includes(error.message)
-      )
-        throw error
-      return fail('invalid_state')
+      const result = await run()
+      assertCurrent()
+      assertLineage()
+      assertCurrent()
+      return result
     } finally {
-      release()
-      if (locks.get(project) === tail) locks.delete(project)
+      work?.finish()
     }
   }
 }
