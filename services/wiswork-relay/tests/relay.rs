@@ -1634,3 +1634,72 @@ async fn governance_wrong_family_and_context_denied() {
         check_v2_body("presentation-governance.v1", Some(rejected)).await;
     }
 }
+fn full_pc_catalog() -> Vec<serde_json::Value> {
+    [
+        "agent.v1",
+        "web-search.v1",
+        "web-fetch.v1",
+        "image-search.v1",
+        "presentation.v1",
+        "presentation-team.v1",
+        "presentation-attachments.v1",
+        "presentation-assets.v1",
+        "presentation-remote-images.v1",
+        "presentation-webpages.v1",
+        "presentation-asset-rights.v1",
+        "presentation-animation-frame.v1",
+        "presentation-pdf.v1",
+        "presentation-production-pdf.v1",
+        "presentation-master-backups.v1",
+        "presentation-package-backups.v1",
+        "presentation-governance.v1",
+    ]
+    .into_iter()
+    .map(|s| json!(s))
+    .collect()
+}
+#[tokio::test]
+async fn full_pc_catalog_intersects_primary_sixteen_and_team_one() {
+    for team in [false, true] {
+        let offered = full_pc_catalog();
+        assert_eq!(offered.len(), 17);
+        let requested: Vec<_> = offered
+            .iter()
+            .filter(|v| (v.as_str() == Some("presentation-team.v1")) == team)
+            .cloned()
+            .collect();
+        assert_eq!(requested.len(), if team { 1 } else { 16 });
+        let url = server().await;
+        let mut office = socket(&url, ORIGIN).await;
+        send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":requested})).await;
+        let created = recv(&mut office).await;
+        assert_eq!(created["type"], "office.created");
+        let mut pc = pc_socket(&url).await;
+        send(&mut pc,json!({"version":2,"type":"pc.negotiate","verification_code":created["verification_code"],"capabilities":offered})).await;
+        let negotiated = recv(&mut pc).await;
+        assert_eq!(negotiated["capabilities"], json!(requested));
+        send(&mut pc,json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":offered})).await;
+        assert_eq!(recv(&mut pc).await["capabilities"], json!(requested));
+    }
+}
+#[tokio::test]
+async fn extended_pc_catalog_rejects_unknown_and_duplicate_entries() {
+    for duplicate in [false, true] {
+        let mut offered = full_pc_catalog();
+        offered[16] = json!(if duplicate { "agent.v1" } else { "future.v1" });
+        let url = server().await;
+        let mut office = socket(&url, ORIGIN).await;
+        send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["agent.v1"]})).await;
+        let created = recv(&mut office).await;
+        let mut pc = pc_socket(&url).await;
+        send(&mut pc,json!({"version":2,"type":"pc.negotiate","verification_code":created["verification_code"],"capabilities":offered})).await;
+        assert_eq!(recv(&mut pc).await["code"], "invalid_frame");
+    }
+}
+#[tokio::test]
+async fn team_only_request_rejects_mixed_capabilities_even_with_full_pc_catalog() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["presentation-team.v1","agent.v1"]})).await;
+    assert_eq!(recv(&mut office).await["code"], "invalid_capabilities");
+}

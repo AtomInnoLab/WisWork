@@ -615,6 +615,29 @@ fn version(m: &Map<String, Value>) -> Result<u64, &'static str> {
         .ok_or("invalid_frame")
 }
 
+fn pc_offered_capabilities(m: &Map<String, Value>) -> Result<Vec<String>, &'static str> {
+    let values = m
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .ok_or("invalid_frame")?;
+    if values.len() <= 16 {
+        return capabilities(m);
+    }
+    if values.len() != SUPPORTED_CAPABILITIES.len() {
+        return Err("invalid_frame");
+    }
+    let mut seen = HashSet::new();
+    let mut result = Vec::with_capacity(values.len());
+    for value in values {
+        let name = value.as_str().ok_or("invalid_frame")?;
+        if !SUPPORTED_CAPABILITIES.contains(&name) || !seen.insert(name) {
+            return Err("invalid_frame");
+        }
+        result.push(name.to_owned());
+    }
+    Ok(result)
+}
+
 fn capabilities(m: &Map<String, Value>) -> Result<Vec<String>, &'static str> {
     let values = m
         .get("capabilities")
@@ -710,7 +733,7 @@ async fn negotiate(
     {
         return Err("invalid_frame");
     }
-    let offered = capabilities(&m)?;
+    let offered = pc_offered_capabilities(&m)?;
     let code = string(&m, "verification_code")?;
     if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("invalid_code");
@@ -894,7 +917,7 @@ async fn claim(
         return Err("invalid_frame");
     }
     let offered = if protocol == PROTOCOL_V2 {
-        capabilities(&m)?
+        pc_offered_capabilities(&m)?
     } else {
         vec!["agent.v1".to_owned()]
     };
@@ -1624,9 +1647,8 @@ async fn request(
         "project_deletion_resume",
     ]
     .contains(&m["body"]["operation"].as_str().unwrap_or(""));
-    if (governance_capability && !governance_operation)
-        || (deletion_operation && !governance_capability)
-        || (governance_capability && session.host != "PowerPoint")
+    if (governance_capability || deletion_operation)
+        && (session.host != "PowerPoint" || !governance_operation || !governance_capability)
     {
         return Err("invalid_request");
     }
