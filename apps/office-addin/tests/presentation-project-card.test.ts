@@ -80,6 +80,46 @@ async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () =>
   }
 }
 describe('presentation project recovery card', () => {
+  it('shows recorded host association, missing pages and historical identity without claiming current content or QA', async () => {
+    const plan = benchmarkPlan()
+    const f = await mount({
+      ...pending,
+      project: {
+        ...pending.project!,
+        plan: { revision: 3, value: plan },
+        hostAssociations: {
+          pages: [
+            {
+              pageId: plan.slides[0]!.id,
+              hostPages: [
+                {
+                  requestId: 'old',
+                  slideId: 'host-old',
+                  planRevision: 1,
+                  revisionRelation: 'historical',
+                  presence: 'present',
+                },
+                {
+                  requestId: 'unknown',
+                  slideId: 'gone',
+                  revisionRelation: 'unknown',
+                  presence: 'missing',
+                },
+              ],
+            },
+          ],
+          legacyImports: 2,
+          uncertainImports: 1,
+        },
+      },
+    })
+    expect(f.container.querySelector('[aria-label="计划与宿主页关联"]')).not.toBeNull()
+    expect(f.container.textContent).toContain('历史计划第 1 版')
+    expect(f.container.textContent).toContain('宿主页已缺失')
+    expect(f.container.textContent).toContain('计划修订未知')
+    expect(f.container.textContent).toContain('2 份旧导入记录缺少页级身份')
+    expect(f.container.textContent).toContain('不证明页面内容仍匹配计划或已通过验收')
+  })
   it('shows persistent page locks and dispatches an explicit unlock while preventing page removal', async () => {
     const plan = benchmarkPlan()
     plan.slides[1]!.locked = true

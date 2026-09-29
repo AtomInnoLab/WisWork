@@ -482,6 +482,56 @@ export function PresentationProjectCard(props: {
       {project?.plan && (
         <details>
           <summary>制作计划 · 第 {project.plan.revision} 版</summary>
+          {project.hostAssociationsUnavailable && (
+            <p role="alert">宿主页关联暂不可读取，请刷新后核对导入记录和当前文档。</p>
+          )}
+          {project.hostAssociations && (
+            <details aria-label="计划与宿主页关联">
+              <summary>计划与宿主页关联</summary>
+              <p>依据持久导入回执核对页面是否存在；不证明页面内容仍匹配计划或已通过验收。</p>
+              <ol>
+                {project.hostAssociations.pages.map((page) => (
+                  <li key={page.pageId}>
+                    {project.plan!.value.slides.find((slide) => slide.id === page.pageId)?.title ??
+                      page.pageId}
+                    {page.hostPages.length === 0 ? (
+                      <p>尚无可定位的导入记录。</p>
+                    ) : (
+                      <ul>
+                        {page.hostPages.map((host) => (
+                          <li key={`${host.requestId}/${host.slideId}`}>
+                            {host.presence === 'present'
+                              ? host.position
+                                ? `宿主第 ${host.position} 页`
+                                : '宿主页存在'
+                              : '宿主页已缺失'}{' '}
+                            ·{' '}
+                            {host.revisionRelation === 'current'
+                              ? `当前计划第 ${host.planRevision} 版`
+                              : host.revisionRelation === 'historical'
+                                ? `历史计划第 ${host.planRevision} 版`
+                                : '计划修订未知'}{' '}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+              </ol>
+              {project.hostAssociations.legacyImports > 0 && (
+                <p>
+                  {project.hostAssociations.legacyImports}{' '}
+                  份旧导入记录缺少页级身份，未按标题或页序猜测关联。
+                </p>
+              )}
+              {project.hostAssociations.uncertainImports > 0 && (
+                <p>
+                  {project.hostAssociations.uncertainImports}{' '}
+                  份导入记录含未确定的写入，请先核对导入恢复状态。
+                </p>
+              )}
+            </details>
+          )}
           {controller.editPlan && history.length > 0 && (
             <details aria-label="历史计划恢复">
               <summary>恢复历史计划</summary>

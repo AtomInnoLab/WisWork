@@ -22,6 +22,11 @@ import {
 } from '@wiswork/pptx-engine/presentation-plan'
 import type { AgentSkill } from '@wiswork/agent-core'
 import type { PresentationGenerationOptions } from './presentation-generation.js'
+import {
+  presentationHostAssociations,
+  type PresentationHostAssociations,
+} from './presentation-host-associations.js'
+import type { PresentationImportRecord } from './presentation-delivery.js'
 
 export interface PresentationProductionTask {
   requestId: string
@@ -38,6 +43,8 @@ export interface PresentationProductionTask {
   }
 }
 export interface PresentationProjectStatus {
+  hostAssociations?: PresentationHostAssociations
+  hostAssociationsUnavailable?: boolean
   sourcePreparation?: {
     sourceId: string
     attachmentId: string
@@ -575,7 +582,10 @@ export function createPresentationProjectController(
     | 'selectedProduction'
     | 'rememberSelectedProduction'
   > &
-    Pick<AgentSkill, 'executeTool'>,
+    Pick<AgentSkill, 'executeTool'> & {
+      listReceipts?(): { key: string; record: PresentationImportRecord }[]
+      hostSlideIds?(signal?: AbortSignal): Promise<string[]>
+    },
 ): PresentationProjectController {
   let state: PresentationProjectSnapshot = { phase: 'idle' }
   const listeners = new Set<() => void>()
@@ -796,6 +806,38 @@ export function createPresentationProjectController(
         selectedRequest && !project.jobsUnavailable
           ? { documentId, projectId, requestId: selectedRequest }
           : undefined
+      if (project.plan && options.listReceipts && options.hostSlideIds) {
+        try {
+          const receipts = options.listReceipts()
+          const capturedReceipts = JSON.stringify(receipts)
+          const hostIds = await options.hostSlideIds(controller.signal)
+          check()
+          if ((await options.documentId()) !== documentId)
+            throw new Error('presentation_document_changed')
+          check()
+          if (JSON.stringify(options.listReceipts()) !== capturedReceipts)
+            throw new Error('presentation_host_association_invalid')
+          project.hostAssociations = presentationHostAssociations(
+            project.plan.value,
+            project.plan.revision,
+            documentId,
+            receipts,
+            project.productionTasks ?? [],
+            hostIds,
+          )
+        } catch (error) {
+          if (
+            controller.signal.aborted ||
+            captured !== epoch ||
+            (error instanceof Error && error.message === 'presentation_document_changed')
+          )
+            throw error
+          project.hostAssociationsUnavailable = true
+        }
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
+      }
       projectDocument = documentId
       publish({ phase: 'idle', project })
       if (

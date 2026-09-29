@@ -277,6 +277,9 @@ it('atomically switches complete receipt mappings and restores parent mapping on
     'presentation_import_superseded',
   )
   expect(f.create().readReceipt('production/project/child')).toEqual(f.childReceipt)
+  expect(f.create().listReceipts()).toEqual([
+    { key: 'production/project/child', record: f.childReceipt },
+  ])
   await expect(f.binding.writeReceipt('production/project/child', undefined)).rejects.toThrow(
     'presentation_import_superseded',
   )
@@ -287,6 +290,11 @@ it('atomically switches complete receipt mappings and restores parent mapping on
   await f.binding.writePageReplacement(restored, pending)
   await f.binding.writePageReplacement(undone, restored)
   expect(f.create().readReceipt('production/project/parent')?.slideIds).toEqual(['restored'])
+  const effective = f.create().listReceipts()
+  expect(effective.map((entry) => entry.key)).toEqual(['production/project/parent'])
+  expect(effective[0]!.record.slideIds).toEqual(['restored'])
+  effective[0]!.record.slideIds![0] = 'tampered view'
+  expect(f.create().listReceipts()[0]!.record.slideIds).toEqual(['restored'])
   expect(() => f.create().readReceipt('production/project/child')).toThrow(
     'presentation_import_superseded',
   )

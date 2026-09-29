@@ -204,6 +204,7 @@ export function createOfficeHostRuntime(
       readQa?(key: string): PresentationQaRecord | undefined
       writeQa?(key: string, record: PresentationQaRecord): Promise<void>
       readReceipt?(key: string): PresentationImportRecord | undefined
+      listReceipts?(): { key: string; record: PresentationImportRecord }[]
       writeReceipt?(key: string, record: PresentationImportRecord | undefined): Promise<void>
     }
     enableHostSkills?: boolean
@@ -722,6 +723,12 @@ export function createOfficeHostRuntime(
     generation && options.presentation
       ? createPresentationProjectController({
           ...options.presentation,
+          ...(options.presentation.listReceipts
+            ? {
+                hostSlideIds: async (signal?: AbortSignal) =>
+                  (await createBrowserPresentationImportAdapter().snapshot(signal)).slideIds,
+              }
+            : {}),
           executeTool: (call, signal) =>
             evidenceDelivery?.tools.some((tool) => tool.name === call.name)
               ? executeEvidenceDelivery(call, signal)

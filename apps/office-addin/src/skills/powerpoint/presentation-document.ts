@@ -1333,6 +1333,15 @@ export function createPresentationDocumentBinding(
       return result
     },
     readReceipt,
+    listReceipts() {
+      const { receipts } = readReplacementEnvelope()
+      return structuredClone(
+        Object.entries({ ...readImports(), ...receipts })
+          .filter((entry): entry is [string, PresentationImportRecord] => entry[1] !== null)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, record]) => ({ key, record })),
+      )
+    },
     writeReceipt(key: string, record: PresentationImportRecord | undefined) {
       const write = async () => {
         if (
