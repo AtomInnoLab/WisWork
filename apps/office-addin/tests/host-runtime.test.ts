@@ -558,6 +558,92 @@ it('gates QA by host support and refreshes saved QA after project restoration', 
   }
 })
 
+it('exposes attempt history only with both durable hooks and never reads or replays without an artifact', () => {
+  const readQaAttempts = vi.fn(() => [])
+  const writeQaAttempt = vi.fn(async () => {})
+  const request = vi.fn(async () => new Response('{}'))
+  for (const paired of [false, true]) {
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request,
+        documentId: async () => 'doc',
+        lastProject: () => undefined,
+        rememberProject: async () => {},
+        readReceipt: () => undefined,
+        readQa: () => undefined,
+        writeQa: async () => {},
+        readQaAttempts,
+        ...(paired ? { writeQaAttempt } : {}),
+      },
+    })
+    try {
+      if (paired) expect(runtime.qa?.attempts?.()).toEqual([])
+      else expect(runtime.qa?.attempts).toBeUndefined()
+    } finally {
+      runtime.dispose()
+    }
+  }
+  expect(readQaAttempts).not.toHaveBeenCalled()
+  expect(writeQaAttempt).not.toHaveBeenCalled()
+  expect(request).not.toHaveBeenCalled()
+})
+
+it('rejects an injected production attempt for the visible restored whole-deck artifact', async () => {
+  let productionSource = true
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      documentId: async () => 'doc',
+      lastProject: () => 'project',
+      rememberProject: async () => {},
+      request: async () =>
+        new Response(
+          JSON.stringify({
+            projectId: 'project',
+            requestId: 'run',
+            status: 'compiled',
+            pptxBase64: 'UEsDBAAAAAA=',
+            report: { deckId: 'project', slideCount: 1 },
+            pages: [{ id: 'page', title: 'Page', sourceSlideId: '256#' }],
+          }),
+        ),
+      readReceipt: () => undefined,
+      readQa: () => undefined,
+      writeQa: async () => {},
+      writeQaAttempt: async () => {},
+      readQaAttempts: () => [
+        {
+          version: 1,
+          id: '12345678-1234-4234-8234-123456789abc',
+          ...(productionSource ? { source: 'production' as const } : {}),
+          documentId: 'doc',
+          projectId: 'project',
+          requestId: 'run',
+          artifactDigest: 'a'.repeat(64),
+          pageId: 'page',
+          hostSlideId: 'new-slide',
+          startedAt: '2026-09-29T00:00:00.000Z',
+          status: 'started',
+        },
+      ],
+    },
+  })
+  try {
+    const result = await runtime.skill.executeTool({
+      id: 'restore',
+      name: 'restore_presentation_project',
+      input: {},
+    })
+    expect(result.isError).not.toBe(true)
+    expect(() => runtime.qa!.attempts!()).toThrow('presentation_qa_attempt_state_invalid')
+    productionSource = false
+    expect(runtime.qa!.attempts!()).toHaveLength(1)
+  } finally {
+    runtime.dispose()
+  }
+})
+
 it('invalidates exactly the affected host pages when confirming batch reapply', async () => {
   const invalidateQa = vi.fn(async (_hostSlideIds?: readonly string[]) => {})
   const runtime = createOfficeHostRuntime('powerpoint', {

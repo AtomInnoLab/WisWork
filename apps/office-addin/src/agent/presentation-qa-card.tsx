@@ -1,7 +1,12 @@
 import { useSyncExternalStore } from 'react'
 import type { PresentationQaRecord } from '../skills/powerpoint/presentation-qa.js'
+import {
+  validatePresentationQaAttempt,
+  type PresentationQaAttempt,
+} from '../skills/powerpoint/presentation-qa-attempts.js'
 export interface PresentationQaController {
   read(): PresentationQaRecord | undefined
+  attempts?(): PresentationQaAttempt[]
   revision(): number
   subscribe(listener: () => void): () => void
 }
@@ -16,16 +21,74 @@ export function PresentationQaCard({
 }) {
   useSyncExternalStore(controller.subscribe, controller.revision, controller.revision)
   let record: PresentationQaRecord | undefined
+  let readError = false
   try {
     record = controller.read()
   } catch {
+    readError = true
+  }
+  let attempts: PresentationQaAttempt[] = [],
+    unavailable = false
+  try {
+    const value = controller.attempts?.() ?? []
+    if (
+      !Array.isArray(value) ||
+      value.length > 64 ||
+      new Set(value.map((attempt) => attempt?.id)).size !== value.length ||
+      !value.every(validatePresentationQaAttempt)
+    )
+      throw Error('invalid_state')
+    attempts = value
+  } catch {
+    unavailable = true
+  }
+  const attemptHistory = unavailable ? (
+    <p role="alert">截图尝试历史暂不可读取；不沿用未知尝试结果，请刷新核对。</p>
+  ) : attempts.length ? (
+    <details>
+      <summary>截图尝试记录 · {attempts.length} 条</summary>
+      <p>只记录采集尝试和已保存截图；不代表图片已收到、视觉复核、专业事实或真实宿主验收通过。</p>
+      <ol>
+        {attempts.map((attempt) => (
+          <li key={attempt.id}>
+            <strong>
+              页面 {attempt.pageId} ·{' '}
+              {
+                {
+                  started: '开始记录尚未闭合，不能证明仍在执行，不自动重放',
+                  recorded: '已保存截图，仍待视觉复核',
+                  waiting: '等待截图能力；可在能力恢复后按明确请求重试',
+                  failed: '采集未完成，请核对状态后再决定是否重试',
+                  cancelled: '采集已取消，未认证截图或页面状态',
+                }[attempt.status]
+              }
+            </strong>
+            <p>
+              <time dateTime={attempt.startedAt}>{attempt.startedAt}</time> · 原开始记录
+            </p>
+            {attempt.finishedAt && (
+              <p>
+                <time dateTime={attempt.finishedAt}>{attempt.finishedAt}</time> · 结束回执
+              </p>
+            )}
+          </li>
+        ))}
+      </ol>
+    </details>
+  ) : null
+  if (readError)
     return (
       <section className="presentation-project" aria-label="页面 QA 记录">
         <p role="alert">检查记录无法读取，请重新采集目标页面。</p>
+        {attemptHistory}
       </section>
     )
-  }
-  if (!record) return null
+  if (!record)
+    return attemptHistory ? (
+      <section className="presentation-project" aria-label="页面 QA 记录">
+        {attemptHistory}
+      </section>
+    ) : null
   const affected = record.pages.filter((page) => page.recheckRequired).map((page) => page.pageId)
   return (
     <section className="presentation-project" aria-label="页面 QA 记录">
@@ -34,6 +97,7 @@ export function PresentationQaCard({
         {record.pages.length} 页
       </strong>
       <p>以下为历史检查记录，需重新采集才能确认当前状态；不代表来源核验或保存重开验收。</p>
+      {attemptHistory}
       {affected.length > 0 && (
         <>
           <p role="status">

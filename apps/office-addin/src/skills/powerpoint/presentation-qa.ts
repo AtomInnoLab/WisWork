@@ -1,3 +1,7 @@
+import {
+  validatePresentationQaAttempt,
+  type PresentationQaAttempt,
+} from './presentation-qa-attempts.js'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import type { PowerPointPageInspection } from './browser-powerpoint-adapter.js'
 import type {
@@ -69,6 +73,8 @@ export interface PresentationQaOptions {
   ): Promise<{ slideId: string; base64: string }>
   readQa(key: string): PresentationQaRecord | undefined
   writeQa(key: string, record: PresentationQaRecord): Promise<void>
+  readQaAttempts?(key: string): PresentationQaAttempt[]
+  writeQaAttempt?(key: string, attempt: PresentationQaAttempt): Promise<void>
   vfs: InMemoryVfs
 }
 const id = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(v)
@@ -445,6 +451,24 @@ export function createPresentationQaSkill(options: PresentationQaOptions): Agent
           summary: '页面验收正在进行，请等待当前操作完成',
         }
       busy = true
+      let attempt: PresentationQaAttempt | undefined
+      let attemptKey = ''
+      let attemptFinished = false
+      let attemptPhase: 'inspection_failed' | 'publication_failed' | 'state_changed' =
+        'inspection_failed'
+      const finishAttempt = async (
+        status: Exclude<PresentationQaAttempt['status'], 'started'>,
+        errorCode?: PresentationQaAttempt['errorCode'],
+      ) => {
+        if (!attempt || attemptFinished) return
+        await options.writeQaAttempt!(attemptKey, {
+          ...attempt,
+          status,
+          finishedAt: new Date(Math.max(Date.now(), Date.parse(attempt.startedAt))).toISOString(),
+          ...(errorCode ? { errorCode } : {}),
+        })
+        attemptFinished = true
+      }
       const captured = epoch
       const check = () => {
         if (signal?.aborted || captured !== epoch) throw new Error('cancelled')
@@ -517,10 +541,32 @@ export function createPresentationQaSkill(options: PresentationQaOptions): Agent
             stored.artifactDigest !== artifactDigest)
         )
           throw new Error('presentation_qa_state_invalid')
+        let attempts: PresentationQaAttempt[] | undefined
+        if (read && options.readQaAttempts) {
+          attempts = options.readQaAttempts(key)
+          if (
+            !Array.isArray(attempts) ||
+            attempts.length > 64 ||
+            new Set(attempts.map((item) => item?.id)).size !== attempts.length ||
+            attempts.some(
+              (item) =>
+                !validatePresentationQaAttempt(item) ||
+                item.documentId !== documentId ||
+                item.source !== source ||
+                item.projectId !== artifact.projectId ||
+                item.requestId !== artifact.requestId ||
+                item.artifactDigest !== artifactDigest ||
+                !artifact.pages?.some((page) => page.id === item.pageId),
+            )
+          )
+            throw new Error('presentation_qa_attempt_state_invalid')
+          await current()
+        }
         if (read)
           return {
             output: JSON.stringify({
               record: stored ?? null,
+              ...(attempts ? { attempts } : {}),
               needs_recapture: true,
               checks: { content: 'not_verified', sources: 'not_verified', saveReopen: 'not_run' },
             }),
@@ -553,6 +599,25 @@ export function createPresentationQaSkill(options: PresentationQaOptions): Agent
             seen.pageJson !== JSON.stringify(previousPage))
         )
           throw new Error('presentation_qa_capture_required')
+        if (capture && options.readQaAttempts && options.writeQaAttempt) {
+          attemptKey = key
+          const started: PresentationQaAttempt = {
+            version: 1,
+            id: crypto.randomUUID(),
+            ...(source ? { source } : {}),
+            documentId,
+            projectId: artifact.projectId,
+            requestId: artifact.requestId,
+            artifactDigest,
+            pageId: page.id,
+            hostSlideId: mapping.slideId,
+            startedAt: new Date().toISOString(),
+            status: 'started',
+          }
+          await options.writeQaAttempt(key, started)
+          attempt = started
+          await consistent()
+        }
         let capturedPage: PowerPointPageInspection
         try {
           capturedPage = await options.inspectPage(mapping.slideId, signal)
@@ -565,6 +630,8 @@ export function createPresentationQaSkill(options: PresentationQaOptions): Agent
               hostCode === 'ActivityLimitReached' ||
               hostCode === 'Timeout')
           ) {
+            await consistent()
+            await finishAttempt('waiting', 'screenshot_unavailable')
             await consistent()
             return {
               output: JSON.stringify({
@@ -665,6 +732,7 @@ export function createPresentationQaSkill(options: PresentationQaOptions): Agent
           await consistent()
         }
         await consistent()
+        attemptPhase = 'state_changed'
         await options.writeQa(key, record)
         await current()
         if (
@@ -683,10 +751,18 @@ export function createPresentationQaSkill(options: PresentationQaOptions): Agent
               : '已记录 Agent 的视觉复核；未核验内容、来源与保存重开结果',
           }
         }
+        attemptPhase = 'publication_failed'
         options.vfs.writeBatch([
           [path, inspected.bytes],
           [recordPath, JSON.stringify(record, null, 2)],
         ])
+        await finishAttempt('recorded')
+        await current()
+        if (
+          JSON.stringify(options.readReceipt(key)) !== receiptJson ||
+          JSON.stringify(options.readQa(key)) !== JSON.stringify(record)
+        )
+          throw new Error('presentation_qa_stale')
         live.delete(liveKey)
         live.set(liveKey, {
           hostSlideId: mapping.slideId,
@@ -718,6 +794,29 @@ export function createPresentationQaSkill(options: PresentationQaOptions): Agent
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : ''
+        if (attempt && !attemptFinished) {
+          try {
+            await finishAttempt(
+              signal?.aborted || captured !== epoch || message === 'cancelled'
+                ? 'cancelled'
+                : 'failed',
+              signal?.aborted || captured !== epoch || message === 'cancelled'
+                ? 'cancelled'
+                : message === 'vfs_limit'
+                  ? 'publication_failed'
+                  : /presentation_(document_changed|qa_stale|unavailable)/.test(message)
+                    ? 'state_changed'
+                    : attemptPhase,
+            )
+          } catch {
+            return {
+              output: 'presentation_qa_attempt_unresolved',
+              isError: true,
+              mutated: false,
+              summary: '截图尝试的结束记录未能确认；请读取已保存记录核对，重开不会自动重试截图。',
+            }
+          }
+        }
         if (message === 'vfs_limit')
           return {
             output: 'presentation_session_storage_full',

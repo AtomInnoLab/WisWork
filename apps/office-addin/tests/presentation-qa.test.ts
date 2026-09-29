@@ -859,3 +859,156 @@ it('validates canonical first invalidation times only on stale evidence after ca
   expect(f.readQa()!.pages[0]).not.toHaveProperty('invalidatedAt')
   expect(f.readQa()!.pages[0]).not.toHaveProperty('recheckRequired')
 })
+
+it('persists screenshot waiting and retry attempts without replacing previous QA evidence', async () => {
+  const f = setup()
+  const attempts: import('../src/skills/powerpoint/presentation-qa-attempts.js').PresentationQaAttempt[] =
+    []
+  const writeQaAttempt = vi.fn(async (_key: string, value: (typeof attempts)[number]) => {
+    const index = attempts.findIndex((item) => item.id === value.id)
+    if (index < 0) attempts.push(structuredClone(value))
+    else attempts[index] = structuredClone(value)
+  })
+  const skill = createPresentationQaSkill({
+    ...f.options,
+    readQaAttempts: () => attempts,
+    writeQaAttempt,
+  })
+  f.inspectPage.mockRejectedValueOnce(
+    Object.assign(new Error('private host information'), { code: 'Timeout' }),
+  )
+  const waiting = await skill.executeTool(f.capture)
+  expect(JSON.parse(waiting.output).status).toBe('waiting_screenshot')
+  expect(attempts).toHaveLength(1)
+  expect(attempts[0]).toMatchObject({
+    status: 'waiting',
+    pageId: 'first',
+    hostSlideId: 'host1',
+    errorCode: 'screenshot_unavailable',
+  })
+  expect(attempts[0].finishedAt! >= attempts[0].startedAt).toBe(true)
+  expect(f.readQa()).toBeUndefined()
+  expect(JSON.stringify(attempts)).not.toContain('private host information')
+  expect((await skill.executeTool(f.capture)).isError).not.toBe(true)
+  expect(attempts.map((item) => item.status)).toEqual(['waiting', 'recorded'])
+  expect(new Set(attempts.map((item) => item.id)).size).toBe(2)
+  expect(writeQaAttempt).toHaveBeenCalledTimes(4)
+  const reopened = createPresentationQaSkill({
+    ...f.options,
+    readQaAttempts: () => attempts,
+    writeQaAttempt,
+  })
+  const read = await reopened.executeTool({ id: 'read', name: 'read_presentation_qa', input: {} })
+  expect(JSON.parse(read.output).attempts).toEqual(attempts)
+  expect(f.inspectPage).toHaveBeenCalledTimes(2)
+})
+
+it('does not call the screenshot host when the durable start cannot be saved', async () => {
+  const f = setup()
+  const skill = createPresentationQaSkill({
+    ...f.options,
+    readQaAttempts: () => [],
+    writeQaAttempt: async () => {
+      throw new Error('settings unavailable')
+    },
+  })
+  expect((await skill.executeTool(f.capture)).isError).toBe(true)
+  expect(f.inspectPage).not.toHaveBeenCalled()
+  expect(f.writeQa).not.toHaveBeenCalled()
+})
+
+it('records cancelled inspection safely and preserves the original attempt identity', async () => {
+  const f = setup(),
+    controller = new AbortController()
+  const writes: import('../src/skills/powerpoint/presentation-qa-attempts.js').PresentationQaAttempt[] =
+    []
+  f.inspectPage.mockImplementationOnce(async () => {
+    controller.abort()
+    throw new Error('secret cancelled detail')
+  })
+  const skill = createPresentationQaSkill({
+    ...f.options,
+    readQaAttempts: () => [],
+    writeQaAttempt: async (_key, value) => {
+      writes.push(structuredClone(value))
+    },
+  })
+  expect((await skill.executeTool(f.capture, controller.signal)).isError).toBe(true)
+  expect(writes.map((item) => item.status)).toEqual(['started', 'cancelled'])
+  expect(writes[0].id).toBe(writes[1].id)
+  expect(writes[1].errorCode).toBe('cancelled')
+  expect(JSON.stringify(writes)).not.toContain('secret cancelled detail')
+})
+
+it('persists safe publication failure without creating a live review capability', async () => {
+  const f = setup()
+  const writes: import('../src/skills/powerpoint/presentation-qa-attempts.js').PresentationQaAttempt[] =
+    []
+  vi.spyOn(f.vfs, 'writeBatch').mockImplementationOnce(() => {
+    throw new Error('vfs_limit')
+  })
+  const skill = createPresentationQaSkill({
+    ...f.options,
+    readQaAttempts: () => [],
+    writeQaAttempt: async (_key, value) => {
+      writes.push(structuredClone(value))
+    },
+  })
+  expect((await skill.executeTool(f.capture)).output).toBe('presentation_session_storage_full')
+  expect(writes.map((item) => item.status)).toEqual(['started', 'failed'])
+  expect(writes[1].errorCode).toBe('publication_failed')
+  expect(f.readQa()?.pages[0].visual.status).toBe('needs_review')
+  const reviewed = await skill.executeTool({
+    id: 'review',
+    name: 'record_presentation_page_review',
+    input: {
+      page_id: 'first',
+      screenshot_digest: f.readQa()!.pages[0].screenshotDigest,
+      outcome: 'pass',
+      notes: 'must not accept unpublished screenshot',
+    },
+  })
+  expect(reviewed.output).toBe('presentation_qa_capture_required')
+})
+
+it('leaves a durable start unresolved when ending it cannot be saved', async () => {
+  const f = setup()
+  const writes: import('../src/skills/powerpoint/presentation-qa-attempts.js').PresentationQaAttempt[] =
+    []
+  f.inspectPage.mockRejectedValueOnce(new Error('private inspection failure'))
+  const skill = createPresentationQaSkill({
+    ...f.options,
+    readQaAttempts: () => writes,
+    writeQaAttempt: async (_key, value) => {
+      if (value.status !== 'started') throw new Error('save failed')
+      writes.push(structuredClone(value))
+    },
+  })
+  expect((await skill.executeTool(f.capture)).output).toBe('presentation_qa_attempt_unresolved')
+  expect(writes).toHaveLength(1)
+  expect(writes[0].status).toBe('started')
+  expect(f.inspectPage).toHaveBeenCalledTimes(1)
+})
+
+it('rejects invalid or other-artifact attempt history before returning it to the agent', async () => {
+  const f = setup()
+  const history = [
+    {
+      version: 1 as const,
+      id: '12345678-1234-4234-8234-123456789abc',
+      documentId: 'doc',
+      projectId: 'project',
+      requestId: 'request',
+      artifactDigest: 'b'.repeat(64),
+      pageId: 'first',
+      hostSlideId: 'host1',
+      startedAt: '2026-09-29T00:00:00.000Z',
+      status: 'started' as const,
+    },
+  ]
+  const skill = createPresentationQaSkill({ ...f.options, readQaAttempts: () => history })
+  const result = await skill.executeTool({ id: 'read', name: 'read_presentation_qa', input: {} })
+  expect(result.output).toBe('presentation_qa_attempt_state_invalid')
+  expect(result.isError).toBe(true)
+  expect(f.inspectPage).not.toHaveBeenCalled()
+})

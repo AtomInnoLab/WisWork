@@ -1,3 +1,8 @@
+import {
+  parsePresentationQaAttempt,
+  PRESENTATION_QA_ATTEMPT_TERMINAL_RESERVE_BYTES,
+  type PresentationQaAttempt,
+} from './presentation-qa-attempts.js'
 import { parseAgentResumeMessages, type AgentMessage } from '@wiswork/agent-core'
 import {
   validatePresentationExistingChange,
@@ -71,6 +76,7 @@ const HISTORY_KEY = 'wiswork.presentation.change-history.v1'
 const TEXT_KEY = 'wiswork.presentation.text-change.v1'
 const GEOMETRY_KEY = 'wiswork.presentation.geometry-change.v1'
 const QA_KEY = 'wiswork.presentation.qa.v1'
+const QA_ATTEMPTS_KEY = 'wiswork.presentation.qa-attempts.v1'
 const PROJECT_KEY = 'wiswork.presentation.project.v1'
 const SELECTED_PRODUCTION_KEY = 'wiswork.presentation.selected-production.v1'
 const AGENT_RUN_KEY = 'wiswork.presentation.agent-run.v1'
@@ -233,6 +239,50 @@ export function createPresentationDocumentBinding(
         throw new Error('presentation_import_state_invalid')
     }
     return value
+  }
+  let qaAttemptWriteFailed = false
+  const qaAttemptKey = (a: PresentationQaAttempt) =>
+    `${a.source === 'production' ? 'production/' : ''}${a.projectId}/${a.requestId}`
+  const qaAttemptIdentity = (a: PresentationQaAttempt) =>
+    JSON.stringify([
+      a.version,
+      a.id,
+      a.source,
+      a.documentId,
+      a.projectId,
+      a.requestId,
+      a.artifactDigest,
+      a.pageId,
+      a.hostSlideId,
+      a.startedAt,
+    ])
+  const qaAttemptValue = (a: PresentationQaAttempt) =>
+    JSON.stringify([qaAttemptIdentity(a), a.status, a.finishedAt, a.errorCode])
+  const qaAttemptBytes = (raw: string, records: Record<string, PresentationQaAttempt>) =>
+    new TextEncoder().encode(raw).byteLength +
+    Object.values(records).filter((a) => a.status === 'started').length *
+      PRESENTATION_QA_ATTEMPT_TERMINAL_RESERVE_BYTES
+  const readRawQaAttempts = (): Record<string, PresentationQaAttempt> => {
+    if (qaAttemptWriteFailed) throw Error('presentation_qa_attempt_state_invalid')
+    const raw = settings.get(QA_ATTEMPTS_KEY)
+    if (raw === undefined || raw === null) return {}
+    try {
+      if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 128 * 1024)
+        throw Error()
+      const map = JSON.parse(raw)
+      if (!map || typeof map !== 'object' || Array.isArray(map) || Object.keys(map).length > 64)
+        throw Error()
+      const result: Record<string, PresentationQaAttempt> = {}
+      for (const [id, value] of Object.entries(map)) {
+        const attempt = parsePresentationQaAttempt(value)
+        if (id !== attempt.id) throw Error()
+        result[id] = attempt
+      }
+      if (qaAttemptBytes(raw, result) > 128 * 1024) throw Error()
+      return result
+    } catch {
+      throw Error('presentation_qa_attempt_state_invalid')
+    }
   }
   let qaWriteFailed = false
   const readQaRecords = (): Record<string, PresentationQaRecord> => {
@@ -1532,6 +1582,70 @@ export function createPresentationDocumentBinding(
             imageWriteFailed = true
           },
         )
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
+    readQaAttempts(key: string): PresentationQaAttempt[] {
+      const current = JSON.stringify([settings.get(ID_KEY), settings.location()])
+      return Object.values(readRawQaAttempts())
+        .filter((a) => qaAttemptKey(a) === key && a.documentId === current)
+        .sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id))
+    },
+    writeQaAttempt(key: string, supplied: PresentationQaAttempt): Promise<void> {
+      const snapshot = structuredClone(supplied)
+      const write = async () => {
+        const attempt = parsePresentationQaAttempt(snapshot)
+        if (qaAttemptKey(attempt) !== key) throw Error('presentation_qa_attempt_state_invalid')
+        if ((await documentId()) !== attempt.documentId)
+          throw Error('presentation_document_changed')
+        const records = readRawQaAttempts(),
+          previousAttempt = records[attempt.id]
+        if (previousAttempt) {
+          if (qaAttemptIdentity(attempt) !== qaAttemptIdentity(previousAttempt))
+            throw Error('presentation_qa_attempt_state_invalid')
+          if (qaAttemptValue(attempt) === qaAttemptValue(previousAttempt)) return
+          if (previousAttempt.status !== 'started' || attempt.status === 'started')
+            throw Error('presentation_qa_attempt_state_invalid')
+        } else if (attempt.status !== 'started')
+          throw Error('presentation_qa_attempt_state_invalid')
+        records[attempt.id] = attempt
+        const oldestFinished = Object.values(records)
+          .filter((a) => a.status !== 'started' && a.id !== attempt.id)
+          .sort(
+            (a, b) =>
+              a.finishedAt!.localeCompare(b.finishedAt!) ||
+              a.startedAt.localeCompare(b.startedAt) ||
+              a.id.localeCompare(b.id),
+          )
+        let serialized = JSON.stringify(records)
+        while (
+          Object.keys(records).length > 64 ||
+          qaAttemptBytes(serialized, records) > 128 * 1024
+        ) {
+          const oldest = oldestFinished.shift()
+          if (!oldest) throw Error('presentation_qa_attempt_history_full')
+          delete records[oldest.id]
+          serialized = JSON.stringify(records)
+        }
+        const previous = settings.get(QA_ATTEMPTS_KEY),
+          location = settings.location()
+        try {
+          settings.set(QA_ATTEMPTS_KEY, serialized)
+          await settings.save()
+          if (settings.location() !== location || settings.get(QA_ATTEMPTS_KEY) !== serialized)
+            throw Error('presentation_document_changed')
+        } catch (error) {
+          if (settings.location() === location && settings.get(QA_ATTEMPTS_KEY) === serialized) {
+            try {
+              settings.set(QA_ATTEMPTS_KEY, typeof previous === 'string' ? previous : '{}')
+            } catch {
+              qaAttemptWriteFailed = true
+            }
+          } else qaAttemptWriteFailed = true
+          throw error
+        }
       }
       const result = receiptQueue.then(write)
       receiptQueue = result.catch(() => {})

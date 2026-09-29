@@ -27,6 +27,12 @@ export function PresentationWorkflowCard({
   useSyncExternalStore(qa?.subscribe ?? noSubscribe, qa?.revision ?? zero, qa?.revision ?? zero)
   let importRecord: ReturnType<PresentationImportProgressController['read']>
   let qaRecord: ReturnType<PresentationQaController['read']>
+  let qaAttempts:
+    | {
+        attempts?: ReturnType<NonNullable<PresentationQaController['attempts']>>
+        unavailable?: boolean
+      }
+    | undefined
   try {
     importRecord = imported?.read()
   } catch {
@@ -37,12 +43,20 @@ export function PresentationWorkflowCard({
   } catch {
     /* The dedicated QA card shows the read error. */
   }
+  if (qa?.attempts) {
+    try {
+      qaAttempts = { attempts: qa.attempts() }
+    } catch {
+      qaAttempts = { unavailable: true }
+    }
+  }
   const workflow = presentationWorkflowSummary(
     snapshot.project,
     importRecord,
     qaRecord,
     snapshot.deliveryReport,
     { bundles: snapshot.deliveryBundles, unavailable: snapshot.deliveryBundlesUnavailable },
+    qaAttempts,
   )
   if (!workflow) return null
   const runNext = () => {

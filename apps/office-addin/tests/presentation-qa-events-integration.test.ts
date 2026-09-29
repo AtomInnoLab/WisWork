@@ -137,6 +137,17 @@ async function fixture() {
       pages: slides.map((slide) => ({ ...slide, state: 'compiled', attempt: 1 })),
     },
   }
+  const inspectionHost = vi.fn(async (id: string) => ({
+    slideId: id,
+    slideWidth: 960,
+    slideHeight: 540,
+    shapes: [],
+    shapesTruncated: false,
+    overflows: [],
+    overlaps: [],
+    overlapsTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: png },
+  }))
   const skill = createPresentationQaSkill({
     available: () => true,
     artifact: () => artifact,
@@ -145,17 +156,9 @@ async function fixture() {
     readQa: (key) => binding.readQa(key),
     writeQa: (key, value) => binding.writeQa(key, value),
     vfs: new InMemoryVfs(),
-    inspectPage: async (id) => ({
-      slideId: id,
-      slideWidth: 960,
-      slideHeight: 540,
-      shapes: [],
-      shapesTruncated: false,
-      overflows: [],
-      overlaps: [],
-      overlapsTruncated: false,
-      screenshot: { mime: 'image/png', base64: png },
-    }),
+    inspectPage: inspectionHost,
+    readQaAttempts: (key) => binding.readQaAttempts(key),
+    writeQaAttempt: (key, value) => binding.writeQaAttempt(key, value),
   })
   const key = `production/${artifact.projectId}/${artifact.requestId}`
   const read = () => binding.readQa(key)!
@@ -177,10 +180,15 @@ async function fixture() {
           'Synthetic screenshot fixture only; this does not verify professional content or a real host.',
       },
     })
-  const workflow = () => presentationWorkflowSummary(project, imported, read())!
+  const workflow = () =>
+    presentationWorkflowSummary(project, imported, read(), undefined, undefined, {
+      attempts: binding.readQaAttempts(key),
+    })!
   const rows = () => workflow().timeline.filter((event) => event.scope === 'saved_page_qa')
   return {
     capture,
+    inspectionHost,
+    attempts: () => binding.readQaAttempts(key),
     review,
     read,
     rows,
@@ -246,4 +254,38 @@ it('replays actual partial QA, first scoped invalidation and fresh recapture thr
   expect(fresh.visual.status).toBe('needs_review')
   expect(f.rows().some((row) => row.id === staleRow.id)).toBe(false)
   expect(f.host).toEqual(['original', 'host-1', 'host-2'])
+})
+
+it('reopens actual waiting screenshot attempts and retries only when explicitly requested', async () => {
+  const f = await fixture()
+  f.inspectionHost.mockRejectedValueOnce(
+    Object.assign(new Error('private host information'), { code: 'office_screenshot_unavailable' }),
+  )
+  const waiting = await f.capture('one')
+  expect(JSON.parse(waiting.output).status).toBe('waiting_screenshot')
+  const attempt = structuredClone(f.attempts()[0]!)
+  expect(attempt.status).toBe('waiting')
+  expect(attempt.errorCode).toBe('screenshot_unavailable')
+  expect(f.read()).toBeUndefined()
+  f.reopen()
+  expect(f.attempts()).toEqual([attempt])
+  expect(f.inspectionHost).toHaveBeenCalledTimes(1)
+  const timeline = f.workflow().timeline.filter((row) => row.scope === 'page_qa_attempt')
+  expect(timeline).toHaveLength(1)
+  expect(timeline[0].records!.map((item) => item.at)).toEqual([
+    attempt.startedAt,
+    attempt.finishedAt,
+  ])
+  expect(JSON.stringify(timeline)).not.toContain('private host information')
+  expect((await f.capture('two')).isError).not.toBe(true)
+  expect((await f.capture('one')).isError).not.toBe(true)
+  f.reopen()
+  expect(f.attempts().map((item) => item.status)).toEqual(['waiting', 'recorded', 'recorded'])
+  expect(f.attempts()[0]).toEqual(attempt)
+  expect(f.read().pages.every((page) => page.visual.status === 'needs_review')).toBe(true)
+  expect(f.workflow().stages.find((stage) => stage.name === '页面审查')).toMatchObject({
+    status: 'working',
+  })
+  expect(f.host).toEqual(['original', 'host-1', 'host-2'])
+  expect(f.inspectionHost).toHaveBeenCalledTimes(3)
 })

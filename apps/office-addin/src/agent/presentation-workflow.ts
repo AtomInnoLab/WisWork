@@ -8,6 +8,10 @@ import {
   validatePresentationQaRecord,
   type PresentationQaRecord,
 } from '../skills/powerpoint/presentation-qa.js'
+import {
+  validatePresentationQaAttempt,
+  type PresentationQaAttempt,
+} from '../skills/powerpoint/presentation-qa-attempts.js'
 import type { PresentationDeliveryReport } from '@wiswork/pptx-engine/presentation-delivery-report'
 import { PRESENTATION_DOMAIN_PROFILES } from '@wiswork/pptx-engine/presentation-plan'
 import type { PresentationSourceAuditHistory } from '@wiswork/project-store/presentation-source-audit'
@@ -150,6 +154,11 @@ export interface PresentationWorkflowSummary {
       | 'qa.capture.recorded'
       | 'qa.visual.recorded'
       | 'qa.evidence.invalidated'
+      | 'qa.attempt.started'
+      | 'qa.attempt.recorded'
+      | 'qa.attempt.waiting'
+      | 'qa.attempt.failed'
+      | 'qa.attempt.cancelled'
     scope?:
       | 'production_asset_resolution'
       | 'source_excerpt_audit'
@@ -160,6 +169,7 @@ export interface PresentationWorkflowSummary {
       | 'current_document_delivery_bundle'
       | 'host_page_import'
       | 'saved_page_qa'
+      | 'page_qa_attempt'
     recordsLabel?: string
     records?: {
       id: string
@@ -171,6 +181,11 @@ export interface PresentationWorkflowSummary {
         | 'qa.capture.recorded'
         | 'qa.visual.recorded'
         | 'qa.evidence.invalidated'
+        | 'qa.attempt.started'
+        | 'qa.attempt.recorded'
+        | 'qa.attempt.waiting'
+        | 'qa.attempt.failed'
+        | 'qa.attempt.cancelled'
     }[]
   }[]
   attention: { id: string; text: string }[]
@@ -195,6 +210,7 @@ export function presentationWorkflowSummary(
   qa: PresentationQaRecord | undefined,
   report?: PresentationDeliveryReport,
   delivery?: { bundles?: PresentationDeliveryBundleReceipt[]; unavailable?: boolean },
+  qaAttempts?: { attempts?: PresentationQaAttempt[]; unavailable?: boolean },
 ): PresentationWorkflowSummary | undefined {
   if (!project) return undefined
   const plan = project.plan?.value
@@ -913,6 +929,78 @@ export function presentationWorkflowSummary(
         recordsLabel: '页面 QA 记录',
         records,
       })
+    }
+  }
+  if (qaAttempts) {
+    const attempts = qaAttempts.attempts ?? []
+    const unavailable =
+      qaAttempts.unavailable === true ||
+      !Array.isArray(attempts) ||
+      attempts.length > 64 ||
+      attempts.some((attempt) => !validatePresentationQaAttempt(attempt)) ||
+      new Set(attempts.map((attempt) => attempt?.id)).size !== attempts.length
+    if (unavailable)
+      attention.push({
+        id: 'qa-attempt-history-unavailable',
+        text: '截图尝试历史暂不可读取；不沿用未知尝试结果，请刷新核对。',
+      })
+    else if (production?.projectId === project.projectId) {
+      const documentId = reportMatches
+        ? report!.documentId
+        : qa?.projectId === project.projectId &&
+            qa.requestId === production.requestId &&
+            validatePresentationQaRecord(qa)
+          ? qa.documentId
+          : undefined
+      for (const attempt of attempts) {
+        if (
+          !validatePresentationQaAttempt(attempt) ||
+          attempt.source !== 'production' ||
+          attempt.projectId !== project.projectId ||
+          attempt.requestId !== production.requestId ||
+          !pageIds?.includes(attempt.pageId) ||
+          (documentId !== undefined && attempt.documentId !== documentId)
+        )
+          continue
+        if (
+          importMatches &&
+          imported!.pages.find((page) => page.id === attempt.pageId)?.slideId !==
+            attempt.hostSlideId
+        )
+          continue
+        const id = `qa-attempt:${JSON.stringify([attempt.documentId, attempt.projectId, attempt.requestId, attempt.pageId, attempt.hostSlideId, attempt.artifactDigest, attempt.id, attempt.startedAt])}`
+        const text = {
+          started: '开始记录尚未闭合，不能证明仍在执行；不自动重放',
+          recorded: '已保存截图；不代表图片已收到、视觉或专业 QA 通过',
+          waiting: '等待截图能力；可在能力恢复后按明确请求重试',
+          failed: '采集未完成；请核对状态后再决定是否重试',
+          cancelled: '采集已取消；未认证截图或页面状态',
+        }[attempt.status]
+        const records: NonNullable<PresentationWorkflowSummary['timeline'][number]['records']> = [
+          {
+            id: `${id}:started`,
+            type: 'qa.attempt.started',
+            at: attempt.startedAt,
+            text: '截图采集尝试的真实开始记录；不证明当前仍在执行。',
+          },
+        ]
+        if (attempt.finishedAt)
+          records.push({
+            id: `${id}:finished:${attempt.finishedAt}`,
+            type: `qa.attempt.${attempt.status}`,
+            at: attempt.finishedAt,
+            text,
+          })
+        timeline.push({
+          id,
+          type: `qa.attempt.${attempt.status}`,
+          scope: 'page_qa_attempt',
+          at: attempt.finishedAt ?? attempt.startedAt,
+          text: `页面 ${attempt.pageId} · ${text}；不认证当前宿主外观或保存重开结果`,
+          recordsLabel: '截图尝试记录',
+          records,
+        })
+      }
     }
   }
   if (reportMatches) {

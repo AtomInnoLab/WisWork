@@ -52,6 +52,10 @@ import {
 } from '../skills/powerpoint/presentation-qa.js'
 import type { PresentationQaController } from './presentation-qa-card.js'
 import {
+  validatePresentationQaAttempt,
+  type PresentationQaAttempt,
+} from '../skills/powerpoint/presentation-qa-attempts.js'
+import {
   createPresentationProductionDeliverySkill,
   presentationImportKey,
   summarizePresentationImport,
@@ -229,6 +233,8 @@ export function createOfficeHostRuntime(
       invalidateQa?(hostSlideIds?: readonly string[]): Promise<void>
       readQa?(key: string): PresentationQaRecord | undefined
       writeQa?(key: string, record: PresentationQaRecord): Promise<void>
+      readQaAttempts?(key: string): PresentationQaAttempt[]
+      writeQaAttempt?(key: string, attempt: PresentationQaAttempt): Promise<void>
       readReceipt?(key: string): PresentationImportRecord | undefined
       listReceipts?(): { key: string; record: PresentationImportRecord }[]
       writeReceipt?(key: string, record: PresentationImportRecord | undefined): Promise<void>
@@ -922,6 +928,18 @@ export function createOfficeHostRuntime(
           inspectPage: inspectQaPage!,
           exportPage: (id, signal) => powerPointAdapter.exportPresentationPagePackage(id, signal),
           readQa: options.presentation.readQa,
+          ...(options.presentation.readQaAttempts && options.presentation.writeQaAttempt
+            ? {
+                readQaAttempts: options.presentation.readQaAttempts,
+                writeQaAttempt: async (key: string, attempt: PresentationQaAttempt) => {
+                  try {
+                    await options.presentation!.writeQaAttempt!(key, attempt)
+                  } finally {
+                    notifyQa()
+                  }
+                },
+              }
+            : {}),
           writeQa: async (key, record) => {
             try {
               await options.presentation!.writeQa!(key, record)
@@ -1069,6 +1087,36 @@ export function createOfficeHostRuntime(
   const qa: PresentationQaController | undefined =
     qaSkill && generation
       ? {
+          ...(options.presentation?.readQaAttempts && options.presentation.writeQaAttempt
+            ? {
+                attempts: () => {
+                  const artifact = visibleArtifact()
+                  if (!artifact) return []
+                  const key = presentationImportKey(artifact)
+                  const attempts = options.presentation!.readQaAttempts!(key)
+                  const digest =
+                    options.presentation!.readReceipt?.(key)?.checkpoint?.artifactDigest
+                  if (
+                    !Array.isArray(attempts) ||
+                    attempts.length > 64 ||
+                    new Set(attempts.map((attempt) => attempt?.id)).size !== attempts.length ||
+                    attempts.some(
+                      (attempt) =>
+                        !validatePresentationQaAttempt(attempt) ||
+                        attempt.source !==
+                          (artifact.pagePptxBase64 !== undefined ? 'production' : undefined) ||
+                        attempt.documentId !== artifact.documentId ||
+                        attempt.projectId !== artifact.projectId ||
+                        attempt.requestId !== artifact.requestId ||
+                        (digest !== undefined && attempt.artifactDigest !== digest) ||
+                        !artifact.pages?.some((page) => page.id === attempt.pageId),
+                    )
+                  )
+                    throw Error('presentation_qa_attempt_state_invalid')
+                  return structuredClone(attempts)
+                },
+              }
+            : {}),
           read: () => {
             const artifact = visibleArtifact()
             return artifact
