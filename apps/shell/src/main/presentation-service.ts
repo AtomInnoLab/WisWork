@@ -17,11 +17,7 @@ import {
   presentationProductionSummary,
 } from './presentation-production'
 import { createPresentationAttachmentService } from './presentation-attachments'
-import {
-  auditPresentationSources,
-  canonicalSourceLocator,
-  matchesFetchedSourceUrl,
-} from './presentation-source-audit'
+import { canonicalSourceLocator, matchesFetchedSourceUrl } from './presentation-source-audit'
 import {
   parsePresentationPlan,
   assertDeckMatchesPresentationPlan,
@@ -42,6 +38,8 @@ import { PresentationCommentLibrary } from './presentation-comments'
 import { convertPresentationToPdf } from './presentation-page-render'
 import { PDFDocument } from 'pdf-lib'
 import { isInstalledFontFamily } from '@wiswork/font-metrics'
+import { handlePresentationSourceAudit } from './presentation-source-audit-history'
+import { presentationSourceAuditHistory } from '@wiswork/project-store/presentation-source-audit'
 
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
@@ -399,6 +397,7 @@ export function createPresentationService(options: {
           'get_plan',
           'read_import_source',
           'audit_sources',
+          'read_source_audit',
           'production_begin',
           'production_rebuild_page',
           'production_status',
@@ -414,99 +413,104 @@ export function createPresentationService(options: {
         ].includes(request.operation as string)
       )
         throw new Error('invalid_request')
-      const allowedKeys = presentationJobOperations.includes(request.operation as string)
-        ? ['operation', 'documentId', 'projectId', 'requestId']
-        : ['production_delivery_report', 'production_record_issue_action'].includes(
-              request.operation as string,
-            )
-          ? [
-              'operation',
-              'documentId',
-              'projectId',
-              'requestId',
-              ...(request.operation === 'production_record_issue_action'
-                ? ['expectedRevision', 'action']
-                : []),
-            ]
-          : request.operation === 'production_read_claim_review'
-            ? ['operation', 'documentId', 'projectId', 'requestId', 'reviewId']
-            : ['production_claim_evidence', 'production_record_claim_review'].includes(
-                  request.operation as string,
-                )
-              ? [
-                  'operation',
-                  'documentId',
-                  'projectId',
-                  'requestId',
-                  'pageId',
-                  'claimId',
-                  'sourceId',
-                  'offset',
-                  'maxChars',
-                  ...(request.operation === 'production_record_claim_review'
-                    ? ['reviewId', 'evidenceDigest', 'outcome', 'notes']
-                    : []),
-                ]
-              : request.operation === 'production_rebuild_page'
+      const allowedKeys = ['audit_sources', 'read_source_audit'].includes(
+        request.operation as string,
+      )
+        ? ['operation', 'documentId', 'projectId', 'auditId']
+        : presentationJobOperations.includes(request.operation as string)
+          ? ['operation', 'documentId', 'projectId', 'requestId']
+          : ['production_delivery_report', 'production_record_issue_action'].includes(
+                request.operation as string,
+              )
+            ? [
+                'operation',
+                'documentId',
+                'projectId',
+                'requestId',
+                ...(request.operation === 'production_record_issue_action'
+                  ? ['expectedRevision', 'action']
+                  : []),
+              ]
+            : request.operation === 'production_read_claim_review'
+              ? ['operation', 'documentId', 'projectId', 'requestId', 'reviewId']
+              : ['production_claim_evidence', 'production_record_claim_review'].includes(
+                    request.operation as string,
+                  )
                 ? [
                     'operation',
                     'documentId',
                     'projectId',
-                    'parentRequestId',
                     'requestId',
                     'pageId',
-                    'slide',
+                    'claimId',
+                    'sourceId',
+                    'offset',
+                    'maxChars',
+                    ...(request.operation === 'production_record_claim_review'
+                      ? ['reviewId', 'evidenceDigest', 'outcome', 'notes']
+                      : []),
                   ]
-                : request.operation === 'production_begin'
-                  ? ['operation', 'documentId', 'projectId', 'requestId', 'planRevision', 'deck']
-                  : request.operation === 'production_status'
-                    ? ['operation', 'documentId', 'projectId', 'requestId']
-                    : request.operation === 'production_run'
+                : request.operation === 'production_rebuild_page'
+                  ? [
+                      'operation',
+                      'documentId',
+                      'projectId',
+                      'parentRequestId',
+                      'requestId',
+                      'pageId',
+                      'slide',
+                    ]
+                  : request.operation === 'production_begin'
+                    ? ['operation', 'documentId', 'projectId', 'requestId', 'planRevision', 'deck']
+                    : request.operation === 'production_status'
                       ? ['operation', 'documentId', 'projectId', 'requestId']
-                      : [
-                            'production_page',
-                            'production_content_check',
-                            'production_page_reviews',
-                          ].includes(request.operation as string)
-                        ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
-                        : request.operation === 'compile'
-                          ? [
-                              'operation',
-                              'documentId',
-                              'projectId',
-                              'requestId',
-                              'deck',
-                              'planRevision',
-                            ]
-                          : request.operation === 'resume'
-                            ? ['operation', 'documentId', 'projectId', 'requestId']
-                            : request.operation === 'read_import_source'
-                              ? ['operation', 'documentId', 'projectId', 'requestId', 'source']
-                              : request.operation === 'set_plan_page_lock'
-                                ? [
-                                    'operation',
-                                    'documentId',
-                                    'projectId',
-                                    'expectedRevision',
-                                    'pageId',
-                                    'locked',
-                                  ]
-                                : request.operation === 'save_plan'
+                      : request.operation === 'production_run'
+                        ? ['operation', 'documentId', 'projectId', 'requestId']
+                        : [
+                              'production_page',
+                              'production_content_check',
+                              'production_page_reviews',
+                            ].includes(request.operation as string)
+                          ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
+                          : request.operation === 'compile'
+                            ? [
+                                'operation',
+                                'documentId',
+                                'projectId',
+                                'requestId',
+                                'deck',
+                                'planRevision',
+                              ]
+                            : request.operation === 'resume'
+                              ? ['operation', 'documentId', 'projectId', 'requestId']
+                              : request.operation === 'read_import_source'
+                                ? ['operation', 'documentId', 'projectId', 'requestId', 'source']
+                                : request.operation === 'set_plan_page_lock'
                                   ? [
                                       'operation',
                                       'documentId',
                                       'projectId',
                                       'expectedRevision',
-                                      'plan',
+                                      'pageId',
+                                      'locked',
                                     ]
-                                  : request.operation === 'get_plan'
-                                    ? ['operation', 'documentId', 'projectId', 'revision']
-                                    : ['operation', 'documentId', 'projectId']
+                                  : request.operation === 'save_plan'
+                                    ? [
+                                        'operation',
+                                        'documentId',
+                                        'projectId',
+                                        'expectedRevision',
+                                        'plan',
+                                      ]
+                                    : request.operation === 'get_plan'
+                                      ? ['operation', 'documentId', 'projectId', 'revision']
+                                      : ['operation', 'documentId', 'projectId']
       const requiredKeys = allowedKeys.filter(
         (key) =>
           !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)) &&
           !(request.operation === 'production_status' && key === 'requestId') &&
-          !(request.operation === 'get_plan' && key === 'revision'),
+          !(request.operation === 'get_plan' && key === 'revision') &&
+          !(request.operation === 'audit_sources' && key === 'auditId'),
       )
       if (
         Object.keys(request).some((key) => !allowedKeys.includes(key)) ||
@@ -520,6 +524,11 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const documentId = request.documentId
+      if (
+        ['audit_sources', 'read_source_audit'].includes(request.operation as string) &&
+        request.auditId !== undefined
+      )
+        assertPresentationId(request.auditId)
       if (request.operation === 'read_import_source') {
         assertPresentationId(request.requestId)
         if (!['compiled', 'production'].includes(request.source as string))
@@ -735,22 +744,10 @@ export function createPresentationService(options: {
             plan: parsePresentationPlan(record.plan),
           })
         }
-        if (request.operation === 'audit_sources') {
-          const record = store.plan(projectId, documentId)
-          if (!record) throw new Error('not_found')
-          const plan = parsePresentationPlan(record.plan)
-          const sources = await auditPresentationSources(plan, documentId, attachments, signal)
-          return boundedResponse({
-            projectId,
-            planRevision: record.revision,
-            sources,
-            checks: {
-              support: 'not_verified',
-              sourceAuthority: 'not_verified',
-              timeliness: 'not_verified',
-            },
-          })
-        }
+        if (['audit_sources', 'read_source_audit'].includes(request.operation as string))
+          return boundedResponse(
+            await handlePresentationSourceAudit(request, store, attachments, signal),
+          )
         if (request.operation === 'status') {
           let reviewComments:
             | {
@@ -790,6 +787,16 @@ export function createPresentationService(options: {
             }
           } catch {
             commentsUnavailable = true
+          }
+          let sourceAuditStatus: Record<string, unknown>
+          try {
+            sourceAuditStatus = {
+              sourceAuditHistory: presentationSourceAuditHistory(
+                store.sourceAudits(projectId, documentId),
+              ),
+            }
+          } catch {
+            sourceAuditStatus = { sourceAuditHistoryUnavailable: true }
           }
           const commentStatus = commentsUnavailable
             ? { commentsUnavailable: true }
@@ -966,6 +973,7 @@ export function createPresentationService(options: {
               history: [],
               plan,
               ...commentStatus,
+              ...sourceAuditStatus,
               ...preparationStatus,
             })
           }
@@ -993,6 +1001,7 @@ export function createPresentationService(options: {
               slideCount: savedDeck(record.deck).slides.length,
             })),
             ...commentStatus,
+            ...sourceAuditStatus,
             ...preparationStatus,
             ...(checks
               ? {

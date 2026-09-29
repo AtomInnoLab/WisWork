@@ -171,6 +171,13 @@ describe('durable project recovery', () => {
       status: 'pending',
       latestRequestId: 'second',
       latestCompiledRequestId: 'first',
+      sourceAuditHistory: {
+        version: 1,
+        projectId: 'deck',
+        documentId: input.documentId,
+        revision: 0,
+        runs: [],
+      },
       slideCount: 1,
       slides: [{ id: 'next', title: 'Next' }],
       history: [

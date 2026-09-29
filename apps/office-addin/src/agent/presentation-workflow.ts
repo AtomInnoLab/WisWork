@@ -3,6 +3,7 @@ import type { PresentationImportProgress } from '../skills/powerpoint/presentati
 import type { PresentationQaRecord } from '../skills/powerpoint/presentation-qa.js'
 import type { PresentationDeliveryReport } from '@wiswork/pptx-engine/presentation-delivery-report'
 import { PRESENTATION_DOMAIN_PROFILES } from '@wiswork/pptx-engine/presentation-plan'
+import type { PresentationSourceAuditHistory } from '@wiswork/project-store/presentation-source-audit'
 
 const jobEventLabels = {
   'run.started': '开始逐页制作',
@@ -115,7 +116,14 @@ export interface PresentationWorkflowSummary {
     detail: string
     status: 'pending' | 'working' | 'attention' | 'recorded'
   }[]
-  timeline: { id: string; text: string; at?: string }[]
+  timeline: {
+    id: string
+    text: string
+    at?: string
+    type?: 'research.started' | 'research.completed' | 'research.failed'
+    scope?: 'source_excerpt_audit'
+    records?: { id: string; text: string; at: string }[]
+  }[]
   attention: { id: string; text: string }[]
   pages: {
     id: string
@@ -450,6 +458,52 @@ export function presentationWorkflowSummary(
   ]
   // Rebuild from durable records. Undated entries are current checkpoints, not events.
   const timeline: PresentationWorkflowSummary['timeline'] = []
+  const sourceHistory = project.sourceAuditHistory
+  if (project.sourceAuditHistoryUnavailable) {
+    attention.push({
+      id: 'source-audit-history-unavailable',
+      text: '资料核对历史暂不可读取；项目与计划仍保留，请恢复记录后重试，不沿用未知核对结论。',
+    })
+  } else if (sourceHistory?.projectId === project.projectId) {
+    const groups = new Map<string, PresentationSourceAuditHistory['runs']>()
+    for (const run of sourceHistory.runs) {
+      const key = JSON.stringify([project.projectId, run.planRevision, run.planDigest])
+      const group = groups.get(key) ?? []
+      group.push(run)
+      groups.set(key, group)
+    }
+    for (const [key, group] of groups) {
+      const latest = group.at(-1)!
+      const text = (run: typeof latest) =>
+        run.state === 'completed'
+          ? `资料摘录核对结束：${run.foundCount}/${run.sourceCount} 份字面匹配`
+          : run.state === 'failed'
+            ? `资料摘录核对未完成：${run.error === 'aborted' ? '已停止' : run.error === 'invalid_state' ? '资料或记录状态异常' : '资料暂不可读取'}`
+            : '核对已开始但无结果回执，不能证明仍在后台执行；可重新核对'
+      timeline.push({
+        id: `research:${key}`,
+        type:
+          latest.state === 'completed'
+            ? 'research.completed'
+            : latest.state === 'failed'
+              ? 'research.failed'
+              : 'research.started',
+        scope: 'source_excerpt_audit',
+        text: `计划第 ${latest.planRevision} 版 · ${text(latest)}；窗口内保留 ${group.length} 次核对，来源真实性、适用范围和时效未核验`,
+        at: latest.finishedAt ?? latest.startedAt,
+        records: group.map((run) => ({
+          id: run.id,
+          text: `开始 ${run.startedAt} · ${text(run)}`,
+          at: run.finishedAt ?? run.startedAt,
+        })),
+      })
+    }
+    if (sourceHistory.runs.some((run) => run.state === 'running'))
+      attention.push({
+        id: 'source-audit-unfinished',
+        text: '历史资料核对有开始记录但无结果回执，不代表后台仍在运行；当前计划可重新核对，旧记录保持原身份。',
+      })
+  }
   if (preparedSources)
     timeline.push({
       id: 'source-preparation',

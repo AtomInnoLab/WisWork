@@ -11,6 +11,97 @@ import type { PresentationQaRecord } from '../src/skills/powerpoint/presentation
 import { deliveryReportFixture } from './presentation-delivery-fixture.js'
 
 const plan = benchmarkPlan()
+it('folds durable source-excerpt research by frozen plan and keeps retry detail without claiming source truth', () => {
+  const runs = [
+    {
+      id: 'one',
+      sequence: 1,
+      scope: 'source_excerpt_audit' as const,
+      planRevision: 1,
+      planDigest: 'a'.repeat(64),
+      state: 'completed' as const,
+      startedAt: '2026-09-29T00:00:00.000Z',
+      finishedAt: '2026-09-29T00:01:00.000Z',
+      sourceCount: 1,
+      foundCount: 1,
+    },
+    {
+      id: 'two',
+      sequence: 3,
+      scope: 'source_excerpt_audit' as const,
+      planRevision: 1,
+      planDigest: 'a'.repeat(64),
+      state: 'failed' as const,
+      startedAt: '2026-09-29T00:02:00.000Z',
+      finishedAt: '2026-09-29T00:03:00.000Z',
+      sourceCount: 1,
+      error: 'aborted' as const,
+    },
+  ]
+  const value = {
+    ...project,
+    sourceAuditHistory: {
+      version: 1 as const,
+      projectId: project.projectId,
+      documentId: 'doc',
+      revision: 4,
+      runs,
+    },
+  }
+  const workflow = presentationWorkflowSummary(value, undefined, undefined)!
+  const rows = workflow.timeline.filter((event) => event.type?.startsWith('research.'))
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({
+    type: 'research.failed',
+    scope: 'source_excerpt_audit',
+    records: [{ id: 'one' }, { id: 'two' }],
+  })
+  expect(rows[0]!.text).toContain('2 次')
+  expect(rows[0]!.text).toContain('未核验')
+  const next = {
+    ...runs[0]!,
+    id: 'three',
+    sequence: 5,
+    startedAt: '2026-09-29T00:04:00.000Z',
+    finishedAt: '2026-09-29T00:05:00.000Z',
+  }
+  value.sourceAuditHistory.runs.push(next)
+  value.sourceAuditHistory.revision = 6
+  const after = presentationWorkflowSummary(value, undefined, undefined)!.timeline.filter((event) =>
+    event.type?.startsWith('research.'),
+  )
+  expect(after[0]!.id).toBe(rows[0]!.id)
+  expect(after[0]!.text).toContain('3 次')
+  expect(after[0]!.type).toBe('research.completed')
+})
+it('an unfinished durable research read does not pretend to be a live background task', () => {
+  const value = {
+    ...project,
+    sourceAuditHistory: {
+      version: 1 as const,
+      projectId: project.projectId,
+      documentId: 'doc',
+      revision: 1,
+      runs: [
+        {
+          id: 'one',
+          sequence: 1,
+          scope: 'source_excerpt_audit' as const,
+          planRevision: 1,
+          planDigest: 'a'.repeat(64),
+          state: 'running' as const,
+          startedAt: '2026-09-29T00:00:00.000Z',
+          sourceCount: 1,
+        },
+      ],
+    },
+  }
+  const workflow = presentationWorkflowSummary(value, undefined, undefined)!
+  expect(workflow.timeline.find((event) => event.type === 'research.started')?.text).toContain(
+    '不能证明仍在后台执行',
+  )
+  expect(workflow.attention.some((item) => item.id === 'source-audit-unfinished')).toBe(true)
+})
 const project: PresentationProjectStatus = {
   projectId: plan.projectId,
   title: plan.title,

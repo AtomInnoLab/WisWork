@@ -604,6 +604,13 @@ export function PresentationProjectCard(props: {
               {sourceAudit?.planRevision === project.plan.revision && (
                 <div role="status">
                   <p>
+                    {sourceAudit.finishedAt && (
+                      <>
+                        历史核对结果 ·{' '}
+                        <time dateTime={sourceAudit.finishedAt}>{sourceAudit.finishedAt}</time>{' '}
+                        ·{' '}
+                      </>
+                    )}
                     第 {sourceAudit.planRevision} 版来源原文核对：
                     {sourceAudit.sources.filter((source) => source.status === 'found').length}/
                     {sourceAudit.sources.length} 份找到字面匹配。
@@ -622,6 +629,7 @@ export function PresentationProjectCard(props: {
                             not_ready: '附件尚未解析就绪',
                             unsupported: '附件不是可读文本',
                             missing: '当前文档缺少附件',
+                            source_mismatch: '网页快照与计划网址不匹配',
                           }[source.status]
                         }
                         {source.status === 'found' ? ` · UTF-16 位置 ${source.offset}` : ''}

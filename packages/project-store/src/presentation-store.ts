@@ -15,6 +15,17 @@ import {
   type PresentationProductionJobEventInput,
 } from './presentation-job.js'
 import { createHash, randomUUID } from 'node:crypto'
+import {
+  parsePresentationPlan,
+  presentationSourceAttachmentId,
+} from '@wiswork/pptx-engine/presentation-plan'
+import {
+  parsePresentationSourceAuditLedger,
+  parsePresentationSourceAuditRun,
+  type PresentationSourceAuditLedger,
+  type PresentationSourceAuditRun,
+  type PresentationSourceAuditResult,
+} from './presentation-source-audit.js'
 import { presentationPageInput, presentationPlanPageInput } from './presentation-page-input.js'
 import {
   lstatSync,
@@ -1111,6 +1122,170 @@ export class PresentationStore {
     )
     return frozen
   }
+  sourceAudits(projectId: string, documentId: string): PresentationSourceAuditLedger {
+    const directory = this.bind(projectId, documentId, false)
+    const path = directory ? join(directory, 'source-audits.json') : undefined
+    if (!path || !present(path))
+      return parsePresentationSourceAuditLedger({
+        version: 1,
+        projectId,
+        documentId,
+        revision: 0,
+        runs: [],
+      })
+    const value = this.read(path) as PresentationSourceAuditLedger & { ledgerDigest: string }
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      throw new Error('invalid_state')
+    const { ledgerDigest, ...content } = value
+    const ledger = parsePresentationSourceAuditLedger(content)
+    if (
+      ledger.projectId !== projectId ||
+      ledger.documentId !== documentId ||
+      ledgerDigest !== jsonDigest(ledger, 4 * 1024 * 1024, 'invalid_state')
+    )
+      throw new Error('invalid_state')
+    return ledger
+  }
+
+  sourceAudit(
+    projectId: string,
+    documentId: string,
+    auditId: string,
+  ): PresentationSourceAuditRun | undefined {
+    assertPresentationId(auditId)
+    const current = this.sourceAudits(projectId, documentId).runs.find((run) => run.id === auditId)
+    if (current) return current
+    const directory = this.bind(projectId, documentId, false)
+    if (!directory) return undefined
+    const path = join(directory, `source-audit-${digest(auditId)}.json`)
+    if (!present(path)) return undefined
+    const value = this.read(path) as {
+      version: number
+      projectId: string
+      documentId: string
+      run: PresentationSourceAuditRun
+      runDigest: string
+    }
+    if (
+      !value ||
+      Object.keys(value).sort().join(',') !== 'documentId,projectId,run,runDigest,version' ||
+      value.version !== 1 ||
+      value.projectId !== projectId ||
+      value.documentId !== documentId
+    )
+      throw new Error('invalid_state')
+    const run = parsePresentationSourceAuditRun(value.run)
+    if (
+      run.id !== auditId ||
+      run.state === 'running' ||
+      value.runDigest !== jsonDigest(run, 4 * 1024 * 1024, 'invalid_state')
+    )
+      throw new Error('invalid_state')
+    return run
+  }
+
+  beginSourceAudit(
+    projectId: string,
+    documentId: string,
+    auditId: string,
+  ): PresentationSourceAuditRun {
+    assertPresentationId(auditId)
+    const ledger = this.sourceAudits(projectId, documentId)
+    const previous = this.sourceAudit(projectId, documentId, auditId)
+    if (previous) return previous
+    const saved = this.plan(projectId, documentId)
+    if (!saved) throw new Error('not_found')
+    const plan = parsePresentationPlan(saved.plan)
+    if (plan.projectId !== projectId) throw new Error('invalid_state')
+    const previousTime = ledger.runs.reduce(
+      (latest, run) => [latest, run.startedAt, run.finishedAt ?? run.startedAt].sort().at(-1)!,
+      '',
+    )
+    const now = new Date().toISOString()
+    const run = parsePresentationSourceAuditRun({
+      id: auditId,
+      sequence: ledger.revision + 1,
+      scope: 'source_excerpt_audit',
+      planRevision: saved.revision,
+      planDigest: saved.inputDigest,
+      state: 'running',
+      startedAt: now < previousTime ? previousTime : now,
+      sourceRefs: plan.sources.flatMap((source) => {
+        const attachmentId = presentationSourceAttachmentId(source)
+        return attachmentId ? [{ sourceId: source.id, attachmentId }] : []
+      }),
+    })
+    const runs = [...ledger.runs]
+    if (runs.length === 32) {
+      const removable = runs.findIndex((entry) => entry.state !== 'running')
+      if (removable < 0) throw new Error('busy')
+      const archived = runs[removable]!
+      const path = join(this.directory(projectId), `source-audit-${digest(archived.id)}.json`)
+      const value = {
+        version: 1,
+        projectId,
+        documentId,
+        run: archived,
+        runDigest: jsonDigest(archived, 4 * 1024 * 1024, 'output_too_large'),
+      }
+      if (present(path)) {
+        if (canonical(this.read(path)) !== canonical(value)) throw new Error('invalid_state')
+      } else this.write(path, value)
+      runs.splice(removable, 1)
+    }
+    runs.push(run)
+    const next = parsePresentationSourceAuditLedger({
+      ...ledger,
+      revision: ledger.revision + 1,
+      runs,
+    })
+    this.write(join(this.directory(projectId), 'source-audits.json'), {
+      ...next,
+      ledgerDigest: jsonDigest(next, 4 * 1024 * 1024, 'output_too_large'),
+    })
+    return structuredClone(run)
+  }
+
+  finishSourceAudit(
+    projectId: string,
+    documentId: string,
+    auditId: string,
+    result:
+      | { sources: PresentationSourceAuditResult[] }
+      | { error: NonNullable<PresentationSourceAuditRun['error']> },
+  ): PresentationSourceAuditRun {
+    assertPresentationId(auditId)
+    const ledger = this.sourceAudits(projectId, documentId)
+    const previous = this.sourceAudit(projectId, documentId, auditId)
+    if (!previous) throw new Error('not_found')
+    if (
+      previous.state !== 'running' &&
+      previous.state !== ('sources' in result ? 'completed' : 'failed')
+    )
+      throw new Error('request_conflict')
+    const now = new Date().toISOString()
+    const finished = parsePresentationSourceAuditRun({
+      ...previous,
+      state: 'sources' in result ? 'completed' : 'failed',
+      finishedAt: previous.finishedAt ?? (now < previous.startedAt ? previous.startedAt : now),
+      ...result,
+    })
+    if (previous.state !== 'running') {
+      if (canonical(previous) !== canonical(finished)) throw new Error('request_conflict')
+      return previous
+    }
+    const next = parsePresentationSourceAuditLedger({
+      ...ledger,
+      revision: ledger.revision + 1,
+      runs: ledger.runs.map((run) => (run.id === auditId ? finished : run)),
+    })
+    this.write(join(this.directory(projectId), 'source-audits.json'), {
+      ...next,
+      ledgerDigest: jsonDigest(next, 4 * 1024 * 1024, 'output_too_large'),
+    })
+    return structuredClone(finished)
+  }
+
   plan(projectId: string, documentId: string): PresentationPlanRecord | undefined {
     const directory = this.bind(projectId, documentId, false)
     if (!directory) return undefined

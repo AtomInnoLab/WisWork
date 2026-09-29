@@ -31,6 +31,13 @@ import {
   parsePresentationImportSource,
   type PresentationImportSource,
 } from '@wiswork/project-store/presentation-import-source'
+import {
+  parsePresentationSourceAuditHistory,
+  parsePresentationSourceAuditRun,
+  presentationSourceAuditHistory,
+  type PresentationSourceAuditHistory,
+  type PresentationSourceAuditResult,
+} from '@wiswork/project-store/presentation-source-audit'
 
 export interface PresentationProductionTask {
   requestId: string
@@ -47,6 +54,8 @@ export interface PresentationProductionTask {
   }
 }
 export interface PresentationProjectStatus {
+  sourceAuditHistory?: PresentationSourceAuditHistory
+  sourceAuditHistoryUnavailable?: boolean
   hostAssociations?: PresentationHostAssociations
   hostAssociationsUnavailable?: boolean
   sourcePreparation?: {
@@ -120,13 +129,10 @@ export interface PresentationProjectStatus {
 export interface PresentationProjectSnapshot {
   planNotice?: string
   sourceAudit?: {
+    auditId?: string
+    finishedAt?: string
     planRevision: number
-    sources: {
-      sourceId: string
-      attachmentId: string
-      status: 'found' | 'not_found' | 'empty_excerpt' | 'not_ready' | 'unsupported' | 'missing'
-      offset?: number
-    }[]
+    sources: PresentationSourceAuditResult[]
   }
   deliveryReport?: PresentationDeliveryReport
   deliveryNotice?: string
@@ -194,6 +200,21 @@ async function presentationDigest(input: string): Promise<string> {
 }
 async function parseStatus(value: unknown, projectId: string): Promise<PresentationProjectStatus> {
   const p = value as PresentationProjectStatus | undefined
+  let sourceAuditHistory: PresentationSourceAuditHistory | undefined
+  let sourceAuditHistoryUnavailable = p?.sourceAuditHistoryUnavailable === true
+  if (p?.sourceAuditHistory !== undefined) {
+    try {
+      sourceAuditHistory = parsePresentationSourceAuditHistory(p.sourceAuditHistory)
+      if (
+        sourceAuditHistory.projectId !== projectId ||
+        (p.plan && sourceAuditHistory.runs.some((run) => run.planRevision > p.plan!.revision))
+      )
+        throw new Error('presentation_response_invalid')
+    } catch {
+      sourceAuditHistory = undefined
+      sourceAuditHistoryUnavailable = true
+    }
+  }
   let plan: PresentationProjectStatus['plan']
   if (p?.plan !== undefined) {
     if (!p.plan || !Number.isSafeInteger(p.plan.revision) || p.plan.revision < 1)
@@ -502,6 +523,8 @@ async function parseStatus(value: unknown, projectId: string): Promise<Presentat
     throw new Error('presentation_response_invalid')
   // Copy only the bounded public projection; never retain arbitrary server fields or binary data.
   return {
+    ...(sourceAuditHistory ? { sourceAuditHistory } : {}),
+    ...(sourceAuditHistoryUnavailable ? { sourceAuditHistoryUnavailable: true } : {}),
     ...(p.sourcePreparation ? { sourcePreparation: structuredClone(p.sourcePreparation) } : {}),
     ...(p.sourcePreparationUnavailable ? { sourcePreparationUnavailable: true } : {}),
     ...(comments ? { reviewComments: structuredClone(comments) } : {}),
@@ -607,6 +630,98 @@ export function createPresentationProjectController(
   const publish = (next: PresentationProjectSnapshot) => {
     state = next
     for (const listener of listeners) listener()
+  }
+  const restoreSourceAudit = async (
+    project: PresentationProjectStatus,
+    documentId: string,
+    signal: AbortSignal,
+    check: () => void,
+  ): Promise<PresentationProjectSnapshot['sourceAudit']> => {
+    const history = project.sourceAuditHistory
+    if (!history) return
+    if (history.documentId !== documentId) throw new Error('presentation_response_invalid')
+    if (project.sourceAuditHistoryUnavailable || !project.plan) return
+    const planDigest = await presentationDigest(canonicalPresentationValue(project.plan.value))
+    check()
+    const expected = [...history.runs]
+      .reverse()
+      .find(
+        (run) =>
+          run.state === 'completed' &&
+          run.planRevision === project.plan!.revision &&
+          run.planDigest === planDigest,
+      )
+    if (!expected) return
+    const response = await options.request(
+      {
+        operation: 'read_source_audit',
+        documentId,
+        projectId: project.projectId,
+        auditId: expected.id,
+      },
+      signal,
+    )
+    check()
+    if ((await options.documentId()) !== documentId)
+      throw new Error('presentation_document_changed')
+    check()
+    if (!response.ok) throw new Error('presentation_service_unavailable')
+    const text = await response.text()
+    check()
+    if (new TextEncoder().encode(text).byteLength > 256 * 1024)
+      throw new Error('presentation_response_invalid')
+    const value = JSON.parse(text)
+    if (
+      !value ||
+      Object.keys(value).sort().join(',') !== 'audit,documentId,projectId' ||
+      value.documentId !== documentId ||
+      value.projectId !== project.projectId
+    )
+      throw new Error('presentation_response_invalid')
+    const run = parsePresentationSourceAuditRun(value.audit)
+    const observed = presentationSourceAuditHistory({
+      version: 1,
+      projectId: project.projectId,
+      documentId,
+      revision: history.revision,
+      runs: [run],
+    }).runs[0]
+    const refs = project.plan.value.sources.flatMap((source) => {
+      const attachmentId = presentationSourceAttachmentId(source)
+      return attachmentId ? [{ sourceId: source.id, attachmentId }] : []
+    })
+    if (
+      canonicalPresentationValue(observed) !== canonicalPresentationValue(expected) ||
+      canonicalPresentationValue(refs) !== canonicalPresentationValue(run.sourceRefs)
+    )
+      throw new Error('presentation_response_invalid')
+    const current = await options.request(
+      { operation: 'get_plan', documentId, projectId: project.projectId },
+      signal,
+    )
+    check()
+    if (!current.ok) throw new Error('presentation_service_unavailable')
+    const currentText = await current.text()
+    check()
+    if (new TextEncoder().encode(currentText).byteLength > 512 * 1024)
+      throw new Error('presentation_response_invalid')
+    const saved = JSON.parse(currentText)
+    if (
+      saved.projectId !== project.projectId ||
+      saved.revision !== project.plan.revision ||
+      (await presentationDigest(canonicalPresentationValue(parsePresentationPlan(saved.plan)))) !==
+        planDigest
+    )
+      throw new Error('presentation_response_invalid')
+    if ((await options.documentId()) !== documentId)
+      throw new Error('presentation_document_changed')
+    check()
+    return {
+      auditId: run.id,
+      finishedAt: run.finishedAt,
+      planRevision: run.planRevision,
+      sources: run.sources!,
+    }
   }
   const stop = (error?: string, resetSelection = false) => {
     stopPolling()
@@ -904,7 +1019,22 @@ export function createPresentationProjectController(
         check()
       }
       projectDocument = documentId
-      publish({ phase: 'idle', project })
+      let sourceAudit: PresentationProjectSnapshot['sourceAudit']
+      try {
+        sourceAudit = await restoreSourceAudit(project, documentId, controller.signal, check)
+      } catch (error) {
+        if (
+          controller.signal.aborted ||
+          captured !== epoch ||
+          (error instanceof Error && error.message === 'presentation_document_changed')
+        )
+          throw error
+        project.sourceAuditHistoryUnavailable = true
+      }
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      check()
+      publish({ phase: 'idle', project, ...(sourceAudit ? { sourceAudit } : {}) })
       if (
         captured === epoch &&
         project.productionJob &&
@@ -1293,6 +1423,7 @@ export function createPresentationProjectController(
               'not_ready',
               'unsupported',
               'missing',
+              'source_mismatch',
             ].includes(String(source.status)) ||
             (source.status === 'found'
               ? !Number.isSafeInteger(source.offset) ||
@@ -1302,16 +1433,59 @@ export function createPresentationProjectController(
         )
       )
         throw new Error('presentation_response_invalid')
-      publish({
-        phase: 'idle',
-        project,
-        sourceAudit: {
-          planRevision: plan.revision,
-          sources: value.sources as NonNullable<
-            PresentationProjectSnapshot['sourceAudit']
-          >['sources'],
-        },
-      })
+      let updatedProject = project
+      let sourceAudit: PresentationProjectSnapshot['sourceAudit'] = {
+        planRevision: plan.revision,
+        sources: value.sources as PresentationSourceAuditResult[],
+      }
+      if (project.sourceAuditHistory !== undefined) {
+        const check = () => {
+          if (captured !== epoch || controller.signal.aborted) throw new Error('cancelled')
+        }
+        const response = await options.request(
+          { operation: 'status', projectId: project.projectId, documentId },
+          controller.signal,
+        )
+        check()
+        if (!response.ok) throw new Error('presentation_service_unavailable')
+        const text = await response.text()
+        check()
+        if (new TextEncoder().encode(text).byteLength > 256 * 1024)
+          throw new Error('presentation_response_invalid')
+        const refreshed = await parseStatus(JSON.parse(text), project.projectId)
+        if (
+          !refreshed.plan ||
+          refreshed.plan.revision !== plan.revision ||
+          canonicalPresentationValue(refreshed.plan.value) !==
+            canonicalPresentationValue(plan.value)
+        )
+          throw new Error('presentation_revision_conflict')
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
+        updatedProject = {
+          ...project,
+          sourceAuditHistory: refreshed.sourceAuditHistory,
+          sourceAuditHistoryUnavailable: refreshed.sourceAuditHistoryUnavailable,
+        }
+        try {
+          sourceAudit =
+            (await restoreSourceAudit(updatedProject, documentId, controller.signal, check)) ??
+            sourceAudit
+        } catch (error) {
+          if (
+            captured !== epoch ||
+            controller.signal.aborted ||
+            (error instanceof Error && error.message === 'presentation_document_changed')
+          )
+            throw error
+          updatedProject.sourceAuditHistoryUnavailable = true
+        }
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
+      }
+      publish({ phase: 'idle', project: updatedProject, sourceAudit })
     } catch (error) {
       if (captured !== epoch) return
       if (
