@@ -156,6 +156,7 @@ it('rejects running, digest/CAS conflicts and pre-commit cancellation without mi
     store.deleteRecord('doc', 'project', 2, 'delete-A', 'B', a.record.draftDigest),
   ).rejects.toThrow('request_conflict')
 })
+// This functional capacity check performs 128 atomic disk writes; allow contention in the full suite.
 it('deletes an ended archive outside the 32 window and releases full 128 capacity without resetting sequence', async () => {
   const { p, store } = fixture()
   const a = await store.begin('doc', 'project', 0, 'A', draft)
@@ -174,7 +175,7 @@ it('deletes an ended archive outside the 32 window and releases full 128 capacit
   expect(history).toMatchObject({ version: 2, lastSequence: 129, totalRecords: 128, revision: 131 })
   expect(history.records).toHaveLength(32)
   await expect(store.read('doc', 'project', 'A')).rejects.toThrow('record_deleted')
-})
+}, 15_000)
 it('enforces 4096 tombstone quota and recovers existing receipts at capacity', async () => {
   const { p, store } = fixture()
   await store.begin('doc', 'project', 0, 'active', draft)

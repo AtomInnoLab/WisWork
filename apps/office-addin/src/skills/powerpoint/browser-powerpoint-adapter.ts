@@ -162,6 +162,7 @@ export interface PresentationTextRangeSnapshot {
 }
 
 export interface PowerPointAdapter {
+  readSlideOrder?(signal?: AbortSignal): Promise<string[]>
   exportPresentationPagePackage?(
     slideId: string,
     signal?: AbortSignal,
@@ -270,7 +271,7 @@ export interface PowerPointAdapter {
     applyMaster?: boolean,
     expected?: PackageEditResult,
     signal?: AbortSignal,
-    preimage?: { slideId: string; packageDigest: string },
+    preimage?: { slideId: string; packageDigest: string; slideIds?: string[] },
   ): Promise<{ slideId: string }>
   executeDeclarative(
     operations: PowerPointDeclarativeOperation[],
@@ -458,6 +459,41 @@ async function getSlideCount(
   if (!Number.isSafeInteger(count.value) || (count.value as number) < 0)
     throw new Error('office_read_failed')
   return count.value as number
+}
+
+/** Read every slide ID with its count in one Office batch; never use bounded QA windows. */
+async function readCompleteSlideOrder(
+  context: RuntimeRecord,
+  slides: RuntimeRecord,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  if (typeof slides.load !== 'function' || typeof slides.getCount !== 'function')
+    throw new Error('office_api_unsupported')
+  const count = (slides.getCount as () => RuntimeRecord)()
+  ;(slides.load as (properties: string) => void)('items/id')
+  await sync(context, signal)
+  if (
+    !Number.isSafeInteger(count.value) ||
+    (count.value as number) < 1 ||
+    !Array.isArray(slides.items) ||
+    slides.items.length !== count.value
+  )
+    throw new Error('office_read_failed')
+  const ids = (slides.items as RuntimeRecord[]).map((item) => item?.id)
+  if (
+    ids.some(
+      (id) =>
+        typeof id !== 'string' ||
+        !id.trim() ||
+        id.length > 256 ||
+        [...id].some(
+          (c) => c.charCodeAt(0) < 32 || (c.charCodeAt(0) >= 127 && c.charCodeAt(0) <= 159),
+        ),
+    ) ||
+    new Set(ids).size !== ids.length
+  )
+    throw new Error('office_read_failed')
+  return ids as string[]
 }
 
 function hash(value: string): string {
@@ -1695,6 +1731,17 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     })
   }
 
+  async readSlideOrder(signal?: AbortSignal): Promise<string[]> {
+    cancelled(signal)
+    return this.run('1.8', async (context) =>
+      readCompleteSlideOrder(
+        context,
+        (context.presentation as RuntimeRecord).slides as RuntimeRecord,
+        signal,
+      ),
+    )
+  }
+
   async exportPresentationPagePackage(
     slideId: string,
     signal?: AbortSignal,
@@ -1773,8 +1820,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     applyMaster = false,
     expected?: PackageEditResult,
     signal?: AbortSignal,
-    preimage?: { slideId: string; packageDigest: string },
+    preimage?: { slideId: string; packageDigest: string; slideIds?: string[] },
   ): Promise<{ slideId: string }> {
+    const ownedPreimage = preimage && structuredClone(preimage)
     cancelled(signal)
     if (applyMaster && isPowerPointMac()) throw new Error('office_api_unsupported')
     if (!base64 || base64.length > MAX_POWERPOINT_SNAPSHOT_BASE64)
@@ -1849,13 +1897,14 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         original.value.length > MAX_POWERPOINT_SNAPSHOT_BASE64
       )
         throw new Error('office_read_failed')
-      const originalExpected = await capturePowerPointPackage(original.value, signal)
-      const replacementExactProof = await capturePowerPointPackage(base64, signal)
+      const originalBase64 = original.value
       const originalSlideId = string(slide.id)
+      const originalExpected = await capturePowerPointPackage(originalBase64, signal)
+      const replacementExactProof = await capturePowerPointPackage(base64, signal)
       if (
-        preimage &&
-        (originalSlideId !== preimage.slideId ||
-          (await presentationPackageDigest(original.value, signal)) !== preimage.packageDigest)
+        ownedPreimage &&
+        (originalSlideId !== ownedPreimage.slideId ||
+          (await presentationPackageDigest(originalBase64, signal)) !== ownedPreimage.packageDigest)
       )
         throw new Error('proposal_stale')
 
@@ -1905,6 +1954,14 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           if (string((item.layout as RuntimeRecord).id) !== originalLayoutIds.get(string(item.id)))
             throw new Error('office_recovery_failed')
         }
+      }
+      if (ownedPreimage?.slideIds) {
+        const order = await readCompleteSlideOrder(context, slides, signal)
+        if (
+          JSON.stringify(order) !== JSON.stringify(ownedPreimage.slideIds) ||
+          order[slideIndex] !== ownedPreimage.slideId
+        )
+          throw new Error('proposal_stale')
       }
       cancelled(signal)
       const insertOptions = {
@@ -1968,7 +2025,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               value: string,
               options: { formatting: string; targetSlideId?: string },
             ) => void
-          )(original.value, insertOptions)
+          )(originalBase64, insertOptions)
           ;(current.delete as () => void)()
           await sync(context)
         } else {

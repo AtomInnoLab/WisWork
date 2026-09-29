@@ -1517,7 +1517,43 @@ export function createPowerPointSkill(options: {
     signal?: AbortSignal,
   ): Promise<ToolExecution> {
     const deck = await options.adapter.verifySlides(signal)
-    const before = await options.adapter.exportSlidePackage(slideIndex, signal)
+    // Copy SDK results immediately: adapters can return live objects or reused arrays.
+    const before = structuredClone(await options.adapter.exportSlidePackage(slideIndex, signal))
+    const beforeDigest = await presentationPackageDigest(before.base64, signal)
+    const readOrder = async (s?: AbortSignal) => {
+      if (!options.adapter.readSlideOrder) return undefined
+      const order = [...(await options.adapter.readSlideOrder(s))]
+      if (
+        !order.length ||
+        new Set(order).size !== order.length ||
+        order.some(
+          (id) =>
+            typeof id !== 'string' ||
+            !id.trim() ||
+            id.length > 256 ||
+            [...id].some(
+              (c) => c.charCodeAt(0) < 32 || (c.charCodeAt(0) >= 127 && c.charCodeAt(0) <= 159),
+            ),
+        )
+      )
+        throw new Error('office_read_failed')
+      return order
+    }
+    const beforeSlideIds = await readOrder(signal)
+    if (beforeSlideIds && beforeSlideIds[slideIndex] !== before.slideId)
+      throw new Error('proposal_stale')
+    const freshPackage = async (s?: AbortSignal) => {
+      const current = structuredClone(await options.adapter.exportSlidePackage(slideIndex, s))
+      if (
+        current.slideId !== before.slideId ||
+        (await presentationPackageDigest(current.base64, s)) !== beforeDigest
+      )
+        throw new Error('proposal_stale')
+      const order = await readOrder(s)
+      if (JSON.stringify(order) !== JSON.stringify(beforeSlideIds))
+        throw new Error('proposal_stale')
+      return current
+    }
     const edited = await editPowerPointPackage(before.base64, kind, replacements, signal)
     let applied: Awaited<ReturnType<typeof editPowerPointPackage>> | undefined
     const proposal = options.proposals.propose({
@@ -1547,15 +1583,17 @@ export function createPowerPointSkill(options: {
         operations: replacements.map((item) => ({ op: 'replace_xml', ...item })),
       }),
       validate: async (confirmSignal) => {
-        const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
-        return verifyPowerPointPackageInputs(current.base64, edited.beforeHashes, confirmSignal)
+        try {
+          await freshPackage(confirmSignal)
+          return true
+        } catch (error) {
+          assertNotCancelled(confirmSignal)
+          if (error instanceof Error && error.message === 'proposal_stale') return false
+          throw error
+        }
       },
       execute: async (confirmSignal) => {
-        const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
-        if (
-          !(await verifyPowerPointPackageInputs(current.base64, edited.beforeHashes, confirmSignal))
-        )
-          throw new Error('proposal_stale')
+        const current = await freshPackage(confirmSignal)
         applied = await editPowerPointPackage(current.base64, kind, replacements, confirmSignal)
         await options.adapter.replaceSlidePackage(
           slideIndex,
@@ -1563,6 +1601,11 @@ export function createPowerPointSkill(options: {
           kind === 'master',
           applied,
           confirmSignal,
+          {
+            slideId: before.slideId,
+            packageDigest: beforeDigest,
+            ...(beforeSlideIds ? { slideIds: [...beforeSlideIds] } : {}),
+          },
         )
       },
       verify: async (confirmSignal) => {

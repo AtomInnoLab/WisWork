@@ -1187,7 +1187,7 @@ describe('PowerPoint compatibility skill', () => {
     expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(2)
   })
 
-  it('validates master edits from the targeted XML instead of volatile package bytes', async () => {
+  it('rejects unrelated master package drift even when targeted XML is unchanged', async () => {
     const first = new JSZip()
     first.file('ppt/slideMasters/slideMaster1.xml', '<p:sldMaster xmlns:p="urn:p"/>')
     first.file('docProps/core.xml', '<core modified="one"/>')
@@ -1225,11 +1225,8 @@ describe('PowerPoint compatibility skill', () => {
         },
       }),
     )
-    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
-    expect(fake.replaceSlidePackage).toHaveBeenCalledOnce()
-    const appliedBase64 = vi.mocked(fake.replaceSlidePackage).mock.calls[0]?.[1]
-    const applied = await JSZip.loadAsync(appliedBase64!, { base64: true })
-    await expect(applied.file('docProps/core.xml')?.async('string')).resolves.toContain('two')
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+    expect(fake.replaceSlidePackage).not.toHaveBeenCalled()
   })
 
   it('does not overwrite a target XML change between validation and execution', async () => {
