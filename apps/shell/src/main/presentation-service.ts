@@ -2197,3 +2197,5 @@ export function createPresentationService(options: {
     }
   }
 }
+
+export { acquireProjectLock as acquirePresentationProjectLock }

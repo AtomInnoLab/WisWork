@@ -176,6 +176,7 @@ import {
 import { registerOfficePairingIpc } from './office-pairing-ipc'
 import {
   createOfficeRelayClient,
+  createOfficePresentationGovernanceProxy,
   officeRelayEndpointFromEnv,
   type OfficeRelayClient,
 } from './office-relay-client'
@@ -2545,7 +2546,12 @@ app.whenReady().then(async () => {
         })
       : undefined
     const endpoint = officeRelayEndpointFromEnv(process.env)
-    const presentationProxy = createPresentationService({ userDataPath: app.getPath('userData') })
+    const presentationUserDataPath = app.getPath('userData')
+    const presentationProxy = createPresentationService({ userDataPath: presentationUserDataPath })
+    const presentationGovernanceProxy =
+      process.env.WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1'
+        ? createOfficePresentationGovernanceProxy({ userDataPath: presentationUserDataPath })
+        : undefined
     officeRelay = createOfficeRelayPool({
       createClient: (events) =>
         createOfficeRelayClient({
@@ -2555,6 +2561,7 @@ app.whenReady().then(async () => {
           proxy: officeMessagesProxy,
           retrievalProxy,
           presentationProxy,
+          presentationGovernanceProxy,
           supportsTeamPresentation: true,
           negotiateCapabilities: true,
           onPending: events.onPending,

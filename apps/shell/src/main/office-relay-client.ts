@@ -1,3 +1,8 @@
+import {
+  createPresentationProjectGovernanceService,
+  presentationProjectGovernanceOperations,
+} from './presentation-project-governance'
+import { acquirePresentationProjectLock } from './presentation-service'
 import type { MessagesProxy } from '@wiswork/office-bridge'
 import WebSocket from 'ws'
 import type { OfficePairingRequest, OfficeRelayStatus } from '../shared/home-api'
@@ -133,6 +138,17 @@ export function officeRelayEndpointFromEnv(env: Record<string, string | undefine
   return url.href
 }
 
+export function createOfficePresentationGovernanceProxy(options: { userDataPath: string }) {
+  const root = options.userDataPath
+  const service = createPresentationProjectGovernanceService({
+    userDataPath: root,
+    acquireProjectLock: (projectId) => acquirePresentationProjectLock(root, projectId),
+  })
+  return async (body: unknown, signal: AbortSignal): Promise<Uint8Array> =>
+    Buffer.from(JSON.stringify(await service(body, signal)))
+}
+const GOVERNANCE_OPERATIONS = new Set<string>(presentationProjectGovernanceOperations)
+
 export function createOfficeRelayClient(options: {
   endpoint: string
   connect?: (url: string, accessToken: string) => RelaySocket
@@ -145,6 +161,7 @@ export function createOfficeRelayClient(options: {
     signal: AbortSignal,
     context?: PresentationTeamContext,
   ) => Promise<Uint8Array>
+  presentationGovernanceProxy?: (body: unknown, signal: AbortSignal) => Promise<Uint8Array>
   supportsTeamPresentation?: true
   negotiateCapabilities?: boolean
   onPending(pairing: OfficePairingRequest): void
@@ -158,8 +175,11 @@ export function createOfficeRelayClient(options: {
   let protocolVersion: 1 | 2 = 1
   const negotiateCapabilities =
     options.negotiateCapabilities === true ||
-    Boolean(options.retrievalProxy || options.presentationProxy)
+    Boolean(
+      options.retrievalProxy || options.presentationProxy || options.presentationGovernanceProxy,
+    )
   const offeredCapabilities: string[] = options.retrievalProxy ? [...V2_CAPABILITIES] : ['agent.v1']
+  if (options.presentationGovernanceProxy) offeredCapabilities.push('presentation-governance.v1')
   if (options.presentationProxy)
     offeredCapabilities.push(
       'presentation.v1',
@@ -276,6 +296,13 @@ export function createOfficeRelayClient(options: {
       if (
         typeof capabilityName !== 'string' ||
         !session.capabilities.includes(capabilityName) ||
+        (capabilityName === 'presentation-governance.v1'
+          ? session.host !== 'PowerPoint' ||
+            !options.presentationGovernanceProxy ||
+            !GOVERNANCE_OPERATIONS.has(frame.body.operation as string) ||
+            bodyBytes > 32 * 1024
+          : typeof frame.body.operation === 'string' &&
+            frame.body.operation.startsWith('project_deletion_')) ||
         (capabilityName === 'presentation-master-backups.v1'
           ? session.host !== 'PowerPoint' ||
             !MASTER_BACKUP_OPERATIONS.has(frame.body.operation as string)
@@ -318,20 +345,22 @@ export function createOfficeRelayClient(options: {
               : true
           : capabilityName === 'presentation-pdf.v1' ||
             capabilityName === 'presentation-production-pdf.v1') ||
-        (capabilityName === 'presentation-team.v1' ||
-        capabilityName === 'presentation.v1' ||
-        capabilityName === 'presentation-attachments.v1' ||
-        capabilityName === 'presentation-assets.v1' ||
-        capabilityName === 'presentation-remote-images.v1' ||
-        capabilityName === 'presentation-webpages.v1' ||
-        capabilityName === 'presentation-asset-rights.v1' ||
-        capabilityName === 'presentation-animation-frame.v1' ||
-        capabilityName === 'presentation-pdf.v1' ||
-        capabilityName === 'presentation-production-pdf.v1' ||
-        capabilityName === 'presentation-master-backups.v1' ||
-        capabilityName === 'presentation-package-backups.v1'
-          ? !options.presentationProxy
-          : capabilityName !== 'agent.v1' && !options.retrievalProxy)
+        (capabilityName === 'presentation-governance.v1'
+          ? !options.presentationGovernanceProxy
+          : capabilityName === 'presentation-team.v1' ||
+              capabilityName === 'presentation.v1' ||
+              capabilityName === 'presentation-attachments.v1' ||
+              capabilityName === 'presentation-assets.v1' ||
+              capabilityName === 'presentation-remote-images.v1' ||
+              capabilityName === 'presentation-webpages.v1' ||
+              capabilityName === 'presentation-asset-rights.v1' ||
+              capabilityName === 'presentation-animation-frame.v1' ||
+              capabilityName === 'presentation-pdf.v1' ||
+              capabilityName === 'presentation-production-pdf.v1' ||
+              capabilityName === 'presentation-master-backups.v1' ||
+              capabilityName === 'presentation-package-backups.v1'
+            ? !options.presentationProxy
+            : capabilityName !== 'agent.v1' && !options.retrievalProxy)
       )
         return clear('protocol_violation', true)
       const response =
@@ -341,26 +370,28 @@ export function createOfficeRelayClient(options: {
               status: 200,
               contentType: 'application/json',
               body:
-                capabilityName === 'presentation-team.v1' ||
-                capabilityName === 'presentation.v1' ||
-                capabilityName === 'presentation-attachments.v1' ||
-                capabilityName === 'presentation-assets.v1' ||
-                capabilityName === 'presentation-remote-images.v1' ||
-                capabilityName === 'presentation-webpages.v1' ||
-                capabilityName === 'presentation-asset-rights.v1' ||
-                capabilityName === 'presentation-animation-frame.v1' ||
-                capabilityName === 'presentation-pdf.v1' ||
-                capabilityName === 'presentation-production-pdf.v1' ||
-                capabilityName === 'presentation-master-backups.v1' ||
-                capabilityName === 'presentation-package-backups.v1'
-                  ? capabilityName === 'presentation-team.v1'
-                    ? await options.presentationProxy!(
-                        frame.body,
-                        controller.signal,
-                        frame.team_context as unknown as PresentationTeamContext,
-                      )
-                    : await options.presentationProxy!(frame.body, controller.signal)
-                  : await options.retrievalProxy!(capabilityName, frame.body, controller.signal),
+                capabilityName === 'presentation-governance.v1'
+                  ? await options.presentationGovernanceProxy!(frame.body, controller.signal)
+                  : capabilityName === 'presentation-team.v1' ||
+                      capabilityName === 'presentation.v1' ||
+                      capabilityName === 'presentation-attachments.v1' ||
+                      capabilityName === 'presentation-assets.v1' ||
+                      capabilityName === 'presentation-remote-images.v1' ||
+                      capabilityName === 'presentation-webpages.v1' ||
+                      capabilityName === 'presentation-asset-rights.v1' ||
+                      capabilityName === 'presentation-animation-frame.v1' ||
+                      capabilityName === 'presentation-pdf.v1' ||
+                      capabilityName === 'presentation-production-pdf.v1' ||
+                      capabilityName === 'presentation-master-backups.v1' ||
+                      capabilityName === 'presentation-package-backups.v1'
+                    ? capabilityName === 'presentation-team.v1'
+                      ? await options.presentationProxy!(
+                          frame.body,
+                          controller.signal,
+                          frame.team_context as unknown as PresentationTeamContext,
+                        )
+                      : await options.presentationProxy!(frame.body, controller.signal)
+                    : await options.retrievalProxy!(capabilityName, frame.body, controller.signal),
             }
       if (owner !== generation || controller.signal.aborted || !session) return
       if (
@@ -396,7 +427,13 @@ export function createOfficeRelayClient(options: {
           if (owner !== generation || controller.signal.aborted || !session) return
           const chunk = source.subarray(offset, offset + MAX_CHUNK_BYTES)
           total += chunk.byteLength
-          if (total > MAX_RESPONSE_BYTES) throw new Error('response_too_large')
+          if (
+            total >
+            (capabilityName === 'presentation-governance.v1'
+              ? 2 * 1024 * 1024 + 14
+              : MAX_RESPONSE_BYTES)
+          )
+            throw new Error('response_too_large')
           send({
             version: protocolVersion,
             type: 'pc.chunk',
@@ -578,7 +615,8 @@ export function createOfficeRelayClient(options: {
         Number(typed.expires_in) > 120 ||
         diagnostic !== 'claiming' ||
         pending !== null ||
-        !negotiated
+        !negotiated ||
+        (negotiated.includes('presentation-governance.v1') && typed.host !== 'PowerPoint')
       )
         return clear('protocol_violation', true)
       try {
