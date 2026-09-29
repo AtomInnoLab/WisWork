@@ -55,6 +55,13 @@ export interface PresentationProjectInventory {
   deletionPerformed: false
   resources: PresentationInventoryResource[]
   totals: { fileCount: number; bytes: number }
+  activity?: PresentationContentActivity
+}
+export interface PresentationContentActivity {
+  scope: { documentId: string; projectId: string }
+  decidable: boolean
+  latestActivityAt: string | null
+  reason?: 'unbound_project' | 'shared_or_unproven' | 'invalid_timestamp'
 }
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 function fail(code = 'presentation_inventory_invalid'): never {
@@ -67,6 +74,7 @@ export async function inspectPresentationProjectInventory(options: {
   documentId: string
   projectId: string
   signal?: AbortSignal
+  observeActivity?: { policySavedAt?: string }
 }): Promise<PresentationProjectInventory> {
   try {
     const { documentId, projectId, signal } = options
@@ -84,9 +92,51 @@ export async function inspectPresentationProjectInventory(options: {
       !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)
     )
       fail('invalid_request')
+    const descriptor = Object.getOwnPropertyDescriptor(options, 'observeActivity')
+    if (
+      'observeActivity' in options &&
+      (!descriptor || !('value' in descriptor) || !descriptor.enumerable)
+    )
+      fail('invalid_request')
+    const activityInput: unknown = descriptor?.value
+    if (
+      activityInput !== undefined &&
+      (!activityInput ||
+        typeof activityInput !== 'object' ||
+        Array.isArray(activityInput) ||
+        Object.getPrototypeOf(activityInput) !== Object.prototype ||
+        Reflect.ownKeys(activityInput).some((key) => key !== 'policySavedAt'))
+    )
+      fail('invalid_request')
+    const policyDescriptor =
+      activityInput === undefined
+        ? undefined
+        : Object.getOwnPropertyDescriptor(activityInput, 'policySavedAt')
+    if (policyDescriptor && (!policyDescriptor.enumerable || !('value' in policyDescriptor)))
+      fail('invalid_request')
+    const policySavedAt: unknown = policyDescriptor?.value
     const base = resolve(options.userDataPath),
       resources: PresentationInventoryResource[] = [],
-      total = { fileCount: 0, bytes: 0 }
+      total = { fileCount: 0, bytes: 0 },
+      observed = activityInput === undefined ? undefined : { latest: 0, invalid: false }
+    if (observed && policySavedAt !== undefined) {
+      const date = policySavedAt
+      if (typeof date !== 'string') fail('invalid_request')
+      const ms = Date.parse(date)
+      if (
+        !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(date) ||
+        !Number.isFinite(ms) ||
+        new Date(ms).toISOString() !== date
+      )
+        fail('invalid_request')
+      observed.latest = ms
+    }
+    const observe = (s: Stats) => {
+      if (!observed) return
+      const times = [s.mtimeMs, s.ctimeMs, s.birthtimeMs]
+      if (times.some((t) => !Number.isFinite(t) || t <= 0 || t > 8.64e15)) observed.invalid = true
+      else observed.latest = Math.max(observed.latest, ...times)
+    }
     const stat = (path: string) => lstatSync(path, { throwIfNoEntry: false })
     const chain = (path: string) => {
       if (path !== base && !path.startsWith(base + sep)) fail()
@@ -106,15 +156,23 @@ export async function inspectPresentationProjectInventory(options: {
       for (const entry of proof) {
         const now = stat(entry.path)
         if (!now || !identity(now, entry.info) || now.isSymbolicLink()) fail()
+        if (
+          observed &&
+          (now.mtimeMs !== entry.info.mtimeMs ||
+            now.ctimeMs !== entry.info.ctimeMs ||
+            now.birthtimeMs !== entry.info.birthtimeMs)
+        )
+          fail()
       }
     }
-    const walk = (path: string, depth = 0): { path: string; info: Stats }[] => {
+    const walk = (path: string, depth = 0, active = false): { path: string; info: Stats }[] => {
       check()
       if (depth > 16) fail('presentation_inventory_budget')
       const proof = chain(path),
         s = stat(path)
       if (!s) return []
       if (s.isSymbolicLink() || (!s.isFile() && !s.isDirectory())) fail()
+      if (active) observe(s)
       if (s.isFile()) {
         if (
           ++total.fileCount > MAX_PRESENTATION_INVENTORY_FILES ||
@@ -127,7 +185,7 @@ export async function inspectPresentationProjectInventory(options: {
       }
       const names = readdirSync(path).sort()
       if (names.length > MAX_PRESENTATION_INVENTORY_FILES) fail('presentation_inventory_budget')
-      const files = names.flatMap((name) => walk(join(path, name), depth + 1))
+      const files = names.flatMap((name) => walk(join(path, name), depth + 1, active))
       unchanged(proof)
       return files
     }
@@ -197,7 +255,7 @@ export async function inspectPresentationProjectInventory(options: {
       })
     }
     const project = join(base, 'projects', 'presentations', hash(projectId)),
-      main = walk(project)
+      main = walk(project, 0, Boolean(observed))
     let anchor = false
     if (main.length) {
       const v = json(join(project, 'project.json'))
@@ -221,7 +279,7 @@ export async function inspectPresentationProjectInventory(options: {
           kind === 'page_backups'
             ? join(base, namespace, hash(projectId))
             : join(base, namespace, hash(documentId), hash(projectId)),
-        files = walk(path)
+        files = walk(path, 0, Boolean(observed))
       if (files.length) {
         if (kind === 'research') {
           const v = json(join(path, 'state.json'), RESEARCH_JSON_BYTES)
@@ -264,7 +322,7 @@ export async function inspectPresentationProjectInventory(options: {
       ['manual_observations', 'presentation-manual-observations'],
     ] as const) {
       const path = join(base, namespace, hash(JSON.stringify([documentId, projectId])) + '.json'),
-        files = walk(path)
+        files = walk(path, 0, Boolean(observed))
       if (files.length) {
         const v = json(
           path,
@@ -391,6 +449,31 @@ export async function inspectPresentationProjectInventory(options: {
       deletionPerformed: false,
       resources,
       totals: total,
+      ...(observed
+        ? {
+            activity: {
+              scope: { documentId, projectId },
+              decidable:
+                anchor &&
+                !observed.invalid &&
+                !resources.some(
+                  (r) => r.ownership !== 'project_exclusive' && r.kind !== 'lifecycle_control',
+                ),
+              latestActivityAt:
+                observed.latest > 0 ? new Date(observed.latest).toISOString() : null,
+              ...(!anchor
+                ? { reason: 'unbound_project' as const }
+                : observed.invalid
+                  ? { reason: 'invalid_timestamp' as const }
+                  : resources.some(
+                        (r) =>
+                          r.ownership !== 'project_exclusive' && r.kind !== 'lifecycle_control',
+                      )
+                    ? { reason: 'shared_or_unproven' as const }
+                    : {}),
+            },
+          }
+        : {}),
     }
   } catch (error) {
     let code = ''

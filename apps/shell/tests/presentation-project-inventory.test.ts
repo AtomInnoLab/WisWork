@@ -21,11 +21,19 @@ import {
   MAX_PRESENTATION_INVENTORY_BYTES,
   MAX_PRESENTATION_INVENTORY_FILES,
 } from '../src/main/presentation-project-inventory'
-const openHook = vi.hoisted(() => ({ after: undefined as undefined | ((path: string) => void) }))
+const openHook = vi.hoisted(() => ({
+  after: undefined as undefined | ((path: string) => void),
+  futureDirectory: undefined as string | undefined,
+}))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
   return {
     ...actual,
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
+      const value = actual.lstatSync(...args)
+      if (value && String(args[0]) === openHook.futureDirectory) value.birthtimeMs = 9e15
+      return value
+    },
     openSync: (...args: Parameters<typeof actual.openSync>) => {
       const fd = actual.openSync(...args)
       openHook.after?.(String(args[0]))
@@ -36,6 +44,7 @@ vi.mock('node:fs', async (importOriginal) => {
 const roots: string[] = []
 afterEach(() => {
   openHook.after = undefined
+  openHook.futureDirectory = undefined
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 const hash = (v: string) => createHash('sha256').update(v).digest('hex')
@@ -388,7 +397,12 @@ it('refuses persistent parent replacement even when the opened metadata bytes ar
     }
   }
   await expect(
-    inspectPresentationProjectInventory({ userDataPath: root, documentId: 'doc', projectId: 'p' }),
+    inspectPresentationProjectInventory({
+      userDataPath: root,
+      documentId: 'doc',
+      projectId: 'p',
+      observeActivity: {},
+    }),
   ).rejects.toThrow('presentation_inventory_invalid')
   expect(replaced).toBe(true)
 })
@@ -527,4 +541,185 @@ it('reads an empty 4096-character research document scope without creating or de
     }),
   ).rejects.toThrow('invalid_request')
   expect(readdirSync(root, { recursive: true })).toEqual([])
+})
+it('internal activity observes only bound project files and excludes lifecycle control and other project', async () => {
+  const root = fixture(),
+    path = project(root),
+    other = project(root, 'other')
+  const { utimesSync } = await import('node:fs')
+  const old = new Date('2020-01-01T00:00:00Z')
+  utimesSync(join(root, path, 'project.json'), old, old)
+  file(root, `${path}/private.bin`, 'own')
+  const alien = file(root, `${other}/foreign.bin`, 'foreign')
+  const before = Date.now()
+  utimesSync(alien, new Date('2035-01-01'), new Date('2035-01-01'))
+  const result = await inspectPresentationProjectInventory({
+    userDataPath: root,
+    documentId: 'doc',
+    projectId: 'p',
+    observeActivity: { policySavedAt: '2026-09-29T00:00:00.000Z' },
+  })
+  expect(result.activity).toMatchObject({
+    scope: { documentId: 'doc', projectId: 'p' },
+    decidable: true,
+  })
+  expect(Date.parse(result.activity!.latestActivityAt!)).toBeGreaterThanOrEqual(before - 1000)
+  expect(result.resources.some((v) => v.kind === 'project')).toBe(true)
+  expect(
+    await inspectPresentationProjectInventory({
+      userDataPath: root,
+      documentId: 'doc',
+      projectId: 'p',
+    }),
+  ).not.toHaveProperty('activity')
+})
+
+it('policy baseline and rollback-resistant ctime delay eligibility without including control activity', async () => {
+  const root = fixture(),
+    path = project(root),
+    scope = { userDataPath: root, documentId: 'doc', projectId: 'p' }
+  const before = await inspectPresentationProjectInventory({ ...scope, observeActivity: {} })
+  const future = '2035-01-01T00:00:00.000Z'
+  const policy = await inspectPresentationProjectInventory({
+    ...scope,
+    observeActivity: { policySavedAt: future },
+  })
+  expect(Date.parse(policy.activity!.latestActivityAt!)).toBeGreaterThanOrEqual(Date.parse(future))
+  const ctl = file(root, `presentation-project-lifecycles/${hash('p')}/lifecycle.json`, {
+    version: 1,
+    projectId: 'p',
+    documentId: 'doc',
+  })
+  const after = await inspectPresentationProjectInventory({ ...scope, observeActivity: {} })
+  expect(after.activity!.latestActivityAt).toBe(before.activity!.latestActivityAt)
+  expect(after.activity!.decidable).toBe(true)
+  const { utimesSync } = await import('node:fs')
+  utimesSync(join(root, path, 'project.json'), new Date('2020-01-01'), new Date('2020-01-01'))
+  const rollback = await inspectPresentationProjectInventory({ ...scope, observeActivity: {} })
+  expect(Date.parse(rollback.activity!.latestActivityAt!)).toBeGreaterThanOrEqual(
+    Date.parse(before.activity!.latestActivityAt!),
+  )
+  expect(ctl).toBeTruthy()
+})
+it('shared or unbound bytes block an activity eligibility proof without body leakage', async () => {
+  const root = fixture(),
+    scope = { userDataPath: root, documentId: 'doc', projectId: 'p' }
+  expect(
+    (await inspectPresentationProjectInventory({ ...scope, observeActivity: {} })).activity,
+  ).toMatchObject({ decidable: false, reason: 'unbound_project' })
+  project(root)
+  file(root, `presentation-attachments/${hash('doc')}/shared.bin`, 'secret private body')
+  const r = await inspectPresentationProjectInventory({ ...scope, observeActivity: {} })
+  expect(r.activity).toMatchObject({ decidable: false, reason: 'shared_or_unproven' })
+  expect(JSON.stringify(r.activity)).not.toContain('secret')
+  expect(Object.keys(r.activity!)).toEqual(['scope', 'decidable', 'latestActivityAt', 'reason'])
+  await expect(
+    inspectPresentationProjectInventory({
+      ...scope,
+      observeActivity: { policySavedAt: 'not-a-date' },
+    }),
+  ).rejects.toThrow('invalid_request')
+  await expect(
+    inspectPresentationProjectInventory({
+      ...scope,
+      observeActivity: { policySavedAt: '2026-02-30T00:00:00.000Z' },
+    }),
+  ).rejects.toThrow('invalid_request')
+})
+
+it('returns undecidable for an unrepresentable directory timestamp and does not coerce policy objects', async () => {
+  const root = fixture(),
+    path = project(root),
+    scope = { userDataPath: root, documentId: 'doc', projectId: 'p' }
+  let coerced = 0
+  const policySavedAt = {
+    [Symbol.toPrimitive]() {
+      coerced++
+      return '2026-09-29T00:00:00.000Z'
+    },
+  }
+  await expect(
+    inspectPresentationProjectInventory({ ...scope, observeActivity: { policySavedAt } as never }),
+  ).rejects.toThrow('invalid_request')
+  expect(coerced).toBe(0)
+  openHook.futureDirectory = join(root, path)
+  const value = await inspectPresentationProjectInventory({ ...scope, observeActivity: {} })
+  expect(value.activity).toMatchObject({ decidable: false, reason: 'invalid_timestamp' })
+  expect(
+    value.activity!.latestActivityAt === null ||
+      Number.isFinite(Date.parse(value.activity!.latestActivityAt)),
+  ).toBe(true)
+})
+it('rejects changing activity options without running accessors or losing the policy baseline', async () => {
+  const root = fixture()
+  project(root)
+  let reads = 0
+  const accessor = {
+    get policySavedAt() {
+      reads++
+      return reads === 1 ? '2035-01-01T00:00:00.000Z' : undefined
+    },
+  }
+  await expect(
+    inspectPresentationProjectInventory({
+      userDataPath: root,
+      documentId: 'doc',
+      projectId: 'p',
+      observeActivity: accessor,
+    }),
+  ).rejects.toThrow('invalid_request')
+  expect(reads).toBe(0)
+  await expect(
+    inspectPresentationProjectInventory({
+      userDataPath: root,
+      documentId: 'doc',
+      projectId: 'p',
+      observeActivity: { extra: true } as never,
+    }),
+  ).rejects.toThrow('invalid_request')
+})
+
+it('observes recent bound research and preference activity without another project time', async () => {
+  const root = fixture()
+  project(root)
+  project(root, 'other')
+  const base = { userDataPath: root, documentId: 'doc', projectId: 'p' }
+  const state = {
+    version: 1,
+    documentId: 'doc',
+    projectId: 'p',
+    revision: 0,
+    totalRecords: 0,
+    records: [],
+  }
+  const research = file(root, `presentation-research/${hash('doc')}/${hash('p')}/state.json`, {
+    state,
+    checksum: hash(JSON.stringify(state)),
+  })
+  const { utimesSync } = await import('node:fs')
+  utimesSync(research, new Date('2033-01-01T00:00:00Z'), new Date('2033-01-01T00:00:00Z'))
+  const first = await inspectPresentationProjectInventory({ ...base, observeActivity: {} })
+  expect(Date.parse(first.activity!.latestActivityAt!)).toBeGreaterThanOrEqual(
+    Date.parse('2033-01-01T00:00:00Z'),
+  )
+  const pref = file(root, `presentation-preferences/${hash(JSON.stringify(['doc', 'p']))}.json`, {
+    version: 1,
+    documentId: 'doc',
+    projectId: 'p',
+    preferences: [],
+  })
+  utimesSync(pref, new Date('2034-01-01T00:00:00Z'), new Date('2034-01-01T00:00:00Z'))
+  const second = await inspectPresentationProjectInventory({ ...base, observeActivity: {} })
+  expect(Date.parse(second.activity!.latestActivityAt!)).toBeGreaterThanOrEqual(
+    Date.parse('2034-01-01T00:00:00Z'),
+  )
+  const alien = file(
+    root,
+    `presentation-preferences/${hash(JSON.stringify(['doc', 'other']))}.json`,
+    { version: 1, documentId: 'doc', projectId: 'other', preferences: [] },
+  )
+  utimesSync(alien, new Date('2035-01-01T00:00:00Z'), new Date('2035-01-01T00:00:00Z'))
+  const after = await inspectPresentationProjectInventory({ ...base, observeActivity: {} })
+  expect(after.activity).toEqual(second.activity)
+  expect(after.activity!.decidable).toBe(true)
 })
