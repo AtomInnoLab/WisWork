@@ -230,12 +230,14 @@ export function createPresentationResearchService(optionsValue: {
       assertCurrent()
       if (lease && !('assertWritable' in lease)) throw Error('access_denied')
     }
+    let projectLock: Promise<(() => void) | undefined> | undefined
     try {
       const captured = options.captureProjectLease?.({ scope, operation: op, signal })
+      projectLock = options.acquireProjectLock?.(projectId)
       lease = captured instanceof Promise ? await captured : captured
       assertCurrent()
       const run = async () => {
-        const release = await options.acquireProjectLock?.(projectId)
+        const release = await projectLock
         try {
           assertCurrent()
           if (signal.aborted) throw new Error('aborted')
@@ -395,13 +397,19 @@ export function createPresentationResearchService(optionsValue: {
           return { history: await summary(), record }
         } finally {
           release?.()
+          projectLock = undefined
         }
       }
       const result = await run()
       assertCurrent()
       return result
     } finally {
-      work?.finish()
+      // Admission may fail while queued; settle and release the acquired lock before finishing Work.
+      try {
+        if (projectLock) (await projectLock)?.()
+      } finally {
+        work?.finish()
+      }
     }
   }
 }

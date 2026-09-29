@@ -505,10 +505,14 @@ export class PresentationLifecycleStore {
       invalid('invalid_state')
     if (binding.documentId !== s.documentId) invalid('document_mismatch')
   }
-  private directory(s: PresentationLifecycleScope, create = false): string | undefined {
+  private directory(
+    s: PresentationLifecycleScope,
+    create = false,
+    checkOwnership = true,
+  ): string | undefined {
     scope(s)
     ancestors(this.root)
-    this.checkOwnership(s)
+    if (checkOwnership) this.checkOwnership(s)
     const paths = [
       join(this.root, 'presentation-project-lifecycles'),
       join(this.root, 'presentation-project-lifecycles', hash(s.projectId)),
@@ -531,6 +535,19 @@ export class PresentationLifecycleStore {
     const s = owned(input)
     scope(s)
     const directory = this.directory(s)
+    if (!directory) return undefined
+    const raw = readJson(join(directory, 'lifecycle.json'), ancestors(directory))
+    if (raw === undefined) return undefined
+    const record = parsePresentationLifecycle(raw)
+    if (record.projectId !== s.projectId) invalid('invalid_state')
+    if (record.documentId !== s.documentId) invalid('document_mismatch')
+    return record
+  }
+  /** Read-only control observation; never authorizes project body access or writes. */
+  readControl(input: PresentationLifecycleScope): PresentationLifecycleRecord | undefined {
+    const s = owned(input)
+    scope(s)
+    const directory = this.directory(s, false, false)
     if (!directory) return undefined
     const raw = readJson(join(directory, 'lifecycle.json'), ancestors(directory))
     if (raw === undefined) return undefined

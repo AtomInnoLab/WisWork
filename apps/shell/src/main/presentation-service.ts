@@ -290,6 +290,34 @@ export function createPresentationService(options: {
         'research_read',
         'research_delete_status',
       ].includes(operation)
+      if (readOnly) {
+        let initial: ReturnType<PresentationLifecycleStore['readControl']>
+        try {
+          initial = lifecycleStore.readControl(scope)
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== 'document_mismatch') throw error
+          const summary = await researchStore.summary(scope.documentId, scope.projectId)
+          checkAbort(signal)
+          if (summary.totalRecords || (summary.version === 2 && summary.lastSequence > 0))
+            throw error
+          return Object.freeze({
+            scope,
+            revision: undefined,
+            assertCurrent: () => checkAbort(signal),
+          })
+        }
+        const assertCurrent = () => {
+          checkAbort(signal)
+          const current = lifecycleStore.readControl(scope)
+          if (current?.revision !== initial?.revision) throw Error('revision_conflict')
+          if (current && current.state !== 'active') throw Error('project_' + current.state)
+        }
+        assertCurrent()
+        // The strict research envelope proves private ownership independently of production metadata.
+        await researchStore.summary(scope.documentId, scope.projectId)
+        assertCurrent()
+        return Object.freeze({ scope, revision: initial?.revision, assertCurrent })
+      }
       let empty = false
       let initialRevision: number | undefined
       try {
@@ -299,7 +327,7 @@ export function createPresentationService(options: {
           throw error
         const summary = await researchStore.summary(scope.documentId, scope.projectId)
         checkAbort(signal)
-        if (summary.totalRecords) throw error
+        if (summary.totalRecords || (summary.version === 2 && summary.lastSequence > 0)) throw error
         return Object.freeze({
           scope,
           revision: undefined,
@@ -317,10 +345,12 @@ export function createPresentationService(options: {
         scope,
         signal,
         readExistingProject: async () => {
-          const project = store.projectScope(scope.projectId, scope.documentId)
-          if (project) return project
+          if (!readOnly) {
+            const project = store.projectScope(scope.projectId, scope.documentId)
+            if (project) return project
+          }
           const summary = await researchStore.summary(scope.documentId, scope.projectId)
-          empty = summary.totalRecords === 0
+          empty = summary.totalRecords === 0 && !(summary.version === 2 && summary.lastSequence > 0)
           return empty ? undefined : scope
         },
       }).catch((error) => {
