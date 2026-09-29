@@ -12,6 +12,7 @@ import {
 } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
 import { registerPresentationProjectWork } from '../src/main/presentation-project-work'
 import { createPresentationProjectDeletionService } from '../src/main/presentation-project-deletion'
+import { inspectPresentationProjectInventory } from '../src/main/presentation-project-inventory'
 const faults = vi.hoisted(() => ({ unlink: false, receipt: false, armReceipt: false }))
 vi.mock('node:fs', async (load) => {
   const actual = await load<typeof import('node:fs')>()
@@ -508,4 +509,158 @@ it('actual background compiler must return before drain acquires project lock an
   resume()
   expect((await pending).state).toBe('deleted')
   expect(f.held()).toBe(false)
+})
+it('retentionConfirm rechecks policy, activity, and work under the shared lock before durable freeze', async () => {
+  const f = fixture(),
+    initial = f.life.initialize(f.scope),
+    policy = f.life.setPolicy(f.scope, initial.revision, {
+      contentRetentionDays: 1,
+      auditRetentionDays: null,
+    }),
+    service = f.make()
+  const proof = await inspectPresentationProjectInventory({
+    userDataPath: f.root,
+    ...f.scope,
+    observeActivity: { policySavedAt: policy.audit.at(-1)!.at },
+  })
+  const input = {
+    scope: f.scope,
+    expectedRevision: policy.revision,
+    policySavedAt: policy.audit.at(-1)!.at,
+    latestActivityAt: proof.activity!.latestActivityAt!,
+    now: '2035-01-01T00:00:00.000Z',
+    deletionId: 'retention_1',
+  }
+  const work = registerPresentationProjectWork({ scope: { root: f.root, ...f.scope } })
+  await expect(service.retentionConfirm(input)).rejects.toThrow('project_busy')
+  expect(f.life.read(f.scope)?.state).toBe('active')
+  work.finish()
+  const result = await service.retentionConfirm(input)
+  expect(result.state).toBe('deleted')
+  expect(f.life.read(f.scope)?.deletion?.reason).toBe('retention')
+  expect(f.held()).toBe(false)
+})
+it('retentionConfirm refuses early, stale policy, or changed content without freezing', async () => {
+  const f = fixture(),
+    initial = f.life.initialize(f.scope),
+    policy = f.life.setPolicy(f.scope, initial.revision, {
+      contentRetentionDays: 2,
+      auditRetentionDays: null,
+    }),
+    service = f.make()
+  const saved = policy.audit.at(-1)!.at
+  const proof = await inspectPresentationProjectInventory({
+    userDataPath: f.root,
+    ...f.scope,
+    observeActivity: { policySavedAt: saved },
+  })
+  const input = {
+    scope: f.scope,
+    expectedRevision: policy.revision,
+    policySavedAt: saved,
+    latestActivityAt: proof.activity!.latestActivityAt!,
+    now: '2035-01-01T00:00:00.000Z',
+    deletionId: 'retention_2',
+  }
+  await expect(service.retentionConfirm({ ...input, now: saved })).rejects.toThrow(
+    'retention_ineligible',
+  )
+  expect(f.life.read(f.scope)?.state).toBe('active')
+  await expect(
+    service.retentionConfirm({ ...input, policySavedAt: '2020-01-01T00:00:00.000Z' }),
+  ).rejects.toThrow('revision_conflict')
+  writeFileSync(
+    join(
+      f.root,
+      'projects',
+      'presentations',
+      createHash('sha256').update(f.scope.projectId).digest('hex'),
+      'late.bin',
+    ),
+    'newcontent',
+  )
+  await expect(service.retentionConfirm(input)).rejects.toThrow('revision_conflict')
+  expect(f.life.read(f.scope)?.state).toBe('active')
+})
+it('retentionConfirm binds original revision across queued project lock and rejects a changed policy', async () => {
+  const f = fixture(),
+    first = f.life.initialize(f.scope),
+    policy = f.life.setPolicy(f.scope, first.revision, {
+      contentRetentionDays: 1,
+      auditRetentionDays: null,
+    }),
+    service = f.make(),
+    saved = policy.audit.at(-1)!.at
+  const proof = await inspectPresentationProjectInventory({
+    userDataPath: f.root,
+    ...f.scope,
+    observeActivity: { policySavedAt: saved },
+  })
+  const release = await f.lock()
+  let entered = false
+  const pending = service
+    .retentionConfirm({
+      scope: f.scope,
+      expectedRevision: policy.revision,
+      policySavedAt: saved,
+      latestActivityAt: proof.activity!.latestActivityAt!,
+      now: '2035-01-01T00:00:00.000Z',
+      deletionId: 'retention_queued',
+    })
+    .then(
+      () => {
+        entered = true
+      },
+      (error) => {
+        entered = true
+        throw error
+      },
+    )
+  expect(entered).toBe(false)
+  f.life.setPolicy(f.scope, policy.revision, { contentRetentionDays: 30, auditRetentionDays: null })
+  release()
+  await expect(pending).rejects.toThrow('revision_conflict')
+  expect(f.life.read(f.scope)?.state).toBe('active')
+})
+it('retentionConfirm requires configured policy and undecided shared resources never freeze', async () => {
+  const f = fixture(),
+    initial = f.life.initialize(f.scope),
+    service = f.make(),
+    saved = initial.audit[0]!.at
+  const activity = await inspectPresentationProjectInventory({
+    userDataPath: f.root,
+    ...f.scope,
+    observeActivity: { policySavedAt: saved },
+  })
+  const input = {
+    scope: f.scope,
+    expectedRevision: initial.revision,
+    policySavedAt: saved,
+    latestActivityAt: activity.activity!.latestActivityAt!,
+    now: '2035-01-01T00:00:00.000Z',
+    deletionId: 'retention_shared',
+  }
+  await expect(service.retentionConfirm(input)).rejects.toThrow('retention_ineligible')
+  const updated = f.life.setPolicy(f.scope, initial.revision, {
+    contentRetentionDays: 1,
+    auditRetentionDays: null,
+  })
+  const base = {
+    ...input,
+    expectedRevision: updated.revision,
+    policySavedAt: updated.audit.at(-1)!.at,
+  }
+  const newProof = await inspectPresentationProjectInventory({
+    userDataPath: f.root,
+    ...f.scope,
+    observeActivity: { policySavedAt: base.policySavedAt },
+  })
+  const docHash = createHash('sha256').update(f.scope.documentId).digest('hex'),
+    shared = join(f.root, 'presentation-attachments', docHash)
+  mkdirSync(shared, { recursive: true })
+  writeFileSync(join(shared, 'shared.bin'), 'shared')
+  await expect(
+    service.retentionConfirm({ ...base, latestActivityAt: newProof.activity!.latestActivityAt! }),
+  ).rejects.toThrow('revision_conflict')
+  expect(f.life.read(f.scope)?.state).toBe('active')
 })

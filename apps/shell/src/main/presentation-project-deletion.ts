@@ -13,7 +13,10 @@ import {
   type PresentationInventoryResource,
 } from './presentation-project-inventory'
 import { removePresentationProjectDeletionResource } from './presentation-project-deletion-resources'
-import { stopPresentationProjectWork } from './presentation-project-work'
+import {
+  hasPresentationProjectWork,
+  stopPresentationProjectWork,
+} from './presentation-project-work'
 const check = (signal?: AbortSignal) => {
   if (signal?.aborted) throw Error('aborted')
 }
@@ -54,6 +57,12 @@ const known = (
   r: PresentationInventoryResource,
 ): r is PresentationInventoryResource & { kind: PresentationLifecycleResourceKind } =>
   PRESENTATION_LIFECYCLE_RESOURCE_KINDS.includes(r.kind as PresentationLifecycleResourceKind)
+const timestamp = (value: unknown): value is string => {
+  if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value))
+    return false
+  const time = Date.parse(value)
+  return Number.isFinite(time) && new Date(time).toISOString() === value
+}
 const content = (resources: PresentationInventoryResource[]) =>
   resources.filter((r) => r.kind !== 'lifecycle_control')
 const token = (
@@ -245,6 +254,92 @@ export function createPresentationProjectDeletionService(optionsValue: {
       }
       return execute(s, r.revision, body.deletionId, signal)
     },
+    /** Internal retention admission only. Public governance never routes this method. */
+    async retentionConfirm(
+      input: {
+        scope: PresentationLifecycleScope
+        expectedRevision: number
+        policySavedAt: string
+        latestActivityAt: string
+        now: string
+        deletionId: string
+      },
+      signal?: AbortSignal,
+    ) {
+      const body = owned(input, [
+          'scope',
+          'expectedRevision',
+          'policySavedAt',
+          'latestActivityAt',
+          'now',
+          'deletionId',
+        ]),
+        s = scope(body.scope)
+      revision(body.expectedRevision)
+      if (
+        !timestamp(body.policySavedAt) ||
+        !timestamp(body.latestActivityAt) ||
+        !timestamp(body.now) ||
+        typeof body.deletionId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(body.deletionId)
+      )
+        throw Error('invalid_request')
+      check(signal)
+      const release = await options.acquireProjectLock(s.projectId)
+      let r: PresentationLifecycleRecord
+      try {
+        check(signal)
+        const prior = life.read(s)
+        if (!prior || prior.revision !== body.expectedRevision) throw Error('revision_conflict')
+        if (prior.state !== 'active') throw Error('project_' + prior.state)
+        const lastPolicy = [...prior.audit]
+          .reverse()
+          .find((event) => event.action === 'policy_updated' || event.action === 'created')?.at
+        if (lastPolicy !== body.policySavedAt) throw Error('revision_conflict')
+        const days = prior.policy.contentRetentionDays
+        if (days === null) throw Error('retention_ineligible')
+        if (!store.projectScope(s.projectId, s.documentId)) throw Error('project_not_found')
+        const inspected = await inspectPresentationProjectInventory({
+          userDataPath: options.userDataPath,
+          ...s,
+          signal,
+          observeActivity: { policySavedAt: lastPolicy },
+        })
+        check(signal)
+        const after = life.read(s)
+        if (!after || after.revision !== body.expectedRevision || after.state !== 'active')
+          throw Error('revision_conflict')
+        const activity = inspected.activity
+        if (!activity?.decidable || activity.latestActivityAt !== body.latestActivityAt)
+          throw Error('revision_conflict')
+        if (Date.parse(body.now) < Date.parse(activity.latestActivityAt) + days * 86400000)
+          throw Error('retention_ineligible')
+        if (hasPresentationProjectWork({ root: options.userDataPath, ...s }))
+          throw Error('project_busy')
+        if (!store.projectScope(s.projectId, s.documentId)) throw Error('project_not_found')
+        const resources = content(inspected.resources)
+          .filter(known)
+          .map((v) => ({
+            resourceId: v.resourceId,
+            kind: v.kind,
+            ownership:
+              v.ownership === 'project_exclusive'
+                ? ('project_exclusive' as const)
+                : v.ownership === 'unproven'
+                  ? ('unproven' as const)
+                  : ('shared_reference' as const),
+          }))
+        if (!resources.length) throw Error('deletion_incomplete')
+        r = life.beginDeletion(s, body.expectedRevision, {
+          deletionId: body.deletionId,
+          reason: 'retention',
+          resources,
+        })
+      } finally {
+        release()
+      }
+      return execute(s, r.revision, body.deletionId, signal)
+    },
     async resume(
       input: { scope: PresentationLifecycleScope; expectedRevision: number; deletionId: string },
       signal?: AbortSignal,
@@ -282,6 +377,8 @@ export function createPresentationProjectDeletionService(optionsValue: {
           'deletion_conflict',
           'confirmation_conflict',
           'deletion_incomplete',
+          'retention_ineligible',
+          'project_busy',
           'output_too_large',
           'presentation_inventory_invalid',
           'presentation_inventory_budget',
@@ -297,5 +394,7 @@ export function createPresentationProjectDeletionService(optionsValue: {
     confirm: (...args: Parameters<typeof service.confirm>) =>
       attempt(() => service.confirm(...args)),
     resume: (...args: Parameters<typeof service.resume>) => attempt(() => service.resume(...args)),
+    retentionConfirm: (...args: Parameters<typeof service.retentionConfirm>) =>
+      attempt(() => service.retentionConfirm(...args)),
   }
 }
