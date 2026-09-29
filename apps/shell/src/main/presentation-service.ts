@@ -354,6 +354,36 @@ export function createPresentationService(options: {
           ),
         )
       }
+      if (request.operation === 'preference_get' || request.operation === 'preference_import') {
+        const required =
+          request.operation === 'preference_get'
+            ? ['operation', 'documentId', 'projectId', 'changeId']
+            : ['operation', 'documentId', 'projectId', 'source', 'expectedTextDigest', 'approvalId']
+        if (
+          Object.keys(request).sort().join(',') !== required.sort().join(',') ||
+          typeof request.documentId !== 'string' ||
+          !request.documentId ||
+          request.documentId.length > 2048
+        )
+          throw new Error('invalid_request')
+        if (request.operation === 'preference_get')
+          return boundedResponse({
+            preference: preferenceLibrary.get(
+              request.documentId,
+              request.projectId as string,
+              request.changeId as string,
+            ),
+          })
+        return boundedResponse({
+          preference: preferenceLibrary.import(
+            request.documentId,
+            request.projectId as string,
+            request.source,
+            request.expectedTextDigest,
+            request.approvalId,
+          ),
+        })
+      }
       if (
         request.operation === 'preference_save' ||
         request.operation === 'preference_list' ||

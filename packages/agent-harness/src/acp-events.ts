@@ -59,7 +59,7 @@ const PRESENTATION_STAGES: ReadonlyArray<readonly [PresentationStage, RegExp]> =
   ['project_recovery', /^(?:restore|resume)_presentation_project$/],
   [
     'planning',
-    /^(?:(?:save|read)_presentation_plan|read_presentation_domain_skill|read_presentation_preference_candidates|save_presentation_preference|list_presentation_preferences|delete_presentation_preference)$/,
+    /^(?:(?:save|read)_presentation_plan|read_presentation_domain_skill|read_presentation_preference_candidates|save_presentation_preference|list_presentation_preferences|delete_presentation_preference|import_presentation_preference)$/,
   ],
   [
     'style',

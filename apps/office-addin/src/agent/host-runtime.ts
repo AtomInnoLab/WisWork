@@ -305,9 +305,11 @@ export function createOfficeHostRuntime(
             // Local preference and review writes do not touch the host deck or its QA state.
             if (
               proposal.toolName === proposal.operation &&
-              ((['save_presentation_preference', 'delete_presentation_preference'].includes(
-                proposal.operation,
-              ) &&
+              (([
+                'save_presentation_preference',
+                'delete_presentation_preference',
+                'import_presentation_preference',
+              ].includes(proposal.operation) &&
                 proposal.impact.host === 'local_preference') ||
                 ([
                   'add_presentation_review_comment',
