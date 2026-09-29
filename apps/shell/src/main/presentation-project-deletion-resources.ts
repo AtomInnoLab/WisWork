@@ -369,7 +369,7 @@ export async function removePresentationProjectDeletionResource(options: {
     checkedPath(work)
     checkedPath(holding)
     if (stat(source) && stat(holding)) fail('resource_busy')
-    if (!stat(source) && !stat(holding)) return result('removed', 'not_found')
+    if (!stat(source) && !stat(holding) && !stat(proofPath)) return result('removed', 'not_found')
     const expected = {
       version: 1 as const,
       scope,
@@ -529,7 +529,10 @@ export async function removePresentationProjectDeletionResource(options: {
     if (stat(source) || stat(holding)) fail('resource_busy')
     checkedPath(proofPath)
     checkAnchors()
+    syncDirectory(work)
+    guard()
     unlinkSync(proofPath)
+    syncDirectory(work)
     return result('removed')
   } catch (error) {
     let code = ''

@@ -245,3 +245,20 @@ it('does not publish a foreign proof leaf substituted after writing the owned FD
     ),
   ).toBe('foreign proof')
 })
+it('resumes proof disposal after raw content cleanup was interrupted', async () => {
+  const f = await fixture()
+  const proof = join(dirname(f.holding), 'proof.json')
+  const first = await removePresentationProjectDeletionResource({
+    ...f.options,
+    assertDeleting: () => {
+      if (!existsSync(f.source) && !existsSync(f.holding) && existsSync(proof))
+        throw Error('resource_busy')
+    },
+  })
+  expect(first).toMatchObject({ status: 'failed', code: 'resource_busy' })
+  expect(existsSync(proof)).toBe(true)
+  expect(await removePresentationProjectDeletionResource(f.options)).toMatchObject({
+    status: 'removed',
+  })
+  expect(existsSync(proof)).toBe(false)
+})
