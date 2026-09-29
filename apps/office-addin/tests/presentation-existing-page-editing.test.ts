@@ -111,7 +111,8 @@ it('keeps a frozen P0-19 three-object edit in one saved page transaction through
   expect(undo.isError, undo.output).not.toBe(true)
   expect((await f.confirm()).status).toBe('confirmed')
   expect(f.records.get(changeId)?.state).toBe('undone')
-  expect(f.data()).toEqual(binary(original))
+  // Compare package bytes natively; generic deep equality walks every array element.
+  expect(Buffer.from(f.data()).equals(Buffer.from(original, 'base64'))).toBe(true)
 })
 async function fixture() {
   const make = async (text: string) => {

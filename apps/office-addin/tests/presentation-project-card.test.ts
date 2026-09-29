@@ -1181,3 +1181,30 @@ it('shows an exact current-plan research binding with renamed source and claim m
   await ui.update({ ...snapshot, phase: 'readingResearch' })
   expect(ui.button('读取计划绑定研究').disabled).toBe(true)
 })
+
+it('locates font failure in Chinese while preserving the existing explicit page retry action', async () => {
+  const view = await mount({
+    ...pending,
+    project: {
+      ...pending.project!,
+      production: {
+        projectId: 'p1',
+        requestId: 'font-pages',
+        planRevision: 1,
+        status: 'partial',
+        compiledCount: 1,
+        total: 2,
+        pages: [
+          { id: 'a', title: '已完成页', state: 'compiled', attempt: 1 },
+          { id: 'b', title: '缺字体页', state: 'failed', attempt: 1, error: 'font_unavailable' },
+        ],
+      },
+    },
+  })
+  expect(view.container.textContent).toContain('缺字体页')
+  expect(view.container.textContent).toContain('指定字体及回退字体均不可用')
+  expect(view.container.textContent).toContain('已编译（未导入验收）')
+  expect(view.controller.runProduction).not.toHaveBeenCalled()
+  await act(async () => view.button('继续页任务').click())
+  expect(view.controller.runProduction).toHaveBeenCalledWith('font-pages')
+})

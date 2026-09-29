@@ -11,6 +11,7 @@ import {
 } from './presentation-issue.js'
 import {
   parsePresentationProductionJob,
+  PRESENTATION_PRODUCTION_ERRORS,
   presentationProductionJobStateAfter,
   type PresentationProductionJob,
   type PresentationProductionJobEventInput,
@@ -286,14 +287,7 @@ function claimReviewDigest(review: unknown, error: string): string {
   }
   return hash
 }
-const PRODUCTION_ERRORS = new Set([
-  'compile_failed',
-  'invalid_deck',
-  'aborted',
-  'output_too_large',
-  'asset_unavailable',
-  'source_unavailable',
-])
+const PRODUCTION_ERRORS: ReadonlySet<string> = new Set(PRESENTATION_PRODUCTION_ERRORS)
 function productionIds(deck: unknown, error: string): string[] {
   jsonDigest(deck, MAX_RECORD_BYTES, error)
   if (!deck || typeof deck !== 'object' || Array.isArray(deck)) throw new Error(error)

@@ -1,4 +1,8 @@
 import {
+  PRESENTATION_PRODUCTION_ERRORS,
+  type PresentationProductionError,
+} from '@wiswork/project-store/presentation-job'
+import {
   PRESENTATION_SOURCE_ASSESSMENT_SCHEMA,
   parsePresentationSourceAssessment,
   assertPresentationSourceAssessmentBasis,
@@ -32,15 +36,6 @@ import {
 } from './presentation-page-delivery.js'
 const id = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v)
 const integer = (v: unknown, min = 0) => Number.isSafeInteger(v) && Number(v) >= min
-const errors = [
-  'compile_failed',
-  'invalid_deck',
-  'aborted',
-  'output_too_large',
-  'asset_unavailable',
-  'source_unavailable',
-  'font_unavailable',
-] as const
 export interface PresentationProductionStatus {
   revision?: { parentRequestId: string; pageId: string; parentInputDigest: string }
   projectId: string
@@ -55,7 +50,7 @@ export interface PresentationProductionStatus {
     state: 'pending' | 'building' | 'compiled' | 'failed'
     attempt: number
     reusedFromRequestId?: string
-    error?: (typeof errors)[number]
+    error?: PresentationProductionError
   }[]
 }
 function object(v: unknown, keys: string[]): v is Record<string, unknown> {
@@ -103,7 +98,7 @@ export function parsePresentationProductionStatus(value: unknown): PresentationP
           page.reusedFromRequestId === value.requestId)) ||
       (page.state === 'pending' ? page.attempt !== 0 : Number(page.attempt) < 1) ||
       (page.state === 'failed'
-        ? !errors.includes(page.error as (typeof errors)[number])
+        ? !PRESENTATION_PRODUCTION_ERRORS.includes(page.error as PresentationProductionError)
         : page.error !== undefined)
     )
       throw new Error('presentation_response_invalid')
@@ -590,13 +585,7 @@ export function createPresentationProductionSkill(
                 'plan_mismatch',
                 'page_locked',
                 'revision_conflict',
-                'invalid_deck',
-                'aborted',
-                'output_too_large',
-                'compile_failed',
-                'asset_unavailable',
-                'source_unavailable',
-                'font_unavailable',
+                ...PRESENTATION_PRODUCTION_ERRORS,
                 'invalid_state',
               ].includes(value.error)
             )

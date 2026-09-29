@@ -23,12 +23,16 @@ function deferred() {
   })
   return { promise, resolve }
 }
-async function setup(compile = vi.fn(compilePresentationDeck)) {
+async function setup(compile = vi.fn(compilePresentationDeck), fontFallbacks?: string[]) {
   const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-jobs-'))
   roots.push(userDataPath)
   const service = createPresentationService({ userDataPath, compile })
   const deck = benchmarkPlannedDeck(),
     plan = benchmarkPlan()
+  if (fontFallbacks) {
+    deck.style.fontFallbacks = fontFallbacks
+    plan.style.fontFallbacks = fontFallbacks
+  }
   deck.slides = deck.slides.slice(0, 2)
   plan.slides = plan.slides.slice(0, 2)
   const call = async (operation: string, extra = {}, signal = new AbortController().signal) =>
@@ -503,3 +507,74 @@ it.each([false, true])(
     })
   },
 )
+
+it('persists a real compiler font failure across PC restart and retries only the failed page', async () => {
+  const compile = vi.fn(compilePresentationDeck)
+  compile.mockImplementationOnce((input) =>
+    compilePresentationDeck(input, { fontAvailable: () => false }),
+  )
+  const f = await setup(compile, ['Courier New'])
+  const result = await f.call('production_run')
+  expect(result).not.toHaveProperty('error')
+  expect(result.pages[0]).toMatchObject({
+    id: f.deck.slides[0]!.id,
+    state: 'failed',
+    error: 'font_unavailable',
+  })
+  expect(result.pages[1]).toMatchObject({ state: 'compiled' })
+  const restarted = createPresentationService({ userDataPath: f.userDataPath, compile })
+  const call = async (operation: string) =>
+    decode(
+      await restarted(
+        { operation, documentId: 'doc', projectId: f.deck.id, requestId: 'run' },
+        new AbortController().signal,
+      ),
+    )
+  expect((await call('production_status')).pages[0]).toMatchObject({
+    state: 'failed',
+    error: 'font_unavailable',
+  })
+  expect(await call('production_run')).toMatchObject({ status: 'compiled', compiledCount: 2 })
+  expect(compile).toHaveBeenCalledTimes(3)
+})
+it('records a real font failure in the background page event and resumes without repeating completed pages', async () => {
+  const compile = vi.fn(compilePresentationDeck)
+  compile.mockImplementationOnce((input) => compilePresentationDeck(input))
+  compile.mockImplementationOnce((input) =>
+    compilePresentationDeck(input, { fontAvailable: () => false }),
+  )
+  const f = await setup(compile, ['Courier New'])
+  await f.call('production_job_start')
+  const failed = await settled(f, 'failed')
+  expect(failed.production.pages[1]).toMatchObject({
+    id: f.deck.slides[1]!.id,
+    state: 'failed',
+    error: 'font_unavailable',
+  })
+  expect(failed.job.events).toContainEqual(
+    expect.objectContaining({
+      type: 'page.failed',
+      pageId: f.deck.slides[1]!.id,
+      attempt: 1,
+      error: 'font_unavailable',
+    }),
+  )
+  expect(failed.job.events).not.toContainEqual(
+    expect.objectContaining({ type: 'run.failed', error: 'invalid_state' }),
+  )
+  const restarted = createPresentationService({ userDataPath: f.userDataPath, compile })
+  const call = async (operation: string) =>
+    decode(
+      await restarted(
+        { operation, documentId: 'doc', projectId: f.deck.id, requestId: 'run' },
+        new AbortController().signal,
+      ),
+    )
+  expect((await call('production_job_status')).job.events).toEqual(failed.job.events)
+  await call('production_job_resume')
+  await vi.waitFor(
+    async () => expect((await call('production_job_status')).job.state).toBe('completed'),
+    { timeout: 10000, interval: 100 },
+  )
+  expect(compile).toHaveBeenCalledTimes(3)
+})

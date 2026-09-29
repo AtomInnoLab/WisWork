@@ -1392,3 +1392,26 @@ it('keeps the original 256KiB wire response bound for evidence without research 
     output: 'presentation_response_invalid',
   })
 })
+
+it('reads a foreground font failure without losing its compiled sibling or exact retry request', async () => {
+  const f = fixture(),
+    value = {
+      ...summary,
+      pages: [summary.pages[0], { ...summary.pages[1], error: 'font_unavailable' }],
+    }
+  f.request.mockResolvedValue(new Response(JSON.stringify(value)))
+  const result = await f.skill.executeTool({
+    id: 'font',
+    name: 'read_presentation_production',
+    input: { project_id: 'p', request_id: 'r' },
+  })
+  expect(result.isError).toBeFalsy()
+  expect(JSON.parse(result.output)).toEqual(value)
+  expect(result.mutated).toBe(false)
+  expect(() =>
+    parsePresentationProductionStatus({
+      ...value,
+      pages: [summary.pages[0], { ...summary.pages[1], error: 'unknown_failure' }],
+    }),
+  ).toThrow('presentation_response_invalid')
+})

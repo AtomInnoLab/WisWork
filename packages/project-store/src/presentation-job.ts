@@ -8,8 +8,16 @@ export type PresentationProductionJobState =
   | 'interrupted'
   | 'completed'
   | 'failed'
-type ProductionError =
-  'compile_failed' | 'invalid_deck' | 'aborted' | 'output_too_large' | 'asset_unavailable' | 'source_unavailable'
+export const PRESENTATION_PRODUCTION_ERRORS = Object.freeze([
+  'compile_failed',
+  'invalid_deck',
+  'aborted',
+  'output_too_large',
+  'asset_unavailable',
+  'source_unavailable',
+  'font_unavailable',
+] as const)
+export type PresentationProductionError = (typeof PRESENTATION_PRODUCTION_ERRORS)[number]
 export type PresentationProductionJobEventInput =
   | {
       type:
@@ -21,9 +29,9 @@ export type PresentationProductionJobEventInput =
         | 'run.interrupted'
         | 'run.completed'
     }
-  | { type: 'run.failed'; error?: ProductionError | 'invalid_state' }
+  | { type: 'run.failed'; error?: PresentationProductionError | 'invalid_state' }
   | { type: 'page.started' | 'page.compiled'; pageId: string; attempt: number }
-  | { type: 'page.failed'; pageId: string; attempt: number; error: ProductionError }
+  | { type: 'page.failed'; pageId: string; attempt: number; error: PresentationProductionError }
 export type PresentationProductionJobEvent = PresentationProductionJobEventInput & {
   sequence: number
   createdAt: string
@@ -49,14 +57,6 @@ const states: PresentationProductionJobState[] = [
   'interrupted',
   'completed',
   'failed',
-]
-const errors = [
-  'compile_failed',
-  'invalid_deck',
-  'aborted',
-  'output_too_large',
-  'asset_unavailable',
-  'source_unavailable',
 ]
 function invalid(): never {
   throw new Error('invalid_state')
@@ -175,10 +175,13 @@ export function parsePresentationProductionJob(value: unknown): PresentationProd
       new Date(event.createdAt).toISOString() !== event.createdAt ||
       event.createdAt < previousTime ||
       (page && (!id(event.pageId) || !positive(event.attempt))) ||
-      (event.type === 'page.failed' && !errors.includes(event.error as string)) ||
+      (event.type === 'page.failed' &&
+        !(PRESENTATION_PRODUCTION_ERRORS as readonly string[]).includes(event.error as string)) ||
       (event.type === 'run.failed' &&
         Object.hasOwn(event, 'error') &&
-        ![...errors, 'invalid_state'].includes(event.error as string))
+        ![...PRESENTATION_PRODUCTION_ERRORS, 'invalid_state'].includes(
+          event.error as PresentationProductionError | 'invalid_state',
+        ))
     )
       invalid()
     if (event.type === 'run.started') {
@@ -189,7 +192,8 @@ export function parsePresentationProductionJob(value: unknown): PresentationProd
       const pageId = event.pageId as string
       const attempt = event.attempt as number
       if (event.type === 'page.started') {
-        if (active.size >= 2 || active.has(pageId) || attempt <= (attempts.get(pageId) ?? 0)) invalid()
+        if (active.size >= 2 || active.has(pageId) || attempt <= (attempts.get(pageId) ?? 0))
+          invalid()
         active.set(pageId, attempt)
       } else {
         if (active.has(pageId)) {
@@ -200,7 +204,11 @@ export function parsePresentationProductionJob(value: unknown): PresentationProd
       }
       attempts.set(pageId, attempt)
     }
-    if (typeof event.type === 'string' && ['run.paused', 'run.cancelled', 'run.completed'].includes(event.type) && active.size)
+    if (
+      typeof event.type === 'string' &&
+      ['run.paused', 'run.cancelled', 'run.completed'].includes(event.type) &&
+      active.size
+    )
       invalid()
     previousTime = event.createdAt
     possibilities = possibilities.flatMap((state) => {

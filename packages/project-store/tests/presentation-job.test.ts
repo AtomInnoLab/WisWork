@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { parsePresentationProductionJob } from '../src/presentation-job.js'
+import {
+  parsePresentationProductionJob,
+  PRESENTATION_PRODUCTION_ERRORS,
+} from '../src/presentation-job.js'
 
 describe('production job contract', () => {
   const job = {
@@ -24,11 +27,32 @@ describe('production job contract', () => {
       { type: 'page.compiled', pageId: 'a', attempt: 1 },
       { type: 'run.completed' },
     ].map((event, index) => ({ ...event, sequence: index + 1, createdAt: at }))
-    expect(parsePresentationProductionJob({ ...job, revision: events.length, state: 'completed', events }).state).toBe('completed')
-    const third = [events[0], events[1], events[2], { type: 'page.started', pageId: 'c', attempt: 1, sequence: 4, createdAt: at }]
-    expect(() => parsePresentationProductionJob({ ...job, revision: 4, events: third })).toThrow('invalid_state')
+    expect(
+      parsePresentationProductionJob({
+        ...job,
+        revision: events.length,
+        state: 'completed',
+        events,
+      }).state,
+    ).toBe('completed')
+    const third = [
+      events[0],
+      events[1],
+      events[2],
+      { type: 'page.started', pageId: 'c', attempt: 1, sequence: 4, createdAt: at },
+    ]
+    expect(() => parsePresentationProductionJob({ ...job, revision: 4, events: third })).toThrow(
+      'invalid_state',
+    )
     const premature = [events[0], events[1], { type: 'run.completed', sequence: 3, createdAt: at }]
-    expect(() => parsePresentationProductionJob({ ...job, revision: 3, state: 'completed', events: premature })).toThrow('invalid_state')
+    expect(() =>
+      parsePresentationProductionJob({
+        ...job,
+        revision: 3,
+        state: 'completed',
+        events: premature,
+      }),
+    ).toThrow('invalid_state')
   })
   it('accepts bounded strict jobs and rejects forged history and fields', () => {
     expect(parsePresentationProductionJob(job)).toEqual(job)
@@ -208,3 +232,120 @@ describe('durable production jobs', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(record)
   })
 })
+it('accepts exact font failure history while rejecting unknown error codes', () => {
+  const events = [
+    { type: 'run.started' },
+    { type: 'page.started', pageId: 's', attempt: 1 },
+    { type: 'page.failed', pageId: 's', attempt: 1, error: 'font_unavailable' },
+    { type: 'run.failed', error: 'font_unavailable' },
+  ].map((event, index) => ({
+    ...event,
+    sequence: index + 1,
+    createdAt: '2026-09-24T00:00:00.000Z',
+  }))
+  const job = {
+    version: 1,
+    projectId: 'p',
+    documentId: 'doc',
+    requestId: 'r',
+    inputDigest: 'a'.repeat(64),
+    planDigest: 'b'.repeat(64),
+    planRevision: 1,
+    revision: 4,
+    state: 'failed',
+    events,
+  }
+  expect(Reflect.set(PRESENTATION_PRODUCTION_ERRORS, 0, 'private_font_path')).toBe(false)
+  expect(PRESENTATION_PRODUCTION_ERRORS).toEqual([
+    'compile_failed',
+    'invalid_deck',
+    'aborted',
+    'output_too_large',
+    'asset_unavailable',
+    'source_unavailable',
+    'font_unavailable',
+  ])
+  for (const error of PRESENTATION_PRODUCTION_ERRORS) {
+    const compatible = structuredClone(job)
+    compatible.events[2]!.error = error
+    compatible.events[3]!.error = error
+    expect(parsePresentationProductionJob(compatible)).toEqual(compatible)
+  }
+  for (const index of [2, 3]) {
+    const invalid = structuredClone(job)
+    invalid.events[index]!.error = 'private_font_path'
+    expect(() => parsePresentationProductionJob(invalid)).toThrow('invalid_state')
+  }
+})
+it.each(PRESENTATION_PRODUCTION_ERRORS)(
+  'persists exact %s failure page and job through restart and retry',
+  (error) => {
+    const { store, root } = setup()
+    let job = store.appendProductionJobEvent('p', 'doc', 'r', 0, { type: 'run.started' })
+    let production = store.production('p', 'doc', 'r')!
+    production = store.updateProductionPage(production, 's', { state: 'building', attempt: 1 })
+    job = store.appendProductionJobEvent('p', 'doc', 'r', job.revision, {
+      type: 'page.started',
+      pageId: 's',
+      attempt: 1,
+    })
+    expect(() =>
+      store.updateProductionPage(production, 's', {
+        state: 'failed',
+        attempt: 1,
+        error: 'private_font_path',
+      }),
+    ).toThrow('invalid_state')
+    expect(store.production('p', 'doc', 'r')).toEqual(production)
+    production = store.updateProductionPage(production, 's', {
+      state: 'failed',
+      attempt: 1,
+      error,
+    })
+    job = store.appendProductionJobEvent('p', 'doc', 'r', job.revision, {
+      type: 'page.failed',
+      pageId: 's',
+      attempt: 1,
+      error,
+    })
+    job = store.appendProductionJobEvent('p', 'doc', 'r', job.revision, {
+      type: 'run.failed',
+      error,
+    })
+    const reopened = new PresentationStore(root)
+    expect(reopened.production('p', 'doc', 'r')).toEqual(production)
+    expect(reopened.productionJob('p', 'doc', 'r')).toEqual(job)
+    job = reopened.appendProductionJobEvent('p', 'doc', 'r', job.revision, { type: 'run.started' })
+    production = reopened.updateProductionPage(production, 's', { state: 'building', attempt: 2 })
+    job = reopened.appendProductionJobEvent('p', 'doc', 'r', job.revision, {
+      type: 'page.started',
+      pageId: 's',
+      attempt: 2,
+    })
+    production = reopened.updateProductionPage(production, 's', {
+      state: 'compiled',
+      attempt: 2,
+      result: { pptxBase64: 'UEsDBAAAAAA=', sourceSlideId: '256#', report: {} },
+    })
+    job = reopened.appendProductionJobEvent('p', 'doc', 'r', job.revision, {
+      type: 'page.compiled',
+      pageId: 's',
+      attempt: 2,
+    })
+    job = reopened.appendProductionJobEvent('p', 'doc', 'r', job.revision, {
+      type: 'run.completed',
+    })
+    expect(new PresentationStore(root).productionJob('p', 'doc', 'r')).toEqual(job)
+    expect(job.events.map((e) => e.type)).toEqual([
+      'run.started',
+      'page.started',
+      'page.failed',
+      'run.failed',
+      'run.started',
+      'page.started',
+      'page.compiled',
+      'run.completed',
+    ])
+    expect(new PresentationStore(root).production('p', 'doc', 'r')).toEqual(production)
+  },
+)
