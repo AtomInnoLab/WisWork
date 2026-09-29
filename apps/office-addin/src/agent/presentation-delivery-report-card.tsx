@@ -191,6 +191,7 @@ function SourceAssessmentHistory({
   )
 }
 const professionalReasons: Record<string, string> = {
+  professional_context_missing: '专业领域主张缺少专业上下文',
   professional_context_incomplete: '专业上下文尚有缺失',
   professional_source_secondary: '专业结论来源为二手或未核验资料',
   professional_legal_rule_inactive: '法律材料不在明确适用日期范围内',
@@ -436,6 +437,58 @@ function IssueList({
     </div>
   )
 }
+const workflowTools: Record<string, string> = {
+  read_research_ledger: '读取指定研究记录',
+  save_presentation_plan: '保存演示计划',
+  read_presentation_claim_evidence: '读取主张来源原文',
+  record_presentation_claim_review: '记录历史来源判断',
+  check_presentation_page_content: '检查页面内容',
+  read_presentation_delivery_report: '读取内容证据报告',
+}
+function ProfessionalWorkflow({
+  workflow,
+}: {
+  workflow?: PresentationDeliveryReport['professionalWorkflow']
+}) {
+  if (!workflow) return null
+  return (
+    <details aria-label="专业制作工作流" key={workflow.domain}>
+      <summary>
+        专业制作工作流 · {{ science: '科研', law: '法律', finance: '金融' }[workflow.domain]}
+      </summary>
+      <h4>来源优先级</h4>
+      <ol>
+        {workflow.sourcePriority.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ol>
+      <h4>专业上下文字段</h4>
+      <ul>
+        {workflow.contextFields.map((item) => (
+          <li key={item}>{professionalLabels[item] ?? item}</li>
+        ))}
+      </ul>
+      <h4>复核步骤</h4>
+      <ol>
+        {workflow.reviewSteps.map((step) => (
+          <li key={step.id}>
+            <p>{step.title}</p>
+            <p>{step.instruction}</p>
+            <p>复核操作：{step.tools.map((tool) => workflowTools[tool] ?? tool).join('、')}</p>
+          </li>
+        ))}
+      </ol>
+      <h4>人工检查</h4>
+      <ul>
+        {workflow.manualChecks.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+      <h4>范围说明</h4>
+      <p>{workflow.disclosure}</p>
+    </details>
+  )
+}
 export function PresentationDeliveryReportCard({
   report,
   controller,
@@ -454,6 +507,7 @@ export function PresentationDeliveryReportCard({
         往返未执行。附件字面核对反映读取报告时的当前文档，不属于冻结生产快照。来源复核是历史 Agent
         判断。已说明不会关闭机器发现。
       </p>
+      <ProfessionalWorkflow workflow={report.professionalWorkflow} />
       {report.research && (
         <details aria-label="冻结计划绑定研究">
           <summary>冻结计划绑定研究 #{report.research.record.sequence}</summary>
@@ -622,6 +676,15 @@ export function PresentationDeliveryReportCard({
             ?.find((slide) => slide.id === page.pageId)
             ?.claimIds.map((claimId) => {
               const claim = report.plan.claims.find((claim) => claim.id === claimId)
+              if (!claim?.professionalContext && report.professionalWorkflow)
+                return (
+                  <details key={claimId} aria-label={`专业上下文缺失 ${claimId}`}>
+                    <summary>主张 {claimId} · 缺少专业上下文</summary>
+                    <p>{claim?.statement}</p>
+                    <p>下一步：读取该主张来源原文，再补充专业限定；无法确认的字段保持未知。</p>
+                    <p>说明或暂缓仍保留缺口，不代表专业审查或来源核验通过。</p>
+                  </details>
+                )
               return (
                 <ProfessionalContext
                   key={claimId}

@@ -7,7 +7,11 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { presentationPlanClaims } from '@wiswork/pptx-engine/presentation-plan'
+import {
+  presentationPlanClaims,
+  PRESENTATION_DOMAIN_PROFILES,
+  presentationProfessionalWorkflow,
+} from '@wiswork/pptx-engine/presentation-plan'
 import { presentationClaimEvidenceContent } from '@wiswork/pptx-engine/presentation-claim-review'
 import type { PresentationResearchDraft } from '@wiswork/project-store/presentation-research'
 import {
@@ -25,6 +29,7 @@ async function setup(
   large = false,
   professionalContext?: PresentationProfessionalContext,
   boundResearch = true,
+  professionalDomain?: 'science' | 'law' | 'finance',
 ) {
   const root = mkdtempSync(join(tmpdir(), 'research-claim-cross-'))
   roots.push(root)
@@ -197,6 +202,18 @@ async function setup(
     sources: [{ sourceId: 'source', researchSourceId: 'original-source' }],
     claims: [{ claimId: 'source-1', researchClaimId: 'original-fact' }],
   }
+  if (professionalDomain) {
+    const domainSkill = await tool('read_presentation_domain_skill', { domain: professionalDomain })
+    expect(domainSkill.isError, domainSkill.output).toBeFalsy()
+    expect(JSON.parse(domainSkill.output).professionalWorkflow).toEqual(
+      presentationProfessionalWorkflow(professionalDomain),
+    )
+    plan.domain = professionalDomain
+    const profile = PRESENTATION_DOMAIN_PROFILES[professionalDomain]
+    plan.slides.forEach((slide, index) => {
+      slide.domainSection = profile.sections[index % profile.sections.length]
+    })
+  }
   if (!boundResearch) delete plan.research
   deck.claims = presentationPlanClaims(plan)
   expect(await raw('save_plan', { expectedRevision: 0, plan })).not.toHaveProperty('error')
@@ -214,6 +231,7 @@ async function setup(
   }
   return {
     root,
+    toolNames: () => host.skill.tools.map((tool) => tool.name),
     request,
     hideAssessmentReply: () => {
       hideAssessmentReply = true
@@ -747,7 +765,7 @@ it('refuses to write when a professional response is stripped to a legacy shape'
 })
 it('exports professional context and source warnings from the actual immutable production into the delivery ZIP', async () => {
   const context = professionalContexts[1]!
-  const f = await setup(false, context)
+  const f = await setup(false, context, true, 'law')
   try {
     const native = await new JSZip()
       .file('ppt/slides/slide1.xml', '<test-native-current/>')
@@ -769,6 +787,7 @@ it('exports professional context and source warnings from the actual immutable p
     expect(exported.isError, exported.output).toBeFalsy()
     const zip = await JSZip.loadAsync(vfs.readBytes(JSON.parse(exported.output).paths[0]))
     const report = JSON.parse(await zip.file('evidence.json')!.async('string'))
+    expect(report.professionalWorkflow).toEqual(presentationProfessionalWorkflow('law'))
     expect(report.plan.claims[0].professionalContext).toEqual(context)
     expect(report.research.record.draft.facts[0].professionalContext).toEqual(context)
     expect(report.pages[0].issues.map((i: { code: string }) => i.code)).toContain(
@@ -780,6 +799,93 @@ it('exports professional context and source warnings from the actual immutable p
     expect(markdown).toContain('professionalContext')
     expect(markdown).toContain('synthetic&#45;case')
     expect(report.checks.timeliness).toBe('not_verified')
+    expect(f.compile).not.toHaveBeenCalled()
+  } finally {
+    f.close()
+  }
+})
+
+it.each(professionalContexts)(
+  'runs the actual $domain planning skill and restores its saved professional workflow selection',
+  async (context) => {
+    const f = await setup(false, context, true, context.domain)
+    try {
+      const read = await f.tool('read_presentation_domain_skill', { domain: context.domain })
+      expect(read.isError, read.output).toBeFalsy()
+      const profile = JSON.parse(read.output)
+      expect(profile.professionalWorkflow).toEqual(presentationProfessionalWorkflow(context.domain))
+      expect(profile.sections).toHaveLength(5)
+      for (const step of profile.professionalWorkflow.reviewSteps)
+        for (const name of step.tools) expect(f.toolNames()).toContain(name)
+      const evidence = await f.tool('read_presentation_claim_evidence', f.input)
+      expect(JSON.parse(evidence.output).claim.professionalContext).toEqual(context)
+      const report = await f.tool('read_presentation_delivery_report', {
+        project_id: f.plan.projectId,
+        request_id: 'frozen',
+      })
+      expect(report.isError, report.output).toBeFalsy()
+      const value = JSON.parse(report.output)
+      expect(value.plan.domain).toBe(context.domain)
+      expect(value.professionalWorkflow).toEqual(profile.professionalWorkflow)
+      expect(value.pages[0].issues.map((i: { code: string }) => i.code)).not.toContain(
+        'professional_context_missing',
+      )
+      const incomplete = structuredClone(f.plan)
+      for (const slide of incomplete.slides) slide.domainSection = profile.sections[0]
+      expect(await f.raw('save_plan', { expectedRevision: 1, plan: incomplete })).toMatchObject({
+        error: 'invalid_plan',
+      })
+      f.restart()
+      const restored = await f.raw('production_delivery_report', { requestId: 'frozen' })
+      expect(restored.plan.domain).toBe(context.domain)
+      expect(restored.professionalWorkflow).toEqual(profile.professionalWorkflow)
+      expect(restored.plan.slides.map((s: { domainSection: string }) => s.domainSection)).toEqual(
+        f.plan.slides.map((s) => s.domainSection),
+      )
+      expect(f.compile).not.toHaveBeenCalled()
+    } finally {
+      f.close()
+    }
+  },
+)
+it('persists missing-context issues for an actual legal workflow even after support and explanation', async () => {
+  const f = await setup(false, undefined, true, 'law')
+  try {
+    const evidence = await f.tool('read_presentation_claim_evidence', f.input)
+    expect(evidence.isError, evidence.output).toBeFalsy()
+    const review = await f.tool('record_presentation_claim_review', {
+      ...f.input,
+      review_id: 'workflow-support',
+      outcome: 'supported',
+      notes: '窗口有支持，法律上下文仍缺失',
+    })
+    expect(review.isError, review.output).toBeFalsy()
+    const report = await f.raw('production_delivery_report', { requestId: 'frozen' })
+    const issue = report.pages[0].issues.find(
+      (i: { code: string }) => i.code === 'professional_context_missing',
+    )
+    expect(issue).toMatchObject({ category: 'unverifiable', disposition: { state: 'open' } })
+    const action = await f.tool('record_presentation_issue_action', {
+      project_id: f.plan.projectId,
+      request_id: 'frozen',
+      expected_revision: 0,
+      action: {
+        actionId: 'explain-professional-missing',
+        issueId: issue.id,
+        issueDigest: issue.digest,
+        state: 'explained',
+        note: '已说明仍缺原专业上下文',
+      },
+    })
+    expect(action.isError, action.output).toBeFalsy()
+    f.restart()
+    const restored = await f.raw('production_delivery_report', { requestId: 'frozen' })
+    expect(
+      restored.pages[0].issues.find(
+        (i: { code: string }) => i.code === 'professional_context_missing',
+      ),
+    ).toMatchObject({ id: issue.id, disposition: { state: 'explained' } })
+    expect(restored.checks.sourceAuthority).toBe('not_verified')
     expect(f.compile).not.toHaveBeenCalled()
   } finally {
     f.close()

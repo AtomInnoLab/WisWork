@@ -15,6 +15,7 @@ import {
 } from '@wiswork/project-store/presentation-issue'
 import {
   parsePresentationPlan,
+  presentationProfessionalWorkflow,
   presentationSourceAttachmentId,
   assertDeckMatchesPresentationPlan,
   type PresentationPlan,
@@ -73,6 +74,7 @@ export interface PresentationDeliveryReport {
   inputDigest: string
   planDigest: string
   plan: PresentationPlan
+  professionalWorkflow?: NonNullable<ReturnType<typeof presentationProfessionalWorkflow>>
   research?: { record: PresentationResearchRecord; findings: PresentationResearchBindingFinding[] }
   sourceAudit?: PresentationSourceAudit[]
   reviews: PresentationClaimReview[]
@@ -157,6 +159,7 @@ function seeds(
       const unverifiable = [
         'claim_no_sources',
         'professional_context_incomplete',
+        'professional_context_missing',
         'source_excerpt_missing',
         'source_excerpt_not_in_attachment',
         'source_attachment_missing',
@@ -189,6 +192,8 @@ function seeds(
     }
     if (missing.has(claimId)) add('claim_text_not_found')
     const professional = claim.professionalContext
+    if (presentationProfessionalWorkflow(report.plan.domain) && !professional)
+      add('professional_context_missing')
     if (professional) {
       if (presentationProfessionalContextMissingFields(professional, claim.type).length)
         add('professional_context_incomplete')
@@ -416,6 +421,7 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
     'inputDigest',
     'planDigest',
     'plan',
+    'professionalWorkflow',
     'research',
     'sourceAudit',
     'reviews',
@@ -442,6 +448,13 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
   )
     invalid()
   const plan = parsePresentationPlan(report.plan)
+  const workflow = presentationProfessionalWorkflow(plan.domain)
+  if (
+    workflow
+      ? canonical(report.professionalWorkflow) !== canonical(workflow)
+      : Object.hasOwn(report, 'professionalWorkflow')
+  )
+    invalid()
   if (plan.research) {
     exact(report.research, ['record', 'findings'])
     const record = parsePresentationResearchRecord(report.research!.record)
@@ -532,11 +545,13 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
       !['pending', 'building', 'compiled', 'failed'].includes(page.productionState) ||
       !Array.isArray(page.issues) ||
       page.issues.length >
-        (plan.claims.some((claim) => claim.professionalContext)
-          ? 1280
-          : plan.research || report.reviews.some((review) => review.sourceAssessment)
-            ? 1056
-            : 608)
+        (presentationProfessionalWorkflow(plan.domain)
+          ? 1312
+          : plan.claims.some((claim) => claim.professionalContext)
+            ? 1280
+            : plan.research || report.reviews.some((review) => review.sourceAssessment)
+              ? 1056
+              : 608)
     )
       invalid()
     const calculations = slide.claimIds
@@ -604,6 +619,9 @@ export async function buildPresentationDeliveryReport(
     version: 1,
     ...input.metadata,
     plan,
+    ...(presentationProfessionalWorkflow(plan.domain)
+      ? { professionalWorkflow: presentationProfessionalWorkflow(plan.domain)! }
+      : {}),
     ...(plan.research
       ? {
           research: {
@@ -672,6 +690,9 @@ export async function buildPresentationDeliveryReport(
         ...(seed.code.startsWith('professional_')
           ? {
               professionalClaim: plan.claims.find((claim) => claim.id === seed.claimId),
+              ...(presentationProfessionalWorkflow(plan.domain)
+                ? { professionalWorkflow: report.professionalWorkflow }
+                : {}),
               professionalOriginal: report.research?.record.draft.facts.find(
                 (fact) =>
                   fact.claimId ===
@@ -853,6 +874,14 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
     '## All source review history',
   )
   for (const review of report.reviews) lines.push(`- ${safe(JSON.stringify(review))}`)
+  const workflow = report.professionalWorkflow
+  if (workflow)
+    lines.push(
+      '',
+      '## Professional workflow (manualChecks NOT VERIFIED)',
+      safe(JSON.stringify(workflow)),
+      'Executing these steps and completing declared context do not certify facts, authority, legal applicability or financial calculations. Manual checks require actual professional review.',
+    )
   for (const claim of report.plan.claims.filter((claim) => claim.professionalContext))
     lines.push(
       `Professional context ${safe(claim.id)}: ${safe(JSON.stringify(claim.professionalContext))}; missing fields: ${safe(JSON.stringify(presentationProfessionalContextMissingFields(claim.professionalContext!, claim.type)))}. This context does not certify truth, legal applicability or financial calculations.`,

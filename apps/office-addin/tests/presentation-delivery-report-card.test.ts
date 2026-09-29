@@ -722,3 +722,158 @@ it('shows frozen page professional context, missing fields and original research
     container.remove()
   }
 })
+
+it('binds complete professional workflow guidance to the current report domain and isolates missing-context actions', async () => {
+  const { benchmarkPlan } =
+    await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
+  const { benchmarkDeck } =
+    await import('../../../packages/pptx-engine/tests/fixtures/presentation-benchmark.js')
+  const { buildPresentationDeliveryReport } =
+    await import('@wiswork/pptx-engine/presentation-delivery-report')
+  const { PRESENTATION_DOMAIN_PROFILES, presentationPlanClaims } =
+    await import('@wiswork/pptx-engine/presentation-plan')
+  const makeReport = async (domain?: 'science' | 'law' | 'finance', complete = false) => {
+    const plan = benchmarkPlan(),
+      deck = benchmarkDeck()
+    if (domain) {
+      plan.domain = domain
+      plan.slides.forEach((slide, index) => {
+        slide.domainSection = PRESENTATION_DOMAIN_PROFILES[domain].sections[index % 5]
+      })
+    }
+    if (complete)
+      plan.claims[0]!.professionalContext = {
+        domain: 'law',
+        materialKind: 'contract',
+        jurisdiction: '原法域',
+        effectLevel: '合同约定',
+        applicabilityDate: '2026-09-29',
+        originalLocation: '第1条',
+        limitations: '仅合同范围',
+      }
+    deck.claims = presentationPlanClaims(plan)
+    const metadata = {
+      projectId: plan.projectId,
+      documentId: 'doc',
+      requestId: `${domain ?? 'old'}-task`,
+      planRevision: 1,
+      inputDigest: 'a'.repeat(64),
+      planDigest: 'b'.repeat(64),
+    }
+    return buildPresentationDeliveryReport({
+      plan,
+      deck,
+      metadata,
+      reviews: [],
+      pageStates: plan.slides.map((slide) => ({ pageId: slide.id, state: 'compiled' })),
+      issueLedger: {
+        version: 1,
+        projectId: metadata.projectId,
+        documentId: 'doc',
+        requestId: metadata.requestId,
+        inputDigest: metadata.inputDigest,
+        planDigest: metadata.planDigest,
+        revision: 0,
+        actions: [],
+      },
+    })
+  }
+  const report = await makeReport('science')
+  const issue = report.pages[0]!.issues.find(
+    (item) => item.code === 'professional_context_missing',
+  )!
+  const otherIssue = report.pages[1]!.issues.find(
+    (item) => item.code === 'professional_context_missing',
+  )!
+  const recordIssueAction = vi.fn()
+  const controller = { recordIssueAction } as unknown as PresentationProjectController
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+  const render = async (value = report) =>
+    act(async () =>
+      root.render(
+        React.createElement(PresentationDeliveryReportCard, {
+          report: value,
+          controller,
+          disabled: false,
+        }),
+      ),
+    )
+  try {
+    await render()
+    expect(container.textContent).toContain('专业领域主张缺少专业上下文')
+    const detail = container.querySelector('[aria-label="专业制作工作流"]') as HTMLDetailsElement
+    expect(detail.open).toBe(false)
+    expect(detail.textContent).toContain('科研')
+    const workflow = report.professionalWorkflow!
+    for (const text of [
+      ...workflow.sourcePriority,
+      ...['材料类型', '出版或发布标识', '版本', '样本', '方法', '统计依据', '局限'],
+      ...workflow.manualChecks,
+      workflow.disclosure,
+      ...workflow.reviewSteps.flatMap((step) => [step.title, step.instruction]),
+    ])
+      expect(detail.textContent).toContain(text)
+    for (const label of ['来源优先级', '专业上下文字段', '复核步骤', '人工检查', '范围说明'])
+      expect(detail.textContent).toContain(label)
+    expect(
+      container.querySelector(`[aria-label="证据页面 ${report.pages[0]!.title}"]`)?.textContent,
+    ).toContain('下一步：读取该主张来源原文，再补充专业限定；无法确认的字段保持未知。')
+    const note = container.querySelector(
+      `[aria-label="处置理由 ${issue.id}"]`,
+    ) as HTMLTextAreaElement
+    await act(async () => {
+      const select = container.querySelector(
+        `[aria-label="处置状态 ${issue.id}"]`,
+      ) as HTMLSelectElement
+      select.value = 'deferred'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        note,
+        '等待原文专业审查',
+      )
+      note.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () =>
+      (note.closest('form')!.querySelector('button') as HTMLButtonElement).click(),
+    )
+    expect(recordIssueAction).toHaveBeenCalledWith(
+      expect.objectContaining({ issueId: issue.id, issueDigest: issue.digest, state: 'deferred' }),
+    )
+    expect(
+      (container.querySelector(`[aria-label="处置理由 ${otherIssue.id}"]`) as HTMLTextAreaElement)
+        .value,
+    ).toBe('')
+    for (const [domain, title] of [
+      ['law', '法律'],
+      ['finance', '金融'],
+    ] as const) {
+      const next = await makeReport(domain)
+      await render(next)
+      const nextDetail = container.querySelector('[aria-label="专业制作工作流"]')!
+      expect(nextDetail.querySelector('summary')?.textContent).toContain(title)
+      expect(nextDetail.querySelector('summary')?.textContent).not.toContain('科研')
+      for (const instruction of next.professionalWorkflow!.manualChecks)
+        expect(nextDetail.textContent).toContain(instruction)
+      expect(
+        (container.querySelector(`[aria-label="处置理由 ${issue.id}"]`) as HTMLTextAreaElement)
+          .value,
+      ).toBe('')
+    }
+    const positive = await makeReport('science', true)
+    expect(positive.pages[0]!.issues.some((item) => item.code.startsWith('professional_'))).toBe(
+      false,
+    )
+    await render(positive)
+    expect(container.querySelector('[aria-label="专业制作工作流"]')).not.toBeNull()
+    expect(container.textContent).not.toContain('下一步：读取该主张来源原文')
+    expect(container.querySelector('[aria-label="专业上下文 source-1"]')).not.toBeNull()
+    await render(await makeReport())
+    expect(container.querySelector('[aria-label="专业制作工作流"]')).toBeNull()
+    expect(container.textContent).not.toContain('下一步：读取该主张来源原文')
+  } finally {
+    await act(async () => root.unmount())
+    container.remove()
+  }
+})

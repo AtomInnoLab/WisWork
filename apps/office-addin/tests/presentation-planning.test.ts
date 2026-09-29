@@ -1,3 +1,4 @@
+import { PRESENTATION_DOMAIN_PROFILES } from '@wiswork/pptx-engine/presentation-plan'
 import { describe, expect, it, vi } from 'vitest'
 import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan.js'
 import { createPresentationPlanningSkill } from '../src/skills/powerpoint/presentation-planning.js'
@@ -247,10 +248,9 @@ describe('saved presentation planning tools', () => {
         input: { domain },
       })
       expect(result.isError).not.toBe(true)
-      expect(JSON.parse(result.output)).toMatchObject({
+      expect(JSON.parse(result.output)).toEqual({
         domain,
-        sections: expect.any(Array),
-        questions: expect.any(Array),
+        ...PRESENTATION_DOMAIN_PROFILES[domain as keyof typeof PRESENTATION_DOMAIN_PROFILES],
       })
     }
     expect(f.request).not.toHaveBeenCalled()
@@ -258,7 +258,7 @@ describe('saved presentation planning tools', () => {
       await f.skill.executeTool({
         id: 'bad',
         name: 'read_presentation_domain_skill',
-        input: { domain: 'finance' },
+        input: { domain: 'unknown' },
       }),
     ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
   })
@@ -500,3 +500,24 @@ it('instructs the planner to read and explicitly map the exact research record w
   expect(f.skill.systemPrompt).toContain('researchSourceId')
   expect(f.skill.systemPrompt).toContain('completed')
 })
+
+it.each(['science', 'law', 'finance'])(
+  'reads %s complete professional workflow locally without PC mutations',
+  async (domain) => {
+    const f = setup()
+    const result = await f.skill.executeTool({
+      id: domain,
+      name: 'read_presentation_domain_skill',
+      input: { domain },
+    })
+    expect(result.isError).not.toBe(true)
+    expect(result.mutated).toBe(false)
+    const value = JSON.parse(result.output)
+    expect(value.professionalWorkflow.domain).toBe(domain)
+    expect(value.professionalWorkflow.version).toBe(1)
+    expect(value.sections).toHaveLength(5)
+    expect(value.professionalWorkflow.reviewSteps).toHaveLength(6)
+    expect(f.request).not.toHaveBeenCalled()
+    expect(f.rememberProject).not.toHaveBeenCalled()
+  },
+)
