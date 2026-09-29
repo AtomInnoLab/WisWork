@@ -1,3 +1,8 @@
+import { registerPresentationProjectWork } from './presentation-project-work'
+import type {
+  PresentationProjectReadLease,
+  PresentationProjectWriteLease,
+} from './presentation-project-write-lease'
 import { PresentationResearchStore } from '@wiswork/project-store/presentation-research-store'
 import {
   parsePresentationResearchDraft,
@@ -6,10 +11,18 @@ import {
 } from '@wiswork/project-store/presentation-research'
 import { createPresentationAttachmentService } from './presentation-attachments'
 import { canonicalSourceLocator, matchesFetchedSourceUrl } from './presentation-source-audit'
-export function createPresentationResearchService(options: {
+export function createPresentationResearchService(optionsValue: {
   userDataPath: string
   attachments?: ReturnType<typeof createPresentationAttachmentService>
   acquireProjectLock?: (projectId: string) => Promise<() => void>
+  captureProjectLease?: (input: {
+    scope: Readonly<{ documentId: string; projectId: string }>
+    operation: string
+    signal: AbortSignal
+  }) =>
+    | PresentationProjectReadLease
+    | PresentationProjectWriteLease
+    | Promise<PresentationProjectReadLease | PresentationProjectWriteLease>
   assertRecordUnprotected?: (
     documentId: string,
     projectId: string,
@@ -17,12 +30,14 @@ export function createPresentationResearchService(options: {
     signal: AbortSignal,
   ) => Promise<void>
 }) {
+  const options = { ...optionsValue }
   const store = new PresentationResearchStore(options.userDataPath),
     attachments = options.attachments ?? createPresentationAttachmentService(options)
   async function evidence(
     documentId: string,
     source: ReturnType<typeof parsePresentationResearchDraft>['sources'][number],
     signal: AbortSignal,
+    assertCurrent: () => void,
   ): Promise<PresentationResearchEvidence> {
     if (signal.aborted) throw new Error('aborted')
     const attachmentId =
@@ -38,10 +53,10 @@ export function createPresentationResearchService(options: {
     })
     let details: Record<string, unknown>
     try {
-      details = (await attachments(
-        { operation: 'attachment_metadata', documentId, attachmentId },
-        signal,
-      )) as Record<string, unknown>
+      details = structuredClone(
+        await attachments({ operation: 'attachment_metadata', documentId, attachmentId }, signal),
+      ) as Record<string, unknown>
+      assertCurrent()
     } catch (e) {
       if (e instanceof Error && e.message === 'not_found') return unavailable('missing')
       throw e
@@ -58,21 +73,24 @@ export function createPresentationResearchService(options: {
     if (fetched && !matchesFetchedSourceUrl(source.uri, details.sourceUrlHash))
       return unavailable('source_mismatch')
     const locator = canonicalSourceLocator(source.locator)
-    const result = (await attachments(
-      {
-        operation: 'attachment_match_excerpt',
-        documentId,
-        attachmentId,
-        excerpt: source.excerpt,
-        ...(locator ? { locator } : {}),
-      },
-      signal,
-    )) as {
+    const result = structuredClone(
+      await attachments(
+        {
+          operation: 'attachment_match_excerpt',
+          documentId,
+          attachmentId,
+          excerpt: source.excerpt,
+          ...(locator ? { locator } : {}),
+        },
+        signal,
+      ),
+    ) as {
       attachmentId: string
       status: PresentationResearchEvidence['status']
       offset?: number
       locator?: string
     }
+    assertCurrent()
     if (
       result.attachmentId !== attachmentId ||
       !['found', 'not_found', 'empty_excerpt', 'not_ready', 'unsupported'].includes(
@@ -169,142 +187,221 @@ export function createPresentationResearchService(options: {
         : request.includeCleanup
           ? { version: 1, available: true, cleanupAvailable: true, historyVersions: [1, 2] }
           : { version: 1, available: true }
+    request = structuredClone(request)
     const projectId = request.projectId
     if (typeof projectId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId))
       throw new Error('invalid_request')
     const documentId = request.documentId
-    const release = await options.acquireProjectLock?.(projectId)
+    if (typeof documentId !== 'string' || !documentId.trim() || documentId.length > 4096)
+      throw Error('invalid_request')
+    const validIdentifier = (value: unknown) =>
+      typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
+    if (
+      (['research_read', 'research_build', 'research_delete', 'research_abandon'].includes(op) &&
+        !validIdentifier(request.ledgerId)) ||
+      (['research_delete', 'research_delete_status'].includes(op) &&
+        !validIdentifier(request.deleteId)) ||
+      (['research_build', 'research_delete', 'research_abandon'].includes(op) &&
+        (!Number.isSafeInteger(request.expectedRevision) ||
+          Number(request.expectedRevision) < 0)) ||
+      (['research_delete', 'research_abandon'].includes(op) &&
+        (typeof request.expectedDraftDigest !== 'string' ||
+          !/^[a-f0-9]{64}$/.test(request.expectedDraftDigest)))
+    )
+      throw Error('invalid_request')
+    const capturedDraft =
+      op === 'research_build' ? parsePresentationResearchDraft(request.draft) : undefined
+    const scope = Object.freeze({ documentId, projectId })
+    const work = options.captureProjectLease
+      ? registerPresentationProjectWork({ scope: { root: options.userDataPath, ...scope }, signal })
+      : undefined
+    signal = work?.signal ?? signal
+    let lease: PresentationProjectReadLease | PresentationProjectWriteLease | undefined
+    const assertCurrent = () => {
+      if (!options.captureProjectLease) return
+      if (signal.aborted) throw Error('aborted')
+      if (lease) {
+        if ('assertWritable' in lease) lease.assertWritable()
+        else lease.assertCurrent()
+      }
+      if (signal.aborted) throw Error('aborted')
+    }
+    const assertWritable = () => {
+      assertCurrent()
+      if (lease && !('assertWritable' in lease)) throw Error('access_denied')
+    }
     try {
-      if (signal.aborted) throw new Error('aborted')
-      const summary = async () => {
-        const result = await store.summary(documentId, projectId)
-        if (result.version === 2 && request.historyVersion !== 2)
-          throw new Error('upgrade_required')
-        return result
-      }
-      if (op === 'research_delete_status') {
-        if (
-          typeof request.deleteId !== 'string' ||
-          !/^[A-Za-z0-9_-]{1,128}$/.test(request.deleteId)
-        )
-          throw new Error('invalid_request')
-        const receipt = await store.deletedReceipt(documentId, projectId, request.deleteId)
-        if (signal.aborted) throw new Error('aborted')
-        if (!receipt) throw new Error('not_found')
-        return receipt
-      }
-      if (op === 'research_latest') {
-        const record = await store.latestCompleted(documentId, projectId)
-        if (signal.aborted) throw new Error('aborted')
-        return { record }
-      }
-      if (op === 'research_list') {
-        const h = await summary()
-        if (signal.aborted) throw new Error('aborted')
-        return h
-      }
-      const id = request.ledgerId
-      if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id))
-        throw new Error('invalid_request')
-      if (op === 'research_read') {
-        const r = await store.read(documentId, projectId, id)
-        if (signal.aborted) throw new Error('aborted')
-        return r
-      }
-      if (op === 'research_delete') {
-        if (
-          typeof request.deleteId !== 'string' ||
-          !/^[A-Za-z0-9_-]{1,128}$/.test(request.deleteId) ||
-          typeof request.expectedDraftDigest !== 'string' ||
-          !/^[a-f0-9]{64}$/.test(request.expectedDraftDigest) ||
-          !Number.isSafeInteger(request.expectedRevision) ||
-          Number(request.expectedRevision) < 0
-        )
-          throw new Error('invalid_request')
-        const receipt = await store
-          .deletedReceipt(documentId, projectId, request.deleteId)
-          .catch((error) => {
-            if (error instanceof Error && error.message === 'not_found') return undefined
-            throw error
-          })
-        if (receipt)
-          return await store.deleteRecord(
+      const captured = options.captureProjectLease?.({ scope, operation: op, signal })
+      lease = captured instanceof Promise ? await captured : captured
+      assertCurrent()
+      const run = async () => {
+        const release = await options.acquireProjectLock?.(projectId)
+        try {
+          assertCurrent()
+          if (signal.aborted) throw new Error('aborted')
+          const summary = async () => {
+            const result = await store.summary(documentId, projectId)
+            assertCurrent()
+            if (result.version === 2 && request.historyVersion !== 2)
+              throw new Error('upgrade_required')
+            return result
+          }
+          if (op === 'research_delete_status') {
+            if (
+              typeof request.deleteId !== 'string' ||
+              !/^[A-Za-z0-9_-]{1,128}$/.test(request.deleteId)
+            )
+              throw new Error('invalid_request')
+            const receipt = await store.deletedReceipt(documentId, projectId, request.deleteId)
+            if (signal.aborted) throw new Error('aborted')
+            if (!receipt) throw new Error('not_found')
+            return receipt
+          }
+          if (op === 'research_latest') {
+            const record = await store.latestCompleted(documentId, projectId)
+            if (signal.aborted) throw new Error('aborted')
+            return { record }
+          }
+          if (op === 'research_list') {
+            const h = await summary()
+            if (signal.aborted) throw new Error('aborted')
+            return h
+          }
+          const id = request.ledgerId
+          if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id))
+            throw new Error('invalid_request')
+          if (op === 'research_read') {
+            const r = await store.read(documentId, projectId, id)
+            if (signal.aborted) throw new Error('aborted')
+            return r
+          }
+          if (op === 'research_delete') {
+            if (
+              typeof request.deleteId !== 'string' ||
+              !/^[A-Za-z0-9_-]{1,128}$/.test(request.deleteId) ||
+              typeof request.expectedDraftDigest !== 'string' ||
+              !/^[a-f0-9]{64}$/.test(request.expectedDraftDigest) ||
+              !Number.isSafeInteger(request.expectedRevision) ||
+              Number(request.expectedRevision) < 0
+            )
+              throw new Error('invalid_request')
+            const receipt = await store
+              .deletedReceipt(documentId, projectId, request.deleteId)
+              .catch((error) => {
+                if (error instanceof Error && error.message === 'not_found') return undefined
+                throw error
+              })
+            if (receipt)
+              return await store.deleteRecord(
+                documentId,
+                projectId,
+                request.expectedRevision as number,
+                request.deleteId,
+                id,
+                request.expectedDraftDigest,
+                signal,
+                options.captureProjectLease ? assertWritable : undefined,
+              )
+            const record = await store.read(documentId, projectId, id)
+            if (!record) throw new Error('not_found')
+            if (record.state === 'running') throw new Error('record_running')
+            if (!options.assertRecordUnprotected || !options.acquireProjectLock)
+              throw new Error('invalid_state')
+            await options.assertRecordUnprotected(documentId, projectId, id, signal)
+            assertCurrent()
+            if (signal.aborted) throw new Error('aborted')
+            return await store.deleteRecord(
+              documentId,
+              projectId,
+              request.expectedRevision as number,
+              request.deleteId,
+              id,
+              request.expectedDraftDigest,
+              signal,
+              options.captureProjectLease ? assertWritable : undefined,
+            )
+          }
+          if (op === 'research_abandon') {
+            if (!options.acquireProjectLock) throw new Error('invalid_state')
+            if (
+              !Number.isSafeInteger(request.expectedRevision) ||
+              Number(request.expectedRevision) < 0 ||
+              typeof request.expectedDraftDigest !== 'string' ||
+              !/^[a-f0-9]{64}$/.test(request.expectedDraftDigest)
+            )
+              throw new Error('invalid_request')
+            return await store.abandon(
+              documentId,
+              projectId,
+              request.expectedRevision as number,
+              id,
+              request.expectedDraftDigest,
+              signal,
+              options.captureProjectLease ? assertWritable : undefined,
+            )
+          }
+          if (
+            typeof request.expectedRevision !== 'number' ||
+            !Number.isSafeInteger(request.expectedRevision) ||
+            request.expectedRevision < 0
+          )
+            throw new Error('invalid_request')
+          const draft = capturedDraft!
+          await summary()
+          if (signal.aborted) throw new Error('aborted')
+          const begin = await store.begin(
             documentId,
             projectId,
-            request.expectedRevision as number,
-            request.deleteId,
+            request.expectedRevision,
             id,
-            request.expectedDraftDigest,
-            signal,
+            draft,
+            options.captureProjectLease ? assertWritable : undefined,
           )
-        const record = await store.read(documentId, projectId, id)
-        if (!record) throw new Error('not_found')
-        if (record.state === 'running') throw new Error('record_running')
-        if (!options.assertRecordUnprotected || !options.acquireProjectLock)
-          throw new Error('invalid_state')
-        await options.assertRecordUnprotected(documentId, projectId, id, signal)
-        if (signal.aborted) throw new Error('aborted')
-        return await store.deleteRecord(
-          documentId,
-          projectId,
-          request.expectedRevision as number,
-          request.deleteId,
-          id,
-          request.expectedDraftDigest,
-          signal,
-        )
+          if (!begin.created) return { history: await summary(), record: begin.record }
+          let record: PresentationResearchRecord
+          const sources: PresentationResearchEvidence[] = []
+          try {
+            for (const source of draft.sources)
+              sources.push(await evidence(documentId, source, signal, assertCurrent))
+            if (signal.aborted) throw new Error('aborted')
+            assertWritable()
+            record = await store.finish(
+              documentId,
+              projectId,
+              id,
+              { state: 'completed', sources },
+              options.captureProjectLease ? assertWritable : undefined,
+            )
+          } catch (e) {
+            const code = e instanceof Error ? e.message : ''
+            assertWritable()
+            record = await store.finish(
+              documentId,
+              projectId,
+              id,
+              {
+                state: 'failed',
+                error:
+                  code === 'aborted'
+                    ? 'aborted'
+                    : code === 'source_unavailable'
+                      ? 'source_unavailable'
+                      : 'invalid_state',
+                sources,
+              },
+              options.captureProjectLease ? assertWritable : undefined,
+            )
+          }
+          return { history: await summary(), record }
+        } finally {
+          release?.()
+        }
       }
-      if (op === 'research_abandon') {
-        if (!options.acquireProjectLock) throw new Error('invalid_state')
-        if (
-          !Number.isSafeInteger(request.expectedRevision) ||
-          Number(request.expectedRevision) < 0 ||
-          typeof request.expectedDraftDigest !== 'string' ||
-          !/^[a-f0-9]{64}$/.test(request.expectedDraftDigest)
-        )
-          throw new Error('invalid_request')
-        return await store.abandon(
-          documentId,
-          projectId,
-          request.expectedRevision as number,
-          id,
-          request.expectedDraftDigest,
-          signal,
-        )
-      }
-      if (
-        typeof request.expectedRevision !== 'number' ||
-        !Number.isSafeInteger(request.expectedRevision) ||
-        request.expectedRevision < 0
-      )
-        throw new Error('invalid_request')
-      const draft = parsePresentationResearchDraft(request.draft)
-      await summary()
-      if (signal.aborted) throw new Error('aborted')
-      const begin = await store.begin(documentId, projectId, request.expectedRevision, id, draft)
-      if (!begin.created) return { history: await summary(), record: begin.record }
-      let record: PresentationResearchRecord
-      const sources: PresentationResearchEvidence[] = []
-      try {
-        for (const source of draft.sources) sources.push(await evidence(documentId, source, signal))
-        if (signal.aborted) throw new Error('aborted')
-        record = await store.finish(documentId, projectId, id, { state: 'completed', sources })
-      } catch (e) {
-        const code = e instanceof Error ? e.message : ''
-        record = await store.finish(documentId, projectId, id, {
-          state: 'failed',
-          error:
-            code === 'aborted'
-              ? 'aborted'
-              : code === 'source_unavailable'
-                ? 'source_unavailable'
-                : 'invalid_state',
-          sources,
-        })
-      }
-      return { history: await summary(), record }
+      const result = await run()
+      assertCurrent()
+      return result
     } finally {
-      release?.()
+      work?.finish()
     }
   }
 }
