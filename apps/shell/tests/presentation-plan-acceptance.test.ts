@@ -147,9 +147,13 @@ it('recovers a decision saved by PC when its response is lost without replaying 
       'doc',
     ).records
     expect(records).toHaveLength(1)
+    await controller.acceptPlan!(1)
+    expect(
+      new PresentationStore(userDataPath).planAcceptances(plan.projectId, 'doc').records,
+    ).toEqual(records)
     await controller.refresh()
     expect(controller.snapshot().project?.planAcceptanceCurrent).toEqual(records[0])
-    expect(accepts).toBe(1)
+    expect(accepts).toBe(2)
     controller.clear()
   } finally {
     rmSync(userDataPath, { recursive: true, force: true })

@@ -1445,7 +1445,7 @@ export function createPresentationProjectController(
     let committed = false
     try {
       const planDigest = await presentationDigest(canonicalPresentationValue(plan.value)),
-        decisionId = crypto.randomUUID()
+        decisionId = `accept-${await presentationDigest(canonicalPresentationValue({ projectId: project.projectId, documentId, planRevision: expectedRevision, planDigest }))}`
       if ((await options.documentId()) !== documentId)
         throw new Error('presentation_document_changed')
       check()
