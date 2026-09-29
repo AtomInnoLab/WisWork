@@ -447,6 +447,7 @@ export function createPresentationDeliveryBundleService(options: { userDataPath:
           canonicalPresentationValue(evidence.plan.sources)
       )
         fail('invalid_state')
+      if (evidence.plan.research && !files.has('research.json')) fail('invalid_state')
       if (files.has('research.json')) {
         const research = parsePresentationResearchRecord(
           JSON.parse(files.get('research.json')!.toString()),
@@ -455,6 +456,12 @@ export function createPresentationDeliveryBundleService(options: { userDataPath:
           research.documentId !== documentId ||
           research.projectId !== projectId ||
           research.state !== 'completed'
+        )
+          fail('invalid_state')
+        if (
+          evidence.plan.research &&
+          canonicalPresentationValue(research) !==
+            canonicalPresentationValue(evidence.research?.record)
         )
           fail('invalid_state')
         const original = await new PresentationResearchStore(options.userDataPath).read(

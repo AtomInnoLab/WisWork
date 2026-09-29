@@ -138,6 +138,133 @@ export function PresentationDeliveryReportCard({
         往返未执行。附件字面核对反映读取报告时的当前文档，不属于冻结生产快照。来源复核是历史 Agent
         判断。已说明不会关闭机器发现。
       </p>
+      {report.research && (
+        <details aria-label="冻结计划绑定研究">
+          <summary>冻结计划绑定研究 #{report.research.record.sequence}</summary>
+          <p>
+            此处是冻结计划明确绑定的历史研究，不自动替换为最近整理结果；完成记录和引用映射不代表事实支持或
+            QA 通过，来源权威性与时效仍未核验。
+          </p>
+          <p>研究范围：{report.research.record.draft.scope}</p>
+          <details>
+            <summary>原研究身份</summary>
+            <p>
+              原记录 ID：{report.research.record.id}；研究摘要：{report.research.record.draftDigest}
+            </p>
+          </details>
+          <h4>引用范围与缺口 · {report.research.findings.length} 项</h4>
+          {!report.research.findings.length && <p>未发现引用范围缺口，仍不代表主张已核验。</p>}
+          <ul>
+            {report.research.findings.map((finding, index) => (
+              <li key={index}>
+                {
+                  {
+                    unmapped_claim: '计划主张未映射研究',
+                    omitted_conflict_partner: '未选用冲突另一方',
+                    unselected_source_ref: '研究引用未选入计划',
+                    source_unavailable: '原文尚不可用',
+                  }[finding.code]
+                }
+                <p>
+                  计划主张：{finding.claimId}
+                  {finding.researchClaimId && `；原研究主张：${finding.researchClaimId}`}
+                  {finding.relatedResearchClaimId &&
+                    `；冲突另一方原 ID：${finding.relatedResearchClaimId}`}
+                  {finding.sourceId && `；原研究来源：${finding.sourceId}`}
+                </p>
+              </li>
+            ))}
+          </ul>
+          <details>
+            <summary>完整研究结论与冲突双方</summary>
+            <ol>
+              {report.research.record.draft.facts.map((fact) => (
+                <li key={fact.claimId}>
+                  <p>
+                    原主张 {fact.claimId} ·{' '}
+                    {
+                      {
+                        fact: '事实主张',
+                        quote: '引文',
+                        calculation: '计算',
+                        judgment: '判断',
+                        assumption: '假设',
+                      }[fact.type]
+                    }
+                    （待审查）：{fact.statement}
+                  </p>
+                  <p>
+                    声明来源级别：
+                    {
+                      {
+                        primary: '一手来源',
+                        authoritative_secondary: '权威二手来源',
+                        secondary: '二手来源',
+                        unverified: '未核验',
+                      }[fact.sourceTier]
+                    }
+                    ；声明可信度：{{ high: '高', medium: '中', low: '低' }[fact.confidence]}
+                    ，不作为独立认证。
+                  </p>
+                  <p>原研究来源：{fact.sourceRefs.join('、') || '未提供'}</p>
+                  {!!fact.conflictsWith.length && (
+                    <p>
+                      冲突：
+                      {fact.conflictsWith
+                        .map(
+                          (id) =>
+                            `${id}：${report.research!.record.draft.facts.find((other) => other.claimId === id)?.statement ?? '待读取'}`,
+                        )
+                        .join('；')}
+                    </p>
+                  )}
+                  {fact.asOf && <p>数据时点：{fact.asOf}</p>}
+                  {fact.jurisdiction && <p>适用范围：{fact.jurisdiction}</p>}
+                  {fact.calculation && (
+                    <p>
+                      计算：{fact.calculation.formula}；输入：{fact.calculation.inputs.join('、')}
+                      {fact.calculation.unit && `；单位：${fact.calculation.unit}`}
+                      {fact.calculation.currency && `；币种：${fact.calculation.currency}`}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </details>
+          <details>
+            <summary>完整研究来源与原文缺口</summary>
+            <ol>
+              {report.research.record.draft.sources.map((source) => {
+                const evidence = report.research!.record.sources?.find(
+                  (item) => item.sourceId === source.id,
+                )
+                return (
+                  <li key={source.id}>
+                    <p>
+                      原来源 {source.id}：
+                      {/^https?:/.test(source.uri) ? (
+                        <a href={source.uri} target="_blank" rel="noreferrer">
+                          {source.title}
+                        </a>
+                      ) : (
+                        source.title
+                      )}
+                    </p>
+                    <blockquote>{source.excerpt || '未提供原文摘录'}</blockquote>
+                    <p>
+                      {evidence?.status === 'found'
+                        ? '找到原文摘录，不证明主张成立'
+                        : '原文仍有缺口，需核对完整研究资料'}
+                    </p>
+                    {source.locator && <p>原文位置：{source.locator}</p>}
+                    {source.asOf && <p>资料数据时点：{source.asOf}</p>}
+                  </li>
+                )
+              })}
+            </ol>
+          </details>
+        </details>
+      )}
       {report.pages.map((page) => (
         <section key={page.pageId} aria-label={`证据页面 ${page.title}`}>
           <h4>

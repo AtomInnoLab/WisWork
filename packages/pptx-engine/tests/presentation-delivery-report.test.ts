@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
+import { canonicalPresentationValue } from '@wiswork/project-store/presentation-canonical'
 import {
   buildPresentationDeliveryReport,
   parsePresentationDeliveryReport,
@@ -9,6 +11,7 @@ import { parsePresentationPlan, presentationPlanClaims } from '../src/presentati
 import { benchmarkPlan } from './fixtures/presentation-plan'
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 import type { PresentationClaimReview } from '../src/presentation-claim-review'
+import { researchFixture } from './fixtures/presentation-research'
 function fixture(): PresentationDeliveryReportInput {
   const plan = benchmarkPlan(),
     deck = benchmarkDeck()
@@ -50,6 +53,65 @@ function input(): PresentationDeliveryReportInput {
   delete (value.issueLedger as unknown as Record<string, unknown>).planRevision
   return value
 }
+describe('frozen research report', () => {
+  function boundInput() {
+    const value = input()
+    const { record } = researchFixture()
+    const claim = value.plan.claims[0]!
+    const { reproduction: _reproduction, ...calculation } = claim.calculation!
+    record.draft.sources[0] = { ...value.plan.sources[0]!, id: 'original-source' }
+    record.draft.facts[0] = {
+      ...record.draft.facts[0]!,
+      type: claim.type,
+      statement: claim.statement,
+      calculation,
+    }
+    record.draftDigest = createHash('sha256')
+      .update(canonicalPresentationValue(record.draft))
+      .digest('hex')
+    value.plan.research = {
+      ledgerId: record.id,
+      sequence: record.sequence,
+      draftDigest: record.draftDigest,
+      sources: [{ sourceId: 'source', researchSourceId: 'original-source' }],
+      claims: [{ claimId: 'source-1', researchClaimId: 'original-claim' }],
+    }
+    value.researchRecord = record
+    return value
+  }
+  it('retains the exact full frozen record, findings and unchecked status', async () => {
+    const value = boundInput()
+    const report = await buildPresentationDeliveryReport(value)
+    expect(report.research?.record).toEqual(value.researchRecord)
+    expect(report.research?.findings[0]?.code).toBe('source_unavailable')
+    expect(report.checks.sourceAuthority).toBe('not_verified')
+    expect(presentationDeliveryMarkdown(report)).toContain('Plan-bound frozen research')
+  })
+  it('rejects missing, wrong-document, mismatched and forged research content', async () => {
+    const value = boundInput()
+    await expect(
+      buildPresentationDeliveryReport({ ...value, researchRecord: undefined }),
+    ).rejects.toThrow()
+    const report = await buildPresentationDeliveryReport(value)
+    const wrongDoc = structuredClone(report)
+    wrongDoc.research!.record.documentId = 'other'
+    expect(() => parsePresentationDeliveryReport(wrongDoc)).toThrow()
+    const wrongVersion = structuredClone(report)
+    wrongVersion.research!.record.sequence++
+    expect(() => parsePresentationDeliveryReport(wrongVersion)).toThrow()
+    const forged = structuredClone(report)
+    forged.research!.findings = []
+    expect(() => parsePresentationDeliveryReport(forged)).toThrow()
+    delete report.plan.research
+    expect(() => parsePresentationDeliveryReport(report)).toThrow()
+  })
+  it('rejects forged digest even when descriptor and record claim the same digest', async () => {
+    const value = boundInput()
+    value.researchRecord!.draftDigest = 'f'.repeat(64)
+    value.plan.research!.draftDigest = 'f'.repeat(64)
+    await expect(buildPresentationDeliveryReport(value)).rejects.toThrow('research_binding_invalid')
+  })
+})
 function review(
   value: PresentationDeliveryReportInput,
   id: string,

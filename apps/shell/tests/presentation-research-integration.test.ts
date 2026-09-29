@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import JSZip from 'jszip'
 import { afterEach, expect, it, vi } from 'vitest'
+import { presentationPlanClaims } from '@wiswork/pptx-engine/presentation-plan'
 import { PresentationStore } from '@wiswork/project-store'
 import { createPresentationService } from '../src/main/presentation-service'
 import { createPresentationResearchSkill } from '../../office-addin/src/skills/powerpoint/presentation-research'
@@ -248,4 +249,146 @@ it('retries an archived original ledger after 33 real builds without appending o
   expect(value.record).toEqual(original)
   expect(value.history).toMatchObject({ totalRecords: 33, revision: 66 })
   expect(value.history.records.some((r: { id: string }) => r.id === 'research1')).toBe(false)
+})
+
+it('keeps the frozen bound research A in report and native delivery after newer research B and a revised plan', async () => {
+  const f = await setup()
+  const plan = benchmarkPlan()
+  plan.projectId = 'project'
+  plan.sources = [{ ...f.draft.sources[0]!, id: 'source', title: '计划来源别名' }]
+  plan.claims = [
+    {
+      id: 'source-1',
+      statement: f.draft.facts[0]!.statement,
+      type: 'fact',
+      sourceIds: ['source'],
+      confidence: 'medium',
+      reviewStatus: 'needs_review',
+    },
+  ]
+  const research = f.client()
+  const resultA = await f.call(research.skill)
+  expect(resultA.isError, resultA.output).toBeFalsy()
+  const recordA = JSON.parse(resultA.output).record
+  plan.research = {
+    ledgerId: recordA.id,
+    sequence: recordA.sequence,
+    draftDigest: recordA.draftDigest,
+    sources: [{ sourceId: 'source', researchSourceId: 'source1' }],
+    claims: [{ claimId: 'source-1', researchClaimId: 'claim1' }],
+  }
+  const saved = await f.raw('save_plan', { projectId: 'project', expectedRevision: 0, plan })
+  expect(saved.error).toBeUndefined()
+  const deck = benchmarkPlannedDeck()
+  deck.id = 'project'
+  deck.claims = presentationPlanClaims(plan)
+  expect(
+    await f.raw('production_begin', {
+      projectId: 'project',
+      requestId: 'bound-run',
+      planRevision: 1,
+      deck,
+    }),
+  ).not.toHaveProperty('error')
+  const draftB = structuredClone(f.draft)
+  draftB.facts[0]!.statement = '后续研究 B 的不同观察'
+  const resultB = await research.skill.executeTool({
+    id: 'build-b',
+    name: 'build_research_ledger',
+    input: { ...f.input, ledger_id: 'research2', expected_revision: 2, draft: draftB },
+  })
+  expect(resultB.isError, resultB.output).toBeFalsy()
+  const recordB = JSON.parse(resultB.output).record
+  const revised = structuredClone(plan)
+  revised.claims[0]!.statement = draftB.facts[0]!.statement
+  revised.research = {
+    ...plan.research,
+    ledgerId: recordB.id,
+    sequence: recordB.sequence,
+    draftDigest: recordB.draftDigest,
+  }
+  expect(
+    (await f.raw('save_plan', { projectId: 'project', expectedRevision: 1, plan: revised })).error,
+  ).toBeUndefined()
+  f.restart()
+  const report = await f.raw('production_delivery_report', {
+    projectId: 'project',
+    requestId: 'bound-run',
+  })
+  expect(report.research.record).toEqual(recordA)
+  expect(report.research.findings).toContainEqual({
+    code: 'omitted_conflict_partner',
+    claimId: 'source-1',
+    researchClaimId: 'claim1',
+    relatedResearchClaimId: 'claim2',
+  })
+  const latest = vi.fn(research.skill.readLatestCompleted)
+  const native = await new JSZip()
+    .file('ppt/slides/slide1.xml', '<title>current host</title>')
+    .generateAsync({ type: 'uint8array' })
+  const vfs = new InMemoryVfs()
+  const bundle = createPresentationHostBundleSkill({
+    available: () => true,
+    nativeAvailable: () => true,
+    exportDocument: async () => native,
+    documentId: async () => 'doc',
+    request: f.request,
+    vfs,
+    readResearch: latest,
+  })
+  const exported = await bundle.executeTool({
+    id: 'bound-package',
+    name: 'export_current_presentation_bundle',
+    input: { project_id: 'project', request_id: 'bound-run' },
+  })
+  expect(exported.isError, exported.output).toBeFalsy()
+  expect(latest).not.toHaveBeenCalled()
+  const bytes = vfs.readBytes(JSON.parse(exported.output).paths[0])
+  const zip = await JSZip.loadAsync(bytes)
+  expect(JSON.parse(await zip.file('research.json')!.async('string'))).toEqual(recordA)
+  expect(await zip.file('research.md')!.async('string')).toContain(f.draft.facts[1]!.statement)
+  expect(await zip.file('README.md')!.async('string')).toContain('冻结计划绑定')
+  // A forged package cannot omit or substitute the explicitly bound ledger, even with valid file hashes.
+  for (const mode of ['omit', 'substitute']) {
+    const forged = await JSZip.loadAsync(bytes)
+    if (mode === 'omit') {
+      forged.remove('research.json')
+      forged.remove('research.md')
+    } else forged.file('research.json', JSON.stringify(recordB))
+    const manifest = JSON.parse(await forged.file('manifest.json')!.async('string'))
+    manifest.files = manifest.files.filter(
+      (file: { name: string }) => mode !== 'omit' || !file.name.startsWith('research.'),
+    )
+    for (const file of manifest.files) {
+      const data = await forged.file(file.name)!.async('uint8array')
+      file.sha256 = hash(data)
+      file.sizeBytes = data.length
+    }
+    forged.file('manifest.json', JSON.stringify(manifest))
+    const forgedBytes = await forged.generateAsync({ type: 'uint8array', compression: 'STORE' })
+    const bundleId = hash(forgedBytes)
+    const identity = { projectId: 'project', requestId: 'bound-run', bundleId }
+    const begin = await f.raw('delivery_bundle_begin', {
+      ...identity,
+      sha256: bundleId,
+      sizeBytes: forgedBytes.length,
+      manifest,
+    })
+    expect(begin.error).toBeUndefined()
+    for (let offset = 0; offset < forgedBytes.length; offset += 128 * 1024) {
+      expect(
+        (
+          await f.raw('delivery_bundle_chunk', {
+            ...identity,
+            offset,
+            base64: Buffer.from(forgedBytes.subarray(offset, offset + 128 * 1024)).toString(
+              'base64',
+            ),
+          })
+        ).error,
+      ).toBeUndefined()
+    }
+    expect(await f.raw('delivery_bundle_finish', identity)).toHaveProperty('error', 'invalid_state')
+  }
+  expect(f.compile).not.toHaveBeenCalled()
 })

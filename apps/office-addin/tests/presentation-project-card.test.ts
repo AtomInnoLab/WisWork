@@ -31,6 +31,7 @@ afterEach(async () => {
 async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () => void) {
   const listeners = new Set<() => void>()
   const controller: PresentationProjectController = {
+    readBoundResearch: vi.fn(async () => {}),
     currentBundleAvailable: vi.fn(() => true),
     exportCurrentBundle: vi.fn(async () => {}),
     restoreDeliveryBundle: vi.fn(async () => {}),
@@ -1145,4 +1146,38 @@ it('deletes a local ready or uploading bundle only after explicit confirmation',
   } finally {
     confirm.mockRestore()
   }
+})
+
+it('shows an exact current-plan research binding with renamed source and claim mappings', async () => {
+  const plan = {
+    ...benchmarkPlan(),
+    research: {
+      ledgerId: 'research-old',
+      sequence: 1,
+      draftDigest: 'a'.repeat(64),
+      sources: [{ sourceId: 'source', researchSourceId: 'original-source' }],
+      claims: [{ claimId: 'source-1', researchClaimId: 'original-claim' }],
+    },
+  }
+  const snapshot: Snapshot = {
+    phase: 'idle',
+    project: {
+      projectId: plan.projectId,
+      title: plan.title,
+      status: 'planned',
+      slideCount: plan.slides.length,
+      slides: plan.slides.map(({ id, title }) => ({ id, title })),
+      history: [],
+      plan: { revision: 1, value: plan },
+    },
+  }
+  const ui = await mount(snapshot)
+  expect(ui.container.textContent).toContain('当前计划绑定研究 #1')
+  expect(ui.container.textContent).toContain('不自动替换为最近研究')
+  expect(ui.container.textContent).toContain('original-source')
+  expect(ui.container.textContent).toContain('original-claim')
+  await act(async () => ui.button('读取计划绑定研究').click())
+  expect(ui.controller.readBoundResearch).toHaveBeenCalledOnce()
+  await ui.update({ ...snapshot, phase: 'readingResearch' })
+  expect(ui.button('读取计划绑定研究').disabled).toBe(true)
 })

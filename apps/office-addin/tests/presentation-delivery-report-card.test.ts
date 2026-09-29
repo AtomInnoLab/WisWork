@@ -83,3 +83,78 @@ it('lets the reviewer reach and record issues after the first 20', async () => {
     await act(async () => root.unmount())
   }
 })
+
+it('shows exact frozen research identities, both conflict statements and every binding finding without certifying them', async () => {
+  const { researchRecord } = await import('./presentation-research-fixture.js')
+  const record = researchRecord()
+  const report = {
+    requestId: 'request-old',
+    planRevision: 1,
+    plan: { sources: [], claims: [] },
+    pages: [],
+    sourceAudit: [],
+    issueLedger: { revision: 0, actions: [] },
+    research: {
+      record,
+      findings: [
+        {
+          code: 'omitted_conflict_partner',
+          claimId: 'renamed-claim',
+          researchClaimId: 'claim1',
+          relatedResearchClaimId: 'claim2',
+        },
+        {
+          code: 'unselected_source_ref',
+          claimId: 'renamed-claim',
+          researchClaimId: 'claim1',
+          sourceId: 'source1',
+        },
+        {
+          code: 'source_unavailable',
+          claimId: 'renamed-claim',
+          researchClaimId: 'claim1',
+          sourceId: 'source1',
+        },
+        { code: 'unmapped_claim', claimId: 'standalone-claim' },
+      ],
+    },
+  } as unknown as PresentationDeliveryReport
+  const controller = { recordIssueAction: vi.fn() } as unknown as PresentationProjectController
+  const container = document.createElement('div')
+  const root = createRoot(container)
+  try {
+    await act(async () =>
+      root.render(
+        React.createElement(PresentationDeliveryReportCard, {
+          report,
+          controller,
+          disabled: false,
+        }),
+      ),
+    )
+    expect(container.textContent).toContain('冻结计划绑定研究 #1')
+    expect(container.textContent).toContain('ledger1')
+    expect(container.textContent).toContain('销售增长')
+    expect(container.textContent).toContain('销售下降')
+    expect(container.textContent).toContain('未选用冲突另一方')
+    expect(container.textContent).toContain('研究引用未选入计划')
+    expect(container.textContent).toContain('原文尚不可用')
+    expect(container.textContent).toContain('计划主张未映射研究')
+    expect(container.textContent).toContain('renamed-claim')
+    expect(container.textContent).toContain('claim2')
+    expect(container.textContent).toContain('source1')
+    expect(container.textContent).toContain('不代表事实支持或 QA 通过')
+    await act(async () =>
+      root.render(
+        React.createElement(PresentationDeliveryReportCard, {
+          report: { ...report, research: undefined },
+          controller,
+          disabled: false,
+        }),
+      ),
+    )
+    expect(container.textContent).not.toContain('冻结计划绑定研究')
+  } finally {
+    await act(async () => root.unmount())
+  }
+})

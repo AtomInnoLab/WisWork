@@ -48,13 +48,18 @@ it('reopens a paused eight-page workbench, downloads saved progress, retries onl
         documentId: async () => documentId,
         lastProject: () => deck.id,
         rememberProject: async () => {},
-        request: async (body, s) => new Response(Buffer.from(await service(body, s ?? signal))),
+        request: async (body, s) => {
+          if ((body as { operation?: string }).operation === 'production_job_resume')
+            resumeOperations.push(body)
+          return new Response(Buffer.from(await service(body, s ?? signal)))
+        },
         readReceipt: () => undefined,
         writeReceipt,
         readQa: () => undefined,
         writeQa,
       },
     })
+  const resumeOperations: unknown[] = []
   let runtime = create()
   const status = () => call('production_job_status', { requestId })
   try {
@@ -113,11 +118,20 @@ it('reopens a paused eight-page workbench, downloads saved progress, retries onl
         expect.objectContaining({ type: 'page.failed', pageId: deck.slides[1]!.id }),
       ]),
     )
+    // Match the real button precondition: automatic polling disables actions until idle.
+    await vi.waitFor(() => expect(runtime.presentation!.snapshot().phase).toBe('idle'))
     await runtime.presentation!.refresh()
     await runtime.presentation!.resumeProductionJob(requestId)
-    await vi.waitFor(async () => expect((await status()).job.state).toBe('completed'), {
-      timeout: 15000,
-    })
+    expect(resumeOperations.length, JSON.stringify(runtime.presentation!.snapshot())).toBe(2)
+    await vi.waitFor(
+      async () => {
+        const current = await status()
+        expect(current.job.state, JSON.stringify(current)).toBe('completed')
+      },
+      {
+        timeout: 15000,
+      },
+    )
     await runtime.presentation!.refresh()
     for (const [index, page] of deck.slides.entries())
       expect(attempts.get(page.id)).toBe(index === 1 ? 2 : 1)

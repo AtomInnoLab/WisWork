@@ -714,6 +714,56 @@ export function createOfficeHostRuntime(
       ? createPresentationProjectController({
           ...options.presentation,
           nativeDocumentExportAvailable: () => supportsPowerPointDocumentExport('pptx'),
+          readResearchRecord: research
+            ? async (projectId, ledgerId, signal) => {
+                const binding = presentation?.snapshot().project?.plan?.value.research
+                const documentId = await options.presentation!.documentId()
+                const abort = () => research.clear()
+                const check = async () => {
+                  if (signal?.aborted) {
+                    research.clear()
+                    throw new Error('cancelled')
+                  }
+                  if ((await options.presentation!.documentId()) !== documentId) {
+                    research.clear()
+                    throw new Error('presentation_document_changed')
+                  }
+                  if (signal?.aborted) {
+                    research.clear()
+                    throw new Error('cancelled')
+                  }
+                }
+                signal?.addEventListener('abort', abort, { once: true })
+                try {
+                  await check()
+                  await research.selectProject(projectId)
+                  await check()
+                  if (research.snapshot().available === false)
+                    throw new Error('presentation_upgrade_required')
+                  await research.read(ledgerId)
+                  await check()
+                  const snapshot = research.snapshot()
+                  const record = snapshot.record
+                  if (snapshot.error || !record)
+                    throw new Error('presentation_research_unavailable')
+                  if (
+                    !binding ||
+                    record.state !== 'completed' ||
+                    record.documentId !== documentId ||
+                    record.projectId !== projectId ||
+                    record.id !== ledgerId ||
+                    record.sequence !== binding.sequence ||
+                    record.draftDigest !== binding.draftDigest
+                  ) {
+                    research.clear()
+                    throw new Error('presentation_research_binding_invalid')
+                  }
+                } finally {
+                  signal?.removeEventListener('abort', abort)
+                }
+              }
+            : undefined,
+
           ...(options.presentation.listReceipts
             ? {
                 hostSlideIds: async (signal?: AbortSignal) =>

@@ -289,7 +289,11 @@ export function createPresentationHostBundleSkill(
               pdfState = 'unavailable'
             }
           }
-          const rawResearch = await options.readResearch?.(projectId, controller.signal)
+          const rawResearch = report.plan.research
+            ? report.research?.record
+            : await options.readResearch?.(projectId, controller.signal)
+          if (report.plan.research && rawResearch === undefined)
+            throw Error('presentation_delivery_bundle_history_invalid')
           await current()
           let research: PresentationResearchRecord | undefined
           if (rawResearch !== undefined) {
@@ -357,7 +361,11 @@ export function createPresentationHostBundleSkill(
             ],
           }
           const readme =
-            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取，导出期间的修改可能导致两份快照不同，尚未核对二者一致性。不可用时不会用编译预览 PDF 代替。历史研究若存在，research.json/.md 属于本项目已完成的研究整理记录，不等于当前生产任务的冻结主张或宿主事实核验；冲突双方和缺口保留。manifest.json 各文件摘要用于检测字节完整性。\n'
+            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取，导出期间的修改可能导致两份快照不同，尚未核对二者一致性。不可用时不会用编译预览 PDF 代替。研究若存在，research.json/.md 保留冲突双方和缺口。' +
+            (report.plan.research
+              ? '本包研究记录来自冻结计划绑定的指定版本，与 evidence.json 中的研究记录一致；仍不代表来源权威性、时效性或当前宿主事实已核验。'
+              : '本包研究记录为读取时本项目的历史研究，未绑定当前生产任务，不等于冻结主张或宿主事实核验。') +
+            'manifest.json 各文件摘要用于检测字节完整性。\n'
           const files: Record<string, Uint8Array> = {
             'presentation.pptx': pptx,
             'evidence.json': json(report),

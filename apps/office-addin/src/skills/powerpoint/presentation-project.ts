@@ -166,6 +166,7 @@ export interface PresentationProjectSnapshot {
     | 'auditing'
     | 'planning'
     | 'accepting'
+    | 'readingResearch'
     | 'bundling'
   project?: PresentationProjectStatus
   error?: string
@@ -176,6 +177,7 @@ export type PresentationPlanEdit =
   | { kind: 'restore'; revision: number }
   | { kind: 'lock'; pageId: string; locked: boolean }
 export interface PresentationProjectController {
+  readBoundResearch?(): Promise<void>
   currentBundleAvailable?(): boolean
   exportCurrentBundle?(includePdf?: boolean): Promise<void>
   restoreDeliveryBundle?(bundleId: string): Promise<void>
@@ -641,6 +643,10 @@ async function parseStatus(value: unknown, projectId: string): Promise<Presentat
 }
 function message(error: unknown): string {
   const code = error instanceof Error ? error.message : ''
+  if (code === 'presentation_research_binding_invalid')
+    return '计划绑定的研究身份或内容不一致；请核对指定研究，不自动替换为最近记录。'
+  if (code === 'presentation_research_unavailable')
+    return '计划绑定的原研究记录暂不可读取；原计划与素材保留，请刷新后读取指定记录。'
   if (code === 'presentation_quota_exceeded')
     return '本机交付包容量已满，请明确删除不再需要的本机包后重试。'
   if (code === 'presentation_delivery_bundle_limit' || code === 'vfs_limit')
@@ -714,6 +720,7 @@ export function createPresentationProjectController(
     | 'rememberSelectedProduction'
   > &
     Pick<AgentSkill, 'executeTool'> & {
+      readResearchRecord?(projectId: string, ledgerId: string, signal?: AbortSignal): Promise<void>
       nativeDocumentExportAvailable?(): boolean
       listReceipts?(): { key: string; record: PresentationImportRecord }[]
       hostSlideIds?(signal?: AbortSignal): Promise<string[]>
@@ -1270,6 +1277,46 @@ export function createPresentationProjectController(
         if (captured !== epoch) return
         publish({ phase: 'idle', ...(retain ? { project: previous } : {}), error: message(error) })
       }
+    } finally {
+      if (captured === epoch) active = undefined
+    }
+  }
+  const readBoundResearch = async () => {
+    const project = state.project
+    const binding = project?.plan?.value.research
+    if (active || !project || !binding || !projectDocument || !options.readResearchRecord) return
+    const documentId = projectDocument
+    const previous = state
+    const controller = new AbortController()
+    active = controller
+    const captured = ++epoch
+    const check = async () => {
+      if (captured !== epoch || controller.signal.aborted) throw new Error('cancelled')
+      if (!options.available()) throw new Error('presentation_unavailable')
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      if (captured !== epoch || controller.signal.aborted) throw new Error('cancelled')
+    }
+    stopPolling()
+    publish({ ...previous, phase: 'readingResearch', error: undefined })
+    try {
+      await check()
+      await options.readResearchRecord(project.projectId, binding.ledgerId, controller.signal)
+      await check()
+      publish({
+        ...previous,
+        phase: 'idle',
+        deliveryNotice: '计划绑定的指定研究已读取；研究整理与引用匹配不代表事实支持或 QA 通过。',
+        error: undefined,
+      })
+    } catch (error) {
+      if (captured !== epoch) return
+      const changed = (await options.documentId().catch(() => undefined)) !== documentId
+      if (captured !== epoch) return
+      if (changed) {
+        controller.abort()
+        stop(message(new Error('presentation_document_changed')))
+      } else publish({ ...previous, phase: 'idle', error: message(error) })
     } finally {
       if (captured === epoch) active = undefined
     }
@@ -1942,6 +1989,7 @@ export function createPresentationProjectController(
     }
   }
   return {
+    readBoundResearch,
     currentBundleAvailable: () =>
       options.available() && options.nativeDocumentExportAvailable?.() === true,
     exportCurrentBundle: (includePdf = false) =>

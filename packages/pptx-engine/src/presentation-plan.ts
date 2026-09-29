@@ -73,6 +73,13 @@ export interface PresentationPlan {
   version: 1
   projectId: string
   title: string
+  research?: {
+    ledgerId: string
+    sequence: number
+    draftDigest: string
+    sources: { sourceId: string; researchSourceId: string }[]
+    claims: { claimId: string; researchClaimId: string }[]
+  }
   brief: {
     objective: string
     audience: string
@@ -155,6 +162,13 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object(
     version: { type: 'number', enum: [1] },
     projectId: id,
     title: text(300, 1),
+    research: object({
+      ledgerId: { ...id, maxLength: 128 },
+      sequence: number(1, Number.MAX_SAFE_INTEGER),
+      draftDigest: { ...text(64, 64), pattern: '^[a-f0-9]{64}$' },
+      sources: array(object({ sourceId: id, researchSourceId: { ...id, maxLength: 128 } }), 256),
+      claims: array(object({ claimId: id, researchClaimId: { ...id, maxLength: 128 } }), 256),
+    }),
     brief: object({
       objective: text(4000, 1),
       audience: text(1000, 1),
@@ -376,6 +390,22 @@ export function parsePresentationPlan(input: unknown): PresentationPlan {
   for (const source of plan.sources) presentationSourceAttachmentId(source)
   const sourceIds = new Set(plan.sources.map((source) => source.id))
   const claimIds = new Set(plan.claims.map((claim) => claim.id))
+  if (plan.research) {
+    if (!Number.isSafeInteger(plan.research.sequence)) reject('research_sequence')
+    unique(
+      plan.research.sources.map((mapping) => mapping.sourceId),
+      'research_source_mapping',
+    )
+    unique(
+      plan.research.claims.map((mapping) => mapping.claimId),
+      'research_claim_mapping',
+    )
+    if (
+      plan.research.sources.some((mapping) => !sourceIds.has(mapping.sourceId)) ||
+      plan.research.claims.some((mapping) => !claimIds.has(mapping.claimId))
+    )
+      reject('research_mapping_target')
+  }
   for (const claim of plan.claims) {
     unique(claim.sourceIds, 'source_reference')
     if (claim.sourceIds.some((source) => !sourceIds.has(source))) reject('source_reference')

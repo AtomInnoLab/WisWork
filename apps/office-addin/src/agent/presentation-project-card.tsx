@@ -127,6 +127,7 @@ export function PresentationProjectCard(props: {
               planning: '正在更新制作计划',
               accepting: '正在保存计划与样式接受决定',
               bundling: '正在处理当前文稿交付包',
+              readingResearch: '正在读取计划绑定研究',
             }[phase]
           : project
             ? `${project.slideCount} 页 · ${project.status === 'planned' ? '计划已保存，尚未编译' : project.status === 'pending' ? '已保存，待编译' : '已编译，尚未完成视觉验证'}`
@@ -140,6 +141,48 @@ export function PresentationProjectCard(props: {
         </p>
       )}
       {planNotice && <p role="status">{planNotice}</p>}
+      {project?.plan?.value.research && (
+        <details aria-label="当前计划绑定研究">
+          <summary>当前计划绑定研究 #{project.plan.value.research.sequence}</summary>
+          <p>
+            当前计划明确引用此研究版本，不自动替换为最近研究；整理完成与映射匹配不代表事实、来源权威性、时效或
+            QA 通过。
+          </p>
+          <p>
+            映射来源 {project.plan.value.research.sources.length} 条 · 映射主张{' '}
+            {project.plan.value.research.claims.length}{' '}
+            条；未选引用与冲突另一方仍需在完整研究和冻结报告中核对。
+          </p>
+          {controller.readBoundResearch && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => void controller.readBoundResearch?.()}
+            >
+              读取计划绑定研究
+            </button>
+          )}
+          <details>
+            <summary>研究身份与映射详情</summary>
+            <p>研究记录 ID：{project.plan.value.research.ledgerId}</p>
+            <p>研究摘要：{project.plan.value.research.draftDigest}</p>
+            <ul>
+              {project.plan.value.research.sources.map((item) => (
+                <li key={item.sourceId}>
+                  计划来源 {item.sourceId} → 原研究来源 {item.researchSourceId}
+                </li>
+              ))}
+            </ul>
+            <ul>
+              {project.plan.value.research.claims.map((item) => (
+                <li key={item.claimId}>
+                  计划主张 {item.claimId} → 原研究主张 {item.researchClaimId}
+                </li>
+              ))}
+            </ul>
+          </details>
+        </details>
+      )}
       {project?.deliveryBundlesAvailable && (
         <details aria-label="当前 PowerPoint 文稿交付包">
           <summary>当前 PowerPoint 文稿交付包</summary>

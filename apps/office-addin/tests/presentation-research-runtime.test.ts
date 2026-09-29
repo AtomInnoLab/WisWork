@@ -65,3 +65,81 @@ it('registers actual research tools and refreshes a standalone project after bui
     runtime.dispose()
   }
 })
+
+it('routes the current-plan binding to its exact archived ledger even when a newer research record exists', async () => {
+  const { benchmarkPlan } =
+    await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
+  const record = researchRecord(),
+    summary = researchSummary(),
+    plan = benchmarkPlan()
+  plan.projectId = 'research'
+  plan.research = {
+    ledgerId: record.id,
+    sequence: record.sequence,
+    draftDigest: record.draftDigest,
+    sources: [{ sourceId: 'source', researchSourceId: 'source1' }],
+    claims: [{ claimId: 'source-1', researchClaimId: 'claim1' }],
+  }
+  const latest = {
+    ...summary.records[0]!,
+    id: 'ledger2',
+    sequence: 2,
+    draftDigest: 'c'.repeat(64),
+    startedAt: '2026-09-29T00:00:02.000Z',
+    finishedAt: '2026-09-29T00:00:03.000Z',
+  }
+  const currentSummary = {
+    ...summary,
+    revision: 4,
+    totalRecords: 2,
+    records: [...summary.records, latest],
+  }
+  const request = vi.fn(async (body: unknown) => {
+    const operation = (body as { operation: string }).operation
+    return new Response(
+      JSON.stringify(
+        operation === 'status'
+          ? {
+              projectId: 'research',
+              title: plan.title,
+              status: 'planned',
+              plan: { revision: 1, value: plan },
+              slideCount: plan.slides.length,
+              slides: plan.slides.map(({ id, title }) => ({ id, title })),
+              history: [],
+            }
+          : operation === 'research_capabilities'
+            ? { version: 1, available: true }
+            : operation === 'research_list'
+              ? currentSummary
+              : operation === 'research_read'
+                ? record
+                : { error: 'invalid_request' },
+      ),
+    )
+  })
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request,
+      documentId: async () => 'doc',
+      lastProject: () => 'research',
+      rememberProject: async () => {},
+    },
+  })
+  try {
+    await runtime.presentation?.refresh()
+    await runtime.presentation?.readBoundResearch?.()
+    expect(runtime.presentation?.snapshot().error).toBeUndefined()
+    expect(runtime.research?.snapshot().record?.id).toBe('ledger1')
+    expect(runtime.research?.snapshot().record?.draftDigest).toBe(record.draftDigest)
+    expect(
+      request.mock.calls
+        .filter(([body]) => (body as { operation: string }).operation === 'research_read')
+        .map(([body]) => (body as { ledgerId: string }).ledgerId),
+    ).toEqual(['ledger1'])
+    expect(runtime.presentation?.snapshot().project?.plan?.value.research).toEqual(plan.research)
+  } finally {
+    runtime.dispose()
+  }
+})

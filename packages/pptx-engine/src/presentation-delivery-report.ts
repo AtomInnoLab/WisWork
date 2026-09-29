@@ -1,4 +1,13 @@
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from './presentation-source-limits'
+import { canonicalPresentationValue } from '@wiswork/project-store/presentation-canonical'
+import {
+  parsePresentationResearchRecord,
+  type PresentationResearchRecord,
+} from '@wiswork/project-store/presentation-research'
+import {
+  presentationResearchBindingFindings,
+  type PresentationResearchBindingFinding,
+} from './presentation-research-binding'
 import {
   parsePresentationIssueLedger,
   type PresentationIssueLedger,
@@ -55,6 +64,7 @@ export interface PresentationDeliveryReport {
   inputDigest: string
   planDigest: string
   plan: PresentationPlan
+  research?: { record: PresentationResearchRecord; findings: PresentationResearchBindingFinding[] }
   sourceAudit?: PresentationSourceAudit[]
   reviews: PresentationClaimReview[]
   issueLedger: PresentationIssueLedger
@@ -76,6 +86,7 @@ export interface PresentationDeliveryReport {
 }
 export interface PresentationDeliveryReportInput {
   plan: PresentationPlan
+  researchRecord?: PresentationResearchRecord
   sourceAudit?: PresentationSourceAudit[]
   deck: PresentationDeck
   metadata: Pick<
@@ -239,6 +250,7 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
     'inputDigest',
     'planDigest',
     'plan',
+    'research',
     'sourceAudit',
     'reviews',
     'issueLedger',
@@ -264,6 +276,16 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
   )
     invalid()
   const plan = parsePresentationPlan(report.plan)
+  if (plan.research) {
+    exact(report.research, ['record', 'findings'])
+    const record = parsePresentationResearchRecord(report.research!.record)
+    if (
+      record.documentId !== report.documentId ||
+      canonical(report.research!.findings) !==
+        canonical(presentationResearchBindingFindings(plan, record))
+    )
+      invalid()
+  } else if (report.research !== undefined) invalid()
   if (report.sourceAudit !== undefined) {
     const expected = plan.sources.flatMap((source) => {
       const attachmentId = presentationSourceAttachmentId(source)
@@ -372,6 +394,20 @@ export async function buildPresentationDeliveryReport(
 ): Promise<PresentationDeliveryReport> {
   const plan = parsePresentationPlan(input.plan),
     deck = parsePresentationDeck(input.deck)
+  const researchRecord = plan.research
+    ? parsePresentationResearchRecord(input.researchRecord)
+    : undefined
+  if (plan.research) {
+    const record = researchRecord!
+    const digestBytes = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(canonicalPresentationValue(record.draft)),
+    )
+    const digest = Array.from(new Uint8Array(digestBytes), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('')
+    if (digest !== record.draftDigest) throw new Error('research_binding_invalid')
+  }
   assertDeckMatchesPresentationPlan(deck, plan)
   if (
     input.pageStates.length !== plan.slides.length ||
@@ -383,6 +419,14 @@ export async function buildPresentationDeliveryReport(
     version: 1,
     ...input.metadata,
     plan,
+    ...(plan.research
+      ? {
+          research: {
+            record: researchRecord!,
+            findings: presentationResearchBindingFindings(plan, researchRecord!),
+          },
+        }
+      : {}),
     ...(input.sourceAudit ? { sourceAudit: input.sourceAudit } : {}),
     reviews: input.reviews,
     issueLedger: input.issueLedger,
@@ -478,6 +522,18 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
     `Request: ${safe(report.requestId)}; plan revision: ${report.planRevision}`,
     `Input digest: ${report.inputDigest}; plan digest: ${report.planDigest}`,
   ]
+  if (report.research) {
+    const { record, findings } = report.research
+    lines.push(
+      '',
+      '## Plan-bound frozen research (not fact verification)',
+      `Ledger: ${safe(record.id)}; sequence: ${record.sequence}; draft digest: ${record.draftDigest}`,
+      'Research completion means the record was archived. Source authority, timeliness and support remain NOT VERIFIED. Conflicts and reference gaps require review.',
+      ...findings.map((finding) => `- Needs review: ${safe(JSON.stringify(finding))}`),
+      'Complete original research record (including both conflict partners and unselected sources):',
+      safe(JSON.stringify(record)),
+    )
+  }
   for (const page of report.pages) {
     lines.push(
       '',

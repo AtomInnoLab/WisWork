@@ -1412,3 +1412,118 @@ it('reports actionable local quota failures and preserves native PDF-unavailable
   await f.controller.exportCurrentBundle?.(true)
   expect(f.controller.snapshot().bundleNotice).toContain('宿主 PDF 不可用，PPTX 已保留')
 })
+
+it('reads the exact currently bound research ledger and propagates cancellation instead of choosing the latest', async () => {
+  const { benchmarkPlan } =
+    await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
+  const f = fixture()
+  const plan = benchmarkPlan()
+  plan.projectId = 'project-1'
+  const bound = {
+    ...plan,
+    research: {
+      ledgerId: 'research-old',
+      sequence: 1,
+      draftDigest: 'a'.repeat(64),
+      sources: [{ sourceId: 'source', researchSourceId: 'original-source' }],
+      claims: [{ claimId: 'source-1', researchClaimId: 'original-claim' }],
+    },
+  }
+  f.request.mockImplementation(
+    async () =>
+      new Response(
+        JSON.stringify({
+          projectId: 'project-1',
+          title: bound.title,
+          status: 'planned',
+          plan: { revision: 1, value: bound },
+          slideCount: bound.slides.length,
+          slides: bound.slides.map(({ id, title }) => ({ id, title })),
+          history: [],
+        }),
+      ),
+  )
+  const readResearchRecord = vi.fn(
+    async (_projectId: string, _ledgerId: string, _signal?: AbortSignal) => {},
+  )
+  const controller = createPresentationProjectController({
+    request: f.request,
+    executeTool: f.executeTool,
+    documentId: f.documentId,
+    available: f.available,
+    lastProject: f.lastProject,
+    readResearchRecord,
+  })
+  await controller.refresh()
+  await controller.readBoundResearch?.()
+  expect(readResearchRecord).toHaveBeenCalledWith(
+    'project-1',
+    'research-old',
+    expect.any(AbortSignal),
+  )
+  expect(controller.snapshot().project?.plan?.value.research).toEqual(bound.research)
+  let finish!: () => void
+  readResearchRecord.mockImplementationOnce(
+    (_projectId, _ledgerId, signal) =>
+      new Promise<void>((resolve) => {
+        finish = resolve
+        expect(signal?.aborted).toBe(false)
+      }),
+  )
+  const waiting = controller.readBoundResearch?.()
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+  const signal = readResearchRecord.mock.calls.at(-1)![2]!
+  controller.cancel()
+  expect(signal.aborted).toBe(true)
+  finish()
+  await waiting
+  expect(controller.snapshot().project).toBeUndefined()
+})
+
+it('keeps a bound plan on unsupported research PCs and refuses a cross-document bound read', async () => {
+  const { benchmarkPlan } =
+    await import('../../../packages/pptx-engine/tests/fixtures/presentation-plan.js')
+  const f = fixture(),
+    plan = benchmarkPlan()
+  plan.projectId = 'project-1'
+  plan.research = {
+    ledgerId: 'research-old',
+    sequence: 1,
+    draftDigest: 'a'.repeat(64),
+    sources: [],
+    claims: [],
+  }
+  f.request.mockImplementation(
+    async () =>
+      new Response(
+        JSON.stringify({
+          projectId: 'project-1',
+          title: plan.title,
+          status: 'planned',
+          plan: { revision: 1, value: plan },
+          slideCount: plan.slides.length,
+          slides: plan.slides.map(({ id, title }) => ({ id, title })),
+          history: [],
+        }),
+      ),
+  )
+  const readResearchRecord = vi.fn(async () => {
+    throw new Error('presentation_upgrade_required')
+  })
+  const controller = createPresentationProjectController({
+    request: f.request,
+    executeTool: f.executeTool,
+    documentId: f.documentId,
+    available: f.available,
+    lastProject: f.lastProject,
+    readResearchRecord,
+  })
+  await controller.refresh()
+  await controller.readBoundResearch?.()
+  expect(controller.snapshot().error).toContain('升级')
+  expect(controller.snapshot().project?.plan?.value.research).toEqual(plan.research)
+  f.documentId.mockResolvedValue('other')
+  await controller.readBoundResearch?.()
+  expect(readResearchRecord).toHaveBeenCalledTimes(1)
+  expect(controller.snapshot().project).toBeUndefined()
+})

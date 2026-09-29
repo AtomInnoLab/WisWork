@@ -1,3 +1,7 @@
+import {
+  readBoundPresentationResearch,
+  type PresentationResearchReader,
+} from './presentation-research-plan-binding'
 import { summarizePresentationPageReviews } from '@wiswork/pptx-engine/presentation-page-reviews'
 import { createHash } from 'node:crypto'
 import {
@@ -155,6 +159,7 @@ export async function handlePresentationProduction(
   options: {
     store: PresentationStore
     compile: typeof compilePresentationDeck
+    readResearch?: PresentationResearchReader
     shouldStop?: () => boolean
     onPage?: (record: PresentationProductionRecord, page: PresentationProductionPage) => void
     attachments: (request: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
@@ -227,6 +232,7 @@ export async function handlePresentationProduction(
     })
   }
   let record = store.production(projectId, documentId, requestId)
+  let researchValidated = false
   if (request.operation === 'production_rebuild_page') {
     const parent = store.production(projectId, documentId, request.parentRequestId as string)
     if (!parent) throw new Error('not_found')
@@ -256,6 +262,15 @@ export async function handlePresentationProduction(
     } catch {
       throw new Error('plan_mismatch')
     }
+    await readBoundPresentationResearch(
+      parsePresentationPlan(parent.plan.plan),
+      documentId,
+      projectId,
+      options.readResearch,
+      signal,
+    )
+    check(signal)
+    researchValidated = true
     record = store.deriveProduction(
       projectId,
       documentId,
@@ -275,6 +290,15 @@ export async function handlePresentationProduction(
     } catch {
       throw new Error(record ? 'request_conflict' : 'plan_mismatch')
     }
+    await readBoundPresentationResearch(
+      parsePresentationPlan(saved.plan),
+      documentId,
+      projectId,
+      options.readResearch,
+      signal,
+    )
+    check(signal)
+    researchValidated = true
     record = store.beginProduction(
       projectId,
       documentId,
@@ -290,6 +314,8 @@ export async function handlePresentationProduction(
   if (!record) throw new Error('not_found')
   const deck = parsePresentationDeck(record.deck)
   const plan = parsePresentationPlan(record.plan.plan)
+  if (!researchValidated)
+    await readBoundPresentationResearch(plan, documentId, projectId, options.readResearch, signal)
   assertDeckMatchesPresentationPlan(deck, plan)
   if (request.operation === 'production_page_reviews') {
     check(signal)

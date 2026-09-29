@@ -492,3 +492,11 @@ it('does not lose an existing project selection when saving a foreign new projec
   ).toMatchObject({ isError: true })
   expect(f.rememberProject).not.toHaveBeenCalled()
 })
+
+it('instructs the planner to read and explicitly map the exact research record without inventing identity or verification', () => {
+  const f = setup()
+  expect(f.skill.systemPrompt).toContain('read_research_ledger')
+  expect(f.skill.systemPrompt).toContain('draftDigest')
+  expect(f.skill.systemPrompt).toContain('researchSourceId')
+  expect(f.skill.systemPrompt).toContain('completed')
+})

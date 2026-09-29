@@ -1,3 +1,7 @@
+import {
+  readBoundPresentationResearch,
+  type PresentationResearchReader,
+} from './presentation-research-plan-binding'
 import { PresentationStore } from '@wiswork/project-store'
 import { parsePresentationIssueActionInput } from '@wiswork/project-store/presentation-issue'
 import { parsePresentationPlan } from '@wiswork/pptx-engine/presentation-plan'
@@ -12,12 +16,21 @@ export async function handlePresentationDeliveryReport(
   store: PresentationStore,
   attachments: (body: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>,
   signal: AbortSignal,
+  readResearch?: PresentationResearchReader,
 ) {
   const projectId = request.projectId as string
   const documentId = request.documentId as string
   const requestId = request.requestId as string
   const production = store.production(projectId, documentId, requestId)
   if (!production) throw new Error('not_found')
+  const plan = parsePresentationPlan(production.plan.plan)
+  const researchRecord = await readBoundPresentationResearch(
+    plan,
+    documentId,
+    projectId,
+    readResearch,
+    signal,
+  )
   const reviews = store.listClaimReviews(projectId, documentId, requestId).map((record) =>
     parsePresentationClaimReview({
       ...(record.review as Record<string, unknown>),
@@ -40,7 +53,8 @@ export async function handlePresentationDeliveryReport(
   let issueLedger = store.issueActions(projectId, documentId, requestId)
   const build = async () =>
     buildPresentationDeliveryReport({
-      plan: parsePresentationPlan(production.plan.plan),
+      plan,
+      ...(researchRecord ? { researchRecord } : {}),
       sourceAudit: await auditPresentationSources(
         parsePresentationPlan(production.plan.plan),
         documentId,

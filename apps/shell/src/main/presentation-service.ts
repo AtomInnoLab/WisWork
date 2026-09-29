@@ -1,3 +1,5 @@
+import { PresentationResearchStore } from '@wiswork/project-store/presentation-research-store'
+import { readBoundPresentationResearch } from './presentation-research-plan-binding'
 import { createPresentationResearchService } from './presentation-research'
 import { createPresentationDeliveryBundleService } from './presentation-delivery-bundles'
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
@@ -52,6 +54,8 @@ const errorCodes = new Set([
   'invalid_plan',
   'plan_mismatch',
   'revision_conflict',
+  'research_binding_invalid',
+  'research_unavailable',
   'acceptance_capacity',
   'plan_revision_unavailable',
   'page_locked',
@@ -127,6 +131,7 @@ export function createPresentationService(options: {
   })
   const deliveryBundles = createPresentationDeliveryBundleService(options)
   const store = new PresentationStore(options.userDataPath)
+  const researchStore = new PresentationResearchStore(options.userDataPath)
   const brandLibrary = new PresentationBrandLibrary(options.userDataPath)
   const preferenceLibrary = new PresentationPreferenceLibrary(options.userDataPath)
   const commentLibrary = new PresentationCommentLibrary(options.userDataPath)
@@ -715,8 +720,26 @@ export function createPresentationService(options: {
       try {
         checkAbort(signal)
         if (presentationJobOperations.includes(request.operation as string)) {
+          if (
+            ['production_job_start', 'production_job_resume'].includes(request.operation as string)
+          ) {
+            const frozen = store.production(projectId, documentId, request.requestId as string)
+            if (frozen)
+              await readBoundPresentationResearch(
+                parsePresentationPlan(frozen.plan.plan),
+                documentId,
+                projectId,
+                (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
+                signal,
+              )
+          }
           const response = encode(
-            handlePresentationJob(key, request, { store, compile, attachments }),
+            handlePresentationJob(key, request, {
+              store,
+              compile,
+              attachments,
+              readResearch: (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
+            }),
           )
           if (response.byteLength > 256 * 1024) throw new Error('output_too_large')
           return response
@@ -729,11 +752,26 @@ export function createPresentationService(options: {
           )
         )
           return boundedResponse(
-            await handlePresentationDeliveryReport(request, store, attachments, signal),
+            await handlePresentationDeliveryReport(
+              request,
+              store,
+              attachments,
+              signal,
+              (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
+            ),
           )
         if ((request.operation as string).startsWith('production_'))
           return boundedResponse(
-            await handlePresentationProduction(request, { store, compile, attachments }, signal),
+            await handlePresentationProduction(
+              request,
+              {
+                store,
+                compile,
+                attachments,
+                readResearch: (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
+              },
+              signal,
+            ),
           )
         if (request.operation === 'read_import_source')
           return boundedResponse(
@@ -771,6 +809,14 @@ export function createPresentationService(options: {
         }
         if (request.operation === 'save_plan' || request.operation === 'get_plan') {
           if (request.operation === 'save_plan') {
+            await readBoundPresentationResearch(
+              plan!,
+              documentId,
+              projectId,
+              (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
+              signal,
+            )
+            checkAbort(signal)
             const previousPlan = store.plan(projectId, documentId)
             if (previousPlan && previousPlan.revision === request.expectedRevision) {
               try {
@@ -1116,10 +1162,28 @@ export function createPresentationService(options: {
               throw new Error(record ? 'request_conflict' : 'plan_mismatch')
             }
           }
+          if (binding)
+            await readBoundPresentationResearch(
+              parsePresentationPlan(binding.plan),
+              documentId,
+              projectId,
+              (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
+              signal,
+            )
+          checkAbort(signal)
           record = store.begin(projectId, documentId, requestId, deck, binding)
         }
         if (!record) throw new Error('not_found')
         if (record.status === 'compiled') return boundedResponse(record.result)
+        if (request.operation === 'resume' && record.plan)
+          await readBoundPresentationResearch(
+            parsePresentationPlan(record.plan.plan),
+            documentId,
+            projectId,
+            (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
+            signal,
+          )
+        checkAbort(signal)
         const inputDeck = savedDeck(record.deck)
         if (inputDeck.id !== projectId) throw new Error('invalid_deck')
         if (record.plan) {
