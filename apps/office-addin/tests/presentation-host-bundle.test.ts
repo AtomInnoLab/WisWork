@@ -292,3 +292,40 @@ it('rejects invalid checkpoint history instead of silently dropping save points'
     false,
   )
 })
+
+it('includes explicitly historical research with all conflicts and verifies document ownership', async () => {
+  const { researchRecordFixture } = await import('./presentation-research-root-fixture.js')
+  const f = await setup(),
+    record = researchRecordFixture(f.report.documentId, f.report.projectId)
+  const skill = createPresentationHostBundleSkill({
+    ...f.options,
+    readResearch: async () => record,
+  })
+  const result = await skill.executeTool({
+    id: 'with-research',
+    name: 'export_current_presentation_bundle',
+    input: { project_id: f.report.projectId, request_id: f.report.requestId },
+  })
+  expect(result.isError, result.output).toBeFalsy()
+  const zip = await JSZip.loadAsync(f.bytes())
+  expect(zip.file('research.json')).not.toBeNull()
+  expect(JSON.parse(await zip.file('research.json')!.async('string'))).toEqual(record)
+  expect(await zip.file('research.md')!.async('string')).toContain(record.draft.facts[1]!.statement)
+  expect(await zip.file('README.md')!.async('string')).toContain('历史研究')
+  const manifest = JSON.parse(await zip.file('manifest.json')!.async('string'))
+  expect(manifest.checks.completion).toBe('not_verified')
+  const wrong = await setup(),
+    wrongSkill = createPresentationHostBundleSkill({
+      ...wrong.options,
+      readResearch: async () => ({ ...record, documentId: 'other' }),
+    })
+  expect(
+    (
+      await wrongSkill.executeTool({
+        id: 'wrong-research',
+        name: 'export_current_presentation_bundle',
+        input: { project_id: wrong.report.projectId, request_id: wrong.report.requestId },
+      })
+    ).output,
+  ).toBe('presentation_delivery_bundle_history_invalid')
+})

@@ -1,3 +1,5 @@
+import { PresentationResearchCard } from './agent/presentation-research-card.js'
+import type { PresentationResearchController } from './agent/presentation-research.js'
 import type { PresentationAcquisitionHistory } from '@wiswork/project-store/presentation-acquisition'
 import { PresentationAcquisitionHistoryCard } from './agent/presentation-acquisition-history.js'
 import { PresentationChangesCard } from './agent/presentation-changes-card.js'
@@ -260,6 +262,7 @@ interface SessionFile {
 }
 
 export interface OfficeWorkspaceUi {
+  readonly research?: PresentationResearchController
   readonly project?: PresentationProjectController
   readonly importProgress?: PresentationImportProgressController
   readonly qa?: PresentationQaController
@@ -346,6 +349,7 @@ export function createOfficeWorkspaceUi(
   interruptedChange?: { agentRunId: string; toolCallId: string },
 ): OfficeWorkspaceUi {
   return Object.freeze({
+    research: runtime.research,
     project: runtime.presentation,
     importProgress: runtime.importProgress,
     qa: runtime.qa,
@@ -662,6 +666,10 @@ export function AgentWorkspace(props: {
   useEffect(() => {
     if (!state.busy) void ui.project?.refresh()
   }, [ui.project, state.busy])
+
+  useEffect(() => {
+    if (!state.busy) void ui.research?.refresh()
+  }, [ui.research, state.busy])
 
   useEffect(() => ui.project?.subscribe(() => setFiles(ui.attachments())), [ui])
 
@@ -1529,6 +1537,12 @@ export function AgentWorkspace(props: {
       )}
 
       <section className="composer-shell" aria-label="Message WisWork Agent">
+        {ui.research && (
+          <PresentationResearchCard
+            controller={ui.research}
+            disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
+          />
+        )}
         {ui.project && (
           <PresentationWorkflowCard
             project={ui.project}

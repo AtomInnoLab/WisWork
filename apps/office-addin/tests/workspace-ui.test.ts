@@ -968,3 +968,64 @@ it('refreshes persisted acquisition history after webpage failure and explicit r
     container.remove()
   }
 })
+
+it('renders independent research when no presentation project or production exists', async () => {
+  const { createPresentationResearchController } =
+    await import('../src/agent/presentation-research.js')
+  const { researchRecord, researchSummary } = await import('./presentation-research-fixture.js')
+  const research = createPresentationResearchController({
+    available: () => true,
+    documentId: async () => 'doc',
+    lastProject: () => 'research',
+    request: async () => new Response(JSON.stringify({ version: 1, available: true })),
+    executeTool: async (call) => ({
+      output: JSON.stringify(
+        call.name === 'list_research_ledgers' ? researchSummary() : researchRecord(),
+      ),
+      mutated: false,
+      summary: 'read',
+    }),
+  })
+  const snapshot = {
+    assistantText: '',
+    activity: '',
+    busy: false,
+    applying: false,
+    status: 'done',
+    retryable: false,
+    timeline: [],
+  } as OfficeAgentSnapshot
+  const session = {
+    snapshot: () => snapshot,
+    subscribe: () => () => undefined,
+  } as unknown as OfficeAgentSession
+  const ui: OfficeWorkspaceUi = {
+    attachments: () => [],
+    skills: () => [],
+    skillPackagesEnabled: true,
+    upload: vi.fn(),
+    clear: vi.fn(),
+    research,
+  }
+  const container = document.createElement('div')
+  const root = createRoot(container)
+  try {
+    await act(async () =>
+      root.render(
+        React.createElement(AgentWorkspace, {
+          session,
+          ui,
+          disconnect: vi.fn(),
+          host: 'powerpoint',
+        }),
+      ),
+    )
+    expect(container.textContent).toContain('资料研究账本')
+    expect(container.textContent).not.toContain('演示文稿项目')
+    await act(async () => research.read('ledger1'))
+    expect(container.textContent).toContain('销售增长')
+    expect(container.textContent).toContain('销售下降')
+  } finally {
+    await act(async () => root.unmount())
+  }
+})

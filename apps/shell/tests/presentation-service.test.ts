@@ -169,6 +169,7 @@ describe('durable project recovery', () => {
       projectId: 'deck',
       title: 'Second',
       deliveryBundlesAvailable: true,
+      researchAvailable: true,
       status: 'pending',
       latestRequestId: 'second',
       latestCompiledRequestId: 'first',

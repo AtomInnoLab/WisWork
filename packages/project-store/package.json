@@ -16,7 +16,9 @@
     "./presentation-job": "./src/presentation-job.ts",
     "./presentation-acquisition": "./src/presentation-acquisition.ts",
     "./presentation-acquisition-store": "./src/presentation-acquisition-store.ts",
-    "./presentation-delivery-bundle": "./src/presentation-delivery-bundle.ts"
+    "./presentation-delivery-bundle": "./src/presentation-delivery-bundle.ts",
+    "./presentation-research": "./src/presentation-research.ts",
+    "./presentation-research-store": "./src/presentation-research-store.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

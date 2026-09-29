@@ -65,7 +65,10 @@ const PRESENTATION_STAGES: ReadonlyArray<readonly [PresentationStage, RegExp]> =
     'style',
     /^(?:(?:save|read)_presentation_brand_kit|list_presentation_brand_kits|inspect_slide_masters|edit_slide_master|edit_slide_master_xml)$/,
   ],
-  ['research', /^(?:web_search|web_fetch)$/],
+  [
+    'research',
+    /^(?:web_search|web_fetch|(?:build|read|export)_research_ledger|list_research_ledgers)$/,
+  ],
   ['assets', /^(?:image_search|insert-image)$/],
   [
     'sources',

@@ -1,3 +1,5 @@
+import { parsePresentationResearchRecord } from '@wiswork/project-store/presentation-research'
+import { PresentationResearchStore } from '@wiswork/project-store/presentation-research-store'
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, rename, rm } from 'node:fs/promises'
@@ -134,7 +136,7 @@ async function validateBundleZip(raw: Buffer) {
       start = raw.readUInt32LE(end + 16)
     if (
       !count ||
-      count > 10 ||
+      count > 12 ||
       count !== raw.readUInt16LE(end + 8) ||
       start + raw.readUInt32LE(end + 12) !== end
     )
@@ -445,6 +447,24 @@ export function createPresentationDeliveryBundleService(options: { userDataPath:
           canonicalPresentationValue(evidence.plan.sources)
       )
         fail('invalid_state')
+      if (files.has('research.json')) {
+        const research = parsePresentationResearchRecord(
+          JSON.parse(files.get('research.json')!.toString()),
+        )
+        if (
+          research.documentId !== documentId ||
+          research.projectId !== projectId ||
+          research.state !== 'completed'
+        )
+          fail('invalid_state')
+        const original = await new PresentationResearchStore(options.userDataPath).read(
+          documentId,
+          projectId,
+          research.id,
+        )
+        if (canonicalPresentationValue(research) !== canonicalPresentationValue(original))
+          fail('invalid_state')
+      }
       if (
         !files
           .get('presentation.pptx')!

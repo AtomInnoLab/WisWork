@@ -90,7 +90,7 @@ export function parsePresentationDeliveryBundleManifest(
     !hash(m.planDigest) ||
     !time(m.createdAt) ||
     !Array.isArray(m.files) ||
-    ![8, 9].includes(m.files.length)
+    ![8, 9, 10, 11].includes(m.files.length)
   )
     fail()
   const names = new Set<string>()
@@ -99,9 +99,12 @@ export function parsePresentationDeliveryBundleManifest(
     if (
       !exact(file, ['name', 'sizeBytes', 'sha256']) ||
       typeof file.name !== 'string' ||
-      ![...presentationDeliveryBundleFiles, 'presentation.pdf'].includes(
-        file.name as (typeof presentationDeliveryBundleFiles)[number],
-      ) ||
+      ![
+        ...presentationDeliveryBundleFiles,
+        'presentation.pdf',
+        'research.json',
+        'research.md',
+      ].includes(file.name as (typeof presentationDeliveryBundleFiles)[number]) ||
       names.has(file.name) ||
       !integer(
         file.sizeBytes,
@@ -131,7 +134,8 @@ export function parsePresentationDeliveryBundleManifest(
     m.checks.roundTrip !== 'not_run' ||
     !['not_checked', 'historical_records_only'].includes(m.checks.hostQa) ||
     !['included', 'not_requested', 'unavailable'].includes(m.checks.pdf) ||
-    (m.checks.pdf === 'included') !== names.has('presentation.pdf')
+    (m.checks.pdf === 'included') !== names.has('presentation.pdf') ||
+    names.has('research.json') !== names.has('research.md')
   )
     fail()
   return structuredClone(m)

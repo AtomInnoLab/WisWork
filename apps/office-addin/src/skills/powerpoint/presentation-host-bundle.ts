@@ -1,3 +1,8 @@
+import {
+  parsePresentationResearchRecord,
+  type PresentationResearchRecord,
+} from '@wiswork/project-store/presentation-research'
+import { presentationResearchMarkdown } from './presentation-research.js'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import JSZip from 'jszip'
 import {
@@ -23,6 +28,10 @@ interface Options {
   vfs: InMemoryVfs
   readQuality?(projectId: string, requestId: string): unknown
   readCheckpoints?(): unknown
+  readResearch?(
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<PresentationResearchRecord | undefined>
 }
 const MAX_BYTES = 20 * 1024 * 1024
 const CHUNK = 128 * 1024
@@ -280,6 +289,22 @@ export function createPresentationHostBundleSkill(
               pdfState = 'unavailable'
             }
           }
+          const rawResearch = await options.readResearch?.(projectId, controller.signal)
+          await current()
+          let research: PresentationResearchRecord | undefined
+          if (rawResearch !== undefined) {
+            try {
+              research = parsePresentationResearchRecord(rawResearch)
+            } catch {
+              throw Error('presentation_delivery_bundle_history_invalid')
+            }
+            if (
+              research.documentId !== documentId ||
+              research.projectId !== projectId ||
+              research.state !== 'completed'
+            )
+              throw Error('presentation_delivery_bundle_history_invalid')
+          }
           const rawQa = options.readQuality?.(projectId, requestId)
           if (
             rawQa !== undefined &&
@@ -332,7 +357,7 @@ export function createPresentationHostBundleSkill(
             ],
           }
           const readme =
-            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取，导出期间的修改可能导致两份快照不同，尚未核对二者一致性。不可用时不会用编译预览 PDF 代替。manifest.json 各文件摘要用于检测字节完整性。\n'
+            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取，导出期间的修改可能导致两份快照不同，尚未核对二者一致性。不可用时不会用编译预览 PDF 代替。历史研究若存在，research.json/.md 属于本项目已完成的研究整理记录，不等于当前生产任务的冻结主张或宿主事实核验；冲突双方和缺口保留。manifest.json 各文件摘要用于检测字节完整性。\n'
           const files: Record<string, Uint8Array> = {
             'presentation.pptx': pptx,
             'evidence.json': json(report),
@@ -347,6 +372,10 @@ export function createPresentationHostBundleSkill(
               entries: checkpoints,
             }),
             'README.md': encoder.encode(readme),
+          }
+          if (research) {
+            files['research.json'] = json(research)
+            files['research.md'] = encoder.encode(presentationResearchMarkdown(research))
           }
           if (pdf) files['presentation.pdf'] = pdf
           if (Object.values(files).reduce((sum, file) => sum + file.length, 0) > 32 * 1024 * 1024)

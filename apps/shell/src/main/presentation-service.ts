@@ -1,3 +1,4 @@
+import { createPresentationResearchService } from './presentation-research'
 import { createPresentationDeliveryBundleService } from './presentation-delivery-bundles'
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import { readPresentationImportSource } from './presentation-import-source'
@@ -70,6 +71,7 @@ const errorCodes = new Set([
   'evidence_excerpt_not_found',
   'evidence_locator_mismatch',
   'attachment_conflict',
+  'revision_conflict',
   'quota_exceeded',
   'digest_mismatch',
   'parse_failed',
@@ -119,6 +121,10 @@ export function createPresentationService(options: {
   const pageBackups = createPresentationPageBackupService(options)
   const existingPageBackups = createPresentationExistingPageBackupService(options)
   const attachments = createPresentationAttachmentService(options)
+  const research = createPresentationResearchService({
+    userDataPath: options.userDataPath,
+    attachments,
+  })
   const deliveryBundles = createPresentationDeliveryBundleService(options)
   const store = new PresentationStore(options.userDataPath)
   const brandLibrary = new PresentationBrandLibrary(options.userDataPath)
@@ -143,6 +149,8 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
+      if (typeof request.operation === 'string' && request.operation.startsWith('research_'))
+        return boundedResponse(await research(request, signal))
       if (typeof request.operation === 'string' && request.operation.startsWith('delivery_bundle_'))
         return boundedResponse(await deliveryBundles(request, signal))
       if (request.operation === 'export_pdf') {
@@ -1032,6 +1040,7 @@ export function createPresentationService(options: {
               title: plan.value.title,
               status: 'planned',
               deliveryBundlesAvailable: true,
+              researchAvailable: true,
               ...(production ? { production, productionTasks } : {}),
               slideCount: plan.value.slides.length,
               slides: plan.value.slides.map(({ id, title }) => ({ id, title })),
@@ -1055,6 +1064,7 @@ export function createPresentationService(options: {
             title: latestDeck.title,
             status: latest.status,
             deliveryBundlesAvailable: true,
+            researchAvailable: true,
             ...(production ? { production, productionTasks } : {}),
             latestRequestId: latest.requestId,
             ...(plan ? { plan } : {}),
