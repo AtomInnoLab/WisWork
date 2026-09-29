@@ -511,6 +511,12 @@ export function PresentationProjectCard(props: {
                               : host.revisionRelation === 'historical'
                                 ? `历史计划第 ${host.planRevision} 版`
                                 : '计划修订未知'}{' '}
+                            ·{' '}
+                            {host.sourceProof === 'digest'
+                              ? '源产物摘要已匹配'
+                              : host.sourceProof === 'identity'
+                                ? '来源身份对应，旧回执无文件摘要'
+                                : '源产物尚未核对'}
                           </li>
                         ))}
                       </ul>
@@ -518,6 +524,12 @@ export function PresentationProjectCard(props: {
                   </li>
                 ))}
               </ol>
+              {!!project.hostAssociations.unverifiedSources && (
+                <p>
+                  {project.hostAssociations.unverifiedSources} 份导入源产物尚未核对，请恢复 PC
+                  连接或核对原始任务后刷新。
+                </p>
+              )}
               {project.hostAssociations.legacyImports > 0 && (
                 <p>
                   {project.hostAssociations.legacyImports}{' '}

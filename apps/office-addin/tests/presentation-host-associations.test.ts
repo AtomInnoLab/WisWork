@@ -2,6 +2,7 @@ import { expect, it } from 'vitest'
 import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan.js'
 import { presentationHostAssociations } from '../src/skills/powerpoint/presentation-host-associations.js'
 import type { PresentationImportRecord } from '../src/skills/powerpoint/presentation-delivery.js'
+import type { PresentationImportSource } from '@wiswork/project-store/presentation-import-source'
 
 function receipt(documentId = 'doc'): PresentationImportRecord {
   return {
@@ -23,6 +24,115 @@ function receipt(documentId = 'doc'): PresentationImportRecord {
     },
   }
 }
+function source(kind: 'compiled' | 'production' = 'production'): PresentationImportSource {
+  const plan = benchmarkPlan()
+  return {
+    version: 1,
+    documentId: 'doc',
+    projectId: plan.projectId,
+    requestId: 'source',
+    source: kind,
+    planRevision: 1,
+    artifactDigest: 'a'.repeat(64),
+    pages: plan.slides.slice(0, 2).map((page, index) => ({
+      id: page.id,
+      title: page.title,
+      sourceSlideId: kind === 'production' ? '256#' : `${256 + index}#`,
+    })),
+  }
+}
+it('verifies exact digest/page identity and obtains the frozen revision even outside the task window', () => {
+  const plan = benchmarkPlan()
+  const result = presentationHostAssociations(
+    plan,
+    3,
+    'doc',
+    [{ key: `production/${plan.projectId}/source`, record: receipt() }],
+    [],
+    ['host-a'],
+    [source()],
+  )
+  expect(result.pages[0]!.hostPages[0]).toMatchObject({
+    sourceProof: 'digest',
+    planRevision: 1,
+    revisionRelation: 'historical',
+  })
+  expect(result.unverifiedSources).toBe(0)
+  for (const change of ['digest', 'page', 'source', 'revision']) {
+    const descriptor = source()
+    if (change === 'digest') descriptor.artifactDigest = 'b'.repeat(64)
+    if (change === 'page') descriptor.pages[0]!.id = 'wrong'
+    if (change === 'source') descriptor.pages[0]!.sourceSlideId = '257#'
+    if (change === 'revision') descriptor.planRevision = 2
+    expect(
+      () =>
+        presentationHostAssociations(
+          plan,
+          3,
+          'doc',
+          [{ key: `production/${plan.projectId}/source`, record: receipt() }],
+          [{ requestId: 'source', planRevision: 1 }],
+          ['host-a'],
+          [descriptor],
+        ),
+      change,
+    ).toThrow('presentation_host_association_invalid')
+  }
+})
+it('recovers v1 checkpoint and complete batch page identity without pretending a missing receipt digest was verified', () => {
+  const plan = benchmarkPlan(),
+    descriptor = source('compiled'),
+    checkpointed = receipt()
+  checkpointed.checkpoint!.version = 1
+  delete checkpointed.checkpoint!.pageIds
+  checkpointed.checkpoint!.sourceSlideIds[1] = '257#'
+  checkpointed.checkpoint!.completed[1]!.sourceSlideId = '257#'
+  for (const checkpoint of [true, false]) {
+    const record = structuredClone(checkpointed)
+    if (!checkpoint) delete record.checkpoint
+    const result = presentationHostAssociations(
+      plan,
+      3,
+      'doc',
+      [{ key: `${plan.projectId}/source`, record }],
+      [],
+      ['host-a', 'host-b'],
+      [descriptor],
+    )
+    expect(result.pages[1]!.hostPages[0]).toMatchObject({
+      slideId: 'host-b',
+      planRevision: 1,
+      sourceProof: checkpoint ? 'digest' : 'identity',
+    })
+    expect(result.legacyImports).toBe(0)
+  }
+})
+it('keeps an unavailable or other namespace source unverified and never associates an uncertain legacy batch', () => {
+  const plan = benchmarkPlan()
+  const result = presentationHostAssociations(
+    plan,
+    3,
+    'doc',
+    [{ key: `production/${plan.projectId}/source`, record: receipt() }],
+    [],
+    ['host-a'],
+    [source('compiled')],
+  )
+  expect(result.pages[0]!.hostPages[0]!.sourceProof).toBe('unverified')
+  expect(result.unverifiedSources).toBe(1)
+  const pending = { state: 'pending' as const, documentId: 'doc' }
+  const legacy = presentationHostAssociations(
+    plan,
+    3,
+    'doc',
+    [{ key: `${plan.projectId}/source`, record: pending }],
+    [],
+    [],
+    [source('compiled')],
+  )
+  expect(legacy.pages.every((page) => page.hostPages.length === 0)).toBe(true)
+  expect(legacy.uncertainImports).toBe(1)
+})
 it('associates exact page IDs across historical imports and distinguishes current presence without inferring content or QA', () => {
   const plan = benchmarkPlan()
   const result = presentationHostAssociations(
@@ -50,6 +160,7 @@ it('associates exact page IDs across historical imports and distinguishes curren
         revisionRelation: 'historical',
         presence: 'present',
         position: 1,
+        sourceProof: 'unverified',
       },
     ],
   })

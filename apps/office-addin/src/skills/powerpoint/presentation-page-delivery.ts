@@ -1,4 +1,5 @@
 import type { AgentSkill } from '@wiswork/agent-core'
+import { presentationImportContent } from '@wiswork/project-store/presentation-import-source'
 import { selectionFingerprint } from '../../agent/proposal-controller.js'
 import { presentationPackageDigest } from './powerpoint-package.js'
 import type {
@@ -199,14 +200,7 @@ export function presentationArtifactContent(artifact: CompiledPresentationArtifa
   if (artifact.pagePptxBase64 === undefined) return artifact.pptxBase64
   if (!validPages(artifact)) throw new Error('presentation_import_state_invalid')
   presentationImportKey(artifact)
-  return JSON.stringify({
-    documentId: artifact.documentId,
-    projectId: artifact.projectId,
-    requestId: artifact.requestId,
-    planRevision: artifact.planRevision,
-    pages: artifact.pages,
-    pagePptxBase64: artifact.pagePptxBase64,
-  })
+  return presentationImportContent(artifact)
 }
 export function presentationPageMapping(
   artifact: CompiledPresentationArtifact,

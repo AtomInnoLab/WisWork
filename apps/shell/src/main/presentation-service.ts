@@ -1,4 +1,5 @@
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
+import { readPresentationImportSource } from './presentation-import-source'
 import { handlePresentationDeliveryReport } from './presentation-delivery-report'
 import { parsePresentationIssueActionInput } from '@wiswork/project-store/presentation-issue'
 import {
@@ -396,6 +397,7 @@ export function createPresentationService(options: {
           'save_plan',
           'set_plan_page_lock',
           'get_plan',
+          'read_import_source',
           'audit_sources',
           'production_begin',
           'production_rebuild_page',
@@ -478,26 +480,28 @@ export function createPresentationService(options: {
                             ]
                           : request.operation === 'resume'
                             ? ['operation', 'documentId', 'projectId', 'requestId']
-                            : request.operation === 'set_plan_page_lock'
-                              ? [
-                                  'operation',
-                                  'documentId',
-                                  'projectId',
-                                  'expectedRevision',
-                                  'pageId',
-                                  'locked',
-                                ]
-                              : request.operation === 'save_plan'
+                            : request.operation === 'read_import_source'
+                              ? ['operation', 'documentId', 'projectId', 'requestId', 'source']
+                              : request.operation === 'set_plan_page_lock'
                                 ? [
                                     'operation',
                                     'documentId',
                                     'projectId',
                                     'expectedRevision',
-                                    'plan',
+                                    'pageId',
+                                    'locked',
                                   ]
-                                : request.operation === 'get_plan'
-                                  ? ['operation', 'documentId', 'projectId', 'revision']
-                                  : ['operation', 'documentId', 'projectId']
+                                : request.operation === 'save_plan'
+                                  ? [
+                                      'operation',
+                                      'documentId',
+                                      'projectId',
+                                      'expectedRevision',
+                                      'plan',
+                                    ]
+                                  : request.operation === 'get_plan'
+                                    ? ['operation', 'documentId', 'projectId', 'revision']
+                                    : ['operation', 'documentId', 'projectId']
       const requiredKeys = allowedKeys.filter(
         (key) =>
           !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)) &&
@@ -516,6 +520,11 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const documentId = request.documentId
+      if (request.operation === 'read_import_source') {
+        assertPresentationId(request.requestId)
+        if (!['compiled', 'production'].includes(request.source as string))
+          throw new Error('invalid_request')
+      }
       let deck: ReturnType<typeof parsePresentationDeck> | undefined
       if (request.operation === 'compile' || request.operation === 'production_begin') {
         try {
@@ -674,6 +683,16 @@ export function createPresentationService(options: {
         if ((request.operation as string).startsWith('production_'))
           return boundedResponse(
             await handlePresentationProduction(request, { store, compile, attachments }, signal),
+          )
+        if (request.operation === 'read_import_source')
+          return boundedResponse(
+            readPresentationImportSource(
+              store,
+              projectId,
+              documentId,
+              request.requestId as string,
+              request.source as 'compiled' | 'production',
+            ),
           )
         if (request.operation === 'set_plan_page_lock') {
           const record = store.setPlanPageLock(

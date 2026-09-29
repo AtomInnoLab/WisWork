@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./presentation-issue": "./src/presentation-issue.ts",
     "./presentation-canonical": "./src/presentation-canonical.ts",
+    "./presentation-import-source": "./src/presentation-import-source.ts",
     "./presentation-job": "./src/presentation-job.ts"
   },
   "scripts": {

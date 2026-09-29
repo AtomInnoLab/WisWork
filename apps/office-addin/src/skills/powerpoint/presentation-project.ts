@@ -27,6 +27,10 @@ import {
   type PresentationHostAssociations,
 } from './presentation-host-associations.js'
 import type { PresentationImportRecord } from './presentation-delivery.js'
+import {
+  parsePresentationImportSource,
+  type PresentationImportSource,
+} from '@wiswork/project-store/presentation-import-source'
 
 export interface PresentationProductionTask {
   requestId: string
@@ -810,6 +814,66 @@ export function createPresentationProjectController(
         try {
           const receipts = options.listReceipts()
           const capturedReceipts = JSON.stringify(receipts)
+          check()
+          if ((await options.documentId()) !== documentId)
+            throw new Error('presentation_document_changed')
+          check()
+          if (JSON.stringify(options.listReceipts()) !== capturedReceipts)
+            throw new Error('presentation_host_association_invalid')
+          const sources: PresentationImportSource[] = []
+          const references = receipts.flatMap(({ key, record }) => {
+            const match = /^(production\/)?([A-Za-z0-9_-]{1,128})\/([A-Za-z0-9_-]{1,128})$/.exec(
+              key,
+            )
+            return match && record.documentId === documentId && match[2] === projectId
+              ? [
+                  {
+                    source: match[1] ? ('production' as const) : ('compiled' as const),
+                    requestId: match[3]!,
+                  },
+                ]
+              : []
+          })
+          for (let start = 0; start < references.length; start += 4) {
+            if ((await options.documentId()) !== documentId)
+              throw new Error('presentation_document_changed')
+            check()
+            const batch = await Promise.all(
+              references.slice(start, start + 4).map(async (reference) => {
+                const response = await options.request(
+                  { operation: 'read_import_source', documentId, projectId, ...reference },
+                  controller.signal,
+                )
+                check()
+                if (!response.ok) return undefined
+                const text = await response.text()
+                check()
+                if (new TextEncoder().encode(text).byteLength > 64 * 1024)
+                  throw new Error('presentation_host_association_invalid')
+                const value = JSON.parse(text)
+                if (
+                  ['not_found', 'page_not_ready', 'invalid_request', 'upgrade_required'].includes(
+                    value?.error,
+                  )
+                )
+                  return undefined
+                const source = parsePresentationImportSource(value)
+                if (
+                  source.documentId !== documentId ||
+                  source.projectId !== projectId ||
+                  source.requestId !== reference.requestId ||
+                  source.source !== reference.source
+                )
+                  throw new Error('presentation_host_association_invalid')
+                return source
+              }),
+            )
+            check()
+            for (const source of batch) if (source) sources.push(source)
+          }
+          if ((await options.documentId()) !== documentId)
+            throw new Error('presentation_document_changed')
+          check()
           const hostIds = await options.hostSlideIds(controller.signal)
           check()
           if ((await options.documentId()) !== documentId)
@@ -824,6 +888,7 @@ export function createPresentationProjectController(
             receipts,
             project.productionTasks ?? [],
             hostIds,
+            sources,
           )
         } catch (error) {
           if (

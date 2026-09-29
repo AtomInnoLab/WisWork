@@ -98,6 +98,7 @@ describe('presentation project recovery card', () => {
                   planRevision: 1,
                   revisionRelation: 'historical',
                   presence: 'present',
+                  sourceProof: 'digest',
                 },
                 {
                   requestId: 'unknown',
@@ -115,6 +116,7 @@ describe('presentation project recovery card', () => {
     })
     expect(f.container.querySelector('[aria-label="计划与宿主页关联"]')).not.toBeNull()
     expect(f.container.textContent).toContain('历史计划第 1 版')
+    expect(f.container.textContent).toContain('源产物摘要已匹配')
     expect(f.container.textContent).toContain('宿主页已缺失')
     expect(f.container.textContent).toContain('计划修订未知')
     expect(f.container.textContent).toContain('2 份旧导入记录缺少页级身份')
