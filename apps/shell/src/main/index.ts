@@ -1,4 +1,8 @@
-import { createPresentationService } from './presentation-service'
+import { acquirePresentationProjectLock, createPresentationService } from './presentation-service'
+import {
+  createPresentationProjectRetentionService,
+  presentationRetentionEnabled,
+} from './presentation-project-retention'
 import { execSync, spawn } from 'node:child_process'
 import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
@@ -290,6 +294,7 @@ let officeBridgeServer: OfficeBridgeHttpServer | null = null
 let officeBridgeDiagnostic = 'disabled'
 let officeRelay: OfficeRelayClient | null = null
 let officeRelayDiagnostic = 'disconnected'
+let presentationRetentionTimer: ReturnType<typeof setInterval> | null = null
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
   if (!authRuntime) throw new AuthError('auth_not_initialized')
   return authRuntime
@@ -2537,6 +2542,19 @@ app.whenReady().then(async () => {
       officeRelay?.revoke('auth_required')
     },
   })
+  if (presentationRetentionEnabled(process.env)) {
+    const root = app.getPath('userData')
+    const retention = createPresentationProjectRetentionService({
+      userDataPath: root,
+      acquireProjectLock: (projectId) => acquirePresentationProjectLock(root, projectId),
+    })
+    const scan = () => {
+      void retention.tick().catch(() => console.error('[ppt-retention] scan failed'))
+    }
+    scan()
+    presentationRetentionTimer = setInterval(scan, 24 * 60 * 60 * 1000)
+    presentationRetentionTimer.unref()
+  }
   try {
     const retrievalEndpoint = officeRetrievalEndpointFromEnv(process.env)
     const retrievalProxy = retrievalEndpoint
@@ -2686,6 +2704,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  if (presentationRetentionTimer) clearInterval(presentationRetentionTimer)
   // No close prompt may fall through to "Save" during shutdown
   markSheetsShuttingDown()
   stopSheetsSidecar()

@@ -43,7 +43,8 @@ it('requires visible explicit confirmation, describes retained data, and never i
     )
     expect(calls).toEqual([])
     expect(element.textContent).toContain('不修改当前 PowerPoint 内容')
-    expect(element.textContent).toContain('不会自动执行清理')
+    expect(element.textContent).toContain('本机默认不自动清理')
+    expect(element.textContent).toContain('PC 明确启用保留期自动执行')
     const button = (text: string) =>
       Array.from(element.querySelectorAll('button')).find((b) => b.textContent === text)!
     await act(async () => button('预览本机项目删除范围').click())

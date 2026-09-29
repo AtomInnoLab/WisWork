@@ -35,7 +35,10 @@ export function PresentationProjectGovernanceCard({
   return (
     <section aria-label="本机项目资料治理">
       <h3>本机项目资料治理</h3>
-      <p>仅处理这台电脑上的项目资料，不修改当前 PowerPoint 内容。保留策略不会自动执行清理。</p>
+      <p>
+        仅处理这台电脑上的项目资料，不修改当前 PowerPoint 内容。本机默认不自动清理；只有 PC
+        明确启用保留期自动执行后，才会定期按策略处理到期项目。
+      </p>
       {!snapshot.available ? (
         <p>当前连接不支持本机项目治理。</p>
       ) : (
