@@ -196,9 +196,16 @@ async function pngDigest(base64: string) {
     b.toString(16).padStart(2, '0'),
   ).join('')
 }
-export function createPresentationExistingEditingSkill(
-  options: Options,
-): AgentSkill & { clear(): void; beginMutation(): void; endMutation(): void } {
+export function createPresentationExistingEditingSkill(options: Options): AgentSkill & {
+  clear(): void
+  beginMutation(): void
+  endMutation(): void
+  executeTool(
+    call: Parameters<AgentSkill['executeTool']>[0],
+    signal?: AbortSignal,
+    newEditAvailable?: () => boolean,
+  ): ReturnType<AgentSkill['executeTool']>
+} {
   let epoch = 0,
     qaEpoch = 0,
     mutating = 0
@@ -229,7 +236,7 @@ export function createPresentationExistingEditingSkill(
     endMutation() {
       mutating = Math.max(0, mutating - 1)
     },
-    async executeTool(call, signal) {
+    async executeTool(call, signal?: AbortSignal, newEditAvailable?: () => boolean) {
       const token = epoch
       const active = (s = signal) => {
         if (s?.aborted || token !== epoch) throw new Error('cancelled')
@@ -285,10 +292,16 @@ export function createPresentationExistingEditingSkill(
           throw new Error('invalid_tool_input')
         const documentId = await options.documentId()
         active()
+        const editAvailable = () => {
+          if (editing && newEditAvailable?.() === false)
+            throw new Error('presentation_existing_persistence_unavailable')
+        }
         const current = async (s?: AbortSignal) => {
           active(s)
+          editAvailable()
           const id = await options.documentId()
           active(s)
+          editAvailable()
           if (id !== documentId) throw new Error('presentation_document_changed')
         }
         if (call.name.startsWith('list_')) {
@@ -1163,6 +1176,7 @@ export function createPresentationExistingEditingSkill(
             if (!matches(await value(s), initial)) throw new Error('proposal_stale')
             if (!reversing) await ensureBackup(s, receiptOnly)
             if (!receiptOnly) {
+              await current(s)
               if (record!.kind === 'table_cell')
                 await options.adapter.editPresentationTableCell!(
                   record!.hostSlideId,

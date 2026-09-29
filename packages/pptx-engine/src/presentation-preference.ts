@@ -3,10 +3,17 @@ export interface PresentationPreferenceSource {
   projectId: string
   changeId: string
 }
+export interface PresentationPreferenceOrigin {
+  version: 1
+  observationId: string
+  beforeDigest: string
+  afterDigest: string
+}
 export interface SavedPresentationPreference {
   projectId: string
   changeId: string
   text: string
+  origin?: PresentationPreferenceOrigin
   reuse?: {
     version: 1
     source: PresentationPreferenceSource
@@ -39,6 +46,20 @@ export function parsePresentationPreferenceSource(value: unknown): PresentationP
     return fail()
   return structuredClone(source) as unknown as PresentationPreferenceSource
 }
+export function parsePresentationPreferenceOrigin(value: unknown): PresentationPreferenceOrigin {
+  const origin = object(value)
+  if (
+    !keys(origin, ['version', 'observationId', 'beforeDigest', 'afterDigest']) ||
+    origin.version !== 1 ||
+    !id(origin.observationId, 80) ||
+    typeof origin.beforeDigest !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(origin.beforeDigest) ||
+    typeof origin.afterDigest !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(origin.afterDigest)
+  )
+    return fail()
+  return structuredClone(origin) as unknown as PresentationPreferenceOrigin
+}
 export function parseSavedPresentationPreference(value: unknown): SavedPresentationPreference {
   const preference = object(value)
   if (
@@ -47,6 +68,7 @@ export function parseSavedPresentationPreference(value: unknown): SavedPresentat
       'changeId',
       'text',
       ...(Object.hasOwn(preference, 'reuse') ? ['reuse'] : []),
+      ...(Object.hasOwn(preference, 'origin') ? ['origin'] : []),
     ]) ||
     !id(preference.projectId, 80) ||
     !id(preference.changeId, 128) ||
@@ -58,6 +80,14 @@ export function parseSavedPresentationPreference(value: unknown): SavedPresentat
     )
   )
     return fail()
+  if (Object.hasOwn(preference, 'origin')) {
+    const origin = parsePresentationPreferenceOrigin(preference.origin)
+    if (
+      !Object.hasOwn(preference, 'reuse') &&
+      preference.changeId !== 'manual_' + origin.observationId
+    )
+      return fail()
+  }
   if (Object.hasOwn(preference, 'reuse')) {
     const reuse = object(preference.reuse)
     if (

@@ -1,3 +1,4 @@
+import { canonicalPresentationValue } from '@wiswork/project-store/presentation-canonical'
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import {
@@ -325,6 +326,8 @@ export function createPresentationPlanningSkill(
             const current = await readSource(proposalSignal)
             if (
               current.text !== original.text ||
+              canonicalPresentationValue(current.origin ?? null) !==
+                canonicalPresentationValue(original.origin ?? null) ||
               (await hash(current.text, proposalSignal)) !== expectedTextDigest
             )
               throw new Error('presentation_preference_changed')
@@ -337,6 +340,9 @@ export function createPresentationPlanningSkill(
               source,
               target: { documentId, projectId },
               preference: original.text,
+              ...(original.origin
+                ? { observationOrigin: original.origin, disclosure: '观察来源不证明编辑者身份。' }
+                : {}),
               note: '确认后持久复制到当前项目偏好目录，不会自动撤回；可另行删除目标副本，源记录不变。不会修改品牌规则、附件、计划或宿主内容。已有相同副本保留首次批准回执，不会冒称重新批准；副本不支持继续转发。',
             },
             impact: { host: 'local_preference', targets: [projectId], count: 1 },
@@ -360,6 +366,7 @@ export function createPresentationPlanningSkill(
                   projectId,
                   source,
                   expectedTextDigest,
+                  ...(original.origin ? { expectedOrigin: original.origin } : {}),
                   approvalId: proposal.id,
                 },
                 proposalSignal,
@@ -380,6 +387,8 @@ export function createPresentationPlanningSkill(
                 receipt.projectId !== projectId ||
                 receipt.changeId !== changeId ||
                 receipt.text !== original.text ||
+                canonicalPresentationValue(receipt.origin ?? null) !==
+                  canonicalPresentationValue(original.origin ?? null) ||
                 !receipt.reuse ||
                 receipt.reuse.source.documentId !== source.documentId ||
                 receipt.reuse.source.projectId !== source.projectId ||

@@ -1,9 +1,12 @@
+import type { PresentationManualObservation } from '@wiswork/pptx-engine/presentation-manual-observation'
+import { canonicalPresentationValue } from '@wiswork/project-store/presentation-canonical'
 import { createHash, randomUUID } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import {
   parsePresentationPreferenceSource,
+  parsePresentationPreferenceOrigin,
   parseSavedPresentationPreference,
   type PresentationPreferenceSource,
   type SavedPresentationPreference,
@@ -108,12 +111,17 @@ export class PresentationPreferenceLibrary {
     return structuredClone(this.read(documentId, projectId)?.preferences ?? [])
   }
   save(documentId: string, input: unknown): SavedPresentationPreference {
-    if (!valid(input) || input.reuse !== undefined) throw new Error('invalid_request')
+    if (!valid(input) || input.reuse !== undefined || input.origin !== undefined)
+      throw new Error('invalid_request')
     const path = this.path(documentId, input.projectId, true)
     const prior = this.read(documentId, input.projectId)
     const existing = prior?.preferences.find((p) => p.changeId === input.changeId)
     if (existing) {
-      if (existing.text !== input.text || existing.reuse !== undefined)
+      if (
+        existing.text !== input.text ||
+        existing.reuse !== undefined ||
+        existing.origin !== undefined
+      )
         throw new Error('revision_conflict')
       return structuredClone(existing)
     }
@@ -135,6 +143,54 @@ export class PresentationPreferenceLibrary {
     }
     return structuredClone(input)
   }
+  saveObservation(
+    documentId: string,
+    observation: PresentationManualObservation,
+    text: unknown,
+  ): SavedPresentationPreference {
+    if (
+      observation.documentId !== documentId ||
+      !observation.after ||
+      observation.before.digest === observation.after.digest
+    )
+      throw new Error('invalid_request')
+    const input = parseSavedPresentationPreference({
+      projectId: observation.projectId,
+      changeId: 'manual_' + observation.observationId,
+      text,
+      origin: {
+        version: 1,
+        observationId: observation.observationId,
+        beforeDigest: observation.before.digest,
+        afterDigest: observation.after.digest,
+      },
+    })
+    const prior = this.read(documentId, input.projectId),
+      existing = prior?.preferences.find((p) => p.changeId === input.changeId)
+    if (existing) {
+      if (canonicalPresentationValue(existing) !== canonicalPresentationValue(input))
+        throw new Error('revision_conflict')
+      return structuredClone(existing)
+    }
+    if ((prior?.preferences.length ?? 0) >= 64) throw new Error('quota_exceeded')
+    const record: RecordFile = {
+      version: 1,
+      documentId,
+      projectId: input.projectId,
+      preferences: [...(prior?.preferences ?? []), input],
+    }
+    const serialized = JSON.stringify(record)
+    if (Buffer.byteLength(serialized) > 64 * 1024) throw new Error('quota_exceeded')
+    const path = this.path(documentId, input.projectId, true),
+      temporary = path + '.' + randomUUID() + '.tmp'
+    try {
+      writeFileSync(temporary, serialized, { flag: 'wx', mode: 0o600 })
+      renameSync(temporary, path)
+    } finally {
+      rmSync(temporary, { force: true })
+    }
+    return structuredClone(input)
+  }
   get(
     documentId: string,
     projectId: string,
@@ -150,6 +206,7 @@ export class PresentationPreferenceLibrary {
     sourceValue: unknown,
     expectedTextDigest: unknown,
     approvalId: unknown,
+    expectedOrigin?: unknown,
   ): SavedPresentationPreference {
     const source = parsePresentationPreferenceSource(sourceValue)
     const path = this.path(documentId, projectId, false)
@@ -160,11 +217,22 @@ export class PresentationPreferenceLibrary {
     const original = this.get(source.documentId, source.projectId, source.changeId)
     if (!original) throw new Error('not_found')
     if (original.reuse) throw new Error('invalid_request')
+    const origin =
+      expectedOrigin === undefined || expectedOrigin === null
+        ? expectedOrigin
+        : parsePresentationPreferenceOrigin(expectedOrigin)
+    if (
+      (original.origin && origin === undefined) ||
+      (origin !== undefined &&
+        canonicalPresentationValue(origin) !== canonicalPresentationValue(original.origin ?? null))
+    )
+      throw new Error('revision_conflict')
     if (hash(original.text) !== expectedTextDigest) throw new Error('revision_conflict')
     const preference = parseSavedPresentationPreference({
       projectId,
       changeId: reuseId(documentId, projectId, source, expectedTextDigest),
       text: original.text,
+      ...(original.origin ? { origin: original.origin } : {}),
       reuse: {
         version: 1,
         source,
@@ -182,7 +250,9 @@ export class PresentationPreferenceLibrary {
         existing.reuse.source.documentId !== source.documentId ||
         existing.reuse.source.projectId !== source.projectId ||
         existing.reuse.source.changeId !== source.changeId ||
-        existing.reuse.sourceTextDigest !== expectedTextDigest
+        existing.reuse.sourceTextDigest !== expectedTextDigest ||
+        canonicalPresentationValue(existing.origin ?? null) !==
+          canonicalPresentationValue(original.origin ?? null)
       )
         throw new Error('revision_conflict')
       return structuredClone(existing)

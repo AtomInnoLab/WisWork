@@ -644,6 +644,7 @@ function errorCode(error: unknown, write = false): string {
       'invalid_tool_input',
       'office_api_unsupported',
       'office_concurrent_change',
+      'presentation_existing_persistence_unavailable',
       'presentation_page_backup_cleanup_failed',
       'presentation_native_add_conflict',
       'presentation_native_add_pending',
@@ -1420,6 +1421,11 @@ export function createPowerPointSkill(options: {
       expected: PresentationExistingBatch | undefined,
     ): Promise<void>
   }
+  durableTextEditAvailable?(): boolean
+  durableTextEdit?(
+    input: { slide_index: number; shape_id: string; text: string; explanation?: string },
+    signal?: AbortSignal,
+  ): Promise<ToolExecution>
   chartSavepoint?: {
     documentId(): Promise<string>
     request(body: unknown, signal?: AbortSignal): Promise<Response>
@@ -2093,26 +2099,30 @@ export function createPowerPointSkill(options: {
     systemPrompt:
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
       ' Prefer inspect_slide_masters and native edit_slide_master for backgrounds, theme colors, and layout inheritance. PowerPoint for Mac must never use edit_slide_master_xml.',
-    tools: [
-      ...tools.filter(
-        (tool) =>
-          (Boolean(options.chartSavepoint) ||
-            ![
-              'update_slide_chart_values',
-              'inspect_slide_chart_values_change',
-              'resume_slide_chart_values_change',
-              'undo_slide_chart_values_change',
-              'release_slide_chart_values_change',
-              'reapply_slide_chart_values_change',
-            ].includes(tool.name)) &&
-          (masterXmlEditingSupported || tool.name !== 'edit_slide_master_xml') &&
-          (nativeMasterEditingSupported ||
-            !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
-      ),
-      ...(nativeExecution ? nativeTools : []),
-      ...(nativeRestoration ? [nativeRestorationTool] : []),
-      ...(nativeRelease ? [nativeReleaseTool] : []),
-    ],
+    get tools() {
+      return [
+        ...tools.filter(
+          (tool) =>
+            (Boolean(options.chartSavepoint) ||
+              ![
+                'update_slide_chart_values',
+                'inspect_slide_chart_values_change',
+                'resume_slide_chart_values_change',
+                'undo_slide_chart_values_change',
+                'release_slide_chart_values_change',
+                'reapply_slide_chart_values_change',
+              ].includes(tool.name)) &&
+            ((Boolean(options.durableTextEdit) && (options.durableTextEditAvailable?.() ?? true)) ||
+              tool.name !== 'edit_slide_text') &&
+            (masterXmlEditingSupported || tool.name !== 'edit_slide_master_xml') &&
+            (nativeMasterEditingSupported ||
+              !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
+        ),
+        ...(nativeExecution ? nativeTools : []),
+        ...(nativeRestoration ? [nativeRestorationTool] : []),
+        ...(nativeRelease ? [nativeReleaseTool] : []),
+      ]
+    },
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
         return failure(
@@ -2379,69 +2389,9 @@ export function createPowerPointSkill(options: {
         }
         if (call.name === 'edit_slide_text') {
           const input = textEditInput(call.input)
-          await options.adapter.verifySlides(signal)
-          const before = await options.adapter.readSlideText(
-            input.slide_index,
-            input.shape_id,
-            signal,
-          )
-          assertNotCancelled(signal)
-          const stableTextFingerprint = fingerprint(
-            JSON.stringify([before.slideId, before.shapeId, before.text, before.paragraphs]),
-          )
-          const proposal = options.proposals.propose({
-            operation: 'edit_slide_text',
-            toolName: call.name,
-            title: input.explanation || 'Edit slide text',
-            preview: { shapeId: input.shape_id, before: before.text, after: input.text },
-            impact: {
-              host: 'powerpoint',
-              targets: [`${before.slideId}/${input.shape_id}`],
-              count: 1,
-            },
-            fingerprint: stableTextFingerprint,
-            before: before.text,
-            after: input.text,
-            validate: async (confirmSignal) => {
-              const currentText = await options.adapter.readSlideText(
-                input.slide_index,
-                input.shape_id,
-                confirmSignal,
-              )
-              return (
-                fingerprint(
-                  JSON.stringify([
-                    currentText.slideId,
-                    currentText.shapeId,
-                    currentText.text,
-                    currentText.paragraphs,
-                  ]),
-                ) === stableTextFingerprint
-              )
-            },
-            execute: (confirmSignal) =>
-              options.adapter.editSlideText(
-                input.slide_index,
-                input.shape_id,
-                input.text,
-                confirmSignal,
-              ),
-            verify: async (confirmSignal) => {
-              await verifyPowerPointReadback(async () => {
-                const result = await options.adapter.readSlideText(
-                  input.slide_index,
-                  input.shape_id,
-                  confirmSignal,
-                )
-                return result.slideId === before.slideId && result.text === input.text
-              }, confirmSignal)
-            },
-          })
-          return {
-            output: boundedJson(proposal),
-            mutated: false,
-            summary: 'Proposed PowerPoint text edit',
-          }
+          if (!options.durableTextEdit || options.durableTextEditAvailable?.() === false)
+            throw new Error('presentation_existing_persistence_unavailable')
+          return await options.durableTextEdit(input, signal)
         }
         if (call.name === 'duplicate_slide') {
           const input = slideInput(call.input)

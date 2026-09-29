@@ -60,7 +60,6 @@ const inventories = {
     'duplicate_slide',
     'edit_slide_chart',
     'edit_slide_master_xml',
-    'edit_slide_text',
     'edit_slide_xml',
     'execute_office_js',
     'list_slide_shapes',

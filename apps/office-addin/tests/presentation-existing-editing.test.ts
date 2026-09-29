@@ -691,7 +691,7 @@ it('captures each exact affected native page after a verified batch', async () =
     },
   })
 })
-async function fixture() {
+async function fixture(legacyText = false) {
   vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => true } } })
   let location = 'file://existing.pptx',
     text = 'before',
@@ -863,6 +863,7 @@ async function fixture() {
     { meta: Record<string, unknown>; bytes: Uint8Array; ready: boolean }
   >()
   const releasedBackups = new Map<string, Record<string, unknown>>()
+  let backupReadCount = 0
   let backupOffline = false
   let backupQuota = 8
   let afterBackupRelease: (() => void) | undefined
@@ -911,6 +912,7 @@ async function fixture() {
       stored!.bytes = Uint8Array.from([...stored!.bytes, ...chunk])
     }
     if (input.operation === 'existing_page_backup_finish') stored!.ready = true
+    if (input.operation === 'existing_page_backup_read') backupReadCount++
     const result =
       input.operation === 'existing_page_backup_read'
         ? {
@@ -942,14 +944,14 @@ async function fixture() {
     createOfficeHostRuntime('powerpoint', {
       presentation: {
         ...bind(),
-        available: () => false,
+        available: () => legacyText,
         request,
         invalidateQa,
       },
     })
   let runtime = create()
-  const call = (name: string, input: Record<string, unknown> = {}) =>
-    runtime.skill.executeTool({ id: 'call', name, input })
+  const call = (name: string, input: Record<string, unknown> = {}, signal?: AbortSignal) =>
+    runtime.skill.executeTool({ id: 'call', name, input }, signal)
   const baseline = async () => {
     const r = await call('read_presentation_baseline', { scope: 'selected' })
     expect(r.isError, r.output).not.toBe(true)
@@ -995,6 +997,10 @@ async function fixture() {
     invalidateQa,
     binding: bind,
     getRuntime: () => runtime,
+    backupReadCount: () => backupReadCount,
+    setLegacyAvailable: (value: boolean) => {
+      legacyText = value
+    },
     reopen: () => {
       runtime.dispose()
       runtime = create()
@@ -2374,3 +2380,165 @@ it('requires the retained backup again after persisting pending reapply and on r
   await expect(f.confirm()).rejects.toThrow('presentation_existing_backup_missing')
   expect(f.editText).toHaveBeenCalledTimes(2)
 })
+
+it('routes legacy text editing through a saved native text transaction that reopens for undo', async () => {
+  const f = await fixture(true)
+  const result = await f.call('edit_slide_text', {
+    slide_index: 0,
+    shape_id: 'shape',
+    text: 'after',
+  })
+  expect(result.isError, result.output).not.toBe(true)
+  expect(f.editText).not.toHaveBeenCalled()
+  await f.confirm()
+  expect(f.text()).toBe('after')
+  expect(f.readyBackups()).toBe(1)
+  expect(f.records()[0]!.record).toMatchObject({
+    kind: 'text',
+    hostSlideId: 'slide',
+    shapeId: 'shape',
+    before: 'before',
+    after: 'after',
+    state: 'applied',
+  })
+  f.reopen()
+  await f.call('undo_existing_presentation_change', { change_id: f.records()[0]!.record.changeId })
+  await f.confirm()
+  expect(f.text()).toBe('before')
+  expect(f.records()[0]!.record.state).toBe('undone')
+})
+it.each(['backup', 'pending'] as const)(
+  'does not write legacy text when its %s save fails',
+  async (failure) => {
+    const f = await fixture(true)
+    const result = await f.call('edit_slide_text', {
+      slide_index: 0,
+      shape_id: 'shape',
+      text: 'after',
+    })
+    expect(result.isError, result.output).not.toBe(true)
+    if (failure === 'backup') f.setBackupOffline(true)
+    else f.save.mockRejectedValue(new Error('save_failed'))
+    await expect(f.confirm()).rejects.toThrow()
+    expect(f.editText).not.toHaveBeenCalled()
+    expect(f.text()).toBe('before')
+  },
+)
+it.each(['document', 'rich', 'index'] as const)(
+  'refuses unsafe legacy text %s targets without a host write',
+  async (failure) => {
+    const f = await fixture(true)
+    if (failure === 'rich')
+      f.setFont({ name: null, size: null, color: null, bold: null, italic: null, underline: null })
+    const result = await f.call('edit_slide_text', {
+      slide_index: failure === 'index' ? 2 : 0,
+      shape_id: 'shape',
+      text: 'after',
+    })
+    if (failure === 'document') {
+      expect(result.isError, result.output).not.toBe(true)
+      f.setLocation('file://other.pptx')
+      await expect(f.confirm()).rejects.toThrow()
+    } else expect(result.isError).toBe(true)
+    expect(f.editText).not.toHaveBeenCalled()
+  },
+)
+
+it('cancels legacy baseline capture before creating a proposal or writing a saved page', async () => {
+  const f = await fixture(true),
+    abort = new AbortController()
+  vi.spyOn(BrowserPresentationBaselineAdapter.prototype, 'readContext').mockImplementationOnce(
+    async () => {
+      abort.abort()
+      return {
+        slideIds: ['slide', 'other'],
+        selectedSlideIds: ['slide'],
+        selectedShapeIds: ['shape'],
+        slideWidth: 960,
+        slideHeight: 540,
+      }
+    },
+  )
+  const result = await f.call(
+    'edit_slide_text',
+    { slide_index: 0, shape_id: 'shape', text: 'after' },
+    abort.signal,
+  )
+  expect(result).toMatchObject({ isError: true, output: 'cancelled' })
+  expect((f.getRuntime().proposals as StructuredProposalController).pending()).toBeUndefined()
+  expect(f.editText).not.toHaveBeenCalled()
+  expect(f.records()).toHaveLength(0)
+})
+it('rejects a document switch during legacy baseline capture before creating a proposal', async () => {
+  const f = await fixture(true)
+  vi.spyOn(BrowserPresentationBaselineAdapter.prototype, 'readContext').mockImplementationOnce(
+    async () => {
+      f.setLocation('file://different.pptx')
+      return {
+        slideIds: ['slide', 'other'],
+        selectedSlideIds: ['slide'],
+        selectedShapeIds: ['shape'],
+        slideWidth: 960,
+        slideHeight: 540,
+      }
+    },
+  )
+  const result = await f.call('edit_slide_text', {
+    slide_index: 0,
+    shape_id: 'shape',
+    text: 'after',
+  })
+  expect(result.isError).toBe(true)
+  expect((f.getRuntime().proposals as StructuredProposalController).pending()).toBeUndefined()
+  expect(f.editText).not.toHaveBeenCalled()
+})
+
+it('enables the durable legacy route on a later PC connection and hides it again on disconnect', async () => {
+  const f = await fixture()
+  const visible = () => f.getRuntime().skill.tools.some((t) => t.name === 'edit_slide_text')
+  expect(visible()).toBe(false)
+  f.setLegacyAvailable(true)
+  expect(visible()).toBe(true)
+  expect(
+    (await f.call('edit_slide_text', { slide_index: 0, shape_id: 'shape', text: 'after' })).isError,
+  ).not.toBe(true)
+  f.setLegacyAvailable(false)
+  expect(visible()).toBe(false)
+  expect(
+    (await f.call('edit_slide_text', { slide_index: 0, shape_id: 'shape', text: 'other' })).isError,
+  ).toBe(true)
+  expect(f.editText).not.toHaveBeenCalled()
+})
+
+it.each(['proposal', 'after_backup_read'] as const)(
+  'blocks a durable legacy native write after disconnect at %s',
+  async (point) => {
+    const f = await fixture(true)
+    const result = await f.call('edit_slide_text', {
+      slide_index: 0,
+      shape_id: 'shape',
+      text: 'after',
+    })
+    expect(result.isError).not.toBe(true)
+    if (point === 'proposal') f.setLegacyAvailable(false)
+    else {
+      const exported = vi.mocked(BrowserPowerPointAdapter.prototype.exportPresentationPagePackage)
+      const original = exported.getMockImplementation()!
+      exported.mockImplementation(async (...args) => {
+        const result = await original(...args)
+        if (f.backupReadCount() > 0) f.setLegacyAvailable(false)
+        return result
+      })
+    }
+    await expect(f.confirm()).rejects.toThrow(
+      point === 'proposal' ? 'proposal_stale' : 'presentation_existing_persistence_unavailable',
+    )
+    expect(f.editText).not.toHaveBeenCalled()
+    expect(f.text()).toBe('before')
+    if (point === 'after_backup_read') {
+      expect(f.backupReadCount()).toBeGreaterThan(0)
+      expect(f.records()[0]!.record.state).toBe('pending')
+      expect(f.records()[0]!.record.backup).toBeDefined()
+    }
+  },
+)

@@ -1,3 +1,7 @@
+import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { benchmarkPlannedDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
+import { createPresentationExistingPageBackupService } from '../../shell/src/main/presentation-existing-page-backups'
+import { BrowserPresentationBaselineAdapter } from '../src/skills/powerpoint/browser-presentation-baseline-adapter'
 import { confirmReviewed } from './presentation-lock-review-fixture.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -101,6 +105,15 @@ async function fixture(withSecondPage = false, withImageBackup = false) {
       },
     })
   let imageService = imageRoot ? createImageService() : undefined
+  let legacyBackup: ReturnType<typeof createPresentationExistingPageBackupService> | undefined
+  const durableEdit = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'editPresentationPageText')
+    .mockImplementation(async (slide, shape, next, expected) => {
+      expect(slide).toBe('host')
+      expect(shape).toBe('shape')
+      expect(expected).toBe(text)
+      text = next
+    })
   const createRuntime = () =>
     createOfficeHostRuntime('powerpoint', {
       imageAdapterOverrideForTests: true,
@@ -119,23 +132,32 @@ async function fixture(withSecondPage = false, withImageBackup = false) {
             ),
           ),
         request: async (body: unknown) =>
-          (body as { operation: string }).operation === 'get_plan'
-            ? new Response(JSON.stringify({ error: 'not_found' }))
-            : new Response(
-                JSON.stringify({
-                  projectId: 'project',
-                  requestId: 'request',
-                  status: 'compiled',
-                  pptxBase64,
-                  report: { deckId: 'project', slideCount: withSecondPage ? 2 : 1 },
-                  pages: [
-                    { id: 'page1', title: 'Page', sourceSlideId: '256#' },
-                    ...(withSecondPage
-                      ? [{ id: 'page2', title: 'Page 2', sourceSlideId: '257#' }]
-                      : []),
-                  ],
-                }),
-              ),
+          (body as { operation: string }).operation.startsWith('existing_page_backup_')
+            ? new Response(
+                JSON.stringify(
+                  await legacyBackup!(
+                    body as Record<string, unknown>,
+                    new AbortController().signal,
+                  ),
+                ),
+              )
+            : (body as { operation: string }).operation === 'get_plan'
+              ? new Response(JSON.stringify({ error: 'not_found' }))
+              : new Response(
+                  JSON.stringify({
+                    projectId: 'project',
+                    requestId: 'request',
+                    status: 'compiled',
+                    pptxBase64,
+                    report: { deckId: 'project', slideCount: withSecondPage ? 2 : 1 },
+                    pages: [
+                      { id: 'page1', title: 'Page', sourceSlideId: '256#' },
+                      ...(withSecondPage
+                        ? [{ id: 'page2', title: 'Page 2', sourceSlideId: '257#' }]
+                        : []),
+                    ],
+                  }),
+                ),
       },
     })
   const runtime = createRuntime()
@@ -178,10 +200,59 @@ async function fixture(withSecondPage = false, withImageBackup = false) {
   }
   const proposals = runtime.proposals as StructuredProposalController
   const propose = async () => {
+    if (!legacyBackup) {
+      const root = mkdtempSync(join(tmpdir(), 'wiswork-legacy-qa-'))
+      imageRoots.push(root)
+      legacyBackup = createPresentationExistingPageBackupService({ userDataPath: root })
+      const deck = benchmarkPlannedDeck()
+      const base64 = Buffer.from(
+        (await compilePresentationDeck({ ...deck, slides: [deck.slides[0]!] })).bytes,
+      ).toString('base64')
+      vi.spyOn(BrowserPresentationBaselineAdapter.prototype, 'readContext').mockResolvedValue({
+        slideIds: withSecondPage ? ['host', 'host-2'] : ['host'],
+        selectedSlideIds: ['host'],
+        selectedShapeIds: ['shape'],
+        slideWidth: 960,
+        slideHeight: 540,
+      })
+      vi.spyOn(BrowserPresentationBaselineAdapter.prototype, 'readPage').mockImplementation(
+        async (slideId) => ({
+          slideId,
+          shapes: [
+            {
+              id: 'shape',
+              name: 'Title',
+              type: 'TextBox',
+              left: 0,
+              top: 0,
+              width: 400,
+              height: 100,
+              text,
+              font: {
+                name: 'Arial',
+                size: 20,
+                color: '#000000',
+                bold: false,
+                italic: false,
+                underline: 'None',
+              },
+            },
+          ],
+        }),
+      )
+      vi.spyOn(
+        BrowserPowerPointAdapter.prototype,
+        'exportPresentationPagePackage',
+      ).mockResolvedValue({
+        slideId: 'host',
+        slideIds: withSecondPage ? ['host', 'host-2'] : ['host'],
+        base64,
+      })
+    }
     const result = await runtime.skill.executeTool({
       id: 'edit',
       name: 'edit_slide_text',
-      input: { slide_index: 1, shape_id: 'shape', text: 'after' },
+      input: { slide_index: 0, shape_id: 'shape', text: 'after' },
     })
     expect(result.isError).not.toBe(true)
     return proposals.pending()!.id
@@ -200,6 +271,7 @@ async function fixture(withSecondPage = false, withImageBackup = false) {
     },
     save,
     edit,
+    durableEdit,
     runtime,
     proposals,
     propose,
@@ -220,14 +292,15 @@ it('invalidates before a confirmed edit, blocks concurrent QA, and requires fres
   expect(f.page().recheckRequired).toBeUndefined()
   const id = await f.propose()
   let finish!: () => void
-  f.edit.mockImplementationOnce(async () => {
+  f.durableEdit.mockImplementationOnce(async () => {
     expect(f.page().recheckRequired).toBe(true)
     await new Promise<void>((resolve) => {
       finish = resolve
     })
   })
   const pending = confirmReviewed(f.proposals, id)
-  await vi.waitFor(() => expect(f.edit).toHaveBeenCalledOnce())
+  await vi.waitFor(() => expect(f.durableEdit).toHaveBeenCalledOnce())
+  expect(f.durableEdit.mock.calls[0]?.slice(0, 4)).toEqual(['host', 'shape', 'after', 'before'])
   expect((await f.capture()).output).toBe('presentation_qa_busy')
   // Simulate the queued Office write and then reconcile its text readback.
   f.setText('after')
@@ -248,7 +321,7 @@ it('prevents document writes when QA invalidation cannot be saved', async () => 
     id = await f.propose()
   f.save.mockRejectedValueOnce(new Error('save_failed'))
   await expect(confirmReviewed(f.proposals, id)).rejects.toThrow('save_failed')
-  expect(f.edit).not.toHaveBeenCalled()
+  expect(f.durableEdit).not.toHaveBeenCalled()
   expect(f.page().recheckRequired).toBeUndefined()
   expect((await f.review(f.digest)).output).toBe('presentation_qa_capture_required')
   expect((await f.capture()).isError).not.toBe(true)
@@ -257,7 +330,7 @@ it('prevents document writes when QA invalidation cannot be saved', async () => 
 it('retains recheck status after uncertain host write failure and releases the QA lock', async () => {
   const f = await fixture(),
     id = await f.propose()
-  f.edit.mockRejectedValueOnce(new Error('office_state_uncertain'))
+  f.durableEdit.mockRejectedValueOnce(new Error('office_state_uncertain'))
   await expect(confirmReviewed(f.proposals, id)).rejects.toThrow('office_state_uncertain')
   expect(f.page().recheckRequired).toBe(true)
   expect((await f.review(f.digest)).output).toBe('presentation_qa_capture_required')
@@ -655,12 +728,12 @@ it('keeps another page review and live capture valid after a stable page text ed
   expect(review.isError, review.output).not.toBe(true)
   f.runtime.dispose()
 })
-it('still invalidates every page for an index-based operation with uncertain impact', async () => {
+it('invalidates only the exact native page resolved from the legacy index', async () => {
   const f = await fixture(true)
   await confirmReviewed(f.proposals, await f.propose())
   expect(f.page().recheckRequired).toBe(true)
-  expect(f.secondPage().recheckRequired).toBe(true)
-  expect((await f.review(f.secondDigest!, 'page2')).output).toBe('presentation_qa_capture_required')
+  expect(f.secondPage().recheckRequired).toBeUndefined()
+  expect((await f.review(f.secondDigest!, 'page2')).isError).not.toBe(true)
   f.runtime.dispose()
 })
 it('does not trust a stable tool label on a general script proposal', async () => {

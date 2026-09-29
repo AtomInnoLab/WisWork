@@ -35,6 +35,7 @@ function fixture() {
             projectId: call.projectId,
             changeId: `reuse_${await digest(JSON.stringify([call.documentId, call.projectId, source.documentId, source.projectId, source.changeId, call.expectedTextDigest]))}`,
             text: sourcePreference!.text,
+            ...(sourcePreference!.origin ? { origin: sourcePreference!.origin } : {}),
             reuse: {
               version: 1,
               source,
@@ -74,7 +75,7 @@ function fixture() {
     },
   }
 }
-it('offers a visible cross-project copy proposal and imports only after confirmation', async () => {
+it('keeps legacy cross-project import wire fields and imports only after visible confirmation', async () => {
   const f = fixture()
   expect(f.skill.tools.some((t) => t.name === 'import_presentation_preference')).toBe(true)
   const result = await f.propose()
@@ -297,4 +298,71 @@ it('rejects a same-document same-project copy before any source request or confi
   ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
   expect(f.request).not.toHaveBeenCalled()
   expect(f.proposals.pending()).toBeUndefined()
+})
+
+it('keeps observed origin in preview, wire precondition and exact import receipt', async () => {
+  const f = fixture(),
+    origin = {
+      version: 1,
+      observationId: 'o',
+      beforeDigest: 'a'.repeat(64),
+      afterDigest: 'b'.repeat(64),
+    }
+  const observedSource = {
+    documentId: 'source-doc',
+    projectId: 'source-project',
+    changeId: 'manual_o',
+  }
+  f.setSource({
+    projectId: 'source-project',
+    changeId: 'manual_o',
+    text: 'Observed suggestion',
+    origin,
+  })
+  const result = await f.skill.executeTool({
+    id: 'import',
+    name: 'import_presentation_preference',
+    input: { ...input, source_change_id: 'manual_o' },
+  })
+  expect(result.isError, result.output).not.toBe(true)
+  expect(f.proposals.pending()!.preview.observationOrigin).toEqual(origin)
+  // Fixture uses the original source for its receipt; a wrong provenance/source receipt must fail safely.
+  const proposal = f.proposals.pending()!
+  await expect(f.proposals.confirm(proposal.id)).rejects.toThrow()
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      operation: 'preference_import',
+      source: observedSource,
+      expectedOrigin: origin,
+    }),
+    expect.any(AbortSignal),
+  )
+})
+it('a changed observation origin after preview blocks import before writing', async () => {
+  const f = fixture(),
+    origin = {
+      version: 1,
+      observationId: 'o',
+      beforeDigest: 'a'.repeat(64),
+      afterDigest: 'b'.repeat(64),
+    }
+  f.setSource({ projectId: 'source-project', changeId: 'manual_o', text: 'Suggestion', origin })
+  const result = await f.skill.executeTool({
+    id: 'import',
+    name: 'import_presentation_preference',
+    input: { ...input, source_change_id: 'manual_o' },
+  })
+  expect(result.isError, result.output).not.toBe(true)
+  f.setSource({
+    projectId: 'source-project',
+    changeId: 'manual_o',
+    text: 'Suggestion',
+    origin: { ...origin, afterDigest: 'c'.repeat(64) },
+  })
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow()
+  expect(
+    f.request.mock.calls.some(
+      ([b]) => (b as Record<string, unknown>).operation === 'preference_import',
+    ),
+  ).toBe(false)
 })

@@ -1,3 +1,4 @@
+import { createPresentationManualObservationSkill } from '../skills/powerpoint/presentation-manual-observations.js'
 import {
   createPresentationTeamController,
   type PresentationTeamController,
@@ -282,6 +283,7 @@ export function createOfficeHostRuntime(
   let existingImageEditing:
     ReturnType<typeof createPresentationExistingImageEditingSkill> | undefined
   let existingPageEditing: ReturnType<typeof createPresentationExistingPageEditingSkill> | undefined
+  let legacyTextEpoch = 0
   let mutationStarted = false
   const readNativeLocks = (
     proposal: Parameters<typeof readPresentationNativeLocks>[1],
@@ -315,6 +317,8 @@ export function createOfficeHostRuntime(
                 'save_presentation_preference',
                 'delete_presentation_preference',
                 'import_presentation_preference',
+                'save_presentation_observed_preference',
+                'delete_presentation_edit_observation',
               ].includes(proposal.operation) &&
                 proposal.impact.host === 'local_preference') ||
                 ([
@@ -385,6 +389,66 @@ export function createOfficeHostRuntime(
         vfs,
         nativeMasterEditingSupported: supportsNativePowerPointMasterEditing(),
         platform: options.platform ?? currentOfficePlatform(),
+        durableTextEditAvailable: () =>
+          Boolean(existingEditing && baselineSkill && options.presentation?.available()),
+        durableTextEdit:
+          options.presentation?.request &&
+          localBinding?.readExistingChange &&
+          localBinding.writeExistingChange &&
+          localBinding.listChangeHistory
+            ? async (input, signal) => {
+                if (!existingEditing || !baselineSkill || !options.presentation?.available())
+                  throw new Error('presentation_existing_persistence_unavailable')
+                const captured = legacyTextEpoch
+                const documentId = await localBinding.documentId()
+                const current = async () => {
+                  if (signal?.aborted || captured !== legacyTextEpoch) throw new Error('cancelled')
+                  if (!options.presentation?.available())
+                    throw new Error('presentation_existing_persistence_unavailable')
+                  if ((await localBinding.documentId()) !== documentId)
+                    throw new Error('presentation_document_changed')
+                  if (signal?.aborted || captured !== legacyTextEpoch) throw new Error('cancelled')
+                }
+                await current()
+                const result = await baselineSkill.executeTool(
+                  {
+                    id: 'legacy-text-baseline',
+                    name: 'read_presentation_baseline',
+                    input: { scope: 'deck', page_offset: input.slide_index, page_limit: 1 },
+                  },
+                  signal,
+                )
+                await current()
+                if (result.isError) return result
+                const baseline = baselineSkill.snapshot(JSON.parse(result.output).baselineId)
+                const slideId = baseline?.context.slideIds[input.slide_index]
+                if (
+                  !baseline ||
+                  baseline.documentId !== documentId ||
+                  !slideId ||
+                  baseline.scope.slideIds.length !== 1 ||
+                  baseline.scope.slideIds[0] !== slideId
+                )
+                  throw new Error('presentation_existing_target_unsupported')
+                const proposed = await existingEditing.executeTool(
+                  {
+                    id: 'legacy-text-edit',
+                    name: 'edit_existing_presentation_text',
+                    input: {
+                      baseline_id: baseline.baselineId,
+                      slide_id: slideId,
+                      shape_id: input.shape_id,
+                      text: input.text,
+                      ...(input.explanation ? { explanation: input.explanation } : {}),
+                    },
+                  },
+                  signal,
+                  () => Boolean(options.presentation?.available()),
+                )
+                await current()
+                return proposed
+              }
+            : undefined,
         screenshotFallback:
           powerPointAdapter && inspectQaPage
             ? async (index, signal, expectedSlideId) => {
@@ -587,7 +651,7 @@ export function createOfficeHostRuntime(
         }
       },
     })
-  const base = composeOfficeSkills(hostSkill, shared, [
+  const composedBase = composeOfficeSkills(hostSkill, shared, [
     ...extensions,
     ...(baselineSkill ? [baselineSkill] : []),
     ...(existingEditing ? [existingEditing] : []),
@@ -595,6 +659,19 @@ export function createOfficeHostRuntime(
     ...(existingImageEditing ? [existingImageEditing] : []),
     ...(existingPageEditing ? [existingPageEditing] : []),
   ])
+  const base: AgentSkill = {
+    ...composedBase,
+    get tools() {
+      return [
+        ...composedBase.tools.filter((tool) => tool.name !== 'edit_slide_text'),
+        ...hostSkill.tools.filter((tool) => tool.name === 'edit_slide_text'),
+      ]
+    },
+    executeTool: (call, signal) =>
+      call.name === 'edit_slide_text'
+        ? hostSkill.executeTool(call, signal)
+        : composedBase.executeTool(call, signal),
+  }
   const generation =
     host === 'powerpoint' && options.presentation
       ? createPresentationGenerationSkill({ ...options.presentation, vfs })
@@ -619,6 +696,16 @@ export function createOfficeHostRuntime(
   const planning =
     generation && options.presentation
       ? createPresentationPlanningSkill({ ...options.presentation, vfs, proposals })
+      : undefined
+  const manualObservations =
+    generation && options.presentation
+      ? createPresentationManualObservationSkill({
+          adapter: new BrowserPresentationBaselineAdapter(),
+          available: options.presentation.available,
+          documentId: options.presentation.documentId,
+          request: options.presentation.request,
+          proposals,
+        })
       : undefined
   const team =
     generation && options.presentation
@@ -1273,6 +1360,7 @@ export function createOfficeHostRuntime(
             ...base.tools,
             ...generation.tools,
             ...(planning?.tools ?? []),
+            ...(manualObservations?.tools ?? []),
             ...(comments?.tools ?? []),
             ...(team?.tools ?? []),
             ...(attachments?.tools ?? []),
@@ -1291,78 +1379,81 @@ export function createOfficeHostRuntime(
           ]
         },
         get systemPrompt() {
-          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${comments?.tools.length ? comments.systemPrompt : ''}\n${team?.tools.length ? team.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${historySkill?.tools.length ? historySkill.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}\n${productionJobs?.tools.length ? productionJobs.systemPrompt : ''}\n${evidenceDelivery?.tools.length ? evidenceDelivery.systemPrompt : ''}\n${hostBundle?.tools.length ? hostBundle.systemPrompt : ''}\n${researchSkill?.tools.length ? researchSkill.systemPrompt : ''}\n${pageBackup?.tools.length ? pageBackup.systemPrompt : ''}\n${pageReplacement?.tools.length ? pageReplacement.systemPrompt : ''}\nQA and stable page editing use the currently selected artifact: a successfully prepared production task or explicitly compiled/restored whole deck. Select the intended source before acting; do not substitute another task with the same IDs.`
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${manualObservations?.tools.length ? manualObservations.systemPrompt : ''}\n${comments?.tools.length ? comments.systemPrompt : ''}\n${team?.tools.length ? team.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${historySkill?.tools.length ? historySkill.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}\n${productionJobs?.tools.length ? productionJobs.systemPrompt : ''}\n${evidenceDelivery?.tools.length ? evidenceDelivery.systemPrompt : ''}\n${hostBundle?.tools.length ? hostBundle.systemPrompt : ''}\n${researchSkill?.tools.length ? researchSkill.systemPrompt : ''}\n${pageBackup?.tools.length ? pageBackup.systemPrompt : ''}\n${pageReplacement?.tools.length ? pageReplacement.systemPrompt : ''}\nQA and stable page editing use the currently selected artifact: a successfully prepared production task or explicitly compiled/restored whole deck. Select the intended source before acting; do not substitute another task with the same IDs.`
         },
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
         executeTool: (call, signal) =>
-          researchSkill?.tools.some((tool) => tool.name === call.name)
-            ? researchSkill.executeTool(call, signal)
-            : hostBundle?.tools.some((tool) => tool.name === call.name)
-              ? hostBundle.executeTool(call, signal)
-              : call.name === 'list_presentation_changes' && historySkill
-                ? historySkill.executeTool(call, signal)
-                : evidenceDelivery?.tools.some((tool) => tool.name === call.name)
-                  ? executeEvidenceDelivery(call, signal)
-                  : productionJobs?.tools.some((tool) => tool.name === call.name)
-                    ? executeProductionJob(call, signal)
-                    : pageReplacement?.tools.some((tool) => tool.name === call.name)
-                      ? executeChangeTool(call, signal)
-                      : ['save_presentation_page_backup', 'read_presentation_page_backup'].includes(
-                            call.name,
-                          ) && pageBackup
-                        ? pageBackup.executeTool(call, signal)
+          manualObservations?.tools.some((tool) => tool.name === call.name)
+            ? manualObservations.executeTool(call, signal)
+            : researchSkill?.tools.some((tool) => tool.name === call.name)
+              ? researchSkill.executeTool(call, signal)
+              : hostBundle?.tools.some((tool) => tool.name === call.name)
+                ? hostBundle.executeTool(call, signal)
+                : call.name === 'list_presentation_changes' && historySkill
+                  ? historySkill.executeTool(call, signal)
+                  : evidenceDelivery?.tools.some((tool) => tool.name === call.name)
+                    ? executeEvidenceDelivery(call, signal)
+                    : productionJobs?.tools.some((tool) => tool.name === call.name)
+                      ? executeProductionJob(call, signal)
+                      : pageReplacement?.tools.some((tool) => tool.name === call.name)
+                        ? executeChangeTool(call, signal)
                         : [
-                              'start_presentation_production',
-                              'rebuild_presentation_page',
-                              'run_presentation_production',
-                              'read_presentation_production',
-                              'read_presentation_page_artifact',
-                              'check_presentation_page_content',
-                              'read_presentation_claim_evidence',
-                              'record_presentation_claim_review',
-                              'read_presentation_claim_review',
-                              'read_presentation_page_reviews',
-                              'prepare_presentation_production_import',
-                            ].includes(call.name) && production
-                          ? executeProduction(call, signal)
-                          : pageEditing?.tools.some((tool) => tool.name === call.name)
-                            ? executeChangeTool(call, signal)
-                            : [
-                                  'capture_presentation_page_qa',
-                                  'read_presentation_qa',
-                                  'record_presentation_page_review',
-                                ].includes(call.name) && qaSkill
-                              ? qaSkill.executeTool(call, signal)
+                              'save_presentation_page_backup',
+                              'read_presentation_page_backup',
+                            ].includes(call.name) && pageBackup
+                          ? pageBackup.executeTool(call, signal)
+                          : [
+                                'start_presentation_production',
+                                'rebuild_presentation_page',
+                                'run_presentation_production',
+                                'read_presentation_production',
+                                'read_presentation_page_artifact',
+                                'check_presentation_page_content',
+                                'read_presentation_claim_evidence',
+                                'record_presentation_claim_review',
+                                'read_presentation_claim_review',
+                                'read_presentation_page_reviews',
+                                'prepare_presentation_production_import',
+                              ].includes(call.name) && production
+                            ? executeProduction(call, signal)
+                            : pageEditing?.tools.some((tool) => tool.name === call.name)
+                              ? executeChangeTool(call, signal)
                               : [
-                                    'list_presentation_attachments',
-                                    'read_presentation_attachment',
-                                  ].includes(call.name) && attachments
-                                ? attachments.executeTool(call, signal)
-                                : team?.tools.some((tool) => tool.name === call.name)
-                                  ? team.executeTool(call, signal)
-                                  : comments?.tools.some((tool) => tool.name === call.name)
-                                    ? comments.executeTool(call, signal)
-                                    : planning?.tools.some((tool) => tool.name === call.name)
-                                      ? planning.executeTool(call, signal)
-                                      : [
-                                            'import_presentation_production',
-                                            'read_presentation_production_import_status',
-                                            'reconcile_presentation_production_import',
-                                          ].includes(call.name) && productionDelivery
-                                        ? executeDelivery(call, signal)
+                                    'capture_presentation_page_qa',
+                                    'read_presentation_qa',
+                                    'record_presentation_page_review',
+                                  ].includes(call.name) && qaSkill
+                                ? qaSkill.executeTool(call, signal)
+                                : [
+                                      'list_presentation_attachments',
+                                      'read_presentation_attachment',
+                                    ].includes(call.name) && attachments
+                                  ? attachments.executeTool(call, signal)
+                                  : team?.tools.some((tool) => tool.name === call.name)
+                                    ? team.executeTool(call, signal)
+                                    : comments?.tools.some((tool) => tool.name === call.name)
+                                      ? comments.executeTool(call, signal)
+                                      : planning?.tools.some((tool) => tool.name === call.name)
+                                        ? planning.executeTool(call, signal)
                                         : [
-                                              'import_generated_presentation',
-                                              'read_presentation_import_status',
-                                            ].includes(call.name) && delivery
+                                              'import_presentation_production',
+                                              'read_presentation_production_import_status',
+                                              'reconcile_presentation_production_import',
+                                            ].includes(call.name) && productionDelivery
                                           ? executeDelivery(call, signal)
                                           : [
-                                                'compile_deck_with_pptxgenjs',
-                                                'restore_presentation_project',
-                                                'resume_presentation_project',
-                                              ].includes(call.name)
-                                            ? executeGeneration(call, signal)
-                                            : base.executeTool(call, signal),
+                                                'import_generated_presentation',
+                                                'read_presentation_import_status',
+                                              ].includes(call.name) && delivery
+                                            ? executeDelivery(call, signal)
+                                            : [
+                                                  'compile_deck_with_pptxgenjs',
+                                                  'restore_presentation_project',
+                                                  'resume_presentation_project',
+                                                ].includes(call.name)
+                                              ? executeGeneration(call, signal)
+                                              : base.executeTool(call, signal),
       }
     : base
   return {
@@ -1374,6 +1465,7 @@ export function createOfficeHostRuntime(
       options.packageRuntime,
       options.enableSkillPackages !== false,
       () => {
+        legacyTextEpoch++
         importSource = 'generation'
         importSelectionEpoch++
         productionEpoch++
@@ -1397,6 +1489,7 @@ export function createOfficeHostRuntime(
         attachments?.clear()
         generation?.clear()
         planning?.clear()
+        manualObservations?.clear()
         comments?.clear()
         teamController?.clear()
         team?.clear()

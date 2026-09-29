@@ -87,7 +87,6 @@ describe('PowerPoint compatibility skill', () => {
       'verify_slides',
       'execute_office_js',
       'add_slide_ir_objects',
-      'edit_slide_text',
       'edit_slide_xml',
       'edit_slide_chart',
       'edit_slide_master',
@@ -95,7 +94,14 @@ describe('PowerPoint compatibility skill', () => {
       'duplicate_slide',
     ])
     for (const tool of skill.tools) expect(tool.inputSchema.additionalProperties).toBe(false)
-    expect(skill.tools.find((tool) => tool.name === 'edit_slide_text')?.inputSchema).toMatchObject({
+    const durable = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+      durableTextEdit: vi.fn(),
+    })
+    expect(
+      durable.tools.find((tool) => tool.name === 'edit_slide_text')?.inputSchema,
+    ).toMatchObject({
       required: ['slide_index', 'shape_id', 'text'],
       properties: {
         slide_index: { type: 'integer', minimum: 0, maximum: 100000 },
@@ -429,32 +435,16 @@ describe('PowerPoint compatibility skill', () => {
     expect(waiting.modelContent).toBeUndefined()
   })
 
-  it('gates text edits behind immutable stale-checked proposals and verifies after confirmation', async () => {
-    const fake = adapter({
-      readSlideText: vi
-        .fn()
-        .mockResolvedValueOnce({
-          slideId: 'slide-1',
-          shapeId: '2',
-          text: 'Hello',
-          paragraphs: ['Hello'],
-        })
-        .mockResolvedValueOnce({
-          slideId: 'slide-1',
-          shapeId: '2',
-          text: 'Hello',
-          paragraphs: ['Hello'],
-        })
-        .mockResolvedValue({
-          slideId: 'slide-1',
-          shapeId: '2',
-          text: 'New',
-          paragraphs: ['New'],
-        }),
-    })
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
-    const proposed = await skill.executeTool(
+  it('delegates the unchanged zero-based legacy input to durable editing without creating a direct write', async () => {
+    const fake = adapter(),
+      proposals = createStructuredProposalController()
+    const durableTextEdit = vi.fn(async () => ({
+      output: '{"proposalId":"durable"}',
+      mutated: false,
+      summary: 'Durable edit',
+    }))
+    const skill = createPowerPointSkill({ adapter: fake, proposals, durableTextEdit })
+    const result = await skill.executeTool(
       call('edit_slide_text', {
         slide_index: 0,
         shape_id: '2',
@@ -462,17 +452,17 @@ describe('PowerPoint compatibility skill', () => {
         explanation: 'Update title',
       }),
     )
-    expect(proposed).toMatchObject({ mutated: false, summary: 'Proposed PowerPoint text edit' })
-    const pending = proposals.pending()!
-    expect(pending).toMatchObject({
-      toolName: 'edit_slide_text',
-      preview: { shapeId: '2', before: 'Hello', after: 'New' },
-      impact: { host: 'powerpoint', targets: ['slide-1/2'], count: 1 },
-    })
-    await proposals.confirm(pending.id)
-    expect(fake.editSlideText).toHaveBeenCalledWith(0, '2', 'New', expect.any(AbortSignal))
-    expect(fake.snapshotSlide).not.toHaveBeenCalled()
-    expect(fake.verifySlides).toHaveBeenCalledOnce()
+    expect(result.summary).toBe('Durable edit')
+    expect(durableTextEdit).toHaveBeenCalledWith(
+      { slide_index: 0, shape_id: '2', text: 'New', explanation: 'Update title' },
+      undefined,
+    )
+    expect(fake.editSlideText).not.toHaveBeenCalled()
+    expect(proposals.pending()).toBeUndefined()
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: -1, shape_id: '2', text: 'New' }),
+    )
+    expect(durableTextEdit).toHaveBeenCalledOnce()
   })
 
   it('refuses stale or cancelled writes before mutation', async () => {
@@ -1174,44 +1164,6 @@ describe('PowerPoint compatibility skill', () => {
     })
     expect(proposals.pending()).toBeUndefined()
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
-  })
-
-  it('waits for delayed PowerPoint text readback before rejecting an applied edit', async () => {
-    const fake = adapter({
-      readSlideText: vi
-        .fn()
-        .mockResolvedValueOnce({
-          slideId: 's1',
-          shapeId: '2',
-          text: 'Old',
-          paragraphs: ['Old'],
-        })
-        .mockResolvedValueOnce({
-          slideId: 's1',
-          shapeId: '2',
-          text: 'Old',
-          paragraphs: ['Old'],
-        })
-        .mockResolvedValueOnce({
-          slideId: 's1',
-          shapeId: '2',
-          text: 'Old',
-          paragraphs: ['Old'],
-        })
-        .mockResolvedValue({
-          slideId: 's1',
-          shapeId: '2',
-          text: 'New',
-          paragraphs: ['New'],
-        }),
-    })
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
-
-    await skill.executeTool(call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'New' }))
-
-    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
-    expect(fake.readSlideText).toHaveBeenCalledTimes(4)
   })
 
   it('waits for delayed geometry, delete, and duplicate readback', async () => {
@@ -2981,21 +2933,47 @@ describe('browser PowerPoint adapter', () => {
     expect(slides.items).toHaveLength(2)
     expect(slides.items[0].id).toBe('s2')
   })
+})
 
-  it('treats a text-only change as stale even when slide geometry is unchanged', async () => {
-    const fake = adapter()
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
+it('does not advertise or execute legacy text writes without durable savepoints', async () => {
+  const fake = adapter(),
+    proposals = createStructuredProposalController(),
+    skill = createPowerPointSkill({ adapter: fake, proposals })
+  expect(skill.tools.some((t) => t.name === 'edit_slide_text')).toBe(false)
+  expect(
     await skill.executeTool(
-      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Replacement' }),
-    )
-    ;(fake.readSlideText as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      slideId: 'slide-1',
-      shapeId: '2',
-      text: 'Changed elsewhere',
-      paragraphs: ['Changed elsewhere'],
-    })
-    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
-    expect(fake.editSlideText).not.toHaveBeenCalled()
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'changed' }),
+    ),
+  ).toMatchObject({ isError: true, output: 'presentation_existing_persistence_unavailable' })
+  expect(fake.editSlideText).not.toHaveBeenCalled()
+  expect(proposals.pending()).toBeUndefined()
+})
+it('tracks offline, online and disconnected durable text capability without rebuilding the skill', async () => {
+  let available = false
+  const fake = adapter(),
+    durableTextEdit = vi.fn(async () => ({ output: '{}', mutated: false, summary: 'durable' }))
+  const skill = createPowerPointSkill({
+    adapter: fake,
+    proposals: createStructuredProposalController(),
+    durableTextEdit,
+    durableTextEditAvailable: () => available,
   })
+  const visible = () => skill.tools.some((t) => t.name === 'edit_slide_text')
+  expect(visible()).toBe(false)
+  expect(
+    (await skill.executeTool(call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'x' })))
+      .isError,
+  ).toBe(true)
+  available = true
+  expect(visible()).toBe(true)
+  await skill.executeTool(call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'x' }))
+  expect(durableTextEdit).toHaveBeenCalledOnce()
+  available = false
+  expect(visible()).toBe(false)
+  expect(
+    (await skill.executeTool(call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'x' })))
+      .isError,
+  ).toBe(true)
+  expect(durableTextEdit).toHaveBeenCalledOnce()
+  expect(fake.editSlideText).not.toHaveBeenCalled()
 })

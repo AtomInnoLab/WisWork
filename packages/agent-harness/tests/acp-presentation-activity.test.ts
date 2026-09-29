@@ -99,3 +99,19 @@ it('maps PowerPoint tools to bounded user-facing stages without claiming complet
   expect(acpToolActivity('read_document', 'running')).toBe('正在读取内容…')
   expect(acpToolActivity('write_document', 'error')).toBe('准备修改未完成')
 })
+
+it.each([
+  ['begin_presentation_edit_observation', 'baseline'],
+  ['complete_presentation_edit_observation', 'baseline'],
+  ['read_presentation_edit_observation', 'baseline'],
+  ['list_presentation_edit_observations', 'baseline'],
+  ['delete_presentation_edit_observation', 'baseline'],
+  ['save_presentation_observed_preference', 'planning'],
+] as const)(
+  'maps %s to its user-visible phase without claiming host edits or QA',
+  (tool, stage) => {
+    expect(acpPresentationStage(tool)).toBe(stage)
+    expect(acpToolActivity(tool, 'complete')).toBe(`${acpPresentationStageLabel(stage)}操作已结束`)
+    expect(acpPresentationStage(`${tool}_unknown`)).toBeUndefined()
+  },
+)

@@ -1,3 +1,4 @@
+import { PresentationManualObservationLibrary } from './presentation-manual-observations'
 import { buildPresentationFeedbackComparison } from '@wiswork/pptx-engine/presentation-feedback-comparison'
 import { parsePresentationProductionFeedbackPages } from '@wiswork/project-store/presentation-feedback'
 import { createPresentationTeamService } from './presentation-team'
@@ -199,6 +200,7 @@ export function createPresentationService(options: {
   const researchStore = new PresentationResearchStore(options.userDataPath)
   const brandLibrary = new PresentationBrandLibrary(options.userDataPath)
   const preferenceLibrary = new PresentationPreferenceLibrary(options.userDataPath)
+  const manualObservations = new PresentationManualObservationLibrary(options.userDataPath)
   const commentLibrary = new PresentationCommentLibrary(options.userDataPath)
   const compile =
     options.compile ??
@@ -371,11 +373,105 @@ export function createPresentationService(options: {
           ),
         )
       }
+      if (
+        [
+          'manual_observation_begin',
+          'manual_observation_complete',
+          'manual_observation_get',
+          'manual_observation_list',
+          'manual_observation_delete',
+          'preference_save_observation',
+        ].includes(request.operation as string)
+      ) {
+        const scope = ['operation', 'documentId', 'projectId']
+        const required =
+          request.operation === 'manual_observation_list'
+            ? scope
+            : [
+                ...scope,
+                'observationId',
+                ...(request.operation === 'manual_observation_begin'
+                  ? ['slideId', 'shape']
+                  : request.operation === 'manual_observation_complete'
+                    ? ['expectedBeforeDigest', 'shape']
+                    : request.operation === 'preference_save_observation'
+                      ? ['text', 'expectedBeforeDigest', 'expectedAfterDigest']
+                      : request.operation === 'manual_observation_delete'
+                        ? ['expectedBeforeDigest', 'expectedAfterDigest']
+                        : []),
+              ]
+        if (Object.keys(request).sort().join(',') !== required.sort().join(','))
+          throw new Error('invalid_request')
+        const documentId = request.documentId as string,
+          projectId = request.projectId as string,
+          observationId = request.observationId as string
+        if (request.operation === 'manual_observation_list')
+          return boundedResponse({ observations: manualObservations.list(documentId, projectId) })
+        if (request.operation === 'manual_observation_begin')
+          return boundedResponse({
+            observation: manualObservations.begin(
+              documentId,
+              projectId,
+              observationId,
+              request.slideId as string,
+              request.shape,
+            ),
+          })
+        if (request.operation === 'manual_observation_complete')
+          return boundedResponse({
+            observation: manualObservations.complete(
+              documentId,
+              projectId,
+              observationId,
+              request.expectedBeforeDigest,
+              request.shape,
+            ),
+          })
+        if (
+          request.operation === 'manual_observation_delete' ||
+          request.operation === 'preference_save_observation'
+        ) {
+          if (
+            typeof request.expectedBeforeDigest !== 'string' ||
+            !/^[a-f0-9]{64}$/.test(request.expectedBeforeDigest) ||
+            (request.expectedAfterDigest !== null &&
+              (typeof request.expectedAfterDigest !== 'string' ||
+                !/^[a-f0-9]{64}$/.test(request.expectedAfterDigest)))
+          )
+            throw new Error('invalid_request')
+          const current = manualObservations.get(documentId, projectId, observationId)
+          if (
+            current &&
+            (current.before.digest !== request.expectedBeforeDigest ||
+              (current.after?.digest ?? null) !== request.expectedAfterDigest)
+          )
+            throw new Error('revision_conflict')
+        }
+        if (request.operation === 'manual_observation_delete')
+          return boundedResponse({
+            deleted: manualObservations.delete(documentId, projectId, observationId),
+          })
+        const observation = manualObservations.get(documentId, projectId, observationId)
+        if (!observation) throw new Error('not_found')
+        if (request.operation === 'preference_save_observation')
+          return boundedResponse({
+            preference: preferenceLibrary.saveObservation(documentId, observation, request.text),
+          })
+        return boundedResponse({ observation })
+      }
       if (request.operation === 'preference_get' || request.operation === 'preference_import') {
         const required =
           request.operation === 'preference_get'
             ? ['operation', 'documentId', 'projectId', 'changeId']
-            : ['operation', 'documentId', 'projectId', 'source', 'expectedTextDigest', 'approvalId']
+            : [
+                'operation',
+                'documentId',
+                'projectId',
+                'source',
+                'expectedTextDigest',
+                'approvalId',
+                ...(Object.hasOwn(request, 'expectedOrigin') ? ['expectedOrigin'] : []),
+              ]
         if (
           Object.keys(request).sort().join(',') !== required.sort().join(',') ||
           typeof request.documentId !== 'string' ||
@@ -398,6 +494,7 @@ export function createPresentationService(options: {
             request.source,
             request.expectedTextDigest,
             request.approvalId,
+            request.expectedOrigin,
           ),
         })
       }
