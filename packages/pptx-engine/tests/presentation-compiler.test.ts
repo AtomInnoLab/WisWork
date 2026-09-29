@@ -636,3 +636,65 @@ it('returns Office source slide IDs from the final OOXML in deck order on repeat
   expect(second.sourceSlideIds).toEqual(ids)
   expect(new Set(ids).size).toBe(8)
 })
+
+it('rejects native table internal geometry, merge and border drift while preserving text and outer frame', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[5]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const originalZip = await JSZip.loadAsync(bytes)
+  const original = await originalZip.file('ppt/slides/slide1.xml')!.async('string')
+  const changes = [
+    (xml: string) => xml.replace(/(<a:gridCol w=")\d+/, '$199999'),
+    (xml: string) => xml.replace(/(<a:tr h=")\d+/, '$199999'),
+    (xml: string) => xml.replace('<a:tc>', '<a:tc gridSpan="2">'),
+    (xml: string) => xml.replace('<a:tc>', '<a:tc rowSpan="2">'),
+    (xml: string) => xml.replace('<a:tc>', '<a:tc hMerge="1">'),
+    (xml: string) => xml.replace('<a:tc>', '<a:tc vMerge="1">'),
+    (xml: string) => xml.replace(/(<a:lnL w=")\d+/, '$199999'),
+    (xml: string) => xml.replace(/(<a:lnR[^>]*><a:solidFill><a:srgbClr val=")[^"]+/, '$1112233'),
+    (xml: string) => xml.replace(/(<a:lnT[^]*?<a:prstDash val=")solid/, '$1sysDash'),
+    (xml: string) => xml.replace(/<a:lnB[^]*?<\/a:lnB>/, ''),
+    ...['alpha', 'tint', 'shade'].map(
+      (transform) => (xml: string) =>
+        xml.replace(
+          /(<a:lnL[^>]*><a:solidFill><a:srgbClr val="[^"]+")\/>/,
+          `$1><a:${transform} val="0"/></a:srgbClr>`,
+        ),
+    ),
+    (xml: string) => xml.replace(/(<a:lnL[^>]*cmpd=")sng/, '$1dbl'),
+    (xml: string) => xml.replace(/(<a:lnL[^>]*cap=")flat/, '$1rnd'),
+    (xml: string) => xml.replace(/(<a:lnL[^>]*algn=")ctr/, '$1in'),
+    (xml: string) => xml.replace(/(<a:lnL[^>]*>)/, '$1<a:gradFill/>'),
+  ]
+  for (const change of changes) {
+    const altered = change(original)
+    expect(altered).not.toBe(original)
+    // Table outer p:xfrm and every text node stay exactly as generated.
+    expect(altered.match(/<p:xfrm>[^]*?<\/p:xfrm>/g)).toEqual(
+      original.match(/<p:xfrm>[^]*?<\/p:xfrm>/g),
+    )
+    expect(altered.match(/<a:t>[^]*?<\/a:t>/g)).toEqual(original.match(/<a:t>[^]*?<\/a:t>/g))
+    const zip = await JSZip.loadAsync(bytes)
+    zip.file('ppt/slides/slide1.xml', altered)
+    await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+  }
+})
+it('accepts generated fractional equal table dimensions with unchanged blank cells and no merges', async () => {
+  const deck = benchmarkDeck()
+  deck.style.accentColor = 'aBcDeF'
+  deck.slides = [deck.slides[5]!]
+  const table = deck.slides[0]!.elements.find((e) => e.kind === 'table')!
+  if (table.kind !== 'table') throw Error('fixture')
+  table.w = 9.1234567
+  table.h = 2.2345678
+  table.rows = [
+    ['a', '', 'c'],
+    ['', 'b', ''],
+    ['x', 'y', 'z'],
+  ]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  await expect(verifyCompiledPresentationStructure(zip, deck)).resolves.toBeUndefined()
+})

@@ -1447,3 +1447,158 @@ it('exposes the comparison for the exact imported production page without changi
     content: { status: 'passed', changed: [], unchecked: [] },
   })
 })
+
+async function nativeTableFixture() {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[5]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const source = (await openPptx(bytes)).deck.slides[0]!
+  const inspection = {
+    slideId: 'host',
+    slideWidth: 960,
+    slideHeight: 540,
+    shapes: source.elements.map((element, index) => ({
+      id: String(index),
+      name: element.name!,
+      type: element.name === 'table' ? 'Table' : 'TextBox',
+      left: (element.transform.offset.x * 72) / 914400,
+      top: (element.transform.offset.y * 72) / 914400,
+      width: (element.transform.offset.cx * 72) / 914400,
+      height: (element.transform.offset.cy * 72) / 914400,
+    })),
+    shapesTruncated: false,
+    overflows: [],
+    overlaps: [],
+    overlapsTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: '' },
+  }
+  const zip = await JSZip.loadAsync(bytes),
+    path = 'ppt/slides/slide1.xml'
+  const xml = await zip.file(path)!.async('string')
+  const original = Buffer.from(bytes).toString('base64')
+  const compare = async (altered: string, source = original) => {
+    zip.file(path, altered)
+    return comparePresentationPageStructure(
+      source,
+      0,
+      inspection,
+      await zip.generateAsync({ type: 'base64' }),
+    )
+  }
+  return { xml, zip, path, compare, original, inspection }
+}
+
+it('detects changed native table internal dimensions and valid merge topology with unchanged text and outer geometry', async () => {
+  const f = await nativeTableFixture()
+  expect((await f.compare(f.xml)).content.status).toBe('passed')
+  const horizontal = f.xml
+    .replace(/<a:tc>/, '<a:tc gridSpan="2">')
+    .replace(/(<a:tc gridSpan="2">[^]*?<\/a:tc>)<a:tc>/, '$1<a:tc hMerge="1">')
+  for (const xml of [
+    f.xml.replace(/(<a:gridCol w=")([0-9]+)/, (_m, prefix, size) => prefix + (Number(size) + 100)),
+    f.xml.replace(/(<a:tr h=")([0-9]+)/, (_m, prefix, size) => prefix + (Number(size) + 100)),
+    horizontal,
+  ]) {
+    expect(xml).not.toBe(f.xml)
+    const result = await f.compare(xml)
+    expect(result.readbackConsistent).toBe(true)
+    expect(result.content).toMatchObject({
+      status: 'warning',
+      tableStructureChanged: ['table'],
+      changed: [],
+      tableStyleChanged: [],
+    })
+  }
+  let verticalIndex = 0
+  const vertical = f.xml.replace(/<a:tc>/g, () => {
+    const index = verticalIndex++
+    return index === 0 ? '<a:tc rowSpan="2">' : index === 2 ? '<a:tc vMerge="1">' : '<a:tc>'
+  })
+  expect((await f.compare(vertical)).content.tableStructureChanged).toEqual(['table'])
+  f.zip.file(f.path, vertical)
+  expect(
+    (await f.compare(vertical, await f.zip.generateAsync({ type: 'base64' }))).content.status,
+  ).toBe('passed')
+  let cellIndex = 0
+  const rectangular = f.xml.replace(
+    /<a:tc>/g,
+    () =>
+      [
+        '<a:tc gridSpan="2" rowSpan="2">',
+        '<a:tc hMerge="true" rowSpan="2">',
+        '<a:tc vMerge="true" gridSpan="2">',
+        '<a:tc hMerge="1" vMerge="1">',
+      ][cellIndex++] ?? '<a:tc>',
+  )
+  expect((await f.compare(rectangular)).content.tableStructureChanged).toEqual(['table'])
+  f.zip.file(f.path, rectangular)
+  expect(
+    (await f.compare(rectangular, await f.zip.generateAsync({ type: 'base64' }))).content.status,
+  ).toBe('passed')
+  const explicitDefaults = f.xml.replace(
+    /<a:tc>/g,
+    '<a:tc gridSpan="1" rowSpan="1" hMerge="false" vMerge="0">',
+  )
+  expect((await f.compare(explicitDefaults)).content.status).toBe('passed')
+  f.zip.file(f.path, horizontal)
+  const merged = await f.zip.generateAsync({ type: 'base64' })
+  expect((await f.compare(horizontal, merged)).content.status).toBe('passed')
+})
+
+it('refuses native table structures that are malformed, contradictory, incomplete or exceed bounds even when both packages match', async () => {
+  const f = await nativeTableFixture()
+  for (const xml of [
+    f.xml.replace(/(<a:gridCol w=")[0-9]+/, '$10'),
+    f.xml.replace(/(<a:tr h=")[0-9]+/, '$1-1'),
+    f.xml.replace('<a:tc>', '<a:tc gridSpan="999">'),
+    f.xml.replace('<a:tc>', '<a:tc rowSpan="999">'),
+    f.xml.replace('<a:tc>', '<a:tc rowSpan="2">'),
+    f.xml.replace('<a:tc>', '<a:tc hMerge="maybe">'),
+    f.xml.replace('<a:tc>', '<a:tc hMerge="1">'),
+    f.xml.replace('<a:tc>', '<a:tc vMerge="1">'),
+    f.xml.replace('<a:tc>', '<a:tc gridSpan="2">'),
+    f.xml.replace(/<a:tc>[^]*?<\/a:tc>/, ''),
+    f.xml.replace('</a:tbl>', '<a:extLst/></a:tbl>'),
+    f.xml.replace(/<a:gridCol w="[0-9]+"\/>/, '<a:gridCol w="1"/>'.repeat(65)),
+  ]) {
+    expect(xml).not.toBe(f.xml)
+    f.zip.file(f.path, xml)
+    const malformed = await f.zip.generateAsync({ type: 'base64' })
+    await expect(f.compare(xml, malformed)).rejects.toThrow('presentation_qa_structure_unavailable')
+  }
+})
+
+it('does not certify table border transforms or compound strokes that are outside the supported explicit semantics', async () => {
+  const f = await nativeTableFixture()
+  const line = f.xml.match(/<a:lnL\b[^]*?<\/a:lnL>/)![0]
+  for (const diagonal of ['<a:lnTlToBr/>', '<a:lnBlToTr/>']) {
+    await expect(f.compare(f.xml.replace('</a:tcPr>', diagonal + '</a:tcPr>'))).rejects.toThrow(
+      'presentation_qa_structure_unavailable',
+    )
+  }
+  for (const border of [
+    line.replace(
+      /<a:srgbClr val="([^"]+)"\/>/,
+      '<a:srgbClr val="$1"><a:alpha val="0"/></a:srgbClr>',
+    ),
+    line.replace(
+      /<a:srgbClr val="([^"]+)"\/>/,
+      '<a:srgbClr val="$1"><a:tint val="50000"/></a:srgbClr>',
+    ),
+    line.replace(
+      /<a:srgbClr val="([^"]+)"\/>/,
+      '<a:srgbClr val="$1"><a:shade val="50000"/></a:srgbClr>',
+    ),
+    line.replace('cmpd="sng"', 'cmpd="dbl"'),
+    line.replace('val="solid"', 'val="dash"'),
+    line.replace('cap="flat"', 'cap="rnd"'),
+  ]) {
+    expect(border).not.toBe(line)
+    const xml = f.xml.replace(line, border)
+    await expect(f.compare(xml)).rejects.toThrow('presentation_qa_structure_unavailable')
+    f.zip.file(f.path, xml)
+    await expect(f.compare(xml, await f.zip.generateAsync({ type: 'base64' }))).rejects.toThrow(
+      'presentation_qa_structure_unavailable',
+    )
+  }
+})

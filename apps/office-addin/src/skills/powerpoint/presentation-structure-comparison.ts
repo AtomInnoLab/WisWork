@@ -28,6 +28,12 @@ type SourceObject = {
     borders: Array<[string, string]>
     runs: Array<[string, string, string, string]>
   }>
+  tableStructure?: {
+    columns: number[]
+    rows: number[]
+    cellCounts: number[]
+    merges: Array<[number, number, number, number]>
+  }
   altText?: string
   crop?: [number, number, number, number]
   appearance?: [string, string, string]
@@ -172,6 +178,155 @@ function textStyles(body: Xml | undefined): Array<[string, string, string, strin
   )
 }
 
+/** Styles not represented by the existing RGB/width comparison cannot certify equality. */
+function supportedTableBorders(cells: Xml[][]): void {
+  const unavailable = (): never => {
+    throw new Error('presentation_qa_structure_unavailable')
+  }
+  for (const row of cells)
+    for (const cell of row) {
+      const properties = cell['a:tcPr']
+      if (properties?.['a:lnTlToBr'] !== undefined || properties?.['a:lnBlToTr'] !== undefined)
+        unavailable()
+      for (const side of ['a:lnL', 'a:lnR', 'a:lnT', 'a:lnB']) {
+        const line = properties?.[side]
+        if (line === undefined) continue
+        if (
+          !line ||
+          typeof line !== 'object' ||
+          Array.isArray(line) ||
+          Object.keys(line).some(
+            (key) =>
+              ![
+                '@_w',
+                '@_cap',
+                '@_cmpd',
+                '@_algn',
+                'a:solidFill',
+                'a:noFill',
+                'a:prstDash',
+                'a:round',
+                'a:headEnd',
+                'a:tailEnd',
+              ].includes(key),
+          ) ||
+          typeof line['@_w'] !== 'string' ||
+          !/^[0-9]+$/.test(line['@_w']) ||
+          Number(line['@_w']) > 91440000 ||
+          (line['@_cap'] !== undefined && line['@_cap'] !== 'flat') ||
+          (line['@_cmpd'] !== undefined && line['@_cmpd'] !== 'sng') ||
+          (line['@_algn'] !== undefined && line['@_algn'] !== 'ctr') ||
+          (line['a:prstDash'] !== undefined &&
+            (Object.keys(line['a:prstDash']).join(',') !== '@_val' ||
+              line['a:prstDash']['@_val'] !== 'solid')) ||
+          (line['a:round'] !== undefined && line['a:round'] !== '')
+        )
+          unavailable()
+        for (const end of ['a:headEnd', 'a:tailEnd']) {
+          const marker = line[end]
+          if (
+            marker !== undefined &&
+            (typeof marker !== 'object' ||
+              Array.isArray(marker) ||
+              Object.keys(marker).some((key) => !['@_type', '@_w', '@_len'].includes(key)) ||
+              marker['@_type'] !== 'none' ||
+              (marker['@_w'] !== undefined && marker['@_w'] !== 'med') ||
+              (marker['@_len'] !== undefined && marker['@_len'] !== 'med'))
+          )
+            unavailable()
+        }
+        if (line['a:noFill'] !== undefined) {
+          if (line['a:noFill'] !== '' || line['a:solidFill'] !== undefined) unavailable()
+        } else {
+          const fill = line['a:solidFill'],
+            color = fill?.['a:srgbClr']
+          if (
+            !fill ||
+            Object.keys(fill).join(',') !== 'a:srgbClr' ||
+            !color ||
+            Object.keys(color).join(',') !== '@_val' ||
+            typeof color['@_val'] !== 'string' ||
+            !SOLID_HEX.test(color['@_val'])
+          )
+            unavailable()
+        }
+      }
+    }
+}
+
+/** Physical continuation cells occupy the grid; their spans must not be summed as columns. */
+function tableStructure(element: Xml): NonNullable<SourceObject['tableStructure']> {
+  const table = element['a:graphic']?.['a:graphicData']?.['a:tbl']
+  const unavailable = (): never => {
+    throw new Error('presentation_qa_structure_unavailable')
+  }
+  const integer = (value: unknown, maximum: number): number => {
+    if (typeof value !== 'string' || !/^[0-9]+$/.test(value)) return unavailable()
+    const number = Number(value)
+    if (!Number.isSafeInteger(number) || number < 1 || number > maximum) return unavailable()
+    return number
+  }
+  const flag = (value: unknown): boolean => {
+    if (value === undefined || value === '0' || value === 'false') return false
+    if (value === '1' || value === 'true') return true
+    return unavailable()
+  }
+  if (!table || /"a:extLst":/.test(JSON.stringify(table))) return unavailable()
+  const columns = many(table['a:tblGrid']?.['a:gridCol']).map((column) =>
+    integer(column['@_w'], 91440000),
+  )
+  const rows = many(table['a:tr'])
+  if (
+    !columns.length ||
+    columns.length > 32 ||
+    !rows.length ||
+    rows.length > 64 ||
+    rows.length * columns.length > 2048
+  )
+    return unavailable()
+  const heights = rows.map((row) => integer(row['@_h'], 91440000))
+  const cells = rows.map((row) => many(row['a:tc']))
+  if (cells.some((row) => row.length !== columns.length)) return unavailable()
+  supportedTableBorders(cells)
+  const occupied: Array<Array<[number, number, number, number] | undefined>> = rows.map(() =>
+    Array(columns.length),
+  )
+  const merges: Array<[number, number, number, number]> = []
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < columns.length; c++) {
+      const cell = cells[r]![c]!
+      const width =
+        cell['@_gridSpan'] === undefined ? 1 : integer(cell['@_gridSpan'], columns.length)
+      const height = cell['@_rowSpan'] === undefined ? 1 : integer(cell['@_rowSpan'], rows.length)
+      const horizontal = flag(cell['@_hMerge']),
+        vertical = flag(cell['@_vMerge'])
+      const owner = occupied[r]![c]
+      if (owner) {
+        const [startRow, startColumn, rowSpan, columnSpan] = owner
+        if (
+          horizontal !== c > startColumn ||
+          vertical !== r > startRow ||
+          (width !== 1 && (c !== startColumn || width !== columnSpan)) ||
+          (height !== 1 && (r !== startRow || height !== rowSpan))
+        )
+          return unavailable()
+        continue
+      }
+      if (horizontal || vertical || r + height > rows.length || c + width > columns.length)
+        return unavailable()
+      const rectangle: [number, number, number, number] = [r, c, height, width]
+      for (let y = r; y < r + height; y++) {
+        for (let x = c; x < c + width; x++) {
+          if (occupied[y]![x]) return unavailable()
+          occupied[y]![x] = rectangle
+        }
+      }
+      if (height > 1 || width > 1) merges.push(rectangle)
+    }
+  }
+  return { columns, rows: heights, cellCounts: cells.map((row) => row.length), merges }
+}
+
 function tableCellStyles(element: Xml): SourceObject['tableCellStyles'] {
   const table = element['a:graphic']?.['a:graphicData']?.['a:tbl']
   return many(table?.['a:tr']).flatMap((row) =>
@@ -242,7 +397,9 @@ function sourceObjects(root: Xml): SourceObject[] {
         box: box as SourceObject['box'],
         text: textRuns(element),
         ...(tag === 'p:sp' ? { textStyles: textStyles(element['p:txBody']) } : {}),
-        ...(type === 'table' ? { tableCellStyles: tableCellStyles(element) } : {}),
+        ...(type === 'table'
+          ? { tableCellStyles: tableCellStyles(element), tableStructure: tableStructure(element) }
+          : {}),
         rotation,
         ...(tag === 'p:sp' ? { appearance } : {}),
         ...(tag === 'p:pic'
@@ -334,6 +491,7 @@ export async function comparePresentationPageStructure(
     appearanceChanged: string[]
     textStyleChanged: string[]
     tableStyleChanged: string[]
+    tableStructureChanged: string[]
     unchecked: string[]
   }
 }> {
@@ -466,6 +624,7 @@ export async function comparePresentationPageStructure(
     appearanceChanged: string[] = [],
     textStyleChanged: string[] = [],
     tableStyleChanged: string[] = [],
+    tableStructureChanged: string[] = [],
     unchecked: string[] = []
   if (hostBase64 && readbackConsistent) {
     for (const element of source.filter((item) => item.type === 'shape')) {
@@ -484,6 +643,11 @@ export async function comparePresentationPageStructure(
     }
     for (const element of source.filter((item) => item.type === 'table')) {
       const actual = exportedByName.get(element.name)
+      if (
+        actual?.type === 'table' &&
+        JSON.stringify(actual.tableStructure) !== JSON.stringify(element.tableStructure)
+      )
+        tableStructureChanged.push(element.name)
       if (
         actual?.type === 'table' &&
         JSON.stringify(actual.tableCellStyles) !== JSON.stringify(element.tableCellStyles)
@@ -666,7 +830,8 @@ export async function comparePresentationPageStructure(
     cropChanged.length ||
     appearanceChanged.length ||
     textStyleChanged.length ||
-    tableStyleChanged.length
+    tableStyleChanged.length ||
+    tableStructureChanged.length
       ? 'warning'
       : unchecked.length || backgroundUnchecked || notesUnchecked || sourceLinksUnchecked
         ? 'incomplete'
@@ -695,6 +860,7 @@ export async function comparePresentationPageStructure(
     appearanceChanged,
     textStyleChanged,
     tableStyleChanged,
+    tableStructureChanged,
     unchecked,
   }
   const structureStatus =

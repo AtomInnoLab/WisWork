@@ -19,6 +19,18 @@ type XmlNode = Record<string, any>
 const xmlItems = (value: unknown): XmlNode[] =>
   value === undefined ? [] : Array.isArray(value) ? value : [value as XmlNode]
 
+// Match only the bounded XML shape emitted for a generated solid table border.
+function generatedXmlMatches(value: unknown, expected: unknown): boolean {
+  if (!expected || typeof expected !== 'object') return value === expected
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  return (
+    Object.keys(value).length === Object.keys(expected).length &&
+    Object.entries(expected).every(([key, child]) =>
+      generatedXmlMatches((value as XmlNode)[key], child),
+    )
+  )
+}
+
 function xmlText(value: unknown): string {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) return value.map(xmlText).join('')
@@ -413,8 +425,44 @@ export async function verifyCompiledPresentationStructure(
             throw new Error('presentation_compile:structure_mismatch')
         }
         if (element.kind === 'table') {
-          const rows = xmlItems(object['a:graphic']['a:graphicData']['a:tbl']['a:tr']).map((row) =>
+          const table = object['a:graphic']['a:graphicData']['a:tbl'] as XmlNode
+          const columns = xmlItems(table['a:tblGrid']?.['a:gridCol'])
+          const nativeRows = xmlItems(table['a:tr'])
+          // PptxGenJS inch2Emu rounds each supplied column/row independently.
+          const columnWidth = Math.round((element.w / element.rows[0]!.length) * 914400)
+          const rowHeight = Math.round((element.h / element.rows.length) * 914400)
+          if (
+            columns.length !== element.rows[0]!.length ||
+            columns.some((column) => Number(column['@_w']) !== columnWidth) ||
+            nativeRows.length !== element.rows.length ||
+            nativeRows.some((row) => Number(row['@_h']) !== rowHeight)
+          )
+            throw new Error('presentation_compile:structure_mismatch')
+          const rows = nativeRows.map((row) =>
             xmlItems(row['a:tc']).map((cell) => {
+              // SlideIR has no merge topology: generated cells must remain unmerged.
+              if (
+                ['gridSpan', 'rowSpan', 'hMerge', 'vMerge'].some((key) =>
+                  Object.hasOwn(cell, `@_${key}`),
+                ) ||
+                ['a:lnL', 'a:lnR', 'a:lnT', 'a:lnB'].some((side) => {
+                  const border = cell['a:tcPr']?.[side] as XmlNode | undefined
+                  return !generatedXmlMatches(border, {
+                    '@_w': '12700',
+                    '@_cap': 'flat',
+                    '@_cmpd': 'sng',
+                    '@_algn': 'ctr',
+                    'a:solidFill': {
+                      'a:srgbClr': { '@_val': deck.style.accentColor.toUpperCase() },
+                    },
+                    'a:prstDash': { '@_val': 'solid' },
+                    'a:round': '',
+                    'a:headEnd': { '@_type': 'none', '@_w': 'med', '@_len': 'med' },
+                    'a:tailEnd': { '@_type': 'none', '@_w': 'med', '@_len': 'med' },
+                  })
+                })
+              )
+                throw new Error('presentation_compile:structure_mismatch')
               verifyTextStyle(
                 cell['a:txBody'],
                 deck.style.fontFace,
