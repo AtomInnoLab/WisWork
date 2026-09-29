@@ -19,7 +19,8 @@
     "./presentation-claim-review": "./src/presentation-claim-review.ts",
     "./presentation-delivery-report": "./src/presentation-delivery-report.ts",
     "./presentation-calculation": "./src/presentation-calculation.ts",
-    "./presentation-source-limits": "./src/presentation-source-limits.ts"
+    "./presentation-source-limits": "./src/presentation-source-limits.ts",
+    "./presentation-chart-data": "./src/presentation-chart-data.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

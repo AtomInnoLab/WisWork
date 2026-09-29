@@ -1,4 +1,8 @@
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from './presentation-source-limits'
+import {
+  parsePresentationChartDataCheck,
+  type PresentationChartDataCheck,
+} from './presentation-chart-data'
 import { presentationProfessionalContextMissingFields } from '@wiswork/project-store/presentation-professional-context'
 import { canonicalPresentationValue } from '@wiswork/project-store/presentation-canonical'
 import {
@@ -85,6 +89,7 @@ export interface PresentationDeliveryReport {
     productionState: 'pending' | 'building' | 'compiled' | 'failed'
     calculations: CalculationResult[]
     issues: DeliveryIssue[]
+    chartData?: PresentationChartDataCheck
   }[]
   checks: {
     scope: 'frozen_production'
@@ -150,38 +155,40 @@ function seeds(
   report: PresentationDeliveryReport,
   pageIndex: number,
   missing: Set<string>,
+  chartData = report.pages[pageIndex]?.chartData,
 ): Seed[] {
   const page = report.plan.slides[pageIndex]!
   const result: Seed[] = []
   for (const [claimIndex, claimId] of page.claimIds.entries()) {
     const claim = report.plan.claims.find((item) => item.id === claimId)!
     const add = (code: string, sourceId?: string): void => {
-      const unverifiable = [
-        'claim_no_sources',
-        'professional_context_incomplete',
-        'professional_context_missing',
-        'source_excerpt_missing',
-        'source_excerpt_not_in_attachment',
-        'source_attachment_missing',
-        'source_attachment_not_ready',
-        'source_attachment_unsupported',
-        'source_url_mismatch',
-        'source_locator_mismatch',
-        'source_original_not_frozen',
-        'source_locator_missing',
-        'source_review_missing',
-        'source_review_insufficient',
-        'source_authority_review_missing',
-        'source_authority_review_uncertain',
-        'source_authority_review_insufficient',
-        'source_timeliness_review_missing',
-        'source_timeliness_review_uncertain',
-        'source_jurisdiction_review_missing',
-        'source_jurisdiction_review_uncertain',
-        'calculation_not_reproduced',
-        'calculation_unsupported',
-        'calculation_invalid_arithmetic',
-      ].includes(code)
+      const unverifiable =
+        [
+          'claim_no_sources',
+          'professional_context_incomplete',
+          'professional_context_missing',
+          'source_excerpt_missing',
+          'source_excerpt_not_in_attachment',
+          'source_attachment_missing',
+          'source_attachment_not_ready',
+          'source_attachment_unsupported',
+          'source_url_mismatch',
+          'source_locator_mismatch',
+          'source_original_not_frozen',
+          'source_locator_missing',
+          'source_review_missing',
+          'source_review_insufficient',
+          'source_authority_review_missing',
+          'source_authority_review_uncertain',
+          'source_authority_review_insufficient',
+          'source_timeliness_review_missing',
+          'source_timeliness_review_uncertain',
+          'source_jurisdiction_review_missing',
+          'source_jurisdiction_review_uncertain',
+          'calculation_not_reproduced',
+          'calculation_unsupported',
+          'calculation_invalid_arithmetic',
+        ].includes(code) || code.startsWith('chart_data_')
       result.push({
         id: `p${pageIndex}_c${claimIndex}_s${sourceId === undefined ? 'x' : claim.sourceIds.indexOf(sourceId)}_${code}`,
         code,
@@ -191,6 +198,14 @@ function seeds(
       })
     }
     if (missing.has(claimId)) add('claim_text_not_found')
+    const chartCodes = new Set(
+      chartData?.charts.flatMap((chart) =>
+        chart.findings
+          .filter((finding) => finding.claimIds.includes(claimId))
+          .map((finding) => finding.code),
+      ) ?? [],
+    )
+    for (const code of chartCodes) add(code)
     const professional = claim.professionalContext
     if (presentationProfessionalWorkflow(report.plan.domain) && !professional)
       add('professional_context_missing')
@@ -536,8 +551,16 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
     reviewIds.add(review.reviewId)
   }
   for (const [index, page] of report.pages.entries()) {
-    exact(page, ['pageId', 'title', 'productionState', 'calculations', 'issues'])
+    exact(page, ['pageId', 'title', 'productionState', 'calculations', 'issues', 'chartData'])
     const slide = plan.slides[index]!
+    if (Object.hasOwn(page, 'chartData')) {
+      try {
+        const check = parsePresentationChartDataCheck(page.chartData, plan)
+        if (check.pageId !== slide.id) invalid()
+      } catch {
+        invalid()
+      }
+    } else if (slide.chartData !== undefined) invalid()
     if (report.reviews.filter((review) => review.pageId === slide.id).length > 32) invalid()
     if (
       page.pageId !== slide.id ||
@@ -551,7 +574,8 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
             ? 1280
             : plan.research || report.reviews.some((review) => review.sourceAssessment)
               ? 1056
-              : 608)
+              : 608) +
+          (page.chartData ? 256 : 0)
     )
       invalid()
     const calculations = slide.claimIds
@@ -651,6 +675,7 @@ export async function buildPresentationDeliveryReport(
       input.reviews,
     )
     const content = checkPresentationPageContent(plan, deck, page.id)
+    const pageChartData = content.chartData
     const missing = new Set(
       content.findings
         .filter((finding) => finding.code === 'claim_text_not_found')
@@ -661,7 +686,7 @@ export async function buildPresentationDeliveryReport(
       .filter((claim) => claim.type === 'calculation')
       .map(reproducePresentationCalculation)
     const issues: DeliveryIssue[] = []
-    for (const seed of seeds(report, index, missing)) {
+    for (const seed of seeds(report, index, missing, pageChartData)) {
       const sourceAssessmentIssue = /^source_(authority|timeliness|jurisdiction)_review_/.test(
         seed.code,
       )
@@ -687,6 +712,9 @@ export async function buildPresentationDeliveryReport(
           ? { sourceAudit: report.sourceAudit.find((item) => item.sourceId === seed.sourceId) }
           : {}),
         relevantReviews,
+        ...(seed.code.startsWith('chart_data_')
+          ? { chartData: pageChartData, chartBindings: page.chartData }
+          : {}),
         ...(seed.code.startsWith('professional_')
           ? {
               professionalClaim: plan.claims.find((claim) => claim.id === seed.claimId),
@@ -758,6 +786,7 @@ export async function buildPresentationDeliveryReport(
       issues.push({ ...seed, digest, disposition: disposition(report, { id: seed.id, digest }) })
     }
     report.pages.push({
+      ...(pageChartData ? { chartData: pageChartData } : {}),
       pageId: page.id,
       title: page.title,
       productionState: input.pageStates.find((state) => state.pageId === page.id)!.state,
@@ -818,6 +847,12 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
     )
   }
   for (const page of report.pages) {
+    if (page.chartData)
+      lines.push(
+        '',
+        'Chart declared-data check (sourceTruth NOT VERIFIED; host NOT CHECKED):',
+        safe(JSON.stringify(page.chartData)),
+      )
     lines.push(
       '',
       `## ${safe(page.pageId)} — ${safe(page.title)}`,

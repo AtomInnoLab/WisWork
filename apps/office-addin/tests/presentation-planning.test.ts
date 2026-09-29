@@ -521,3 +521,25 @@ it.each(['science', 'law', 'finance'])(
     expect(f.rememberProject).not.toHaveBeenCalled()
   },
 )
+
+it('guides actual planning tools to bind every chart point to frozen source or reproduced calculation without certifying it', () => {
+  const f = setup()
+  for (const text of [
+    'slides[].chartData',
+    'elementId',
+    'claimId',
+    'excerptOffset',
+    'excerptText',
+    'calculation',
+    'unit',
+    'currency',
+    'read_presentation_claim_evidence',
+    'read_presentation_delivery_report',
+    'does not verify source truth',
+  ])
+    expect(f.skill.systemPrompt).toContain(text)
+  expect(
+    f.skill.tools.find((tool) => tool.name === 'save_presentation_plan')?.description,
+  ).toContain('chartData')
+  expect(f.skill.tools.some((tool) => tool.name === 'check_chart_data')).toBe(false)
+})

@@ -402,7 +402,8 @@ function IssueList({
                   ? '网页快照与计划网址不匹配'
                   : issue.code === 'source_locator_mismatch'
                     ? '计划定位与原文实际位置不匹配'
-                    : (professionalReasons[issue.code] ??
+                    : (chartReasons[issue.code] ??
+                      professionalReasons[issue.code] ??
                       sourceAssessmentReasons[issue.code] ??
                       researchReasons[issue.code] ??
                       issue.code)}{' '}
@@ -435,6 +436,149 @@ function IssueList({
         </button>
       )}
     </div>
+  )
+}
+const chartReasons: Record<string, string> = {
+  chart_data_unbound: '实际图表未关联声明数据',
+  chart_data_missing: '声明的图表未出现在冻结页面',
+  chart_data_shape_mismatch: '图表类别、系列名称或维度与声明不同',
+  chart_data_value_mismatch: '图表逐点数值与声明不同',
+  chart_data_source_basis_mismatch: '计划摘录与声明数值依据不一致',
+  chart_data_calculation_not_reproduced: '计算依据未复现为声明数值',
+  chart_data_unit_mismatch: '图表声明单位缺失或不一致',
+  chart_data_currency_mismatch: '图表声明币种缺失或不一致',
+}
+function ChartDataDetails({
+  report,
+  page,
+}: {
+  report: PresentationDeliveryReport
+  page: PresentationDeliveryReport['pages'][number]
+}) {
+  const check = page.chartData
+  if (!check) return null
+  const declared = report.plan.slides?.find((slide) => slide.id === page.pageId)?.chartData
+  return (
+    <details
+      aria-label="冻结图表数据关联"
+      key={`${report.documentId}-${report.requestId}-${page.pageId}`}
+    >
+      <summary>图表数据关联 · {check.charts.length} 个图表</summary>
+      <p>
+        仅比较冻结页面与计划保存的声明数据，不证明原附件真实性、事实支持或适用范围；来源权威性、时效与宿主显示仍未核验。
+      </p>
+      {check.charts.map((chart) => {
+        const binding = declared?.find((item) => item.elementId === chart.elementId)
+        return (
+          <section key={chart.elementId}>
+            <h5>图表 {chart.elementId}</h5>
+            {!chart.findings.length && <p>声明数据一致，仍待审查。</p>}
+            <ul>
+              {chart.findings.map((finding) => (
+                <li key={finding.code}>
+                  {chartReasons[finding.code]} · 受影响主张：
+                  {finding.claimIds.join('、') || '未绑定页面主张'}
+                </li>
+              ))}
+            </ul>
+            {chart.actual ? (
+              <>
+                <p>
+                  实际类别：{chart.actual.categories.join('、')}；实际系列数：
+                  {chart.actual.series.length}
+                </p>
+                <table>
+                  <caption>冻结图表实际数值</caption>
+                  <thead>
+                    <tr>
+                      <th>类别</th>
+                      {chart.actual.series.map((series, index) => (
+                        <th key={index}>{series.name}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {chart.actual.categories.map((category, index) => (
+                      <tr key={index}>
+                        <th>{category}</th>
+                        {chart.actual!.series.map((series, seriesIndex) => (
+                          <td key={seriesIndex}>{series.values[index]}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            ) : (
+              <p>冻结页面未找到该图表。</p>
+            )}
+            {binding ? (
+              <details>
+                <summary>逐点声明与原始依据</summary>
+                <p>
+                  声明类别：{binding.categories.join('、')}；声明单位：{binding.unit ?? '未声明'}
+                  ；声明币种：{binding.currency ?? '未声明'}
+                </p>
+                {binding.series.map((series, seriesIndex) => (
+                  <section key={seriesIndex}>
+                    <h6>声明系列：{series.name}</h6>
+                    <ol>
+                      {series.points.map((point, index) => {
+                        const claim = report.plan.claims.find((item) => item.id === point.claimId)
+                        const sourceId =
+                          point.basis.kind === 'source' ? point.basis.sourceId : undefined
+                        return (
+                          <li key={index}>
+                            <p>
+                              {binding.categories[index]} · 声明值 {point.value} · 主张{' '}
+                              {point.claimId}：{claim?.statement}
+                            </p>
+                            {point.basis.kind === 'source' ? (
+                              <>
+                                <p>
+                                  计划原来源：
+                                  <a
+                                    href={`#evidence-source-${report.requestId}-${point.basis.sourceId}`}
+                                  >
+                                    {point.basis.sourceId}
+                                  </a>{' '}
+                                  · 计划摘录内 UTF-16 {point.basis.excerptOffset}
+                                </p>
+                                <blockquote>原数值依据：{point.basis.excerptText}</blockquote>
+                                <p>
+                                  原文位置：
+                                  {report.plan.sources.find((source) => source.id === sourceId)
+                                    ?.locator ?? '未提供'}
+                                  ；需读取来源完整原文确认口径与支持。
+                                </p>
+                              </>
+                            ) : (
+                              <>
+                                <p>
+                                  计算公式：{claim?.calculation?.formula ?? '未配置'}；计算输入：
+                                  {claim?.calculation?.inputs.join('、') ?? '未配置'}
+                                </p>
+                                <p>
+                                  计算单位：{claim?.calculation?.unit ?? '未声明'}；计算币种：
+                                  {claim?.calculation?.currency ?? '未声明'}
+                                  ；算术复现不证明输入来自真实原文。
+                                </p>
+                              </>
+                            )}
+                          </li>
+                        )
+                      })}
+                    </ol>
+                  </section>
+                ))}
+              </details>
+            ) : (
+              <p>此实际图表尚无逐点数据关联，不能推断其来源或主张支持。</p>
+            )}
+          </section>
+        )
+      })}
+    </details>
   )
 }
 const workflowTools: Record<string, string> = {
@@ -694,6 +838,7 @@ export function PresentationDeliveryReportCard({
                 />
               )
             })}
+          <ChartDataDetails report={report} page={page} />
           <SourceAssessmentHistory report={report} pageId={page.pageId} />
         </section>
       ))}

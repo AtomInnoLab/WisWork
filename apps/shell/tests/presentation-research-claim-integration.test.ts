@@ -30,12 +30,14 @@ async function setup(
   professionalContext?: PresentationProfessionalContext,
   boundResearch = true,
   professionalDomain?: 'science' | 'law' | 'finance',
+  chartValues?: [number, number],
 ) {
   const root = mkdtempSync(join(tmpdir(), 'research-claim-cross-'))
   roots.push(root)
   const compile = vi.fn()
   let service = createPresentationService({ userDataPath: root, compile })
   let corruptEvidence = false
+  let chartReportTamper: 'remove' | 'hide_findings' | undefined
   let hideAssessmentReply = false
   let omitProfessionalContext = false
   let stripProfessionalContext = false
@@ -72,6 +74,14 @@ async function setup(
       delete value.documentId
       delete value.source.asOf
     }
+    if (
+      chartReportTamper &&
+      (body as { operation: string }).operation === 'production_delivery_report' &&
+      value.pages?.[0]?.chartData
+    ) {
+      if (chartReportTamper === 'remove') delete value.pages[0].chartData
+      else value.pages[0].chartData.charts[0].findings = []
+    }
     return Response.json(value)
   }
   const runtime = () =>
@@ -98,7 +108,10 @@ async function setup(
         })
       ).text(),
     )
-  const original = Buffer.from('原文对测试样本有效，不能推广到总体。'),
+  const originalText = chartValues
+    ? '原文对测试样本有效。A=10，B=20。'
+    : '原文对测试样本有效，不能推广到总体。'
+  const original = Buffer.from(originalText),
     attachmentId = hash(original)
   await raw('attachment_begin', {
     attachmentId,
@@ -115,7 +128,7 @@ async function setup(
         id: 'original-source',
         title: '原始资料',
         uri: `attachment:${attachmentId}`,
-        excerpt: '原文对测试样本有效',
+        excerpt: chartValues ? originalText : '原文对测试样本有效',
         locator: '第一段',
         asOf: '2026-09-01',
       },
@@ -215,6 +228,42 @@ async function setup(
     })
   }
   if (!boundResearch) delete plan.research
+  if (chartValues) {
+    const page = plan.slides[0]!
+    page.chartData = [
+      {
+        elementId: 'evidence-chart',
+        categories: ['A', 'B'],
+        series: [
+          {
+            name: '样本数',
+            points: [10, 20].map((value) => ({
+              value,
+              claimId: 'source-1',
+              basis: {
+                kind: 'source' as const,
+                sourceId: 'source',
+                excerptOffset: originalText.indexOf(String(value)),
+                excerptText: String(value),
+              },
+            })),
+          },
+        ],
+        unit: '个',
+      },
+    ]
+    deck.slides[0]!.elements.push({
+      id: 'evidence-chart',
+      kind: 'chart',
+      chartType: 'bar',
+      x: 1,
+      y: 2,
+      w: 8,
+      h: 3,
+      categories: ['A', 'B'],
+      series: [{ name: '样本数', values: chartValues }],
+    })
+  }
   deck.claims = presentationPlanClaims(plan)
   expect(await raw('save_plan', { expectedRevision: 0, plan })).not.toHaveProperty('error')
   expect(
@@ -231,6 +280,9 @@ async function setup(
   }
   return {
     root,
+    tamperChartReport: (mode: 'remove' | 'hide_findings') => {
+      chartReportTamper = mode
+    },
     toolNames: () => host.skill.tools.map((tool) => tool.name),
     request,
     hideAssessmentReply: () => {
@@ -942,3 +994,138 @@ it('negotiates cleanup history through actual Agent tools and never exposes a de
     f.close()
   }
 })
+
+it('preserves actual uploaded numeric evidence through chart planning, report, restart and native host ZIP', async () => {
+  const f = await setup(false, undefined, true, undefined, [10, 20])
+  try {
+    const report = await f.raw('production_delivery_report', { requestId: 'frozen' })
+    expect(report.plan.slides[0].chartData).toEqual(f.plan.slides[0]!.chartData)
+    expect(report.pages[0].chartData).toMatchObject({
+      scope: 'frozen_declared_data',
+      charts: [{ elementId: 'evidence-chart', findings: [] }],
+      checks: { sourceTruth: 'not_verified', host: 'not_checked' },
+    })
+    const evidence = await f.tool('read_presentation_claim_evidence', f.input)
+    expect(evidence.isError, evidence.output).toBeFalsy()
+    expect(JSON.parse(evidence.output).research.record.sources[0].status).toBe('found')
+    expect(JSON.parse(evidence.output).attachment.text).toContain('A=10，B=20')
+    const newer = structuredClone(f.plan)
+    newer.slides[0]!.chartData![0]!.series[0]!.points[0]!.value = 99
+    expect(await f.raw('save_plan', { expectedRevision: 1, plan: newer })).not.toHaveProperty(
+      'error',
+    )
+    f.restart()
+    const restored = await f.raw('production_delivery_report', { requestId: 'frozen' })
+    expect(restored.pages[0].chartData).toEqual(report.pages[0].chartData)
+    expect(restored.plan.slides[0].chartData).toEqual(f.plan.slides[0]!.chartData)
+    const vfs = new InMemoryVfs()
+    const pptx = await new JSZip()
+      .file('synthetic.txt', 'native host bytes for test')
+      .generateAsync({ type: 'uint8array' })
+    const skill = createPresentationHostBundleSkill({
+      available: () => true,
+      nativeAvailable: () => true,
+      documentId: async () => 'doc',
+      request: f.request,
+      vfs,
+      exportDocument: async () => pptx,
+    })
+    const result = await skill.executeTool({
+      id: 'chart-host-export',
+      name: 'export_current_presentation_bundle',
+      input: {
+        project_id: f.plan.projectId,
+        request_id: 'frozen',
+        include_pdf: false,
+      },
+    })
+    expect(result.isError, result.output).toBeFalsy()
+    const zip = await JSZip.loadAsync(vfs.readBytes(JSON.parse(result.output).paths[0]))
+    expect(JSON.parse(await zip.file('evidence.json')!.async('string')).pages[0].chartData).toEqual(
+      report.pages[0].chartData,
+    )
+    expect(
+      JSON.parse(await zip.file('research.json')!.async('string')).draft.sources[0].excerpt,
+    ).toContain('A=10，B=20')
+    expect(await zip.file('evidence.md')!.async('string')).toContain('evidence')
+  } finally {
+    f.close()
+  }
+})
+it('reports a real chart value differing from its frozen original and keeps its issue after review and explanation', async () => {
+  const f = await setup(false, undefined, true, undefined, [10, 21])
+  try {
+    const read = await f.tool('read_presentation_delivery_report', {
+      project_id: f.plan.projectId,
+      request_id: 'frozen',
+    })
+    expect(read.isError, read.output).toBeFalsy()
+    const report = JSON.parse(read.output)
+    expect(report.pages[0].chartData.charts[0].findings).toContainEqual({
+      code: 'chart_data_value_mismatch',
+      claimIds: ['source-1'],
+    })
+    const issue = report.pages[0].issues.find(
+      (item: { code: string }) => item.code === 'chart_data_value_mismatch',
+    )
+    expect(issue).toMatchObject({
+      claimId: 'source-1',
+      category: 'unverifiable',
+      disposition: { state: 'open' },
+    })
+    expect((await f.tool('read_presentation_claim_evidence', f.input)).isError).toBeFalsy()
+    expect(
+      (
+        await f.tool('record_presentation_claim_review', {
+          ...f.input,
+          review_id: 'chart-support',
+          outcome: 'supported',
+          notes: '文字支持，图表数值仍需修正',
+        })
+      ).isError,
+    ).toBeFalsy()
+    const action = await f.tool('record_presentation_issue_action', {
+      project_id: f.plan.projectId,
+      request_id: 'frozen',
+      expected_revision: 0,
+      action: {
+        actionId: 'explain-chart',
+        issueId: issue.id,
+        issueDigest: issue.digest,
+        state: 'explained',
+        note: '已说明原值20与绘图21不一致',
+      },
+    })
+    expect(action.isError, action.output).toBeFalsy()
+    f.restart()
+    const restored = await f.raw('production_delivery_report', { requestId: 'frozen' })
+    expect(
+      restored.pages[0].issues.find((item: { code: string }) => item.code === issue.code),
+    ).toMatchObject({ id: issue.id, disposition: { state: 'explained' } })
+    expect(restored.pages[0].chartData.charts[0].findings).toContainEqual({
+      code: 'chart_data_value_mismatch',
+      claimIds: ['source-1'],
+    })
+    expect(f.compile).not.toHaveBeenCalled()
+  } finally {
+    f.close()
+  }
+})
+
+it.each(['remove', 'hide_findings'] as const)(
+  'rejects an actual Agent chart report whose %s response suppresses the frozen data mismatch',
+  async (mode) => {
+    const f = await setup(false, undefined, true, undefined, [10, 21])
+    try {
+      f.tamperChartReport(mode)
+      const read = await f.tool('read_presentation_delivery_report', {
+        project_id: f.plan.projectId,
+        request_id: 'frozen',
+      })
+      expect(read).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+      expect(f.compile).not.toHaveBeenCalled()
+    } finally {
+      f.close()
+    }
+  },
+)

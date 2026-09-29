@@ -7,11 +7,17 @@ import {
 import { array, choice, id, object, valid } from './presentation-schema'
 import { sourceAsOfFinding } from './presentation-source-time'
 import { reproducePresentationCalculation } from './presentation-calculation'
+import {
+  checkPresentationChartData,
+  parsePresentationChartDataCheck,
+  type PresentationChartDataCheck,
+} from './presentation-chart-data'
 
 export interface PresentationPageContentCheck {
   version: 1
   pageId: string
   claimIds: string[]
+  chartData?: PresentationChartDataCheck
   findings: {
     code:
       | 'claim_text_not_found'
@@ -67,12 +73,34 @@ const reportSchema = object({
   }),
 })
 
-export function parsePresentationPageContentCheck(value: unknown): PresentationPageContentCheck {
+export function parsePresentationPageContentCheck(
+  value: unknown,
+  plan?: PresentationPlan,
+): PresentationPageContentCheck {
   const reject = (reason: string): never => {
     throw new Error(`presentation_content_check_invalid:${reason}`)
   }
-  if (!valid(value, reportSchema)) reject('schema')
+  const base = { ...(value as PresentationPageContentCheck) }
+  delete base.chartData
+  if (!valid(base, reportSchema)) reject('schema')
   const report = value as PresentationPageContentCheck
+  if (Object.hasOwn(report, 'chartData')) {
+    try {
+      const chartData = parsePresentationChartDataCheck(report.chartData, plan)
+      if (chartData.pageId !== report.pageId) reject('chart_page')
+      if (
+        chartData.charts.some((chart) =>
+          chart.findings.some((finding) =>
+            finding.claimIds.some((id) => !report.claimIds.includes(id)),
+          ),
+        )
+      )
+        reject('chart_claim_reference')
+    } catch {
+      reject('chart_data')
+    }
+  } else if (plan?.slides.find((slide) => slide.id === report.pageId)?.chartData !== undefined)
+    reject('chart_required')
   const claimIds = new Set(report.claimIds)
   if (claimIds.size !== report.claimIds.length) reject('duplicate_claim')
   const findings = new Set<string>()
@@ -119,6 +147,11 @@ export function checkPresentationPageContent(
   const claims = new Map(plan.claims.map((claim) => [claim.id, claim]))
   const sources = new Map(plan.sources.map((source) => [source.id, source]))
   const findings: PresentationPageContentCheck['findings'] = []
+  const charts = slide.elements.filter((element) => element.kind === 'chart')
+  const chartData =
+    charts.length || plan.slides.find((page) => page.id === pageId)?.chartData !== undefined
+      ? checkPresentationChartData(plan, pageId, charts)
+      : undefined
   for (const claimId of claimIds) {
     const claim = claims.get(claimId)!
     const statement = normalize(claim.statement)
@@ -142,17 +175,21 @@ export function checkPresentationPageContent(
     )
       findings.push({ code: 'calculation_not_reproduced', claimId })
   }
-  return parsePresentationPageContentCheck({
-    version: 1,
-    pageId,
-    claimIds,
-    findings,
-    checks: {
-      content: 'needs_review',
-      sources: 'not_verified',
-      calculations: 'not_verified',
-      timeliness: 'not_verified',
-      host: 'not_checked',
+  return parsePresentationPageContentCheck(
+    {
+      version: 1,
+      pageId,
+      claimIds,
+      findings,
+      ...(chartData ? { chartData } : {}),
+      checks: {
+        content: 'needs_review',
+        sources: 'not_verified',
+        calculations: 'not_verified',
+        timeliness: 'not_verified',
+        host: 'not_checked',
+      },
     },
-  })
+    plan,
+  )
 }

@@ -1,3 +1,8 @@
+import {
+  PRESENTATION_CHART_DATA_SCHEMA,
+  parsePresentationChartDataBindings,
+  type PresentationChartDataBinding,
+} from './presentation-chart-data'
 import type { PresentationClaim, PresentationDeck, PresentationStyle } from './presentation'
 import {
   PROFESSIONAL_CONTEXT_SCHEMA,
@@ -337,6 +342,7 @@ export interface PresentationPlan {
     locked?: boolean
     claimIds: string[]
     layout: 'cover' | 'content' | 'comparison' | 'process' | 'chart' | 'summary'
+    chartData?: PresentationChartDataBinding[]
     domainSection?: PresentationDomainSection
     dependsOn?: string[]
     layoutComponentId?: string
@@ -467,6 +473,7 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object(
           locked: { type: 'boolean' },
           claimIds: array(id, 32),
           layout: choice('cover', 'content', 'comparison', 'process', 'chart', 'summary'),
+          chartData: PRESENTATION_CHART_DATA_SCHEMA,
           domainSection: choice(...domainSections),
           dependsOn: array(id, 31),
           layoutComponentId: id,
@@ -522,7 +529,19 @@ export function presentationSourceAttachmentId(
 }
 
 export function parsePresentationPlan(input: unknown): PresentationPlan {
-  if (!valid(input, PRESENTATION_PLAN_SCHEMA)) reject('schema')
+  const schemaInput =
+    input && typeof input === 'object' && Array.isArray((input as PresentationPlan).slides)
+      ? {
+          ...input,
+          slides: (input as PresentationPlan).slides.map((slide) => {
+            if (!slide || typeof slide !== 'object') return slide
+            const copy = { ...slide }
+            delete copy.chartData
+            return copy
+          }),
+        }
+      : input
+  if (!valid(schemaInput, PRESENTATION_PLAN_SCHEMA)) reject('schema')
   const plan = input as PresentationPlan
   for (const claim of plan.claims) {
     if (Object.hasOwn(claim, 'professionalContext')) {
@@ -640,6 +659,26 @@ export function parsePresentationPlan(input: unknown): PresentationPlan {
   }
   const previousSlideIds = new Set<string>()
   for (const slide of plan.slides) {
+    if (Object.hasOwn(slide, 'chartData')) {
+      try {
+        parsePresentationChartDataBindings(slide.chartData)
+      } catch {
+        reject('chart_data')
+      }
+      for (const chart of slide.chartData!)
+        for (const series of chart.series)
+          for (const point of series.points) {
+            const claim = plan.claims.find((c) => c.id === point.claimId)
+            if (
+              !claim ||
+              !slide.claimIds.includes(point.claimId) ||
+              (point.basis.kind === 'source'
+                ? !claim.sourceIds.includes(point.basis.sourceId)
+                : claim.type !== 'calculation')
+            )
+              reject('chart_data_reference')
+          }
+    }
     if (plan.parallelism === 2 && slide.dependsOn === undefined) reject('page_dependency')
     unique(slide.claimIds, 'claim_reference')
     if (slide.claimIds.some((claim) => !claimIds.has(claim))) reject('claim_reference')

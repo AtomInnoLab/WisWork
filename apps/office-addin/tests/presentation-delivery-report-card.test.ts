@@ -877,3 +877,224 @@ it('binds complete professional workflow guidance to the current report domain a
     container.remove()
   }
 })
+
+it('shows actual chart values, all data findings and exact source/calculation bindings without claiming source truth', async () => {
+  const reasons = {
+    chart_data_unbound: '实际图表未关联声明数据',
+    chart_data_missing: '声明的图表未出现在冻结页面',
+    chart_data_shape_mismatch: '图表类别、系列名称或维度与声明不同',
+    chart_data_value_mismatch: '图表逐点数值与声明不同',
+    chart_data_source_basis_mismatch: '计划摘录与声明数值依据不一致',
+    chart_data_calculation_not_reproduced: '计算依据未复现为声明数值',
+    chart_data_unit_mismatch: '图表声明单位缺失或不一致',
+    chart_data_currency_mismatch: '图表声明币种缺失或不一致',
+  }
+  const report = {
+    documentId: 'doc-a',
+    requestId: 'chart-task',
+    planRevision: 1,
+    plan: {
+      sources: [
+        {
+          id: 'source',
+          title: '原始数据',
+          uri: 'attachment:source',
+          excerpt: '2',
+          locator: '第 1 页',
+        },
+      ],
+      claims: [
+        { id: 'source-claim', type: 'fact', statement: '原数值2', sourceIds: ['source'] },
+        {
+          id: 'calc-claim',
+          type: 'calculation',
+          statement: '计算结果4',
+          sourceIds: ['source'],
+          calculation: { formula: '2+2', inputs: ['2', '2'], unit: '万元', currency: 'CNY' },
+        },
+      ],
+      slides: [
+        {
+          id: 'page',
+          claimIds: ['source-claim', 'calc-claim'],
+          chartData: [
+            {
+              elementId: 'chart1',
+              categories: ['2025', '2026'],
+              unit: '万元',
+              currency: 'CNY',
+              series: [
+                {
+                  name: '收入',
+                  points: [
+                    {
+                      value: 2,
+                      claimId: 'source-claim',
+                      basis: {
+                        kind: 'source',
+                        sourceId: 'source',
+                        excerptOffset: 0,
+                        excerptText: '2',
+                      },
+                    },
+                    { value: 4, claimId: 'calc-claim', basis: { kind: 'calculation' } },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    pages: [
+      {
+        pageId: 'page',
+        title: '图表页',
+        productionState: 'compiled',
+        calculations: [],
+        issues: [
+          {
+            id: 'chart-issue',
+            code: 'chart_data_value_mismatch',
+            claimId: 'source-claim',
+            digest: 'a'.repeat(64),
+            category: 'unverifiable',
+            disposition: { state: 'open', stale: false },
+          },
+        ],
+        chartData: {
+          version: 1,
+          pageId: 'page',
+          scope: 'frozen_declared_data',
+          charts: [
+            {
+              elementId: 'chart1',
+              actual: {
+                categories: ['2025', '2026'],
+                series: [{ name: '收入', values: [7312, 5] }],
+              },
+              findings: Object.keys(reasons).map((code) => ({
+                code,
+                claimIds: ['source-claim', 'calc-claim'],
+              })),
+            },
+            {
+              elementId: 'unbound-chart',
+              actual: {
+                categories: ['未关联类别'],
+                series: [{ name: '未关联系列', values: [17] }],
+              },
+              findings: [{ code: 'chart_data_unbound', claimIds: [] }],
+            },
+          ],
+          checks: { data: 'needs_review', sourceTruth: 'not_verified', host: 'not_checked' },
+        },
+      },
+    ],
+    reviews: [],
+    sourceAudit: [],
+    issueLedger: { revision: 0, actions: [] },
+  } as unknown as PresentationDeliveryReport
+  const recordIssueAction = vi.fn()
+  const controller = { recordIssueAction } as unknown as PresentationProjectController
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+  const render = async (value = report) =>
+    act(async () =>
+      root.render(
+        React.createElement(PresentationDeliveryReportCard, {
+          report: value,
+          controller,
+          disabled: false,
+        }),
+      ),
+    )
+  try {
+    await render()
+    const detail = container.querySelector('[aria-label="冻结图表数据关联"]') as HTMLDetailsElement
+    expect(detail.open).toBe(false)
+    for (const reason of Object.values(reasons)) expect(detail.textContent).toContain(reason)
+    for (const text of [
+      'chart1',
+      '2025',
+      '2026',
+      '收入',
+      '7312',
+      '5',
+      'source-claim',
+      'calc-claim',
+      '计划摘录内 UTF-16 0',
+      '原数值依据：2',
+      '计算公式：2+2',
+      '计算输入：2、2',
+      '万元',
+      'CNY',
+      '未关联类别',
+      '未关联系列',
+      '不证明原附件真实性、事实支持或适用范围',
+      '算术复现不证明输入来自真实原文',
+    ])
+      expect(detail.textContent).toContain(text)
+    expect(detail.querySelector('a[href="#evidence-source-chart-task-source"]')).not.toBeNull()
+    const note = container.querySelector(
+      '[aria-label="处置理由 chart-issue"]',
+    ) as HTMLTextAreaElement
+    await act(async () => {
+      const select = container.querySelector(
+        '[aria-label="处置状态 chart-issue"]',
+      ) as HTMLSelectElement
+      select.value = 'explained'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        note,
+        '保留原数据差异待复核',
+      )
+      note.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () =>
+      (note.closest('form')!.querySelector('button') as HTMLButtonElement).click(),
+    )
+    expect(recordIssueAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId: 'chart-issue',
+        issueDigest: 'a'.repeat(64),
+        state: 'explained',
+      }),
+    )
+    const matched = {
+      ...report,
+      documentId: 'doc-b',
+      requestId: 'next-chart-task',
+      pages: [
+        {
+          ...report.pages[0]!,
+          chartData: {
+            ...report.pages[0]!.chartData!,
+            charts: [
+              {
+                elementId: 'chart1',
+                actual: {
+                  categories: ['2025', '2026'],
+                  series: [{ name: '收入', values: [2, 4] }],
+                },
+                findings: [],
+              },
+            ],
+          },
+        },
+      ],
+    }
+    await render(matched)
+    expect(container.textContent).toContain('声明数据一致，仍待审查')
+    expect(container.textContent).not.toContain('7312')
+    expect(container.querySelector('[aria-label="冻结图表数据关联"]')?.textContent).toContain(
+      '不证明原附件真实性',
+    )
+    await render({ ...report, pages: [{ ...report.pages[0]!, chartData: undefined }] })
+    expect(container.querySelector('[aria-label="冻结图表数据关联"]')).toBeNull()
+  } finally {
+    await act(async () => root.unmount())
+    container.remove()
+  }
+})
