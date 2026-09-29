@@ -698,6 +698,38 @@ it('describes changed saved plan sections even when source counts stay the same'
   expect(summary.timeline.find((event) => event.id === 'plan-2')?.text).toContain(
     '来源真实性仍需核验',
   )
+  expect(summary.timeline.find((event) => event.id === 'plan-1')).toMatchObject({
+    type: 'plan.proposed',
+    scope: 'saved_plan',
+  })
+  expect(summary.timeline.find((event) => event.id === 'plan-2')).toMatchObject({
+    type: 'plan.revised',
+    scope: 'saved_plan',
+  })
+  expect(summary.timeline.find((event) => event.id === 'style-2')).toMatchObject({
+    type: 'style.proposed',
+    scope: 'saved_style',
+  })
+  expect(summary.timeline.some((event) => String(event.type).endsWith('.approved'))).toBe(false)
+  const truncated = presentationWorkflowSummary(
+    {
+      ...project,
+      plan: {
+        ...project.plan!,
+        revision: 5,
+        revisions: [
+          { ...revisions[0]!, revision: 3 },
+          { ...revisions[1]!, revision: 5 },
+        ],
+      },
+    },
+    undefined,
+    undefined,
+  )!
+  expect(truncated.timeline.find((event) => event.id === 'plan-5')?.text).not.toContain('有变化')
+  expect(truncated.timeline.find((event) => event.id === 'plan-history')?.text).toContain(
+    '不推断缺失版本',
+  )
 })
 
 it('warns when the selected production task still uses an older saved plan', () => {

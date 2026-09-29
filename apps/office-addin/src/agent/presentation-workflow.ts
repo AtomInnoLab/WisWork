@@ -120,8 +120,14 @@ export interface PresentationWorkflowSummary {
     id: string
     text: string
     at?: string
-    type?: 'research.started' | 'research.completed' | 'research.failed'
-    scope?: 'source_excerpt_audit'
+    type?:
+      | 'research.started'
+      | 'research.completed'
+      | 'research.failed'
+      | 'plan.proposed'
+      | 'plan.revised'
+      | 'style.proposed'
+    scope?: 'source_excerpt_audit' | 'saved_plan' | 'saved_style'
     records?: { id: string; text: string; at: string }[]
   }[]
   attention: { id: string; text: string }[]
@@ -512,9 +518,22 @@ export function presentationWorkflowSummary(
   if (plan) {
     const revisions = project.plan!.revisions
     if (revisions?.length) {
+      if (
+        revisions[0]!.revision !== 1 ||
+        revisions.some(
+          (event, index) => index > 0 && event.revision !== revisions[index - 1]!.revision + 1,
+        )
+      )
+        timeline.push({
+          id: 'plan-history',
+          text: '仅展示已保留的计划版本；不推断缺失版本的资料、主张或样式变化。',
+        })
       for (const [index, event] of revisions.entries()) {
         const current = event.snapshot
-        const previous = revisions[index - 1]?.snapshot
+        const previous =
+          revisions[index - 1]?.revision === event.revision - 1
+            ? revisions[index - 1]?.snapshot
+            : undefined
         const changed =
           current && previous
             ? [
@@ -532,6 +551,8 @@ export function presentationWorkflowSummary(
               : ''
         timeline.push({
           id: `plan-${event.revision}`,
+          type: event.revision === 1 ? 'plan.proposed' : 'plan.revised',
+          scope: 'saved_plan',
           text: `已保存计划第 ${event.revision} 版${detail}；来源真实性仍需核验`,
           at: event.createdAt,
         })
@@ -549,6 +570,8 @@ export function presentationWorkflowSummary(
         if (current && (!previous || current.styleDigest !== previous.styleDigest))
           timeline.push({
             id: `style-${event.revision}`,
+            type: 'style.proposed',
+            scope: 'saved_style',
             text: `第 ${event.revision} 版样式规范已保存；页面视觉效果仍需审查`,
             at: event.createdAt,
           })
