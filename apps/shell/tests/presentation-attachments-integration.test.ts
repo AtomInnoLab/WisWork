@@ -420,6 +420,7 @@ it('retains the unreadable page of the real P0-11 NACA scan through PC restart a
       status: 'ready',
       sectionCount: 30,
       pagesWithoutExtractedText: [2],
+      pagesWithSparseExtractedText: expect.arrayContaining([24, 30]),
     }),
   ])
   const read = await client.executeTool({

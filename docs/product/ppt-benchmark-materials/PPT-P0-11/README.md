@@ -12,6 +12,8 @@ NASA NTRS 的[NACA 研究备忘录 L50B01](https://ntrs.nasa.gov/citations/19930
 
 跨组件回归又以同一 12.9 MB 扫描 PDF 经 Office 附件客户端分块上传至真实 PC 服务，重建 PC 服务后由 Agent 附件列表读取，保留 `sectionCount: 30` 和 `pagesWithoutExtractedText: [2]`；读取正文仍返回第 2 页零长度及第 3 页标题的来源定位。Taskpane 根据该字段提示该页缺文字并请求补料；这是本地模拟客户端与真实服务的工程证据，不是 PowerPoint 宿主验收。
 
+附件链路现另记录 `pagesWithSparseExtractedText`：提取后非空但不足 200 个字符的 PDF 页面。该真实扫描件跨组件回归至少识别第 24、30 页；Taskpane 和 Agent 附件清单提示核对原 PDF 或补充可读取文本。低文字量可能是图表、封面或短页，不能据此判断 OCR 准确性；文字量多的页也可能有 OCR 错误。旧附件没有该字段仍可读取。
+
 ## 三份原工程输入与来源
 
 | 文件 | 用途 | 核验结果 |

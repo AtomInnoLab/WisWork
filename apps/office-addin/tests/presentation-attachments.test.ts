@@ -142,6 +142,28 @@ it('shows PDF pages without extracted text and rejects malformed page coverage',
     await expect(f.skill.list()).rejects.toThrow('presentation_response_invalid')
   }
 })
+it('accepts sparse PDF page hints and rejects overlap with empty pages', async () => {
+  const f = setup()
+  const item = {
+    attachmentId: f.attachmentId,
+    sha256: f.attachmentId,
+    name: 'partly-readable.pdf',
+    sizeBytes: 100,
+    receivedBytes: 100,
+    status: 'ready',
+    kind: 'text',
+    totalChars: 20,
+    sectionCount: 3,
+    pagesWithoutExtractedText: [2],
+    pagesWithSparseExtractedText: [3],
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify({ attachments: [item] })))
+  expect(await f.skill.list()).toMatchObject([item])
+  f.request.mockResolvedValue(
+    new Response(JSON.stringify({ attachments: [{ ...item, pagesWithSparseExtractedText: [2] }] })),
+  )
+  await expect(f.skill.list()).rejects.toThrow('presentation_response_invalid')
+})
 it('requires negotiated support and validates the user-selected first-frame result', async () => {
   const f = setup()
   const response = {

@@ -178,6 +178,25 @@ describe('durable presentation attachments', () => {
       ),
     ).toMatchObject({ pagesWithoutExtractedText: [2] })
   })
+  it('persists PDF pages with sparse extracted text without treating them as empty', async () => {
+    const { call, userDataPath } = await setup()
+    const id = await upload(
+      call,
+      Buffer.from(buildPdfFixture(['Introductory evidence', 'figure 7'])),
+      'sparse-page.pdf',
+    )
+    expect(await call({ operation: 'attachment_finish', attachmentId: id })).toMatchObject({
+      status: 'ready',
+      pagesWithSparseExtractedText: [1, 2],
+    })
+    const restarted = createPresentationAttachmentService({ userDataPath })
+    expect(
+      await restarted(
+        { operation: 'attachment_metadata', documentId: 'doc-1', attachmentId: id },
+        new AbortController().signal,
+      ),
+    ).toMatchObject({ pagesWithSparseExtractedText: [1, 2] })
+  })
   it('marks a PDF with no extractable text as failed instead of ready', async () => {
     const { call } = await setup()
     const id = await upload(call, Buffer.from(buildPdfFixture(['', ''])), 'image-only.pdf')

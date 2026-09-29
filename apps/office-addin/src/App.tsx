@@ -1277,6 +1277,16 @@ export function AgentWorkspace(props: {
                           页未提取到文字；如这些页面包含内容，请补充可读取文本或 OCR 结果。
                         </p>
                       ) : null}
+                      {file.pagesWithSparseExtractedText?.length ? (
+                        <p role="status">
+                          第 {file.pagesWithSparseExtractedText.slice(0, 20).join('、')}
+                          {file.pagesWithSparseExtractedText.length > 20
+                            ? ` 等 ${file.pagesWithSparseExtractedText.length} `
+                            : ' '}
+                          页提取到的文字较少；如关键内容在这些页面，请核对原 PDF
+                          或补充可读取文本。此提示不判断 OCR 准确性。
+                        </p>
+                      ) : null}
                       {file.status === 'failed' && file.error === 'parse_failed' && (
                         <p role="alert">
                           资料解析失败。

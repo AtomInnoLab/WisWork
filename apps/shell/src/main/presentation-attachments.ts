@@ -121,6 +121,7 @@ interface Metadata {
   sectionsDigest?: string
   sectionCount?: number
   pagesWithoutExtractedText?: number[]
+  pagesWithSparseExtractedText?: number[]
 }
 async function directory(path: string, create = true) {
   if (create) {
@@ -315,6 +316,23 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
       ))
   )
     fail('invalid_state')
+  if (
+    m.pagesWithSparseExtractedText !== undefined &&
+    (m.status !== 'ready' ||
+      m.kind !== 'text' ||
+      extname(m.name).toLowerCase() !== '.pdf' ||
+      !m.sectionCount ||
+      !Array.isArray(m.pagesWithSparseExtractedText) ||
+      m.pagesWithSparseExtractedText.length < 1 ||
+      m.pagesWithSparseExtractedText.length > m.sectionCount ||
+      m.pagesWithSparseExtractedText.some(
+        (page, index) =>
+          !integer(page, 1, m.sectionCount!) ||
+          (index > 0 && page <= m.pagesWithSparseExtractedText![index - 1]!) ||
+          m.pagesWithoutExtractedText?.includes(page),
+      ))
+  )
+    fail('invalid_state')
   if (m.status !== 'ready' && m.licenseDeclaration !== undefined) fail('invalid_state')
   if (m.status !== 'ready' && m.animationHandling !== undefined) fail('invalid_state')
   if (
@@ -337,6 +355,9 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
   ...(m.sectionCount !== undefined ? { sectionCount: m.sectionCount } : {}),
   ...(m.pagesWithoutExtractedText
     ? { pagesWithoutExtractedText: m.pagesWithoutExtractedText }
+    : {}),
+  ...(m.pagesWithSparseExtractedText
+    ? { pagesWithSparseExtractedText: m.pagesWithSparseExtractedText }
     : {}),
   ...(m.source ? { source: m.source } : {}),
   ...(m.sourceUrlHash ? { sourceUrlHash: m.sourceUrlHash } : {}),
@@ -1251,6 +1272,14 @@ export function createPresentationAttachmentService(options: {
                       section.start === section.end ? [index + 1] : [],
                     )
                   : []
+              const pagesWithSparseExtractedText =
+                extname(m.name).toLowerCase() === '.pdf'
+                  ? (parsed.sections ?? []).flatMap((section, index) => {
+                      // A coverage hint only: short text does not establish OCR accuracy or a defect.
+                      const chars = parsed.text!.slice(section.start, section.end).trim().length
+                      return chars > 0 && chars < 200 ? [index + 1] : []
+                    })
+                  : []
               m = {
                 attachmentId: id,
                 sha256: id,
@@ -1264,6 +1293,7 @@ export function createPresentationAttachmentService(options: {
                   ? { sectionCount: parsed.sections!.length, sectionsDigest: hash(sectionsRaw) }
                   : {}),
                 ...(pagesWithoutExtractedText.length ? { pagesWithoutExtractedText } : {}),
+                ...(pagesWithSparseExtractedText.length ? { pagesWithSparseExtractedText } : {}),
               }
             }
           } catch (error) {
