@@ -1,3 +1,5 @@
+import { PresentationTeamCard } from './agent/presentation-team-card.js'
+import type { PresentationTeamController } from './agent/presentation-team-controller.js'
 import { createPresentationResearchAbandonPersistence } from './agent/presentation-research-recovery-storage.js'
 import { createPresentationResearchDeletePersistence } from './agent/presentation-research-cleanup-storage.js'
 import { PresentationResearchCard } from './agent/presentation-research-card.js'
@@ -264,6 +266,7 @@ interface SessionFile {
 }
 
 export interface OfficeWorkspaceUi {
+  readonly team?: PresentationTeamController
   readonly research?: PresentationResearchController
   readonly project?: PresentationProjectController
   readonly importProgress?: PresentationImportProgressController
@@ -351,6 +354,7 @@ export function createOfficeWorkspaceUi(
   interruptedChange?: { agentRunId: string; toolCallId: string },
 ): OfficeWorkspaceUi {
   return Object.freeze({
+    team: runtime.team,
     research: runtime.research,
     project: runtime.presentation,
     importProgress: runtime.importProgress,
@@ -1546,6 +1550,12 @@ export function AgentWorkspace(props: {
       )}
 
       <section className="composer-shell" aria-label="Message WisWork Agent">
+        {host === 'powerpoint' && ui.team && (
+          <PresentationTeamCard
+            controller={ui.team}
+            disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
+          />
+        )}
         {ui.research && (
           <PresentationResearchCard
             controller={ui.research}

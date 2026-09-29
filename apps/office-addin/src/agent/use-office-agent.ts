@@ -1050,7 +1050,12 @@ export function createOfficeAgentSession(dependencies: {
             item.kind === 'proposal' ? { ...item, state: 'applied' } : item,
           )
         publish({
-          activity: 'Document updated',
+          activity:
+            event?.proposal &&
+            'impact' in event.proposal &&
+            event.proposal.impact.host === 'local_team'
+              ? '团队记录已保存'
+              : 'Document updated',
           error: undefined,
           errorMessage: undefined,
           retryable: false,

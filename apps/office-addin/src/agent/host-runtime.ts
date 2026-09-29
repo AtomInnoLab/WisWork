@@ -1,3 +1,7 @@
+import {
+  createPresentationTeamController,
+  type PresentationTeamController,
+} from './presentation-team-controller.js'
 import { createPresentationResearchSkill } from '../skills/powerpoint/presentation-research.js'
 import {
   createPresentationResearchController,
@@ -121,6 +125,7 @@ import {
 import { composeOfficeSkills } from './skill-registry.js'
 
 export interface OfficeHostRuntime {
+  readonly team?: PresentationTeamController
   readonly research?: PresentationResearchController
   readonly presentation?: PresentationProjectController
   readonly importProgress?: PresentationImportProgressController
@@ -618,6 +623,14 @@ export function createOfficeHostRuntime(
   const team =
     generation && options.presentation
       ? createPresentationTeamSkill({ ...options.presentation, proposals })
+      : undefined
+  const teamController =
+    team && options.presentation
+      ? createPresentationTeamController({
+          skill: team,
+          documentId: options.presentation.documentId,
+          proposals,
+        })
       : undefined
   const comments =
     generation && options.presentation
@@ -1385,6 +1398,7 @@ export function createOfficeHostRuntime(
         generation?.clear()
         planning?.clear()
         comments?.clear()
+        teamController?.clear()
         team?.clear()
         presentation?.clear()
         notifyImport()
@@ -1416,6 +1430,7 @@ export function createOfficeHostRuntime(
           }
         : undefined,
     ),
+    ...(teamController ? { team: teamController } : {}),
     ...(research ? { research } : {}),
     ...(presentation ? { presentation } : {}),
     ...(importProgress ? { importProgress } : {}),
