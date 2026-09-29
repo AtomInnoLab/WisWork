@@ -699,18 +699,67 @@ export async function comparePresentationPageStructure(
       const [before, after] = await Promise.all([
         inspectPowerPointComplexPagePackage(sourceBase64, undefined, {
           slideIndex: sourceIndex,
+          includeVisibleStyle: true,
           maxBytes: 10 * 1024 * 1024,
         }),
-        inspectPowerPointComplexPagePackage(hostBase64),
+        inspectPowerPointComplexPagePackage(hostBase64, undefined, { includeVisibleStyle: true }),
       ])
       for (const element of source.filter((item) => item.type === 'chart')) {
         const hostElement = exportedByName.get(element.name)
         const original = before.charts.find((chart) => chart.shapeId === element.shapeId)
         const current = after.charts.find((chart) => chart.shapeId === hostElement?.shapeId)
-        if (!original || !current || original.truncated || current.truncated) continue
+        if (!original || !current) continue
+        const effectiveStyle = (style: Record<string, string>, key: string): string | undefined => {
+          if (style[key] !== undefined) return style[key]
+          const point = /^(series\.\d+)\.point\.\d+\.(marker\.)?(.+)$/.exec(key)
+          if (point) {
+            const parent = `${point[1]}${point[2] ? '.marker' : ''}`
+            const role = key.slice(0, key.length - point[3]!.length - 1)
+            if (Object.keys(style).some((field) => field.startsWith(`${role}.`))) return undefined
+            return style[`${parent}.${point[3]}`]
+          }
+          const label = /^(series\.\d+\.labels)(?:\.point\.\d+)?\.(.+)$/.exec(key)
+          if (label) {
+            const role = key.slice(0, key.length - label[2]!.length - 1)
+            if (Object.keys(style).some((field) => field.startsWith(`${role}.`))) return undefined
+            return style[`${label[1]}.${label[2]}`] ?? style[`labels.${label[2]}`]
+          }
+          return undefined
+        }
+        const explicitStyleChanged =
+          original.visibleStyle &&
+          current.visibleStyle &&
+          [
+            ...new Set([
+              ...Object.keys(original.visibleStyle),
+              ...Object.keys(current.visibleStyle),
+            ]),
+          ]
+            .filter((key) => !key.endsWith('.$explicit'))
+            .some((key) => {
+              const beforeValue = effectiveStyle(original.visibleStyle!, key)
+              const afterValue = effectiveStyle(current.visibleStyle!, key)
+              return (
+                beforeValue !== undefined && afterValue !== undefined && beforeValue !== afterValue
+              )
+            })
+        if (explicitStyleChanged) chartStyleChanged.push(element.name)
+        // Visible styles have an independent bounded projection; a preceding table/cache text
+        // budget must not hide known style drift. Truncated cache evidence remains unverified.
+        if (original.truncated || current.truncated) continue
         if (JSON.stringify(original.plotTypes) !== JSON.stringify(current.plotTypes))
           chartTypeChanged.push(element.name)
-        if (JSON.stringify(original.visualOptions) !== JSON.stringify(current.visualOptions))
+        const normalizeOptions = (value: typeof original.visualOptions) => ({
+          ...value,
+          valueLabels: value.valueLabels.map((label) =>
+            label === 'true' ? '1' : label === 'false' ? '0' : label,
+          ),
+        })
+        if (
+          JSON.stringify(normalizeOptions(original.visualOptions)) !==
+            JSON.stringify(normalizeOptions(current.visualOptions)) &&
+          !chartStyleChanged.includes(element.name)
+        )
           chartStyleChanged.push(element.name)
         if (
           (original.series.length || current.series.length) &&

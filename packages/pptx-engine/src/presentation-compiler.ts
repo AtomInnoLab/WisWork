@@ -1,7 +1,7 @@
 import PptxGenJS from 'pptxgenjs'
 import JSZip from 'jszip'
 import { PNG } from 'pngjs'
-import { XMLParser, XMLValidator } from 'fast-xml-parser'
+import { XMLBuilder, XMLParser, XMLValidator } from 'fast-xml-parser'
 import { relsPathFor, resolveTarget } from './zip'
 import { parseChartXml } from './chart'
 import {
@@ -29,6 +29,272 @@ function generatedXmlMatches(value: unknown, expected: unknown): boolean {
       generatedXmlMatches((value as XmlNode)[key], child),
     )
   )
+}
+
+function generatedChartFill(color: string): XmlNode {
+  return { 'a:solidFill': { 'a:srgbClr': { '@_val': color.toUpperCase() } } }
+}
+function generatedChartLine(color: string, width: string): XmlNode {
+  return {
+    '@_w': width,
+    '@_cap': 'flat',
+    ...generatedChartFill(color),
+    'a:prstDash': { '@_val': 'solid' },
+    'a:round': '',
+  }
+}
+function generatedChartText(
+  fontFace: string,
+  color: string,
+  role: 'label' | 'axis' | 'legend',
+  size = '1200',
+): XmlNode {
+  return {
+    'a:bodyPr': '',
+    'a:lstStyle': '',
+    'a:p': {
+      'a:pPr': {
+        'a:defRPr': {
+          ...(role === 'legend'
+            ? {}
+            : { '@_b': '0', '@_i': '0', '@_strike': 'noStrike', '@_sz': size, '@_u': 'none' }),
+          ...generatedChartFill(color),
+          'a:latin': { '@_typeface': fontFace },
+          ...(role === 'legend' ? { 'a:cs': { '@_typeface': fontFace } } : {}),
+        },
+      },
+      ...(role === 'label' ? {} : { 'a:endParaRPr': { '@_lang': 'en-US' } }),
+    },
+  }
+}
+
+// PptxGenJS hardcodes these pie defaults despite its dataLabel/dataBorder options.
+// Repair only fresh generated parts with this exact known serializer shape.
+async function normalizeGeneratedPieStyle(zip: JSZip, deck: PresentationDeck): Promise<boolean> {
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    parseTagValue: false,
+  })
+  let changed = false
+  for (const path of Object.keys(zip.files).filter((path) =>
+    /^ppt\/charts\/chart\d+\.xml$/.test(path),
+  )) {
+    const xml = await zip.file(path)!.async('string')
+    if (!xml.includes('<c:pieChart>')) continue
+    const root = parser.parse(xml),
+      pie = root['c:chartSpace']?.['c:chart']?.['c:plotArea']?.['c:pieChart']
+    const series = xmlItems(pie?.['c:ser'])
+    if (series.length !== 1) throw new Error('presentation_compile:structure_mismatch')
+    const item = series[0]!,
+      label = item['c:dLbls']
+    if (
+      !generatedXmlMatches(item['c:spPr'], {
+        'a:solidFill': { 'a:schemeClr': { '@_val': 'accent1' } },
+        'a:ln': generatedChartLine('F9F9F9', '9525'),
+        'a:effectLst': '',
+      }) ||
+      !generatedXmlMatches(
+        label?.['c:txPr'],
+        generatedChartText('Arial', '000000', 'label', '1800'),
+      )
+    )
+      throw new Error('presentation_compile:structure_mismatch')
+    item['c:spPr'] = {
+      ...generatedChartFill(deck.style.accentColor),
+      'a:ln': generatedChartLine(deck.style.accentColor, '9525'),
+      'a:effectLst': '',
+    }
+    label['c:txPr'] = generatedChartText(deck.style.fontFace, deck.style.textColor, 'label', '1800')
+    zip.file(
+      path,
+      new XMLBuilder({ ignoreAttributes: false, attributeNamePrefix: '@_' }).build(root),
+    )
+    changed = true
+  }
+  return changed
+}
+
+// Inspect only visible roles produced by our supported chart options. In particular,
+// pie points explicitly override the serializer's unused parent theme fill/border.
+function verifyGeneratedChartStyle(
+  root: XmlNode,
+  deck: PresentationDeck,
+  type: 'bar' | 'line' | 'pie',
+  categoryCount: number,
+): void {
+  const reject = () => {
+    throw new Error('presentation_compile:structure_mismatch')
+  }
+  const normalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(normalize)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key, child]) => !(key === '#text' && typeof child === 'string' && !child.trim()))
+        .map(([key, child]) => [
+          key,
+          key === 'a:srgbClr' && child && typeof child === 'object'
+            ? {
+                ...child,
+                '@_val':
+                  typeof (child as XmlNode)['@_val'] === 'string'
+                    ? (child as XmlNode)['@_val'].toUpperCase()
+                    : (child as XmlNode)['@_val'],
+              }
+            : normalize(child),
+        ]),
+    )
+  }
+  const match = (value: unknown, expected: unknown) => {
+    if (!generatedXmlMatches(normalize(value), expected)) reject()
+  }
+  const only = (value: XmlNode, keys: string[]) => {
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Object.keys(normalize(value) as XmlNode).some((key) => !keys.includes(key))
+    )
+      reject()
+  }
+  const fill = generatedChartFill,
+    line = generatedChartLine
+  const space = root['c:chartSpace'],
+    chart = space?.['c:chart'],
+    plot = chart?.['c:plotArea']
+  const area = { ...fill(deck.style.background), 'a:ln': { 'a:noFill': '' }, 'a:effectLst': '' }
+  match(space?.['c:spPr'], area)
+  match(plot?.['c:spPr'], area)
+  if (
+    ['c:title', 'c:view3D', 'c:backWall', 'c:sideWall', 'c:floor'].some(
+      (key) => chart?.[key] !== undefined,
+    )
+  )
+    reject()
+  const text = (role: 'label' | 'axis' | 'legend', size?: string) =>
+    generatedChartText(deck.style.fontFace, deck.style.textColor, role, size)
+  const legend = chart?.['c:legend']
+  if (legend !== undefined)
+    match(legend, {
+      'c:legendPos': { '@_val': 'r' },
+      'c:overlay': { '@_val': '0' },
+      'c:txPr': text('legend'),
+    })
+  const plots = xmlItems(plot?.[`c:${type}Chart`]),
+    series = plots.flatMap((p) => xmlItems(p['c:ser']))
+  only(plot, ['c:layout', `c:${type}Chart`, 'c:catAx', 'c:valAx', 'c:spPr'])
+  if (plots.length !== 1) reject()
+  for (const value of plots) {
+    only(
+      value,
+      type === 'bar'
+        ? [
+            'c:barDir',
+            'c:grouping',
+            'c:varyColors',
+            'c:ser',
+            'c:dLbls',
+            'c:gapWidth',
+            'c:overlap',
+            'c:axId',
+          ]
+        : type === 'line'
+          ? ['c:varyColors', 'c:ser', 'c:dLbls', 'c:marker', 'c:axId']
+          : ['c:varyColors', 'c:ser', 'c:firstSliceAng'],
+    )
+    match(value['c:varyColors'], { '@_val': type === 'pie' ? '1' : '0' })
+    if (type === 'bar') {
+      match(value['c:barDir'], { '@_val': 'col' })
+      match(value['c:grouping'], { '@_val': 'clustered' })
+      match(value['c:gapWidth'], { '@_val': '150' })
+      match(value['c:overlap'], { '@_val': '0' })
+    } else if (type === 'line') match(value['c:marker'], { '@_val': '1' })
+    else match(value['c:firstSliceAng'], { '@_val': '0' })
+  }
+  const labels = [plots[0]?.['c:dLbls'], ...series.map((s) => s['c:dLbls'])].filter(
+    (v) => v !== undefined,
+  )
+  for (const label of labels) {
+    if (label['c:spPr'] !== undefined || label['c:tx'] !== undefined) reject()
+    if (type === 'pie') {
+      match(label['c:txPr'], text('label', '1800'))
+      const points = xmlItems(label['c:dLbl'])
+      if (points.length !== categoryCount) reject()
+      points.forEach((point, index) => {
+        if (point['c:idx']?.['@_val'] !== String(index) || point['c:tx'] !== undefined) reject()
+        match(point['c:spPr'], '')
+        match(point['c:txPr'], text('label'))
+      })
+    } else {
+      if (label['c:dLbl'] !== undefined) reject()
+      match(label['c:txPr'], text('label'))
+    }
+  }
+  for (const item of series) {
+    only(item, [
+      'c:idx',
+      'c:order',
+      'c:tx',
+      'c:spPr',
+      'c:dLbls',
+      'c:cat',
+      'c:val',
+      ...(type === 'pie' ? ['c:dPt'] : ['c:invertIfNegative']),
+      ...(type === 'line' ? ['c:marker', 'c:smooth'] : []),
+    ])
+    if (type !== 'pie') match(item['c:invertIfNegative'], { '@_val': '0' })
+    if (type === 'line') match(item['c:smooth'], { '@_val': '0' })
+    if (type === 'pie') {
+      match(item['c:spPr'], {
+        ...fill(deck.style.accentColor),
+        'a:ln': line(deck.style.accentColor, '9525'),
+        'a:effectLst': '',
+      })
+      const points = xmlItems(item['c:dPt'])
+      if (points.length !== categoryCount) reject()
+      points.forEach((point, index) => {
+        if (point['c:idx']?.['@_val'] !== String(index)) reject()
+        match(point['c:spPr'], {
+          ...fill(deck.style.accentColor),
+          'a:ln': line(deck.style.accentColor, '9525'),
+          'a:effectLst': '',
+        })
+      })
+    } else {
+      if (item['c:dPt'] !== undefined) reject()
+      match(item['c:spPr'], {
+        ...fill(deck.style.accentColor),
+        ...(type === 'line' ? { 'a:ln': line(deck.style.accentColor, '25400') } : {}),
+        'a:effectLst': '',
+      })
+      if (type === 'line')
+        match(item['c:marker'], {
+          'c:symbol': { '@_val': 'circle' },
+          'c:size': { '@_val': '6' },
+          'c:spPr': {
+            ...fill(deck.style.accentColor),
+            'a:ln': line(deck.style.accentColor, '9525'),
+            'a:effectLst': '',
+          },
+        })
+      else if (item['c:marker'] !== undefined) reject()
+    }
+  }
+  const categories = xmlItems(plot?.['c:catAx']),
+    values = xmlItems(plot?.['c:valAx'])
+  if (categories.length !== (type === 'pie' ? 0 : 1) || values.length !== (type === 'pie' ? 0 : 1))
+    reject()
+  for (const [axis, valueAxis] of [
+    ...categories.map((axis) => [axis, false] as const),
+    ...values.map((axis) => [axis, true] as const),
+  ]) {
+    if (axis['c:title'] !== undefined || axis['c:minorGridlines'] !== undefined) reject()
+    match(axis['c:txPr'], text('axis'))
+    match(axis['c:spPr'], { 'a:ln': line(deck.style.textColor, '12700') })
+    if (valueAxis)
+      match(axis['c:majorGridlines'], { 'c:spPr': { 'a:ln': line(deck.style.textColor, '12700') } })
+    else if (axis['c:majorGridlines'] !== undefined) reject()
+  }
 }
 
 function shapeIds(root: unknown): string[] {
@@ -619,6 +885,7 @@ export async function verifyCompiledPresentationStructure(
             !labelsMatch
           )
             throw new Error('presentation_compile:structure_mismatch')
+          verifyGeneratedChartStyle(chartRoot, deck, element.chartType, element.categories.length)
           await verifyChartWorkbook(zip, chartPath, chartRoot, element, seriesNodes, parser)
           const categoriesMatch =
             seriesNodes.length === element.series.length &&
@@ -829,7 +1096,21 @@ export async function compilePresentationDeck(
             showLegend: el.series.length > 1,
             showTitle: false,
             chartColors: [deck.style.accentColor],
+            ...(el.chartType === 'pie'
+              ? { dataBorder: { color: deck.style.accentColor, pt: 0.75 } }
+              : {}),
             showValue: true,
+            dataLabelFontFace: deck.style.fontFace,
+            dataLabelColor: deck.style.textColor,
+            legendColor: deck.style.textColor,
+            catAxisLabelColor: deck.style.textColor,
+            valAxisLabelColor: deck.style.textColor,
+            catAxisLineColor: deck.style.textColor,
+            valAxisLineColor: deck.style.textColor,
+            catGridLine: { color: deck.style.textColor, style: 'none' },
+            valGridLine: { color: deck.style.textColor, size: 1, style: 'solid', cap: 'flat' },
+            chartArea: { fill: { color: deck.style.background } },
+            plotArea: { fill: { color: deck.style.background } },
             ...(el.chartType === 'bar' ? { valAxisMinVal: 0 } : {}),
             catAxisLabelFontFace: deck.style.fontFace,
             valAxisLabelFontFace: deck.style.fontFace,
@@ -904,11 +1185,12 @@ export async function compilePresentationDeck(
   })
   if (new Set(sourceSlideIds).size !== sourceSlideIds.length)
     throw new Error('presentation_compile:invalid_slide_ids')
+  const normalizedPie = await normalizeGeneratedPieStyle(zip, deck)
   const repairedZeros = await restoreGeneratedChartZeros(zip, deck)
   await verifyCompiledPresentationStructure(zip, deck)
   return {
     bytes:
-      repairedZeros || normalizedIds
+      repairedZeros || normalizedIds || normalizedPie
         ? await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
         : output,
     sourceSlideIds,

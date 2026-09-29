@@ -56,16 +56,309 @@ export interface ComplexPagePackageSummary {
     }
     series: Array<{ name?: string; categories: string[]; values: string[] }>
     cacheOnly: true
+    /** Known explicit fields only. A missing field is unverified, never proof of equality. */
+    visibleStyle?: Record<string, string>
     truncated?: boolean
   }>
   truncated: boolean
+}
+
+const direct = (nodes: Node[], tag: string): Node[] =>
+  nodes.filter((node) => Object.hasOwn(node, tag))
+function child(nodes: Node[], tag: string): Node[] | undefined {
+  const found = direct(nodes, tag)
+  return found.length === 1 && Array.isArray(found[0]![tag])
+    ? (found[0]![tag] as Node[])
+    : undefined
+}
+const attrs = (node: Node | undefined): Node => (node?.[':@'] ?? {}) as Node
+const onlyChildren = (nodes: Node[], allowed: readonly string[]) =>
+  nodes.every((node) =>
+    Object.keys(node).every(
+      (key) =>
+        key === ':@' || (key === '#text' && !String(node[key]).trim()) || allowed.includes(key),
+    ),
+  )
+function fill(nodes: Node[]): string | undefined {
+  const colors = direct(nodes, 'a:solidFill'),
+    none = direct(nodes, 'a:noFill')
+  if (
+    none.length === 1 &&
+    !colors.length &&
+    !Object.keys(attrs(none[0])).length &&
+    !(none[0]!['a:noFill'] as Node[]).length
+  )
+    return 'none'
+  const solid = child(nodes, 'a:solidFill')
+  if (!solid || none.length || !onlyChildren(solid, ['a:srgbClr'])) return undefined
+  const rgb = direct(solid, 'a:srgbClr')
+  const color = attrs(rgb[0])['@_val']
+  if (
+    rgb.length !== 1 ||
+    Object.keys(attrs(rgb[0])).join(',') !== '@_val' ||
+    (rgb[0]!['a:srgbClr'] as Node[]).length ||
+    typeof color !== 'string' ||
+    !/^[A-Fa-f0-9]{6}$/.test(color)
+  )
+    return undefined
+  return color.toUpperCase()
+}
+function shapeStyle(nodes: Node[] | undefined): Record<string, string> {
+  if (!nodes) return {}
+  const effect = child(nodes, 'a:effectLst')
+  if (!onlyChildren(nodes, ['a:solidFill', 'a:noFill', 'a:ln', 'a:effectLst']) || effect?.length)
+    return {}
+  const output: Record<string, string> = {},
+    color = fill(nodes)
+  if (color !== undefined) output.fill = color
+  const line = child(nodes, 'a:ln'),
+    lineNode = direct(nodes, 'a:ln')[0]
+  if (
+    line &&
+    onlyChildren(line, ['a:solidFill', 'a:noFill', 'a:prstDash', 'a:round', 'a:bevel', 'a:miter'])
+  ) {
+    const lineAttrs = attrs(lineNode),
+      lineColor = fill(line)
+    if (
+      Object.keys(lineAttrs).some((key) => !['@_w', '@_cap', '@_cmpd', '@_algn'].includes(key)) ||
+      (lineAttrs['@_cmpd'] !== undefined && lineAttrs['@_cmpd'] !== 'sng') ||
+      (lineAttrs['@_algn'] !== undefined && lineAttrs['@_algn'] !== 'ctr')
+    )
+      return output
+    if (lineColor !== undefined) {
+      output.line = lineColor
+      if (lineColor !== 'none') {
+        const width = lineAttrs['@_w']
+        if (typeof width === 'string' && /^\d+$/.test(width) && Number(width) <= 12_700_000)
+          output.lineWidth = String(Number(width))
+        const cap = lineAttrs['@_cap'] ?? 'flat'
+        if (['flat', 'rnd', 'sq'].includes(String(cap))) output.lineCap = String(cap)
+        const dashNodes = direct(line, 'a:prstDash'),
+          dash = attrs(dashNodes[0])['@_val'] ?? 'solid'
+        if (
+          dashNodes.length <= 1 &&
+          [
+            'solid',
+            'dot',
+            'dash',
+            'lgDash',
+            'dashDot',
+            'lgDashDot',
+            'lgDashDotDot',
+            'sysDash',
+            'sysDot',
+            'sysDashDot',
+            'sysDashDotDot',
+          ].includes(String(dash))
+        )
+          output.lineDash = String(dash)
+      }
+    }
+  }
+  return output
+}
+function textStyle(nodes: Node[] | undefined): Record<string, string> {
+  if (!nodes || !onlyChildren(nodes, ['a:bodyPr', 'a:lstStyle', 'a:p'])) return {}
+  const body = direct(nodes, 'a:bodyPr')[0],
+    bodyAttrs = attrs(body)
+  if (
+    Object.keys(bodyAttrs).some(
+      (key) => !['@_rot', '@_vert', '@_anchor', '@_wrap'].includes(key),
+    ) ||
+    (bodyAttrs['@_rot'] !== undefined && Number(bodyAttrs['@_rot']) !== 0) ||
+    (bodyAttrs['@_vert'] !== undefined && bodyAttrs['@_vert'] !== 'horz') ||
+    child(nodes, 'a:lstStyle')?.length
+  )
+    return {}
+  const paragraphs = direct(nodes, 'a:p')
+  if (paragraphs.length !== 1) return {}
+  const paragraph = paragraphs[0]!['a:p'] as Node[],
+    properties = child(paragraph, 'a:pPr'),
+    defaults = properties && child(properties, 'a:defRPr')
+  if (
+    !defaults ||
+    !onlyChildren(paragraph, ['a:pPr', 'a:endParaRPr']) ||
+    !onlyChildren(defaults, ['a:solidFill', 'a:latin', 'a:ea', 'a:cs'])
+  )
+    return {}
+  const output: Record<string, string> = {},
+    color = fill(defaults)
+  if (color !== undefined && color !== 'none') output.color = color
+  for (const [tag, key] of [
+    ['a:latin', 'font'],
+    ['a:ea', 'eastAsianFont'],
+    ['a:cs', 'complexFont'],
+  ]) {
+    const fontNodes = direct(defaults, tag!),
+      face = attrs(fontNodes[0])['@_typeface']
+    if (
+      fontNodes.length === 1 &&
+      typeof face === 'string' &&
+      face.length > 0 &&
+      face.length <= 128 &&
+      !face.startsWith('+') &&
+      !(fontNodes[0]![tag!] as Node[]).length
+    )
+      output[key!] = face.toLowerCase()
+  }
+  const run = attrs(direct(properties!, 'a:defRPr')[0])
+  if (
+    typeof run['@_sz'] === 'string' &&
+    /^\d+$/.test(run['@_sz']) &&
+    Number(run['@_sz']) > 0 &&
+    Number(run['@_sz']) <= 40000
+  )
+    output.size = String(Number(run['@_sz']))
+  for (const key of ['b', 'i']) {
+    const val = run[`@_${key}`] ?? '0'
+    if (['0', '1', 'false', 'true'].includes(String(val)))
+      output[key] = val === '1' || val === 'true' ? '1' : '0'
+  }
+  for (const [key, fallback] of [
+    ['u', 'none'],
+    ['strike', 'noStrike'],
+  ])
+    if (typeof (run[`@_${key}`] ?? fallback) === 'string')
+      output[key!] = String(run[`@_${key}`] ?? fallback)
+  return output
+}
+/** Conservative semantic projection: ordinary explicit RGB styles, never inherited theme proof. */
+function chartVisibleStyle(nodes: Node[], plotTypes: string[]): Record<string, string> | undefined {
+  if (plotTypes.length !== 1 || !['barChart', 'lineChart', 'pieChart'].includes(plotTypes[0]!))
+    return undefined
+  const space = child(nodes, 'c:chartSpace'),
+    chart = space && child(space, 'c:chart'),
+    area = chart && child(chart, 'c:plotArea')
+  if (!space || !chart || !area) return undefined
+  const output: Record<string, string> = {}
+  const record = (role: string, values: Record<string, string>) => {
+    for (const [key, val] of Object.entries(values)) output[`${role}.${key}`] = val
+  }
+  const common = (role: string, container: Node[]) => {
+    record(role, shapeStyle(child(container, 'c:spPr')))
+    record(`${role}.text`, textStyle(child(container, 'c:txPr')))
+  }
+  const inheritedCommon = (role: string, container: Node[], parent: string) => {
+    const inherited: Record<string, string> = {}
+    for (const [key, value] of Object.entries(output)) {
+      if (!key.startsWith(`${parent}.`)) continue
+      const suffix = key.slice(parent.length + 1)
+      if (suffix.includes('point.') || suffix === '$explicit') continue
+      if (
+        suffix.startsWith('text.')
+          ? !direct(container, 'c:txPr').length
+          : !direct(container, 'c:spPr').length
+      )
+        inherited[suffix] = value
+    }
+    record(role, inherited)
+    output[`${role}.$explicit`] = '1'
+    common(role, container)
+  }
+  common('chart', space)
+  common('plot', area)
+  const legend = child(chart, 'c:legend')
+  if (legend) common('legend', legend)
+  const plot = child(area, `c:${plotTypes[0]}`)
+  if (!plot) return undefined
+  const labels = child(plot, 'c:dLbls')
+  if (labels) common('labels', labels)
+  const series = direct(plot, 'c:ser')
+  if (series.length > 10) return undefined
+  for (let index = 0; index < series.length; index++) {
+    const ser = series[index]!['c:ser'] as Node[],
+      role = `series.${index}`
+    common(role, ser)
+    const label = child(ser, 'c:dLbls')
+    if (label) {
+      inheritedCommon(`${role}.labels`, label, 'labels')
+      const pointLabels = direct(label, 'c:dLbl')
+      if (pointLabels.length > 50) return undefined
+      const labelIndices = new Set<number>()
+      for (const pointLabel of pointLabels) {
+        const parts = pointLabel['c:dLbl'] as Node[]
+        const labelIndex = attrs(direct(parts, 'c:idx')[0])['@_val']
+        if (
+          typeof labelIndex !== 'string' ||
+          !/^\d+$/.test(labelIndex) ||
+          Number(labelIndex) > 49 ||
+          labelIndices.has(Number(labelIndex))
+        )
+          return undefined
+        labelIndices.add(Number(labelIndex))
+        inheritedCommon(`${role}.labels.point.${Number(labelIndex)}`, parts, `${role}.labels`)
+      }
+    }
+    const marker = child(ser, 'c:marker')
+    if (marker) common(`${role}.marker`, marker)
+    const points = direct(ser, 'c:dPt')
+    if (points.length > 50) return undefined
+    const seen = new Set<string>()
+    for (const point of points) {
+      const parts = point['c:dPt'] as Node[],
+        pointIndex = attrs(direct(parts, 'c:idx')[0])['@_val']
+      if (
+        typeof pointIndex !== 'string' ||
+        !/^\d+$/.test(pointIndex) ||
+        Number(pointIndex) > 49 ||
+        seen.has(String(Number(pointIndex)))
+      )
+        return undefined
+      seen.add(String(Number(pointIndex)))
+      const parentProperties = child(ser, 'c:spPr'),
+        pointProperties = child(parts, 'c:spPr')
+      const inherited = shapeStyle(parentProperties),
+        local = shapeStyle(pointProperties)
+      // An omitted point line inherits the series border. Explicit but unsupported overrides
+      // do not inherit known parent values and must remain unverified.
+      if (pointProperties && direct(pointProperties, 'a:ln').length) {
+        for (const key of Object.keys(inherited)) if (key.startsWith('line')) delete inherited[key]
+      }
+      if (
+        pointProperties &&
+        pointProperties.some((node) =>
+          Object.keys(node).some((key) =>
+            [
+              'a:solidFill',
+              'a:noFill',
+              'a:gradFill',
+              'a:blipFill',
+              'a:pattFill',
+              'a:grpFill',
+            ].includes(key),
+          ),
+        )
+      )
+        delete inherited.fill
+      output[`${role}.point.${Number(pointIndex)}.$explicit`] = '1'
+      record(`${role}.point.${Number(pointIndex)}`, { ...inherited, ...local })
+      const pointMarker = child(parts, 'c:marker')
+      if (pointMarker) {
+        inheritedCommon(`${role}.point.${Number(pointIndex)}.marker`, pointMarker, `${role}.marker`)
+      }
+    }
+  }
+  for (const axis of ['catAx', 'valAx']) {
+    const axes = direct(area, `c:${axis}`)
+    if (axes.length > 1) return undefined
+    if (!axes.length) continue
+    const parts = axes[0]![`c:${axis}`] as Node[]
+    common(axis, parts)
+    for (const tag of ['majorGridlines', 'minorGridlines']) {
+      const grid = child(parts, `c:${tag}`)
+      if (grid) common(`${axis}.${tag}`, grid)
+      else output[`${axis}.${tag}.line`] = 'none'
+    }
+  }
+  const ordered = Object.fromEntries(Object.entries(output).sort(([a], [b]) => a.localeCompare(b)))
+  return new TextEncoder().encode(JSON.stringify(ordered)).length <= 64 * 1024 ? ordered : undefined
 }
 
 /** Read only the exported page and embedded chart caches; workbook links are never followed. */
 export async function inspectPowerPointComplexPagePackage(
   base64: string,
   signal?: AbortSignal,
-  options: { slideIndex?: number; maxBytes?: number } = {},
+  options: { slideIndex?: number; maxBytes?: number; includeVisibleStyle?: boolean } = {},
 ): Promise<ComplexPagePackageSummary> {
   const zip = await loadBoundedZip(base64, signal, true, options.maxBytes)
   const slides = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
@@ -195,7 +488,7 @@ export async function inspectPowerPointComplexPagePackage(
     ].filter((type) => elements(chart, `c:${type}`).length > 0)
     if (!plotTypes.length) output.truncated = true
     const allSeries = elements(chart, 'c:ser')
-    const options = (tag: string): string[] => {
+    const visualValues = (tag: string): string[] => {
       const nodes = tagNodes(chart, tag)
       if (nodes.length > 8) output.truncated = true
       return nodes.slice(0, 8).map((node) => {
@@ -208,10 +501,10 @@ export async function inspectPowerPointComplexPagePackage(
       })
     }
     const visualOptions = {
-      barDirections: options('c:barDir'),
-      groupings: options('c:grouping'),
-      legendPositions: options('c:legendPos'),
-      valueLabels: options('c:showVal'),
+      barDirections: visualValues('c:barDir'),
+      groupings: visualValues('c:grouping'),
+      legendPositions: visualValues('c:legendPos'),
+      valueLabels: visualValues('c:showVal'),
     }
     const series = allSeries.slice(0, 8).map((ser) => {
       const cache = (container: string): string[] => {
@@ -249,12 +542,16 @@ export async function inspectPowerPointComplexPagePackage(
       }
     })
     if (allSeries.length > 8) output.truncated = true
+    const visibleStyle = options.includeVisibleStyle
+      ? chartVisibleStyle(chart, plotTypes)
+      : undefined
     output.charts.push({
       shapeId,
       plotTypes,
       visualOptions,
       series,
       cacheOnly: true,
+      ...(visibleStyle ? { visibleStyle } : {}),
       ...(output.truncated ? { truncated: true } : {}),
     })
   }
