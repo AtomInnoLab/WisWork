@@ -1,3 +1,9 @@
+import { PresentationAcquisitionStore } from '@wiswork/project-store/presentation-acquisition-store'
+import {
+  presentationAcquisitionErrors,
+  type PresentationAcquisitionRecord,
+  type PresentationAcquisitionError,
+} from '@wiswork/project-store/presentation-acquisition'
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
@@ -467,6 +473,7 @@ export function createPresentationAttachmentService(options: {
   fetchImage?: (url: string, signal: AbortSignal) => Promise<Response | null>
   fetchPage?: (url: string, signal: AbortSignal) => Promise<Response | null>
 }) {
+  const history = new PresentationAcquisitionStore(options.userDataPath)
   const root = join(resolve(options.userDataPath), 'presentation-attachments')
   const parse = options.parse ?? parseFileToText
   const normalizeImage = options.normalizeImage ?? normalizePresentationImage
@@ -486,7 +493,6 @@ export function createPresentationAttachmentService(options: {
       }))
   let stagingCleanup: Promise<void> | undefined
   return async (body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> => {
-    checkAbort(signal)
     const fields: Record<string, string[]> = {
       attachment_begin: ['attachmentId', 'name', 'sizeBytes', 'sha256'],
       attachment_chunk: ['attachmentId', 'offset', 'base64'],
@@ -497,6 +503,7 @@ export function createPresentationAttachmentService(options: {
       attachment_import_webpage: ['url'],
       attachment_attest_license: ['attachmentId', 'license', 'evidenceAttachmentId'],
       attachment_revoke_license: ['attachmentId'],
+      attachment_acquisition_history: [],
       attachment_list: [],
       attachment_list_assets: [],
       attachment_metadata: ['attachmentId'],
@@ -532,6 +539,7 @@ export function createPresentationAttachmentService(options: {
     if (
       ![
         'attachment_list',
+        'attachment_acquisition_history',
         'attachment_list_assets',
         'attachment_import_url',
         'attachment_import_webpage',
@@ -565,6 +573,23 @@ export function createPresentationAttachmentService(options: {
         fail('invalid_request')
       if (!supported(body.name)) fail('unsupported_file')
     }
+    if (op === 'attachment_acquisition_history') {
+      checkAbort(signal)
+      const result = await history.read(body.documentId)
+      checkAbort(signal)
+      return result
+    }
+    const remote = op === 'attachment_import_url' || op === 'attachment_import_webpage'
+    let source: URL | undefined
+    if (remote) {
+      try {
+        source = new URL(body.url as string)
+      } catch {
+        fail('invalid_request')
+      }
+      if (!['http:', 'https:'].includes(source.protocol) || source.username || source.password)
+        fail('invalid_request')
+    }
     const doc = join(root, hash(body.documentId))
     const previous = locks.get(doc) ?? Promise.resolve()
     let release!: () => void
@@ -573,7 +598,41 @@ export function createPresentationAttachmentService(options: {
     })
     locks.set(doc, tail)
     await previous
+    let acquisition: PresentationAcquisitionRecord | undefined
+    const complete = async (item: Metadata, size: number) => {
+      if (acquisition) {
+        const result =
+          item.status === 'ready'
+            ? {
+                state: 'ready' as const,
+                attachmentId: item.attachmentId,
+                sha256: item.sha256,
+                sizeBytes: item.sizeBytes,
+                ...(acquisition.kind === 'image' ? { assetSha256: item.assetSha256 } : {}),
+              }
+            : {
+                state: 'rejected' as const,
+                error: 'animated_image_unsupported' as const,
+                attachmentId: item.attachmentId,
+              }
+        // The published attachment remains valid if the independent history write fails.
+        await history
+          .finish(body.documentId as string, acquisition.id, result)
+          .catch(() => undefined)
+      }
+      return publicMetadata(item, size)
+    }
     try {
+      if (source) {
+        const sourceUrlHash = hash(source.toString())
+        source.search = ''
+        source.hash = ''
+        acquisition = await history.begin(body.documentId, {
+          kind: op === 'attachment_import_url' ? 'image' : 'webpage',
+          source: source.toString(),
+          sourceUrlHash,
+        })
+      }
       checkAbort(signal)
       await directory(
         root,
@@ -616,7 +675,7 @@ export function createPresentationAttachmentService(options: {
             continue
           const stored = await bytes(join(doc, entry, 'raw.html'), WEBPAGE_LIMIT)
           if (hash(stored) !== entry) fail('digest_mismatch')
-          return publicMetadata(item, item.sizeBytes)
+          return await complete(item, item.sizeBytes)
         }
         if (!(await isSafeRemoteUrl(url.toString()))) fail('remote_webpage_unavailable')
         const combined = AbortSignal.any([signal, AbortSignal.timeout(15_000)])
@@ -709,7 +768,7 @@ export function createPresentationAttachmentService(options: {
         } finally {
           await rm(staging, { recursive: true, force: true })
         }
-        return publicMetadata(item, raw.length)
+        return await complete(item, raw.length)
       }
       if (op === 'attachment_import_url') {
         let url: URL
@@ -741,7 +800,7 @@ export function createPresentationAttachmentService(options: {
             if (original.length !== item.sizeBytes || hash(original) !== entry)
               fail('digest_mismatch')
           }
-          return publicMetadata(item, item.sizeBytes)
+          return await complete(item, item.sizeBytes)
         }
         if (!(await isSafeRemoteUrl(url.toString()))) fail('remote_image_unavailable')
         const timeout = AbortSignal.timeout(15_000)
@@ -847,7 +906,7 @@ export function createPresentationAttachmentService(options: {
             ],
           }
           await atomic(join(existingDir, 'metadata.json'), JSON.stringify(updated))
-          return publicMetadata(updated, updated.sizeBytes)
+          return await complete(updated, updated.sizeBytes)
         }
         let declared = 0
         for (const entry of entries)
@@ -888,7 +947,7 @@ export function createPresentationAttachmentService(options: {
         } finally {
           await rm(staging, { recursive: true, force: true })
         }
-        return publicMetadata(item, raw.length)
+        return await complete(item, raw.length)
       }
       if (op === 'attachment_list' || op === 'attachment_list_assets') {
         const attachments = []
@@ -1308,6 +1367,15 @@ export function createPresentationAttachmentService(options: {
       }
     } catch (e) {
       const code = e instanceof Error ? e.message : ''
+      if (acquisition)
+        await history
+          .finish(body.documentId as string, acquisition.id, {
+            state: 'rejected',
+            error: presentationAcquisitionErrors.includes(code as PresentationAcquisitionError)
+              ? (code as PresentationAcquisitionError)
+              : 'acquisition_failed',
+          })
+          .catch(() => undefined)
       if (
         [
           'invalid_request',

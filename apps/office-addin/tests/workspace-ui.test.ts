@@ -872,3 +872,99 @@ it('serializes durable upload, permits same-file retry and drops a late result a
   await act(async () => root.unmount())
   container.remove()
 })
+
+it('refreshes persisted acquisition history after webpage failure and explicit retry without losing durable files', async () => {
+  const snapshot = {
+    assistantText: '',
+    activity: '',
+    busy: false,
+    applying: false,
+    status: 'done',
+    retryable: false,
+    timeline: [],
+  } as OfficeAgentSnapshot
+  const session = {
+    snapshot: () => snapshot,
+    subscribe: () => () => undefined,
+  } as unknown as OfficeAgentSession
+  const id = 'a'.repeat(64)
+  const read = vi.fn(async () => ({
+    version: 1 as const,
+    scope: 'remote_material_acquisition' as const,
+    documentId: 'doc1',
+    revision: 0,
+    totalAttempts: 0,
+    records: [],
+  }))
+  const acquire = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('presentation_remote_webpage_unavailable'))
+    .mockResolvedValueOnce(undefined)
+  const ui: OfficeWorkspaceUi = {
+    attachments: () => [],
+    skills: () => [],
+    skillPackagesEnabled: true,
+    upload: vi.fn(),
+    clear: vi.fn(),
+    durableAttachmentsAvailable: () => true,
+    webpagesAvailable: () => true,
+    readPresentationAcquisitionHistory: read,
+    importPresentationWebpageUrl: acquire,
+    listDurableAttachments: async () => [
+      {
+        attachmentId: id,
+        sha256: id,
+        name: 'kept.txt',
+        sizeBytes: 1,
+        receivedBytes: 1,
+        status: 'ready',
+        kind: 'text',
+        totalChars: 1,
+      },
+    ],
+  }
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+  try {
+    await act(async () =>
+      root.render(
+        React.createElement(AgentWorkspace, {
+          session,
+          ui,
+          disconnect: vi.fn(),
+          host: 'powerpoint',
+          initialPanel: 'attachments',
+        }),
+      ),
+    )
+    expect(read).toHaveBeenCalledTimes(1)
+    const input = container.querySelector<HTMLInputElement>('#presentation-webpage-url')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        'https://example.com/page',
+      )
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () =>
+      input
+        .closest('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    )
+    expect(acquire).toHaveBeenCalledTimes(1)
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(container.textContent).toContain('kept.txt')
+    await act(async () =>
+      input
+        .closest('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    )
+    expect(acquire).toHaveBeenCalledTimes(2)
+    expect(read).toHaveBeenCalledTimes(3)
+    expect(container.textContent).toContain('kept.txt')
+  } finally {
+    await act(async () => root.unmount())
+    container.remove()
+  }
+})

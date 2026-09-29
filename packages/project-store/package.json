@@ -13,7 +13,9 @@
     "./presentation-source-audit": "./src/presentation-source-audit.ts",
     "./presentation-plan-acceptance": "./src/presentation-plan-acceptance.ts",
     "./presentation-asset-events": "./src/presentation-asset-events.ts",
-    "./presentation-job": "./src/presentation-job.ts"
+    "./presentation-job": "./src/presentation-job.ts",
+    "./presentation-acquisition": "./src/presentation-acquisition.ts",
+    "./presentation-acquisition-store": "./src/presentation-acquisition-store.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

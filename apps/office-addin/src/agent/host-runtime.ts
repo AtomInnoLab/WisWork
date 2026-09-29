@@ -1,3 +1,4 @@
+import type { PresentationAcquisitionHistory } from '@wiswork/project-store/presentation-acquisition'
 import { presentationMutationScope } from '../skills/powerpoint/presentation-mutation-scope.js'
 import { readPresentationNativeLocks } from '../skills/powerpoint/presentation-native-locks.js'
 import { createPresentationExistingEditingSkill } from '../skills/powerpoint/presentation-existing-editing.js'
@@ -113,6 +114,7 @@ export interface OfficeHostRuntime {
   webpagesAvailable?(): boolean
   rightsAvailable?(): boolean
   animationFrameAvailable?(): boolean
+  readPresentationAcquisitionHistory?(): Promise<PresentationAcquisitionHistory | undefined>
   listDurableAttachments?(): Promise<PresentationAttachmentMetadata[]>
   deleteDurableAttachment?(attachmentId: string): Promise<void>
   importPresentationImageUrl?(url: string | string[]): Promise<void>
@@ -1147,6 +1149,7 @@ export function createOfficeHostRuntime(
             available: options.presentation.attachmentsAvailable ?? (() => false),
             upload: attachments.upload,
             list: attachments.list,
+            acquisitionHistory: attachments.acquisitionHistory,
             remove: attachments.remove,
             importUrl: attachments.importUrl,
             importUrls: attachments.importUrls,
@@ -1190,6 +1193,7 @@ function lifecycle(
     rightsAvailable(): boolean
     animationFrameAvailable(): boolean
     upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
+    acquisitionHistory?(): Promise<PresentationAcquisitionHistory | undefined>
     list(): Promise<PresentationAttachmentMetadata[]>
     remove(attachmentId: string): Promise<void>
     importUrl(url: string): Promise<unknown>
@@ -1230,6 +1234,8 @@ function lifecycle(
     webpagesAvailable: () => attachments?.webpagesAvailable() ?? false,
     rightsAvailable: () => attachments?.rightsAvailable() ?? false,
     animationFrameAvailable: () => attachments?.animationFrameAvailable() ?? false,
+    readPresentationAcquisitionHistory: () =>
+      attachments?.acquisitionHistory?.() ?? Promise.resolve(undefined),
     listDurableAttachments: () => attachments?.list() ?? Promise.resolve([]),
     deleteDurableAttachment: (attachmentId) =>
       attachments?.remove(attachmentId) ?? Promise.reject(new Error('presentation_unavailable')),

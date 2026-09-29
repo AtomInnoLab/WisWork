@@ -818,3 +818,86 @@ it('rejects oversized images and unnegotiated image uploads without dispatch', a
   expect(f.request).not.toHaveBeenCalled()
   expect(f.skill.systemPrompt).not.toContain('attachmentId: listed_attachmentId')
 })
+
+const acquisitionHistory = () => ({
+  version: 1,
+  scope: 'remote_material_acquisition',
+  documentId: 'doc1',
+  revision: 1,
+  totalAttempts: 1,
+  records: [
+    {
+      id: 'attempt1',
+      attempt: 1,
+      kind: 'webpage',
+      source: 'https://example.com/page',
+      sourceUrlHash: 'a'.repeat(64),
+      state: 'fetching',
+      startedAt: '2026-09-29T00:00:00.000Z',
+    },
+  ],
+})
+it('reads scoped acquisition history and rejects cross-document or malformed histories', async () => {
+  const f = setup()
+  f.request.mockResolvedValue(new Response(JSON.stringify(acquisitionHistory())))
+  expect(await f.skill.acquisitionHistory()).toEqual(acquisitionHistory())
+  expect(f.request).toHaveBeenCalledWith(
+    { operation: 'attachment_acquisition_history', documentId: 'doc1' },
+    expect.any(AbortSignal),
+  )
+  for (const value of [
+    { ...acquisitionHistory(), documentId: 'other' },
+    { ...acquisitionHistory(), secret: 'query' },
+    { ...acquisitionHistory(), records: Array(65).fill(acquisitionHistory().records[0]) },
+  ]) {
+    f.request.mockResolvedValue(new Response(JSON.stringify(value)))
+    await expect(f.skill.acquisitionHistory()).rejects.toThrow('presentation_response_invalid')
+  }
+})
+it('hides history for old PCs but preserves other errors', async () => {
+  const f = setup()
+  for (const error of ['invalid_request', 'upgrade_required']) {
+    f.request.mockResolvedValue(new Response(JSON.stringify({ error })))
+    expect(await f.skill.acquisitionHistory()).toBeUndefined()
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify({ error: 'invalid_state' })))
+  await expect(f.skill.acquisitionHistory()).rejects.toThrow('presentation_invalid_state')
+})
+it('rejects history arriving after cancellation or document switching', async () => {
+  for (const clear of [true, false]) {
+    const f = setup()
+    let resolve!: (response: Response) => void
+    f.request.mockImplementation(
+      () =>
+        new Promise<Response>((done) => {
+          resolve = done
+        }),
+    )
+    const pending = f.skill.acquisitionHistory()
+    await vi.waitFor(() => expect(f.request).toHaveBeenCalled())
+    if (clear) f.skill.clear()
+    else f.documentId.mockResolvedValue('other')
+    resolve(new Response(JSON.stringify(acquisitionHistory())))
+    await expect(pending).rejects.toThrow(
+      clear ? 'upload_cancelled' : 'presentation_document_changed',
+    )
+  }
+})
+
+it('accepts the bounded latest 64 attempts without losing global attempt numbers', async () => {
+  const f = setup()
+  const value = {
+    ...acquisitionHistory(),
+    revision: 65,
+    totalAttempts: 65,
+    records: Array.from({ length: 64 }, (_, index) => ({
+      ...acquisitionHistory().records[0],
+      id: `attempt${index + 2}`,
+      attempt: index + 2,
+    })),
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify(value)))
+  const result = await f.skill.acquisitionHistory()
+  expect(result?.records).toHaveLength(64)
+  expect(result?.records[0].attempt).toBe(2)
+})

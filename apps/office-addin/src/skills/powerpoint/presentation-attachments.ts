@@ -1,3 +1,7 @@
+import {
+  parsePresentationAcquisitionHistory,
+  type PresentationAcquisitionHistory,
+} from '@wiswork/project-store/presentation-acquisition'
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import { MAX_VFS_FILE_BYTES } from '../shared/vfs.js'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
@@ -221,6 +225,7 @@ export function createPresentationAttachmentSkill(
   },
 ): AgentSkill & {
   upload(name: string, content: Promise<ArrayBuffer>): Promise<void>
+  acquisitionHistory(): Promise<PresentationAcquisitionHistory | undefined>
   list(): Promise<PresentationAttachmentMetadata[]>
   importUrl(url: string): Promise<PresentationAttachmentMetadata>
   importUrls(urls: string[]): Promise<PresentationAttachmentMetadata>
@@ -398,6 +403,33 @@ export function createPresentationAttachmentSkill(
       active.clear()
     },
     importWebpage,
+    async acquisitionHistory() {
+      return scope(undefined, async (request, check) => {
+        let value: unknown
+        try {
+          value = await request({ operation: 'attachment_acquisition_history' })
+        } catch (error) {
+          await check()
+          if (
+            error instanceof Error &&
+            ['presentation_invalid_request', 'presentation_upgrade_required'].includes(
+              error.message,
+            )
+          )
+            return undefined
+          throw error
+        }
+        let history: PresentationAcquisitionHistory
+        try {
+          history = parsePresentationAcquisitionHistory(value)
+        } catch {
+          return invalid()
+        }
+        if (history.documentId !== (await options.documentId())) return invalid()
+        await check()
+        return history
+      })
+    },
     async list() {
       return scope(undefined, async (request) => {
         const attachments: PresentationAttachmentMetadata[] = []

@@ -76,6 +76,8 @@ const errorCodes = new Set([
   'invalid_brand_kit',
   'remote_image_unavailable',
   'remote_image_source_conflict',
+  'remote_webpage_unavailable',
+  'remote_webpage_source_conflict',
   'font_unavailable',
   'attachment_in_use',
   'page_not_ready',
@@ -110,6 +112,7 @@ export function createPresentationService(options: {
   ) => Promise<{ bytes: Uint8Array; width: number; height: number }>
   renderPage?: (pptx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>
   renderPdf?: (pptx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>
+  fetchImage?: (url: string, signal: AbortSignal) => Promise<Response | null>
   fetchPage?: (url: string, signal: AbortSignal) => Promise<Response | null>
 }): (body: unknown, signal: AbortSignal) => Promise<Uint8Array> {
   const pageBackups = createPresentationPageBackupService(options)
@@ -367,6 +370,7 @@ export function createPresentationService(options: {
         return boundedResponse(await pageBackups(request, signal))
       if (
         [
+          'attachment_acquisition_history',
           'attachment_begin',
           'attachment_chunk',
           'attachment_finish',

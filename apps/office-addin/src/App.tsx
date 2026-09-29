@@ -1,3 +1,5 @@
+import type { PresentationAcquisitionHistory } from '@wiswork/project-store/presentation-acquisition'
+import { PresentationAcquisitionHistoryCard } from './agent/presentation-acquisition-history.js'
 import { PresentationChangesCard } from './agent/presentation-changes-card.js'
 import type { PresentationChangesController } from './agent/presentation-changes.js'
 import { validatePresentationQaRecord } from './skills/powerpoint/presentation-qa.js'
@@ -269,6 +271,9 @@ export interface OfficeWorkspaceUi {
   readonly webpagesAvailable?: () => boolean
   readonly rightsAvailable?: () => boolean
   readonly animationFrameAvailable?: () => boolean
+  readonly readPresentationAcquisitionHistory?: () => Promise<
+    PresentationAcquisitionHistory | undefined
+  >
   readonly listDurableAttachments?: () => Promise<PresentationAttachmentMetadata[]>
   readonly deleteDurableAttachment?: (attachmentId: string) => Promise<void>
   readonly importPresentationImageUrl?: (url: string | string[]) => Promise<void>
@@ -352,6 +357,7 @@ export function createOfficeWorkspaceUi(
     webpagesAvailable: runtime.webpagesAvailable,
     rightsAvailable: runtime.rightsAvailable,
     animationFrameAvailable: runtime.animationFrameAvailable,
+    readPresentationAcquisitionHistory: runtime.readPresentationAcquisitionHistory,
     listDurableAttachments: runtime.listDurableAttachments,
     deleteDurableAttachment: runtime.deleteDurableAttachment,
     importPresentationImageUrl: runtime.importPresentationImageUrl,
@@ -605,6 +611,7 @@ export function AgentWorkspace(props: {
   )
   const [instruction, setInstruction] = useState('')
   const [files, setFiles] = useState<readonly string[]>(ui.attachments())
+  const [acquisitionRefresh, setAcquisitionRefresh] = useState(0)
   const [durableFiles, setDurableFiles] = useState<PresentationAttachmentMetadata[]>([])
   const [skills, setSkills] = useState<readonly string[]>(ui.skills())
   const [uploadError, setUploadError] = useState('')
@@ -1069,30 +1076,35 @@ export function AgentWorkspace(props: {
                   onSubmit={(event) => {
                     event.preventDefault()
                     if (uploadPending || state.busy || !webpageUrl.trim()) return
+                    const captured = ++uploadEpoch.current
+                    const current = () => mounted.current && captured === uploadEpoch.current
                     setUploadPending(true)
                     setUploadError('')
                     setUploadStatus('正在由 PC 抓取网页并保存原文…')
                     void ui
                       .importPresentationWebpageUrl?.(webpageUrl.trim())
                       .then(() => {
-                        if (!mounted.current) return
+                        if (!current()) return
                         setUploadStatus('网页原文及正文已保存到当前文档的 PC 资料。')
                         setWebpageUrl('')
                         void ui
                           .listDurableAttachments?.()
                           .then((items) => {
-                            if (mounted.current) setDurableFiles(items)
+                            if (current()) setDurableFiles(items)
                           })
                           .catch(() => undefined)
                       })
                       .catch((error: unknown) => {
-                        if (mounted.current) {
+                        if (current()) {
                           setUploadStatus('')
                           setUploadError(safeUploadError(error))
                         }
                       })
                       .finally(() => {
-                        if (mounted.current) setUploadPending(false)
+                        if (current()) {
+                          setUploadPending(false)
+                          setAcquisitionRefresh((value) => value + 1)
+                        }
                       })
                   }}
                 >
@@ -1132,33 +1144,40 @@ export function AgentWorkspace(props: {
                           setUploadError('候选图片网址最多 4 个。')
                           return
                         }
+                        const captured = ++uploadEpoch.current
+                        const current = () => mounted.current && captured === uploadEpoch.current
                         setUploadPending(true)
                         setUploadError('')
                         setUploadStatus('正在由 PC 下载并校验图片…')
                         void ui
                           .importPresentationImageUrl?.(urls.length === 1 ? urls[0]! : urls)
                           .then(async () => {
-                            if (!mounted.current) return
-                            setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
+                            if (!current()) return
+                            const items = await ui.listDurableAttachments?.()
+                            if (!current()) return
+                            if (items) setDurableFiles(items)
                             setUploadStatus(
                               '图片已保存到当前文档的 PC 素材缓存；许可状态仍需核验。',
                             )
                             setImageUrl('')
                           })
                           .catch((error: unknown) => {
-                            if (mounted.current) {
+                            if (current()) {
                               setUploadStatus('')
                               setUploadError(safeUploadError(error))
                               void ui
                                 .listDurableAttachments?.()
                                 .then((items) => {
-                                  if (mounted.current) setDurableFiles(items)
+                                  if (current()) setDurableFiles(items)
                                 })
                                 .catch(() => undefined)
                             }
                           })
                           .finally(() => {
-                            if (mounted.current) setUploadPending(false)
+                            if (current()) {
+                              setUploadPending(false)
+                              setAcquisitionRefresh((value) => value + 1)
+                            }
                           })
                       }}
                     >
@@ -1196,6 +1215,12 @@ export function AgentWorkspace(props: {
                 <p className="error-text" role="alert">
                   {uploadError}
                 </p>
+              )}
+              {ui.durableAttachmentsAvailable?.() && (
+                <PresentationAcquisitionHistoryCard
+                  read={ui.readPresentationAcquisitionHistory}
+                  refreshKey={`${acquisitionRefresh}:${state.busy}`}
+                />
               )}
               {ui.durableAttachmentsAvailable?.() && durableFiles.length > 0 && (
                 <ul>
