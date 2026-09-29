@@ -62,11 +62,18 @@ describe('parseFileToText: pdf', () => {
     )
   }, 20_000)
 
-  it('locates the Toyota audited revenue and historical FX in the frozen P0-08 PDFs', async () => {
+  it('locates Apple and Toyota revenue and historical FX in the frozen P0-08 PDFs', async () => {
     const root = resolve(
       import.meta.dirname,
       '../../../docs/product/ppt-benchmark-materials/PPT-P0-08',
     )
+    const apple = await parseFileToText(resolve(root, 'apple-fy2024-form10k.pdf'))
+    expect(apple.ok).toBe(true)
+    expect(apple.sections).toHaveLength(121)
+    const appleRevenuePage = apple.sections![31]!
+    expect(appleRevenuePage.locator).toBe('第 32 页')
+    expect(apple.text!.slice(appleRevenuePage.start, appleRevenuePage.end)).toContain('391,035')
+
     const report = await parseFileToText(resolve(root, 'toyota-fy2024-form20f.pdf'))
     expect(report.ok).toBe(true)
     expect(report.sections).toHaveLength(281)

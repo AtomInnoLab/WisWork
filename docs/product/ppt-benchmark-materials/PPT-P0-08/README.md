@@ -4,7 +4,7 @@
 
 ## 来源、报告期与比较边界
 
-- Apple FY2024 截至 2024-09-28，审计 [Form 10-K](https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm)；净销售额 **391,035 百万美元**，本地 PDF 第 32 页。仓库保存与该备案核对过的公司 PDF 镜像。
+- Apple FY2024 截至 2024-09-28，审计 [Form 10-K](https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm)；净销售额 **391,035 百万美元**，本地 PDF 第 32 页。仓库保存[Apple 投资者关系备案页](https://investor.apple.com/sec-filings/sec-filings-details/default.aspx?FilingId=17933082)直链的官方 PDF，并与 SEC 备案核对。
 - Toyota FY2024 截至 2024-03-31，官方 [Form 20-F](https://global.toyota/pages/global_toyota/ir/library/sec/20-F_202403_final.pdf) 的本地 PDF 第 167 页列出合并销售收入 **45,095,325 百万日元**，其中金融服务收入 3,447,195 百万日元；会计准则为 IFRS。官方[年度财务汇总](https://global.toyota/pages/global_toyota/ir/financial-results/2024_4q_summary_en.pdf)本地 PDF 第 28 页在 **FY2024 已发生的 12 个月栏**列出 1 美元 = **145 日元**。右侧 FY2025 预测栏恰好也写 145，不作为本案例的历史汇率来源。
 - 示意换算仅为 `45,095,325 / 145 = 311,002.24` **百万美元**，采用 Toyota FY2024 年度栏汇率；它不是 2024-11-01 即期汇率，也不代表 Apple 财年的平均汇率。不可据此与 Apple 净销售额相减、做排名或声称同口径规模。
 - 财年结束日、US GAAP 与 IFRS、产品和金融服务收入范围均不同。`basis.json` 将同口径美元差额和跨公司收入排名明确设为 `null`。Toyota 20-F 于 2024-06-25、财务汇总于 2024-05-08、Apple 10-K 于 2024-11-01 披露，均不晚于固定截至日期；仍需财务审阅人确认主张与适用边界。

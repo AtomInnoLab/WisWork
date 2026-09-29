@@ -21,6 +21,14 @@ assert.equal(
   'https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm',
 )
 assert.equal(
+  basis.companies[0].localPdfSource,
+  'https://d18rn0p25nwr6d.cloudfront.net/CIK-0000320193/c87043b9-5d89-4717-9f49-c4f9663d0061.pdf',
+)
+assert.equal(
+  basis.companies[0].localPdfListing,
+  'https://investor.apple.com/sec-filings/sec-filings-details/default.aspx?FilingId=17933082',
+)
+assert.equal(
   basis.companies[1].source,
   'https://global.toyota/pages/global_toyota/ir/library/sec/20-F_202403_final.pdf',
 )
