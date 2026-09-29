@@ -18,7 +18,8 @@
     "./presentation-acquisition-store": "./src/presentation-acquisition-store.ts",
     "./presentation-delivery-bundle": "./src/presentation-delivery-bundle.ts",
     "./presentation-research": "./src/presentation-research.ts",
-    "./presentation-research-store": "./src/presentation-research-store.ts"
+    "./presentation-research-store": "./src/presentation-research-store.ts",
+    "./presentation-source-assessment": "./src/presentation-source-assessment.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

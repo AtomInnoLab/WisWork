@@ -1,3 +1,7 @@
+import {
+  parsePresentationSourceAssessment,
+  assertPresentationSourceAssessmentBasis,
+} from '@wiswork/project-store/presentation-source-assessment'
 import { presentationResearchBindingFindings } from '@wiswork/pptx-engine/presentation-research-binding'
 import type { PresentationResearchRecord } from '@wiswork/project-store/presentation-research'
 import {
@@ -191,6 +195,26 @@ export async function handlePresentationProduction(
         .update(presentationClaimEvidenceContent(evidence))
         .digest('hex')
       if (digest !== request.evidenceDigest) throw new Error('evidence_changed')
+      if (Object.hasOwn(request, 'sourceAssessment')) {
+        try {
+          const assessment = parsePresentationSourceAssessment(request.sourceAssessment)
+          assertPresentationSourceAssessmentBasis(assessment, evidence.attachment)
+          const frozen = store.production(projectId, documentId, requestId!)
+          if (!frozen) throw new Error('invalid_request')
+          const plan = parsePresentationPlan(frozen.plan.plan)
+          const claim = plan.claims.find((c) => c.id === evidence.claimId)!
+          const source = plan.sources.find((s) => s.id === evidence.source.id)!
+          if (
+            assessment.timeliness.claimAsOf !== claim.asOf ||
+            assessment.timeliness.sourceAsOf !== source.asOf ||
+            (assessment.jurisdiction &&
+              assessment.jurisdiction.claimJurisdiction !== claim.jurisdiction)
+          )
+            throw new Error('invalid_request')
+        } catch {
+          throw new Error('invalid_request')
+        }
+      }
       if (request.outcome === 'supported') {
         if (evidence.excerptMatch.status !== 'found') throw new Error('evidence_excerpt_not_found')
         const planned = canonicalSourceLocator(evidence.source.locator)
@@ -213,6 +237,9 @@ export async function handlePresentationProduction(
         outcome: request.outcome,
         notes: request.notes,
         reviewer: 'agent',
+        ...(Object.hasOwn(request, 'sourceAssessment')
+          ? { sourceAssessment: request.sourceAssessment }
+          : {}),
       })
     } else saved = store.claimReview(projectId, documentId, requestId!, request.reviewId as string)
     if (!saved) throw new Error('not_found')

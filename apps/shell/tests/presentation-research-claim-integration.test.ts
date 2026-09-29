@@ -1,3 +1,6 @@
+import JSZip from 'jszip'
+import { createPresentationHostBundleSkill } from '../../office-addin/src/skills/powerpoint/presentation-host-bundle'
+import { InMemoryVfs } from '../../office-addin/src/skills/shared/vfs'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -23,6 +26,7 @@ async function setup(large = false) {
   const compile = vi.fn()
   let service = createPresentationService({ userDataPath: root, compile })
   let corruptEvidence = false
+  let hideAssessmentReply = false
   const documentId = 'doc',
     plan = benchmarkPlan(),
     deck = benchmarkPlannedDeck()
@@ -35,6 +39,13 @@ async function setup(large = false) {
       value.research
     )
       value.research.record.draft.scope = '伪造研究范围'
+    if (
+      hideAssessmentReply &&
+      (body as { operation: string }).operation === 'production_record_claim_review'
+    ) {
+      hideAssessmentReply = false
+      delete value.sourceAssessment
+    }
     return Response.json(value)
   }
   const runtime = () =>
@@ -178,6 +189,10 @@ async function setup(large = false) {
   }
   return {
     root,
+    request,
+    hideAssessmentReply: () => {
+      hideAssessmentReply = true
+    },
     compile,
     plan,
     deck,
@@ -343,6 +358,215 @@ it('reads the complete bounded research evidence above the old 256KiB response l
     expect(Buffer.byteLength(read.output)).toBeLessThanOrEqual(512 * 1024)
     expect(JSON.parse(read.output).research.record).toEqual(f.recordA)
     expect(JSON.parse(read.output).research.record.draft.sources).toHaveLength(24)
+    expect(f.compile).not.toHaveBeenCalled()
+  } finally {
+    f.close()
+  }
+})
+
+function sourceAssessmentFixture() {
+  return {
+    scope: '仅对原文窗口与测试样本的来源适用性判断',
+    authority: {
+      outcome: 'appropriate_for_claim',
+      sourceTier: 'primary',
+      reason: '在本合成测试范围内判断；尚未认证真实出版方。',
+    },
+    timeliness: {
+      outcome: 'current_for_claim',
+      referenceDate: '2026-09-29',
+      claimAsOf: '2026-09-01',
+      sourceAsOf: '2026-09-01',
+      reason: '原标签一致，仅判断本范围，不证明法规现行或来源更新。',
+    },
+    jurisdiction: {
+      claimJurisdiction: '中国大陆；仅测试样本',
+      outcome: 'applicable',
+      reason: '仅限声明的样本范围，不能推广。',
+    },
+    basis: [{ offset: 0, text: '原文对测试样本有效' }],
+  }
+}
+it('preserves every source authority/time/scope assessment and exposes mixed historical judgments without closing research conflicts', async () => {
+  const f = await setup()
+  try {
+    const read = await f.tool('read_presentation_claim_evidence', f.input)
+    expect(read.isError, read.output).toBeFalsy()
+    const assessment = sourceAssessmentFixture()
+    const input = {
+      ...f.input,
+      review_id: 'source-positive',
+      outcome: 'supported',
+      notes: '本窗口支持样本陈述；来源判断尚未认证。',
+      source_assessment: assessment,
+    }
+    const saved = await f.tool('record_presentation_claim_review', input)
+    expect(saved.isError, saved.output).toBeFalsy()
+    expect(JSON.parse(saved.output).sourceAssessment).toEqual(assessment)
+    const other = structuredClone(assessment)
+    other.authority = {
+      outcome: 'uncertain',
+      sourceTier: 'secondary',
+      reason: '不能从上传资料证明实际出版方。',
+    }
+    other.timeliness = {
+      ...other.timeliness,
+      outcome: 'historical_only',
+      referenceDate: '2026-09-28',
+      reason: '不同参照日的历史判断仍保留。',
+    }
+    other.jurisdiction = {
+      ...other.jurisdiction,
+      outcome: 'mismatch',
+      reason: '原样本结论不能直接应用总体。',
+    }
+    const second = await f.tool('record_presentation_claim_review', {
+      ...input,
+      review_id: 'source-uncertain',
+      source_assessment: other,
+    })
+    expect(second.isError, second.output).toBeFalsy()
+    const result = await f.tool('read_presentation_delivery_report', {
+      project_id: f.plan.projectId,
+      request_id: 'frozen',
+    })
+    expect(result.isError, result.output).toBeFalsy()
+    const report = JSON.parse(result.output)
+    expect(
+      report.reviews.map((review: { sourceAssessment: unknown }) => review.sourceAssessment),
+    ).toEqual([assessment, other])
+    expect(report.pages[0].issues.map((issue: { code: string }) => issue.code)).toEqual(
+      expect.arrayContaining([
+        'source_authority_review_mixed',
+        'source_timeliness_review_mixed',
+        'source_jurisdiction_review_mixed',
+        'research_claim_conflict',
+      ]),
+    )
+    const issue = report.pages[0].issues.find(
+      (issue: { code: string }) => issue.code === 'source_authority_review_mixed',
+    )
+    const action = await f.tool('record_presentation_issue_action', {
+      project_id: f.plan.projectId,
+      request_id: 'frozen',
+      expected_revision: 0,
+      action: {
+        actionId: 'explain-source',
+        issueId: issue.id,
+        issueDigest: issue.digest,
+        state: 'explained',
+        note: '保留两个不同历史判断，不能视为认证。',
+      },
+    })
+    expect(action.isError, action.output).toBeFalsy()
+    expect(JSON.parse(action.output).checks.sourceAuthority).toBe('not_verified')
+    f.restart()
+    const restored = await f.tool('read_presentation_claim_review', {
+      project_id: f.plan.projectId,
+      request_id: 'frozen',
+      review_id: 'source-positive',
+    })
+    expect(restored.isError, restored.output).toBeFalsy()
+    expect(JSON.parse(restored.output).sourceAssessment).toEqual(assessment)
+    expect(f.compile).not.toHaveBeenCalled()
+  } finally {
+    f.close()
+  }
+})
+it('rejects forged literal source-assessment basis before the PC persists a new review', async () => {
+  const f = await setup()
+  try {
+    expect((await f.tool('read_presentation_claim_evidence', f.input)).isError).toBeFalsy()
+    for (const [index, basis] of [
+      [{ offset: 1, text: '原文对测试样本有效' }],
+      [{ offset: 0, text: '伪造原文' }],
+      [{ offset: 8001, text: '原文' }],
+    ].entries()) {
+      const source_assessment = { ...sourceAssessmentFixture(), basis }
+      const result = await f.tool('record_presentation_claim_review', {
+        ...f.input,
+        review_id: `invalid-basis-${index}`,
+        outcome: 'supported',
+        notes: '不能用错误原文依据写判断',
+        source_assessment,
+      })
+      expect(result.isError).toBe(true)
+      expect(
+        await f.raw('production_read_claim_review', {
+          requestId: 'frozen',
+          reviewId: `invalid-basis-${index}`,
+        }),
+      ).toHaveProperty('error', 'not_found')
+    }
+  } finally {
+    f.close()
+  }
+})
+it('does not claim an omitted assessment acknowledgment succeeded and restores the immutable real PC result by read', async () => {
+  const f = await setup()
+  try {
+    expect((await f.tool('read_presentation_claim_evidence', f.input)).isError).toBeFalsy()
+    f.hideAssessmentReply()
+    const source_assessment = sourceAssessmentFixture()
+    const result = await f.tool('record_presentation_claim_review', {
+      ...f.input,
+      review_id: 'lost-assessment-ack',
+      outcome: 'supported',
+      notes: '实际写入，返回字段丢失后只读恢复',
+      source_assessment,
+    })
+    expect(result).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+    f.restart()
+    const read = await f.tool('read_presentation_claim_review', {
+      project_id: f.plan.projectId,
+      request_id: 'frozen',
+      review_id: 'lost-assessment-ack',
+    })
+    expect(read.isError, read.output).toBeFalsy()
+    expect(JSON.parse(read.output).sourceAssessment).toEqual(source_assessment)
+  } finally {
+    f.close()
+  }
+})
+it('includes the actual immutable source assessment and unresolved source issues in the current host delivery archive', async () => {
+  const f = await setup()
+  try {
+    expect((await f.tool('read_presentation_claim_evidence', f.input)).isError).toBeFalsy()
+    const source_assessment = sourceAssessmentFixture()
+    const saved = await f.tool('record_presentation_claim_review', {
+      ...f.input,
+      review_id: 'package-source',
+      outcome: 'supported',
+      notes: '只针对原窗口；不得宣称整套完成',
+      source_assessment,
+    })
+    expect(saved.isError, saved.output).toBeFalsy()
+    const native = await new JSZip()
+      .file('ppt/slides/slide1.xml', '<title>current host</title>')
+      .generateAsync({ type: 'uint8array' })
+    const vfs = new InMemoryVfs()
+    const skill = createPresentationHostBundleSkill({
+      available: () => true,
+      nativeAvailable: () => true,
+      exportDocument: async () => native,
+      documentId: async () => 'doc',
+      request: f.request,
+      vfs,
+    })
+    const exported = await skill.executeTool({
+      id: 'assessed-package',
+      name: 'export_current_presentation_bundle',
+      input: { project_id: f.plan.projectId, request_id: 'frozen' },
+    })
+    expect(exported.isError, exported.output).toBeFalsy()
+    const zip = await JSZip.loadAsync(vfs.readBytes(JSON.parse(exported.output).paths[0]))
+    const report = JSON.parse(await zip.file('evidence.json')!.async('string'))
+    expect(report.reviews[0].sourceAssessment).toEqual(source_assessment)
+    expect(report.pages[0].issues.map((issue: { code: string }) => issue.code)).toContain(
+      'research_claim_conflict',
+    )
+    expect(report.checks.sourceAuthority).toBe('not_verified')
+    expect(await zip.file('evidence.md')!.async('string')).toContain('2026&#45;09&#45;29')
     expect(f.compile).not.toHaveBeenCalled()
   } finally {
     f.close()

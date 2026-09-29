@@ -67,6 +67,125 @@ const researchReasons: Record<string, string> = {
   research_source_unavailable: '原文尚不可用',
   research_claim_conflict: '研究结论存在冲突',
 }
+const sourceAssessmentReasons: Record<string, string> = {
+  source_authority_review_missing: '缺少来源权威性判断',
+  source_authority_review_uncertain: '来源权威性尚不确定',
+  source_authority_review_insufficient: '来源权威性不足以支持该主张',
+  source_authority_review_mixed: '来源权威性判断或声明级别不同',
+  source_timeliness_review_missing: '缺少来源时效判断',
+  source_timeliness_review_uncertain: '来源时效尚不确定',
+  source_timeliness_review_historical_only: '来源仅适用于历史时点',
+  source_timeliness_review_superseded: '来源已被后续资料取代',
+  source_timeliness_review_mixed: '来源时效判断或比较框架不同',
+  source_jurisdiction_review_missing: '缺少来源适用范围判断',
+  source_jurisdiction_review_uncertain: '来源适用范围尚不确定',
+  source_jurisdiction_review_mismatch: '来源与主张适用范围不匹配',
+  source_jurisdiction_review_mixed: '来源适用范围判断不同',
+}
+function SourceAssessmentHistory({
+  report,
+  pageId,
+}: {
+  report: PresentationDeliveryReport
+  pageId: string
+}) {
+  const reviews = (report.reviews ?? []).filter(
+    (review) =>
+      review.pageId === pageId && review.requestId === report.requestId && review.sourceAssessment,
+  )
+  const groups = new Map<string, typeof reviews>()
+  for (const review of reviews) {
+    const key = `${review.claimId}:${review.sourceId}`
+    const group = groups.get(key) ?? []
+    group.push(review)
+    groups.set(key, group)
+  }
+  return (
+    <>
+      {Array.from(groups, ([key, items]) => (
+        <details key={key} aria-label={`来源评估历史 ${items[0]!.claimId} ${items[0]!.sourceId}`}>
+          <summary>
+            来源评估历史 · 主张 {items[0]!.claimId} · 来源 {items[0]!.sourceId} · {items.length} 条
+          </summary>
+          <p>
+            全部为历史 Agent
+            判断，保留每个原文窗口，不以最新判断覆盖旧判断。正向判断仍不证明事实成立或来源已认证，全局权威性与时效未核验。
+          </p>
+          <p>判断或比较框架不同，不代表事实矛盾；说明或暂缓不会关闭发现的问题。</p>
+          {items.map((review) => {
+            const assessment = review.sourceAssessment!
+            return (
+              <section key={review.reviewId}>
+                <p>
+                  原复核 ID：{review.reviewId} · {review.createdAt}
+                </p>
+                <p>
+                  窗口 UTF-16 {review.offset} · 最多 {review.maxChars} 字符
+                </p>
+                <p>评估范围：{assessment.scope}</p>
+                <p>
+                  权威性：
+                  {
+                    {
+                      appropriate_for_claim: '适合该主张',
+                      insufficient_authority: '权威性不足',
+                      uncertain: '不确定',
+                    }[assessment.authority.outcome]
+                  }
+                  ； 声明来源级别：
+                  {
+                    {
+                      primary: '一手来源',
+                      authoritative_secondary: '权威二手来源',
+                      secondary: '二手来源',
+                      unverified: '未核验',
+                    }[assessment.authority.sourceTier]
+                  }
+                  ； 理由：{assessment.authority.reason}
+                </p>
+                <p>
+                  时效：
+                  {
+                    {
+                      current_for_claim: '适用于该主张时点',
+                      historical_only: '仅适用于历史时点',
+                      superseded: '已被后续资料取代',
+                      uncertain: '不确定',
+                    }[assessment.timeliness.outcome]
+                  }
+                  ； 比较日期：{assessment.timeliness.referenceDate}；理由：
+                  {assessment.timeliness.reason}
+                </p>
+                <p>
+                  主张数据时点：{assessment.timeliness.claimAsOf ?? '未提供'}；资料数据时点：
+                  {assessment.timeliness.sourceAsOf ?? '未提供'}
+                </p>
+                {assessment.jurisdiction && (
+                  <p>
+                    主张适用范围：{assessment.jurisdiction.claimJurisdiction}； 范围判断：
+                    {
+                      { applicable: '适用', mismatch: '不匹配', uncertain: '不确定' }[
+                        assessment.jurisdiction.outcome
+                      ]
+                    }
+                    ； 理由：{assessment.jurisdiction.reason}
+                  </p>
+                )}
+                <p>原文依据只证明字面存在，不证明来源真实或结论正确。</p>
+                {!assessment.basis.length && <p>未提供可核验原文依据。</p>}
+                {assessment.basis.map((basis, index) => (
+                  <blockquote key={index}>
+                    UTF-16 {basis.offset}：{basis.text}
+                  </blockquote>
+                ))}
+              </section>
+            )
+          })}
+        </details>
+      ))}
+    </>
+  )
+}
 function ResearchIssueContext({
   issue,
   report,
@@ -192,7 +311,9 @@ function IssueList({
                   ? '网页快照与计划网址不匹配'
                   : issue.code === 'source_locator_mismatch'
                     ? '计划定位与原文实际位置不匹配'
-                    : (researchReasons[issue.code] ?? issue.code)}{' '}
+                    : (sourceAssessmentReasons[issue.code] ??
+                      researchReasons[issue.code] ??
+                      issue.code)}{' '}
               · 主张 {issue.claimId}：
               {report.plan.claims.find((claim) => claim.id === issue.claimId)?.statement}
               {issue.sourceId && (
@@ -401,6 +522,7 @@ export function PresentationDeliveryReportCard({
               />
             )
           })}
+          <SourceAssessmentHistory report={report} pageId={page.pageId} />
         </section>
       ))}
       <details>

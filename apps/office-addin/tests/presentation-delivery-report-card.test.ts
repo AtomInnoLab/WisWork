@@ -319,3 +319,208 @@ it('shows page research context and keeps explained, deferred and reopened actio
     container.remove()
   }
 })
+
+it('shows every scoped historical source assessment and Chinese source issue reasons without certification', async () => {
+  const reasons = {
+    source_authority_review_missing: '缺少来源权威性判断',
+    source_authority_review_uncertain: '来源权威性尚不确定',
+    source_authority_review_insufficient: '来源权威性不足以支持该主张',
+    source_authority_review_mixed: '来源权威性判断或声明级别不同',
+    source_timeliness_review_missing: '缺少来源时效判断',
+    source_timeliness_review_uncertain: '来源时效尚不确定',
+    source_timeliness_review_historical_only: '来源仅适用于历史时点',
+    source_timeliness_review_superseded: '来源已被后续资料取代',
+    source_timeliness_review_mixed: '来源时效判断或比较框架不同',
+    source_jurisdiction_review_missing: '缺少来源适用范围判断',
+    source_jurisdiction_review_uncertain: '来源适用范围尚不确定',
+    source_jurisdiction_review_mismatch: '来源与主张适用范围不匹配',
+    source_jurisdiction_review_mixed: '来源适用范围判断不同',
+  }
+  const assessment = {
+    scope: '该销售主张的来源',
+    authority: {
+      outcome: 'appropriate_for_claim',
+      sourceTier: 'primary',
+      reason: '发布方提供原始数据',
+    },
+    timeliness: {
+      outcome: 'current_for_claim',
+      referenceDate: '2026-09-29',
+      claimAsOf: '2025年度',
+      sourceAsOf: '2025-12-31',
+      reason: '适用于冻结主张时点',
+    },
+    jurisdiction: {
+      claimJurisdiction: '中国大陆',
+      outcome: 'applicable',
+      reason: '资料覆盖中国大陆',
+    },
+    basis: [{ offset: 40, text: '<script>销售原文</script>' }],
+  }
+  const reviews = ['older', 'newer', 'other-page'].map((reviewId, index) => ({
+    requestId: 'request',
+    pageId: index === 2 ? 'page-b' : 'page-a',
+    claimId: 'claim',
+    sourceId: 'source',
+    reviewId,
+    offset: 40 + index,
+    maxChars: 80,
+    createdAt: `2026-09-29T00:0${index}:00.000Z`,
+    sourceAssessment:
+      index === 1
+        ? {
+            ...assessment,
+            authority: {
+              outcome: 'uncertain',
+              sourceTier: 'secondary',
+              reason: '较晚判断仍无独立权威核验',
+            },
+            timeliness: {
+              ...assessment.timeliness,
+              referenceDate: '2026-09-28',
+              reason: '采用另一比较时点',
+            },
+          }
+        : assessment,
+  }))
+  const issues = Object.keys(reasons).map((code, index) => ({
+    id: `assessment-${index}`,
+    code,
+    claimId: 'claim',
+    sourceId: 'source',
+    digest: 'a'.repeat(64),
+    category: 'needs_human',
+    disposition: { state: 'open', stale: false },
+  }))
+  const report = {
+    requestId: 'request',
+    planRevision: 1,
+    plan: {
+      claims: [{ id: 'claim', statement: '销售主张' }],
+      sources: [{ id: 'source', title: '原资料', uri: 'attachment:source', excerpt: '' }],
+    },
+    pages: [
+      { pageId: 'page-a', title: 'A', productionState: 'compiled', calculations: [], issues },
+      {
+        pageId: 'page-b',
+        title: 'B',
+        productionState: 'compiled',
+        calculations: [],
+        issues: [{ ...issues[0], id: 'other-issue', digest: 'b'.repeat(64) }],
+      },
+    ],
+    reviews,
+    sourceAudit: [],
+    issueLedger: { revision: 0, actions: [] },
+  } as unknown as PresentationDeliveryReport
+  const recordIssueAction = vi.fn()
+  const controller = { recordIssueAction } as unknown as PresentationProjectController
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+  const render = async (value = report) =>
+    act(async () =>
+      root.render(
+        React.createElement(PresentationDeliveryReportCard, {
+          report: value,
+          controller,
+          disabled: false,
+        }),
+      ),
+    )
+  const action = async (id: string, state: string) => {
+    await act(async () => {
+      const select = container.querySelector(`[aria-label="处置状态 ${id}"]`) as HTMLSelectElement
+      select.value = state
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      const note = container.querySelector(`[aria-label="处置理由 ${id}"]`) as HTMLTextAreaElement
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        note,
+        '保留来源判断限制',
+      )
+      note.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () =>
+      (
+        container
+          .querySelector(`[aria-label="处置理由 ${id}"]`)!
+          .closest('form')!
+          .querySelector('button') as HTMLButtonElement
+      ).click(),
+    )
+  }
+  try {
+    await render()
+    for (const reason of Object.values(reasons)) expect(container.textContent).toContain(reason)
+    const pageA = container.querySelector('[aria-label="证据页面 A"]')!
+    const detail = pageA.querySelector(
+      'details[aria-label="来源评估历史 claim source"]',
+    ) as HTMLDetailsElement
+    expect(detail.open).toBe(false)
+    for (const text of [
+      'older',
+      'newer',
+      '窗口 UTF-16 40 · 最多 80 字符',
+      '2026-09-29T00:00:00.000Z',
+      '一手来源',
+      '二手来源',
+      '发布方提供原始数据',
+      '较晚判断仍无独立权威核验',
+      '2026-09-28',
+      '2026-09-29',
+      '2025年度',
+      '2025-12-31',
+      '中国大陆',
+      '<script>销售原文</script>',
+      '历史 Agent 判断',
+      '不代表事实矛盾',
+    ])
+      expect(detail.textContent).toContain(text)
+    expect(detail.textContent).not.toContain('other-page')
+    expect(detail.querySelector('script')).toBeNull()
+    const pageB = container.querySelector('[aria-label="证据页面 B"]')!
+    expect(
+      pageB.querySelector('details[aria-label="来源评估历史 claim source"]')?.textContent,
+    ).toContain('other-page')
+    expect(pageB.textContent).not.toContain('较晚判断仍无独立权威核验')
+    expect(container.textContent).toContain('来源真实性、时效未核验')
+    await action('assessment-0', 'explained')
+    expect(recordIssueAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        issueId: 'assessment-0',
+        issueDigest: 'a'.repeat(64),
+        state: 'explained',
+      }),
+    )
+    await action('other-issue', 'deferred')
+    expect(recordIssueAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        issueId: 'other-issue',
+        issueDigest: 'b'.repeat(64),
+        state: 'deferred',
+      }),
+    )
+    await action('assessment-0', 'open')
+    expect(recordIssueAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ issueId: 'assessment-0', state: 'open' }),
+    )
+    await render({ ...report, pages: [{ ...report.pages[1]!, issues: [] }] })
+    expect(
+      container.querySelector('[aria-label="来源评估历史 claim source"]')?.textContent,
+    ).toContain('适合该主张')
+    await render({ ...report, requestId: 'other-task' })
+    expect(container.querySelector('[aria-label="来源评估历史 claim source"]')).toBeNull()
+    expect(
+      (container.querySelector('[aria-label="处置理由 assessment-0"]') as HTMLTextAreaElement)
+        .value,
+    ).toBe('')
+    await render({
+      ...report,
+      reviews: reviews.map(({ sourceAssessment: _assessment, ...review }) => review),
+    } as unknown as PresentationDeliveryReport)
+    expect(container.querySelector('[aria-label="来源评估历史 claim source"]')).toBeNull()
+  } finally {
+    await act(async () => root.unmount())
+    container.remove()
+  }
+})

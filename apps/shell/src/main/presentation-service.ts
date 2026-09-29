@@ -1,3 +1,4 @@
+import { parsePresentationSourceAssessment } from '@wiswork/project-store/presentation-source-assessment'
 import { PresentationResearchStore } from '@wiswork/project-store/presentation-research-store'
 import { readBoundPresentationResearch } from './presentation-research-plan-binding'
 import { createPresentationResearchService } from './presentation-research'
@@ -471,7 +472,7 @@ export function createPresentationService(options: {
                         'offset',
                         'maxChars',
                         ...(request.operation === 'production_record_claim_review'
-                          ? ['reviewId', 'evidenceDigest', 'outcome', 'notes']
+                          ? ['reviewId', 'evidenceDigest', 'outcome', 'notes', 'sourceAssessment']
                           : []),
                       ]
                     : request.operation === 'production_rebuild_page'
@@ -547,7 +548,8 @@ export function createPresentationService(options: {
           !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)) &&
           !(request.operation === 'production_status' && key === 'requestId') &&
           !(request.operation === 'get_plan' && key === 'revision') &&
-          !(request.operation === 'audit_sources' && key === 'auditId'),
+          !(request.operation === 'audit_sources' && key === 'auditId') &&
+          !(request.operation === 'production_record_claim_review' && key === 'sourceAssessment'),
       )
       if (
         Object.keys(request).some((key) => !allowedKeys.includes(key)) ||
@@ -649,6 +651,8 @@ export function createPresentationService(options: {
       }
       if (request.operation === 'production_record_claim_review') {
         try {
+          if (Object.hasOwn(request, 'sourceAssessment'))
+            parsePresentationSourceAssessment(request.sourceAssessment)
           parsePresentationClaimReview({
             version: 1,
             projectId: request.projectId,
@@ -663,6 +667,9 @@ export function createPresentationService(options: {
             outcome: request.outcome,
             notes: request.notes,
             reviewer: 'agent',
+            ...(Object.hasOwn(request, 'sourceAssessment')
+              ? { sourceAssessment: request.sourceAssessment }
+              : {}),
             planRevision: 1,
             inputDigest: '0'.repeat(64),
             planDigest: '0'.repeat(64),

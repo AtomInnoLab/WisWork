@@ -1,6 +1,11 @@
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from './presentation-source-limits'
 import { parsePresentationClaimEvidence } from './presentation-claim-evidence'
-import { choice, id, number, object, text, valid } from './presentation-schema'
+import {
+  PRESENTATION_SOURCE_ASSESSMENT_SCHEMA,
+  parsePresentationSourceAssessment,
+  type PresentationSourceAssessment,
+} from '@wiswork/project-store/presentation-source-assessment'
+import { choice, id, number, object, text, valid, type Schema } from './presentation-schema'
 
 export interface PresentationClaimReview {
   version: 1
@@ -19,6 +24,7 @@ export interface PresentationClaimReview {
   evidenceDigest: string
   outcome: 'supported' | 'contradicted' | 'insufficient_evidence'
   notes: string
+  sourceAssessment?: PresentationSourceAssessment
   reviewer: 'agent'
   createdAt: string
   checks: {
@@ -55,10 +61,18 @@ const schema = object({
     host: choice('not_checked'),
   }),
 })
+schema.properties!.sourceAssessment = PRESENTATION_SOURCE_ASSESSMENT_SCHEMA as Schema
 /** A saved agent judgment does not verify source authority, timeliness, or host output. */
 export function parsePresentationClaimReview(value: unknown): PresentationClaimReview {
-  if (!valid(value, schema)) throw new Error('presentation_claim_review_invalid:schema')
+  const base = { ...(value as PresentationClaimReview) }
+  delete base.sourceAssessment
+  if (!valid(base, schema)) throw new Error('presentation_claim_review_invalid:schema')
   const review = value as PresentationClaimReview
+  // The shared parser handles integer offsets and preserves literal non-XML basis code units.
+  if (Object.hasOwn(review, 'sourceAssessment') && review.sourceAssessment === undefined)
+    throw new Error('presentation_claim_review_invalid:schema')
+  if (review.sourceAssessment !== undefined)
+    parsePresentationSourceAssessment(review.sourceAssessment)
   if (
     ![review.planRevision, review.offset, review.maxChars].every(Number.isSafeInteger) ||
     !review.notes.trim() ||

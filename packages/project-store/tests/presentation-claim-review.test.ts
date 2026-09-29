@@ -221,3 +221,71 @@ it('lists all validated immutable history across restart and isolates documents'
     'invalid_state',
   )
 })
+
+it('persists complete optional assessment and rejects changed assessment same ID after restart', () => {
+  const sourceAssessment = {
+    scope: '此主张',
+    authority: { outcome: 'uncertain', sourceTier: 'unverified', reason: '无认证' },
+    timeliness: { outcome: 'uncertain', referenceDate: '2026-09-29', reason: '未验证' },
+    basis: [],
+  }
+  const saved = save('review1', { ...review, sourceAssessment })
+  expect(read()).toEqual(saved)
+  expect(save('review1', { ...review, sourceAssessment })).toEqual(saved)
+  expect(() =>
+    save('review1', { ...review, sourceAssessment: { ...sourceAssessment, scope: '变化' } }),
+  ).toThrow('request_conflict')
+  expect(() =>
+    save('bad', { ...review, sourceAssessment: { ...sourceAssessment, unknown: true } }),
+  ).toThrow('invalid_request')
+})
+it('enforces unchanged total quota and validates assessed corruption even with recomputed digest', () => {
+  const sourceAssessment = {
+    scope: '界'.repeat(400),
+    authority: { outcome: 'uncertain', sourceTier: 'unverified', reason: '界'.repeat(600) },
+    timeliness: {
+      outcome: 'uncertain',
+      referenceDate: '2026-09-29',
+      claimAsOf: '界'.repeat(100),
+      sourceAsOf: '界'.repeat(100),
+      reason: '界'.repeat(600),
+    },
+    jurisdiction: {
+      claimJurisdiction: '界'.repeat(400),
+      outcome: 'uncertain',
+      reason: '界'.repeat(600),
+    },
+    basis: Array.from({ length: 4 }, (_, offset) => ({ offset, text: '界'.repeat(600) })),
+  }
+  const value = { ...review, notes: '界'.repeat(2000), sourceAssessment }
+  expect(Buffer.byteLength(JSON.stringify(value))).toBeGreaterThan(8 * 1024)
+  const first = save('review1', value)
+  expect(read()).toEqual(first)
+  let written = 1
+  for (; written < 32; written++) {
+    try {
+      save(`assessed${written}`, value)
+    } catch (error) {
+      expect((error as Error).message).toBe('quota_exceeded')
+      break
+    }
+  }
+  expect(written).toBeLessThan(32)
+  expect(read()).toEqual(first)
+  const records = JSON.parse(readFileSync(path, 'utf8'))
+  records[0].review.sourceAssessment.authority.outcome = 'certified'
+  const { reviewDigest: _old, ...content } = records[0]
+  const canonical = (v: unknown): unknown =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.entries(v)
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+            .map(([k, v]) => [k, canonical(v)]),
+        )
+      : Array.isArray(v)
+        ? v.map(canonical)
+        : v
+  records[0].reviewDigest = hash(JSON.stringify(canonical(content)))
+  writeFileSync(path, JSON.stringify(records))
+  expect(() => read()).toThrow('invalid_state')
+})

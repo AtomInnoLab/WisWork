@@ -1,3 +1,4 @@
+import { parsePresentationSourceAssessment } from './presentation-source-assessment.js'
 import {
   canonicalPresentationValue as canonical,
   presentationPlanSnapshotInputs,
@@ -232,7 +233,10 @@ export interface PresentationClaimReviewRecord {
   reviewDigest: string
 }
 function claimReviewDigest(review: unknown, error: string): string {
-  const hash = jsonDigest(review, MAX_CLAIM_REVIEW_BYTES, error)
+  const assessed = Boolean(
+    review && typeof review === 'object' && Object.hasOwn(review, 'sourceAssessment'),
+  )
+  const hash = jsonDigest(review, assessed ? 24 * 1024 : MAX_CLAIM_REVIEW_BYTES, error)
   if (!review || typeof review !== 'object' || Array.isArray(review)) throw new Error(error)
   const value = review as Record<string, unknown>
   const fields = [
@@ -246,6 +250,7 @@ function claimReviewDigest(review: unknown, error: string): string {
     'outcome',
     'notes',
     'reviewer',
+    ...(assessed ? ['sourceAssessment'] : []),
   ]
   if (
     Object.keys(value).length !== fields.length ||
@@ -272,6 +277,13 @@ function claimReviewDigest(review: unknown, error: string): string {
     value.reviewer !== 'agent'
   )
     throw new Error(error)
+  if (assessed) {
+    try {
+      parsePresentationSourceAssessment(value.sourceAssessment)
+    } catch {
+      throw new Error(error)
+    }
+  }
   return hash
 }
 const PRODUCTION_ERRORS = new Set([

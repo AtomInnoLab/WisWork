@@ -232,3 +232,90 @@ it('preserves exact legacy unbound evidence fields despite stored source and cla
   expect(evidence.source).not.toHaveProperty('asOf')
   expect(parsePresentationClaimEvidence(evidence)).toEqual(evidence)
 })
+
+it('saves actual source assessment with literal basis and frozen labels; restart/lost ACK is immutable', async () => {
+  const f = await setup()
+  const evidence = parsePresentationClaimEvidence(await f.raw(f.evidenceRequest))
+  const sourceAssessment = {
+    scope: '仅此冻结主张',
+    authority: {
+      outcome: 'appropriate_for_claim',
+      sourceTier: 'primary',
+      reason: 'Agent语义判断，不是认证',
+    },
+    timeliness: {
+      outcome: 'current_for_claim',
+      referenceDate: '2026-09-29',
+      claimAsOf: f.plan.claims[0]!.asOf,
+      sourceAsOf: f.plan.sources[0]!.asOf,
+      reason: '按冻结标签比较',
+    },
+    jurisdiction: {
+      claimJurisdiction: f.plan.claims[0]!.jurisdiction,
+      outcome: 'applicable',
+      reason: '范围判断',
+    },
+    basis: [{ offset: 0, text: evidence.attachment.text.slice(0, 5) }],
+  }
+  const request = {
+    ...f.evidenceRequest,
+    operation: 'production_record_claim_review',
+    reviewId: 'assessed',
+    outcome: 'supported',
+    notes: '意见',
+    evidenceDigest: hash(presentationClaimEvidenceContent(evidence)),
+    sourceAssessment,
+  }
+  const receipt = await f.raw(request)
+  expect(receipt).not.toHaveProperty('error')
+  expect(receipt.sourceAssessment).toEqual(sourceAssessment)
+  expect(receipt.checks).toMatchObject({
+    sourceAuthority: 'not_verified',
+    timeliness: 'not_verified',
+  })
+  f.restart()
+  expect(await f.raw(request)).toEqual(receipt)
+  expect(
+    await f.raw({ ...request, sourceAssessment: { ...sourceAssessment, scope: '不同' } }),
+  ).toEqual({ error: 'request_conflict' })
+  for (const change of [
+    { basis: [{ offset: 1, text: '伪造' }] },
+    { timeliness: { ...sourceAssessment.timeliness, claimAsOf: '伪造' } },
+    { jurisdiction: { ...sourceAssessment.jurisdiction, claimJurisdiction: '其他' } },
+  ]) {
+    expect(
+      await f.raw({
+        ...request,
+        reviewId: 'invalid',
+        sourceAssessment: { ...sourceAssessment, ...change },
+      }),
+    ).toEqual({ error: 'invalid_request' })
+    expect(f.store.claimReview(f.plan.projectId, 'doc', 'frozen', 'invalid')).toBeUndefined()
+  }
+})
+it('checks assessment labels against unbound frozen plan rather than evidence optional context', async () => {
+  const f = await setup(false)
+  const evidence = parsePresentationClaimEvidence(await f.raw(f.evidenceRequest))
+  const sourceAssessment = {
+    scope: '无标签也不可猜测',
+    authority: { outcome: 'uncertain', sourceTier: 'unverified', reason: '未验证' },
+    timeliness: {
+      outcome: 'uncertain',
+      referenceDate: '2026-09-29',
+      claimAsOf: '猜测',
+      reason: '未验证',
+    },
+    basis: [],
+  }
+  expect(
+    await f.raw({
+      ...f.evidenceRequest,
+      operation: 'production_record_claim_review',
+      reviewId: 'bad-label',
+      outcome: 'insufficient_evidence',
+      notes: '意见',
+      evidenceDigest: hash(presentationClaimEvidenceContent(evidence)),
+      sourceAssessment,
+    }),
+  ).toEqual({ error: 'invalid_request' })
+})

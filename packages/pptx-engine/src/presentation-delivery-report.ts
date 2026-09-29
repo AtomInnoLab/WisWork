@@ -166,6 +166,13 @@ function seeds(
         'source_locator_missing',
         'source_review_missing',
         'source_review_insufficient',
+        'source_authority_review_missing',
+        'source_authority_review_uncertain',
+        'source_authority_review_insufficient',
+        'source_timeliness_review_missing',
+        'source_timeliness_review_uncertain',
+        'source_jurisdiction_review_missing',
+        'source_jurisdiction_review_uncertain',
         'calculation_not_reproduced',
         'calculation_unsupported',
         'calculation_invalid_arithmetic',
@@ -215,6 +222,52 @@ function seeds(
       else if (outcomes.size > 1) add('source_review_mixed', sourceId)
       else if (outcomes.has('contradicted')) add('source_review_contradicted', sourceId)
       else if (outcomes.has('insufficient_evidence')) add('source_review_insufficient', sourceId)
+      if (report.plan.research || report.reviews.some((review) => review.sourceAssessment)) {
+        const assessments = relevant.flatMap((review) =>
+          review.sourceAssessment ? [review.sourceAssessment] : [],
+        )
+        const authority = new Set(
+          assessments.map((item) => canonical([item.authority.outcome, item.authority.sourceTier])),
+        )
+        if (!assessments.length) add('source_authority_review_missing', sourceId)
+        else if (authority.size > 1) add('source_authority_review_mixed', sourceId)
+        else if (assessments[0]!.authority.outcome === 'uncertain')
+          add('source_authority_review_uncertain', sourceId)
+        else if (assessments[0]!.authority.outcome === 'insufficient_authority')
+          add('source_authority_review_insufficient', sourceId)
+        const timeliness = new Set(
+          assessments.map((item) =>
+            canonical([
+              item.timeliness.outcome,
+              item.timeliness.referenceDate,
+              item.timeliness.claimAsOf,
+              item.timeliness.sourceAsOf,
+            ]),
+          ),
+        )
+        if (!assessments.length) add('source_timeliness_review_missing', sourceId)
+        else if (timeliness.size > 1) add('source_timeliness_review_mixed', sourceId)
+        else if (assessments[0]!.timeliness.outcome !== 'current_for_claim')
+          add(`source_timeliness_review_${assessments[0]!.timeliness.outcome}`, sourceId)
+        if (claim.jurisdiction !== undefined) {
+          const jurisdictions = assessments.flatMap((item) =>
+            item.jurisdiction ? [item.jurisdiction] : [],
+          )
+          const frames = new Set(
+            assessments.map((item) =>
+              canonical(
+                item.jurisdiction
+                  ? [item.jurisdiction.outcome, item.jurisdiction.claimJurisdiction]
+                  : null,
+              ),
+            ),
+          )
+          if (!jurisdictions.length) add('source_jurisdiction_review_missing', sourceId)
+          else if (frames.size > 1) add('source_jurisdiction_review_mixed', sourceId)
+          else if (jurisdictions[0]!.outcome !== 'applicable')
+            add(`source_jurisdiction_review_${jurisdictions[0]!.outcome}`, sourceId)
+        }
+      }
     }
     if (claim.type === 'calculation') {
       const calculation = reproducePresentationCalculation(claim)
@@ -414,6 +467,11 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
       !page?.claimIds.includes(review.claimId) ||
       !claim?.sourceIds.includes(review.sourceId) ||
       !source ||
+      (review.sourceAssessment !== undefined &&
+        (review.sourceAssessment.timeliness.claimAsOf !== claim.asOf ||
+          review.sourceAssessment.timeliness.sourceAsOf !== source.asOf ||
+          (review.sourceAssessment.jurisdiction !== undefined &&
+            review.sourceAssessment.jurisdiction.claimJurisdiction !== claim.jurisdiction))) ||
       presentationSourceAttachmentId(source) !== review.attachmentId
     )
       invalid()
@@ -428,7 +486,8 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
       page.title !== slide.title ||
       !['pending', 'building', 'compiled', 'failed'].includes(page.productionState) ||
       !Array.isArray(page.issues) ||
-      page.issues.length > (plan.research ? 768 : 608)
+      page.issues.length >
+        (plan.research || report.reviews.some((review) => review.sourceAssessment) ? 1056 : 608)
     )
       invalid()
     const calculations = slide.claimIds
@@ -536,9 +595,13 @@ export async function buildPresentationDeliveryReport(
       .map(reproducePresentationCalculation)
     const issues: DeliveryIssue[] = []
     for (const seed of seeds(report, index, missing)) {
+      const sourceAssessmentIssue = /^source_(authority|timeliness|jurisdiction)_review_/.test(
+        seed.code,
+      )
       const relevantReviews = input.reviews.filter(
         (review) =>
-          seed.code.startsWith('source_review_') &&
+          (seed.code.startsWith('source_review_') ||
+            (sourceAssessmentIssue && review.sourceAssessment !== undefined)) &&
           review.pageId === page.id &&
           review.claimId === seed.claimId &&
           (seed.sourceId === undefined || review.sourceId === seed.sourceId),
@@ -557,6 +620,50 @@ export async function buildPresentationDeliveryReport(
           ? { sourceAudit: report.sourceAudit.find((item) => item.sourceId === seed.sourceId) }
           : {}),
         relevantReviews,
+        ...(sourceAssessmentIssue
+          ? {
+              sourceAssessmentContext: {
+                claim: plan.claims.find((claim) => claim.id === seed.claimId),
+                source: plan.sources.find((source) => source.id === seed.sourceId),
+                ...(report.research
+                  ? {
+                      research: {
+                        ledgerId: report.research.record.id,
+                        sequence: report.research.record.sequence,
+                        draftDigest: report.research.record.draftDigest,
+                        claimMapping: plan.research!.claims.find(
+                          (mapping) => mapping.claimId === seed.claimId,
+                        ),
+                        sourceMapping: plan.research!.sources.find(
+                          (mapping) => mapping.sourceId === seed.sourceId,
+                        ),
+                        claim: report.research.record.draft.facts.find(
+                          (fact) =>
+                            fact.claimId ===
+                            plan.research!.claims.find(
+                              (mapping) => mapping.claimId === seed.claimId,
+                            )?.researchClaimId,
+                        ),
+                        source: report.research.record.draft.sources.find(
+                          (source) =>
+                            source.id ===
+                            plan.research!.sources.find(
+                              (mapping) => mapping.sourceId === seed.sourceId,
+                            )?.researchSourceId,
+                        ),
+                        evidence: report.research.record.sources!.find(
+                          (source) =>
+                            source.sourceId ===
+                            plan.research!.sources.find(
+                              (mapping) => mapping.sourceId === seed.sourceId,
+                            )?.researchSourceId,
+                        ),
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}),
         ...(seed.research ? { research: researchIssueContext(report, seed) } : {}),
         ...(calculation ? { calculation } : {}),
       })
@@ -686,6 +793,11 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
     '## All source review history',
   )
   for (const review of report.reviews) lines.push(`- ${safe(JSON.stringify(review))}`)
+  if (report.reviews.some((review) => review.sourceAssessment))
+    lines.push(
+      '',
+      'Source assessments above preserve every historical Agent opinion, literal basis and reference date. Mixed reference frames are differing judgments, not automatic factual contradictions. Positive opinions do not certify authority, timeliness or applicability; global checks remain NOT VERIFIED.',
+    )
   lines.push('', '## All disposition history (explanations do not close machine findings)')
   for (const action of report.issueLedger.actions) lines.push(`- ${safe(JSON.stringify(action))}`)
   return lines.join('\n') + '\n'
