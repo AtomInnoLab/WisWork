@@ -59,7 +59,12 @@ export type PresentationHistoryEntry = {
     kind: K
     record: Records[K]
   }
-}[keyof Records] & { agentRunId?: string; toolCallId?: string }
+}[keyof Records] & {
+  agentRunId?: string
+  toolCallId?: string
+  checkpointCreatedAt?: string
+  checkpointRestoredAt?: string
+}
 export function historyEntryId<K extends keyof Records>(kind: K, record: Records[K]): string {
   if (kind === 'image') {
     const r = record as ImageReplacementRecord
@@ -72,11 +77,26 @@ export function validatePresentationHistoryEntry(
 ): value is PresentationHistoryEntry {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const e = value as PresentationHistoryEntry
+  const eventKeys = ['checkpointCreatedAt', 'checkpointRestoredAt']
+  const date = (value: unknown) =>
+    typeof value === 'string' &&
+    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value
   if (
     ![
       'id,kind,legacy,record,sequence',
       'agentRunId,id,kind,legacy,record,sequence,toolCallId',
-    ].includes(Object.keys(e).sort().join(',')) ||
+    ].includes(
+      Object.keys(e)
+        .filter((key) => !eventKeys.includes(key))
+        .sort()
+        .join(','),
+    ) ||
+    (e.checkpointCreatedAt !== undefined && (!date(e.checkpointCreatedAt) || e.legacy)) ||
+    (e.checkpointRestoredAt !== undefined &&
+      (!date(e.checkpointRestoredAt) ||
+        (e.checkpointCreatedAt !== undefined && e.checkpointRestoredAt < e.checkpointCreatedAt))) ||
     (e.agentRunId !== undefined &&
       (typeof e.agentRunId !== 'string' ||
         !/^[A-Za-z0-9_-]{1,128}$/.test(e.agentRunId) ||
@@ -150,6 +170,15 @@ export const presentationHistoryBytes = (history: PresentationHistoryEnvelope) =
   history.entries.reduce(
     (sum, e) =>
       sum +
+      // Fixed timestamp metadata has a separate bounded allowance, preserving old full histories.
+      -(e.checkpointCreatedAt || e.checkpointRestoredAt
+        ? new TextEncoder().encode(
+            JSON.stringify({
+              checkpointCreatedAt: e.checkpointCreatedAt,
+              checkpointRestoredAt: e.checkpointRestoredAt,
+            }),
+          ).byteLength - 1
+        : 0) +
       (e.kind === 'existing_batch'
         ? existingBatchReservedBytes(e.record)
         : e.kind === 'existing_image'

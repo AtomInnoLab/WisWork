@@ -113,7 +113,15 @@ it('links a single existing-change page backup and offers reapply and release af
     artifact: () => undefined,
     documentId: async () => 'doc',
     listChangeHistory: () => [
-      { id: 'existing:single', kind: 'existing', sequence: 1, legacy: false, record },
+      {
+        id: 'existing:single',
+        kind: 'existing',
+        sequence: 1,
+        legacy: false,
+        record,
+        checkpointCreatedAt: '2026-09-29T00:00:00.000Z',
+        checkpointRestoredAt: '2026-09-29T00:01:00.000Z',
+      },
     ],
     listExistingPageBackups: async () => [
       {
@@ -129,6 +137,10 @@ it('links a single existing-change page backup and offers reapply and release af
   })
   await controller.refresh()
   expect(controller.snapshot().backupAudit).toEqual({ active: 1, unmatched: 0 })
+  expect(controller.snapshot().entries[0]).toMatchObject({
+    checkpointCreatedAt: '2026-09-29T00:00:00.000Z',
+    checkpointRestoredAt: '2026-09-29T00:01:00.000Z',
+  })
   expect(controller.snapshot().entries[0]?.actions).toEqual(['inspect', 'reapply', 'release'])
   await controller.run('existing:single', 'release')
   expect(executeTool).toHaveBeenCalledWith(

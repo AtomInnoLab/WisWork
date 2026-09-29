@@ -48,6 +48,40 @@ async function fixture() {
     },
   }
 }
+it('persists checkpoint event times without changing their identity across reopen and undo', async () => {
+  const f = await fixture()
+  await f.binding.writeTextChange(f.record, undefined)
+  const created = f.binding.listChangeHistory()[0]!
+  expect(created).toHaveProperty('checkpointCreatedAt', expect.any(String))
+  expect(created).not.toHaveProperty('checkpointRestoredAt')
+  const applied = { ...f.record, state: 'applied' as const }
+  await f.binding.writeTextChange(applied, f.record)
+  const pending = { ...applied, state: 'undo_pending' as const }
+  await f.binding.writeTextChange(pending, applied)
+  expect(f.binding.listChangeHistory()[0]).not.toHaveProperty('checkpointRestoredAt')
+  await f.binding.writeTextChange({ ...pending, state: 'undone' }, pending)
+  const restored = f.create().listChangeHistory()[0]!
+  expect(restored.checkpointCreatedAt).toBe(created.checkpointCreatedAt)
+  expect(restored.checkpointRestoredAt).toEqual(expect.any(String))
+  expect(restored.checkpointRestoredAt! >= restored.checkpointCreatedAt!).toBe(true)
+  expect(restored.id).toBe(created.id)
+  const saved = JSON.parse(f.values.get(historyKey)!)
+  saved.entries[0].checkpointRestoredAt = '2000-01-01T00:00:00.000Z'
+  f.values.set(historyKey, JSON.stringify(saved))
+  expect(() => f.create().listChangeHistory()).toThrow('presentation_change_history_state_invalid')
+})
+it('records actual legacy undo without fabricating its original checkpoint date', async () => {
+  const f = await fixture()
+  const applied = { ...f.record, state: 'applied' as const }
+  f.values.set(textKey, JSON.stringify(applied))
+  const pending = { ...applied, state: 'undo_pending' as const }
+  await f.binding.writeTextChange(pending, applied)
+  await f.binding.writeTextChange({ ...pending, state: 'undone' }, pending)
+  const restored = f.create().listChangeHistory()[0]!
+  expect(restored.legacy).toBe(true)
+  expect(restored).not.toHaveProperty('checkpointCreatedAt')
+  expect(restored.checkpointRestoredAt).toEqual(expect.any(String))
+})
 it('retains same-kind records after reopening and selects older records exactly for CAS undo', async () => {
   const f = await fixture()
   await f.binding.writeTextChange(f.record, undefined)
@@ -418,6 +452,11 @@ it.each(['text', 'geometry'] as const)(
     }
     const pending = { ...f.record, changeId: 'boundary', before: '', after: '' }
     const h: PresentationHistoryEnvelope = JSON.parse(f.values.get(historyKey)!)
+    for (const entry of h.entries) {
+      delete entry.checkpointCreatedAt
+      delete entry.checkpointRestoredAt
+    }
+    f.values.set(historyKey, JSON.stringify(h))
     h.entries.push({
       id: 'text:boundary',
       sequence: h.entries.length + 1,

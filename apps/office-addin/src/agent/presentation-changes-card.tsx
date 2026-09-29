@@ -99,6 +99,27 @@ export function PresentationChangesCard({
                 }[entry.kind]
               }
             </strong>
+            {(entry.checkpointCreatedAt || entry.checkpointRestoredAt) && (
+              <details>
+                <summary>保存点历史</summary>
+                <ol>
+                  {entry.checkpointCreatedAt && (
+                    <li data-event-type="checkpoint.created">
+                      <time dateTime={entry.checkpointCreatedAt}>{entry.checkpointCreatedAt}</time>{' '}
+                      修改保存点记录已保存
+                    </li>
+                  )}
+                  {entry.checkpointRestoredAt && (
+                    <li data-event-type="checkpoint.restored">
+                      <time dateTime={entry.checkpointRestoredAt}>
+                        {entry.checkpointRestoredAt}
+                      </time>{' '}
+                      已记录撤销恢复；当前宿主内容仍需检查
+                    </li>
+                  )}
+                </ol>
+              </details>
+            )}
             <p>
               {entry.source === 'existing_batch'
                 ? '现稿批量 · '

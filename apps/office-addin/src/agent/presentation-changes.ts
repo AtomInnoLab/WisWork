@@ -35,6 +35,8 @@ import {
 export type PresentationChangeAction =
   'inspect' | 'undo' | 'resume' | 'reapply' | 'commit' | 'discard' | 'release'
 export interface PresentationChangeEntry {
+  checkpointCreatedAt?: string
+  checkpointRestoredAt?: string
   origin?: { agentRunId: string; toolCallId: string }
   source?: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart'
   review?: PresentationExistingChange['review']
@@ -525,6 +527,12 @@ export function createPresentationChangesController(
             id: saved.id,
             sequence: saved.sequence,
             legacy: saved.legacy,
+            ...(saved.checkpointCreatedAt
+              ? { checkpointCreatedAt: saved.checkpointCreatedAt }
+              : {}),
+            ...(saved.checkpointRestoredAt
+              ? { checkpointRestoredAt: saved.checkpointRestoredAt }
+              : {}),
             ...(saved.agentRunId && saved.toolCallId
               ? { origin: { agentRunId: saved.agentRunId, toolCallId: saved.toolCallId } }
               : {}),

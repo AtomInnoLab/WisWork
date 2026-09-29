@@ -610,7 +610,10 @@ export function createPresentationDocumentBinding(
         })
       return history
     }
-    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 1024 * 1024)
+    if (
+      typeof raw !== 'string' ||
+      new TextEncoder().encode(raw).byteLength > 1024 * 1024 + 64 * 120
+    )
       throw invalidHistory()
     let h: PresentationHistoryEnvelope
     try {
@@ -742,6 +745,27 @@ export function createPresentationDocumentBinding(
   ) => {
     const history = readHistory(),
       index = history.entries.findIndex((e) => e.id === entry.id)
+    const previousEntry = history.entries[index]
+    const latestAt = history.entries.reduce((latest, value) => {
+      const at = value.checkpointRestoredAt ?? value.checkpointCreatedAt ?? ''
+      return at > latest ? at : latest
+    }, '')
+    const now = new Date().toISOString()
+    const at = now < latestAt ? latestAt : now
+    const events = {
+      ...(previousEntry?.checkpointCreatedAt
+        ? { checkpointCreatedAt: previousEntry.checkpointCreatedAt }
+        : index < 0 && !entry.legacy
+          ? { checkpointCreatedAt: at }
+          : {}),
+      ...(previousEntry?.checkpointRestoredAt
+        ? { checkpointRestoredAt: previousEntry.checkpointRestoredAt }
+        : entry.record.state === 'undone' &&
+            previousEntry &&
+            previousEntry.record.state !== 'undone'
+          ? { checkpointRestoredAt: at }
+          : {}),
+    }
     const unresolved = (e: PresentationHistoryEntry) =>
       !['applied', 'undone', 'discarded', 'complete', 'cancelled'].includes(e.record.state)
     if (
@@ -775,11 +799,13 @@ export function createPresentationDocumentBinding(
       history.entries.push({
         ...entry,
         ...attribution,
+        ...events,
         sequence: (history.entries.at(-1)?.sequence ?? 0) + 1,
       })
     } else
       history.entries[index] = {
         ...entry,
+        ...events,
         sequence: history.entries[index].sequence,
         legacy: history.entries[index].legacy,
         ...(history.entries[index].agentRunId

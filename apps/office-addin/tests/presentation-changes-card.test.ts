@@ -36,6 +36,8 @@ it('dispatches actual actions, escapes text and disables busy controls', async (
       entries: [
         {
           id: 'id',
+          checkpointCreatedAt: '2026-09-29T01:00:00.000Z',
+          checkpointRestoredAt: '2026-09-29T01:05:00.000Z',
           source: 'existing',
           review: {
             screenshotDigest: 'a'.repeat(64),
@@ -65,6 +67,16 @@ it('dispatches actual actions, escapes text and disables busy controls', async (
     expect(container.querySelector('script')).toBeNull()
     expect(container.textContent).toContain('<script>unsafe</script>')
     expect(container.textContent).toContain('不完整历史')
+    expect(
+      container
+        .querySelector('[data-event-type="checkpoint.created"] time')
+        ?.getAttribute('datetime'),
+    ).toBe('2026-09-29T01:00:00.000Z')
+    expect(
+      container
+        .querySelector('[data-event-type="checkpoint.restored"] time')
+        ?.getAttribute('datetime'),
+    ).toBe('2026-09-29T01:05:00.000Z')
     expect(container.textContent).toContain('现稿 · 页面')
     expect(container.textContent).toContain('历史截图复核：通过')
     expect(container.textContent).toContain('此结果不代表当前页面 QA 通过')
