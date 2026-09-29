@@ -405,3 +405,266 @@ it('preserves the recorded SDK prefix when closing a partially completed additio
   })
   expect(f.adapter.executeDeclarative).toHaveBeenCalledTimes(1)
 })
+
+import { createPresentationNativeModifyRestoration } from '../src/skills/powerpoint/presentation-native-modify-restoration'
+import type { PresentationNativeModifyBatch } from '../src/skills/powerpoint/presentation-existing-batch'
+async function genericRestorationFixture() {
+  const f = await restorationFixture()
+  const values = new Map<string, string>()
+  const settings = {
+    get: (key: string) => values.get(key),
+    set: (key: string, value: string) => {
+      values.set(key, value)
+    },
+    save: async () => {},
+    location: () => 'synthetic',
+  }
+  const binding = () => createPresentationDocumentBinding(settings, () => 'doc')
+  const original = f.r
+  const record: PresentationNativeModifyBatch = {
+    version: 3,
+    kind: 'native_page_modify',
+    changeId: 'modify',
+    documentId: original.documentId,
+    baselineId: original.baselineId,
+    baselineDigest: original.baselineDigest,
+    beforeSlideIds: ['host'],
+    scope: { slideIds: ['host'] },
+    intent: 'Delete a native object',
+    preserved: [],
+    validation: [],
+    risk: 'high',
+    backups: original.backups,
+    operations: [{ op: 'delete_shape', slide_index: 0, shape_id: 'native-shape' }],
+    pages: [{ hostSlideId: 'host', slideIndex: 0, expectedPackageDigest: original.baselineDigest }],
+    nextIndex: 0,
+    state: 'applying',
+  }
+  await binding().writeExistingBatch(record, undefined)
+  await binding().writeExistingBatch({ ...record, inFlightIndex: 0 }, record)
+  f.setPage({ ...f.page, restores: { ...f.page.restores!, sourceChangeId: 'modify' } })
+  const finalizer = () =>
+    createPresentationNativeModifyRestoration({
+      ...f.dependencies,
+      readExistingBatch: (id) => binding().readExistingBatch(id),
+      writeExistingBatch: (next, expected) => binding().writeExistingBatch(next, expected),
+      readExistingPageChange: () => ({
+        ...f.page,
+        restores: { ...f.page.restores!, sourceChangeId: 'modify' },
+      }),
+      listExistingPageChanges: () => [
+        { ...f.page, restores: { ...f.page.restores!, sourceChangeId: 'modify' } },
+      ],
+      exportPresentationPagePackage: f.exportPage,
+    })
+  return { ...f, binding, finalizer }
+}
+it('closes a generic uncertain deletion only after verified package restoration and survives reopen', async () => {
+  const f = await genericRestorationFixture()
+  const restored = await f.finalizer().finalize('modify', ['restore'])
+  expect(restored).toMatchObject({
+    version: 3,
+    state: 'undone',
+    restoredSlideIds: { host: 'restored' },
+  })
+  expect(restored.inFlightIndex).toBeUndefined()
+  f.restartPC()
+  expect(f.binding().readExistingBatch('modify')).toMatchObject({
+    state: 'undone',
+    restoredSlideIds: { host: 'restored' },
+  })
+  expect(await f.finalizer().finalize('modify', ['restore'])).toEqual(restored)
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+})
+it('rejects missing, duplicated or changed generic restore evidence without closing the savepoint', async () => {
+  const f = await genericRestorationFixture()
+  await expect(f.finalizer().finalize('modify', [])).rejects.toThrow()
+  await expect(f.finalizer().finalize('modify', ['restore', 'restore'])).rejects.toThrow()
+  f.exportPage.mockResolvedValueOnce({
+    slideId: 'restored',
+    slideIds: ['other'],
+    base64: (await f.adapter.exportPresentationPagePackage()).base64,
+  })
+  await expect(f.finalizer().finalize('modify', ['restore'])).rejects.toThrow()
+  expect(f.binding().readExistingBatch('modify')).toMatchObject({
+    state: 'applying',
+    inFlightIndex: 0,
+  })
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+})
+
+it('allows an exact original-page recovery record while its generic source remains uncertain', async () => {
+  const f = await genericRestorationFixture()
+  const { newSlideId: _inserted, ...identity } = f.page
+  const page: PresentationExistingPageChange = {
+    ...identity,
+    changeId: 'generic-stage',
+    state: 'pending',
+    restores: { ...f.page.restores!, sourceChangeId: 'modify' },
+  }
+  await f.binding().writeExistingPageChange(page, undefined)
+  expect(f.binding().readExistingPageChange('generic-stage')).toMatchObject({
+    state: 'pending',
+    restores: { sourceChangeId: 'modify' },
+  })
+  expect(f.binding().readExistingBatch('modify')).toMatchObject({
+    state: 'applying',
+    inFlightIndex: 0,
+  })
+})
+it('does not let unrelated page work bypass an uncertain generic savepoint', async () => {
+  const f = await genericRestorationFixture()
+  const { newSlideId: _inserted, ...identity } = f.page
+  const page: PresentationExistingPageChange = {
+    ...identity,
+    changeId: 'unrelated-stage',
+    state: 'pending',
+    restores: { ...f.page.restores!, sourceChangeId: 'other-modify' },
+  }
+  await expect(f.binding().writeExistingPageChange(page, undefined)).rejects.toThrow(
+    'presentation_change_history_pending',
+  )
+  expect(f.binding().readExistingPageChange('unrelated-stage')).toBeUndefined()
+})
+
+async function multiGenericRestorationFixture() {
+  const f = await fixture({ fullOrder: ['host', 'other'] })
+  const original = (await f.adapter.exportPresentationPagePackage()).base64
+  const otherBackup = await saveChartPackageBackup({
+    request: f.request,
+    documentId: f.r.documentId,
+    hostSlideId: 'other',
+    slideIds: ['host', 'other'],
+    base64: original,
+    backupId: 'original-other',
+  })
+  const values = new Map<string, string>()
+  const settings = {
+    get: (key: string) => values.get(key),
+    set: (key: string, value: string) => {
+      values.set(key, value)
+    },
+    save: async () => {},
+    location: () => 'synthetic',
+  }
+  const binding = () => createPresentationDocumentBinding(settings, () => 'doc')
+  const record: PresentationNativeModifyBatch = {
+    version: 3,
+    kind: 'native_page_modify',
+    changeId: 'multi-modify',
+    documentId: f.r.documentId,
+    baselineId: 'baseline',
+    baselineDigest: f.r.baselineDigest,
+    beforeSlideIds: ['host', 'other'],
+    scope: { slideIds: ['host', 'other'] },
+    intent: 'Two uncertain native changes',
+    preserved: [],
+    validation: [],
+    risk: 'high',
+    backups: [
+      f.r.backups[0]!,
+      { ...otherBackup, hostSlideId: 'other', packageDigest: f.r.baselineDigest },
+    ],
+    operations: [
+      { op: 'delete_shape', slide_index: 0, shape_id: 'shape' },
+      { op: 'delete_shape', slide_index: 1, shape_id: 'shape' },
+    ],
+    pages: [
+      { hostSlideId: 'host', slideIndex: 0, expectedPackageDigest: f.r.baselineDigest },
+      { hostSlideId: 'other', slideIndex: 1, expectedPackageDigest: f.r.baselineDigest },
+    ],
+    nextIndex: 0,
+    state: 'applying',
+  }
+  await binding().writeExistingBatch(record, undefined)
+  await binding().writeExistingBatch({ ...record, inFlightIndex: 0 }, record)
+  const pages: PresentationExistingPageChange[] = []
+  for (const hostSlideId of ['host', 'other']) {
+    const order = hostSlideId === 'host' ? ['host', 'other'] : ['restored-host', 'other']
+    const sourceBackup = await saveChartPackageBackup({
+      request: f.request,
+      documentId: f.r.documentId,
+      hostSlideId,
+      slideIds: order,
+      base64: original,
+      backupId: `source-${hostSlideId}`,
+    })
+    pages.push({
+      version: 1,
+      changeId: `restore-${hostSlideId}`,
+      documentId: f.r.documentId,
+      baselineId: 'restore-baseline',
+      baselineDigest: f.r.baselineDigest,
+      scope: { slideIds: [hostSlideId] },
+      oldSlideId: hostSlideId,
+      beforeSlideIds: order,
+      originalPackageDigest: f.r.baselineDigest,
+      replacementPackageDigest: f.r.baselineDigest,
+      sourceSlideId: '256#',
+      restores: {
+        sourceKind: 'batch',
+        sourceChangeId: 'multi-modify',
+        sourceHostSlideId: hostSlideId,
+        originalBackupId: record.backups.find((backup) => backup.hostSlideId === hostSlideId)!
+          .backupId,
+        originalPackageDigest: f.r.baselineDigest,
+      },
+      sourceBackup,
+      backup: { backupId: `edited-${hostSlideId}`, sha256: '1'.repeat(64), sizeBytes: 1 },
+      state: 'applied',
+      newSlideId: `restored-${hostSlideId}`,
+    })
+  }
+  const exportPage = vi.fn(async (slideId: string) => ({
+    slideId,
+    slideIds: ['restored-host', 'restored-other'],
+    base64: original,
+  }))
+  const controller = () =>
+    createPresentationNativeModifyRestoration({
+      documentId: () => binding().documentId(),
+      readExistingBatch: (id) => binding().readExistingBatch(id),
+      writeExistingBatch: (next, expected) => binding().writeExistingBatch(next, expected),
+      readExistingPageChange: (id) => pages.find((page) => page.changeId === id),
+      listExistingPageChanges: () => pages,
+      request: f.request,
+      exportPresentationPagePackage: exportPage,
+    })
+  return { ...f, binding, pages, controller, exportPage }
+}
+it('verifies every restored generic page in its sequential deck order and retries regardless of supplied ID order', async () => {
+  const f = await multiGenericRestorationFixture()
+  const restored = await f.controller().finalize('multi-modify', ['restore-other', 'restore-host'])
+  expect(restored).toMatchObject({
+    state: 'undone',
+    restoredSlideIds: { host: 'restored-host', other: 'restored-other' },
+  })
+  expect(await f.controller().finalize('multi-modify', ['restore-host', 'restore-other'])).toEqual(
+    restored,
+  )
+  expect(f.exportPage.mock.calls.some(([id]) => id === 'restored-host')).toBe(true)
+  expect(f.exportPage.mock.calls.some(([id]) => id === 'restored-other')).toBe(true)
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+})
+it('rejects a generic restore chain that skipped a prior page identity or has an additional pending restore', async () => {
+  const f = await multiGenericRestorationFixture()
+  f.pages[1] = { ...f.pages[1]!, beforeSlideIds: ['host', 'other'] }
+  await expect(
+    f.controller().finalize('multi-modify', ['restore-host', 'restore-other']),
+  ).rejects.toThrow('presentation_native_modify_restore_conflict')
+  expect(f.binding().readExistingBatch('multi-modify')).toMatchObject({
+    state: 'applying',
+    inFlightIndex: 0,
+  })
+  f.pages[1] = { ...f.pages[1]!, beforeSlideIds: ['restored-host', 'other'] }
+  f.pages.push({
+    ...f.pages[0]!,
+    changeId: 'extra-pending',
+    state: 'pending',
+    newSlideId: undefined,
+  })
+  await expect(
+    f.controller().finalize('multi-modify', ['restore-host', 'restore-other']),
+  ).rejects.toThrow('presentation_native_modify_restore_conflict')
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+})

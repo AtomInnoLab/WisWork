@@ -16,7 +16,15 @@ function host() {
       textRange: {
         text: 'Existing document',
         load,
-        font: { name: null, size: 18, color: null, bold: null, italic: false, underline: 'None', load },
+        font: {
+          name: null,
+          size: 18,
+          color: null,
+          bold: null,
+          italic: false,
+          underline: 'None',
+          load,
+        },
       },
     },
   }
@@ -127,7 +135,7 @@ describe('existing presentation baseline adapter', () => {
       const h = host()
       const adapter = new BrowserPresentationBaselineAdapter()
       if (reason === 'slide count') {
-        h.slides.items = Array.from({ length: 501 }, (_, i) => ({ ...h.slide, id: String(i) }))
+        h.slides.items = Array.from({ length: 513 }, (_, i) => ({ ...h.slide, id: String(i) }))
         await expect(adapter.readContext()).rejects.toThrow('presentation_baseline_limit_exceeded')
         return
       }
@@ -220,4 +228,13 @@ describe('existing presentation baseline adapter', () => {
       'office_api_unsupported',
     )
   })
+})
+
+it('reads all 512 native page identities required for generic original-page recovery', async () => {
+  const h = host()
+  h.slides.items = Array.from({ length: 512 }, (_, index) => ({ ...h.slide, id: `page-${index}` }))
+  h.selectedSlides.items = [h.slides.items[511]!]
+  const result = await new BrowserPresentationBaselineAdapter().readContext()
+  expect(result.slideIds).toHaveLength(512)
+  expect(result.selectedSlideIds).toEqual(['page-511'])
 })

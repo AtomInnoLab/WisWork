@@ -403,7 +403,7 @@ export function createPresentationExistingPageEditingSkill(
               ? validatePresentationExistingChange(savedRecord)
               : validatePresentationExistingBatch(savedRecord)) ||
             !(
-              kind === 'batch' && savedRecord.version === 2
+              kind === 'batch' && savedRecord.version !== 1
                 ? ['applying', 'applied', 'undoing', 'undone']
                 : ['applied', 'undone']
             ).includes(savedRecord.state) ||

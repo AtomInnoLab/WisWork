@@ -97,6 +97,7 @@ export function PresentationChangesCard({
                   image: '图片身份与摘要差异（非视觉 diff）',
                   page: '整页身份与摘要差异（非视觉 diff）',
                   addition: '新增页面内容与已记录的对象身份',
+                  modification: '原生修改步骤与原页保存点（非视觉 diff）',
                   chart: '图表数据与页面包摘要差异（非视觉 diff）',
                 }[entry.kind]
               }

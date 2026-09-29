@@ -34,7 +34,7 @@ it('exports the exact stable host page and bounded presentation order without se
   })
   expect(f.slides.getItem).toHaveBeenCalledWith('host-27')
   expect(f.slides.getItemAt).not.toHaveBeenCalled()
-  expect(f.slides.load).toHaveBeenCalledWith({ $top: 513, id: true })
+  expect(f.slides.load).toHaveBeenCalledWith({ $top: 514, id: true })
   expect(f.supports).toHaveBeenCalledWith('PowerPointApi', '1.8')
 })
 it('rejects page order changes during export, missing targets, and mismatched identities', async () => {
@@ -60,7 +60,7 @@ it('rejects oversized or duplicate page lists before exporting', async () => {
   await expect(f.adapter.exportPresentationPagePackage('host-27')).rejects.toThrow(
     'office_read_failed',
   )
-  f.slides.items = Array.from({ length: 513 }, (_, i) => ({ id: i ? `page-${i}` : 'host-27' }))
+  f.slides.items = Array.from({ length: 514 }, (_, i) => ({ id: i ? `page-${i}` : 'host-27' }))
   await expect(f.adapter.exportPresentationPagePackage('host-27')).rejects.toThrow(
     'office_read_failed',
   )
@@ -85,4 +85,14 @@ it('stops for cancellation, unsupported hosts, and oversized output', async () =
   await expect(f.adapter.exportPresentationPagePackage('host-27')).rejects.toThrow(
     'office_read_failed',
   )
+})
+
+it('reads the transient 513-page deck while an original-page restore retains both old and staged pages', async () => {
+  const f = setup()
+  f.slides.items = Array.from({ length: 513 }, (_, index) => ({
+    id: index ? `page-${index}` : 'host-27',
+  }))
+  const result = await f.adapter.exportPresentationPagePackage('host-27')
+  expect(result.slideIds).toHaveLength(513)
+  expect(result.base64).toBe('UEsDBAAAAAA=')
 })

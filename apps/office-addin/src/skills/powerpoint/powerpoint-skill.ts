@@ -47,7 +47,6 @@ import { officeOperationsForSlideIR } from './presentation-office-ir.js'
 const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
-const POWERPOINT_GEOMETRY_EPSILON = 0.01
 const MASTER_PATTERN_TYPES = [
   'Percent5',
   'Percent10',
@@ -1091,10 +1090,6 @@ function declarativeInput(
   }
 }
 
-function sameGeometry(actual: number, expected: number): boolean {
-  return Math.abs(actual - expected) <= POWERPOINT_GEOMETRY_EPSILON
-}
-
 function parseXmlProgram(code: string): XmlReplacement[] {
   return parseDeclarativeProgram(code, (value) => {
     const operation = exactRecord(value, ['op', 'path', 'xml'])
@@ -1421,6 +1416,11 @@ export function createPowerPointSkill(options: {
       expected: PresentationExistingBatch | undefined,
     ): Promise<void>
   }
+  durableModify?(
+    operations: import('./presentation-existing-batch.js').NativeModifyOperation[],
+    explanation?: string,
+    signal?: AbortSignal,
+  ): Promise<{ proposalId: string; changeId: string; status: string }>
   durableTextEditAvailable?(): boolean
   durableTextEdit?(
     input: { slide_index: number; shape_id: string; text: string; explanation?: string },
@@ -2558,177 +2558,65 @@ export function createPowerPointSkill(options: {
               summary: 'Proposed durable native SlideIR addition',
             }
           }
+          if (!program.operations.some((operation) => operation.op === 'duplicate_slide')) {
+            if (!options.durableModify)
+              throw new Error('presentation_existing_persistence_unavailable')
+            const proposed = await options.durableModify(
+              structuredClone(
+                program.operations,
+              ) as import('./presentation-existing-batch.js').NativeModifyOperation[],
+              input.explanation,
+              signal,
+            )
+            return {
+              output: boundedJson(proposed),
+              mutated: false,
+              summary: 'Proposed durable declarative PowerPoint modification',
+            }
+          }
+          // Duplication is a separate insertion transaction; its durable route is tracked independently.
+          const operation = program.operations[0]!
           await options.adapter.verifySlides(signal)
-          const slideIndexes = [
-            ...new Set(program.operations.map((operation) => operation.slide_index)),
-          ]
-          if (slideIndexes.length > 8) throw new Error('invalid_tool_input')
-          const snapshots = await Promise.all(
-            slideIndexes.map((index) => options.adapter.snapshotSlide(index, signal)),
-          )
-          const beforeTexts = await Promise.all(
-            program.operations.flatMap((operation) =>
-              operation.op === 'set_shape_text'
-                ? [options.adapter.readSlideText(operation.slide_index, operation.shape_id, signal)]
-                : [],
-            ),
-          )
-          const combined = snapshots.map((item) => item.fingerprint).join('|')
-          let declarativeResult: { createdShapeIds: string[]; insertedSlideId?: string } | undefined
+          const snapshot = await options.adapter.snapshotSlide(operation.slide_index, signal)
+          let insertedSlideId: string | undefined
           const proposal = options.proposals.propose({
             operation: call.name,
             toolName: call.name,
-            title: input.explanation || 'Execute declarative PowerPoint operations',
+            title: input.explanation || 'Duplicate PowerPoint slide',
             preview: { version: 1, operations: program.operations },
-            impact: {
-              host: 'powerpoint',
-              targets: program.operations.map((operation) =>
-                operation.op === 'set_shape_text'
-                  ? `${operation.slide_index}/${operation.shape_id}`
-                  : `${operation.slide_index}`,
-              ),
-              count: program.operations.length,
-            },
-            fingerprint: fingerprint(combined),
+            impact: { host: 'powerpoint', targets: [snapshot.slideId], count: 1 },
+            fingerprint: fingerprint(snapshot.fingerprint),
             code: input.code,
-            before: {
-              slides: snapshots.map(({ slideId, fingerprint: value }) => ({
-                slideId,
-                fingerprint: value,
-              })),
-              texts: beforeTexts.map((item) => ({
-                slideId: item.slideId,
-                shapeId: item.shapeId,
-                text: item.text,
-              })),
-            },
+            before: { slides: [snapshot], texts: [] },
             after: { operations: program.operations },
             validate: async (confirmSignal) => {
-              if (plannedNames) {
-                const current = await options.adapter.listSlideShapes(
-                  program.operations[0]!.slide_index,
-                  confirmSignal,
-                )
-                if (current.shapes.some((shape) => plannedNames.has(shape.name))) return false
-              }
-              const current = await Promise.all(
-                slideIndexes.map((index) => options.adapter.snapshotSlide(index, confirmSignal)),
+              const current = await options.adapter.snapshotSlide(
+                operation.slide_index,
+                confirmSignal,
               )
-              return current.every(
-                (item, index) => item.fingerprint === snapshots[index].fingerprint,
+              return (
+                current.slideId === snapshot.slideId && current.fingerprint === snapshot.fingerprint
               )
             },
             execute: async (confirmSignal) => {
-              declarativeResult = await options.adapter.executeDeclarative(
-                program.operations,
-                confirmSignal,
-              )
+              insertedSlideId = (
+                await options.adapter.executeDeclarative(program.operations, confirmSignal)
+              ).insertedSlideId
             },
             verify: async (confirmSignal) => {
-              let createdShapeIndex = 0
-              for (const [operationIndex, operation] of program.operations.entries()) {
-                const superseded = program.operations.slice(operationIndex + 1).some((later) => {
-                  if (
-                    !('shape_id' in operation) ||
-                    !('shape_id' in later) ||
-                    later.slide_index !== operation.slide_index ||
-                    later.shape_id !== operation.shape_id
-                  )
-                    return false
-                  return (
-                    later.op === 'delete_shape' ||
-                    (operation.op === 'set_shape_text' && later.op === 'set_shape_text') ||
-                    (operation.op === 'set_shape_geometry' && later.op === 'set_shape_geometry')
-                  )
-                })
-                if (superseded) continue
-                if (operation.op === 'set_shape_text') {
-                  await verifyPowerPointReadback(async () => {
-                    const current = await options.adapter.readSlideText(
-                      operation.slide_index,
-                      operation.shape_id,
-                      confirmSignal,
-                    )
-                    return current.text === operation.text
-                  }, confirmSignal)
-                } else if (operation.op !== 'duplicate_slide') {
-                  if (
-                    operation.op === 'add_text_box' ||
-                    operation.op === 'add_geometric_shape' ||
-                    operation.op === 'add_native_table'
-                  ) {
-                    const createdShapeId = declarativeResult?.createdShapeIds[createdShapeIndex++]
-                    await verifyPowerPointReadback(async () => {
-                      const current = await options.adapter.listSlideShapes(
-                        operation.slide_index,
-                        confirmSignal,
-                      )
-                      const shape = current.shapes.find((item) => item.id === createdShapeId)
-                      if (
-                        shape &&
-                        shape.name === operation.name &&
-                        sameGeometry(shape.left, operation.left) &&
-                        sameGeometry(shape.top, operation.top) &&
-                        sameGeometry(shape.width, operation.width) &&
-                        sameGeometry(shape.height, operation.height)
-                      ) {
-                        if (operation.op === 'add_geometric_shape')
-                          return shape.type === 'GeometricShape'
-                        if (operation.op === 'add_native_table') {
-                          if (shape.type !== 'Table') return false
-                          const rows = await options.adapter.readSlideTable(
-                            operation.slide_index,
-                            shape.id,
-                            confirmSignal,
-                          )
-                          return JSON.stringify(rows) === JSON.stringify(operation.rows)
-                        }
-                        const text = await options.adapter.readSlideText(
-                          operation.slide_index,
-                          shape.id,
-                          confirmSignal,
-                        )
-                        if (text.text === operation.text) return true
-                      }
-                      return false
-                    }, confirmSignal)
-                    continue
-                  }
-                  await verifyPowerPointReadback(async () => {
-                    const current = await options.adapter.listSlideShapes(
-                      operation.slide_index,
-                      confirmSignal,
-                    )
-                    const shape = current.shapes.find((item) => item.id === operation.shape_id)
-                    if (operation.op === 'delete_shape') return !shape
-                    return Boolean(
-                      shape &&
-                      sameGeometry(shape.left, operation.left) &&
-                      sameGeometry(shape.top, operation.top) &&
-                      sameGeometry(shape.width, operation.width) &&
-                      sameGeometry(shape.height, operation.height),
-                    )
-                  }, confirmSignal)
-                }
-              }
-              if (program.operations[0]?.op === 'duplicate_slide') {
-                const operation = program.operations[0]
-                const insertedSlideId = declarativeResult?.insertedSlideId
-                if (!insertedSlideId) throw new Error('office_verify_failed')
-                await verifyPowerPointReadback(async () => {
-                  const inserted = await options.adapter.listSlideShapes(
-                    operation.slide_index + 1,
-                    confirmSignal,
-                  )
-                  return inserted.slideId === insertedSlideId
-                }, confirmSignal)
-              }
+              if (!insertedSlideId) throw new Error('office_verify_failed')
+              await verifyPowerPointReadback(
+                async () =>
+                  (await options.adapter.listSlideShapes(operation.slide_index + 1, confirmSignal))
+                    .slideId === insertedSlideId,
+                confirmSignal,
+              )
             },
           })
           return {
             output: boundedJson(proposal),
             mutated: false,
-            summary: 'Proposed declarative PowerPoint execution',
+            summary: 'Proposed declarative PowerPoint duplication',
           }
         }
         if (call.name === 'edit_slide_master') {

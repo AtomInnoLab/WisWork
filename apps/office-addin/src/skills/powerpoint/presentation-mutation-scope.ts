@@ -68,6 +68,35 @@ export function presentationMutationScope(proposal: StructuredProposal): string[
       hostSlideIds = undefined
     }
   }
+  // Generic modifications derive these IDs from exact original-page savepoints.
+  // Legacy index labels and caller-supplied programs cannot establish this proof.
+  if (
+    ['execute_office_js', 'resume_native_modify_batch'].includes(proposal.operation) &&
+    proposal.operation === proposal.toolName &&
+    proposal.impact.host === 'powerpoint' &&
+    proposal.impact.count >= 1 &&
+    proposal.impact.count <= 32 &&
+    proposal.impact.targets.length >= 1 &&
+    proposal.impact.targets.length <= 8
+  ) {
+    const scope = proposal.preview.qaScope
+    if (
+      scope &&
+      typeof scope === 'object' &&
+      !Array.isArray(scope) &&
+      Object.keys(scope).sort().join(',') === 'basis,hostSlideIds' &&
+      (scope as Record<string, unknown>).basis === 'native_modify_savepoints' &&
+      Array.isArray((scope as Record<string, unknown>).hostSlideIds) &&
+      JSON.stringify((scope as Record<string, unknown>).hostSlideIds) ===
+        JSON.stringify(proposal.impact.targets)
+    ) {
+      try {
+        hostSlideIds = [...presentationQaMutationScope(proposal.impact.targets)!]
+      } catch {
+        hostSlideIds = undefined
+      }
+    }
+  }
   // Only the native master tool derives this scope from a complete, revalidated
   // host dependency snapshot. XML/package edits and generic labels remain unknown.
   if (

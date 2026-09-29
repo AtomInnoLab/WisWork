@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { createPresentationService } from '../../shell/src/main/presentation-service'
+import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
+import { createPresentationNativeModifySkill } from '../src/skills/powerpoint/presentation-native-modify'
+
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import {
   BrowserPowerPointAdapter,
@@ -72,6 +80,111 @@ function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter 
 }
 
 const call = (name: string, input: Record<string, unknown> = {}) => ({ id: 'call-1', name, input })
+
+const durableRoots: string[] = []
+afterEach(() => {
+  for (const root of durableRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+/** Real durable package storage and document receipts; native SDK writes remain deterministic mocks. */
+async function durableCompatibility(
+  fake: PowerPointAdapter,
+  proposals: ReturnType<typeof createStructuredProposalController>,
+) {
+  const root = mkdtempSync(join(tmpdir(), 'ppt-compat-durable-'))
+  durableRoots.push(root)
+  const service = createPresentationService({ userDataPath: root })
+  const initial = await fake.listSlideShapes(0)
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  deck.slides[0]!.elements = initial.shapes.map((shape) => ({
+    kind: 'text' as const,
+    id: shape.name.replace(/[^A-Za-z0-9_-]/g, '_'),
+    x: shape.left / 72,
+    y: shape.top / 72,
+    w: shape.width / 72,
+    h: shape.height / 72,
+    text: 'Hello',
+    fontSize: 20,
+  }))
+  const { bytes } = await compilePresentationDeck(deck),
+    zip = await JSZip.loadAsync(bytes)
+  let base64 = await zip.generateAsync({ type: 'base64' })
+  const originalWrite = (
+    fake.executeDeclarative as ReturnType<typeof vi.fn>
+  ).getMockImplementation()! as PowerPointAdapter['executeDeclarative']
+  ;(fake.executeDeclarative as ReturnType<typeof vi.fn>).mockImplementation(
+    async (ops: any[], signal?: AbortSignal) => {
+      const result = await originalWrite(ops, signal)
+      for (const op of ops) {
+        const shape = initial.shapes.find((shape) => shape.id === op.shape_id)!
+        const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+        const node = [...xml.matchAll(/<p:sp\b[^]*?<\/p:sp>/g)]
+          .map((match) => match[0])
+          .find((node) => node.includes(`name="${shape.name.replace(/[^A-Za-z0-9_-]/g, '_')}"`))
+        if (!node) throw Error('fixture_native_shape_missing')
+        const replacement =
+          op.op === 'delete_shape'
+            ? ''
+            : op.op === 'set_shape_text'
+              ? node.replace(/<a:t>[^]*?<\/a:t>/, `<a:t>${op.text}</a:t>`)
+              : node
+                  .replace(
+                    /<a:off\b[^>]*\/>/,
+                    `<a:off x="${Math.round(op.left * 12700)}" y="${Math.round(op.top * 12700)}"/>`,
+                  )
+                  .replace(
+                    /<a:ext\b[^>]*\/>/,
+                    `<a:ext cx="${Math.round(op.width * 12700)}" cy="${Math.round(op.height * 12700)}"/>`,
+                  )
+        zip.file('ppt/slides/slide1.xml', xml.replace(node, replacement))
+      }
+      base64 = await zip.generateAsync({ type: 'base64' })
+      return result
+    },
+  )
+  fake.snapshotSlide = vi.fn(async () => ({
+    slideId: initial.slideId,
+    fingerprint: 'initial-native-page',
+  }))
+  fake.exportPresentationPagePackage = vi.fn(async (slideId: string) => ({
+    slideId,
+    slideIds: [initial.slideId],
+    base64,
+  }))
+  const values = new Map<string, string>()
+  const binding = createPresentationDocumentBinding(
+    {
+      get: (key) => values.get(key),
+      set: (key, value) => {
+        values.set(key, value)
+      },
+      save: async () => {},
+      location: () => 'compatibility-deck',
+    },
+    () => 'compatibility-doc',
+  )
+  const generic = createPresentationNativeModifySkill({
+    adapter: fake,
+    proposals,
+    available: () => true,
+    documentId: () => binding.documentId(),
+    request: async (body, signal) =>
+      new Response(
+        Buffer.from(await service(body, signal ?? new AbortController().signal)).toString('utf8'),
+      ),
+    readExistingBatch: (id) => binding.readExistingBatch(id),
+    writeExistingBatch: (next, expected) => binding.writeExistingBatch(next, expected),
+  })
+  return {
+    binding,
+    skill: createPowerPointSkill({
+      adapter: fake,
+      proposals,
+      durableModify: (operations, explanation, signal) =>
+        generic.propose(operations, explanation, signal),
+    }),
+  }
+}
 
 describe('PowerPoint compatibility skill', () => {
   it('exposes native master inspection and editing with exact schemas', () => {
@@ -514,20 +627,25 @@ describe('PowerPoint compatibility skill', () => {
     }
   })
 
-  it('accepts direct structured programs without JSON string double encoding', async () => {
-    const fake = adapter()
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
+  it('forwards direct structured programs to durable modification without JSON string double encoding', async () => {
+    const fake = adapter(),
+      proposals = createStructuredProposalController()
+    const durableModify = vi.fn(async () => ({
+      proposalId: 'proposal',
+      changeId: 'change',
+      status: 'awaiting_confirmation',
+    }))
+    const skill = createPowerPointSkill({ adapter: fake, proposals, durableModify })
     const program = {
       version: 1,
       operations: [{ op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'Structured' }],
     }
-
     await expect(skill.executeTool(call('execute_office_js', { program }))).resolves.toMatchObject({
       mutated: false,
-      output: expect.stringContaining('set_shape_text'),
+      output: expect.stringContaining('awaiting_confirmation'),
     })
-    expect(proposals.pending()?.preview).toEqual(program)
+    expect(durableModify).toHaveBeenCalledWith(program.operations, undefined, undefined)
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
   })
 
   it('reports a content-free program location for invalid operation fields', async () => {
@@ -1045,28 +1163,46 @@ describe('PowerPoint compatibility skill', () => {
     expect(fake.replaceSlidePackage).not.toHaveBeenCalled()
   })
 
-  it('executes only confirmed declarative PowerPoint operations and verifies text', async () => {
+  it('executes confirmed declarative text through a durable savepoint and verifies actual changed text', async () => {
+    let text = 'Hello'
     const fake = adapter({
-      exportSlidePackage: vi
-        .fn()
-        .mockResolvedValue({ slideId: 's1', base64: 'ppt', fingerprint: 'same' }),
-      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: [] }),
-      readSlideText: vi
-        .fn()
-        .mockResolvedValue({ slideId: 's1', shapeId: '2', text: 'New', paragraphs: ['New'] }),
+      executeDeclarative: vi.fn(async () => {
+        text = 'New'
+        return { createdShapeIds: [] }
+      }),
+      readSlideText: vi.fn(async () => ({
+        slideId: 'slide-1',
+        shapeId: '2',
+        text,
+        paragraphs: [text],
+      })),
     })
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
-    const code =
-      '{"version":1,"operations":[{"op":"set_shape_text","slide_index":0,"shape_id":"2","text":"New"}]}'
-    await skill.executeTool(call('execute_office_js', { code }))
+    const proposals = createStructuredProposalController(),
+      f = await durableCompatibility(fake, proposals)
+    const result = await f.skill.executeTool(
+      call('execute_office_js', {
+        program: {
+          version: 1,
+          operations: [{ op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'New' }],
+        },
+      }),
+    )
+    const { changeId } = JSON.parse(result.output)
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
+    expect(text).toBe('Hello')
     await proposals.confirm(proposals.pending()!.id)
     expect(fake.executeDeclarative).toHaveBeenCalledWith(
       [{ op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'New' }],
       expect.any(AbortSignal),
     )
-    expect(fake.snapshotSlide).toHaveBeenCalledTimes(2)
+    expect(text).toBe('New')
+    expect(fake.readSlideText).toHaveBeenLastCalledWith(0, '2', expect.any(AbortSignal))
+    expect(f.binding.readExistingBatch(changeId)).toMatchObject({
+      version: 3,
+      state: 'applied',
+      nextIndex: 1,
+    })
+    expect(fake.exportPresentationPagePackage).toHaveBeenCalled()
     expect(fake.exportSlidePackage).not.toHaveBeenCalled()
   })
 
@@ -1166,7 +1302,7 @@ describe('PowerPoint compatibility skill', () => {
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
   })
 
-  it('waits for delayed geometry, delete, and duplicate readback', async () => {
+  it('waits for delayed geometry and deletion readback before saving each durable receipt', async () => {
     const beforeShape = {
       id: '2',
       name: 'Title',
@@ -1176,35 +1312,32 @@ describe('PowerPoint compatibility skill', () => {
       width: 200,
       height: 40,
     }
-    const afterShape = { ...beforeShape, left: 30 }
-    const deletedShape = { ...beforeShape, id: '9', name: 'Remove me' }
+    const afterShape = { ...beforeShape, left: 30 },
+      deletedShape = { ...beforeShape, id: '9', name: 'Remove me' }
+    let geometryWritten = false,
+      deletionWritten = false,
+      geometryReads = 0,
+      deletionReads = 0
     const fake = adapter({
-      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: [] }),
-      listSlideShapes: vi
-        .fn()
-        .mockResolvedValueOnce({
-          slideId: 's1',
-          slideIndex: 0,
-          shapes: [beforeShape, deletedShape],
-        })
-        .mockResolvedValueOnce({
-          slideId: 's1',
-          slideIndex: 0,
-          shapes: [afterShape, deletedShape],
-        })
-        .mockResolvedValueOnce({
-          slideId: 's1',
-          slideIndex: 0,
-          shapes: [afterShape, deletedShape],
-        })
-        .mockResolvedValueOnce({ slideId: 's1', slideIndex: 0, shapes: [afterShape] }),
+      executeDeclarative: vi.fn(async (ops) => {
+        if (ops[0]!.op === 'set_shape_geometry') geometryWritten = true
+        else deletionWritten = true
+        return { createdShapeIds: [] }
+      }),
+      listSlideShapes: vi.fn(async () => ({
+        slideId: 'slide-1',
+        slideIndex: 0,
+        shapes: [
+          geometryWritten && geometryReads++ > 0 ? afterShape : beforeShape,
+          ...(deletionWritten && deletionReads++ > 0 ? [] : [deletedShape]),
+        ],
+      })),
     })
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
-
-    await skill.executeTool(
+    const proposals = createStructuredProposalController(),
+      f = await durableCompatibility(fake, proposals)
+    const result = await f.skill.executeTool(
       call('execute_office_js', {
-        code: JSON.stringify({
+        program: {
           version: 1,
           operations: [
             {
@@ -1218,11 +1351,20 @@ describe('PowerPoint compatibility skill', () => {
             },
             { op: 'delete_shape', slide_index: 0, shape_id: '9' },
           ],
-        }),
+        },
       }),
     )
-
+    const { changeId } = JSON.parse(result.output)
     await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(geometryReads).toBeGreaterThanOrEqual(2)
+    expect(deletionReads).toBeGreaterThanOrEqual(2)
+    expect(fake.executeDeclarative).toHaveBeenCalledTimes(2)
+    expect(f.binding.readExistingBatch(changeId)).toMatchObject({
+      version: 3,
+      state: 'applied',
+      nextIndex: 2,
+    })
+    expect((await fake.listSlideShapes(0)).shapes).toEqual([afterShape])
   })
 
   it('waits for a delayed duplicate-slide collection readback', async () => {

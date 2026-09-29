@@ -12,26 +12,41 @@ export interface PresentationBaselinePage {
   shapes: Array<
     PowerPointShape & {
       text?: string
-      font?: { name: string | null; size: number | null; color: string | null; bold?: boolean | null; italic?: boolean | null; underline?: string | null }
+      font?: {
+        name: string | null
+        size: number | null
+        color: string | null
+        bold?: boolean | null
+        italic?: boolean | null
+        underline?: string | null
+      }
     }
   >
   masterId?: string
   layoutId?: string
 }
 /** Only plain target text with determinate aggregate font attributes uses whole-range replacement. */
-export function nativePlainTextEditable(shape: PresentationBaselinePage['shapes'][number]): boolean {
-  return (shape.type === 'TextBox' || shape.type === 'GeometricShape') &&
+export function nativePlainTextEditable(
+  shape: PresentationBaselinePage['shapes'][number],
+): boolean {
+  return (
+    (shape.type === 'TextBox' || shape.type === 'GeometricShape') &&
     shape.text !== undefined &&
     (shape.text.length === 0 ||
-      (shape.font !== undefined && shape.font.name !== null && shape.font.size !== null && shape.font.color !== null &&
-        typeof shape.font.bold === 'boolean' && typeof shape.font.italic === 'boolean' &&
+      (shape.font !== undefined &&
+        shape.font.name !== null &&
+        shape.font.size !== null &&
+        shape.font.color !== null &&
+        typeof shape.font.bold === 'boolean' &&
+        typeof shape.font.italic === 'boolean' &&
         typeof shape.font.underline === 'string'))
+  )
 }
 export interface PresentationBaselineAdapter {
   readContext(signal?: AbortSignal): Promise<PresentationBaselineContext>
   readPage(slideId: string, signal?: AbortSignal): Promise<PresentationBaselinePage>
 }
-const MAX_SLIDES = 500
+const MAX_SLIDES = 512
 const MAX_SHAPES = 100
 const MAX_TEXT = 12_000
 const MAX_PAGE_TEXT = 120_000
@@ -194,8 +209,18 @@ export class BrowserPresentationBaselineAdapter implements PresentationBaselineA
           name: range.font.name === null ? null : boundedString(range.font.name, 256),
           size: range.font.size === null ? null : number(range.font.size, 0),
           color: range.font.color === null ? null : boundedString(range.font.color, 256),
-          bold: range.font.bold === null ? null : typeof range.font.bold === 'boolean' ? range.font.bold : invalid(),
-          italic: range.font.italic === null ? null : typeof range.font.italic === 'boolean' ? range.font.italic : invalid(),
+          bold:
+            range.font.bold === null
+              ? null
+              : typeof range.font.bold === 'boolean'
+                ? range.font.bold
+                : invalid(),
+          italic:
+            range.font.italic === null
+              ? null
+              : typeof range.font.italic === 'boolean'
+                ? range.font.italic
+                : invalid(),
           underline: range.font.underline === null ? null : boundedString(range.font.underline, 64),
         }
       }

@@ -1130,3 +1130,24 @@ it('rejects changed and unsafe notes packages instead of returning stale text', 
     ).output,
   ).toBe('office_api_unsupported')
 })
+
+it('reads a final-page baseline for a 512-page generic restore without enlarging the page window', async () => {
+  const f = fixture()
+  const ids = Array.from({ length: 512 }, (_, index) => `large-${index}`)
+  f.setContext({
+    ...f.getContext(),
+    slideIds: ids,
+    selectedSlideIds: [ids[511]!],
+    selectedShapeIds: [],
+  })
+  f.pages.set(ids[511]!, page(ids[511]!))
+  const result = await f.call('read_presentation_baseline', {
+    scope: 'deck',
+    page_offset: 511,
+    page_limit: 1,
+  })
+  expect(result.isError, result.output).not.toBe(true)
+  expect(JSON.parse(result.output).scope.slideIds).toEqual([ids[511]])
+  expect(f.adapter.readPage).toHaveBeenCalledTimes(2)
+  expect(f.adapter.readPage.mock.calls.every(([id]) => id === ids[511])).toBe(true)
+})

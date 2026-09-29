@@ -73,7 +73,7 @@ const tools: AgentToolDef[] = [
       properties: {
         scope: { type: 'string', enum: ['current', 'selected', 'deck'] },
         package_integrity: { type: 'boolean' },
-        page_offset: { type: 'integer', minimum: 0, maximum: 499 },
+        page_offset: { type: 'integer', minimum: 0, maximum: 511 },
         page_limit: { type: 'integer', minimum: 1, maximum: MAX_PAGES },
       },
       additionalProperties: false,
@@ -212,7 +212,7 @@ function validateContext(c: PresentationBaselineContext): void {
     !Array.isArray(c.slideIds) ||
     !Array.isArray(c.selectedSlideIds) ||
     !Array.isArray(c.selectedShapeIds) ||
-    c.slideIds.length > 500 ||
+    c.slideIds.length > 512 ||
     c.selectedShapeIds.length > 100 ||
     [c.slideIds, c.selectedSlideIds, c.selectedShapeIds].some(
       (ids) => ids.some((id) => !validId(id)) || new Set(ids).size !== ids.length,
@@ -445,7 +445,7 @@ export function createPresentationBaselineSkill(options: Options): PresentationB
             call.input.page_offset !== undefined &&
             (!Number.isInteger(call.input.page_offset) ||
               (call.input.page_offset as number) < 0 ||
-              (call.input.page_offset as number) > 499)) ||
+              (call.input.page_offset as number) > 511)) ||
           (read &&
             call.input.page_limit !== undefined &&
             (!Number.isInteger(call.input.page_limit) ||

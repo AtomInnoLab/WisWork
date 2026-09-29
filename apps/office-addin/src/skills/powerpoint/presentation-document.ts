@@ -808,9 +808,36 @@ export function createPresentationDocumentBinding(
     }
     const unresolved = (e: PresentationHistoryEntry) =>
       !['applied', 'undone', 'discarded', 'complete', 'cancelled'].includes(e.record.state)
+    // A recovery may journal its own replacement while the source write remains uncertain.
+    // The exception is tied to the exact original backup; unrelated pending work still blocks.
+    const restoringSource = (source: PresentationHistoryEntry) => {
+      if (
+        entry.kind !== 'existing_page' ||
+        source.kind !== 'existing_batch' ||
+        source.record.version === 1 ||
+        !entry.record.restores ||
+        entry.record.restores.sourceKind !== 'batch' ||
+        source.record.changeId !== entry.record.restores.sourceChangeId ||
+        source.record.documentId !== entry.record.documentId ||
+        source.record.backupReleasedAt
+      )
+        return false
+      const original = source.record.backups.find(
+        (backup) => backup.hostSlideId === entry.record.oldSlideId,
+      )
+      return Boolean(
+        original &&
+        entry.record.restores.sourceHostSlideId === original.hostSlideId &&
+        entry.record.restores.originalBackupId === original.backupId &&
+        entry.record.restores.originalPackageDigest === original.packageDigest &&
+        entry.record.replacementPackageDigest === original.packageDigest &&
+        entry.record.sourceBackup?.sha256 === original.sha256 &&
+        entry.record.sourceBackup.sizeBytes === original.sizeBytes,
+      )
+    }
     if (
       (index < 0 || !unresolved(history.entries[index])) &&
-      history.entries.some((e) => e.id !== entry.id && unresolved(e))
+      history.entries.some((e) => e.id !== entry.id && unresolved(e) && !restoringSource(e))
     )
       throw new Error('presentation_change_history_pending')
     if (index < 0) {

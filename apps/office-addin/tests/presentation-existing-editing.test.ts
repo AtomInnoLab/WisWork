@@ -1,3 +1,6 @@
+import { BrowserPresentationPageReplacementAdapter } from '../src/skills/powerpoint/browser-presentation-page-replacement-adapter'
+import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { confirmReviewed } from './presentation-lock-review-fixture.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
@@ -2542,3 +2545,256 @@ it.each(['proposal', 'after_backup_read'] as const)(
     }
   },
 )
+
+it('persists a generic native text and geometry program before writes and retains its record after reopen', async () => {
+  const f = await fixture(true)
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'verifySlides').mockResolvedValue({
+    slideWidth: 960,
+    slideHeight: 540,
+    slides: [],
+  })
+  let order = ['slide', 'other']
+  const restoredPackages = new Map<string, string>()
+  vi.spyOn(BrowserPresentationBaselineAdapter.prototype, 'readContext').mockImplementation(
+    async () => ({
+      slideIds: [...order],
+      selectedSlideIds: [order[0]!],
+      selectedShapeIds: ['shape'],
+      slideWidth: 960,
+      slideHeight: 540,
+    }),
+  )
+  vi.spyOn(BrowserPresentationPageReplacementAdapter.prototype, 'inspect').mockImplementation(
+    async (record) => ({
+      status:
+        record.newSlideId && order.includes(record.newSlideId)
+          ? order.includes(record.oldSlideId)
+            ? 'staged'
+            : 'applied'
+          : 'baseline',
+      slideIds: [...order],
+    }),
+  )
+  const stageWrite = vi
+    .spyOn(BrowserPresentationPageReplacementAdapter.prototype, 'stage')
+    .mockImplementation(async (record, base64, onInserted, assertCurrent) => {
+      await assertCurrent()
+      order.splice(order.indexOf(record.oldSlideId) + 1, 0, 'restored-slide')
+      restoredPackages.set('restored-slide', base64)
+      await onInserted('restored-slide')
+    })
+  const commitWrite = vi
+    .spyOn(BrowserPresentationPageReplacementAdapter.prototype, 'commit')
+    .mockImplementation(async (record, assertCurrent) => {
+      await assertCurrent()
+      order = order.filter((id) => id !== record.oldSlideId)
+    })
+  const compiledPages = new Map<string, string>()
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'exportPresentationPagePackage').mockImplementation(
+    async (slideId) => {
+      const retained = restoredPackages.get(slideId)
+      if (retained) return { slideId, slideIds: [...order], base64: retained }
+      const deck = benchmarkDeck()
+      const geometry = f.geometry()
+      deck.slides = [
+        {
+          ...deck.slides[0]!,
+          elements: [
+            {
+              kind: 'text',
+              id: 'shape',
+              x: geometry.left / 72,
+              y: geometry.top / 72,
+              w: geometry.width / 72,
+              h: geometry.height / 72,
+              text: slideId === 'slide' ? f.text() : f.otherText(),
+              fontSize: 20,
+            },
+          ],
+        },
+      ]
+      const key = JSON.stringify([slideId, deck.slides[0]!.elements])
+      let base64 = compiledPages.get(key)
+      if (!base64) {
+        base64 = Buffer.from((await compilePresentationDeck(deck)).bytes).toString('base64')
+        compiledPages.set(key, base64)
+      }
+      return { slideId, slideIds: [...order], base64 }
+    },
+  )
+  const shape = () => ({
+    id: 'shape',
+    name: 'Title',
+    type: 'TextBox',
+    ...f.geometry(),
+    text: f.text(),
+  })
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'snapshotSlide').mockImplementation(async () => ({
+    slideId: 'slide',
+    fingerprint: JSON.stringify(shape()),
+    semanticShapes: [shape()],
+  }))
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'listSlideShapes').mockImplementation(async () => ({
+    slideId: 'slide',
+    slideIndex: 0,
+    shapes: [shape()],
+  }))
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'readSlideText').mockImplementation(async () => ({
+    slideId: 'slide',
+    shapeId: 'shape',
+    text: f.text(),
+    paragraphs: [f.text()],
+  }))
+  const writes = vi
+    .spyOn(BrowserPowerPointAdapter.prototype, 'executeDeclarative')
+    .mockImplementation(async (operations) => {
+      const record = f
+        .binding()
+        .listChangeHistory()
+        .find((e) => e.kind === 'existing_batch')?.record
+      expect(record).toMatchObject({ version: 3, state: 'applying' })
+      expect(f.backupReadCount()).toBeGreaterThan(0)
+      for (const operation of operations) {
+        if (operation.op === 'set_shape_text') f.setText(operation.text)
+        else if (operation.op === 'set_shape_geometry') {
+          await f.editGeometry(
+            'slide',
+            'shape',
+            {
+              left: operation.left,
+              top: operation.top,
+              width: operation.width,
+              height: operation.height,
+            },
+            f.geometry(),
+          )
+        }
+      }
+      return { createdShapeIds: [] }
+    })
+  const proposed = await f.call('execute_office_js', {
+    program: {
+      version: 1,
+      operations: [
+        { op: 'set_shape_text', slide_index: 0, shape_id: 'shape', text: 'generic after' },
+        { op: 'set_shape_geometry', slide_index: 0, shape_id: 'shape', ...f.geometry(), left: 30 },
+      ],
+    },
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  const changeId = JSON.parse(proposed.output).changeId
+  expect(changeId).toBeTypeOf('string')
+  expect(writes).not.toHaveBeenCalled()
+  await f.confirm()
+  expect(f.invalidateQa).toHaveBeenCalledWith(['slide'])
+  expect(f.text()).toBe('generic after')
+  expect(f.geometry().left).toBe(30)
+  expect(f.binding().readExistingBatch(changeId)).toMatchObject({
+    version: 3,
+    state: 'applied',
+    nextIndex: 2,
+  })
+  f.reopen()
+  expect(f.binding().readExistingBatch(changeId)).toMatchObject({
+    version: 3,
+    state: 'applied',
+    nextIndex: 2,
+  })
+  await f.getRuntime().changes!.refresh()
+  const entry = f
+    .getRuntime()
+    .changes!.snapshot()
+    .entries.find((e) => e.id === `existing_batch:${changeId}`)!
+  expect(entry).toMatchObject({ kind: 'modification', operationCount: 2 })
+  expect(entry.actions).toContain('undo')
+  const prepared = await f.call('prepare_existing_presentation_original_page_restore', {
+    source_kind: 'batch',
+    change_id: changeId,
+    slide_id: 'slide',
+  })
+  expect(prepared.isError, prepared.output).not.toBe(true)
+  expect(JSON.parse(prepared.output)).toMatchObject({
+    nextTool: 'stage_existing_presentation_page_change',
+    slideId: 'slide',
+    sourceChangeId: changeId,
+  })
+  await f.getRuntime().changes!.run(entry.id, 'undo')
+  expect(f.getRuntime().changes!.snapshot().error).toBeUndefined()
+  expect((f.getRuntime().proposals as StructuredProposalController).pending()?.toolName).toBe(
+    'stage_existing_presentation_page_change',
+  )
+  expect(writes).toHaveBeenCalledTimes(2)
+  expect(stageWrite).not.toHaveBeenCalled()
+  await f.confirm()
+  expect(stageWrite).toHaveBeenCalledTimes(1)
+  const restoration = f
+    .binding()
+    .listChangeHistory()
+    .find((item) => item.kind === 'existing_page')!
+  expect(restoration.record).toMatchObject({
+    state: 'staged',
+    oldSlideId: 'slide',
+    newSlideId: 'restored-slide',
+  })
+  expect(order).toEqual(['slide', 'restored-slide', 'other'])
+  const commit = await f.call('commit_existing_presentation_page_change', {
+    change_id: restoration.record.changeId,
+  })
+  expect(commit.isError, commit.output).not.toBe(true)
+  expect(commitWrite).not.toHaveBeenCalled()
+  await f.confirm()
+  expect(commitWrite).toHaveBeenCalledTimes(1)
+  expect(order).toEqual(['restored-slide', 'other'])
+  f.reopen()
+  await f.getRuntime().changes!.refresh()
+  const restoredEntry = f
+    .getRuntime()
+    .changes!.snapshot()
+    .entries.find((item) => item.id === entry.id)!
+  expect(restoredEntry.actions).toContain('finalize')
+  await f.getRuntime().changes!.run(entry.id, 'finalize')
+  expect(f.getRuntime().changes!.snapshot().error).toBeUndefined()
+  expect(f.binding().readExistingBatch(changeId)).toMatchObject({
+    state: 'undone',
+    restoredSlideIds: { slide: 'restored-slide' },
+  })
+  expect(writes).toHaveBeenCalledTimes(2)
+  expect(stageWrite).toHaveBeenCalledTimes(1)
+  expect(commitWrite).toHaveBeenCalledTimes(1)
+  const inspected = await f.call('inspect_native_modify_batch', { change_id: changeId })
+  expect(inspected.isError, inspected.output).not.toBe(true)
+  expect(JSON.parse(inspected.output)).toMatchObject({
+    currentPackageMatches: true,
+    currentHostVerified: true,
+    qaPassed: false,
+  })
+})
+
+it('refuses the generic modification route without a paired PC instead of exposing an unsafe proposal', async () => {
+  const f = await fixture(false)
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'verifySlides').mockResolvedValue({
+    slideWidth: 960,
+    slideHeight: 540,
+    slides: [],
+  })
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'snapshotSlide').mockResolvedValue({
+    slideId: 'slide',
+    fingerprint: 'before',
+  })
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'readSlideText').mockResolvedValue({
+    slideId: 'slide',
+    shapeId: 'shape',
+    text: 'before',
+    paragraphs: ['before'],
+  })
+  const write = vi.spyOn(BrowserPowerPointAdapter.prototype, 'executeDeclarative')
+  const result = await f.call('execute_office_js', {
+    program: {
+      version: 1,
+      operations: [{ op: 'set_shape_text', slide_index: 0, shape_id: 'shape', text: 'after' }],
+    },
+  })
+  expect(result.isError).toBe(true)
+  expect((f.getRuntime().proposals as StructuredProposalController).pending()).toBeUndefined()
+  expect(write).not.toHaveBeenCalled()
+})

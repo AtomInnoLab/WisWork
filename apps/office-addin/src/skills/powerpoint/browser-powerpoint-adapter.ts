@@ -1705,9 +1705,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
       if (typeof slides?.load !== 'function') throw new Error('office_api_unsupported')
       const readOrder = async (): Promise<string[]> => {
-        ;(slides.load as (properties: unknown) => void)({ $top: 513, id: true })
+        ;(slides.load as (properties: unknown) => void)({ $top: 514, id: true })
         await sync(context, signal)
-        if (!Array.isArray(slides.items) || slides.items.length < 1 || slides.items.length > 512)
+        if (!Array.isArray(slides.items) || slides.items.length < 1 || slides.items.length > 513)
           throw new Error('office_read_failed')
         const ids = (slides.items as RuntimeRecord[]).map((item) => item?.id)
         if (

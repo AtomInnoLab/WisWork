@@ -90,7 +90,35 @@ export interface PresentationNativeAddBatch {
   restoredSlideId?: string
   backupReleasedAt?: string
 }
-export type PresentationExistingBatch = PresentationTargetBatch | PresentationNativeAddBatch
+export type NativeModifyOperation = Extract<
+  PowerPointDeclarativeOperation,
+  { op: 'set_shape_text' | 'set_shape_geometry' | 'delete_shape' }
+>
+export interface PresentationNativeModifyBatch {
+  version: 3
+  kind: 'native_page_modify'
+  changeId: string
+  documentId: string
+  baselineId: string
+  baselineDigest: string
+  beforeSlideIds: string[]
+  scope: { slideIds: string[] }
+  intent: string
+  preserved: string[]
+  validation: string[]
+  risk: 'high'
+  backups: NonNullable<PresentationTargetBatch['backups']>
+  operations: NativeModifyOperation[]
+  pages: { hostSlideId: string; slideIndex: number; expectedPackageDigest: string }[]
+  nextIndex: number
+  inFlightIndex?: number
+  state: 'applying' | 'applied' | 'undoing' | 'undone'
+  restoredSlideIds?: Record<string, string>
+  reviews?: PresentationTargetBatch['reviews']
+  backupReleasedAt?: string
+}
+export type PresentationExistingBatch =
+  PresentationTargetBatch | PresentationNativeAddBatch | PresentationNativeModifyBatch
 
 const bytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).byteLength
 const id = (v: unknown) => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v)
@@ -687,10 +715,21 @@ function nativeAddReservedBytes(r: PresentationNativeAddBatch) {
   return Math.max(0, bytes(maximal) - bytes(r))
 }
 export function validatePresentationExistingBatch(v: unknown): v is PresentationExistingBatch {
-  return record(v) && (v.version === 2 ? validateNativeAddBatch(v) : validateTargetBatch(v))
+  return (
+    record(v) &&
+    (v.version === 3
+      ? validateNativeModifyBatch(v)
+      : v.version === 2
+        ? validateNativeAddBatch(v)
+        : validateTargetBatch(v))
+  )
 }
 export const existingBatchReservedBytes = (r: PresentationExistingBatch) =>
-  r.version === 2 ? nativeAddReservedBytes(r) : targetBatchReservedBytes(r)
+  r.version === 3
+    ? nativeModifyReservedBytes(r)
+    : r.version === 2
+      ? nativeAddReservedBytes(r)
+      : targetBatchReservedBytes(r)
 export function validExistingBatchTransition(
   before: PresentationExistingBatch | undefined,
   after: PresentationExistingBatch,
@@ -700,6 +739,8 @@ export function validExistingBatchTransition(
     (before && !validatePresentationExistingBatch(before))
   )
     return false
+  if (after.version === 3) return validNativeModifyTransition(before, after)
+  if (before?.version === 3) return false
   if (after.version === 1)
     return (!before || before.version === 1) && validTargetBatchTransition(before, after)
   if (!before)
@@ -753,5 +794,311 @@ export function validExistingBatchTransition(
     after.state === 'undone' &&
     before.backupReleasedAt === undefined &&
     timestamp(after.backupReleasedAt)
+  )
+}
+
+function validateNativeModifyBatch(value: Record<string, unknown>): boolean {
+  const r = value as unknown as PresentationNativeModifyBatch
+  const hash = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v)
+  const allowed = [
+    'version',
+    'kind',
+    'changeId',
+    'documentId',
+    'baselineId',
+    'baselineDigest',
+    'beforeSlideIds',
+    'scope',
+    'intent',
+    'preserved',
+    'validation',
+    'risk',
+    'backups',
+    'operations',
+    'pages',
+    'nextIndex',
+    'inFlightIndex',
+    'state',
+    'restoredSlideIds',
+    'backupReleasedAt',
+    'reviews',
+  ]
+  if (
+    Object.keys(value).some((k) => !allowed.includes(k)) ||
+    r.version !== 3 ||
+    r.kind !== 'native_page_modify' ||
+    !id(r.changeId) ||
+    !id(r.baselineId) ||
+    !boundedText(r.documentId, 4096) ||
+    !hash(r.baselineDigest) ||
+    !uniqueIds(r.beforeSlideIds, 512) ||
+    !record(r.scope) ||
+    Object.keys(r.scope).join(',') !== 'slideIds' ||
+    !uniqueIds(r.scope.slideIds, 8) ||
+    !boundedText(r.intent, 300) ||
+    !labels(r.preserved, 20) ||
+    !labels(r.validation, 20) ||
+    r.risk !== 'high' ||
+    !Array.isArray(r.pages) ||
+    r.pages.length !== r.scope.slideIds.length ||
+    !Array.isArray(r.backups) ||
+    r.backups.length !== r.pages.length ||
+    !Array.isArray(r.operations) ||
+    r.operations.length < 1 ||
+    r.operations.length > 32 ||
+    bytes({ version: 1, operations: r.operations }) > 32768 ||
+    !Number.isInteger(r.nextIndex) ||
+    r.nextIndex < 0 ||
+    r.nextIndex > r.operations.length ||
+    !['applying', 'applied', 'undoing', 'undone'].includes(r.state) ||
+    (r.state === 'applied' && r.nextIndex !== r.operations.length) ||
+    (r.state === 'applying' && r.nextIndex === r.operations.length) ||
+    (r.inFlightIndex !== undefined && (r.state !== 'applying' || r.inFlightIndex !== r.nextIndex))
+  )
+    return false
+  if (
+    new Set(r.pages.map((p) => p?.hostSlideId)).size !== r.pages.length ||
+    new Set(r.backups.map((b) => b?.backupId)).size !== r.backups.length
+  )
+    return false
+  for (const p of r.pages) {
+    if (
+      !record(p) ||
+      Object.keys(p).sort().join(',') !== 'expectedPackageDigest,hostSlideId,slideIndex' ||
+      !hostId(p.hostSlideId) ||
+      !Number.isInteger(p.slideIndex) ||
+      p.slideIndex < 0 ||
+      p.slideIndex >= r.beforeSlideIds.length ||
+      r.beforeSlideIds[p.slideIndex] !== p.hostSlideId ||
+      !r.scope.slideIds.includes(p.hostSlideId) ||
+      !hash(p.expectedPackageDigest)
+    )
+      return false
+    const b = r.backups.find((b) => b.hostSlideId === p.hostSlideId)
+    if (
+      !b ||
+      !record(b) ||
+      Object.keys(b).sort().join(',') !== 'backupId,hostSlideId,packageDigest,sha256,sizeBytes' ||
+      !id(b.backupId) ||
+      !hash(b.sha256) ||
+      !hash(b.packageDigest) ||
+      !Number.isSafeInteger(b.sizeBytes) ||
+      b.sizeBytes < 1 ||
+      b.sizeBytes > 8 * 1024 * 1024
+    )
+      return false
+  }
+  for (const op of r.operations) {
+    if (
+      !record(op) ||
+      !r.pages.some((p) => p.slideIndex === op.slide_index) ||
+      !hostId(op.shape_id)
+    )
+      return false
+    if (op.op === 'set_shape_text') {
+      if (
+        Object.keys(op).sort().join(',') !== 'op,shape_id,slide_index,text' ||
+        typeof op.text !== 'string' ||
+        op.text.length > 12000
+      )
+        return false
+    } else if (op.op === 'set_shape_geometry') {
+      if (
+        Object.keys(op).sort().join(',') !== 'height,left,op,shape_id,slide_index,top,width' ||
+        ![op.left, op.top, op.width, op.height].every(
+          (v) => typeof v === 'number' && Number.isFinite(v),
+        ) ||
+        op.width <= 0 ||
+        op.height <= 0
+      )
+        return false
+    } else if (
+      op.op !== 'delete_shape' ||
+      Object.keys(op).sort().join(',') !== 'op,shape_id,slide_index'
+    )
+      return false
+  }
+  if (
+    r.restoredSlideIds !== undefined &&
+    (!['undoing', 'undone'].includes(r.state) ||
+      !record(r.restoredSlideIds) ||
+      Object.entries(r.restoredSlideIds).some(
+        ([k, v]) =>
+          !r.scope.slideIds.includes(k) ||
+          !hostId(v) ||
+          r.beforeSlideIds.filter((id) => !r.scope.slideIds.includes(id)).includes(v),
+      ) ||
+      new Set(Object.values(r.restoredSlideIds)).size !== Object.keys(r.restoredSlideIds).length)
+  )
+    return false
+  const targets = new Map<string, string[]>()
+  for (const op of r.operations) {
+    const key = JSON.stringify([op.slide_index, op.shape_id])
+    const prior = targets.get(key) ?? []
+    if (
+      prior.includes(op.op) ||
+      prior.includes('delete_shape') ||
+      (op.op === 'delete_shape' && prior.length)
+    )
+      return false
+    targets.set(key, [...prior, op.op])
+  }
+  if (r.baselineDigest !== r.backups[0]?.packageDigest) return false
+  if (
+    r.state === 'undone' &&
+    (!r.restoredSlideIds ||
+      Object.keys(r.restoredSlideIds).length !== r.pages.length ||
+      r.pages.some(
+        (p) =>
+          !Object.hasOwn(r.restoredSlideIds!, p.hostSlideId) ||
+          !hostId(r.restoredSlideIds![p.hostSlideId]),
+      ))
+  )
+    return false
+  if (r.backupReleasedAt !== undefined && (r.state !== 'undone' || !timestamp(r.backupReleasedAt)))
+    return false
+  if (
+    r.reviews !== undefined &&
+    (!Array.isArray(r.reviews) ||
+      r.reviews.length > r.pages.length ||
+      new Set(r.reviews.map((review) => review?.hostSlideId)).size !== r.reviews.length ||
+      r.reviews.some(
+        (review) =>
+          !record(review) ||
+          Object.keys(review).sort().join(',') !==
+            'capturedAt,hostSlideId,notes,reviewedAt,screenshotDigest,status' ||
+          !r.scope.slideIds.includes(review.hostSlideId) ||
+          !hash(review.screenshotDigest) ||
+          !timestamp(review.capturedAt) ||
+          !timestamp(review.reviewedAt) ||
+          Date.parse(review.capturedAt) > Date.parse(review.reviewedAt) ||
+          !['pass', 'fail'].includes(review.status) ||
+          typeof review.notes !== 'string' ||
+          review.notes.length > 2000,
+      ))
+  )
+    return false
+  return bytes(r) + nativeModifyReservedBytes(r) <= 192 * 1024
+}
+function validNativeModifyTransition(
+  before: PresentationExistingBatch | undefined,
+  after: PresentationNativeModifyBatch,
+) {
+  if (!before)
+    return (
+      after.state === 'applying' &&
+      after.reviews === undefined &&
+      after.nextIndex === 0 &&
+      after.inFlightIndex === undefined &&
+      after.restoredSlideIds === undefined &&
+      after.backupReleasedAt === undefined &&
+      after.pages.every(
+        (p) =>
+          p.expectedPackageDigest ===
+          after.backups.find((b) => b.hostSlideId === p.hostSlideId)?.packageDigest,
+      )
+    )
+  if (before.version !== 3) return false
+  const core = (r: PresentationNativeModifyBatch) =>
+    JSON.stringify({
+      ...r,
+      state: undefined,
+      nextIndex: undefined,
+      inFlightIndex: undefined,
+      restoredSlideIds: undefined,
+      backupReleasedAt: undefined,
+      reviews: undefined,
+      pages: r.pages.map((p) => ({ ...p, expectedPackageDigest: undefined })),
+    })
+  if (core(before) !== core(after)) return false
+  const reviewsSame = JSON.stringify(before.reviews) === JSON.stringify(after.reviews)
+  if (!reviewsSame) {
+    const without = (r: PresentationNativeModifyBatch) =>
+      JSON.stringify({ ...r, reviews: undefined })
+    if (
+      before.state !== 'applied' ||
+      after.state !== 'applied' ||
+      without(before) !== without(after) ||
+      !after.reviews ||
+      after.reviews.length < (before.reviews?.length ?? 0)
+    )
+      return false
+    const changed = after.reviews.filter(
+      (review) =>
+        JSON.stringify(review) !==
+        JSON.stringify(before.reviews?.find((prior) => prior.hostSlideId === review.hostSlideId)),
+    )
+    return (
+      changed.length === 1 &&
+      (before.reviews ?? []).every((prior) =>
+        after.reviews!.some((review) => review.hostSlideId === prior.hostSlideId),
+      )
+    )
+  }
+  const pagesSame = JSON.stringify(before.pages) === JSON.stringify(after.pages)
+  const restoredSame =
+    JSON.stringify(before.restoredSlideIds) === JSON.stringify(after.restoredSlideIds)
+  if (
+    before.state === 'applying' &&
+    after.state === 'applying' &&
+    before.nextIndex === after.nextIndex &&
+    pagesSame &&
+    restoredSame &&
+    before.backupReleasedAt === after.backupReleasedAt
+  )
+    return before.inFlightIndex === undefined && after.inFlightIndex === before.nextIndex
+  if (
+    before.state === 'applying' &&
+    ['applying', 'applied'].includes(after.state) &&
+    before.inFlightIndex === before.nextIndex &&
+    after.inFlightIndex === undefined &&
+    after.nextIndex === before.nextIndex + 1 &&
+    restoredSame &&
+    before.backupReleasedAt === after.backupReleasedAt
+  )
+    return before.pages.every(
+      (p, i) =>
+        p.slideIndex === before.operations[before.nextIndex].slide_index ||
+        JSON.stringify(p) === JSON.stringify(after.pages[i]),
+    )
+  if (before.nextIndex !== after.nextIndex || !pagesSame) return false
+  if (
+    ['applying', 'applied', 'undoing'].includes(before.state) &&
+    ['undoing', 'undone'].includes(after.state) &&
+    (after.state !== 'undone' || before.state === 'undoing') &&
+    after.inFlightIndex === undefined &&
+    before.backupReleasedAt === after.backupReleasedAt
+  )
+    return Object.entries(before.restoredSlideIds ?? {}).every(
+      ([k, v]) => after.restoredSlideIds?.[k] === v,
+    )
+  return (
+    before.state === 'undone' &&
+    after.state === 'undone' &&
+    restoredSame &&
+    before.backupReleasedAt === undefined &&
+    timestamp(after.backupReleasedAt)
+  )
+}
+
+function nativeModifyReservedBytes(r: PresentationNativeModifyBatch) {
+  return (
+    bytes({
+      restoredSlideIds: Object.fromEntries(
+        r.scope.slideIds.map((id) => [id, '\u0001'.repeat(256)]),
+      ),
+      backupReleasedAt: '9999-12-31T23:59:59.999Z',
+      reviews: r.scope.slideIds.map((hostSlideId) => ({
+        hostSlideId,
+        screenshotDigest: 'f'.repeat(64),
+        capturedAt: '9999-12-31T23:59:59.999Z',
+        reviewedAt: '9999-12-31T23:59:59.999Z',
+        status: 'pass',
+        notes: '\u0001'.repeat(2000),
+      })),
+    }) +
+    256 -
+    bytes(r.reviews ?? []) -
+    bytes(r.restoredSlideIds ?? {})
   )
 }

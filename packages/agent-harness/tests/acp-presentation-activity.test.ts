@@ -115,3 +115,20 @@ it.each([
     expect(acpPresentationStage(`${tool}_unknown`)).toBeUndefined()
   },
 )
+
+it.each([
+  ['inspect_native_modify_batch', 'editing'],
+  ['resume_native_modify_batch', 'editing'],
+  ['finalize_native_modify_restore', 'editing'],
+  ['capture_native_modify_page', 'review'],
+  ['record_native_modify_page_review', 'review'],
+])('classifies the durable generic edit tool %s without claiming host QA', (tool, stage) => {
+  expect(acpPresentationStage(tool)).toBe(stage)
+  expect(acpToolActivity(tool, 'complete')).toBe(
+    `${acpPresentationStageLabel(stage as 'editing' | 'review')}操作已结束`,
+  )
+})
+it('does not infer unregistered generic edit action suffixes', () => {
+  expect(acpPresentationStage('approve_native_modify_batch')).toBeUndefined()
+  expect(acpPresentationStage('capture_native_modify_page_untrusted')).toBeUndefined()
+})

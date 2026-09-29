@@ -36,15 +36,20 @@ export function presentationChangeSetSummary(
       scope: record.scope,
       intent: record.intent,
       operations:
-        record.version === 2
-          ? record.operations.map(() => ({
+        record.version === 3
+          ? record.operations.map((op) => ({
               kind: 'existing_batch' as const,
-              pageId: record.hostSlideId,
+              pageId: record.beforeSlideIds[op.slide_index]!,
             }))
-          : record.operations.map((op) => ({
-              kind: 'existing_batch' as const,
-              pageId: op.hostSlideId,
-            })),
+          : record.version === 2
+            ? record.operations.map(() => ({
+                kind: 'existing_batch' as const,
+                pageId: record.hostSlideId,
+              }))
+            : record.operations.map((op) => ({
+                kind: 'existing_batch' as const,
+                pageId: op.hostSlideId,
+              })),
       preserved: record.preserved,
       validation: record.validation,
       risk: record.risk,
