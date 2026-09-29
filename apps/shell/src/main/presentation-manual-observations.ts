@@ -1,3 +1,7 @@
+export type PresentationLibraryWriteGuard = (
+  scope: Readonly<{ documentId: string; projectId: string }>,
+) => void
+
 import { createHash, randomUUID } from 'node:crypto'
 import {
   constants,
@@ -109,6 +113,7 @@ export class PresentationManualObservationLibrary {
     documentId: string,
     projectId: string,
     observations: PresentationManualObservation[],
+    assertWritable?: PresentationLibraryWriteGuard,
   ) {
     const serialized = JSON.stringify({
       version: 1,
@@ -122,10 +127,15 @@ export class PresentationManualObservationLibrary {
       Buffer.byteLength(serialized) > MAX_PRESENTATION_MANUAL_OBSERVATIONS_BYTES
     )
       throw new Error('quota_exceeded')
+    const check = () => assertWritable?.(Object.freeze({ documentId, projectId }))
+    this.path(documentId, projectId, false)
+    check()
     const path = this.path(documentId, projectId, true),
       temporary = path + '.' + randomUUID() + '.tmp'
     try {
+      check()
       writeFileSync(temporary, serialized, { flag: 'wx', mode: 0o600 })
+      check()
       renameSync(temporary, path)
     } finally {
       rmSync(temporary, { force: true })
@@ -137,6 +147,7 @@ export class PresentationManualObservationLibrary {
     observationId: string,
     slideId: string,
     shapeValue: unknown,
+    assertWritable?: PresentationLibraryWriteGuard,
   ) {
     this.id(observationId)
     const shape = parsePresentationManualObservationShape(shapeValue),
@@ -162,7 +173,7 @@ export class PresentationManualObservationLibrary {
       atomicSnapshot: false,
       coverage: 'text_geometry_aggregate_font',
     })
-    this.write(documentId, projectId, [...records, record])
+    this.write(documentId, projectId, [...records, record], assertWritable)
     return record
   }
   complete(
@@ -171,6 +182,7 @@ export class PresentationManualObservationLibrary {
     observationId: string,
     expectedBeforeDigest: unknown,
     shapeValue: unknown,
+    assertWritable?: PresentationLibraryWriteGuard,
   ) {
     this.id(observationId)
     const records = this.list(documentId, projectId),
@@ -195,15 +207,21 @@ export class PresentationManualObservationLibrary {
       documentId,
       projectId,
       records.map((r) => (r.observationId === observationId ? record : r)),
+      assertWritable,
     )
     return record
   }
-  delete(documentId: string, projectId: string, observationId: string) {
+  delete(
+    documentId: string,
+    projectId: string,
+    observationId: string,
+    assertWritable?: PresentationLibraryWriteGuard,
+  ) {
     this.id(observationId)
     const records = this.list(documentId, projectId),
       next = records.filter((r) => r.observationId !== observationId)
     if (next.length === records.length) return false
-    this.write(documentId, projectId, next)
+    this.write(documentId, projectId, next, assertWritable)
     return true
   }
 }

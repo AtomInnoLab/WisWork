@@ -1,3 +1,7 @@
+export type PresentationLibraryWriteGuard = (
+  scope: Readonly<{ documentId: string; projectId: string }>,
+) => void
+
 import type { PresentationManualObservation } from '@wiswork/pptx-engine/presentation-manual-observation'
 import { canonicalPresentationValue } from '@wiswork/project-store/presentation-canonical'
 import { createHash, randomUUID } from 'node:crypto'
@@ -110,9 +114,17 @@ export class PresentationPreferenceLibrary {
   list(documentId: string, projectId: string): SavedPresentationPreference[] {
     return structuredClone(this.read(documentId, projectId)?.preferences ?? [])
   }
-  save(documentId: string, input: unknown): SavedPresentationPreference {
-    if (!valid(input) || input.reuse !== undefined || input.origin !== undefined)
+  save(
+    documentId: string,
+    inputValue: unknown,
+    assertWritable?: PresentationLibraryWriteGuard,
+  ): SavedPresentationPreference {
+    if (!valid(inputValue) || inputValue.reuse !== undefined || inputValue.origin !== undefined)
       throw new Error('invalid_request')
+    const input = structuredClone(inputValue)
+    this.path(documentId, input.projectId, false)
+    const check = () => assertWritable?.(Object.freeze({ documentId, projectId: input.projectId }))
+    check()
     const path = this.path(documentId, input.projectId, true)
     const prior = this.read(documentId, input.projectId)
     const existing = prior?.preferences.find((p) => p.changeId === input.changeId)
@@ -136,7 +148,9 @@ export class PresentationPreferenceLibrary {
     if (Buffer.byteLength(serialized, 'utf8') > 64 * 1024) throw new Error('quota_exceeded')
     const temporary = `${path}.${randomUUID()}.tmp`
     try {
+      check()
       writeFileSync(temporary, serialized, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+      check()
       renameSync(temporary, path)
     } finally {
       rmSync(temporary, { force: true })
@@ -147,6 +161,7 @@ export class PresentationPreferenceLibrary {
     documentId: string,
     observation: PresentationManualObservation,
     text: unknown,
+    assertWritable?: PresentationLibraryWriteGuard,
   ): SavedPresentationPreference {
     if (
       observation.documentId !== documentId ||
@@ -181,10 +196,15 @@ export class PresentationPreferenceLibrary {
     }
     const serialized = JSON.stringify(record)
     if (Buffer.byteLength(serialized) > 64 * 1024) throw new Error('quota_exceeded')
+    this.path(documentId, input.projectId, false)
+    const check = () => assertWritable?.(Object.freeze({ documentId, projectId: input.projectId }))
+    check()
     const path = this.path(documentId, input.projectId, true),
       temporary = path + '.' + randomUUID() + '.tmp'
     try {
+      check()
       writeFileSync(temporary, serialized, { flag: 'wx', mode: 0o600 })
+      check()
       renameSync(temporary, path)
     } finally {
       rmSync(temporary, { force: true })
@@ -207,20 +227,36 @@ export class PresentationPreferenceLibrary {
     expectedTextDigest: unknown,
     approvalId: unknown,
     expectedOrigin?: unknown,
+    guards?: {
+      assertWritable?: PresentationLibraryWriteGuard
+      assertSourceCurrent?: PresentationLibraryWriteGuard
+    },
   ): SavedPresentationPreference {
-    const source = parsePresentationPreferenceSource(sourceValue)
+    const source = structuredClone(parsePresentationPreferenceSource(sourceValue))
+    const assertWritable = guards?.assertWritable,
+      assertSourceCurrent = guards?.assertSourceCurrent
+    const sourceScope = Object.freeze({
+      documentId: source.documentId,
+      projectId: source.projectId,
+    })
+    const origin =
+      expectedOrigin === undefined || expectedOrigin === null
+        ? expectedOrigin
+        : parsePresentationPreferenceOrigin(expectedOrigin)
+    const check = () => {
+      assertSourceCurrent?.(sourceScope)
+      assertWritable?.(Object.freeze({ documentId, projectId }))
+    }
     const path = this.path(documentId, projectId, false)
     if (source.documentId === documentId && source.projectId === projectId)
       throw new Error('invalid_request')
     if (typeof expectedTextDigest !== 'string' || !/^[a-f0-9]{64}$/.test(expectedTextDigest))
       throw new Error('invalid_request')
+    assertSourceCurrent?.(sourceScope)
     const original = this.get(source.documentId, source.projectId, source.changeId)
+    assertSourceCurrent?.(sourceScope)
     if (!original) throw new Error('not_found')
     if (original.reuse) throw new Error('invalid_request')
-    const origin =
-      expectedOrigin === undefined || expectedOrigin === null
-        ? expectedOrigin
-        : parsePresentationPreferenceOrigin(expectedOrigin)
     if (
       (original.origin && origin === undefined) ||
       (origin !== undefined &&
@@ -266,29 +302,41 @@ export class PresentationPreferenceLibrary {
     }
     const serialized = JSON.stringify(record)
     if (Buffer.byteLength(serialized, 'utf8') > 64 * 1024) throw new Error('quota_exceeded')
+    check()
     this.path(documentId, projectId, true)
     const temporary = `${path}.${randomUUID()}.tmp`
     try {
+      check()
       writeFileSync(temporary, serialized, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+      check()
       renameSync(temporary, path)
     } finally {
       rmSync(temporary, { force: true })
     }
     return structuredClone(preference)
   }
-  delete(documentId: string, projectId: string, changeId: string): boolean {
+  delete(
+    documentId: string,
+    projectId: string,
+    changeId: string,
+    assertWritable?: PresentationLibraryWriteGuard,
+  ): boolean {
     if (!id(changeId, 128)) throw new Error('invalid_request')
     const prior = this.read(documentId, projectId)
     const preferences = prior?.preferences.filter((p) => p.changeId !== changeId) ?? []
     if (!prior || preferences.length === prior.preferences.length) return false
+    const check = () => assertWritable?.(Object.freeze({ documentId, projectId }))
+    check()
     const path = this.path(documentId, projectId, true)
     const temporary = `${path}.${randomUUID()}.tmp`
     try {
+      check()
       writeFileSync(temporary, JSON.stringify({ ...prior, preferences }), {
         encoding: 'utf8',
         flag: 'wx',
         mode: 0o600,
       })
+      check()
       renameSync(temporary, path)
     } finally {
       rmSync(temporary, { force: true })
