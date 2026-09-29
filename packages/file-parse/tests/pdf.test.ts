@@ -61,4 +61,28 @@ describe('parseFileToText: pdf', () => {
       'NATIONAL ADVISORY COMMITTEE FOR AERONAUTICS',
     )
   }, 20_000)
+
+  it('locates the Toyota audited revenue and historical FX in the frozen P0-08 PDFs', async () => {
+    const root = resolve(
+      import.meta.dirname,
+      '../../../docs/product/ppt-benchmark-materials/PPT-P0-08',
+    )
+    const report = await parseFileToText(resolve(root, 'toyota-fy2024-form20f.pdf'))
+    expect(report.ok).toBe(true)
+    expect(report.sections).toHaveLength(281)
+    const revenuePage = report.sections![166]!
+    expect(revenuePage.locator).toBe('第 167 页')
+    const revenueText = report.text!.slice(revenuePage.start, revenuePage.end)
+    expect(revenueText).toContain('45,095,325')
+    expect(revenueText).toContain('Financial services')
+
+    const summary = await parseFileToText(resolve(root, 'toyota-fy2024-financial-summary.pdf'))
+    expect(summary.ok).toBe(true)
+    expect(summary.sections).toHaveLength(29)
+    const fxPage = summary.sections![27]!
+    expect(fxPage.locator).toBe('第 28 页')
+    const fxText = summary.text!.slice(fxPage.start, fxPage.end)
+    expect(fxText).toContain('FY2024')
+    expect(fxText).toContain('Yen to US Dollar Rate')
+  }, 20_000)
 })

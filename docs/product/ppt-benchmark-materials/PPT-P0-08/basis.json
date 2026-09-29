@@ -12,31 +12,34 @@
       "metric": "Net sales",
       "valueMillions": 391035,
       "currency": "USD",
-      "reportPdfPage": 32
+      "reportPdfPage": 32,
+      "filingDate": "2024-11-01"
     },
     {
-      "name": "Sony Group Corporation",
-      "report": "Form 20-F FY2023",
-      "source": "https://www.sony.com/en/SonyInfo/IR/library/FY2023_20F_PDF.pdf",
-      "localFile": null,
+      "name": "Toyota Motor Corporation",
+      "report": "Form 20-F FY2024",
+      "source": "https://global.toyota/pages/global_toyota/ir/library/sec/20-F_202403_final.pdf",
+      "localFile": "toyota-fy2024-form20f.pdf",
       "fiscalYearEnd": "2024-03-31",
       "accounting": "IFRS",
-      "metric": "Total sales and financial services revenue",
-      "valueMillions": 13020768,
+      "metric": "Total sales revenues (products and financial services)",
+      "valueMillions": 45095325,
       "currency": "JPY",
-      "valueSource": "https://www.sony.com/en/SonyInfo/IR/library/FY2023_20F_PDF.pdf",
-      "valueSourcePdfPage": 48
+      "valueSource": "https://global.toyota/pages/global_toyota/ir/library/sec/20-F_202403_final.pdf",
+      "valueSourcePdfPage": 167,
+      "filingDate": "2024-06-25"
     }
   ],
   "illustrativeFx": {
-    "source": "https://www.sony.com/en/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf",
-    "sourcePdfPage": 24,
-    "period": "FY2023 annual average, year ended 2024-03-31",
-    "jpyPerUsd": 144.4,
-    "formula": "Sony JPY millions / 144.4 JPY per USD",
+    "source": "https://global.toyota/pages/global_toyota/ir/financial-results/2024_4q_summary_en.pdf",
+    "sourcePdfPage": 28,
+    "period": "FY2024 12-month historical column, year ended 2024-03-31",
+    "jpyPerUsd": 145,
+    "formula": "Toyota JPY millions / 145 JPY per USD",
     "reproductionFormula": "round(jpy / rate, 2)",
-    "sonyUsdMillionsRounded2": 90171.52,
-    "status": "illustrative_only"
+    "toyotaUsdMillionsRounded2": 311002.24,
+    "status": "illustrative_only",
+    "publicationDate": "2024-05-08"
   },
   "comparison": {
     "sameFiscalPeriod": false,
@@ -44,7 +47,7 @@
     "sameRevenueScope": false,
     "likeForLikeUsdRevenueDifferenceMillions": null,
     "crossCompanyRevenueRanking": null,
-    "missingReason": "Different fiscal year ends, US GAAP versus IFRS, and Sony revenue includes financial services; a currency conversion alone cannot align these measures."
+    "missingReason": "Different fiscal year ends, US GAAP versus IFRS, and Toyota revenue includes financial services; a currency conversion alone cannot align these measures."
   },
   "review": "pending_financial_reviewer"
 }
