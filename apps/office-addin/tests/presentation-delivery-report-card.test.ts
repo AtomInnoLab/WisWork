@@ -1098,3 +1098,119 @@ it('shows actual chart values, all data findings and exact source/calculation bi
     container.remove()
   }
 })
+
+it('renders the saved domain workflow full text without replacing it or claiming manual acceptance', async () => {
+  const report = {
+    issueLedger: { revision: 0, actions: [] },
+    requestId: 'domain-task',
+    planRevision: 1,
+    plan: { domain: 'pitch', sources: [], claims: [] },
+    pages: [],
+    domainWorkflow: {
+      version: 1,
+      domain: 'pitch',
+      sections: [
+        { id: 'problem', title: '已交付章节', instruction: '<script>历史章节指引</script>' },
+      ],
+      reviewSteps: [
+        {
+          id: 'review',
+          title: '已交付审核',
+          tools: ['save_presentation_plan', 'check_presentation_page_content'],
+          instruction: '历史步骤全文',
+        },
+      ],
+      manualChecks: ['人工检查历史问题'],
+      disclosure: '历史范围未认证',
+    },
+  } as unknown as PresentationDeliveryReport
+  const controller = { recordIssueAction: vi.fn() } as unknown as PresentationProjectController
+  const container = document.createElement('div'),
+    root = createRoot(container)
+  try {
+    await act(async () =>
+      root.render(
+        React.createElement(PresentationDeliveryReportCard, {
+          report,
+          controller,
+          disabled: false,
+        }),
+      ),
+    )
+    const detail = container.querySelector('[aria-label="行业制作工作流"]') as HTMLDetailsElement
+    expect(detail).not.toBeNull()
+    expect(detail.open).toBe(false)
+    for (const text of [
+      '路演',
+      '已交付章节',
+      '<script>历史章节指引</script>',
+      '已交付审核',
+      '历史步骤全文',
+      '保存演示计划',
+      '检查页面内容',
+      '人工检查历史问题',
+      '待人工核验',
+      '历史范围未认证',
+    ])
+      expect(detail.textContent).toContain(text)
+    expect(detail.querySelector('script')).toBeNull()
+    expect(detail.querySelector('button')).toBeNull()
+    expect(controller.recordIssueAction).not.toHaveBeenCalled()
+    await act(async () =>
+      root.render(
+        React.createElement(PresentationDeliveryReportCard, {
+          report: { ...report, domainWorkflow: undefined },
+          controller,
+          disabled: false,
+        }),
+      ),
+    )
+    expect(container.querySelector('[aria-label="行业制作工作流"]')).toBeNull()
+  } finally {
+    await act(async () => root.unmount())
+  }
+})
+
+it('shows all five actual domain instructions and Chinese tool names without changing review actions', async () => {
+  const { presentationDomainWorkflow } = await import('@wiswork/pptx-engine/presentation-plan')
+  const controller = { recordIssueAction: vi.fn() } as unknown as PresentationProjectController
+  const container = document.createElement('div'),
+    root = createRoot(container)
+  try {
+    for (const domain of ['pitch', 'report', 'training', 'research', 'sales']) {
+      const workflow = presentationDomainWorkflow(domain)!
+      const report = {
+        issueLedger: { revision: 0, actions: [] },
+        requestId: domain,
+        planRevision: 1,
+        plan: { domain, sources: [], claims: [] },
+        pages: [],
+        domainWorkflow: workflow,
+      } as unknown as PresentationDeliveryReport
+      await act(async () =>
+        root.render(
+          React.createElement(PresentationDeliveryReportCard, {
+            report,
+            controller,
+            disabled: false,
+          }),
+        ),
+      )
+      const detail = container.querySelector('[aria-label="行业制作工作流"]')!
+      for (const text of [
+        ...workflow.sections.flatMap((section) => [section.title, section.instruction]),
+        ...workflow.reviewSteps.flatMap((step) => [step.title, step.instruction]),
+        ...workflow.manualChecks,
+        workflow.disclosure,
+      ])
+        expect(detail.textContent).toContain(text)
+      expect(detail.textContent).not.toMatch(
+        /操作：[^。]*\b(?:read_|record_|save_|start_|run_|capture_|compare_|prepare_|import_)/,
+      )
+      expect(detail.querySelector('button')).toBeNull()
+    }
+    expect(controller.recordIssueAction).not.toHaveBeenCalled()
+  } finally {
+    await act(async () => root.unmount())
+  }
+})

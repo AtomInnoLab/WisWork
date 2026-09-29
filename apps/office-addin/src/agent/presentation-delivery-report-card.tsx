@@ -719,11 +719,65 @@ function ChartDataDetails({
 }
 const workflowTools: Record<string, string> = {
   read_research_ledger: '读取指定研究记录',
+  capture_presentation_page_qa: '记录页面截图证据',
+  record_presentation_page_review: '记录历史视觉复核',
+  start_presentation_production: '开始逐页生产',
+  run_presentation_production: '推进逐页生产',
+  prepare_presentation_production_import: '准备逐页导入',
+  import_presentation_production: '提出逐页导入确认',
+  compare_presentation_page_structure: '核对页面结构',
   save_presentation_plan: '保存演示计划',
   read_presentation_claim_evidence: '读取主张来源原文',
   record_presentation_claim_review: '记录历史来源判断',
   check_presentation_page_content: '检查页面内容',
   read_presentation_delivery_report: '读取内容证据报告',
+}
+function DomainWorkflow({ workflow }: { workflow?: PresentationDeliveryReport['domainWorkflow'] }) {
+  if (!workflow) return null
+  return (
+    <details aria-label="行业制作工作流" key={workflow.domain}>
+      <summary>
+        行业制作工作流 ·{' '}
+        {
+          {
+            pitch: '路演',
+            report: '汇报',
+            training: '培训',
+            research: '研究报告',
+            sales: '销售方案',
+          }[workflow.domain]
+        }
+      </summary>
+      <h4>章节制作指引</h4>
+      <ol>
+        {workflow.sections.map((section) => (
+          <li key={section.id}>
+            <p>{section.title}</p>
+            <p>{section.instruction}</p>
+          </li>
+        ))}
+      </ol>
+      <h4>制作与复核步骤</h4>
+      <ol>
+        {workflow.reviewSteps.map((step) => (
+          <li key={step.id}>
+            <p>{step.title}</p>
+            <p>{step.instruction}</p>
+            <p>操作：{step.tools.map((tool) => workflowTools[tool] ?? tool).join('、')}</p>
+          </li>
+        ))}
+      </ol>
+      <h4>待人工核验</h4>
+      <p>以下检查尚未核验；工作流展示不代表内容、行业效果或 QA 已通过。</p>
+      <ul>
+        {workflow.manualChecks.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+      <h4>范围说明</h4>
+      <p>{workflow.disclosure}</p>
+    </details>
+  )
 }
 function ProfessionalWorkflow({
   workflow,
@@ -787,6 +841,7 @@ export function PresentationDeliveryReportCard({
         往返未执行。附件字面核对反映读取报告时的当前文档，不属于冻结生产快照。来源复核是历史 Agent
         判断。已说明不会关闭机器发现。
       </p>
+      <DomainWorkflow workflow={report.domainWorkflow} />
       <ProfessionalWorkflow workflow={report.professionalWorkflow} />
       {report.research && (
         <details aria-label="冻结计划绑定研究">

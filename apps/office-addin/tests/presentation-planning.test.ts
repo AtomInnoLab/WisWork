@@ -1,4 +1,7 @@
-import { PRESENTATION_DOMAIN_PROFILES } from '@wiswork/pptx-engine/presentation-plan'
+import {
+  PRESENTATION_DOMAIN_PROFILES,
+  presentationDomainWorkflow,
+} from '@wiswork/pptx-engine/presentation-plan'
 import { describe, expect, it, vi } from 'vitest'
 import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan.js'
 import { createPresentationPlanningSkill } from '../src/skills/powerpoint/presentation-planning.js'
@@ -248,7 +251,15 @@ describe('saved presentation planning tools', () => {
         input: { domain },
       })
       expect(result.isError).not.toBe(true)
-      expect(JSON.parse(result.output)).toEqual({
+      const value = JSON.parse(result.output)
+      expect(value.domainWorkflow).toEqual(presentationDomainWorkflow(domain))
+      expect(value.domainWorkflow.sections.map((section: { id: string }) => section.id)).toEqual(
+        PRESENTATION_DOMAIN_PROFILES[domain as keyof typeof PRESENTATION_DOMAIN_PROFILES].sections,
+      )
+      expect(value.domainWorkflow.reviewSteps.length).toBeGreaterThan(0)
+      expect(value.domainWorkflow.manualChecks.length).toBeGreaterThan(0)
+      const { domainWorkflow: _workflow, ...legacy } = value
+      expect(legacy).toEqual({
         domain,
         ...PRESENTATION_DOMAIN_PROFILES[domain as keyof typeof PRESENTATION_DOMAIN_PROFILES],
       })

@@ -140,6 +140,147 @@ export interface PresentationProfessionalWorkflow {
   readonly manualChecks: readonly string[]
   readonly disclosure: string
 }
+export interface PresentationDomainWorkflow {
+  readonly version: 1
+  readonly domain: 'pitch' | 'report' | 'training' | 'research' | 'sales'
+  readonly sections: readonly {
+    readonly id: string
+    readonly title: string
+    readonly instruction: string
+  }[]
+  readonly reviewSteps: PresentationProfessionalWorkflow['reviewSteps']
+  readonly manualChecks: readonly string[]
+  readonly disclosure: string
+}
+const domainInstructions = {
+  pitch: [
+    '界定目标用户、具体痛点和现有替代方案，标明访谈或材料范围；没有验证的市场需求只列为待验证假设。',
+    '说明方案如何缓解已声明痛点、差异和实施边界，区分已具备能力与未来路线图，不用产品承诺代替证据。',
+    '展示可回溯的验证结果、样本和时间范围，将用户反馈、试验结果与团队推断分开，并保留相反证据。',
+    '列出市场口径、商业模式、成本收入假设和风险，数字标注单位与来源，测算结果不等于未来业绩承诺。',
+    '给出请求的资源、用途、里程碑和判断标准，明确依赖条件与下一步负责人，不将叙事完整当作投资建议。',
+  ],
+  report: [
+    '先陈述本次汇报要支持的决策、范围与主要结论，将已完成结果和建议分开，避免用进度百分比代替实际成果。',
+    '按优先级说明主要发现、与基准或目标的差异及影响，区分观测事实、原因假设和待确认事项。',
+    '让每项结论回溯到原材料、统计口径和时间范围，比较保持同单位与同基准，异常值不静默删除。',
+    '列明风险、未完成项、证据缺口和缓解措施，说明哪些结论受限制；解释问题不能冒充问题已关闭。',
+    '将行动建议写成负责人、时间点、依赖和验收标准，需要决策的事项明确选项与权衡，不虚构责任人。',
+  ],
+  training: [
+    '写明学习者基础、课程范围与可观察的学习目标，用具体任务和评价标准表达目标，不把看完课件视为掌握。',
+    '按先备知识到新概念组织内容，解释术语与常见误区，区分简化示例和真实生产条件，保留安全限制。',
+    '展示可复现的操作步骤、输入、预期结果与失败处理，案例使用明确合成或授权材料，不隐去关键前提。',
+    '设计与目标对应的练习、反馈和评价规则，给出练习所需条件与参考解法，不能以练习存在认证学习效果。',
+    '回扣每个目标，总结关键步骤和常见错误，给出迁移任务与后续材料；未实际评估的学习效果保持待验证。',
+  ],
+  research: [
+    '界定研究问题、已有知识与待检验假设，说明研究范围及为何有意义，不将提出假设写成发现。',
+    '交代数据来源、样本、方法、时间与分析口径，说明排除条件和复现所需信息，材料缺失不猜填。',
+    '分别呈现原结果、分析与推断，图表保留单位、样本和不确定性；相关性不能自动表述为因果。',
+    '列明样本偏差、方法局限、相反证据与外推边界，说明结果适用于什么条件，不以章节齐全认证科学正确。',
+    '为事实与关键推断列出指定版本的原来源和引用位置，保留未核实来源及冲突，不用最新研究替换冻结证据。',
+  ],
+  sales: [
+    '用已知客户材料说明业务问题、现状和决策条件，区分客户明确需求与销售方推测，不捏造客户认可。',
+    '将方案内容逐项映射到需求，说明交付物、能力边界、实施条件及不包含项，未来功能不得伪装现有能力。',
+    '展示与客户场景有关的案例和效果证据，声明案例条件、样本与授权边界，其他客户结果不是本客户效果保证。',
+    '比较客户价值、成本、周期与替代方案，公开收益测算的输入和假设，保持币种单位一致，不承诺未经证实的ROI。',
+    '明确试点或采购下一步、负责人、日期、成功标准与风险承担，需要确认的商务条款单列，不自动代表客户同意。',
+  ],
+} as const
+/** Guidance follows the selected domain; it is not evidence of task or industry success. */
+export function presentationDomainWorkflow(
+  domain?: string,
+): PresentationDomainWorkflow | undefined {
+  if (
+    domain !== 'pitch' &&
+    domain !== 'report' &&
+    domain !== 'training' &&
+    domain !== 'research' &&
+    domain !== 'sales'
+  )
+    return undefined
+  const profile = PRESENTATION_DOMAIN_PROFILES[domain]
+  return structuredClone({
+    version: 1,
+    domain,
+    sections: profile.sections.map((id, index) => ({
+      id,
+      title: profile.labels[index]!,
+      instruction: domainInstructions[domain][index]!,
+    })),
+    reviewSteps: [
+      {
+        id: 'research_scope',
+        title: '核对叙事所需证据',
+        tools: ['read_research_ledger'],
+        instruction:
+          domainInstructions[domain][2] +
+          '读取指定研究的完整事实、推断、冲突与来源；无研究时保留证据缺口，不虚构记录。',
+      },
+      {
+        id: 'save_story',
+        title: '保存章节与证据映射',
+        tools: ['save_presentation_plan'],
+        instruction:
+          domainInstructions[domain][0] +
+          '保存对应domain及全部必需章节，将每页结论映射到实际claim/source；绑定研究时保留原版本。',
+      },
+      {
+        id: 'freeze_production',
+        title: '冻结并编译实际生产任务',
+        tools: ['start_presentation_production', 'run_presentation_production'],
+        instruction:
+          '以实际保存的 plan_revision 启动生产，保留返回的真实 request_id；按该 request_id 推进逐页编译。冻结任务创建后才可读取其主张证据，全部页编译完成后才可准备导入；本步骤不写宿主页。',
+      },
+      {
+        id: 'claim_review',
+        title: '复核冻结主张',
+        tools: ['read_presentation_claim_evidence', 'record_presentation_claim_review'],
+        instruction:
+          domainInstructions[domain][3] +
+          '使用上一步真实 request_id 逐项读取该冻结任务的主张证据，在 notes 记录已读窗口内的判断；可选 source_assessment.basis 只能使用实际原文窗口的绝对 UTF-16 位置，不新增顶层 basis。Agent 意见不认证事实，不替代行业人工审核。',
+      },
+      {
+        id: 'confirm_import',
+        title: '准备并确认导入',
+        tools: ['prepare_presentation_production_import', 'import_presentation_production'],
+        instruction:
+          '使用同一真实 request_id，先复核冻结主张并将问题显式保留，全部页编译完成后仅准备导入；实际导入必须提出可见提案并取得用户确认。工具存在不代表授权宿主写入，不静默导入；尚无真实导入回执时不进行宿主比较或截图 QA。',
+      },
+      {
+        id: 'compare_imported',
+        title: '核对实际导入页',
+        tools: ['compare_presentation_page_structure'],
+        instruction:
+          '仅在实际导入回执已经建立 artifact 与宿主页业务映射后比较文字、表格、图表数据及显式样式的实际读回；未知、继承样式和完整图表语义仍未验证。导入成功不认证内容或视觉保真。',
+      },
+      {
+        id: 'visual_review',
+        title: '逐页视觉复核',
+        tools: ['capture_presentation_page_qa', 'record_presentation_page_review'],
+        instruction:
+          '实际导入回执建立页面映射后，逐页取得实际可读截图再检查层级、密度、图表标签及限定语；不可读或无截图不得标视觉通过，Agent审阅不是用户或行业认证。',
+      },
+      {
+        id: 'delivery_review',
+        title: '核对交付与待办',
+        tools: ['read_presentation_delivery_report'],
+        instruction:
+          domainInstructions[domain][4] +
+          '阅读冻结报告和所有未关闭问题，将人工检查及后续行动显式交付；说明不关闭机器发现。',
+      },
+    ],
+    manualChecks: [
+      ...profile.questions,
+      '实际检查目标受众能否理解并完成本次叙事目标；工具步骤存在不证明行业效果。',
+    ],
+    disclosure:
+      '本工作流提供制作与复核指引，不认证事实、行业效果、品牌、宿主视觉保真或人工检查已完成。',
+  })
+}
+
 const professionalGuidance = {
   science: {
     sourcePriority: ['原始学术论文', '官方数据集', '学术机构与标准制定机构'],

@@ -21,6 +21,7 @@ import {
 import {
   parsePresentationPlan,
   presentationProfessionalWorkflow,
+  presentationDomainWorkflow,
   presentationSourceAttachmentId,
   assertDeckMatchesPresentationPlan,
   type PresentationPlan,
@@ -79,6 +80,7 @@ export interface PresentationDeliveryReport {
   inputDigest: string
   planDigest: string
   plan: PresentationPlan
+  domainWorkflow?: NonNullable<ReturnType<typeof presentationDomainWorkflow>>
   professionalWorkflow?: NonNullable<ReturnType<typeof presentationProfessionalWorkflow>>
   research?: { record: PresentationResearchRecord; findings: PresentationResearchBindingFinding[] }
   sourceAudit?: PresentationSourceAudit[]
@@ -458,6 +460,7 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
     'planDigest',
     'plan',
     'professionalWorkflow',
+    'domainWorkflow',
     'research',
     'sourceAudit',
     'reviews',
@@ -489,6 +492,12 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
     workflow
       ? canonical(report.professionalWorkflow) !== canonical(workflow)
       : Object.hasOwn(report, 'professionalWorkflow')
+  )
+    invalid()
+  if (
+    Object.hasOwn(report, 'domainWorkflow') &&
+    (!presentationDomainWorkflow(plan.domain) ||
+      canonical(report.domainWorkflow) !== canonical(presentationDomainWorkflow(plan.domain)))
   )
     invalid()
   if (plan.research) {
@@ -679,6 +688,9 @@ export async function buildPresentationDeliveryReport(
     version: 1,
     ...input.metadata,
     plan,
+    ...(presentationDomainWorkflow(plan.domain)
+      ? { domainWorkflow: presentationDomainWorkflow(plan.domain)! }
+      : {}),
     ...(presentationProfessionalWorkflow(plan.domain)
       ? { professionalWorkflow: presentationProfessionalWorkflow(plan.domain)! }
       : {}),
@@ -1012,6 +1024,13 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
             safe(JSON.stringify(presentationProfessionalIssueContext(report, issue, page.pageId))),
           ),
       ),
+    )
+  if (report.domainWorkflow)
+    lines.push(
+      '',
+      '## Domain workflow (manualChecks NOT VERIFIED)',
+      safe(JSON.stringify(report.domainWorkflow)),
+      'These narrative and review instructions do not certify facts, industry outcomes or completion of manual checks.',
     )
   const workflow = report.professionalWorkflow
   if (workflow)
