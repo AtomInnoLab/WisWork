@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./presentation-issue": "./src/presentation-issue.ts",
+    "./presentation-canonical": "./src/presentation-canonical.ts",
     "./presentation-job": "./src/presentation-job.ts"
   },
   "scripts": {

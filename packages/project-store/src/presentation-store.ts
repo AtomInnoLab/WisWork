@@ -1,4 +1,8 @@
 import {
+  canonicalPresentationValue as canonical,
+  presentationPlanSnapshotInputs,
+} from './presentation-canonical.js'
+import {
   parsePresentationIssueLedger,
   parsePresentationIssueActionInput,
   type PresentationIssueLedger,
@@ -71,8 +75,12 @@ export interface PresentationPlanRecord extends PresentationPlanBinding {
   projectId: string
   documentId: string
   inputDigest: string
-  revisions?: { revision: number; inputDigest: string; createdAt: string;
-    snapshot?: PresentationPlanRevisionSnapshot }[]
+  revisions?: {
+    revision: number
+    inputDigest: string
+    createdAt: string
+    snapshot?: PresentationPlanRevisionSnapshot
+  }[]
 }
 export interface PresentationPlanRevisionSnapshot {
   sourceCount: number
@@ -85,28 +93,48 @@ export interface PresentationPlanRevisionSnapshot {
 }
 function planRevisionSnapshot(plan: unknown): PresentationPlanRevisionSnapshot | undefined {
   const value = plan as Record<string, unknown>
-  if (!Array.isArray(value.sources) || value.sources.length > 256 ||
-    !Array.isArray(value.claims) || value.claims.length > 256 ||
-    !Array.isArray(value.slides) || value.slides.length > 32 ||
-    !value.style || typeof value.style !== 'object' || Array.isArray(value.style)) return undefined
+  if (
+    !Array.isArray(value.sources) ||
+    value.sources.length > 256 ||
+    !Array.isArray(value.claims) ||
+    value.claims.length > 256 ||
+    !Array.isArray(value.slides) ||
+    value.slides.length > 32 ||
+    !value.style ||
+    typeof value.style !== 'object' ||
+    Array.isArray(value.style)
+  )
+    return undefined
+  const inputs = presentationPlanSnapshotInputs(value)
   return {
-    sourceCount: value.sources.length, claimCount: value.claims.length,
+    sourceCount: value.sources.length,
+    claimCount: value.claims.length,
     slideCount: value.slides.length,
-    sourcesDigest: digest(canonical(value.sources)), claimsDigest: digest(canonical(value.claims)),
-    slidesDigest: digest(canonical(value.slides)),
-    styleDigest: digest(canonical(value.brandKit === undefined ? value.style : { style: value.style, brandKit: value.brandKit })),
+    sourcesDigest: digest(inputs.sourcesDigest),
+    claimsDigest: digest(inputs.claimsDigest),
+    slidesDigest: digest(inputs.slidesDigest),
+    styleDigest: digest(inputs.styleDigest),
   }
 }
 function validPlanRevisionSnapshot(value: unknown): value is PresentationPlanRevisionSnapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const snapshot = value as PresentationPlanRevisionSnapshot
-  return Object.keys(snapshot).sort().join(',') ===
-    'claimCount,claimsDigest,slideCount,slidesDigest,sourceCount,sourcesDigest,styleDigest' &&
-    [snapshot.sourceCount, snapshot.claimCount, snapshot.slideCount].every((count) =>
-      Number.isSafeInteger(count) && count >= 0) &&
-    snapshot.sourceCount <= 256 && snapshot.claimCount <= 256 && snapshot.slideCount <= 32 &&
-    [snapshot.sourcesDigest, snapshot.claimsDigest, snapshot.slidesDigest, snapshot.styleDigest]
-      .every((hash) => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))
+  return (
+    Object.keys(snapshot).sort().join(',') ===
+      'claimCount,claimsDigest,slideCount,slidesDigest,sourceCount,sourcesDigest,styleDigest' &&
+    [snapshot.sourceCount, snapshot.claimCount, snapshot.slideCount].every(
+      (count) => Number.isSafeInteger(count) && count >= 0,
+    ) &&
+    snapshot.sourceCount <= 256 &&
+    snapshot.claimCount <= 256 &&
+    snapshot.slideCount <= 32 &&
+    [
+      snapshot.sourcesDigest,
+      snapshot.claimsDigest,
+      snapshot.slidesDigest,
+      snapshot.styleDigest,
+    ].every((hash) => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))
+  )
 }
 function bindingDigest(binding: PresentationPlanBinding, error = 'invalid_plan'): string {
   if (!binding || !Number.isSafeInteger(binding.revision) || binding.revision < 1)
@@ -120,15 +148,6 @@ export function assertPresentationId(value: unknown): asserts value is string {
 }
 function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex')
-}
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
-  if (value && typeof value === 'object')
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`)
-      .join(',')}}`
-  return JSON.stringify(value)
 }
 export interface PresentationReceipt {
   version: 1
@@ -1024,30 +1043,49 @@ export class PresentationStore {
     )
       throw new Error('invalid_state')
     if (record.revisions !== undefined) {
-      if (!Array.isArray(record.revisions) || record.revisions.length < 1 || record.revisions.length > 32)
+      if (
+        !Array.isArray(record.revisions) ||
+        record.revisions.length < 1 ||
+        record.revisions.length > 32
+      )
         throw new Error('invalid_state')
       let previous = 0
       let previousTime = ''
       for (const event of record.revisions) {
-        if (!event || typeof event !== 'object' || Array.isArray(event) ||
+        if (
+          !event ||
+          typeof event !== 'object' ||
+          Array.isArray(event) ||
           Object.keys(event).sort().join(',') !==
-            (event.snapshot === undefined ? 'createdAt,inputDigest,revision' : 'createdAt,inputDigest,revision,snapshot') ||
-          !Number.isSafeInteger(event.revision) || event.revision < 1 ||
+            (event.snapshot === undefined
+              ? 'createdAt,inputDigest,revision'
+              : 'createdAt,inputDigest,revision,snapshot') ||
+          !Number.isSafeInteger(event.revision) ||
+          event.revision < 1 ||
           (previous > 0 && event.revision !== previous + 1) ||
-          typeof event.inputDigest !== 'string' || !/^[a-f0-9]{64}$/.test(event.inputDigest) ||
+          typeof event.inputDigest !== 'string' ||
+          !/^[a-f0-9]{64}$/.test(event.inputDigest) ||
           (event.snapshot !== undefined && !validPlanRevisionSnapshot(event.snapshot)) ||
           typeof event.createdAt !== 'string' ||
           !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(event.createdAt) ||
           !Number.isFinite(Date.parse(event.createdAt)) ||
           new Date(event.createdAt).toISOString() !== event.createdAt ||
-          event.createdAt < previousTime) throw new Error('invalid_state')
+          event.createdAt < previousTime
+        )
+          throw new Error('invalid_state')
         previous = event.revision
         previousTime = event.createdAt
       }
-      if (previous !== record.revision || record.revisions.at(-1)!.inputDigest !== record.inputDigest)
+      if (
+        previous !== record.revision ||
+        record.revisions.at(-1)!.inputDigest !== record.inputDigest
+      )
         throw new Error('invalid_state')
       const latestSnapshot = record.revisions.at(-1)!.snapshot
-      if (latestSnapshot && canonical(latestSnapshot) !== canonical(planRevisionSnapshot(record.plan)))
+      if (
+        latestSnapshot &&
+        canonical(latestSnapshot) !== canonical(planRevisionSnapshot(record.plan))
+      )
         throw new Error('invalid_state')
     }
     return record
@@ -1083,9 +1121,14 @@ export class PresentationStore {
       inputDigest,
       revisions: [
         ...(previous?.revisions ?? []),
-        { revision: revision + 1, inputDigest,
-          createdAt: new Date(Math.max(Date.now(), previousTime ? Date.parse(previousTime) : 0)).toISOString(),
-          ...(snapshot ? { snapshot } : {}) },
+        {
+          revision: revision + 1,
+          inputDigest,
+          createdAt: new Date(
+            Math.max(Date.now(), previousTime ? Date.parse(previousTime) : 0),
+          ).toISOString(),
+          ...(snapshot ? { snapshot } : {}),
+        },
       ].slice(-32),
     }
     this.write(join(directory, 'plan.json'), record)

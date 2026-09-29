@@ -6,6 +6,10 @@ import {
 import type { PresentationIssueActionInput } from '@wiswork/project-store/presentation-issue'
 import type { PresentationProductionJob } from '@wiswork/project-store/presentation-job'
 import type { PresentationPlanRevisionSnapshot } from '@wiswork/project-store'
+import {
+  canonicalPresentationValue,
+  presentationPlanSnapshotInputs,
+} from '@wiswork/project-store/presentation-canonical'
 import { parsePresentationJobResponse } from './presentation-jobs.js'
 import {
   parsePresentationProductionStatus,
@@ -166,7 +170,7 @@ function validRevisionSnapshot(value: unknown): value is PresentationPlanRevisio
     ].every((hash) => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))
   )
 }
-function parseStatus(value: unknown, projectId: string): PresentationProjectStatus {
+async function parseStatus(value: unknown, projectId: string): Promise<PresentationProjectStatus> {
   const p = value as PresentationProjectStatus | undefined
   let plan: PresentationProjectStatus['plan']
   if (p?.plan !== undefined) {
@@ -220,6 +224,23 @@ function parseStatus(value: unknown, projectId: string): PresentationProjectStat
     }
     if (plan.value.projectId !== projectId) throw new Error('presentation_response_invalid')
     const latestSnapshot = revisions?.at(-1)?.snapshot
+    if (latestSnapshot) {
+      const inputs = presentationPlanSnapshotInputs(p.plan.value)
+      const digest = async (input: string) => {
+        const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
+        return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join(
+          '',
+        )
+      }
+      for (const key of Object.keys(inputs) as (keyof typeof inputs)[]) {
+        const hash = await digest(inputs[key])
+        if (hash !== latestSnapshot[key]) throw new Error('presentation_response_invalid')
+      }
+      if (
+        (await digest(canonicalPresentationValue(p.plan.value))) !== revisions!.at(-1)!.inputDigest
+      )
+        throw new Error('presentation_response_invalid')
+    }
     if (
       latestSnapshot &&
       (latestSnapshot.sourceCount !== plan.value.sources.length ||
@@ -644,7 +665,11 @@ export function createPresentationProjectController(
       if (text.length > 384 * 1024) throw new Error('presentation_response_invalid')
       const value = JSON.parse(text)
       if (value?.error) throw new Error(`presentation_${value.error}`)
-      const project = parseStatus(value, projectId)
+      const project = await parseStatus(value, projectId)
+      check()
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      check()
       let selectedRequest =
         phase === 'loading' && requestId
           ? requestId

@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
+import {
+  canonicalPresentationValue,
+  presentationPlanSnapshotInputs,
+} from '@wiswork/project-store/presentation-canonical'
 import { createPresentationProjectController } from '../src/skills/powerpoint/presentation-project.js'
 
 const project = {
@@ -416,14 +421,22 @@ describe('plan-only project status', () => {
       sourceCount: plan.sources.length,
       claimCount: plan.claims.length,
       slideCount: plan.slides.length,
-      sourcesDigest: 'a'.repeat(64),
-      claimsDigest: 'b'.repeat(64),
-      slidesDigest: 'c'.repeat(64),
-      styleDigest: 'd'.repeat(64),
+      sourcesDigest: createHash('sha256')
+        .update(presentationPlanSnapshotInputs(plan).sourcesDigest)
+        .digest('hex'),
+      claimsDigest: createHash('sha256')
+        .update(presentationPlanSnapshotInputs(plan).claimsDigest)
+        .digest('hex'),
+      slidesDigest: createHash('sha256')
+        .update(presentationPlanSnapshotInputs(plan).slidesDigest)
+        .digest('hex'),
+      styleDigest: createHash('sha256')
+        .update(presentationPlanSnapshotInputs(plan).styleDigest)
+        .digest('hex'),
     }
     const event = {
       revision: 1,
-      inputDigest: 'a'.repeat(64),
+      inputDigest: createHash('sha256').update(canonicalPresentationValue(plan)).digest('hex'),
       createdAt: '2026-09-24T00:00:00.000Z',
       snapshot,
     }
@@ -441,6 +454,62 @@ describe('plan-only project status', () => {
     f.request.mockResolvedValueOnce(new Response(JSON.stringify(value)))
     await f.controller.refresh()
     expect(f.controller.snapshot().project?.plan?.revisions).toEqual([event])
+    for (const changed of [
+      { ...plan, sources: plan.sources.map((source) => ({ ...source, title: 'Altered source' })) },
+      { ...plan, claims: plan.claims.map((claim) => ({ ...claim, statement: 'Altered claim' })) },
+      { ...plan, slides: plan.slides.map((slide) => ({ ...slide, title: 'Altered slide' })) },
+      { ...plan, title: 'Altered brief identity' },
+    ]) {
+      const g = fixture()
+      g.lastProject.mockReturnValue(plan.projectId)
+      g.request.mockResolvedValueOnce(
+        new Response(JSON.stringify({ ...value, plan: { ...value.plan, value: changed } })),
+      )
+      await g.controller.refresh()
+      expect(g.controller.snapshot().project).toBeUndefined()
+      expect(g.controller.snapshot().error).toBeTruthy()
+    }
+    const digestSpy = vi
+      .spyOn(crypto.subtle, 'digest')
+      .mockRejectedValueOnce(new Error('crypto unavailable'))
+    const unavailable = fixture()
+    unavailable.lastProject.mockReturnValue(plan.projectId)
+    unavailable.request.mockResolvedValueOnce(new Response(JSON.stringify(value)))
+    await unavailable.controller.refresh()
+    expect(unavailable.controller.snapshot().project).toBeUndefined()
+    expect(unavailable.controller.snapshot().error).toBeTruthy()
+    digestSpy.mockRestore()
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle)
+    let release!: () => void
+    const delayed = vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce(async (...args) => {
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return originalDigest(...args)
+    })
+    const cancelled = fixture()
+    cancelled.lastProject.mockReturnValue(plan.projectId)
+    cancelled.request.mockResolvedValueOnce(new Response(JSON.stringify(value)))
+    const refresh = cancelled.controller.refresh()
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    cancelled.controller.cancel()
+    release()
+    await refresh
+    expect(cancelled.controller.snapshot().project).toBeUndefined()
+    delayed.mockRestore()
+    f.request.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...value,
+          plan: {
+            ...value.plan,
+            value: { ...plan, style: { ...plan.style, accentColor: 'FF0000' } },
+          },
+        }),
+      ),
+    )
+    await f.controller.refresh()
+    expect(f.controller.snapshot().error).toBeTruthy()
     f.request.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
