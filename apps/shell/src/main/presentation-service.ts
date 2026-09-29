@@ -1,6 +1,11 @@
 import {
+  registerPresentationProjectWork,
+  type PresentationProjectWork,
+} from './presentation-project-work'
+import {
   capturePresentationProjectWriteLease,
   capturePresentationProjectReadLease,
+  capturePresentationProjectCreationLease,
 } from './presentation-project-write-lease'
 import {
   createPresentationProjectLifecycleService,
@@ -75,6 +80,21 @@ const readonlyProductionOperations = new Set([
   'production_delivery_report',
   'production_feedback_read',
   'production_feedback_compare',
+])
+const ordinaryProjectReadOperations = new Set([
+  'get',
+  'status',
+  'get_plan',
+  'read_import_source',
+  'read_source_audit',
+])
+const ordinaryProjectWriteOperations = new Set([
+  'compile',
+  'resume',
+  'save_plan',
+  'accept_plan',
+  'set_plan_page_lock',
+  'audit_sources',
 ])
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
@@ -247,6 +267,7 @@ export function createPresentationService(options: {
       }))
   const renderPdf = options.renderPdf ?? convertPresentationToPdf
   return async (body, signal, context) => {
+    let foregroundWork: PresentationProjectWork | undefined
     try {
       checkAbort(signal)
       if (
@@ -257,7 +278,13 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       let request = body as Record<string, unknown>
-      if (typeof request.operation === 'string' && request.operation.startsWith('production_'))
+      if (
+        typeof request.operation === 'string' &&
+        (request.operation.startsWith('production_') ||
+          request.operation === 'export_pdf' ||
+          ordinaryProjectReadOperations.has(request.operation) ||
+          ordinaryProjectWriteOperations.has(request.operation))
+      )
         request = structuredClone(request)
       if (
         presentationProjectLifecycleOperations.some((operation) => operation === request.operation)
@@ -296,76 +323,106 @@ export function createPresentationService(options: {
           throw new Error('invalid_request')
         assertPresentationId(request.projectId)
         assertPresentationId(request.requestId)
-        const source = request.source ?? 'compiled'
-        let pdf: Buffer
-        let slideCount: number
-        if (source === 'production') {
-          const production = store.production(
-            request.projectId as string,
-            request.documentId,
-            request.requestId as string,
-          )
-          if (!production) throw new Error('not_found')
-          if (production.pages.some((page) => page.state !== 'compiled' || !page.result))
-            throw new Error('page_not_ready')
-          const merged = await PDFDocument.create()
-          let inputBytes = 0
-          for (const page of production.pages) {
-            checkAbort(signal)
-            const pptx = Buffer.from(page.result!.pptxBase64, 'base64')
-            inputBytes += pptx.length
-            if (inputBytes > 10 * 1024 * 1024) throw new Error('output_too_large')
-            const rendered = await renderPdf(pptx, signal)
-            checkAbort(signal)
-            let onePage: PDFDocument
-            try {
-              onePage = await PDFDocument.load(rendered)
-            } catch {
-              throw new Error('renderer_unavailable')
-            }
-            if (onePage.getPageCount() !== 1) throw new Error('renderer_unavailable')
-            const [copied] = await merged.copyPages(onePage, [0])
-            merged.addPage(copied)
-          }
-          slideCount = production.pages.length
-          pdf = Buffer.from(await merged.save())
-        } else {
-          const record = store.request(
-            request.projectId as string,
-            request.documentId,
-            request.requestId as string,
-          )
-          if (record?.status !== 'compiled') throw new Error('not_found')
-          const compiled = record.result as {
-            pptxBase64: string
-            report: PresentationCompileReport
-          }
-          pdf = Buffer.from(await renderPdf(Buffer.from(compiled.pptxBase64, 'base64'), signal))
-          slideCount = compiled.report.slideCount
-        }
-        checkAbort(signal)
-        if (
-          pdf.length < 16 ||
-          pdf.length > 10 * 1024 * 1024 ||
-          !pdf.subarray(0, 5).equals(Buffer.from('%PDF-')) ||
-          !pdf.subarray(Math.max(0, pdf.length - 1024)).includes(Buffer.from('%%EOF'))
-        )
-          throw new Error('renderer_unavailable')
-        let pageCount: number
-        try {
-          pageCount = (await PDFDocument.load(pdf)).getPageCount()
-        } catch {
-          throw new Error('renderer_unavailable')
-        }
-        if (pageCount !== slideCount) throw new Error('renderer_unavailable')
-        return boundedResponse({
-          status: 'exported',
-          source,
-          projectId: request.projectId,
-          requestId: request.requestId,
-          slideCount: pageCount,
-          pdfBase64: pdf.toString('base64'),
+        const scope = { projectId: request.projectId as string, documentId: request.documentId }
+        const existing = store.projectScope(scope.projectId, scope.documentId)
+        const control = lifecycleStore.read(scope)
+        if (control) lifecycleStore.assertActive(scope, control.revision)
+        if (!existing && !control) throw new Error('not_found')
+        foregroundWork = registerPresentationProjectWork({
+          scope: { root: options.userDataPath, ...scope },
+          signal,
         })
+        signal = foregroundWork.signal
+        const lease = capturePresentationProjectReadLease({
+          store: lifecycleStore,
+          scope,
+          readExistingProject: (bound) => store.projectScope(bound.projectId, bound.documentId),
+          signal,
+        })
+        const assertCurrent = lease.assertCurrent
+        try {
+          const source = request.source ?? 'compiled'
+          let pdf: Buffer
+          let slideCount: number
+          if (source === 'production') {
+            const production = store.production(
+              request.projectId as string,
+              request.documentId,
+              request.requestId as string,
+            )
+            if (!production) throw new Error('not_found')
+            if (production.pages.some((page) => page.state !== 'compiled' || !page.result))
+              throw new Error('page_not_ready')
+            const merged = await PDFDocument.create()
+            assertCurrent()
+            let inputBytes = 0
+            for (const page of production.pages) {
+              checkAbort(signal)
+              const pptx = Buffer.from(page.result!.pptxBase64, 'base64')
+              inputBytes += pptx.length
+              if (inputBytes > 10 * 1024 * 1024) throw new Error('output_too_large')
+              const rendered = await renderPdf(pptx, signal)
+              assertCurrent()
+              checkAbort(signal)
+              let onePage: PDFDocument
+              try {
+                onePage = await PDFDocument.load(rendered)
+              } catch {
+                throw new Error('renderer_unavailable')
+              }
+              assertCurrent()
+              if (onePage.getPageCount() !== 1) throw new Error('renderer_unavailable')
+              const [copied] = await merged.copyPages(onePage, [0])
+              assertCurrent()
+              merged.addPage(copied)
+            }
+            slideCount = production.pages.length
+            pdf = Buffer.from(await merged.save())
+            assertCurrent()
+          } else {
+            const record = store.request(
+              request.projectId as string,
+              request.documentId,
+              request.requestId as string,
+            )
+            if (record?.status !== 'compiled') throw new Error('not_found')
+            const compiled = record.result as {
+              pptxBase64: string
+              report: PresentationCompileReport
+            }
+            pdf = Buffer.from(await renderPdf(Buffer.from(compiled.pptxBase64, 'base64'), signal))
+            assertCurrent()
+            slideCount = compiled.report.slideCount
+          }
+          checkAbort(signal)
+          if (
+            pdf.length < 16 ||
+            pdf.length > 10 * 1024 * 1024 ||
+            !pdf.subarray(0, 5).equals(Buffer.from('%PDF-')) ||
+            !pdf.subarray(Math.max(0, pdf.length - 1024)).includes(Buffer.from('%%EOF'))
+          )
+            throw new Error('renderer_unavailable')
+          let pageCount: number
+          try {
+            pageCount = (await PDFDocument.load(pdf)).getPageCount()
+          } catch {
+            throw new Error('renderer_unavailable')
+          }
+          assertCurrent()
+          if (pageCount !== slideCount) throw new Error('renderer_unavailable')
+          assertCurrent()
+          return boundedResponse({
+            status: 'exported',
+            source,
+            projectId: request.projectId,
+            requestId: request.requestId,
+            slideCount: pageCount,
+            pdfBase64: pdf.toString('base64'),
+          })
+        } catch (error) {
+          assertCurrent()
+          throw error
+        }
       }
       if (
         ['comment_list', 'comment_add', 'comment_resolve'].includes(request.operation as string)
@@ -1014,31 +1071,76 @@ export function createPresentationService(options: {
       if (plan && plan.projectId !== projectId) throw new Error('invalid_plan')
       if (deck && deck.id !== projectId) throw new Error('invalid_request')
       const key = `${resolve(options.userDataPath)}\0${projectId}`
-      const readonlyProduction = readonlyProductionOperations.has(request.operation as string)
-      const productionLease = (request.operation as string).startsWith('production_')
-        ? (readonlyProduction
-            ? capturePresentationProjectReadLease
-            : capturePresentationProjectWriteLease)({
+      const ordinaryProject =
+        ordinaryProjectReadOperations.has(request.operation as string) ||
+        ordinaryProjectWriteOperations.has(request.operation as string)
+      foregroundWork = registerPresentationProjectWork({
+        scope: { root: options.userDataPath, projectId, documentId },
+        signal,
+      })
+      signal = foregroundWork.signal
+      const readonlyProject =
+        readonlyProductionOperations.has(request.operation as string) ||
+        ordinaryProjectReadOperations.has(request.operation as string)
+      const existingProject = ordinaryProject
+        ? store.projectScope(projectId, documentId)
+        : undefined
+      const control = ordinaryProject ? lifecycleStore.read({ projectId, documentId }) : undefined
+      if (control) lifecycleStore.assertActive({ projectId, documentId }, control.revision)
+      if (ordinaryProject && readonlyProject && !existingProject && !control)
+        throw new Error(
+          request.operation === 'get_plan' && request.revision !== undefined
+            ? 'plan_revision_unavailable'
+            : 'not_found',
+        )
+      const creating =
+        ordinaryProject &&
+        !existingProject &&
+        ['compile', 'save_plan'].includes(request.operation as string)
+      if (
+        creating &&
+        (request.operation === 'save_plan'
+          ? request.expectedRevision !== 0
+          : request.planRevision !== undefined)
+      )
+        throw new Error('revision_conflict')
+      if (ordinaryProject && !existingProject && !control && !creating) throw new Error('not_found')
+      const projectLease = creating
+        ? capturePresentationProjectCreationLease({
             store: lifecycleStore,
             scope: { projectId, documentId },
-            readExistingProject: (scope) => store.projectScope(scope.projectId, scope.documentId),
-            ...(presentationJobOperations.includes(request.operation as string) ? {} : { signal }),
+            signal,
           })
+        : (request.operation as string).startsWith('production_') || ordinaryProject
+          ? (readonlyProject
+              ? capturePresentationProjectReadLease
+              : capturePresentationProjectWriteLease)({
+              store: lifecycleStore,
+              scope: { projectId, documentId },
+              readExistingProject: (scope) => store.projectScope(scope.projectId, scope.documentId),
+              ...(presentationJobOperations.includes(request.operation as string)
+                ? {}
+                : { signal }),
+            })
+          : undefined
+      const assertProjectCurrent = projectLease
+        ? 'assertCurrent' in projectLease
+          ? projectLease.assertCurrent
+          : projectLease.assertWritable
         : undefined
-      const assertProductionCurrent = productionLease
-        ? 'assertCurrent' in productionLease
-          ? productionLease.assertCurrent
-          : productionLease.assertWritable
-        : undefined
-      const assertProductionWrite = readonlyProduction
+      const assertProjectWrite = readonlyProject
         ? () => {
             throw new Error('access_denied')
           }
-        : assertProductionCurrent
+        : assertProjectCurrent
       const release = await acquireProjectLock(options.userDataPath, projectId)
+      const guardedResponse = (value: unknown) => {
+        assertProjectCurrent?.()
+        return boundedResponse(value)
+      }
       try {
         checkAbort(signal)
-        assertProductionCurrent?.()
+        assertProjectCurrent?.()
         if (request.operation === 'production_feedback_compare') {
           const baseline = store.production(
             projectId,
@@ -1062,7 +1164,7 @@ export function createPresentationService(options: {
               plan: parsePresentationPlan(task.plan.plan),
               feedback: store.productionFeedback(projectId, documentId, task.requestId) ?? null,
             })
-            return boundedResponse({
+            return guardedResponse({
               comparison: buildPresentationFeedbackComparison({
                 projectId,
                 documentId,
@@ -1080,13 +1182,13 @@ export function createPresentationService(options: {
           }
         }
         if (request.operation === 'production_feedback_read')
-          return boundedResponse({
+          return guardedResponse({
             feedback:
               store.productionFeedback(projectId, documentId, request.requestId as string) ?? null,
           })
         if (request.operation === 'production_feedback_record') {
-          assertProductionCurrent?.()
-          return boundedResponse({
+          assertProjectCurrent?.()
+          return guardedResponse({
             feedback: store.recordProductionFeedback(
               projectId,
               documentId,
@@ -1111,13 +1213,13 @@ export function createPresentationService(options: {
               )
           }
           checkAbort(signal)
-          assertProductionCurrent?.()
+          assertProjectCurrent?.()
           const response = encode(
             handlePresentationJob(key, request, {
               store,
               compile,
               attachments,
-              assertWritable: assertProductionWrite,
+              assertWritable: assertProjectWrite,
               readResearch: (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
             }),
           )
@@ -1137,10 +1239,10 @@ export function createPresentationService(options: {
             attachments,
             signal,
             (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
-            assertProductionWrite,
+            assertProjectWrite,
           )
-          assertProductionCurrent?.()
-          return boundedResponse(result)
+          assertProjectCurrent?.()
+          return guardedResponse(result)
         }
         if ((request.operation as string).startsWith('production_')) {
           const result = await handlePresentationProduction(
@@ -1149,16 +1251,16 @@ export function createPresentationService(options: {
               store,
               compile,
               attachments,
-              assertWritable: assertProductionWrite,
+              assertWritable: assertProjectWrite,
               readResearch: (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
             },
             signal,
           )
-          assertProductionCurrent?.()
-          return boundedResponse(result)
+          assertProjectCurrent?.()
+          return guardedResponse(result)
         }
         if (request.operation === 'read_import_source')
-          return boundedResponse(
+          return guardedResponse(
             readPresentationImportSource(
               store,
               projectId,
@@ -1168,6 +1270,7 @@ export function createPresentationService(options: {
             ),
           )
         if (request.operation === 'accept_plan') {
+          assertProjectWrite?.()
           const acceptance = store.acceptPlan(
             projectId,
             documentId,
@@ -1175,9 +1278,10 @@ export function createPresentationService(options: {
             request.expectedRevision as number,
             request.planDigest as string,
           )
-          return boundedResponse({ projectId, documentId, acceptance })
+          return guardedResponse({ projectId, documentId, acceptance })
         }
         if (request.operation === 'set_plan_page_lock') {
+          assertProjectWrite?.()
           const record = store.setPlanPageLock(
             projectId,
             documentId,
@@ -1185,7 +1289,7 @@ export function createPresentationService(options: {
             request.pageId as string,
             request.locked as boolean,
           )
-          return boundedResponse({
+          return guardedResponse({
             projectId,
             revision: record.revision,
             plan: parsePresentationPlan(record.plan),
@@ -1201,6 +1305,7 @@ export function createPresentationService(options: {
               signal,
             )
             checkAbort(signal)
+            assertProjectCurrent?.()
             const previousPlan = store.plan(projectId, documentId)
             if (previousPlan && previousPlan.revision === request.expectedRevision) {
               try {
@@ -1210,6 +1315,7 @@ export function createPresentationService(options: {
               }
             }
           }
+          if (request.operation === 'save_plan') assertProjectWrite?.()
           const record =
             request.operation === 'save_plan'
               ? store.savePlan(projectId, documentId, request.expectedRevision as number, plan)
@@ -1220,15 +1326,21 @@ export function createPresentationService(options: {
             throw new Error(
               request.revision === undefined ? 'not_found' : 'plan_revision_unavailable',
             )
-          return boundedResponse({
+          return guardedResponse({
             projectId,
             revision: record.revision,
             plan: parsePresentationPlan(record.plan),
           })
         }
         if (['audit_sources', 'read_source_audit'].includes(request.operation as string))
-          return boundedResponse(
-            await handlePresentationSourceAudit(request, store, attachments, signal),
+          return guardedResponse(
+            await handlePresentationSourceAudit(
+              request,
+              store,
+              attachments,
+              signal,
+              assertProjectWrite,
+            ),
           )
         if (request.operation === 'status') {
           let researchStatus: Record<string, unknown>
@@ -1471,7 +1583,7 @@ export function createPresentationService(options: {
           const latest = history[0]
           if (!latest) {
             if (!plan) throw new Error('not_found')
-            return boundedResponse({
+            return guardedResponse({
               projectId,
               title: plan.value.title,
               status: 'planned',
@@ -1496,7 +1608,7 @@ export function createPresentationService(options: {
             latest.status === 'compiled'
               ? (latest.result as { report: PresentationCompileReport }).report.checks
               : undefined
-          return boundedResponse({
+          return guardedResponse({
             projectId,
             title: latestDeck.title,
             status: latest.status,
@@ -1537,7 +1649,7 @@ export function createPresentationService(options: {
         if (request.operation === 'get') {
           const record = store.latest(projectId, documentId)
           if (!record) throw new Error('not_found')
-          return boundedResponse(record.result)
+          return guardedResponse(record.result)
         }
         const requestId = request.requestId as string
         let record = store.request(projectId, documentId, requestId)
@@ -1563,10 +1675,11 @@ export function createPresentationService(options: {
               signal,
             )
           checkAbort(signal)
+          assertProjectWrite?.()
           record = store.begin(projectId, documentId, requestId, deck, binding)
         }
         if (!record) throw new Error('not_found')
-        if (record.status === 'compiled') return boundedResponse(record.result)
+        if (record.status === 'compiled') return guardedResponse(record.result)
         if (request.operation === 'resume' && record.plan)
           await readBoundPresentationResearch(
             parsePresentationPlan(record.plan.plan),
@@ -1576,6 +1689,7 @@ export function createPresentationService(options: {
             signal,
           )
         checkAbort(signal)
+        assertProjectCurrent?.()
         const inputDeck = savedDeck(record.deck)
         if (inputDeck.id !== projectId) throw new Error('invalid_deck')
         if (record.plan) {
@@ -1587,7 +1701,7 @@ export function createPresentationService(options: {
             throw new Error('plan_mismatch')
           }
           const sourceReadiness = new Map<string, Promise<boolean>>()
-          for (const slide of inputDeck.slides)
+          for (const slide of inputDeck.slides) {
             await assertCitedPresentationSourcesReady(
               plan,
               slide,
@@ -1596,6 +1710,8 @@ export function createPresentationService(options: {
               signal,
               sourceReadiness,
             )
+            assertProjectCurrent?.()
+          }
         }
         // Keep compact references in the durable receipt. Resolve only against this document.
         const assets = []
@@ -1612,6 +1728,7 @@ export function createPresentationService(options: {
                 )) as PresentationInlineAsset),
                 id: asset.id,
               }
+              assertProjectCurrent?.()
             } catch (error) {
               checkAbort(signal)
               if (
@@ -1629,10 +1746,12 @@ export function createPresentationService(options: {
           assets.push(resolved)
         }
         checkAbort(signal)
+        assertProjectCurrent?.()
         if (record.plan) assertBrandLogoAsset(parsePresentationPlan(record.plan.plan), assets)
         // Only attachment_asset can add evidence after document-bound digest validation.
         const compiled = await compile({ ...inputDeck, assets }, { trustedAssetEvidence: true })
         checkAbort(signal)
+        assertProjectCurrent?.()
         if (compiled.bytes.byteLength > 10 * 1024 * 1024) throw new Error('output_too_large')
         const sourceSlideIds = compiled.sourceSlideIds
         if (
@@ -1668,8 +1787,12 @@ export function createPresentationService(options: {
         }
         const response = encode(result)
         if (response.byteLength > MAX_RESPONSE_BYTES) throw new Error('output_too_large')
+        assertProjectWrite?.()
         store.complete(record, result)
         return response
+      } catch (error) {
+        assertProjectCurrent?.()
+        throw error
       } finally {
         release()
       }
@@ -1682,6 +1805,8 @@ export function createPresentationService(options: {
         /* Only finite error codes are sent to the paired client. */
       }
       return encode({ error: code })
+    } finally {
+      foregroundWork?.finish()
     }
   }
 }
