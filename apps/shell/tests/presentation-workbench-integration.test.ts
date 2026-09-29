@@ -132,7 +132,10 @@ it('reopens a paused eight-page workbench, downloads saved progress, retries onl
         timeout: 15000,
       },
     )
+    // Match the enabled UI action: a background status refresh may still be in flight.
+    await vi.waitFor(() => expect(runtime.presentation!.snapshot().phase).toBe('idle'))
     await runtime.presentation!.refresh()
+    expect(runtime.presentation!.snapshot().project?.production?.status).toBe('compiled')
     for (const [index, page] of deck.slides.entries())
       expect(attempts.get(page.id)).toBe(index === 1 ? 2 : 1)
     await runtime.presentation!.prepareProduction()

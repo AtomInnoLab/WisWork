@@ -127,6 +127,9 @@ export interface PresentationWorkflowSummary {
       | 'research.started'
       | 'research.completed'
       | 'research.failed'
+      | 'source_audit.started'
+      | 'source_audit.completed'
+      | 'source_audit.failed'
       | 'plan.proposed'
       | 'plan.revised'
       | 'style.proposed'
@@ -135,6 +138,7 @@ export interface PresentationWorkflowSummary {
     scope?:
       | 'production_asset_resolution'
       | 'source_excerpt_audit'
+      | 'research_ledger'
       | 'saved_plan'
       | 'saved_style'
       | 'explicit_user_decision'
@@ -546,6 +550,89 @@ export function presentationWorkflowSummary(
         text: '素材解析仅保留最近 128 条事件，较早记录未展示。',
       })
   }
+  const research = project.researchSummary
+  if (project.researchHistoryUnavailable)
+    attention.push({
+      id: 'research-history-unavailable',
+      text: '独立研究整理历史暂不可读取；不能沿用未知记录状态或结论，请刷新项目状态后核对。',
+    })
+  else if (research?.projectId === project.projectId) {
+    const binding = plan?.research
+    const disclaimer = '仅为研究整理归档，不代表主张支持、来源权威性或时效通过'
+    for (const record of research.records) {
+      const id = `research-ledger:${JSON.stringify([research.documentId, research.projectId, record.id, record.sequence, record.draftDigest])}`
+      const bound =
+        binding?.ledgerId === record.id &&
+        binding.sequence === record.sequence &&
+        binding.draftDigest === record.draftDigest
+      const result =
+        record.state === 'completed'
+          ? '整理已归档（待核验）'
+          : record.state === 'failed'
+            ? `整理未完成：${record.error === 'aborted' ? '整理已中断' : record.error === 'source_unavailable' ? '原文资料暂不可用' : '研究记录状态异常'}`
+            : '缺少结束回执，不能证明仍在执行或已经中断'
+      const records = [
+        {
+          id: `${id}:started`,
+          at: record.startedAt,
+          text: `开始整理研究 #${record.sequence} · 原记录 ${record.id} · 草稿摘要 ${record.draftDigest}；${disclaimer}`,
+        },
+      ]
+      if (record.finishedAt)
+        records.push({
+          id: `${id}:finished`,
+          at: record.finishedAt,
+          text: `${result}；${disclaimer}`,
+        })
+      timeline.push({
+        id,
+        scope: 'research_ledger',
+        type:
+          record.state === 'completed'
+            ? 'research.completed'
+            : record.state === 'failed'
+              ? 'research.failed'
+              : 'research.started',
+        at: record.finishedAt ?? record.startedAt,
+        text: `研究 #${record.sequence} · ${result} · 来源 ${record.sourceCount} · 结论 ${record.factCount} · 冲突 ${record.conflictCount}；${bound ? '当前计划精确绑定' : '历史研究，不替代当前计划绑定'}；${disclaimer}`,
+        recordsLabel: '研究整理记录',
+        records,
+      })
+    }
+    if (research.records.some((record) => record.state === 'running'))
+      attention.push({
+        id: 'research-unfinished',
+        text: '研究整理有开始记录但缺少结束回执，不能证明后台仍在执行或已经中断；请只读核对原记录，不自动重跑。',
+      })
+    if (research.records.some((record) => record.state === 'failed'))
+      attention.push({
+        id: 'research-failed',
+        text: '研究整理存在未完成记录；原草稿与记录保留，请读取原记录核对，不自动重跑。',
+      })
+    if (research.records.some((record) => record.conflictCount > 0))
+      attention.push({
+        id: 'research-conflicts',
+        text: '研究整理归档记录包含冲突；请读取双方原结论与来源，历史记录不替代当前计划绑定或事实核验。',
+      })
+    if (research.totalRecords > research.records.length)
+      attention.push({
+        id: 'research-history-window',
+        text: `研究整理现存 ${research.totalRecords} 条；仅展示最近 ${research.records.length} 条，较早记录不在此窗口内；序号间隔不代表缺失记录的状态。`,
+      })
+    if (
+      binding &&
+      !research.records.some(
+        (record) =>
+          record.id === binding.ledgerId &&
+          record.sequence === binding.sequence &&
+          record.draftDigest === binding.draftDigest,
+      )
+    )
+      attention.push({
+        id: 'research-binding-window',
+        text: '当前计划精确绑定的研究记录未出现在最近窗口中；不能据此推断删除或完成，请按原记录 ID 读取核对，不替换绑定。',
+      })
+  }
   const sourceHistory = project.sourceAuditHistory
   if (project.sourceAuditHistoryUnavailable) {
     attention.push({
@@ -569,13 +656,13 @@ export function presentationWorkflowSummary(
             ? `资料摘录核对未完成：${run.error === 'aborted' ? '已停止' : run.error === 'invalid_state' ? '资料或记录状态异常' : '资料暂不可读取'}`
             : '核对已开始但无结果回执，不能证明仍在后台执行；可重新核对'
       timeline.push({
-        id: `research:${key}`,
+        id: `source-audit:${key}`,
         type:
           latest.state === 'completed'
-            ? 'research.completed'
+            ? 'source_audit.completed'
             : latest.state === 'failed'
-              ? 'research.failed'
-              : 'research.started',
+              ? 'source_audit.failed'
+              : 'source_audit.started',
         scope: 'source_excerpt_audit',
         text: `计划第 ${latest.planRevision} 版 · ${text(latest)}；窗口内保留 ${group.length} 次核对，来源真实性、适用范围和时效未核验`,
         at: latest.finishedAt ?? latest.startedAt,

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { researchSummary } from './presentation-research-fixture.js'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -136,4 +137,67 @@ it('replays the saved project stage and updates from the import record', async (
   expect(node.textContent).toContain('采集页面截图')
   expect(node.textContent).toContain('恢复记录 · 3 项')
   expect(node.textContent).toContain('保存重开')
+})
+
+it('shows original research start and end in folded records and updates in place after an interrupted record ends', async () => {
+  const summary = researchSummary()
+  const record = summary.records[0]!
+  record.state = 'running'
+  delete record.finishedAt
+  summary.revision = 1
+  let snapshot: ReturnType<PresentationProjectController['snapshot']> = {
+    phase: 'idle',
+    project: {
+      projectId: 'research',
+      title: '研究项目',
+      status: 'planned',
+      slideCount: 0,
+      slides: [],
+      history: [],
+      researchSummary: summary,
+    },
+  }
+  const listeners = new Set<() => void>()
+  const project = {
+    snapshot: () => snapshot,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+  } as unknown as PresentationProjectController
+  const node = document.createElement('div')
+  const root = createRoot(node)
+  roots.push(root)
+  await act(async () => root.render(React.createElement(PresentationWorkflowCard, { project })))
+  const findRecords = () =>
+    Array.from(node.querySelectorAll('details')).find((item) =>
+      item.querySelector(':scope > summary')?.textContent?.includes('研究整理记录'),
+    )!
+  expect(findRecords()).toBeDefined()
+  expect(findRecords().open).toBe(false)
+  expect(findRecords().querySelectorAll('time')).toHaveLength(1)
+  expect(findRecords().querySelector('time')?.dateTime).toBe(record.startedAt)
+  expect(node.querySelector('[aria-label="待处理问题"]')).not.toBeNull()
+  const ended = structuredClone(summary)
+  ended.revision = 2
+  ended.records[0]!.state = 'failed'
+  ended.records[0]!.error = 'aborted'
+  ended.records[0]!.finishedAt = '2026-09-29T00:00:03.000Z'
+  snapshot = { ...snapshot, project: { ...snapshot.project!, researchSummary: ended } }
+  await act(async () => listeners.forEach((listener) => listener()))
+  expect(
+    Array.from(node.querySelectorAll('summary')).filter((item) =>
+      item.textContent?.includes('研究整理记录'),
+    ),
+  ).toHaveLength(1)
+  expect(findRecords().querySelectorAll('time')).toHaveLength(2)
+  expect(findRecords().querySelectorAll('time')[1]!.dateTime).toBe(ended.records[0]!.finishedAt)
+  expect(findRecords().open).toBe(false)
+  await act(async () => findRecords().querySelector('summary')!.click())
+  expect(findRecords().open).toBe(true)
+  expect(findRecords().querySelectorAll('time')).toHaveLength(2)
+  expect(findRecords().textContent).toContain(record.startedAt)
+  expect(findRecords().textContent).toContain(ended.records[0]!.finishedAt!)
 })

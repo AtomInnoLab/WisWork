@@ -3,6 +3,10 @@ import {
   type PresentationDeliveryBundleReceipt,
 } from '@wiswork/project-store/presentation-delivery-bundle'
 import {
+  parsePresentationResearchSummary,
+  type PresentationResearchSummary,
+} from '@wiswork/project-store/presentation-research'
+import {
   parsePresentationAssetLedger,
   type PresentationAssetLedger,
 } from '@wiswork/project-store/presentation-asset-events'
@@ -67,6 +71,8 @@ export interface PresentationProductionTask {
   }
 }
 export interface PresentationProjectStatus {
+  researchSummary?: PresentationResearchSummary
+  researchHistoryUnavailable?: boolean
   deliveryBundlesAvailable?: true
   assetHistory?: PresentationAssetLedger
   assetHistoryUnavailable?: boolean
@@ -238,6 +244,18 @@ async function presentationDigest(input: string): Promise<string> {
 }
 async function parseStatus(value: unknown, projectId: string): Promise<PresentationProjectStatus> {
   const p = value as PresentationProjectStatus | undefined
+  let researchSummary: PresentationResearchSummary | undefined
+  let researchHistoryUnavailable =
+    Object.hasOwn(p ?? {}, 'researchHistoryUnavailable') && p?.researchHistoryUnavailable !== false
+  if (!researchHistoryUnavailable && Object.hasOwn(p ?? {}, 'researchSummary')) {
+    try {
+      researchSummary = parsePresentationResearchSummary(p?.researchSummary)
+      if (researchSummary.projectId !== projectId) throw new Error('presentation_response_invalid')
+    } catch {
+      researchSummary = undefined
+      researchHistoryUnavailable = true
+    }
+  }
   if (p?.deliveryBundlesAvailable !== undefined && p.deliveryBundlesAvailable !== true)
     throw new Error('presentation_response_invalid')
   let planAcceptance: PresentationPlanAcceptanceLedger | undefined
@@ -600,6 +618,8 @@ async function parseStatus(value: unknown, projectId: string): Promise<Presentat
   }
   // Copy only the bounded public projection; never retain arbitrary server fields or binary data.
   return {
+    ...(researchSummary ? { researchSummary } : {}),
+    ...(researchHistoryUnavailable ? { researchHistoryUnavailable: true } : {}),
     ...(p.deliveryBundlesAvailable ? { deliveryBundlesAvailable: true } : {}),
     ...(assetHistory ? { assetHistory } : {}),
     ...(assetHistoryUnavailable ? { assetHistoryUnavailable: true } : {}),
@@ -978,6 +998,10 @@ export function createPresentationProjectController(
       if ((await options.documentId()) !== documentId)
         throw new Error('presentation_document_changed')
       check()
+      if (project.researchSummary && project.researchSummary.documentId !== documentId) {
+        delete project.researchSummary
+        project.researchHistoryUnavailable = true
+      }
       let selectedRequest =
         phase === 'loading' && requestId
           ? requestId
@@ -1942,11 +1966,19 @@ export function createPresentationProjectController(
         if ((await options.documentId()) !== documentId)
           throw new Error('presentation_document_changed')
         check()
+        if (refreshed.researchSummary && refreshed.researchSummary.documentId !== documentId) {
+          delete refreshed.researchSummary
+          refreshed.researchHistoryUnavailable = true
+        }
         updatedProject = {
           ...project,
           sourceAuditHistory: refreshed.sourceAuditHistory,
           sourceAuditHistoryUnavailable: refreshed.sourceAuditHistoryUnavailable,
         }
+        delete updatedProject.researchSummary
+        delete updatedProject.researchHistoryUnavailable
+        if (refreshed.researchSummary) updatedProject.researchSummary = refreshed.researchSummary
+        if (refreshed.researchHistoryUnavailable) updatedProject.researchHistoryUnavailable = true
         try {
           sourceAudit =
             (await restoreSourceAudit(updatedProject, documentId, controller.signal, check)) ??

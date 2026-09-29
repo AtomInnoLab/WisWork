@@ -1,3 +1,5 @@
+import { createPresentationProjectController } from '../../office-addin/src/skills/powerpoint/presentation-project'
+import { presentationWorkflowSummary } from '../../office-addin/src/agent/presentation-workflow'
 import { createPresentationResearchAbandonPersistence } from '../../office-addin/src/agent/presentation-research-recovery-storage'
 import { PresentationResearchStore } from '@wiswork/project-store/presentation-research-store'
 import { createPresentationResearchController } from '../../office-addin/src/agent/presentation-research'
@@ -1382,6 +1384,125 @@ it('reopens durable end identity after cancellation and ignores a late ACK witho
     expect(f.compile).not.toHaveBeenCalled()
   } finally {
     releaseAck()
+    f.close()
+  }
+})
+
+function researchProjectController(f: Awaited<ReturnType<typeof setup>>) {
+  return createPresentationProjectController({
+    request: f.request,
+    available: () => true,
+    pdfAvailable: () => false,
+    productionPdfAvailable: () => false,
+    documentId: async () => 'doc',
+    lastProject: () => f.plan.projectId,
+    executeTool: async (call, signal) => f.tool(call.name, call.input, signal),
+  })
+}
+it('restores actual independent research events through PC status and Office project without replacing frozen research A', async () => {
+  const f = await setup()
+  try {
+    const controller = researchProjectController(f)
+    await controller.refresh()
+    expect(controller.snapshot().error).toBeUndefined()
+    const project = controller.snapshot().project!
+    expect(project.researchSummary).toMatchObject({
+      documentId: 'doc',
+      projectId: f.plan.projectId,
+      revision: 2,
+      totalRecords: 1,
+    })
+    const events = presentationWorkflowSummary(project, undefined, undefined)!.timeline.filter(
+      (event) => event.scope === 'research_ledger',
+    )
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ type: 'research.completed', at: f.recordA.finishedAt })
+    expect(events[0]!.records!.map((item) => item.at)).toEqual([
+      f.recordA.startedAt,
+      f.recordA.finishedAt,
+    ])
+    expect(events[0]!.text).toContain('当前')
+    const newer = structuredClone(f.draft)
+    newer.scope = 'later independent research, not frozen production'
+    const result = await f.tool('build_research_ledger', {
+      project_id: f.plan.projectId,
+      ledger_id: 'later',
+      expected_revision: 2,
+      draft: newer,
+    })
+    expect(result.isError, result.output).toBeFalsy()
+    f.restart()
+    const reopened = researchProjectController(f)
+    await reopened.refresh()
+    expect(reopened.snapshot().error).toBeUndefined()
+    const restored = reopened.snapshot().project!
+    expect(restored.plan!.value.research).toEqual(f.plan.research)
+    const next = presentationWorkflowSummary(restored, undefined, undefined)!.timeline.filter(
+      (event) => event.scope === 'research_ledger',
+    )
+    expect(next).toHaveLength(2)
+    expect(next.find((event) => event.id === events[0]!.id)).toEqual(events[0])
+    expect(next.filter((event) => event.text.includes('当前计划精确绑定'))).toHaveLength(1)
+    expect(f.compile).not.toHaveBeenCalled()
+    controller.cancel()
+    reopened.cancel()
+  } finally {
+    f.close()
+  }
+})
+it('reflects actual end and cleanup gaps without creating fictitious research events or replaying work', async () => {
+  const f = await setup()
+  try {
+    const store = new PresentationResearchStore(f.root)
+    const orphan = await store.begin('doc', f.plan.projectId, 2, 'timeline-orphan', f.draft)
+    f.restart()
+    const controller = researchProjectController(f)
+    await controller.refresh()
+    const before = presentationWorkflowSummary(controller.snapshot().project, undefined, undefined)!
+    const pending = before.timeline.find(
+      (event) => event.scope === 'research_ledger' && event.type === 'research.started',
+    )!
+    expect(pending).toBeDefined()
+    expect(pending.at).toBe(orphan.record.startedAt)
+    expect(pending.records).toHaveLength(1)
+    await f.raw('research_abandon', {
+      ledgerId: orphan.record.id,
+      expectedDraftDigest: orphan.record.draftDigest,
+      expectedRevision: 3,
+    })
+    await controller.refresh()
+    const ended = presentationWorkflowSummary(
+      controller.snapshot().project,
+      undefined,
+      undefined,
+    )!.timeline.find((event) => event.id === pending.id)!
+    expect(ended.type).toBe('research.failed')
+    expect(ended.records).toHaveLength(2)
+    await f.raw('research_delete', {
+      ledgerId: orphan.record.id,
+      expectedDraftDigest: orphan.record.draftDigest,
+      expectedRevision: 4,
+      deleteId: 'timeline-cleanup',
+    })
+    f.restart()
+    await controller.refresh()
+    expect(controller.snapshot().error).toBeUndefined()
+    expect(controller.snapshot().project!.researchSummary).toMatchObject({
+      version: 2,
+      totalRecords: 1,
+      lastSequence: 2,
+    })
+    const remaining = presentationWorkflowSummary(
+      controller.snapshot().project,
+      undefined,
+      undefined,
+    )!.timeline.filter((event) => event.scope === 'research_ledger')
+    expect(remaining).toHaveLength(1)
+    expect(remaining.some((event) => event.id === pending.id)).toBe(false)
+    expect(controller.snapshot().project!.plan!.value.research).toEqual(f.plan.research)
+    expect(f.compile).not.toHaveBeenCalled()
+    controller.cancel()
+  } finally {
     f.close()
   }
 })

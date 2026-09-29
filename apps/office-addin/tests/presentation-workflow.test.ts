@@ -92,10 +92,10 @@ it('folds durable source-excerpt research by frozen plan and keeps retry detail 
     },
   }
   const workflow = presentationWorkflowSummary(value, undefined, undefined)!
-  const rows = workflow.timeline.filter((event) => event.type?.startsWith('research.'))
+  const rows = workflow.timeline.filter((event) => event.type?.startsWith('source_audit.'))
   expect(rows).toHaveLength(1)
   expect(rows[0]).toMatchObject({
-    type: 'research.failed',
+    type: 'source_audit.failed',
     scope: 'source_excerpt_audit',
     records: [{ id: 'one' }, { id: 'two' }],
   })
@@ -111,11 +111,11 @@ it('folds durable source-excerpt research by frozen plan and keeps retry detail 
   value.sourceAuditHistory.runs.push(next)
   value.sourceAuditHistory.revision = 6
   const after = presentationWorkflowSummary(value, undefined, undefined)!.timeline.filter((event) =>
-    event.type?.startsWith('research.'),
+    event.type?.startsWith('source_audit.'),
   )
   expect(after[0]!.id).toBe(rows[0]!.id)
   expect(after[0]!.text).toContain('3 次')
-  expect(after[0]!.type).toBe('research.completed')
+  expect(after[0]!.type).toBe('source_audit.completed')
 })
 it('an unfinished durable research read does not pretend to be a live background task', () => {
   const value = {
@@ -140,7 +140,7 @@ it('an unfinished durable research read does not pretend to be a live background
     },
   }
   const workflow = presentationWorkflowSummary(value, undefined, undefined)!
-  expect(workflow.timeline.find((event) => event.type === 'research.started')?.text).toContain(
+  expect(workflow.timeline.find((event) => event.type === 'source_audit.started')?.text).toContain(
     '不能证明仍在后台执行',
   )
   expect(workflow.attention.some((item) => item.id === 'source-audit-unfinished')).toBe(true)

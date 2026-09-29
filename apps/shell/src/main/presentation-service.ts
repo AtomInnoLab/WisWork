@@ -908,6 +908,12 @@ export function createPresentationService(options: {
             await handlePresentationSourceAudit(request, store, attachments, signal),
           )
         if (request.operation === 'status') {
+          let researchStatus: Record<string, unknown>
+          try {
+            researchStatus = { researchSummary: await researchStore.summary(documentId, projectId) }
+          } catch {
+            researchStatus = { researchHistoryUnavailable: true }
+          }
           let reviewComments:
             | {
                 revision: number
@@ -1148,6 +1154,7 @@ export function createPresentationService(options: {
               status: 'planned',
               deliveryBundlesAvailable: true,
               researchAvailable: true,
+              ...researchStatus,
               ...(production ? { production, productionTasks } : {}),
               slideCount: plan.value.slides.length,
               slides: plan.value.slides.map(({ id, title }) => ({ id, title })),
@@ -1172,6 +1179,7 @@ export function createPresentationService(options: {
             status: latest.status,
             deliveryBundlesAvailable: true,
             researchAvailable: true,
+            ...researchStatus,
             ...(production ? { production, productionTasks } : {}),
             latestRequestId: latest.requestId,
             ...(plan ? { plan } : {}),
