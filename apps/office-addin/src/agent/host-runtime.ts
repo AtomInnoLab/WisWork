@@ -1,3 +1,11 @@
+import {
+  createPresentationProjectGovernanceController,
+  type PresentationGovernanceOptions,
+} from './presentation-project-governance.js'
+import type {
+  PresentationLifecycleScope,
+  PresentationProjectDeletionAttempt,
+} from '@wiswork/project-store/presentation-project-governance'
 import { createPresentationMasterXmlSkill } from '../skills/powerpoint/presentation-master-xml.js'
 import { BrowserPresentationMasterXmlAdapter } from '../skills/powerpoint/browser-presentation-master-xml-adapter.js'
 import type { PresentationMasterXmlChange } from '../skills/powerpoint/presentation-master-xml-change.js'
@@ -138,6 +146,7 @@ import { composeOfficeSkills } from './skill-registry.js'
 
 export interface OfficeHostRuntime {
   readonly team?: PresentationTeamController
+  readonly governance?: ReturnType<typeof createPresentationProjectGovernanceController>
   readonly research?: PresentationResearchController
   readonly presentation?: PresentationProjectController
   readonly importProgress?: PresentationImportProgressController
@@ -202,6 +211,15 @@ export function createOfficeHostRuntime(
   host: OfficeHost,
   options: {
     presentation?: Omit<PresentationGenerationOptions, 'vfs'> & {
+      projectGovernanceEnabled?: boolean
+      governanceAvailable?(): boolean
+      governanceRequest?(body: unknown, signal?: AbortSignal): Promise<Response>
+      governanceSessionId?(): string | undefined
+      readGovernanceAttempt?(scope: PresentationLifecycleScope): unknown
+      writeGovernanceAttempt?(
+        scope: PresentationLifecycleScope,
+        value: PresentationProjectDeletionAttempt | undefined,
+      ): void
       assertDocumentId?(expected: string): void
       packageBackupAvailable?(): boolean
       packageBackupRequest?(body: unknown, signal?: AbortSignal): Promise<Response>
@@ -1277,6 +1295,43 @@ export function createOfficeHostRuntime(
       }
     return result
   }
+  const governance =
+    host === 'powerpoint' &&
+    generation &&
+    options.presentation?.projectGovernanceEnabled === true &&
+    options.presentation.governanceRequest
+      ? createPresentationProjectGovernanceController({
+          available: () =>
+            options.presentation!.projectGovernanceEnabled === true &&
+            options.presentation!.available() &&
+            options.presentation!.governanceAvailable?.() === true &&
+            Boolean(
+              presentation?.snapshot().project?.projectId ?? options.presentation!.lastProject(),
+            ),
+          sessionId: options.presentation.governanceSessionId,
+          documentId: options.presentation.documentId,
+          currentProjectId: () =>
+            presentation?.snapshot().project?.projectId ?? options.presentation!.lastProject(),
+          previewAvailable: () => Boolean(presentation?.snapshot().project?.projectId),
+          request: options.presentation.governanceRequest,
+          readAttempt: options.presentation.readGovernanceAttempt ?? (() => undefined),
+          writeAttempt:
+            options.presentation.writeGovernanceAttempt ??
+            (() => {
+              throw Error('presentation_governance_storage_unavailable')
+            }),
+        } satisfies PresentationGovernanceOptions)
+      : undefined
+  let governanceProjectId = presentation?.snapshot().project?.projectId
+  const unsubscribeGovernanceProject = governance
+    ? presentation?.subscribe(() => {
+        const next = presentation.snapshot().project?.projectId
+        if (next !== governanceProjectId) {
+          governanceProjectId = next
+          governance.clear()
+        }
+      })
+    : undefined
   let importRevision = 0
   const importListeners = new Set<() => void>()
   const notifyImport = () => {
@@ -1746,79 +1801,85 @@ export function createOfficeHostRuntime(
                                               : base.executeTool(call, signal),
       }
     : base
+  const lifecycleRuntime = lifecycle(
+    skill,
+    proposals,
+    vfs,
+    skills,
+    options.packageRuntime,
+    options.enableSkillPackages !== false,
+    () => {
+      legacyTextEpoch++
+      importSource = 'generation'
+      importSelectionEpoch++
+      productionEpoch++
+      production?.clear()
+      productionJobs?.clear()
+      evidenceDelivery?.clear()
+      pageBackup?.clear()
+      pageReplacement?.clear()
+      researchSkill?.clear()
+      research?.clear()
+      governance?.clear()
+      hostBundle?.clear()
+      historySkill?.clear()
+      baselineSkill?.clear()
+      existingEditing?.clear()
+      existingBatchEditing?.clear()
+      nativeModify?.clear()
+      slideDuplication?.clear()
+      nativeMaster?.clear()
+      packageEditing?.clear()
+      masterXml?.clear()
+      nativeModifyRestoration?.clear()
+      existingImageEditing?.clear()
+      existingPageEditing?.clear()
+      pageEditing?.clear()
+      changes?.clear()
+      qaSkill?.clear()
+      attachments?.clear()
+      generation?.clear()
+      planning?.clear()
+      manualObservations?.clear()
+      comments?.clear()
+      teamController?.clear()
+      team?.clear()
+      presentation?.clear()
+      notifyImport()
+      notifyQa()
+    },
+    attachments && options.presentation
+      ? {
+          available: options.presentation.attachmentsAvailable ?? (() => false),
+          upload: attachments.upload,
+          list: attachments.list,
+          acquisitionHistory: attachments.acquisitionHistory,
+          remove: attachments.remove,
+          importUrl: attachments.importUrl,
+          importUrls: attachments.importUrls,
+          importWebpage: attachments.importWebpage,
+          attestLicense: attachments.attestLicense,
+          revokeLicense: attachments.revokeLicense,
+          extractFirstFrame: attachments.extractFirstFrame,
+          imagesAvailable: () =>
+            Boolean(
+              options.presentation?.attachmentsAvailable?.() &&
+              options.presentation?.assetsAvailable?.(),
+            ),
+          remoteImagesAvailable: () => Boolean(options.presentation?.remoteImagesAvailable?.()),
+          webpagesAvailable: () => Boolean(options.presentation?.webpagesAvailable?.()),
+          rightsAvailable: () => Boolean(options.presentation?.rightsAvailable?.()),
+          animationFrameAvailable: () => Boolean(options.presentation?.animationFrameAvailable?.()),
+        }
+      : undefined,
+  )
   return {
-    ...lifecycle(
-      skill,
-      proposals,
-      vfs,
-      skills,
-      options.packageRuntime,
-      options.enableSkillPackages !== false,
-      () => {
-        legacyTextEpoch++
-        importSource = 'generation'
-        importSelectionEpoch++
-        productionEpoch++
-        production?.clear()
-        productionJobs?.clear()
-        evidenceDelivery?.clear()
-        pageBackup?.clear()
-        pageReplacement?.clear()
-        researchSkill?.clear()
-        research?.clear()
-        hostBundle?.clear()
-        historySkill?.clear()
-        baselineSkill?.clear()
-        existingEditing?.clear()
-        existingBatchEditing?.clear()
-        nativeModify?.clear()
-        slideDuplication?.clear()
-        nativeMaster?.clear()
-        packageEditing?.clear()
-        masterXml?.clear()
-        nativeModifyRestoration?.clear()
-        existingImageEditing?.clear()
-        existingPageEditing?.clear()
-        pageEditing?.clear()
-        changes?.clear()
-        qaSkill?.clear()
-        attachments?.clear()
-        generation?.clear()
-        planning?.clear()
-        manualObservations?.clear()
-        comments?.clear()
-        teamController?.clear()
-        team?.clear()
-        presentation?.clear()
-        notifyImport()
-        notifyQa()
-      },
-      attachments && options.presentation
-        ? {
-            available: options.presentation.attachmentsAvailable ?? (() => false),
-            upload: attachments.upload,
-            list: attachments.list,
-            acquisitionHistory: attachments.acquisitionHistory,
-            remove: attachments.remove,
-            importUrl: attachments.importUrl,
-            importUrls: attachments.importUrls,
-            importWebpage: attachments.importWebpage,
-            attestLicense: attachments.attestLicense,
-            revokeLicense: attachments.revokeLicense,
-            extractFirstFrame: attachments.extractFirstFrame,
-            imagesAvailable: () =>
-              Boolean(
-                options.presentation?.attachmentsAvailable?.() &&
-                options.presentation?.assetsAvailable?.(),
-              ),
-            remoteImagesAvailable: () => Boolean(options.presentation?.remoteImagesAvailable?.()),
-            webpagesAvailable: () => Boolean(options.presentation?.webpagesAvailable?.()),
-            rightsAvailable: () => Boolean(options.presentation?.rightsAvailable?.()),
-            animationFrameAvailable: () =>
-              Boolean(options.presentation?.animationFrameAvailable?.()),
-          }
-        : undefined,
-    ),
+    ...lifecycleRuntime,
+    dispose() {
+      unsubscribeGovernanceProject?.()
+      lifecycleRuntime.dispose()
+    },
+    ...(governance ? { governance } : {}),
     ...(teamController ? { team: teamController } : {}),
     ...(research ? { research } : {}),
     ...(presentation ? { presentation } : {}),

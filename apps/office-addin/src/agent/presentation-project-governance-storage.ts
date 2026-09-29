@@ -2,7 +2,7 @@ import {
   parsePresentationProjectDeletionAttempt,
   type PresentationLifecycleScope,
   type PresentationProjectDeletionAttempt,
-} from '../../../../packages/project-store/src/presentation-project-governance'
+} from '@wiswork/project-store/presentation-project-governance'
 export function createPresentationGovernanceStorage(
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>,
 ) {

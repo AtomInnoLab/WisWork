@@ -13,7 +13,7 @@ import {
   type PresentationLifecycleScope,
   type PresentationProjectDeletionAttempt,
   type PresentationRetentionPolicy,
-} from '../../../../packages/project-store/src/presentation-project-governance'
+} from '@wiswork/project-store/presentation-project-governance'
 export interface PresentationGovernanceSnapshot {
   available: boolean
   phase: 'idle' | 'busy' | 'unknown' | 'partial' | 'deleted' | 'error'
@@ -26,6 +26,8 @@ export interface PresentationGovernanceSnapshot {
   error?: string
 }
 export interface PresentationGovernanceOptions {
+  previewAvailable?(): boolean
+  sessionId?(): string | undefined
   available(): boolean
   documentId(): Promise<string>
   currentProjectId(): string | undefined
@@ -48,6 +50,7 @@ export function createPresentationProjectGovernanceController(
   let state: PresentationGovernanceSnapshot = { available: options.available(), phase: 'idle' },
     epoch = 0,
     active: AbortController | undefined
+  let previewSessionId: string | undefined, controlSessionId: string | undefined
   const listeners = new Set<() => void>()
   const publish = (value: PresentationGovernanceSnapshot) => {
     const cloned = structuredClone(value)
@@ -62,6 +65,8 @@ export function createPresentationProjectGovernanceController(
     listeners.forEach((f) => f())
   }
   const clear = () => {
+    previewSessionId = undefined
+    controlSessionId = undefined
     epoch++
     active?.abort()
     active = undefined
@@ -82,13 +87,15 @@ export function createPresentationProjectGovernanceController(
     active?.abort()
     const controller = new AbortController()
     active = controller
-    const generation = ++epoch
+    const generation = ++epoch,
+      connectionId = options.sessionId?.()
     let scope: PresentationLifecycleScope | undefined
     const checkSync = () => {
       if (
         controller.signal.aborted ||
         generation !== epoch ||
         !options.available() ||
+        options.sessionId?.() !== connectionId ||
         options.currentProjectId() !== scope?.projectId
       )
         throw Error('stale')
@@ -107,6 +114,7 @@ export function createPresentationProjectGovernanceController(
         controller.signal.aborted ||
         generation !== epoch ||
         !options.available() ||
+        options.sessionId?.() !== connectionId ||
         options.currentProjectId() !== projectId
       )
         throw Error('stale')
@@ -202,6 +210,7 @@ export function createPresentationProjectGovernanceController(
       )
         throw Error('invalid')
     }
+    controlSessionId = options.sessionId?.()
     return record
   }
   return {
@@ -247,12 +256,18 @@ export function createPresentationProjectGovernanceController(
           return
         }
         if (state.attempt) throw Error('pending')
+        if (options.previewAvailable?.() === false) throw Error('unavailable')
         const preview = parsePresentationGovernancePreview(
           await call('project_deletion_preview', 'preview'),
         )
+        previewSessionId = options.sessionId?.()
         publish({ ...state, preview })
       }),
     confirmDeletion: () => {
+      if (options.sessionId?.() !== previewSessionId) {
+        clear()
+        return Promise.resolve()
+      }
       const original = state.preview
       if (!original || state.attempt) return Promise.resolve()
       return run(async (scope, call, check) => {
@@ -300,6 +315,10 @@ export function createPresentationProjectGovernanceController(
         })
       }),
     resumeDeletion: () => {
+      if (options.sessionId?.() !== controlSessionId) {
+        clear()
+        return Promise.resolve()
+      }
       const attempt = state.attempt,
         lifecycle = state.lifecycle
       if (
@@ -321,6 +340,10 @@ export function createPresentationProjectGovernanceController(
       }, true)
     },
     initializePolicy: () => {
+      if (options.sessionId?.() !== previewSessionId) {
+        clear()
+        return Promise.resolve()
+      }
       if (!state.preview || state.attempt || state.lifecycle) return Promise.resolve()
       return run(async (scope, call) => {
         const lifecycle = boundLifecycle(
@@ -332,6 +355,10 @@ export function createPresentationProjectGovernanceController(
       }, true)
     },
     setPolicy: (policy: PresentationRetentionPolicy) => {
+      if (options.sessionId?.() !== controlSessionId) {
+        clear()
+        return Promise.resolve()
+      }
       const lifecycle = state.lifecycle
       if (!lifecycle || lifecycle.state !== 'active') return Promise.resolve()
       let frozen: PresentationRetentionPolicy

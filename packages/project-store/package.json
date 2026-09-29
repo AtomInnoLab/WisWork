@@ -21,6 +21,7 @@
     "./presentation-research-store": "./src/presentation-research-store.ts",
     "./presentation-source-assessment": "./src/presentation-source-assessment.ts",
     "./presentation-professional-context": "./src/presentation-professional-context.ts",
+    "./presentation-project-governance": "./src/presentation-project-governance.ts",
     "./presentation-feedback": "./src/presentation-feedback.ts"
   },
   "scripts": {

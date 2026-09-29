@@ -1,3 +1,6 @@
+import { PresentationProjectGovernanceCard } from './agent/presentation-project-governance-card.js'
+import { createPresentationGovernanceStorage } from './agent/presentation-project-governance-storage.js'
+import type { createPresentationProjectGovernanceController } from './agent/presentation-project-governance.js'
 import { createBrowserAuthClient, createMemorySessionStore } from '@wiswork/auth/browser'
 import { officeTeamAuthConfig } from './agent/team-auth-config.js'
 import { createOfficeTeamLoginDialog } from './agent/team-login-dialog.js'
@@ -272,6 +275,7 @@ interface SessionFile {
 export interface OfficeWorkspaceUi {
   readonly team?: PresentationTeamController
   readonly teamConnection?: OfficeTeamConnection
+  readonly governance?: ReturnType<typeof createPresentationProjectGovernanceController>
   readonly research?: PresentationResearchController
   readonly project?: PresentationProjectController
   readonly importProgress?: PresentationImportProgressController
@@ -363,6 +367,7 @@ export function createOfficeWorkspaceUi(
     team: runtime.team,
     teamConnection,
     research: runtime.research,
+    governance: runtime.governance,
     project: runtime.presentation,
     importProgress: runtime.importProgress,
     qa: runtime.qa,
@@ -1564,6 +1569,14 @@ export function AgentWorkspace(props: {
             disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
           />
         )}
+        {host === 'powerpoint' &&
+          import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1' &&
+          ui.governance && (
+            <PresentationProjectGovernanceCard
+              controller={ui.governance}
+              disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
+            />
+          )}
         {ui.research && (
           <PresentationResearchCard
             controller={ui.research}
@@ -1779,6 +1792,9 @@ function ConfiguredApp() {
               'presentation-production-pdf.v1',
               'presentation-master-backups.v1',
               'presentation-package-backups.v1',
+              ...(import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1'
+                ? ['presentation-governance.v1' as const]
+                : []),
             ],
           }),
     [transportMode],
@@ -1865,6 +1881,16 @@ function ConfiguredApp() {
                     })(),
                   )
                 : undefined
+            const governancePersistence =
+              import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1'
+                ? (() => {
+                    try {
+                      return createPresentationGovernanceStorage(window.localStorage)
+                    } catch {
+                      return undefined
+                    }
+                  })()
+                : undefined
             const researchDeletePersistence = boundPresentationDocumentId
               ? createPresentationResearchDeletePersistence(
                   boundPresentationDocumentId,
@@ -1917,6 +1943,21 @@ function ConfiguredApp() {
                 ? {
                     presentation: {
                       ...presentationBinding!,
+                      projectGovernanceEnabled:
+                        import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1',
+                      governanceAvailable: () => {
+                        const current = bridge.snapshot()
+                        return (
+                          current.status === 'connected' &&
+                          current.capabilities?.includes('presentation-governance.v1') === true
+                        )
+                      },
+                      governanceRequest: (body: unknown, signal?: AbortSignal) =>
+                        bridge.capabilityFetch('presentation-governance.v1', body, signal),
+                      governanceSessionId: () =>
+                        'diagnosticSessionId' in bridge ? bridge.diagnosticSessionId() : undefined,
+                      readGovernanceAttempt: governancePersistence?.read,
+                      writeGovernanceAttempt: governancePersistence?.write,
                       teamAvailable: () => teamConnection?.available() === true,
                       teamRequest: teamConnection
                         ? (body: unknown, signal?: AbortSignal) =>
@@ -2130,6 +2171,11 @@ function ConfiguredApp() {
     }
   }, [bridgeState.status, workspace])
 
+  const governanceSessionId =
+    'diagnosticSessionId' in bridge ? bridge.diagnosticSessionId() : undefined
+  useEffect(() => {
+    workspace?.runtime.governance?.clear()
+  }, [workspace, governanceSessionId])
   if (busy) return <StatusScreen title="Starting WisWork Agent" detail={status} busy />
   if (presentationRolloutExcluded)
     return <StatusScreen title="PPT Agent unavailable" detail={status} />

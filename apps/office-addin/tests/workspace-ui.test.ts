@@ -1044,7 +1044,14 @@ it('renders independent research when no presentation project or production exis
     available: () => true,
     documentId: async () => 'doc',
     lastProject: () => 'research',
-    request: async () => new Response(JSON.stringify({ version: 1, available: true })),
+    request: async (body) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'research_list'
+            ? researchSummary()
+            : { version: 1, available: true },
+        ),
+      ),
     executeTool: async (call) => ({
       output: JSON.stringify(
         call.name === 'list_research_ledgers' ? researchSummary() : researchRecord(),

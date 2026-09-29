@@ -2,7 +2,13 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { createPresentationProjectGovernanceController } from './presentation-project-governance'
 import { downloadLocalFile } from './session-download.js'
 type Controller = ReturnType<typeof createPresentationProjectGovernanceController>
-export function PresentationProjectGovernanceCard({ controller }: { controller: Controller }) {
+export function PresentationProjectGovernanceCard({
+  controller,
+  disabled = false,
+}: {
+  controller: Controller
+  disabled?: boolean
+}) {
   const snapshot = useSyncExternalStore(
     controller.subscribe,
     controller.snapshot,
@@ -23,7 +29,7 @@ export function PresentationProjectGovernanceCard({ controller }: { controller: 
     snapshot.lifecycle?.policy.auditRetentionDays,
   ])
   const busy = snapshot.phase === 'busy',
-    enabled = snapshot.available && !busy
+    enabled = snapshot.available && !busy && !disabled
   const preview = snapshot.available ? snapshot.preview : undefined,
     lifecycle = snapshot.available ? snapshot.lifecycle : undefined
   return (
@@ -35,7 +41,7 @@ export function PresentationProjectGovernanceCard({ controller }: { controller: 
       ) : (
         <>
           <button
-            disabled={busy}
+            disabled={busy || disabled}
             onClick={() => {
               setConfirm(false)
               void controller.refresh()
