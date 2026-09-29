@@ -55,7 +55,7 @@ function setup(loggedIn = true) {
 }
 
 describe('Office relay PC client', () => {
-  it.each(['agent.v1', 'presentation-master-backups.v1'])(
+  it.each(['agent.v1', 'presentation-master-backups.v1', 'presentation-package-backups.v1'])(
     'reattaches an approved v2 %s session with a fresh token after socket loss',
     async (capabilityName) => {
       const first = new FakeSocket()
@@ -852,6 +852,7 @@ describe('Office relay PC client', () => {
         'presentation-pdf.v1',
         'presentation-production-pdf.v1',
         'presentation-master-backups.v1',
+        'presentation-package-backups.v1',
       ]
       expect(JSON.parse(socket.sent[0]!)).toEqual({
         version: 2,
@@ -1395,9 +1396,88 @@ it.each([false, true])(
     socket.open()
     await pending
     const offered = JSON.parse(socket.sent[0]!).capabilities
-    expect(offered).toHaveLength(enabled ? 15 : 4)
+    expect(offered).toHaveLength(enabled ? 16 : 4)
     expect(offered.length).toBeLessThanOrEqual(16)
     expect(offered.includes('presentation-master-backups.v1')).toBe(enabled)
+    expect(offered.includes('presentation-package-backups.v1')).toBe(enabled)
     client.revoke('complete')
   },
 )
+it.each([
+  'package_backup_begin',
+  'package_backup_chunk',
+  'package_backup_finish',
+  'package_backup_status',
+  'package_backup_read',
+  'package_backup_list',
+])('routes only negotiated PowerPoint package backup operation %s', async (operation) => {
+  const f = await teamPcClient(false, ['agent.v1', 'presentation-package-backups.v1'])
+  expect(f.offered).toContain('presentation-package-backups.v1')
+  expect(f.client.status()).toBe('paired')
+  const body = { operation, documentId: 'document', changeId: 'change', key: 'snapshot' }
+  f.socket.message({
+    version: 2,
+    type: 'relay.request',
+    session_id: 'session_12345678',
+    request_id: 'master_1',
+    capability_name: 'presentation-package-backups.v1',
+    body,
+  })
+  await vi.waitFor(() =>
+    expect(f.presentationProxy).toHaveBeenCalledWith(body, expect.any(AbortSignal)),
+  )
+  await vi.waitFor(() =>
+    expect(f.socket.sent.map((x) => JSON.parse(x)).some((x) => x.type === 'pc.done')).toBe(true),
+  )
+  f.client.revoke('complete')
+})
+it.each([
+  ['presentation.v1', 'package_backup_status', 'PowerPoint', undefined],
+  ['agent.v1', 'package_backup_status', 'PowerPoint', undefined],
+  ['presentation-package-backups.v1', 'production_status', 'PowerPoint', undefined],
+  ['presentation-package-backups.v1', 'package_backup_delete', 'PowerPoint', undefined],
+  ['presentation-package-backups.v1', 'package_backup_status', 'Word', undefined],
+  ['presentation-package-backups.v1', 'package_backup_status', 'Excel', undefined],
+  ['presentation-package-backups.v1', 'package_backup_status', 'PowerPoint', {}],
+])(
+  'rejects package capability routing mismatch %s/%s/%s before proxy',
+  async (capability_name, operation, host, context) => {
+    const f = await teamPcClient(
+      false,
+      ['agent.v1', 'presentation.v1', 'presentation-package-backups.v1'],
+      host as string,
+    )
+    f.socket.message({
+      version: 2,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'master_bad',
+      capability_name,
+      body: { operation },
+      ...(context ? { team_context: context } : {}),
+    })
+    await vi.waitFor(() => expect(f.client.status()).toBe('disconnected:protocol_violation'))
+    expect(f.presentationProxy).not.toHaveBeenCalled()
+  },
+)
+
+it.each([
+  ['presentation-master-backups.v1', 'package_backup_status'],
+  ['presentation-package-backups.v1', 'master_backup_status'],
+])('rejects cross-namespace %s', async (capability_name, operation) => {
+  const f = await teamPcClient(false, [
+    'agent.v1',
+    'presentation-master-backups.v1',
+    'presentation-package-backups.v1',
+  ])
+  f.socket.message({
+    version: 2,
+    type: 'relay.request',
+    session_id: 'session_12345678',
+    request_id: 'cross_bad',
+    capability_name,
+    body: { operation },
+  })
+  await vi.waitFor(() => expect(f.client.status()).toBe('disconnected:protocol_violation'))
+  expect(f.presentationProxy).not.toHaveBeenCalled()
+})

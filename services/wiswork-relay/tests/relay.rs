@@ -710,7 +710,12 @@ async fn v2_negotiates_master_backups_and_denies_unnegotiated_requests() {
 
 async fn check_v2_capability(capability: &str) {
     let url = server().await;
-    let host = if capability == "presentation-master-backups.v1" {
+    let host = if [
+        "presentation-master-backups.v1",
+        "presentation-package-backups.v1",
+    ]
+    .contains(&capability)
+    {
         "PowerPoint"
     } else {
         "Word"
@@ -1517,7 +1522,7 @@ async fn master_backup_capability_budget_accepts_sixteen_and_rejects_seventeen()
         "presentation-pdf.v1",
         "presentation-production-pdf.v1",
         "presentation-master-backups.v1",
-        "future-one.v1",
+        "presentation-package-backups.v1",
         "future-two.v1"
     ]);
     send(
@@ -1531,7 +1536,7 @@ async fn master_backup_capability_budget_accepts_sixteen_and_rejects_seventeen()
     send(&mut pc,json!({"version":2,"type":"pc.negotiate","verification_code":created["verification_code"],"capabilities":caps})).await;
     let negotiated = recv(&mut pc).await;
     assert_eq!(negotiated["type"], "pc.negotiated");
-    assert_eq!(negotiated["capabilities"].as_array().unwrap().len(), 14);
+    assert_eq!(negotiated["capabilities"].as_array().unwrap().len(), 15);
     assert!(
         negotiated["capabilities"]
             .as_array()
@@ -1561,5 +1566,25 @@ async fn old_pc_without_master_backups_cannot_forward_master_requests() {
     recv(&mut pc).await;
     let ready = recv(&mut office).await;
     send(&mut office,json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"missing_master","capability_name":"presentation-master-backups.v1","body":{"operation":"master_backup_status"}})).await;
+    assert_eq!(recv(&mut office).await["code"], "capability_not_negotiated");
+}
+
+#[tokio::test]
+async fn v2_package_backups_negotiate_stream_and_disconnect() {
+    check_v2_capability("presentation-package-backups.v1").await;
+}
+#[tokio::test]
+async fn old_pc_without_package_backups_cannot_forward_master_requests() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["agent.v1","presentation-package-backups.v1"]})).await;
+    let created = recv(&mut office).await;
+    let mut pc = pc_socket(&url).await;
+    send(&mut pc,json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":["agent.v1"]})).await;
+    let claimed = recv(&mut pc).await;
+    send(&mut pc,json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"]})).await;
+    recv(&mut pc).await;
+    let ready = recv(&mut office).await;
+    send(&mut office,json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"missing_master","capability_name":"presentation-package-backups.v1","body":{"operation":"package_backup_status"}})).await;
     assert_eq!(recv(&mut office).await["code"], "capability_not_negotiated");
 }

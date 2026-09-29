@@ -778,7 +778,11 @@ describe('PowerPoint compatibility skill', () => {
       ],
     ] as const) {
       const controller = createStructuredProposalController()
-      const scoped = createPowerPointSkill({ adapter: fake, proposals: controller })
+      const scoped = createPowerPointSkill({
+        adapter: fake,
+        proposals: controller,
+        durablePackage: async () => ({ id: 'durable-proposal' }),
+      })
       await expect(scoped.executeTool(call(name, input))).resolves.toMatchObject({
         mutated: false,
         summary: expect.stringContaining('Proposed'),
@@ -787,7 +791,7 @@ describe('PowerPoint compatibility skill', () => {
     }
   })
 
-  it('proposes and semantically verifies bounded XML, chart, and master package edits', async () => {
+  it('delegates slide/chart XML and retains semantic verification for the legacy master XML path', async () => {
     const zip = new JSZip()
     zip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
     zip.file('ppt/charts/chart1.xml', '<c:chart xmlns:c="urn:c"/>')
@@ -856,14 +860,18 @@ describe('PowerPoint compatibility skill', () => {
       ],
     ] as const) {
       const proposals = createStructuredProposalController()
-      const skill = createPowerPointSkill({ adapter: fake, proposals })
+      const skill = createPowerPointSkill({
+        adapter: fake,
+        proposals,
+        durablePackage: async () => ({ id: 'durable-proposal' }),
+      })
       await expect(skill.executeTool(call(name, input))).resolves.toMatchObject({
         mutated: false,
         summary: expect.stringContaining('Proposed'),
       })
-      await proposals.confirm(proposals.pending()!.id)
+      if (name === 'edit_slide_master_xml') await proposals.confirm(proposals.pending()!.id)
     }
-    expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(3)
+    expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(1)
   })
 
   it('confirms one synchronized chart value edit and rejects package drift', async () => {
@@ -3220,3 +3228,65 @@ it.each(['duplicate_slide', 'execute_office_js'] as const)(
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
   },
 )
+
+describe('durable slide/chart XML proposal routing', () => {
+  it.each(['edit_slide_xml', 'edit_slide_chart'])(
+    'routes %s parsed replacements to the durable factory without invoking the legacy closure',
+    async (name) => {
+      const fake = adapter(),
+        proposals = createStructuredProposalController()
+      const durablePackage = vi.fn(async () => ({ id: 'durable-proposal' }))
+      const skill = createPowerPointSkill({ adapter: fake, proposals, durablePackage })
+      const path = name === 'edit_slide_chart' ? 'ppt/charts/chart1.xml' : 'ppt/slides/slide1.xml'
+      const replacements = [{ op: 'replace_xml', path, xml: '<root/>' }]
+      const result = await skill.executeTool(
+        call(name, { slide_index: 599, program: { version: 1, operations: replacements } }),
+      )
+      expect(result.isError, result.output).not.toBe(true)
+      expect(durablePackage).toHaveBeenCalledWith(
+        name === 'edit_slide_chart' ? 'chart' : 'slide',
+        599,
+        [{ path, xml: '<root/>' }],
+        undefined,
+        undefined,
+      )
+      expect(fake.verifySlides).not.toHaveBeenCalled()
+      expect(fake.exportSlidePackage).not.toHaveBeenCalled()
+      expect(fake.replaceSlidePackage).not.toHaveBeenCalled()
+    },
+  )
+  it('refuses missing persistence instead of using the old in-memory replacement path', async () => {
+    const fake = adapter(),
+      proposals = createStructuredProposalController(),
+      skill = createPowerPointSkill({ adapter: fake, proposals })
+    const result = await skill.executeTool(
+      call('edit_slide_xml', {
+        slide_index: 0,
+        program: {
+          version: 1,
+          operations: [{ op: 'replace_xml', path: 'ppt/slides/slide1.xml', xml: '<root/>' }],
+        },
+      }),
+    )
+    expect(result).toMatchObject({
+      isError: true,
+      mutated: false,
+      output: 'presentation_package_persistence_unavailable',
+    })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.exportSlidePackage).not.toHaveBeenCalled()
+  })
+  it('rejects arbitrary code before calling the durable factory', async () => {
+    const durablePackage = vi.fn(),
+      skill = createPowerPointSkill({
+        adapter: adapter(),
+        proposals: createStructuredProposalController(),
+        durablePackage,
+      })
+    const result = await skill.executeTool(
+      call('edit_slide_xml', { slide_index: 0, code: 'PowerPoint.run(...)' }),
+    )
+    expect(result).toMatchObject({ isError: true, output: 'invalid_tool_input' })
+    expect(durablePackage).not.toHaveBeenCalled()
+  })
+})

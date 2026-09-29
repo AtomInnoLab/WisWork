@@ -1,5 +1,11 @@
 type Request = (body: unknown, signal?: AbortSignal) => Promise<Response>
-type Scope = { request: Request; documentId: string; changeId: string; signal?: AbortSignal }
+type Scope = {
+  request: Request
+  documentId: string
+  changeId: string
+  signal?: AbortSignal
+  protocol?: 'master' | 'package'
+}
 export type MasterBackupRef = { key: string; sha256: string; sizeBytes: number }
 type Save = Scope & { key: string; bytes: Uint8Array }
 type Read = Scope & { backup: MasterBackupRef }
@@ -56,6 +62,9 @@ async function call(
   data: Record<string, unknown> = {},
 ) {
   cancelled(scope.signal)
+  if (scope.protocol !== undefined && !['master', 'package'].includes(scope.protocol)) invalid()
+  if (scope.protocol === 'package')
+    operation = operation.replace('master_backup_', 'package_backup_')
   const body = { operation, documentId: scope.documentId, changeId: scope.changeId, key, ...data }
   if (new TextEncoder().encode(JSON.stringify(body)).length > MAX_JSON) invalid()
   let response: Response
@@ -103,7 +112,11 @@ async function call(
   if (!result || typeof result !== 'object' || Array.isArray(result)) invalid()
   const value = result as Record<string, unknown>
   if (value.error === 'cancelled' || value.error === 'aborted') throw new Error('cancelled')
-  if (value.error === 'presentation_master_backup_capacity' || value.error === 'quota_exceeded')
+  if (
+    value.error === 'presentation_master_backup_capacity' ||
+    value.error === 'presentation_package_backup_capacity' ||
+    value.error === 'quota_exceeded'
+  )
     throw new Error('presentation_master_backup_capacity')
   if (!response.ok || Object.hasOwn(value, 'error')) invalid()
   return value
@@ -143,6 +156,7 @@ export async function saveMasterBackup(input: Save): Promise<MasterBackupRef> {
     documentId: input.documentId,
     changeId: input.changeId,
     signal: input.signal,
+    protocol: input.protocol,
   }
   const key = input.key
   scopeValid(scope, key)
@@ -180,6 +194,7 @@ export async function readMasterBackup(input: Read): Promise<Uint8Array> {
     documentId: input.documentId,
     changeId: input.changeId,
     signal: input.signal,
+    protocol: input.protocol,
   }
   const backup = { ...input.backup }
   scopeValid(scope, backup.key)

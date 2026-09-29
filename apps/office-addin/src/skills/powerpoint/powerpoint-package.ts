@@ -401,6 +401,72 @@ export async function verifyImportedPowerPointPackage(
   }
 }
 
+/** Full ownership proof for durable imports; preserve accepted background normalization. */
+export async function verifyImportedPowerPointPackageContent(
+  base64: string,
+  expected: PackageEditResult,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const saved = structuredClone(expected)
+  if (signal?.aborted) throw new Error('cancelled')
+  try {
+    if (!(await verifyImportedPowerPointPackage(base64, saved, signal))) return false
+    const actual = await loadBoundedZip(base64, signal, false)
+    const prepared = await loadBoundedZip(saved.base64, signal, false)
+    const paths = Object.keys(actual.files)
+      .filter((path) => !actual.files[path]!.dir)
+      .sort()
+    const expectedPaths = Object.keys(prepared.files)
+      .filter((path) => !prepared.files[path]!.dir)
+      .sort()
+    if (JSON.stringify(paths) !== JSON.stringify(expectedPaths)) return false
+    let actualTotal = 0,
+      preparedTotal = 0
+    const decoder = new TextDecoder('utf-8', { fatal: true })
+    for (const path of paths) {
+      const actualBytes = await boundedEntryBytes(
+        actual.files[path]!,
+        MAX_PPTX_PACKAGE_BYTES - actualTotal,
+        signal,
+      )
+      const expectedBytes = await boundedEntryBytes(
+        prepared.files[path]!,
+        MAX_PPTX_PACKAGE_BYTES - preparedTotal,
+        signal,
+      )
+      actualTotal += actualBytes.length
+      preparedTotal += expectedBytes.length
+      if (
+        saved.changedPaths.includes(path) &&
+        saved.beforeXml[path] !== undefined &&
+        saved.afterXml[path] !== undefined &&
+        backgroundOnly(saved.beforeXml[path]!, saved.afterXml[path]!)
+      ) {
+        const actualXml = decoder.decode(actualBytes),
+          preparedXml = decoder.decode(expectedBytes)
+        const a = backgroundXml(actualXml),
+          b = backgroundXml(preparedXml)
+        if (
+          !a ||
+          !b ||
+          canonicalXml(a) !== canonicalXml(b) ||
+          withoutBackground(actualXml) !== withoutBackground(preparedXml)
+        )
+          return false
+      } else if (
+        actualBytes.length !== expectedBytes.length ||
+        actualBytes.some((byte, index) => byte !== expectedBytes[index])
+      )
+        return false
+    }
+    return true
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.message === 'cancelled'))
+      throw new Error('cancelled', { cause: error })
+    return false
+  }
+}
+
 export async function verifyPowerPointPackage(
   base64: string,
   expected: Pick<PackageEditResult, 'changedPaths' | 'afterHashes' | 'preservedHashes'>,

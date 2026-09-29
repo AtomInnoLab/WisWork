@@ -1,4 +1,9 @@
 import {
+  validatePresentationPackageChange,
+  validPackageTransition,
+  type PresentationPackageChange,
+} from './presentation-package-change.js'
+import {
   validatePresentationNativeMasterChange,
   validNativeMasterTransition,
   type PresentationNativeMasterChange,
@@ -78,6 +83,7 @@ const EXISTING_BATCH_KEY = 'wiswork.presentation.existing-batch.v1'
 const EXISTING_IMAGE_KEY = 'wiswork.presentation.existing-image.v1'
 const EXISTING_PAGE_KEY = 'wiswork.presentation.existing-page.v1'
 const EXISTING_CHART_KEY = 'wiswork.presentation.existing-chart.v1'
+const PACKAGE_XML_KEY = 'wiswork.presentation.package-xml.v1'
 const NATIVE_MASTER_KEY = 'wiswork.presentation.native-master.v1'
 const HISTORY_KEY = 'wiswork.presentation.change-history.v1'
 const TEXT_KEY = 'wiswork.presentation.text-change.v1'
@@ -508,6 +514,23 @@ export function createPresentationDocumentBinding(
       throw new Error('presentation_existing_chart_state_invalid')
     return value
   }
+  let packageWriteFailed = false
+  const readRawPackageChange = (): PresentationPackageChange | undefined => {
+    if (packageWriteFailed) throw new Error('presentation_package_state_invalid')
+    const raw = settings.get(PACKAGE_XML_KEY)
+    if (raw === undefined || raw === null || raw === '') return undefined
+    if (typeof raw !== 'string' || new TextEncoder().encode(raw).byteLength > 192 * 1024)
+      throw new Error('presentation_package_state_invalid')
+    let value: unknown
+    try {
+      value = JSON.parse(raw)
+    } catch {
+      throw new Error('presentation_package_state_invalid')
+    }
+    if (!validatePresentationPackageChange(value))
+      throw new Error('presentation_package_state_invalid')
+    return value
+  }
   let nativeMasterWriteFailed = false
   const readRawNativeMasterChange = (): PresentationNativeMasterChange | undefined => {
     if (nativeMasterWriteFailed) throw new Error('presentation_native_master_state_invalid')
@@ -631,6 +654,7 @@ export function createPresentationDocumentBinding(
     existing_page: readRawExistingPage(),
     existing_chart: readRawExistingChart(),
     native_master: readRawNativeMasterChange(),
+    package_xml: readRawPackageChange(),
     text: readRawTextChange(),
     geometry: readRawGeometryChange(),
     page: readRawPageReplacement(),
@@ -652,6 +676,7 @@ export function createPresentationDocumentBinding(
         'existing_page',
         'existing_chart',
         'native_master',
+        'package_xml',
       ] as const) {
         const record = heads[kind]
         if (!record) continue
@@ -707,7 +732,7 @@ export function createPresentationDocumentBinding(
             'existing_page',
             'existing_chart',
             'native_master',
-            'native_master',
+            'package_xml',
           ].includes(k),
       )
     )
@@ -731,6 +756,7 @@ export function createPresentationDocumentBinding(
       'existing_page',
       'existing_chart',
       'native_master',
+      'package_xml',
     ] as const) {
       const head = h.entries.find((e) => e.id === h.heads[kind])
       if ((head && head.kind !== kind) || (!head && h.entries.some((e) => e.kind === kind)))
@@ -805,6 +831,11 @@ export function createPresentationDocumentBinding(
       (entry): entry is Extract<PresentationHistoryEntry, { kind: 'native_master' }> =>
         entry.kind === 'native_master' && entry.record.changeId === changeId,
     )?.record
+  const readPackageChange = (changeId: string): PresentationPackageChange | undefined =>
+    readHistory().entries.find(
+      (entry): entry is Extract<PresentationHistoryEntry, { kind: 'package_xml' }> =>
+        entry.kind === 'package_xml' && entry.record.changeId === changeId,
+    )?.record
   const readPageReplacement = () => {
     const raw = readRawPageReplacement()
     readHistory()
@@ -833,13 +864,15 @@ export function createPresentationDocumentBinding(
           : {}),
       ...(previousEntry?.checkpointRestoredAt
         ? { checkpointRestoredAt: previousEntry.checkpointRestoredAt }
-        : entry.record.state === 'undone' &&
+        : (entry.record.state === 'undone' ||
+              (entry.kind === 'package_xml' && entry.record.state === 'discarded')) &&
             previousEntry &&
-            previousEntry.record.state !== 'undone'
+            previousEntry.record.state !== entry.record.state
           ? { checkpointRestoredAt: at }
           : {}),
     }
     const unresolved = (e: PresentationHistoryEntry) =>
+      (e.kind === 'package_xml' && Boolean(e.record.pending)) ||
       !['applied', 'undone', 'discarded', 'complete', 'cancelled'].includes(e.record.state)
     // A recovery may journal its own replacement while the source write remains uncertain.
     // The exception is tied to the exact original backup; unrelated pending work still blocks.
@@ -992,6 +1025,46 @@ export function createPresentationDocumentBinding(
     readExistingImageChange,
     readExistingPageChange,
     readExistingChartChange,
+    readPackageChange,
+    writePackageChange(
+      record: PresentationPackageChange,
+      expectedRecord: PresentationPackageChange | undefined,
+    ) {
+      const snapshot = structuredClone(record),
+        expected = structuredClone(expectedRecord)
+      const write = async () => {
+        if (
+          !validatePresentationPackageChange(snapshot) ||
+          (expected !== undefined && !validatePresentationPackageChange(expected))
+        )
+          throw new Error('presentation_package_state_invalid')
+        if ((await documentId()) !== snapshot.documentId)
+          throw new Error('presentation_document_changed')
+        const prior = readPackageChange(snapshot.changeId)
+        if (JSON.stringify(prior) !== JSON.stringify(expected))
+          throw new Error('presentation_package_stale')
+        if (JSON.stringify(prior) === JSON.stringify(snapshot)) return
+        if (!validPackageTransition(prior, snapshot))
+          throw new Error('presentation_package_state_invalid')
+        await saveWithHistory(
+          PACKAGE_XML_KEY,
+          JSON.stringify(snapshot),
+          {
+            id: historyEntryId('package_xml', snapshot),
+            kind: 'package_xml',
+            record: snapshot,
+            legacy: false,
+            sequence: 1,
+          },
+          () => {
+            packageWriteFailed = true
+          },
+        )
+      }
+      const result = receiptQueue.then(write)
+      receiptQueue = result.catch(() => {})
+      return result
+    },
     readNativeMasterChange,
     writeNativeMasterChange(
       record: PresentationNativeMasterChange,
@@ -1928,6 +2001,7 @@ export function createPresentationDocumentBinding(
         total: entries.length,
         unresolved: entries.filter(
           (entry) =>
+            (entry.kind === 'package_xml' && Boolean(entry.record.pending)) ||
             !['applied', 'undone', 'discarded', 'complete', 'cancelled'].includes(
               entry.record.state,
             ),

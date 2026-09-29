@@ -51,6 +51,7 @@ const SUPPORTED_CAPABILITIES: &[&str] = &[
     "presentation-pdf.v1",
     "presentation-production-pdf.v1",
     "presentation-master-backups.v1",
+    "presentation-package-backups.v1",
 ];
 
 #[derive(Clone)]

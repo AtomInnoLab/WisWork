@@ -127,17 +127,19 @@ export function PresentationChangesCard({
               </details>
             )}
             <p>
-              {entry.source === 'native_master'
-                ? '母版共享样式 · '
-                : entry.source === 'existing_batch'
-                  ? '现稿批量 · '
-                  : entry.source === 'existing_image'
-                    ? '现稿图片 · '
-                    : entry.source === 'existing_page'
-                      ? '现稿整页 · '
-                      : entry.source === 'existing'
-                        ? '现稿 · '
-                        : ''}
+              {entry.source === 'package_xml'
+                ? `XML${entry.kind === 'chart' ? '图表' : '页面'}修改`
+                : entry.source === 'native_master'
+                  ? '母版共享样式 · '
+                  : entry.source === 'existing_batch'
+                    ? '现稿批量 · '
+                    : entry.source === 'existing_image'
+                      ? '现稿图片 · '
+                      : entry.source === 'existing_page'
+                        ? '现稿整页 · '
+                        : entry.source === 'existing'
+                          ? '现稿 · '
+                          : ''}
               页面：{entry.pageId} · 状态：
               {entry.state}
             </p>
@@ -229,12 +231,14 @@ export function PresentationChangesCard({
                 key={action}
                 type="button"
                 disabled={busy}
-                aria-label={`${action === 'reconcile' && entry.kind === 'master' ? '核对母版回执' : labels[action]} ${entry.pageId}`}
+                aria-label={`${action === 'reconcile' && entry.source === 'package_xml' ? '核对XML回执' : action === 'reconcile' && entry.kind === 'master' ? '核对母版回执' : labels[action]} ${entry.pageId}`}
                 onClick={() => void controller.run(entry.id, action)}
               >
-                {action === 'reconcile' && entry.kind === 'master'
-                  ? '核对母版回执'
-                  : labels[action]}
+                {action === 'reconcile' && entry.source === 'package_xml'
+                  ? '核对XML回执'
+                  : action === 'reconcile' && entry.kind === 'master'
+                    ? '核对母版回执'
+                    : labels[action]}
               </button>
             ))}
           </li>

@@ -125,6 +125,38 @@ export function presentationMutationScope(proposal: StructuredProposal): string[
       }
     }
   }
+  // Durable XML imports prove the source and any already observed replacement identities.
+  if (
+    [
+      'edit_slide_xml',
+      'edit_slide_chart',
+      'resume_package_xml_change',
+      'undo_package_xml_change',
+      'discard_package_xml_change',
+    ].includes(proposal.operation) &&
+    proposal.operation === proposal.toolName &&
+    proposal.impact.host === 'powerpoint' &&
+    proposal.impact.count === 1 &&
+    proposal.impact.targets.length >= 1 &&
+    proposal.impact.targets.length <= 3
+  ) {
+    const scope = proposal.preview.qaScope
+    if (
+      scope &&
+      typeof scope === 'object' &&
+      !Array.isArray(scope) &&
+      Object.keys(scope).sort().join(',') === 'basis,hostSlideIds' &&
+      (scope as Record<string, unknown>).basis === 'package_xml_savepoint' &&
+      JSON.stringify((scope as Record<string, unknown>).hostSlideIds) ===
+        JSON.stringify(proposal.impact.targets)
+    ) {
+      try {
+        hostSlideIds = [...presentationQaMutationScope(proposal.impact.targets)!]
+      } catch {
+        hostSlideIds = undefined
+      }
+    }
+  }
   // Only the native master tool derives this scope from a complete, revalidated
   // host dependency snapshot. XML/package edits and generic labels remain unknown.
   if (

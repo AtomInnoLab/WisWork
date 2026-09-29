@@ -177,9 +177,15 @@ function metadata(path: string, parents: Parents): { value: Metadata; parents: P
   if (!validMetadata(value)) invalid()
   return { value, parents: scoped }
 }
-export function createPresentationMasterBackupService(options: { userDataPath: string }) {
+export function createPresentationMasterBackupService(options: {
+  userDataPath: string
+  storageDirectory?: 'presentation-master-backups' | 'presentation-package-backups'
+}) {
   const userData = resolve(options.userDataPath)
-  const root = join(userData, 'presentation-master-backups')
+  const storageDirectory = options.storageDirectory ?? 'presentation-master-backups'
+  if (!['presentation-master-backups', 'presentation-package-backups'].includes(storageDirectory))
+    invalid()
+  const root = join(userData, storageDirectory)
   return async (input: Record<string, unknown>, signal: AbortSignal): Promise<unknown> => {
     check(signal)
     let body: Record<string, unknown>

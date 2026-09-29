@@ -576,6 +576,16 @@ function errorCode(error: unknown, write = false): string {
       'office_api_unsupported',
       'office_concurrent_change',
       'presentation_existing_persistence_unavailable',
+      'presentation_package_backup_invalid',
+      'presentation_package_backup_capacity',
+      'presentation_package_conflict',
+      'presentation_package_invalid',
+      'presentation_package_missing',
+      'presentation_package_persistence_unavailable',
+      'presentation_package_qa_stale',
+      'presentation_package_stale',
+      'presentation_package_state_invalid',
+      'presentation_package_unknown',
       'presentation_master_backup_invalid',
       'presentation_master_backup_capacity',
       'presentation_native_master_inverse_unproven',
@@ -1171,6 +1181,13 @@ export function createPowerPointSkill(options: {
       expected: PresentationExistingBatch | undefined,
     ): Promise<void>
   }
+  durablePackage?(
+    kind: 'slide' | 'chart',
+    slideIndex: number,
+    replacements: XmlReplacement[],
+    explanation?: string,
+    signal?: AbortSignal,
+  ): Promise<unknown>
   durableMaster?(
     operations: PowerPointMasterOperation[],
     explanation?: string,
@@ -1283,6 +1300,21 @@ export function createPowerPointSkill(options: {
     explanation: string | undefined,
     signal?: AbortSignal,
   ): Promise<ToolExecution> {
+    if (kind === 'slide' || kind === 'chart') {
+      if (!options.durablePackage) throw new Error('presentation_package_persistence_unavailable')
+      const proposal = await options.durablePackage(
+        kind,
+        slideIndex,
+        structuredClone(replacements),
+        explanation,
+        signal,
+      )
+      return {
+        output: boundedJson(proposal),
+        mutated: false,
+        summary: `Proposed PowerPoint ${kind} XML edit`,
+      }
+    }
     const deck = await options.adapter.verifySlides(signal)
     // Copy SDK results immediately: adapters can return live objects or reused arrays.
     const before = structuredClone(await options.adapter.exportSlidePackage(slideIndex, signal))

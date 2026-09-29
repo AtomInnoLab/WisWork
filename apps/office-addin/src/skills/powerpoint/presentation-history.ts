@@ -22,6 +22,15 @@ export interface PresentationChangeSetSummary {
 export function presentationChangeSetSummary(
   entry: PresentationHistoryEntry,
 ): PresentationChangeSetSummary {
+  if (entry.kind === 'package_xml')
+    return {
+      scope: { slideIds: [entry.record.sourceSlideId], affectedPageCount: 1 },
+      intent: entry.record.intent,
+      operations: [{ kind: 'package_xml', pageId: entry.record.sourceSlideId }],
+      preserved: ['目标外完整页面包和顺序需按PC保存点核对', '原始页面和待导入页面已保存'],
+      validation: ['导入、删除及恢复的实际页ID和包回读', '受影响页面截图复核'],
+      risk: 'high',
+    }
   if (entry.kind === 'native_master')
     return {
       scope: {
@@ -163,6 +172,7 @@ export async function selectPresentationHistory(
         | 'existing_page'
         | 'existing_chart'
         | 'native_master'
+        | 'package_xml'
     }
   >[]
 > {
@@ -200,6 +210,7 @@ export async function selectPresentationHistory(
             | 'existing_page'
             | 'existing_chart'
             | 'native_master'
+            | 'package_xml'
         }
       > =>
         e.kind !== 'existing' &&
@@ -207,7 +218,8 @@ export async function selectPresentationHistory(
         e.kind !== 'existing_image' &&
         e.kind !== 'existing_page' &&
         e.kind !== 'existing_chart' &&
-        e.kind !== 'native_master',
+        e.kind !== 'native_master' &&
+        e.kind !== 'package_xml',
     )
     .filter((e) => {
       const r = e.record
