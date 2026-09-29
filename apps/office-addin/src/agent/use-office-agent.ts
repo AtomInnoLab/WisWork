@@ -27,9 +27,10 @@ import {
   type ProposalPresentationEvent,
   type ToolPresentationEvent,
 } from './presentation-state.js'
-import type {
-  OfficeDiagnostics,
-  PresentationDiagnosticContext,
+import {
+  isDiagnosticToolError,
+  type OfficeDiagnostics,
+  type PresentationDiagnosticContext,
 } from '../diagnostics/office-diagnostics.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
@@ -186,32 +187,54 @@ const safeRunError = (error: string): SafeSessionError =>
     retryable: true,
   }
 
-const DIAGNOSTIC_TOOL_ERRORS = new Set([
-  'cancelled',
-  'invalid_tool_input',
-  'office_api_unsupported',
-  'office_read_failed',
-  'office_overwrite_required',
-  'office_recovery_failed',
-  'office_concurrent_change',
-  'office_state_uncertain',
-  'office_verify_failed',
-  'office_write_failed',
-  'proposal_missing',
-  'proposal_stale',
-])
-
 function diagnosticToolError(output: string): string {
-  const safe = (value: string) =>
-    DIAGNOSTIC_TOOL_ERRORS.has(value) || /^office_recovery_failed:word_[a-z_]+$/.test(value)
-  if (safe(output)) return output
+  if (isDiagnosticToolError(output)) return output
   try {
     const parsed = JSON.parse(output) as { error?: unknown }
-    return typeof parsed.error === 'string' && safe(parsed.error)
+    return typeof parsed.error === 'string' && isDiagnosticToolError(parsed.error)
       ? parsed.error
       : 'agent_run_failed'
   } catch {
     return 'agent_run_failed'
+  }
+}
+
+function screenshotWaitingDiagnostic(
+  call: AgentToolCall,
+  execution: ToolExecution,
+): string | undefined {
+  if (
+    execution.isError ||
+    execution.mutated !== false ||
+    ![
+      'capture_presentation_page_qa',
+      'record_presentation_page_review',
+      'compare_presentation_page_structure',
+    ].includes(call.name) ||
+    new TextEncoder().encode(execution.output).byteLength > 4096
+  )
+    return undefined
+  try {
+    const value = JSON.parse(execution.output) as Record<string, unknown>
+    const pageId = call.input.page_id
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      Object.keys(value).length !== 4 ||
+      value.status !== 'waiting_screenshot' ||
+      value.retryable !== true ||
+      typeof pageId !== 'string' ||
+      !/^[a-zA-Z0-9_-]{1,80}$/.test(pageId) ||
+      value.pageId !== pageId ||
+      typeof value.hostSlideId !== 'string' ||
+      !value.hostSlideId.trim() ||
+      value.hostSlideId.length > 256
+    )
+      return undefined
+    return 'presentation_screenshot_waiting'
+  } catch {
+    return undefined
   }
 }
 
@@ -628,8 +651,10 @@ export function createOfficeAgentSession(dependencies: {
         })
       },
       onToolExecuted: (event) => {
-        if (event.execution.isError) {
-          const errorCode = diagnosticToolError(event.execution.output)
+        const errorCode = event.execution.isError
+          ? diagnosticToolError(event.execution.output)
+          : screenshotWaitingDiagnostic(event.call, event.execution)
+        if (errorCode) {
           diagnose((diagnostics) => {
             const context = presentationDiagnosticContext(event.call)
             if (context) diagnostics.setTool(event.call.name, context)

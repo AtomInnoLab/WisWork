@@ -22,14 +22,9 @@ export interface PresentationDiagnosticContext {
   tool_call_id?: string
 }
 
-const ERROR_CODES = new Set([
-  'agent_run_completed',
-  'agent_run_failed',
-  'auth_required',
+const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'cancelled',
-  'diagnostic_upload_failed',
   'invalid_tool_input',
-  'network_error',
   'office_api_unsupported',
   'office_read_failed',
   'office_overwrite_required',
@@ -40,6 +35,29 @@ const ERROR_CODES = new Set([
   'office_write_failed',
   'proposal_missing',
   'proposal_stale',
+  'presentation_screenshot_waiting',
+  'presentation_qa_failed',
+  'presentation_qa_capture_invalid',
+  'presentation_qa_capture_required',
+  'presentation_qa_stale',
+  'presentation_qa_busy',
+  'presentation_qa_state_invalid',
+  'presentation_qa_page_not_imported',
+  'presentation_qa_attempt_unresolved',
+  'presentation_qa_attempt_history_full',
+  'presentation_qa_attempt_state_invalid',
+  'presentation_session_storage_full',
+])
+export function isDiagnosticToolError(value: string): boolean {
+  return DIAGNOSTIC_TOOL_ERRORS.has(value) || /^office_recovery_failed:word_[a-z_]+$/.test(value)
+}
+const ERROR_CODES = new Set([
+  ...DIAGNOSTIC_TOOL_ERRORS,
+  'agent_run_completed',
+  'agent_run_failed',
+  'auth_required',
+  'diagnostic_upload_failed',
+  'network_error',
   'provider_unavailable',
   'request_timeout',
 ])
@@ -156,14 +174,13 @@ const identifier = (value: unknown, fallback: string, maximum = 128): string => 
   return normalized && /^[A-Za-z0-9_.:/()-]+$/.test(normalized) ? normalized : fallback
 }
 const stableError = (value: unknown): string =>
-  typeof value === 'string' &&
-  (ERROR_CODES.has(value) || /^office_recovery_failed:word_[a-z_]+$/.test(value))
+  typeof value === 'string' && (ERROR_CODES.has(value) || isDiagnosticToolError(value))
     ? value
     : 'office_write_failed'
 const outcome = (code: string): DiagnosticOutcome =>
   code === 'agent_run_completed'
     ? 'passed'
-    : code === 'office_api_unsupported'
+    : code === 'office_api_unsupported' || code === 'presentation_screenshot_waiting'
       ? 'unsupported'
       : code === 'cancelled'
         ? 'cancelled'

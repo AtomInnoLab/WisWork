@@ -2153,3 +2153,165 @@ it('hides unknown backup confirmation response text from the session', async () 
   expect(JSON.stringify(session.snapshot())).not.toContain('/private/secret')
   expect(proposals.controller.confirm).toHaveBeenCalledOnce()
 })
+
+it.each([
+  'capture_presentation_page_qa',
+  'record_presentation_page_review',
+  'compare_presentation_page_structure',
+])(
+  'records nonfatal waiting screenshot diagnostics for %s without changing its model output',
+  async (name) => {
+    const harness = transportHarness()
+    const output = JSON.stringify({
+      status: 'waiting_screenshot',
+      pageId: 'page-1',
+      hostSlideId: 'host-1',
+      retryable: true,
+    })
+    const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'screenshot-test' })
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'qa-test',
+        systemPrompt: 'test',
+        tools: [{ name, description: 'test', inputSchema: { type: 'object' } }],
+        executeTool: async () => ({ output, mutated: false, summary: 'waiting' }),
+      },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+    try {
+      session.send('Capture this page')
+      await Promise.resolve()
+      harness.callbacks().onToolCall({
+        id: 'screenshot-call',
+        name,
+        input: { project_id: 'project-1', page_id: 'page-1' },
+      })
+      harness.callbacks().onDone()
+      await vi.waitFor(() =>
+        expect(
+          diagnostics
+            .snapshot()
+            .events.some((event) => event.error_code === 'presentation_screenshot_waiting'),
+        ).toBe(true),
+      )
+      const event = diagnostics
+        .snapshot()
+        .events.find((event) => event.error_code === 'presentation_screenshot_waiting')!
+      expect(event).toMatchObject({
+        tool: name,
+        phase: 'tool',
+        outcome: 'unsupported',
+        presentation_context: {
+          project_id: 'project-1',
+          page_id: 'page-1',
+          tool_call_id: 'screenshot-call',
+        },
+      })
+      expect(session.snapshot().status).not.toBe('error')
+      expect(diagnostics.exportJson()).not.toContain('page-1')
+      expect(JSON.stringify(harness.stream.mock.calls)).toContain('waiting_screenshot')
+    } finally {
+      session.dispose()
+    }
+  },
+)
+
+it('keeps a real unresolved screenshot failure distinct from a generic agent failure', async () => {
+  const harness = transportHarness(),
+    diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'screenshot-test' })
+  const name = 'capture_presentation_page_qa'
+  const session = createOfficeAgentSession({
+    transport: harness.transport,
+    skill: {
+      id: 'qa-test',
+      systemPrompt: 'test',
+      tools: [{ name, description: 'test', inputSchema: { type: 'object' } }],
+      executeTool: async () => ({
+        output: 'presentation_qa_attempt_unresolved',
+        isError: true,
+        mutated: false,
+        summary: 'unresolved',
+      }),
+    },
+    proposals: proposalsHarness().controller,
+    diagnostics,
+  })
+  try {
+    session.send('Capture')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'failed-capture', name, input: { page_id: 'page-1' } })
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(
+        diagnostics
+          .snapshot()
+          .events.some((event) => event.error_code === 'presentation_qa_attempt_unresolved'),
+      ).toBe(true),
+    )
+    expect(
+      diagnostics
+        .snapshot()
+        .events.find((event) => event.error_code === 'presentation_qa_attempt_unresolved')?.outcome,
+    ).toBe('failed')
+  } finally {
+    session.dispose()
+  }
+})
+
+it.each([
+  { name: 'unrelated_tool', payload: {}, mutated: false },
+  { name: 'capture_presentation_page_qa', payload: { pageId: 'other-page' }, mutated: false },
+  { name: 'capture_presentation_page_qa', payload: { retryable: false }, mutated: false },
+  { name: 'capture_presentation_page_qa', payload: { hostSlideId: '' }, mutated: false },
+  { name: 'capture_presentation_page_qa', payload: { private: 'unexpected' }, mutated: false },
+  {
+    name: 'capture_presentation_page_qa',
+    payload: { hostSlideId: 'x'.repeat(4096) },
+    mutated: false,
+  },
+  { name: 'capture_presentation_page_qa', payload: {}, mutated: true },
+])(
+  'does not infer screenshot waiting from untrusted or unrelated results: %j',
+  async ({ name, payload, mutated }) => {
+    const harness = transportHarness()
+    const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'screenshot-test' })
+    const output = JSON.stringify({
+      status: 'waiting_screenshot',
+      pageId: 'page-1',
+      hostSlideId: 'host-1',
+      retryable: true,
+      ...payload,
+    })
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'qa-test',
+        systemPrompt: 'test',
+        tools: [{ name, description: 'test', inputSchema: { type: 'object' } }],
+        executeTool: async () => ({ output, mutated, summary: 'done' }),
+      },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+    try {
+      session.send('Capture this page')
+      await Promise.resolve()
+      harness.callbacks().onToolCall({
+        id: 'screenshot-call',
+        name,
+        input: { project_id: 'project-1', page_id: 'page-1' },
+      })
+      harness.callbacks().onDone()
+      await vi.waitFor(() => expect(harness.stream.mock.calls.length).toBeGreaterThan(1))
+      expect(
+        diagnostics
+          .snapshot()
+          .events.some((event) => event.error_code === 'presentation_screenshot_waiting'),
+      ).toBe(false)
+    } finally {
+      session.dispose()
+    }
+  },
+)

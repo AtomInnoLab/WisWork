@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import {
   createOfficeDiagnostics,
+  isDiagnosticToolError,
   officeDiagnosticEnvironment,
 } from '../src/diagnostics/office-diagnostics.js'
 
@@ -734,4 +735,83 @@ it('keeps legacy oversized local exports throwing without a provider and never c
   expect(result.events.length + result.omitted_event_count).toBe(200)
   expect(result.events).toEqual(d.snapshot().events.slice(result.omitted_event_count))
   expect(d.snapshot().events).toHaveLength(200)
+})
+
+describe('screenshot diagnostic taxonomy', () => {
+  it.each([
+    'presentation_screenshot_waiting',
+    'presentation_qa_failed',
+    'presentation_qa_capture_invalid',
+    'presentation_qa_capture_required',
+    'presentation_qa_stale',
+    'presentation_qa_busy',
+    'presentation_qa_state_invalid',
+    'presentation_qa_page_not_imported',
+    'presentation_qa_attempt_unresolved',
+    'presentation_qa_attempt_history_full',
+    'presentation_qa_attempt_state_invalid',
+    'presentation_session_storage_full',
+  ])(
+    'preserves finite tool code %s and safe outcomes without remote context/raw errors',
+    (code) => {
+      const sent: unknown[] = []
+      const d = createOfficeDiagnostics({
+        host: 'powerpoint',
+        build: 'test',
+        localDocumentId: 'private-doc',
+        remoteEnabled: true,
+        send: (e) => {
+          sent.push(e)
+        },
+      })
+      expect(isDiagnosticToolError(code)).toBe(true)
+      const event = d.record({
+        phase: 'tool',
+        errorCode: code,
+        error: Error('private-document-content'),
+      })
+      expect(event.error_code).toBe(code)
+      expect(event.outcome).toBe(
+        code === 'presentation_screenshot_waiting' ? 'unsupported' : 'failed',
+      )
+      expect(d.exportJson()).not.toContain('private-document-content')
+      expect(JSON.stringify(sent)).not.toContain('private-doc')
+    },
+  )
+  it('distinguishes run and transport codes from tools and retains old Word recovery compatibility', () => {
+    for (const code of [
+      'agent_run_completed',
+      'agent_run_failed',
+      'auth_required',
+      'network_error',
+      'provider_unavailable',
+      'request_timeout',
+      'diagnostic_upload_failed',
+      'presentation_qa_failed:private document',
+    ])
+      expect(isDiagnosticToolError(code)).toBe(false)
+    const d = createOfficeDiagnostics({ host: 'word', build: 'test' })
+    for (const code of [
+      'cancelled',
+      'invalid_tool_input',
+      'office_api_unsupported',
+      'office_read_failed',
+      'office_overwrite_required',
+      'office_recovery_failed',
+      'office_concurrent_change',
+      'office_state_uncertain',
+      'office_verify_failed',
+      'office_write_failed',
+      'proposal_missing',
+      'proposal_stale',
+      'office_recovery_failed:word_content',
+    ]) {
+      expect(isDiagnosticToolError(code)).toBe(true)
+      expect(d.record({ phase: 'tool', errorCode: code }).error_code).toBe(code)
+    }
+    expect(
+      d.record({ phase: 'tool', errorCode: 'presentation_qa_failed:private document' }).error_code,
+    ).toBe('office_write_failed')
+    expect(d.record({ phase: 'run', errorCode: 'agent_run_completed' }).outcome).toBe('passed')
+  })
 })
