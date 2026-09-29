@@ -29,7 +29,10 @@ describe('parseFileToText: pdf', () => {
   })
 
   it('reports an image-only research PDF as unreadable and accepts its text fallback', async () => {
-    const materials = resolve(import.meta.dirname, '../../../docs/product/ppt-benchmark-materials/PPT-P0-11')
+    const materials = resolve(
+      import.meta.dirname,
+      '../../../docs/product/ppt-benchmark-materials/PPT-P0-11',
+    )
     const imageOnly = await parseFileToText(resolve(materials, 'deardorff-2020-image-only.pdf'))
     expect(imageOnly).toMatchObject({ ok: false, kind: 'text', error: 'pdf_no_extractable_text' })
 
@@ -42,4 +45,20 @@ describe('parseFileToText: pdf', () => {
     expect(fallback.ok).toBe(true)
     expect(fallback.text).toContain('Assessing the impact of introductory')
   })
+
+  it('preserves the blank scanned page and source page numbers in a real NACA scan', async () => {
+    const path = resolve(
+      import.meta.dirname,
+      '../../../docs/product/ppt-benchmark-materials/PPT-P0-11/naca-rm-l50b01-1950-real-scan.pdf',
+    )
+    const result = await parseFileToText(path)
+    expect(result.ok).toBe(true)
+    expect(result.sections).toHaveLength(30)
+    const blankPage = result.sections?.[1]
+    expect(blankPage?.locator).toBe('第 2 页')
+    expect(blankPage?.start).toBe(blankPage?.end)
+    expect(result.text?.slice(result.sections![2]!.start, result.sections![2]!.end)).toContain(
+      'NATIONAL ADVISORY COMMITTEE FOR AERONAUTICS',
+    )
+  }, 20_000)
 })
