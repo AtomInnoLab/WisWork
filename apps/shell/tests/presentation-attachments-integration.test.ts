@@ -422,6 +422,22 @@ it('retains the unreadable page of the real P0-11 NACA scan through PC restart a
       pagesWithoutExtractedText: [2],
     }),
   ])
+  const read = await client.executeTool({
+    id: 'read',
+    name: 'read_presentation_attachment',
+    input: { attachment_id: attachmentId, max_chars: 4000 },
+  })
+  expect(read.isError, read.output).not.toBe(true)
+  const page = JSON.parse(read.output)
+  expect(page.pageSpans).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ locator: '第 2 页', start: expect.any(Number) }),
+      expect.objectContaining({ locator: '第 3 页', start: expect.any(Number) }),
+    ]),
+  )
+  const blank = page.pageSpans.find((span: { locator: string }) => span.locator === '第 2 页')
+  expect(blank.start).toBe(blank.end)
+  expect(page.text).toContain('NATIONAL ADVISORY COMMITTEE FOR AERONAUTICS')
 }, 60_000)
 
 it('resumes the frozen P0-16 real PDF after a lost first chunk acknowledgement and PC restart', async () => {
