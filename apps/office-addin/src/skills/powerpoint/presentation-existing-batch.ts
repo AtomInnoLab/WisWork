@@ -1,4 +1,7 @@
-import type { PresentationPageGeometry } from './browser-powerpoint-adapter.js'
+import type {
+  PowerPointDeclarativeOperation,
+  PresentationPageGeometry,
+} from './browser-powerpoint-adapter.js'
 
 export type ExistingBatchOperation = {
   hostSlideId: string
@@ -17,7 +20,7 @@ export type ExistingBatchOperation = {
   | { kind: 'geometry'; before: PresentationPageGeometry; after: PresentationPageGeometry }
 )
 
-export interface PresentationExistingBatch {
+export interface PresentationTargetBatch {
   version: 1
   changeId: string
   documentId: string
@@ -57,6 +60,38 @@ export interface PresentationExistingBatch {
   }[]
 }
 
+export type NativeAddOperation = Extract<
+  PowerPointDeclarativeOperation,
+  {
+    op: 'add_text_box' | 'add_geometric_shape' | 'add_native_table'
+  }
+>
+export interface PresentationNativeAddBatch {
+  version: 2
+  kind: 'native_page_add'
+  changeId: string
+  documentId: string
+  baselineId: string
+  baselineDigest: string
+  hostSlideId: string
+  slideIndex: number
+  beforeSlideIds: string[]
+  scope: { slideIds: string[] }
+  intent: string
+  preserved: string[]
+  validation: string[]
+  risk: 'high'
+  backups: NonNullable<PresentationTargetBatch['backups']>
+  operations: NativeAddOperation[]
+  createdShapeIds: string[]
+  nextIndex: number
+  inFlightIndex?: number
+  state: 'applying' | 'applied' | 'undoing' | 'undone'
+  restoredSlideId?: string
+  backupReleasedAt?: string
+}
+export type PresentationExistingBatch = PresentationTargetBatch | PresentationNativeAddBatch
+
 const bytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).byteLength
 const id = (v: unknown) => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v)
 const hostId = (v: unknown): v is string =>
@@ -88,9 +123,9 @@ const geometry = (v: unknown): v is PresentationPageGeometry => {
     g.height >= 0
   )
 }
-export function validatePresentationExistingBatch(v: unknown): v is PresentationExistingBatch {
+function validateTargetBatch(v: unknown): v is PresentationTargetBatch {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false
-  const r = v as PresentationExistingBatch
+  const r = v as PresentationTargetBatch
   if (
     Object.keys(r).some(
       (k) =>
@@ -327,7 +362,7 @@ const timestamp = (v: unknown): v is string =>
   Number.isFinite(Date.parse(v)) &&
   new Date(v).toISOString() === v
 
-export const existingBatchReservedBytes = (r: PresentationExistingBatch) => {
+const targetBatchReservedBytes = (r: PresentationTargetBatch) => {
   const stateBytes =
     Math.max('applying'.length, 'applied'.length, 'undoing'.length, 'undone'.length) -
     r.state.length +
@@ -345,12 +380,12 @@ export const existingBatchReservedBytes = (r: PresentationExistingBatch) => {
   )
 }
 
-export function validExistingBatchTransition(
-  before: PresentationExistingBatch | undefined,
-  after: PresentationExistingBatch,
+function validTargetBatchTransition(
+  before: PresentationTargetBatch | undefined,
+  after: PresentationTargetBatch,
 ): boolean {
   if (!before) return after.state === 'applying' && after.cursor === 0
-  const core = (r: PresentationExistingBatch) =>
+  const core = (r: PresentationTargetBatch) =>
     JSON.stringify({
       ...r,
       state: undefined,
@@ -372,7 +407,7 @@ export function validExistingBatchTransition(
       JSON.stringify(before.reviews) !== JSON.stringify(after.reviews)
     )
       return false
-    const stableCore = (r: PresentationExistingBatch) =>
+    const stableCore = (r: PresentationTargetBatch) =>
       JSON.stringify({
         ...r,
         backups: r.backups?.map(({ hostSlideId, packageDigest }) => ({
@@ -449,4 +484,274 @@ export function validExistingBatchTransition(
       after.reviews === undefined
     )
   return false
+}
+
+const record = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === 'object' && !Array.isArray(v)
+const keysOnly = (v: Record<string, unknown>, keys: string[]) =>
+  Object.keys(v).every((k) => keys.includes(k))
+const boundedText = (v: unknown, max: number) =>
+  typeof v === 'string' && v.length > 0 && v.length <= max
+const color = (v: unknown) => typeof v === 'string' && /^[A-Fa-f0-9]{6}$/.test(v)
+const range = (v: unknown, min: number, max: number): v is number =>
+  typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max
+const optional = (v: Record<string, unknown>, key: string, valid: (x: unknown) => boolean) =>
+  !Object.hasOwn(v, key) || valid(v[key])
+// The declarative parser is private to powerpoint-skill; validate the same bounded add subset here.
+function validNativeAddOperation(v: unknown, slideIndex: number): v is NativeAddOperation {
+  if (
+    !record(v) ||
+    v.slide_index !== slideIndex ||
+    !boundedText(v.name, 256) ||
+    !['left', 'top', 'width', 'height'].every((k) => range(v[k], -100000, 100000)) ||
+    Number(v.width) <= 0 ||
+    Number(v.height) <= 0
+  )
+    return false
+  const common = ['op', 'slide_index', 'name', 'left', 'top', 'width', 'height']
+  if (v.op === 'add_geometric_shape')
+    return (
+      keysOnly(v, [...common, 'shape', 'fill', 'lineColor']) &&
+      ['rect', 'ellipse', 'roundRect'].includes(String(v.shape)) &&
+      color(v.fill) &&
+      color(v.lineColor)
+    )
+  if (v.op === 'add_text_box')
+    return (
+      keysOnly(v, [
+        ...common,
+        'text',
+        'fontFace',
+        'fontSize',
+        'color',
+        'bold',
+        'align',
+        'margin',
+        'verticalAlignment',
+      ]) &&
+      typeof v.text === 'string' &&
+      v.text.length <= 12000 &&
+      optional(v, 'fontFace', (x) => boundedText(x, 128)) &&
+      optional(v, 'fontSize', (x) => range(x, 6, 96)) &&
+      optional(v, 'color', color) &&
+      optional(v, 'bold', (x) => typeof x === 'boolean') &&
+      optional(v, 'align', (x) => ['left', 'center', 'right'].includes(String(x))) &&
+      optional(v, 'margin', (x) => range(x, 0, 72)) &&
+      optional(v, 'verticalAlignment', (x) => ['top', 'middle', 'bottom'].includes(String(x)))
+    )
+  if (
+    v.op !== 'add_native_table' ||
+    !keysOnly(v, [
+      ...common,
+      'rows',
+      'fontFace',
+      'fontSize',
+      'color',
+      'borderColor',
+      'cellMargin',
+    ]) ||
+    !boundedText(v.fontFace, 128) ||
+    !range(v.fontSize, 6, 48) ||
+    !color(v.color) ||
+    !optional(v, 'borderColor', color) ||
+    !optional(v, 'cellMargin', (x) => range(x, 0, 36))
+  )
+    return false
+  const rows = v.rows
+  return (
+    Array.isArray(rows) &&
+    rows.length >= 1 &&
+    rows.length <= 20 &&
+    Array.isArray(rows[0]) &&
+    rows[0].length >= 1 &&
+    rows[0].length <= 12 &&
+    rows.length * rows[0].length <= 128 &&
+    Array.from(rows).every(
+      (row) =>
+        Array.isArray(row) &&
+        row.length === rows[0].length &&
+        Array.from(row).every((cell) => typeof cell === 'string' && cell.length <= 256),
+    ) &&
+    JSON.stringify(rows).length <= 12000
+  )
+}
+function validateNativeAddBatch(v: unknown): v is PresentationNativeAddBatch {
+  if (
+    !record(v) ||
+    !keysOnly(v, [
+      'version',
+      'kind',
+      'changeId',
+      'documentId',
+      'baselineId',
+      'baselineDigest',
+      'hostSlideId',
+      'slideIndex',
+      'beforeSlideIds',
+      'scope',
+      'intent',
+      'preserved',
+      'validation',
+      'risk',
+      'backups',
+      'operations',
+      'createdShapeIds',
+      'nextIndex',
+      'inFlightIndex',
+      'state',
+      'restoredSlideId',
+      'backupReleasedAt',
+    ]) ||
+    v.version !== 2 ||
+    v.kind !== 'native_page_add' ||
+    !id(v.changeId) ||
+    !id(v.baselineId) ||
+    !boundedText(v.documentId, 4096) ||
+    !hostId(v.hostSlideId) ||
+    !Number.isSafeInteger(v.slideIndex) ||
+    !range(v.slideIndex, 0, 100000) ||
+    !uniqueIds(v.beforeSlideIds, 500) ||
+    !Array.from(v.beforeSlideIds).every(hostId) ||
+    v.beforeSlideIds[v.slideIndex] !== v.hostSlideId ||
+    !record(v.scope) ||
+    Object.keys(v.scope).join(',') !== 'slideIds' ||
+    !Array.isArray(v.scope.slideIds) ||
+    v.scope.slideIds.length !== 1 ||
+    v.scope.slideIds[0] !== v.hostSlideId ||
+    !boundedText(v.intent, 300) ||
+    !labels(v.preserved, 20) ||
+    !labels(v.validation, 20) ||
+    !Array.from(v.preserved as unknown[]).every((x) => boundedText(x, 300)) ||
+    !Array.from(v.validation as unknown[]).every((x) => boundedText(x, 300)) ||
+    v.risk !== 'high' ||
+    !Array.isArray(v.backups) ||
+    v.backups.length !== 1 ||
+    !record(v.backups[0]) ||
+    Object.keys(v.backups[0]).sort().join(',') !==
+      'backupId,hostSlideId,packageDigest,sha256,sizeBytes'
+  )
+    return false
+  const backup = v.backups[0]
+  const digest = (x: unknown) => typeof x === 'string' && /^[a-f0-9]{64}$/.test(x)
+  if (
+    backup.hostSlideId !== v.hostSlideId ||
+    !id(backup.backupId) ||
+    !digest(backup.sha256) ||
+    !digest(backup.packageDigest) ||
+    backup.packageDigest !== v.baselineDigest ||
+    !Number.isSafeInteger(backup.sizeBytes) ||
+    !range(backup.sizeBytes, 1, 8 * 1024 * 1024) ||
+    !Array.isArray(v.operations) ||
+    v.operations.length < 1 ||
+    v.operations.length > 32 ||
+    !Array.from(v.operations).every((op) => validNativeAddOperation(op, v.slideIndex as number)) ||
+    new Set(v.operations.map((op) => op.name)).size !== v.operations.length ||
+    !Array.isArray(v.createdShapeIds) ||
+    !Number.isSafeInteger(v.nextIndex) ||
+    !range(v.nextIndex, 0, v.operations.length) ||
+    v.createdShapeIds.length !== v.nextIndex ||
+    !Array.from(v.createdShapeIds).every(hostId) ||
+    new Set(v.createdShapeIds).size !== v.createdShapeIds.length ||
+    !['applying', 'applied', 'undoing', 'undone'].includes(String(v.state))
+  )
+    return false
+  const operationCount = v.operations.length
+  if (
+    !optional(
+      v,
+      'inFlightIndex',
+      (x) => v.state === 'applying' && x === v.nextIndex && Number(v.nextIndex) < operationCount,
+    ) ||
+    (v.state === 'applying' && v.nextIndex === v.operations.length) ||
+    (v.state === 'applied' && v.nextIndex !== v.operations.length) ||
+    !optional(v, 'restoredSlideId', (x) => v.state === 'undone' && hostId(x)) ||
+    (v.state === 'undone' && !hostId(v.restoredSlideId)) ||
+    !optional(v, 'backupReleasedAt', (x) => v.state === 'undone' && timestamp(x))
+  )
+    return false
+  return bytes(v) + nativeAddReservedBytes(v as unknown as PresentationNativeAddBatch) <= 192 * 1024
+}
+function nativeAddReservedBytes(r: PresentationNativeAddBatch) {
+  // Reserve JSON-escaped lone surrogates (six bytes per code unit), as well as future control fields.
+  const maximal = {
+    ...r,
+    state: 'applying',
+    nextIndex: r.operations.length,
+    inFlightIndex: 31,
+    createdShapeIds: r.operations.map(
+      (_, i) => String.fromCharCode(0xd800 + i) + '\ud800'.repeat(255),
+    ),
+    restoredSlideId: '\ud800'.repeat(256),
+    backupReleasedAt: '2026-09-29T00:00:00.000Z',
+  }
+  return Math.max(0, bytes(maximal) - bytes(r))
+}
+export function validatePresentationExistingBatch(v: unknown): v is PresentationExistingBatch {
+  return record(v) && (v.version === 2 ? validateNativeAddBatch(v) : validateTargetBatch(v))
+}
+export const existingBatchReservedBytes = (r: PresentationExistingBatch) =>
+  r.version === 2 ? nativeAddReservedBytes(r) : targetBatchReservedBytes(r)
+export function validExistingBatchTransition(
+  before: PresentationExistingBatch | undefined,
+  after: PresentationExistingBatch,
+): boolean {
+  if (
+    !validatePresentationExistingBatch(after) ||
+    (before && !validatePresentationExistingBatch(before))
+  )
+    return false
+  if (after.version === 1)
+    return (!before || before.version === 1) && validTargetBatchTransition(before, after)
+  if (!before)
+    return after.state === 'applying' && after.nextIndex === 0 && after.inFlightIndex === undefined
+  if (before.version !== 2) return false
+  const core = (r: PresentationNativeAddBatch) =>
+    JSON.stringify({
+      ...r,
+      state: undefined,
+      nextIndex: undefined,
+      createdShapeIds: undefined,
+      inFlightIndex: undefined,
+      restoredSlideId: undefined,
+      backupReleasedAt: undefined,
+    })
+  if (
+    core(before) !== core(after) ||
+    before.createdShapeIds.some((id, i) => after.createdShapeIds[i] !== id) ||
+    (before.restoredSlideId !== undefined && before.restoredSlideId !== after.restoredSlideId) ||
+    (before.backupReleasedAt !== undefined && before.backupReleasedAt !== after.backupReleasedAt)
+  )
+    return false
+  if (
+    before.state === 'applying' &&
+    after.state === 'applying' &&
+    after.nextIndex === before.nextIndex &&
+    JSON.stringify(before.createdShapeIds) === JSON.stringify(after.createdShapeIds)
+  )
+    return (
+      (before.inFlightIndex === undefined && after.inFlightIndex === before.nextIndex) ||
+      (before.inFlightIndex === before.nextIndex && after.inFlightIndex === undefined)
+    )
+  if (
+    before.state === 'applying' &&
+    ['applying', 'applied'].includes(after.state) &&
+    before.inFlightIndex === before.nextIndex &&
+    after.inFlightIndex === undefined &&
+    after.nextIndex === before.nextIndex + 1
+  )
+    return true
+  if (
+    after.nextIndex !== before.nextIndex ||
+    JSON.stringify(after.createdShapeIds) !== JSON.stringify(before.createdShapeIds)
+  )
+    return false
+  if (['applying', 'applied'].includes(before.state) && after.state === 'undoing')
+    return after.inFlightIndex === undefined
+  if (before.state === 'undoing' && after.state === 'undone') return hostId(after.restoredSlideId)
+  return (
+    before.state === 'undone' &&
+    after.state === 'undone' &&
+    before.backupReleasedAt === undefined &&
+    timestamp(after.backupReleasedAt)
+  )
 }

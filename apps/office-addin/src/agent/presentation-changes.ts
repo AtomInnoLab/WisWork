@@ -1,5 +1,9 @@
 import type { PresentationExistingChange } from '../skills/powerpoint/presentation-existing-change.js'
-import type { PresentationExistingBatch } from '../skills/powerpoint/presentation-existing-batch.js'
+import type {
+  PresentationExistingBatch,
+  PresentationTargetBatch,
+  PresentationNativeAddBatch,
+} from '../skills/powerpoint/presentation-existing-batch.js'
 import type { PresentationExistingImageChange } from '../skills/powerpoint/presentation-existing-image.js'
 import type { PresentationExistingPageChange } from '../skills/powerpoint/presentation-existing-page.js'
 import type { PresentationExistingChartChange } from '../skills/powerpoint/presentation-existing-chart.js'
@@ -32,6 +36,14 @@ import {
   type ImageReplacementRecord,
 } from '../skills/powerpoint/presentation-image-replacement-record.js'
 
+const nativeAdditionDescription = (record: PresentationNativeAddBatch) =>
+  record.operations
+    .map(
+      (op, index) =>
+        `${index + 1}. ${op.name}: ${record.createdShapeIds[index] ?? '尚未记录创建身份'}`,
+    )
+    .join('\n')
+
 export type PresentationChangeAction =
   'inspect' | 'undo' | 'resume' | 'reapply' | 'commit' | 'discard' | 'release'
 export interface PresentationChangeEntry {
@@ -40,7 +52,7 @@ export interface PresentationChangeEntry {
   origin?: { agentRunId: string; toolCallId: string }
   source?: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart'
   review?: PresentationExistingChange['review']
-  reviews?: PresentationExistingBatch['reviews']
+  reviews?: PresentationTargetBatch['reviews']
   visualReviews?: PresentationExistingPageChange['reviews']
   visualCaptures?: PresentationExistingPageChange['captures']
   visualPageIds?: string[]
@@ -51,7 +63,7 @@ export interface PresentationChangeEntry {
   legacy?: boolean
   changeSet?: PresentationChangeSetSummary
   id: string
-  kind: 'text' | 'text_range' | 'geometry' | 'table_cell' | 'image' | 'page' | 'chart'
+  kind: 'text' | 'text_range' | 'geometry' | 'table_cell' | 'image' | 'page' | 'chart' | 'addition'
   pageId: string
   state: string
   before: string
@@ -441,45 +453,65 @@ export function createPresentationChangesController(
                       fingerprint: JSON.stringify(saved),
                     }
                   : saved.kind === 'existing_batch'
-                    ? {
-                        entry: {
-                          id: saved.id,
-                          source: 'existing_batch',
-                          kind: saved.record.operations[0].kind,
-                          pageId: saved.record.operations[0].hostSlideId,
-                          state: saved.record.state,
-                          cursor: saved.record.cursor,
-                          operationCount: saved.record.operations.length,
-                          reviews: copy(saved.record.reviews),
-                          affectedPageCount: new Set(
-                            saved.record.operations.map((op) => op.hostSlideId),
-                          ).size,
-                          before: saved.record.operations
-                            .map(
-                              (op) =>
-                                `${op.hostSlideId}/${op.shapeId}${op.kind === 'table_cell' ? `[${op.rowIndex},${op.columnIndex}]` : ''}: ${JSON.stringify(op.before)}`,
-                            )
-                            .join('\n'),
-                          after: saved.record.operations
-                            .map(
-                              (op) =>
-                                `${op.hostSlideId}/${op.shapeId}${op.kind === 'table_cell' ? `[${op.rowIndex},${op.columnIndex}]` : ''}: ${JSON.stringify(op.after)}`,
-                            )
-                            .join('\n'),
-                          actions:
-                            saved.record.state === 'applied'
-                              ? ['inspect', 'undo']
-                              : saved.record.state === 'undone'
-                                ? saved.record.backups?.length && !saved.record.backupReleasedAt
-                                  ? ['inspect', 'reapply', 'release']
-                                  : ['inspect']
-                                : saved.record.state === 'applying'
-                                  ? ['inspect', 'resume', 'undo']
-                                  : ['inspect', 'resume'],
-                        },
-                        record: copy(saved.record),
-                        fingerprint: JSON.stringify(saved),
-                      }
+                    ? saved.record.version === 2
+                      ? {
+                          entry: {
+                            id: saved.id,
+                            source: 'existing_batch',
+                            kind: 'addition',
+                            pageId: saved.record.restoredSlideId ?? saved.record.hostSlideId,
+                            state: saved.record.state,
+                            cursor: saved.record.nextIndex,
+                            operationCount: saved.record.operations.length,
+                            affectedPageCount: 1,
+                            before: saved.record.backupReleasedAt
+                              ? `原页备份已释放：${saved.record.backupReleasedAt}`
+                              : '原页包已保存；原有对象须完整保留',
+                            after: nativeAdditionDescription(saved.record),
+                            actions: [],
+                          },
+                          record: copy(saved.record),
+                          fingerprint: JSON.stringify(saved),
+                        }
+                      : {
+                          entry: {
+                            id: saved.id,
+                            source: 'existing_batch',
+                            kind: saved.record.operations[0].kind,
+                            pageId: saved.record.operations[0].hostSlideId,
+                            state: saved.record.state,
+                            cursor: saved.record.cursor,
+                            operationCount: saved.record.operations.length,
+                            reviews: copy(saved.record.reviews),
+                            affectedPageCount: new Set(
+                              saved.record.operations.map((op) => op.hostSlideId),
+                            ).size,
+                            before: saved.record.operations
+                              .map(
+                                (op) =>
+                                  `${op.hostSlideId}/${op.shapeId}${op.kind === 'table_cell' ? `[${op.rowIndex},${op.columnIndex}]` : ''}: ${JSON.stringify(op.before)}`,
+                              )
+                              .join('\n'),
+                            after: saved.record.operations
+                              .map(
+                                (op) =>
+                                  `${op.hostSlideId}/${op.shapeId}${op.kind === 'table_cell' ? `[${op.rowIndex},${op.columnIndex}]` : ''}: ${JSON.stringify(op.after)}`,
+                              )
+                              .join('\n'),
+                            actions:
+                              saved.record.state === 'applied'
+                                ? ['inspect', 'undo']
+                                : saved.record.state === 'undone'
+                                  ? saved.record.backups?.length && !saved.record.backupReleasedAt
+                                    ? ['inspect', 'reapply', 'release']
+                                    : ['inspect']
+                                  : saved.record.state === 'applying'
+                                    ? ['inspect', 'resume', 'undo']
+                                    : ['inspect', 'resume'],
+                          },
+                          record: copy(saved.record),
+                          fingerprint: JSON.stringify(saved),
+                        }
                     : saved.kind === 'existing'
                       ? {
                           entry: {

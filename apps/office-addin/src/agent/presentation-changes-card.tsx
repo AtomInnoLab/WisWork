@@ -95,6 +95,7 @@ export function PresentationChangesCard({
                   table_cell: '表格单元格文字差异',
                   image: '图片身份与摘要差异（非视觉 diff）',
                   page: '整页身份与摘要差异（非视觉 diff）',
+                  addition: '新增页面内容与已记录的对象身份',
                   chart: '图表数据与页面包摘要差异（非视觉 diff）',
                 }[entry.kind]
               }

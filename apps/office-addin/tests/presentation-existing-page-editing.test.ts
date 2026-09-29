@@ -172,7 +172,7 @@ async function fixture() {
       sizeBytes: backupBytes.length,
     },
   }
-  const batchSourceRecord: PresentationExistingBatch = {
+  let batchSourceRecord: PresentationExistingBatch = {
     version: 1,
     changeId: 'batch',
     documentId: 'doc',
@@ -452,6 +452,9 @@ async function fixture() {
     },
     originalSourceRecord,
     batchSourceRecord,
+    setBatchSourceRecord: (record: PresentationExistingBatch) => {
+      batchSourceRecord = structuredClone(record)
+    },
     preparedFiles,
     digest,
     backupStore,
@@ -1195,3 +1198,68 @@ it.each([
     expect(f.records.size).toBe(0)
   },
 )
+
+it('prepares a pending native-add V2 original page for separately confirmed restoration without replaying additions', async () => {
+  const f = await fixture()
+  const backup = f.batchSourceRecord.backups![0]!
+  const record: import('../src/skills/powerpoint/presentation-existing-batch').PresentationNativeAddBatch =
+    {
+      version: 2,
+      kind: 'native_page_add',
+      changeId: 'native-add',
+      documentId: 'doc',
+      baselineId: 'native-before',
+      baselineDigest: backup.packageDigest,
+      hostSlideId: 'old',
+      slideIndex: 0,
+      beforeSlideIds: ['old'],
+      scope: { slideIds: ['old'] },
+      intent: 'Add native title',
+      preserved: ['Original page'],
+      validation: ['Native readback'],
+      risk: 'high',
+      backups: [backup],
+      operations: [
+        {
+          op: 'add_text_box',
+          slide_index: 0,
+          name: 'added-title',
+          text: 'Title',
+          left: 72,
+          top: 72,
+          width: 720,
+          height: 72,
+        },
+      ],
+      createdShapeIds: [],
+      nextIndex: 0,
+      inFlightIndex: 0,
+      state: 'applying',
+    }
+  f.setBatchSourceRecord(record)
+  f.setCurrentPage(f.source())
+  const prepared = await f.skill.executeTool({
+    id: 'prepare-native-restore',
+    name: 'prepare_existing_presentation_original_page_restore',
+    input: { source_kind: 'batch', change_id: 'native-add', slide_id: 'old' },
+  })
+  expect(prepared.isError, prepared.output).not.toBe(true)
+  const next = JSON.parse(prepared.output).nextInput
+  expect(f.preparedFiles.get(next.path)).toEqual(f.backup())
+  expect(f.adapter.stage).not.toHaveBeenCalled()
+  const staged = await f.call('stage', { baseline_id: 'baseline', ...next })
+  expect(staged.isError, staged.output).not.toBe(true)
+  expect(f.adapter.stage).not.toHaveBeenCalled()
+  await f.confirm()
+  const restore = [...f.records.values()][0]!
+  expect(restore.restores).toMatchObject({
+    sourceKind: 'batch',
+    sourceChangeId: 'native-add',
+    sourceHostSlideId: 'old',
+  })
+  expect(f.adapter.stage).toHaveBeenCalledOnce()
+  await f.call('commit', { change_id: restore.changeId })
+  await f.confirm()
+  expect(f.records.get(restore.changeId)?.state).toBe('applied')
+  expect(record).toMatchObject({ state: 'applying', nextIndex: 0, inFlightIndex: 0 })
+})

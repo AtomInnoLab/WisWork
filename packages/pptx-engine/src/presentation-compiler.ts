@@ -31,6 +31,50 @@ function generatedXmlMatches(value: unknown, expected: unknown): boolean {
   )
 }
 
+function shapeIds(root: unknown): string[] {
+  if (Array.isArray(root)) return root.flatMap(shapeIds)
+  if (!root || typeof root !== 'object') return []
+  return Object.entries(root).flatMap(([key, value]) =>
+    key === 'p:cNvPr' ? xmlItems(value).map((node) => node['@_id']) : shapeIds(value),
+  )
+}
+function unsupportedShapeReferences(root: unknown): boolean {
+  if (Array.isArray(root)) return root.some(unsupportedShapeReferences)
+  if (!root || typeof root !== 'object') return false
+  return Object.entries(root).some(
+    ([key, value]) =>
+      ['p:timing', 'p:bldLst', 'p:cxnSp', 'a:stCxn', 'a:endCxn'].includes(key) ||
+      /^@_(?:spid|spId|shapeId)$/.test(key) ||
+      unsupportedShapeReferences(value),
+  )
+}
+/** Repair only freshly generated slides; no supported IR element carries a shape-ID reference. */
+async function normalizeGeneratedShapeIds(zip: JSZip, slideCount: number): Promise<boolean> {
+  const parser = new XMLParser({ ignoreAttributes: false, parseAttributeValue: false })
+  let changed = false
+  for (let index = 0; index < slideCount; index++) {
+    const path = `ppt/slides/slide${index + 1}.xml`,
+      file = zip.file(path)
+    if (!file) throw Error('presentation_compile:structure_mismatch')
+    const xml = await file.async('string')
+    if (XMLValidator.validate(xml) !== true || unsupportedShapeReferences(parser.parse(xml)))
+      throw Error('presentation_compile:structure_mismatch')
+    let next = 0
+    const normalized = xml.replace(/<p:cNvPr\b[^>]*>/g, (tag) => {
+      next++
+      if (next > 0xffffffff || !/\bid="[^"]*"/.test(tag))
+        throw Error('presentation_compile:structure_mismatch')
+      return tag.replace(/\bid="[^"]*"/, `id="${next}"`)
+    })
+    if (!next) throw Error('presentation_compile:structure_mismatch')
+    if (normalized !== xml) {
+      zip.file(path, normalized)
+      changed = true
+    }
+  }
+  return changed
+}
+
 function xmlText(value: unknown): string {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) return value.map(xmlText).join('')
@@ -286,6 +330,16 @@ export async function verifyCompiledPresentationStructure(
     )
       throw new Error('presentation_compile:structure_mismatch')
     const root = parser.parse(xml) as XmlNode
+    const nativeIds = shapeIds(root)
+    if (
+      unsupportedShapeReferences(root) ||
+      !nativeIds.length ||
+      nativeIds.some(
+        (id) => typeof id !== 'string' || !/^[1-9]\d*$/.test(id) || Number(id) > 0xffffffff,
+      ) ||
+      new Set(nativeIds).size !== nativeIds.length
+    )
+      throw Error('presentation_compile:structure_mismatch')
     if (
       !colorEquals(
         root['p:sld']?.['p:cSld']?.['p:bg']?.['p:bgPr']?.['a:solidFill'],
@@ -820,6 +874,7 @@ export async function compilePresentationDeck(
   const output = await pptx.write({ outputType: 'uint8array', compression: true })
   if (!(output instanceof Uint8Array)) throw new Error('presentation_compile:unexpected_output')
   const zip = await JSZip.loadAsync(output)
+  const normalizedIds = await normalizeGeneratedShapeIds(zip, deck.slides.length)
   const presentation = zip.file('ppt/presentation.xml')
   if (!presentation) throw new Error('presentation_compile:missing_presentation')
   const parsed = new XMLParser({
@@ -850,9 +905,10 @@ export async function compilePresentationDeck(
   const repairedZeros = await restoreGeneratedChartZeros(zip, deck)
   await verifyCompiledPresentationStructure(zip, deck)
   return {
-    bytes: repairedZeros
-      ? await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
-      : output,
+    bytes:
+      repairedZeros || normalizedIds
+        ? await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+        : output,
     sourceSlideIds,
     report: {
       deckId: deck.id,

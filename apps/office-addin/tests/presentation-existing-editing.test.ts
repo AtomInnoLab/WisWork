@@ -6,6 +6,14 @@ import type { StructuredProposalController } from '../src/agent/proposal-control
 import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
 import { BrowserPresentationBaselineAdapter } from '../src/skills/powerpoint/browser-presentation-baseline-adapter'
 import { BrowserPowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter'
+const targetBatch = (
+  value:
+    | import('../src/skills/powerpoint/presentation-existing-batch').PresentationExistingBatch
+    | undefined,
+) => {
+  if (value && value.version !== 1) throw new Error('expected legacy target batch')
+  return value
+}
 const png =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII='
 const otherPng =
@@ -90,7 +98,7 @@ it('applies and reverses two ordered native table cells with one durable batch',
   expect(undo.isError, undo.output).not.toBe(true)
   await f.confirm()
   expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
-  expect(f.binding().readExistingBatch(batch!.record.changeId)?.state).toBe('undone')
+  expect(targetBatch(f.binding().readExistingBatch(batch!.record.changeId))?.state).toBe('undone')
 })
 it('confirms reapplication of an undone batch and can undo it again after reopening', async () => {
   const f = await fixture()
@@ -117,7 +125,10 @@ it('confirms reapplication of an undone batch and can undo it again after reopen
   expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
   await f.confirm()
   expect([f.tableText(), f.tableText2()]).toEqual(['after', 'after-2'])
-  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applied', cursor: 2 })
+  expect(targetBatch(f.binding().readExistingBatch(change_id))).toMatchObject({
+    state: 'applied',
+    cursor: 2,
+  })
   f.reopen()
   const undo = await f.call('undo_existing_presentation_batch', { change_id })
   expect(undo.isError, undo.output).not.toBe(true)
@@ -147,7 +158,10 @@ it('refuses reapplication while its original page backup is unreadable or releas
   const pending = await f.call('reapply_existing_presentation_batch', { change_id })
   expect(pending.isError, pending.output).not.toBe(true)
   await expect(f.confirm()).rejects.toThrow('presentation_existing_batch_backup_missing')
-  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'undone', cursor: 0 })
+  expect(targetBatch(f.binding().readExistingBatch(change_id))).toMatchObject({
+    state: 'undone',
+    cursor: 0,
+  })
   expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
   f.setBackupOffline(false)
   f.reopen()
@@ -183,7 +197,10 @@ it('refuses reapplication after a target is changed to a third value', async () 
   f.setText('manual')
   const rejected = await f.call('reapply_existing_presentation_batch', { change_id })
   expect(rejected.output).toBe('presentation_existing_batch_conflict')
-  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'undone', cursor: 0 })
+  expect(targetBatch(f.binding().readExistingBatch(change_id))).toMatchObject({
+    state: 'undone',
+    cursor: 0,
+  })
 })
 it('does not reconstruct an accidentally missing original backup during reapplication', async () => {
   const f = await fixture()
@@ -204,12 +221,15 @@ it('does not reconstruct an accidentally missing original backup during reapplic
   await f.confirm()
   await f.call('undo_existing_presentation_batch', { change_id })
   await f.confirm()
-  const backup_id = f.binding().readExistingBatch(change_id)!.backups![0]!.backupId
+  const backup_id = targetBatch(f.binding().readExistingBatch(change_id))!.backups![0]!.backupId
   f.deleteBackup(backup_id)
   const pending = await f.call('reapply_existing_presentation_batch', { change_id })
   expect(pending.isError, pending.output).not.toBe(true)
   await expect(f.confirm()).rejects.toThrow('presentation_existing_batch_backup_missing')
-  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'undone', cursor: 0 })
+  expect(targetBatch(f.binding().readExistingBatch(change_id))).toMatchObject({
+    state: 'undone',
+    cursor: 0,
+  })
   expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
 })
 it('recovers a reapplication whose first Office write succeeded but its receipt was lost', async () => {
@@ -244,14 +264,20 @@ it('recovers a reapplication whose first Office write succeeded but its receipt 
   })
   await f.call('reapply_existing_presentation_batch', { change_id })
   await expect(f.confirm()).rejects.toThrow()
-  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applying', cursor: 0 })
+  expect(targetBatch(f.binding().readExistingBatch(change_id))).toMatchObject({
+    state: 'applying',
+    cursor: 0,
+  })
   expect(f.text()).toBe('after')
   f.reopen()
   const resumed = await f.call('resume_existing_presentation_batch', { change_id })
   expect(resumed.isError, resumed.output).not.toBe(true)
   await f.confirm()
   expect(f.editText).toHaveBeenCalledTimes(3)
-  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applied', cursor: 2 })
+  expect(targetBatch(f.binding().readExistingBatch(change_id))).toMatchObject({
+    state: 'applied',
+    cursor: 2,
+  })
 })
 it('resumes a table batch after one cell was durably written and the next write failed', async () => {
   const f = await fixture()
@@ -275,7 +301,10 @@ it('resumes a table batch after one cell was durably written and the next write 
     .mockImplementationOnce(write)
     .mockRejectedValueOnce(new Error('office_write_failed'))
   await expect(f.confirm()).rejects.toThrow()
-  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applying', cursor: 1 })
+  expect(targetBatch(f.binding().readExistingBatch(change_id))).toMatchObject({
+    state: 'applying',
+    cursor: 1,
+  })
   expect([f.tableText(), f.tableText2()]).toEqual(['after', 'before-2'])
   f.reopen()
   const inspected = await f.call('inspect_existing_presentation_batch', { change_id })
@@ -284,7 +313,10 @@ it('resumes a table batch after one cell was durably written and the next write 
   expect(resumed.isError, resumed.output).not.toBe(true)
   await f.confirm()
   expect([f.tableText(), f.tableText2()]).toEqual(['after', 'after-2'])
-  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applied', cursor: 2 })
+  expect(targetBatch(f.binding().readExistingBatch(change_id))).toMatchObject({
+    state: 'applied',
+    cursor: 2,
+  })
 })
 
 it.each(['resume', 'undo'] as const)(
@@ -311,7 +343,10 @@ it.each(['resume', 'undo'] as const)(
       throw new Error('receipt_lost')
     })
     await expect(f.confirm()).rejects.toThrow('receipt_lost')
-    expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'applying', cursor: 0 })
+    expect(targetBatch(f.binding().readExistingBatch(changeId))).toMatchObject({
+      state: 'applying',
+      cursor: 0,
+    })
     expect([f.tableText(), f.tableText2()]).toEqual(['after', 'before-2'])
     f.reopen()
     const recovery = await f.call(`${action}_existing_presentation_batch`, { change_id: changeId })
@@ -320,7 +355,7 @@ it.each(['resume', 'undo'] as const)(
     expect([f.tableText(), f.tableText2()]).toEqual(
       action === 'resume' ? ['after', 'after-2'] : ['before', 'before-2'],
     )
-    expect(f.binding().readExistingBatch(changeId)).toMatchObject({
+    expect(targetBatch(f.binding().readExistingBatch(changeId))).toMatchObject({
       state: action === 'resume' ? 'applied' : 'undone',
       cursor: action === 'resume' ? 2 : 0,
     })
@@ -383,13 +418,19 @@ it.each([false, true])(
       throw new Error(receiptLost ? 'receipt_lost' : 'office_write_failed')
     })
     await expect(f.confirm()).rejects.toThrow()
-    expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'applying', cursor: 1 })
+    expect(targetBatch(f.binding().readExistingBatch(changeId))).toMatchObject({
+      state: 'applying',
+      cursor: 1,
+    })
     f.reopen()
     const undo = await f.call('undo_existing_presentation_batch', { change_id: changeId })
     expect(undo.isError, undo.output).not.toBe(true)
     await f.confirm()
     expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
-    expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'undone', cursor: 0 })
+    expect(targetBatch(f.binding().readExistingBatch(changeId))).toMatchObject({
+      state: 'undone',
+      cursor: 0,
+    })
     expect(f.editTableCell).toHaveBeenCalledTimes(receiptLost ? 4 : 3)
   },
 )
@@ -419,7 +460,10 @@ it('stops a confirmed batch after its first durable write when Stop is requested
   await expect(f.confirm()).rejects.toThrow()
   expect(f.editTableCell).toHaveBeenCalledTimes(1)
   expect([f.tableText(), f.tableText2()]).toEqual(['after', 'before-2'])
-  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'applying', cursor: 1 })
+  expect(targetBatch(f.binding().readExistingBatch(changeId))).toMatchObject({
+    state: 'applying',
+    cursor: 1,
+  })
   f.reopen()
   const resumed = await f.call('resume_existing_presentation_batch', { change_id: changeId })
   expect(resumed.isError, resumed.output).not.toBe(true)
@@ -458,14 +502,20 @@ it('stops a batch undo after its first durable reverse write and resumes it', as
   await expect(f.confirm()).rejects.toThrow()
   expect(f.editTableCell).toHaveBeenCalledTimes(1)
   expect([f.tableText(), f.tableText2()]).toEqual(['after', 'before-2'])
-  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'undoing', cursor: 1 })
+  expect(targetBatch(f.binding().readExistingBatch(changeId))).toMatchObject({
+    state: 'undoing',
+    cursor: 1,
+  })
   f.reopen()
   const resumed = await f.call('resume_existing_presentation_batch', { change_id: changeId })
   expect(resumed.isError, resumed.output).not.toBe(true)
   await f.confirm()
   expect([f.tableText(), f.tableText2()]).toEqual(['before', 'before-2'])
   expect(f.editTableCell).toHaveBeenCalledTimes(2)
-  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'undone', cursor: 0 })
+  expect(targetBatch(f.binding().readExistingBatch(changeId))).toMatchObject({
+    state: 'undone',
+    cursor: 0,
+  })
 })
 it('finalizes an already written table cell after a lost receipt without replaying it', async () => {
   const f = await fixture()
@@ -490,14 +540,20 @@ it('finalizes an already written table cell after a lost receipt without replayi
     throw new Error('receipt_lost')
   })
   await expect(f.confirm()).rejects.toThrow()
-  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applying', cursor: 1 })
+  expect(targetBatch(f.binding().readExistingBatch(change_id))).toMatchObject({
+    state: 'applying',
+    cursor: 1,
+  })
   expect([f.tableText(), f.tableText2()]).toEqual(['after', 'after-2'])
   f.reopen()
   const resumed = await f.call('resume_existing_presentation_batch', { change_id })
   expect(resumed.isError, resumed.output).not.toBe(true)
   await f.confirm()
   expect(f.editTableCell).toHaveBeenCalledTimes(2)
-  expect(f.binding().readExistingBatch(change_id)).toMatchObject({ state: 'applied', cursor: 2 })
+  expect(targetBatch(f.binding().readExistingBatch(change_id))).toMatchObject({
+    state: 'applied',
+    cursor: 2,
+  })
 })
 it('rejects a table batch if a target cell changes to a third value before confirmation', async () => {
   const f = await fixture()
@@ -1384,7 +1440,7 @@ it('applies and reverses an ordered text plus geometry batch through one durable
     notes: 'Title and position checked',
   })
   expect(reviewed.isError, reviewed.output).not.toBe(true)
-  expect(f.binding().readExistingBatch(changeId)?.reviews).toMatchObject([
+  expect(targetBatch(f.binding().readExistingBatch(changeId))?.reviews).toMatchObject([
     { hostSlideId: 'slide', status: 'pass' },
   ])
   f.reopen()
@@ -1405,7 +1461,7 @@ it('applies and reverses an ordered text plus geometry batch through one durable
   expect(f.text()).toBe('before')
   expect(f.geometry().left).toBe(1)
   expect(f.binding().listChangeHistory()[0].record).toMatchObject({ state: 'undone', cursor: 0 })
-  expect(f.binding().readExistingBatch(changeId)?.reviews).toBeUndefined()
+  expect(targetBatch(f.binding().readExistingBatch(changeId))?.reviews).toBeUndefined()
   expect(f.readyBackups()).toBe(1)
   await workbench.refresh()
   const undoneRow = workbench
@@ -1422,7 +1478,7 @@ it('applies and reverses an ordered text plus geometry batch through one durable
   await workbench.run(undoneRow!.id, 'release')
   await f.confirm()
   expect(f.readyBackups()).toBe(0)
-  expect(f.binding().readExistingBatch(changeId)?.backupReleasedAt).toBeTruthy()
+  expect(targetBatch(f.binding().readExistingBatch(changeId))?.backupReleasedAt).toBeTruthy()
   await workbench.refresh()
   expect(workbench.snapshot().entries.find((entry) => entry.id === undoneRow!.id)?.actions).toEqual(
     ['inspect'],
@@ -1457,7 +1513,7 @@ it('stops releasing batch backups after the first receipt and safely retries rel
   await expect(f.confirm()).rejects.toThrow()
   expect(f.readyBackups()).toBe(1)
   expect(f.releasedBackups()).toBe(1)
-  expect(f.binding().readExistingBatch(changeId)?.backupReleasedAt).toBeUndefined()
+  expect(targetBatch(f.binding().readExistingBatch(changeId))?.backupReleasedAt).toBeUndefined()
   f.setAfterBackupRelease(undefined)
   f.reopen()
   const retry = await f.call('release_existing_presentation_batch', { change_id: changeId })
@@ -1465,7 +1521,7 @@ it('stops releasing batch backups after the first receipt and safely retries rel
   await f.confirm()
   expect(f.readyBackups()).toBe(0)
   expect(f.releasedBackups()).toBe(2)
-  expect(f.binding().readExistingBatch(changeId)?.backupReleasedAt).toBeTruthy()
+  expect(targetBatch(f.binding().readExistingBatch(changeId))?.backupReleasedAt).toBeTruthy()
 })
 
 it('completes all affected page package backups before the first batch host write', async () => {
@@ -1517,13 +1573,19 @@ it('keeps PowerPoint unchanged when PC backup is unavailable and resumes after r
   await expect(f.confirm()).rejects.toThrow('offline')
   expect(f.text()).toBe('before')
   expect(f.geometry().left).toBe(1)
-  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'applying', cursor: 0 })
+  expect(targetBatch(f.binding().readExistingBatch(changeId))).toMatchObject({
+    state: 'applying',
+    cursor: 0,
+  })
   f.setBackupOffline(false)
   f.reopen()
   const resumed = await f.call('resume_existing_presentation_batch', { change_id: changeId })
   expect(resumed.isError, resumed.output).not.toBe(true)
   await f.confirm()
-  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'applied', cursor: 2 })
+  expect(targetBatch(f.binding().readExistingBatch(changeId))).toMatchObject({
+    state: 'applied',
+    cursor: 2,
+  })
   expect(f.readyBackups()).toBe(1)
 })
 it('does not begin a multi-page batch when PC backup quota fills partway', async () => {
@@ -1547,7 +1609,7 @@ it('does not begin a multi-page batch when PC backup quota fills partway', async
   expect(f.text()).toBe('before')
   expect(f.otherText()).toBe('other-before')
   const changeId = JSON.parse(proposed.output).changeId as string
-  const missingBackup = f.binding().readExistingBatch(changeId)!.backups![1]!
+  const missingBackup = targetBatch(f.binding().readExistingBatch(changeId))!.backups![1]!
   f.setBackupQuota(2)
   f.reopen()
   f.setPackageComment('regenerated ZIP metadata')
@@ -1558,7 +1620,7 @@ it('does not begin a multi-page batch when PC backup quota fills partway', async
   await f.confirm()
   expect(f.readyBackups()).toBe(2)
   expect(f.otherText()).toBe('other-after')
-  expect(f.binding().readExistingBatch(changeId)!.backups![1]!.sha256).not.toBe(
+  expect(targetBatch(f.binding().readExistingBatch(changeId))!.backups![1]!.sha256).not.toBe(
     missingBackup.sha256,
   )
 })
@@ -1596,7 +1658,7 @@ it('stops a batch when a non-target shape changes during a confirmed write', asy
   })
   await expect(f.confirm()).rejects.toThrow('presentation_existing_preserved_changed')
   expect(f.otherText()).toBe('other-before')
-  const saved = f.binding().readExistingBatch(JSON.parse(proposed.output).changeId)
+  const saved = targetBatch(f.binding().readExistingBatch(JSON.parse(proposed.output).changeId))
   expect(saved).toMatchObject({ state: 'applying', cursor: 0 })
   expect(saved?.preservedPageDigests).toHaveProperty('slide')
   expect(saved?.preservedPageDigests).toHaveProperty('other')
@@ -1643,7 +1705,8 @@ it('stops a batch when a text edit also changes an unplanned target font', async
   await expect(f.confirm()).rejects.toThrow('presentation_existing_preserved_changed')
   expect(f.geometry().left).toBe(1)
   expect(
-    f.binding().readExistingBatch(JSON.parse(proposed.output).changeId)?.preservedTargetDigests,
+    targetBatch(f.binding().readExistingBatch(JSON.parse(proposed.output).changeId))
+      ?.preservedTargetDigests,
   ).toHaveProperty(JSON.stringify(['slide', 'shape']))
 })
 it('edits two native objects on two pages and invalidates both QA page scopes', async () => {
@@ -1683,7 +1746,7 @@ it('edits two native objects on two pages and invalidates both QA page scopes', 
     })
     expect(reviewed.isError, reviewed.output).not.toBe(true)
   }
-  expect(f.binding().readExistingBatch(changeId)?.reviews).toHaveLength(2)
+  expect(targetBatch(f.binding().readExistingBatch(changeId))?.reviews).toHaveLength(2)
   f.reopen()
   const undo = await f.call('undo_existing_presentation_batch', { change_id: changeId })
   expect(undo.isError, undo.output).not.toBe(true)
@@ -1732,7 +1795,7 @@ it('rejects a changed or cross-session batch screenshot review', async () => {
   f.reopen()
   const reopened = await f.call('record_existing_presentation_batch_page_review', review)
   expect(reopened).toMatchObject({ isError: true, output: 'presentation_existing_batch_qa_stale' })
-  expect(f.binding().readExistingBatch(changeId)?.reviews).toBeUndefined()
+  expect(targetBatch(f.binding().readExistingBatch(changeId))?.reviews).toBeUndefined()
 })
 it('invalidates a captured batch review when another confirmed host edit begins', async () => {
   const f = await fixture()
@@ -1779,7 +1842,7 @@ it('invalidates a captured batch review when another confirmed host edit begins'
     notes: 'Old capture',
   })
   expect(stale).toMatchObject({ isError: true, output: 'presentation_existing_batch_qa_stale' })
-  expect(f.binding().readExistingBatch(changeId)?.reviews).toBeUndefined()
+  expect(targetBatch(f.binding().readExistingBatch(changeId))?.reviews).toBeUndefined()
 })
 it('resumes a batch after the first step was saved and the second host write failed', async () => {
   const f = await fixture()
@@ -1846,7 +1909,10 @@ it('finalizes an interrupted first-step receipt without replaying the host write
     }
   })
   await expect(f.confirm()).rejects.toThrow()
-  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'applying', cursor: 0 })
+  expect(targetBatch(f.binding().readExistingBatch(changeId))).toMatchObject({
+    state: 'applying',
+    cursor: 0,
+  })
   expect(f.text()).toBe('after')
   f.reopen()
   const inspected = await f.call('inspect_existing_presentation_batch', { change_id: changeId })
@@ -1855,7 +1921,10 @@ it('finalizes an interrupted first-step receipt without replaying the host write
   expect(resumed.isError, resumed.output).not.toBe(true)
   await f.confirm()
   expect(f.editText).toHaveBeenCalledTimes(1)
-  expect(f.binding().readExistingBatch(changeId)).toMatchObject({ state: 'applied', cursor: 2 })
+  expect(targetBatch(f.binding().readExistingBatch(changeId))).toMatchObject({
+    state: 'applied',
+    cursor: 2,
+  })
 })
 it.each(['text', 'selection', 'document'] as const)(
   'rejects %s drift before confirmation without a host write',

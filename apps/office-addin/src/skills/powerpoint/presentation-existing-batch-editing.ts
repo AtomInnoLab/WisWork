@@ -20,6 +20,7 @@ import {
   validatePresentationExistingBatch,
   type ExistingBatchOperation,
   type PresentationExistingBatch,
+  type PresentationTargetBatch,
 } from './presentation-existing-batch.js'
 import { inspectPowerPointTableCellsPackage } from './presentation-complex-page-package.js'
 import { presentationPackageDigest } from './powerpoint-package.js'
@@ -304,7 +305,7 @@ export function createPresentationExistingBatchEditingSkill(
             throw new Error('presentation_document_changed')
           active()
         }
-        let record: PresentationExistingBatch
+        let record: PresentationTargetBatch
         let initialBaseline: ReturnType<PresentationBaselineSkill['snapshot']>
         const proposalPackages = new Map<string, string>()
         if (creating) {
@@ -567,7 +568,7 @@ export function createPresentationExistingBatchEditingSkill(
             state: 'applying',
             cursor: 0,
             reviewCapacity: true,
-          } as PresentationExistingBatch
+          } as PresentationTargetBatch
           if (!validatePresentationExistingBatch(record)) throw new Error('invalid_tool_input')
         } else {
           if (
@@ -582,6 +583,7 @@ export function createPresentationExistingBatchEditingSkill(
             saved.documentId !== documentId
           )
             throw new Error('presentation_existing_batch_missing')
+          if (saved.version !== 1) throw new Error('office_api_unsupported')
           record = structuredClone(saved)
         }
         let expected = creating ? undefined : structuredClone(record)
@@ -670,7 +672,7 @@ export function createPresentationExistingBatchEditingSkill(
           }
           return op.kind === 'text' ? shape.text : geometry(shape)
         }
-        const store = async (next: PresentationExistingBatch) => {
+        const store = async (next: PresentationTargetBatch) => {
           await current()
           saved()
           await options.writeExistingBatch(next, expected)

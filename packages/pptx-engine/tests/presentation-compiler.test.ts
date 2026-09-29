@@ -698,3 +698,51 @@ it('accepts generated fractional equal table dimensions with unchanged blank cel
   const zip = await JSZip.loadAsync(bytes)
   await expect(verifyCompiledPresentationStructure(zip, deck)).resolves.toBeUndefined()
 })
+
+it('gives every native single-page table shape a unique canonical positive uint32 ID', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[5]!]
+  const { bytes, sourceSlideIds } = await compilePresentationDeck(deck)
+  expect(sourceSlideIds).toHaveLength(1)
+  const zip = await JSZip.loadAsync(bytes)
+  const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const ids = [...xml.matchAll(/<p:cNvPr\b[^>]*\bid="([^"]*)"/g)].map((m) => m[1]!)
+  expect(ids.length).toBeGreaterThan(2)
+  expect(new Set(ids).size).toBe(ids.length)
+  expect(ids.every((id) => /^[1-9]\d*$/.test(id) && Number(id) <= 0xffffffff)).toBe(true)
+  for (const bad of [ids[0]!, '0', '-1', '01', '1.5', '4294967296', 'illegal']) {
+    const altered = xml.replace(/(<p:cNvPr\b[^>]*\bid=")[^"]*/, `$1${bad}`)
+    // Mutate a second object for the duplicate case while retaining the group ID.
+    const value =
+      bad === ids[0]
+        ? xml.replace(
+            /(<p:cNvPr\b[^>]*\bid="[^"]*"[^>]*>[^]*?<p:cNvPr\b[^>]*\bid=")[^"]*/,
+            `$1${bad}`,
+          )
+        : altered
+    expect(value).not.toBe(xml)
+    zip.file('ppt/slides/slide1.xml', value)
+    await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+  }
+})
+it('rejects unsupported native shape references rather than silently certifying a disconnected package', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[5]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes),
+    xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  for (const fragment of [
+    '<p:timing/>',
+    '<p:bldLst/>',
+    '<a:stCxn id="2" idx="0"/>',
+    '<a:endCxn id="2" idx="0"/>',
+    '<p:spTgt spid="2"/>',
+  ]) {
+    zip.file('ppt/slides/slide1.xml', xml.replace('</p:sld>', fragment + '</p:sld>'))
+    await expect(verifyCompiledPresentationStructure(zip, deck)).rejects.toThrow(
+      'presentation_compile:structure_mismatch',
+    )
+  }
+})

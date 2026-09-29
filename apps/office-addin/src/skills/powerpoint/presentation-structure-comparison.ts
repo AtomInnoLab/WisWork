@@ -884,3 +884,9 @@ export async function comparePresentationPageStructure(
     content,
   }
 }
+
+// Package observers reuse these checks after their own bounded XML read.
+export {
+  tableStructure as inspectNativeTableStructure,
+  tableCellStyles as inspectNativeTableCellStyles,
+}

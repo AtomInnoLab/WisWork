@@ -398,10 +398,15 @@ export function createPresentationExistingPageEditingSkill(
           if (
             !savedRecord ||
             savedRecord.documentId !== documentId ||
+            savedRecord.changeId !== changeId ||
             !(kind === 'single'
               ? validatePresentationExistingChange(savedRecord)
               : validatePresentationExistingBatch(savedRecord)) ||
-            !['applied', 'undone'].includes(savedRecord.state) ||
+            !(
+              kind === 'batch' && savedRecord.version === 2
+                ? ['applying', 'applied', 'undoing', 'undone']
+                : ['applied', 'undone']
+            ).includes(savedRecord.state) ||
             savedRecord.backupReleasedAt
           )
             throw new Error('presentation_original_restore_source_invalid')

@@ -354,13 +354,17 @@ export function createPresentationExistingEditingSkill(
                           changeId: e.record.changeId,
                           kind: 'batch',
                           state: e.record.state,
-                          cursor: e.record.cursor,
+                          cursor: e.record.version === 2 ? e.record.nextIndex : e.record.cursor,
                           operationCount: e.record.operations.length,
                           hostSlideIds: [
-                            ...new Set(e.record.operations.map((op) => op.hostSlideId)),
+                            ...new Set(
+                              e.record.version === 2
+                                ? [e.record.hostSlideId]
+                                : e.record.operations.map((op) => op.hostSlideId),
+                            ),
                           ],
                           sequence: e.sequence,
-                          historicalReviews: e.record.reviews ?? [],
+                          historicalReviews: e.record.version === 2 ? [] : (e.record.reviews ?? []),
                         }
                       : {
                           changeId: e.record.changeId,

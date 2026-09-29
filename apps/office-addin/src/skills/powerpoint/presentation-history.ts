@@ -19,24 +19,37 @@ export function presentationChangeSetSummary(
   if (entry.kind === 'existing')
     return {
       scope: { slideIds: [entry.record.hostSlideId], shapeIds: [entry.record.shapeId] },
-      intent: entry.record.kind === 'text' ? '修改现稿文字' : entry.record.kind === 'table_cell' ? '修改现稿表格单元格文字' : '调整现稿位置与尺寸',
+      intent:
+        entry.record.kind === 'text'
+          ? '修改现稿文字'
+          : entry.record.kind === 'table_cell'
+            ? '修改现稿表格单元格文字'
+            : '调整现稿位置与尺寸',
       operations: [{ kind: 'existing', pageId: entry.record.hostSlideId }],
       preserved: ['目标以外对象（需复核）'],
       validation: ['目标对象回读', '受影响页面截图复核'],
       risk: 'medium',
     }
-  if (entry.kind === 'existing_batch')
+  if (entry.kind === 'existing_batch') {
+    const record = entry.record
     return {
-      scope: entry.record.scope,
-      intent: entry.record.intent,
-      operations: entry.record.operations.map((op) => ({
-        kind: 'existing_batch',
-        pageId: op.hostSlideId,
-      })),
-      preserved: entry.record.preserved,
-      validation: entry.record.validation,
-      risk: entry.record.risk,
+      scope: record.scope,
+      intent: record.intent,
+      operations:
+        record.version === 2
+          ? record.operations.map(() => ({
+              kind: 'existing_batch' as const,
+              pageId: record.hostSlideId,
+            }))
+          : record.operations.map((op) => ({
+              kind: 'existing_batch' as const,
+              pageId: op.hostSlideId,
+            })),
+      preserved: record.preserved,
+      validation: record.validation,
+      risk: record.risk,
     }
+  }
   if (entry.kind === 'existing_image')
     return {
       scope: entry.record.scope,
@@ -109,7 +122,10 @@ export async function selectPresentationHistory(
   artifact: CompiledPresentationArtifact,
   documentId: string,
 ): Promise<
-  Exclude<PresentationHistoryEntry, { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart' }>[]
+  Exclude<
+    PresentationHistoryEntry,
+    { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart' }
+  >[]
 > {
   if (
     !Array.isArray(entries) ||
@@ -137,7 +153,10 @@ export async function selectPresentationHistory(
         e,
       ): e is Exclude<
         PresentationHistoryEntry,
-        { kind: 'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart' }
+        {
+          kind:
+            'existing' | 'existing_batch' | 'existing_image' | 'existing_page' | 'existing_chart'
+        }
       > =>
         e.kind !== 'existing' &&
         e.kind !== 'existing_batch' &&

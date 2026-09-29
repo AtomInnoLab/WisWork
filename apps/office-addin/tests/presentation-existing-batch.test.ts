@@ -3,7 +3,7 @@ import { createPresentationDocumentBinding } from '../src/skills/powerpoint/pres
 import {
   validatePresentationExistingBatch,
   validExistingBatchTransition,
-  type PresentationExistingBatch,
+  type PresentationTargetBatch,
 } from '../src/skills/powerpoint/presentation-existing-batch'
 
 async function fixture() {
@@ -18,7 +18,7 @@ async function fixture() {
     location: () => 'deck',
   }
   const binding = createPresentationDocumentBinding(settings, () => 'doc')
-  const batch: PresentationExistingBatch = {
+  const batch: PresentationTargetBatch = {
     version: 1,
     changeId: 'batch',
     documentId: await binding.documentId(),
@@ -61,7 +61,7 @@ async function fixture() {
 
 it('allows one equivalent missing backup to be re-journaled only before any host write', async () => {
   const f = await fixture()
-  const before: PresentationExistingBatch = {
+  const before: PresentationTargetBatch = {
     ...f.batch,
     beforeSlideIds: ['s1', 's2'],
     backups: [
@@ -125,7 +125,7 @@ it('reapplies an undone batch only with unchanged operation and backup identity'
       packageDigest: 'b'.repeat(64),
     },
   ]
-  const undone: PresentationExistingBatch = {
+  const undone: PresentationTargetBatch = {
     ...f.batch,
     beforeSlideIds: ['s1', 's2'],
     backups,
@@ -142,7 +142,7 @@ it('reapplies an undone batch only with unchanged operation and backup identity'
       },
     ],
   }
-  const replay: PresentationExistingBatch = { ...undone, state: 'applying', reviews: undefined }
+  const replay: PresentationTargetBatch = { ...undone, state: 'applying', reviews: undefined }
   expect(validExistingBatchTransition(undone, replay)).toBe(true)
   expect(
     validExistingBatchTransition(undone, {
@@ -192,7 +192,10 @@ it('journals ordered forward and reverse progress across reopen', async () => {
     ],
   }
   await f.binding.writeExistingBatch(reviewed, applied)
-  expect(f.reopen().readExistingBatch('batch')?.reviews).toEqual(reviewed.reviews)
+  const reopened = f.reopen().readExistingBatch('batch')
+  expect(reopened?.version).toBe(1)
+  if (reopened?.version !== 1) throw Error('expected target batch')
+  expect(reopened.reviews).toEqual(reviewed.reviews)
   await expect(f.binding.writeExistingBatch(applied, reviewed)).rejects.toThrow('state_invalid')
   const undoing = { ...applied, state: 'undoing' as const }
   await f.binding.writeExistingBatch(undoing, reviewed)
@@ -303,7 +306,7 @@ it('requires one bounded package savepoint per affected page in new batch record
       backups: [{ ...backups[0], hostSlideId: 'foreign' }, backups[1]],
     }),
   ).toBe(false)
-  const undone: PresentationExistingBatch = { ...record, state: 'undone', cursor: 0 }
+  const undone: PresentationTargetBatch = { ...record, state: 'undone', cursor: 0 }
   const released = { ...undone, backupReleasedAt: '2026-09-28T00:00:00.000Z' }
   expect(validatePresentationExistingBatch(released)).toBe(true)
   expect(validExistingBatchTransition(undone, released)).toBe(true)
@@ -343,7 +346,7 @@ it('accepts only bounded terminal reviews on affected pages and clears them befo
 
 it('keeps large records from the previous batch format readable without retroactive review reservation', async () => {
   const f = await fixture()
-  const legacy: PresentationExistingBatch = {
+  const legacy: PresentationTargetBatch = {
     ...f.batch,
     scope: { slideIds: ['s1'] },
     operations: Array.from({ length: 8 }, (_, index) => ({
@@ -423,5 +426,8 @@ it('does not leave a forged historical review when its settings save fails', asy
   await expect(f.binding.writeExistingBatch(reviewed, applied)).rejects.toThrow('failed')
   expect(f.values.get('wiswork.presentation.change-history.v1')).toBe(priorHistory)
   expect(f.values.get('wiswork.presentation.existing-batch.v1')).toBe(priorSlot)
-  expect(f.reopen().readExistingBatch('batch')?.reviews).toBeUndefined()
+  const reopened = f.reopen().readExistingBatch('batch')
+  expect(reopened?.version).toBe(1)
+  if (reopened?.version !== 1) throw Error('expected target batch')
+  expect(reopened.reviews).toBeUndefined()
 })
