@@ -15,6 +15,29 @@ const CONNECT_TIMEOUT_MS = 10_000
 const SESSION_ABSOLUTE_MAX_MS = 8 * 60 * 60 * 1_000
 const IDENTIFIER = /^[A-Za-z0-9_-]{8,128}$/
 const HOSTS = new Set(['Word', 'Excel', 'PowerPoint'])
+export interface PresentationTeamContext {
+  version: 1
+  actorSubject: string
+  pcSubject: string
+}
+const TEAM_OPERATIONS = new Set([
+  'team_identity',
+  'team_project_create',
+  'team_project_read',
+  'team_plan_read',
+  'team_member_set',
+  'team_member_revoke',
+  'team_plan_publish',
+  'team_comment_add',
+  'team_comment_resolve',
+])
+const validTeamContext = (value: unknown): value is PresentationTeamContext =>
+  exact(value, ['version', 'actorSubject', 'pcSubject']) &&
+  value.version === 1 &&
+  typeof value.actorSubject === 'string' &&
+  /^[a-f0-9]{64}$/.test(value.actorSubject) &&
+  typeof value.pcSubject === 'string' &&
+  /^[a-f0-9]{64}$/.test(value.pcSubject)
 const MAX_REQUEST_IDS = 2_048
 const RELAY_ERROR_CODES = new Set([
   'already_claimed',
@@ -106,7 +129,12 @@ export function createOfficeRelayClient(options: {
   getAccessToken(): Promise<string | null>
   proxy: MessagesProxy
   retrievalProxy?: OfficeRetrievalProxy
-  presentationProxy?: (body: unknown, signal: AbortSignal) => Promise<Uint8Array>
+  presentationProxy?: (
+    body: unknown,
+    signal: AbortSignal,
+    context?: PresentationTeamContext,
+  ) => Promise<Uint8Array>
+  supportsTeamPresentation?: true
   negotiateCapabilities?: boolean
   onPending(pairing: OfficePairingRequest): void
   onPendingExpired?: (pairingId: string) => void
@@ -133,8 +161,15 @@ export function createOfficeRelayClient(options: {
       'presentation-pdf.v1',
       'presentation-production-pdf.v1',
     )
+  if (options.presentationProxy && options.supportsTeamPresentation === true)
+    offeredCapabilities.push('presentation-team.v1')
   let pending: (OfficePairingRequest & { capabilities?: string[] }) | null = null
-  let session: { sessionId: string; capability: string; capabilities: string[] } | null = null
+  let session: {
+    sessionId: string
+    capability: string
+    capabilities: string[]
+    host: string
+  } | null = null
   let active: { requestId: string; controller: AbortController; remoteCancelled: boolean } | null =
     null
   let claimedCode: string | null = null
@@ -228,6 +263,16 @@ export function createOfficeRelayClient(options: {
       if (
         typeof capabilityName !== 'string' ||
         !session.capabilities.includes(capabilityName) ||
+        (capabilityName === 'presentation-team.v1'
+          ? options.supportsTeamPresentation !== true ||
+            session.host !== 'PowerPoint' ||
+            !validTeamContext(frame.team_context) ||
+            !TEAM_OPERATIONS.has(frame.body.operation as string)
+          : Object.hasOwn(frame, 'team_context') ||
+            (typeof frame.body.operation === 'string' &&
+              frame.body.operation.startsWith('team_'))) ||
+        Object.hasOwn(frame.body, 'access_token') ||
+        Object.hasOwn(frame.body, 'team_context') ||
         (jsonObject(frame.body) &&
           frame.body.operation === 'attachment_import_url' &&
           capabilityName !== 'presentation-remote-images.v1') ||
@@ -250,7 +295,8 @@ export function createOfficeRelayClient(options: {
               : true
           : capabilityName === 'presentation-pdf.v1' ||
             capabilityName === 'presentation-production-pdf.v1') ||
-        (capabilityName === 'presentation.v1' ||
+        (capabilityName === 'presentation-team.v1' ||
+        capabilityName === 'presentation.v1' ||
         capabilityName === 'presentation-attachments.v1' ||
         capabilityName === 'presentation-assets.v1' ||
         capabilityName === 'presentation-remote-images.v1' ||
@@ -270,6 +316,7 @@ export function createOfficeRelayClient(options: {
               status: 200,
               contentType: 'application/json',
               body:
+                capabilityName === 'presentation-team.v1' ||
                 capabilityName === 'presentation.v1' ||
                 capabilityName === 'presentation-attachments.v1' ||
                 capabilityName === 'presentation-assets.v1' ||
@@ -279,7 +326,13 @@ export function createOfficeRelayClient(options: {
                 capabilityName === 'presentation-animation-frame.v1' ||
                 capabilityName === 'presentation-pdf.v1' ||
                 capabilityName === 'presentation-production-pdf.v1'
-                  ? await options.presentationProxy!(frame.body, controller.signal)
+                  ? capabilityName === 'presentation-team.v1'
+                    ? await options.presentationProxy!(
+                        frame.body,
+                        controller.signal,
+                        frame.team_context as unknown as PresentationTeamContext,
+                      )
+                    : await options.presentationProxy!(frame.body, controller.signal)
                   : await options.retrievalProxy!(capabilityName, frame.body, controller.signal),
             }
       if (owner !== generation || controller.signal.aborted || !session) return
@@ -416,6 +469,8 @@ export function createOfficeRelayClient(options: {
         (candidate.pairing_version !== 1 && candidate.pairing_version !== 2) ||
         !Array.isArray(candidate.capabilities) ||
         candidate.capabilities.length < 1 ||
+        (candidate.capabilities.includes('presentation-team.v1') &&
+          candidate.capabilities.length !== 1) ||
         candidate.capabilities.length > offeredCapabilities.length ||
         candidate.capabilities.some(
           (value, index, values) =>
@@ -474,6 +529,7 @@ export function createOfficeRelayClient(options: {
         protocolVersion === 2 &&
         Array.isArray(typed.capabilities) &&
         typed.capabilities.length > 0 &&
+        (!typed.capabilities.includes('presentation-team.v1') || typed.capabilities.length === 1) &&
         typed.capabilities.every(
           (value, index, values) =>
             typeof value === 'string' &&
@@ -548,6 +604,7 @@ export function createOfficeRelayClient(options: {
         sessionId: typed.session_id,
         capability: typed.capability,
         capabilities: pending.capabilities ?? ['agent.v1'],
+        host: pending.hostLabel,
       }
       if (pairingTimer) clearTimeout(pairingTimer)
       pairingTimer = null
@@ -560,6 +617,8 @@ export function createOfficeRelayClient(options: {
     if (typed.type === 'relay.request') {
       const requestKeys = ['version', 'type', 'session_id', 'request_id', 'body']
       if (protocolVersion === 2) requestKeys.push('capability_name')
+      if (protocolVersion === 2 && typed.capability_name === 'presentation-team.v1')
+        requestKeys.push('team_context')
       if (!exact(frame, requestKeys) || !jsonObject(typed.body))
         return clear('protocol_violation', true)
       void runRequest(typed, owner)

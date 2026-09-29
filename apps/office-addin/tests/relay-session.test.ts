@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   OFFICE_RELAY_URL,
   createOfficeRelaySession,
@@ -1155,4 +1155,114 @@ describe('Office cloud relay session', () => {
     ).rejects.toThrow('relay_disconnected')
     expect(connected.snapshot()).toEqual({ status: 'offline' })
   })
+})
+
+async function teamOfficeSession(getTeamAccessToken: () => Promise<string | null>) {
+  const socket = new FakeSocket(),
+    session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['presentation-team.v1'],
+      getTeamAccessToken,
+      randomUUID: () => 'team_request',
+    })
+  const connecting = session.connect('powerpoint')
+  socket.open()
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.created',
+      pairing_id: 'pair_team',
+      verification_code: '123456',
+      expires_in: 120,
+    }),
+  )
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.approved',
+      session_id: 'session_team',
+      capability: 'cap_team',
+      expires_in: 1800,
+      capabilities: ['presentation-team.v1'],
+    }),
+  )
+  await connecting
+  return { session, socket }
+}
+it('sends a private actor token only for a negotiated PowerPoint team request', async () => {
+  const f = await teamOfficeSession(async () => 'private-actor-token')
+  const request = f.session.capabilityFetch('presentation-team.v1', { operation: 'team_identity' })
+  await vi.waitFor(() =>
+    expect(f.socket.sent.some((x) => JSON.parse(x).type === 'office.request')).toBe(true),
+  )
+  expect(
+    f.socket.sent.map((x) => JSON.parse(x)).find((x) => x.type === 'office.request'),
+  ).toMatchObject({
+    capability_name: 'presentation-team.v1',
+    access_token: 'private-actor-token',
+    body: { operation: 'team_identity' },
+  })
+  f.session.disconnect()
+  await expect(request).rejects.toThrow()
+})
+it('does not send an anonymous team request or a stale late-token request', async () => {
+  const absent = await teamOfficeSession(async () => null)
+  await expect(
+    absent.session.capabilityFetch('presentation-team.v1', { operation: 'team_identity' }),
+  ).rejects.toThrow('relay_team_auth_unavailable')
+  expect(absent.socket.sent.some((x) => JSON.parse(x).type === 'office.request')).toBe(false)
+  absent.session.disconnect()
+  let complete: (token: string) => void = () => {}
+  const late = await teamOfficeSession(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve
+      }),
+  )
+  const request = late.session.capabilityFetch('presentation-team.v1', {
+    operation: 'team_identity',
+  })
+  late.session.disconnect()
+  complete('private-token')
+  await expect(request).rejects.toThrow()
+  expect(late.socket.sent.some((x) => JSON.parse(x).type === 'office.request')).toBe(false)
+})
+it('cancels an unresolved team token without sending and rejects caller credentials', async () => {
+  let complete: (value: string) => void = () => {}
+  const provider = vi.fn(
+    () =>
+      new Promise<string>((resolve) => {
+        complete = resolve
+      }),
+  )
+  const f = await teamOfficeSession(provider)
+  const controller = new AbortController()
+  const request = f.session.capabilityFetch(
+    'presentation-team.v1',
+    { operation: 'team_identity' },
+    controller.signal,
+  )
+  await vi.waitFor(() => expect(provider).toHaveBeenCalledOnce())
+  controller.abort()
+  await expect(request).rejects.toThrow()
+  complete('late-private-token')
+  await expect(f.session.capabilityFetch('agent.v1', { access_token: 'forged' })).rejects.toThrow()
+  await expect(
+    f.session.capabilityFetch('presentation-team.v1', { team_context: {} }),
+  ).rejects.toThrow()
+  expect(f.socket.sent.some((value) => JSON.parse(value).type === 'office.request')).toBe(false)
+  f.session.disconnect()
+})
+it('refuses a team capability combined with any private workspace capability before pairing', async () => {
+  const createSocket = vi.fn(() => new FakeSocket())
+  for (const other of ['agent.v1', 'presentation.v1', 'presentation-attachments.v1'] as const) {
+    const session = createOfficeRelaySession({
+      createSocket,
+      capabilities: ['presentation-team.v1', other],
+      getTeamAccessToken: async () => 'token',
+    })
+    await expect(session.connect('powerpoint')).rejects.toThrow('relay_invalid_capabilities')
+    expect(session.snapshot().status).toBe('offline')
+  }
+  expect(createSocket).not.toHaveBeenCalled()
 })

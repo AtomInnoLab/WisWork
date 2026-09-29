@@ -21,7 +21,8 @@
     "./presentation-calculation": "./src/presentation-calculation.ts",
     "./presentation-source-limits": "./src/presentation-source-limits.ts",
     "./presentation-chart-data": "./src/presentation-chart-data.ts",
-    "./presentation-preference": "./src/presentation-preference.ts"
+    "./presentation-preference": "./src/presentation-preference.ts",
+    "./presentation-team": "./src/presentation-team.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

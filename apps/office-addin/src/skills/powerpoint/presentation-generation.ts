@@ -64,6 +64,8 @@ const tools: AgentToolDef[] = [
 export interface PresentationGenerationOptions {
   vfs: InMemoryVfs
   available(): boolean
+  teamAvailable?(): boolean
+  teamRequest?(body: unknown, signal?: AbortSignal): Promise<Response>
   assetsAvailable?(): boolean
   remoteImagesAvailable?(): boolean
   webpagesAvailable?(): boolean

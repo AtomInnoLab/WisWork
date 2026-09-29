@@ -66,6 +66,7 @@ import {
   supportsPresentationAttachment,
   type PresentationAttachmentMetadata,
 } from '../skills/powerpoint/presentation-attachments.js'
+import { createPresentationTeamSkill } from '../skills/powerpoint/presentation-team.js'
 import { createPresentationPlanningSkill } from '../skills/powerpoint/presentation-planning.js'
 import { createPresentationCommentsSkill } from '../skills/powerpoint/presentation-comments.js'
 import {
@@ -315,7 +316,16 @@ export function createOfficeHostRuntime(
                   'add_presentation_review_comment',
                   'resolve_presentation_review_comment',
                 ].includes(proposal.operation) &&
-                  proposal.impact.host === 'local_review'))
+                  proposal.impact.host === 'local_review') ||
+                ([
+                  'create_presentation_team',
+                  'publish_presentation_team_plan',
+                  'set_presentation_team_member',
+                  'revoke_presentation_team_member',
+                  'add_presentation_team_comment',
+                  'resolve_presentation_team_comment',
+                ].includes(proposal.operation) &&
+                  proposal.impact.host === 'local_team'))
             )
               return
             // Only these internally constructed operations resolve a stable host page before
@@ -604,6 +614,10 @@ export function createOfficeHostRuntime(
   const planning =
     generation && options.presentation
       ? createPresentationPlanningSkill({ ...options.presentation, vfs, proposals })
+      : undefined
+  const team =
+    generation && options.presentation
+      ? createPresentationTeamSkill({ ...options.presentation, proposals })
       : undefined
   const comments =
     generation && options.presentation
@@ -1247,6 +1261,7 @@ export function createOfficeHostRuntime(
             ...generation.tools,
             ...(planning?.tools ?? []),
             ...(comments?.tools ?? []),
+            ...(team?.tools ?? []),
             ...(attachments?.tools ?? []),
             ...(delivery?.tools ?? []),
             ...(productionDelivery?.tools ?? []),
@@ -1263,7 +1278,7 @@ export function createOfficeHostRuntime(
           ]
         },
         get systemPrompt() {
-          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${comments?.tools.length ? comments.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${historySkill?.tools.length ? historySkill.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}\n${productionJobs?.tools.length ? productionJobs.systemPrompt : ''}\n${evidenceDelivery?.tools.length ? evidenceDelivery.systemPrompt : ''}\n${hostBundle?.tools.length ? hostBundle.systemPrompt : ''}\n${researchSkill?.tools.length ? researchSkill.systemPrompt : ''}\n${pageBackup?.tools.length ? pageBackup.systemPrompt : ''}\n${pageReplacement?.tools.length ? pageReplacement.systemPrompt : ''}\nQA and stable page editing use the currently selected artifact: a successfully prepared production task or explicitly compiled/restored whole deck. Select the intended source before acting; do not substitute another task with the same IDs.`
+          return `${base.systemPrompt}\n\n${generation.tools.length ? generation.systemPrompt : ''}\n${delivery?.tools.length ? delivery.systemPrompt : ''}\n${productionDelivery?.tools.length ? productionDelivery.systemPrompt : ''}\n${planning?.tools.length ? planning.systemPrompt : ''}\n${comments?.tools.length ? comments.systemPrompt : ''}\n${team?.tools.length ? team.systemPrompt : ''}\n${attachments?.tools.length ? attachments.systemPrompt : ''}\n${qaSkill?.tools.length ? qaSkill.systemPrompt : ''}\n${pageEditing?.tools.length ? pageEditing.systemPrompt : ''}\n${historySkill?.tools.length ? historySkill.systemPrompt : ''}\n${production?.tools.length ? production.systemPrompt : ''}\n${productionJobs?.tools.length ? productionJobs.systemPrompt : ''}\n${evidenceDelivery?.tools.length ? evidenceDelivery.systemPrompt : ''}\n${hostBundle?.tools.length ? hostBundle.systemPrompt : ''}\n${researchSkill?.tools.length ? researchSkill.systemPrompt : ''}\n${pageBackup?.tools.length ? pageBackup.systemPrompt : ''}\n${pageReplacement?.tools.length ? pageReplacement.systemPrompt : ''}\nQA and stable page editing use the currently selected artifact: a successfully prepared production task or explicitly compiled/restored whole deck. Select the intended source before acting; do not substitute another task with the same IDs.`
         },
         buildContext: () =>
           [base.buildContext?.(), generation.buildContext?.()].filter(Boolean).join('\n\n'),
@@ -1311,28 +1326,30 @@ export function createOfficeHostRuntime(
                                     'read_presentation_attachment',
                                   ].includes(call.name) && attachments
                                 ? attachments.executeTool(call, signal)
-                                : comments?.tools.some((tool) => tool.name === call.name)
-                                  ? comments.executeTool(call, signal)
-                                  : planning?.tools.some((tool) => tool.name === call.name)
-                                    ? planning.executeTool(call, signal)
-                                    : [
-                                          'import_presentation_production',
-                                          'read_presentation_production_import_status',
-                                          'reconcile_presentation_production_import',
-                                        ].includes(call.name) && productionDelivery
-                                      ? executeDelivery(call, signal)
+                                : team?.tools.some((tool) => tool.name === call.name)
+                                  ? team.executeTool(call, signal)
+                                  : comments?.tools.some((tool) => tool.name === call.name)
+                                    ? comments.executeTool(call, signal)
+                                    : planning?.tools.some((tool) => tool.name === call.name)
+                                      ? planning.executeTool(call, signal)
                                       : [
-                                            'import_generated_presentation',
-                                            'read_presentation_import_status',
-                                          ].includes(call.name) && delivery
+                                            'import_presentation_production',
+                                            'read_presentation_production_import_status',
+                                            'reconcile_presentation_production_import',
+                                          ].includes(call.name) && productionDelivery
                                         ? executeDelivery(call, signal)
                                         : [
-                                              'compile_deck_with_pptxgenjs',
-                                              'restore_presentation_project',
-                                              'resume_presentation_project',
-                                            ].includes(call.name)
-                                          ? executeGeneration(call, signal)
-                                          : base.executeTool(call, signal),
+                                              'import_generated_presentation',
+                                              'read_presentation_import_status',
+                                            ].includes(call.name) && delivery
+                                          ? executeDelivery(call, signal)
+                                          : [
+                                                'compile_deck_with_pptxgenjs',
+                                                'restore_presentation_project',
+                                                'resume_presentation_project',
+                                              ].includes(call.name)
+                                            ? executeGeneration(call, signal)
+                                            : base.executeTool(call, signal),
       }
     : base
   return {
@@ -1368,6 +1385,7 @@ export function createOfficeHostRuntime(
         generation?.clear()
         planning?.clear()
         comments?.clear()
+        team?.clear()
         presentation?.clear()
         notifyImport()
         notifyQa()

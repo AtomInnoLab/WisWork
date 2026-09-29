@@ -11,6 +11,7 @@ const MAX_RELAY_FRAME_BYTES = Math.ceil((MAX_CHUNK_BYTES * 4) / 3) + 4096
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 // Finish before Relay's 300s deadline so the client owns cancellation and preserves pairing.
 const REQUEST_TIMEOUT_MS = 290_000
+const TEAM_TOKEN_TIMEOUT_MS = 10_000
 const MAX_OPAQUE_LENGTH = 512
 const MAX_DIAGNOSTIC_EVENT_BYTES = 4 * 1024
 const MAX_PENDING_DIAGNOSTICS = 16
@@ -75,6 +76,7 @@ export type OfficeRelayCapability =
   | 'web-fetch.v1'
   | 'image-search.v1'
   | 'presentation.v1'
+  | 'presentation-team.v1'
   | 'presentation-attachments.v1'
   | 'presentation-assets.v1'
   | 'presentation-remote-images.v1'
@@ -85,6 +87,7 @@ export type OfficeRelayCapability =
   | 'presentation-production-pdf.v1'
 
 interface Dependencies {
+  getTeamAccessToken?: () => Promise<string | null>
   createSocket?: (url: string) => RelayWebSocket
   randomUUID?: () => string
   capabilities?: readonly OfficeRelayCapability[]
@@ -146,6 +149,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   let negotiatedCapabilities: OfficeRelayCapability[] = []
   let request: ActiveRequest | undefined
   let generation = 0
+  let teamTokenPending: { cancel(): void } | undefined
   let settleConnect: (() => void) | undefined
   let pairingTimer: ReturnType<typeof setTimeout> | undefined
   const pendingDiagnostics = new Map<string, { resolve(): void; reject(error: Error): void }>()
@@ -182,6 +186,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   }
   const revoke = (status: OfficeRelayStatus = 'offline', close = true, retainResume = false) => {
     generation += 1
+    teamTokenPending?.cancel()
+    teamTokenPending = undefined
     finishRequest('relay_disconnected')
     pairingId = undefined
     sessionId = undefined
@@ -298,10 +304,12 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         protocolVersion === 2 &&
         Array.isArray(frame.capabilities) &&
         frame.capabilities.length > 0 &&
+        (!frame.capabilities.includes('presentation-team.v1') || frame.capabilities.length === 1) &&
         frame.capabilities.every(
           (value, index, values) =>
             typeof value === 'string' &&
             requestedCapabilities.includes(value as OfficeRelayCapability) &&
+            (value !== 'presentation-team.v1' || activeHost === 'powerpoint') &&
             values.indexOf(value) === index,
         )
           ? (frame.capabilities as OfficeRelayCapability[])
@@ -526,6 +534,11 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     connect(host) {
       revoke('offline', true, host !== 'unknown' && resumeCredentials?.host === host)
       activeHost = host
+      if (
+        requestedCapabilities.includes('presentation-team.v1') &&
+        (requestedCapabilities.length !== 1 || host !== 'powerpoint')
+      )
+        return Promise.reject(new Error('relay_invalid_capabilities'))
       if (host === 'unknown') return Promise.resolve()
       const epoch = generation
       publish({ status: 'connecting' })
@@ -575,7 +588,14 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
                       version: protocolVersion,
                       type: 'office.create',
                       host: hostLabels[host],
-                      ...(protocolVersion === 2 ? { capabilities: requestedCapabilities } : {}),
+                      ...(protocolVersion === 2
+                        ? {
+                            capabilities: requestedCapabilities.filter(
+                              (name) =>
+                                name !== 'presentation-team.v1' || activeHost === 'powerpoint',
+                            ),
+                          }
+                        : {}),
                     },
               )
             } catch {
@@ -644,7 +664,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         state.status !== 'connected'
       )
         throw new Error('relay_disconnected')
-      if (request) throw new Error('relay_busy')
+      if (request || teamTokenPending) throw new Error('relay_busy')
       if (init.method !== 'POST' || typeof init.body !== 'string')
         throw new Error('relay_invalid_request')
       if (encoder.encode(init.body).byteLength > MAX_REQUEST_BYTES)
@@ -671,8 +691,60 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       if (request) throw new Error('relay_busy')
       if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody))
         throw new Error('relay_invalid_request')
+      if ('team_context' in parsedBody || 'access_token' in parsedBody)
+        throw new Error('relay_invalid_request')
       const bodyBytes = encoder.encode(JSON.stringify(parsedBody)).byteLength
       if (bodyBytes > MAX_REQUEST_BYTES) throw new Error('relay_request_too_large')
+      const body = JSON.parse(JSON.stringify(parsedBody)) as unknown
+      let accessToken: string | undefined
+      if (capabilityName === 'presentation-team.v1') {
+        if (activeHost !== 'powerpoint' || !dependencies.getTeamAccessToken)
+          throw new Error('relay_team_auth_unavailable')
+        if (signal?.aborted) throw new Error('relay_cancelled')
+        const owner = generation,
+          opened = socket,
+          boundSession = sessionId
+        let cancel = () => {}
+        const pending = { cancel: () => cancel() }
+        teamTokenPending = pending
+        try {
+          const token = await new Promise<string | null>((resolve, reject) => {
+            const done = (value: string | null, error?: string) => {
+              clearTimeout(timer)
+              signal?.removeEventListener('abort', aborted)
+              if (error) reject(new Error(error))
+              else resolve(value)
+            }
+            const timer = setTimeout(
+              () => done(null, 'relay_team_auth_unavailable'),
+              TEAM_TOKEN_TIMEOUT_MS,
+            )
+            const aborted = () => done(null, 'relay_cancelled')
+            cancel = () => done(null, 'relay_disconnected')
+            signal?.addEventListener('abort', aborted, { once: true })
+            Promise.resolve()
+              .then(() => dependencies.getTeamAccessToken!())
+              .then(
+                (value) => done(value),
+                () => done(null, 'relay_team_auth_unavailable'),
+              )
+          })
+          if (
+            owner !== generation ||
+            socket !== opened ||
+            sessionId !== boundSession ||
+            state.status !== 'connected' ||
+            !negotiatedCapabilities.includes(capabilityName)
+          )
+            throw new Error('relay_capability_unavailable')
+          if (signal?.aborted) throw new Error('relay_cancelled')
+          if (typeof token !== 'string' || !token || token.length > 4096)
+            throw new Error('relay_team_auth_unavailable')
+          accessToken = token
+        } finally {
+          if (teamTokenPending === pending) teamTokenPending = undefined
+        }
+      }
       const id = randomUUID()
       return new Promise<Response>((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -721,7 +793,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
               capability,
               request_id: id,
               ...(protocolVersion === 2 ? { capability_name: capabilityName } : {}),
-              body: parsedBody,
+              ...(accessToken ? { access_token: accessToken } : {}),
+              body,
             })
           } catch {
             protocolFailure()

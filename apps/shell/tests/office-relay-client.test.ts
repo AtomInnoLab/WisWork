@@ -855,6 +855,7 @@ describe('Office relay PC client', () => {
         capabilities,
       })
       socket.message({ version: 2, type: 'pc.negotiated', pairing_version: 2, capabilities })
+      if (socket.closedWith) return { socket, client, presentationProxy, offered }
       socket.message({
         version: 2,
         type: 'pc.claimed',
@@ -1162,4 +1163,134 @@ describe('Office relay PC client', () => {
     })
     expect(client.status()).toBe('disconnected:protocol_violation')
   })
+})
+
+async function teamPcClient(supportsTeamPresentation = true, negotiatedCapabilities?: string[]) {
+  const socket = new FakeSocket(),
+    presentationProxy = vi.fn(
+      async (
+        _body: unknown,
+        _signal: AbortSignal,
+        _context?: import('../src/main/office-relay-client').PresentationTeamContext,
+      ) => new TextEncoder().encode('{}'),
+    )
+  const client = createOfficeRelayClient({
+    endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+    connect: () => socket,
+    getValidAccountStatus: async () => ({ loggedIn: true }),
+    getAccessToken: async () => 'pc-token',
+    proxy: vi.fn(),
+    presentationProxy,
+    ...(supportsTeamPresentation ? { supportsTeamPresentation: true as const } : {}),
+    onPending: vi.fn(),
+  })
+  const claiming = client.claim('123456')
+  await vi.waitFor(() => expect(socket.listeners.get('open')?.length).toBeGreaterThan(0))
+  socket.open()
+  await claiming
+  const offered = JSON.parse(socket.sent[0]!).capabilities
+  const capabilities =
+    negotiatedCapabilities ??
+    (supportsTeamPresentation ? ['presentation-team.v1'] : ['agent.v1', 'presentation.v1'])
+  socket.message({ version: 2, type: 'pc.negotiated', pairing_version: 2, capabilities })
+  if (socket.closedWith) return { socket, client, presentationProxy, offered }
+  socket.message({
+    version: 2,
+    type: 'pc.claimed',
+    pairing_id: 'pairing_12345678',
+    host: 'PowerPoint',
+    origin: 'https://office.8-216-134-194.sslip.io',
+    verification_code: '123456',
+    expires_in: 120,
+    capabilities,
+  })
+  await client.approve('pairing_12345678')
+  socket.message({
+    version: 2,
+    type: 'pc.approved',
+    session_id: 'session_12345678',
+    capability: 'secret-capability',
+    expires_in: 1800,
+    capabilities,
+  })
+  return { socket, client, presentationProxy, offered }
+}
+it('advertises team transport only explicitly and passes verified context separately from the body', async () => {
+  const old = await teamPcClient(false)
+  expect(old.offered).not.toContain('presentation-team.v1')
+  old.client.revoke()
+  const f = await teamPcClient(),
+    context = { version: 1, actorSubject: 'a'.repeat(64), pcSubject: 'b'.repeat(64) },
+    body = { operation: 'team_identity' }
+  expect(f.offered).toContain('presentation-team.v1')
+  f.socket.message({
+    version: 2,
+    type: 'relay.request',
+    session_id: 'session_12345678',
+    request_id: 'request_12345678',
+    capability_name: 'presentation-team.v1',
+    team_context: context,
+    body,
+  })
+  await vi.waitFor(() =>
+    expect(f.presentationProxy).toHaveBeenCalledWith(body, expect.any(AbortSignal), context),
+  )
+  expect(f.socket.sent.every((value) => !value.includes('pc-token'))).toBe(true)
+  f.client.revoke()
+})
+it.each(['missing', 'bad-subject', 'extra', 'unknown-operation', 'ordinary-operation', 'bearer'])(
+  'rejects %s team request context before proxying',
+  async (scenario) => {
+    const f = await teamPcClient(),
+      context: Record<string, unknown> = {
+        version: 1,
+        actorSubject: 'a'.repeat(64),
+        pcSubject: 'b'.repeat(64),
+      },
+      body: Record<string, unknown> = { operation: 'team_identity' }
+    if (scenario === 'bad-subject') context.actorSubject = 'raw-actor'
+    if (scenario === 'extra') context.token = 'private'
+    if (scenario === 'unknown-operation') body.operation = 'team_unknown'
+    if (scenario === 'ordinary-operation') body.operation = 'get_plan'
+    const frame: Record<string, unknown> = {
+      version: 2,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'request_12345678',
+      capability_name: 'presentation-team.v1',
+      team_context: context,
+      body,
+    }
+    if (scenario === 'missing') delete frame.team_context
+    if (scenario === 'bearer') frame.access_token = 'private-token'
+    f.socket.message(frame)
+    expect(f.presentationProxy).not.toHaveBeenCalled()
+    expect(f.socket.closedWith).toBeDefined()
+    f.client.revoke()
+  },
+)
+it('rejects team operations and forged context through an ordinary presentation capability', async () => {
+  for (const withContext of [false, true]) {
+    const f = await teamPcClient(false)
+    f.socket.message({
+      version: 2,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'request_12345678',
+      capability_name: 'presentation.v1',
+      body: { operation: 'team_identity' },
+      ...(withContext
+        ? { team_context: { version: 1, actorSubject: 'a'.repeat(64), pcSubject: 'b'.repeat(64) } }
+        : {}),
+    })
+    expect(f.presentationProxy).not.toHaveBeenCalled()
+    expect(f.socket.closedWith).toBeDefined()
+    f.client.revoke()
+  }
+})
+it('refuses a forged mixed team/private negotiated session', async () => {
+  const f = await teamPcClient(true, ['presentation-team.v1', 'presentation.v1'])
+  expect(f.socket.closedWith).toBeDefined()
+  expect(f.presentationProxy).not.toHaveBeenCalled()
+  f.client.revoke()
 })

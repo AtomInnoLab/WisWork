@@ -41,6 +41,7 @@ const SUPPORTED_CAPABILITIES: &[&str] = &[
     "web-fetch.v1",
     "image-search.v1",
     "presentation.v1",
+    "presentation-team.v1",
     "presentation-attachments.v1",
     "presentation-assets.v1",
     "presentation-remote-images.v1",
@@ -412,7 +413,12 @@ async fn connection(
         let Some(Ok(message)) = message else { break };
         match message {
             Message::Text(text) if text.len() <= FRAME_MAX => {
-                if let Err(code) = process(
+                let incoming: Option<Value> = serde_json::from_str(text.as_str()).ok();
+                let is_team = incoming.as_ref().is_some_and(|frame| {
+                    frame["type"] == "office.request"
+                        && frame["capability_name"] == "presentation-team.v1"
+                });
+                let processing = process(
                     &app,
                     id,
                     &tx,
@@ -420,9 +426,28 @@ async fn connection(
                     peer,
                     subject,
                     text.as_str(),
-                )
-                .await
-                {
+                );
+                tokio::pin!(processing);
+                let result = if is_team {
+                    loop {
+                        tokio::select! {
+                            biased;
+                            next = stream.next() => match next {
+                                Some(Ok(Message::Ping(data))) => { let _ = tx.sender.try_send(Message::Pong(data)); },
+                                Some(Ok(Message::Pong(_))) => {},
+                                Some(Ok(Message::Text(cancel_text))) if cancel_text.len() <= CONTROL_MAX => {
+                                    break cancel_authenticating_team(&app, id, incoming.as_ref().unwrap(), cancel_text.as_str()).await;
+                                },
+                                _ => break Err("invalid_session"),
+                            },
+                            result = &mut processing => break result,
+                            _ = tx.failed.notified() => break Err("invalid_session"),
+                        }
+                    }
+                } else {
+                    processing.await
+                };
+                if let Err(code) = result {
                     eprintln!(
                         "{}",
                         protocol_error_log(id, origin.is_some(), text.as_str(), code)
@@ -649,7 +674,7 @@ async fn process(
         "pc.resume" => resume_pc(app, conn, tx, subject.ok_or("auth_required")?, map).await,
         "pc.approve" => approve(app, conn, tx, map).await,
         "pc.reject" => reject(app, conn, map).await,
-        "office.request" => request(app, conn, map).await,
+        "office.request" => request(app, conn, peer, map).await,
         "office.cancel" => cancel(app, conn, map).await,
         "office.diagnostic" => {
             if let Err(code) = diagnostic(app, conn, tx, map, text.len()).await {
@@ -766,6 +791,22 @@ async fn create(
     };
     let host = string(&m, "host")?;
     if !matches!(host, "Word" | "Excel" | "PowerPoint") {
+        return Err("unsupported_host");
+    }
+    if requested_capabilities
+        .iter()
+        .any(|name| name == "presentation-team.v1")
+        && m.get("capabilities")
+            .and_then(Value::as_array)
+            .is_none_or(|values| values.len() != 1)
+    {
+        return Err("invalid_capabilities");
+    }
+    if host != "PowerPoint"
+        && requested_capabilities
+            .iter()
+            .any(|name| name == "presentation-team.v1")
+    {
         return Err("unsupported_host");
     }
     let mut store = app.inner.state.lock().await;
@@ -1432,8 +1473,15 @@ fn session_fields(m: &Map<String, Value>) -> Result<(&str, &str, &str), &'static
         string(m, "request_id")?,
     ))
 }
-async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+async fn request(
+    app: &App,
+    conn: u64,
+    peer: IpAddr,
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
     let protocol = version(&m)?;
+    let team = protocol == PROTOCOL_V2
+        && m.get("capability_name").and_then(Value::as_str) == Some("presentation-team.v1");
     let mut expected = vec![
         "version",
         "type",
@@ -1445,6 +1493,9 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
     if protocol == PROTOCOL_V2 {
         expected.push("capability_name");
     }
+    if team {
+        expected.push("access_token");
+    }
     if !exact(&m, &expected) {
         return Err("invalid_frame");
     }
@@ -1455,14 +1506,89 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
     {
         return Err("request_too_large");
     }
+    if m["body"]
+        .as_object()
+        .is_some_and(|body| body.contains_key("team_context") || body.contains_key("access_token"))
+    {
+        return Err("invalid_request");
+    }
     let (sid, cap, rid) = session_fields(&m)?;
     if rid.is_empty() || rid.len() > 128 {
         return Err("invalid_frame");
     }
+    let operation = m
+        .get("body")
+        .and_then(Value::as_object)
+        .and_then(|body| body.get("operation"))
+        .and_then(Value::as_str);
+    if team
+        && !matches!(
+            operation,
+            Some(
+                "team_identity"
+                    | "team_project_create"
+                    | "team_project_read"
+                    | "team_plan_read"
+                    | "team_member_set"
+                    | "team_member_revoke"
+                    | "team_plan_publish"
+                    | "team_comment_add"
+                    | "team_comment_resolve"
+            )
+        )
+        || !team && operation.is_some_and(|name| name.starts_with("team_"))
+    {
+        return Err("invalid_request");
+    }
+    let identity = if team {
+        let pc_subject = {
+            let mut store = app.inner.state.lock().await;
+            expire(&mut store, app.inner.config.pairing_ttl);
+            let session = store.sessions.get(sid).ok_or("invalid_session")?;
+            if session.office != conn
+                || session.office_cap != cap
+                || session.version != protocol
+                || session.host != "PowerPoint"
+                || !session
+                    .capabilities
+                    .iter()
+                    .any(|name| name == "presentation-team.v1")
+            {
+                return Err("invalid_capability");
+            }
+            if session.active.is_some() {
+                return Err("request_active");
+            }
+            if session.used_requests.iter().any(|used| used == rid) {
+                return Err("duplicate_request");
+            }
+            session.pc_subject
+        };
+        if !allow_preauth(app, peer).await {
+            return Err("auth_rate_limited");
+        }
+        let _permit = app
+            .inner
+            .auth_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "relay_busy")?;
+        let token = string(&m, "access_token")?;
+        if token.is_empty() || token.len() > 4096 {
+            return Err("auth_required");
+        }
+        let actor = authenticate_pc(app, token).await.ok_or("auth_required")?;
+        Some((actor, pc_subject))
+    } else {
+        None
+    };
     let mut st = app.inner.state.lock().await;
     expire(&mut st, app.inner.config.pairing_ttl);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.office != conn || session.office_cap != cap || session.version != protocol {
+        return Err("invalid_capability");
+    }
+    if identity.is_some_and(|(_, pc_subject)| pc_subject != session.pc_subject) {
         return Err("invalid_capability");
     }
     let capability_name = if protocol == PROTOCOL_V2 {
@@ -1503,14 +1629,22 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
         deadline: Instant::now() + app.inner.config.request_ttl,
         started: false,
     });
-    send(
-        &session.pc_tx,
-        if let Some(name) = capability_name {
-            json!({"version":protocol,"type":"relay.request","session_id":sid,"request_id":rid,"capability_name":name,"body":m["body"]})
-        } else {
-            json!({"version":1,"type":"relay.request","session_id":sid,"request_id":rid,"body":m["body"]})
-        },
-    );
+    let mut forward = if let Some(name) = capability_name {
+        json!({"version":protocol,"type":"relay.request","session_id":sid,"request_id":rid,"capability_name":name,"body":m["body"]})
+    } else {
+        json!({"version":1,"type":"relay.request","session_id":sid,"request_id":rid,"body":m["body"]})
+    };
+    if let Some((actor, pc_subject)) = identity {
+        let hex = |value: [u8; 32]| {
+            value
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        forward["team_context"] =
+            json!({"version":1,"actorSubject":hex(actor),"pcSubject":hex(pc_subject)});
+    }
+    send(&session.pc_tx, forward);
     let deadline_app = app.clone();
     let deadline_sid = sid.to_owned();
     let deadline_rid = rid.to_owned();
@@ -1538,6 +1672,51 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
     });
     Ok(())
 }
+// A cancellation received while OIDC validation is pending drops that future before forwarding.
+async fn cancel_authenticating_team(
+    app: &App,
+    conn: u64,
+    original: &Value,
+    text: &str,
+) -> Result<(), &'static str> {
+    let m: Map<String, Value> = serde_json::from_str(text).map_err(|_| "invalid_frame")?;
+    if !exact(
+        &m,
+        &["version", "type", "session_id", "capability", "request_id"],
+    ) || m["type"] != "office.cancel"
+        || m["version"] != original["version"]
+        || m["session_id"] != original["session_id"]
+        || m["capability"] != original["capability"]
+        || m["request_id"] != original["request_id"]
+    {
+        return Err("invalid_request");
+    }
+    let (sid, cap, rid) = session_fields(&m)?;
+    let mut st = app.inner.state.lock().await;
+    expire(&mut st, app.inner.config.pairing_ttl);
+    let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
+    if session.office != conn
+        || session.office_cap != cap
+        || session.version != PROTOCOL_V2
+        || session.host != "PowerPoint"
+        || !session
+            .capabilities
+            .iter()
+            .any(|c| c == "presentation-team.v1")
+    {
+        return Err("invalid_capability");
+    }
+    if session.active.is_some() || session.used_requests.iter().any(|id| id == rid) {
+        return Err("invalid_request");
+    }
+    if session.used_requests.len() == 256 {
+        session.used_requests.pop_front();
+    }
+    session.used_requests.push_back(rid.to_owned());
+    renew_session(session, app.inner.config.session_ttl);
+    Ok(())
+}
+
 async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
     let protocol = version(&m)?;
     if !exact(

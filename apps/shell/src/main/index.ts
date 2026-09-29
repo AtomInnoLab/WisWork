@@ -2555,6 +2555,7 @@ app.whenReady().then(async () => {
           proxy: officeMessagesProxy,
           retrievalProxy,
           presentationProxy,
+          supportsTeamPresentation: true,
           negotiateCapabilities: true,
           onPending: events.onPending,
           onPendingExpired: events.onPendingExpired,

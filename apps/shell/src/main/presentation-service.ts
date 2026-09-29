@@ -1,3 +1,5 @@
+import { createPresentationTeamService } from './presentation-team'
+import type { PresentationTeamContext } from '@wiswork/pptx-engine/presentation-team'
 import { parsePresentationSourceAssessment } from '@wiswork/project-store/presentation-source-assessment'
 import { PresentationResearchStore } from '@wiswork/project-store/presentation-research-store'
 import { readBoundPresentationResearch } from './presentation-research-plan-binding'
@@ -63,6 +65,7 @@ async function acquireProjectLock(root: string, projectId: string): Promise<() =
   }
 }
 const errorCodes = new Set([
+  'access_denied',
   'busy',
   'issue_changed',
   'invalid_request',
@@ -142,11 +145,21 @@ export function createPresentationService(options: {
   renderPdf?: (pptx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>
   fetchImage?: (url: string, signal: AbortSignal) => Promise<Response | null>
   fetchPage?: (url: string, signal: AbortSignal) => Promise<Response | null>
-}): (body: unknown, signal: AbortSignal) => Promise<Uint8Array> {
+}): (body: unknown, signal: AbortSignal, context?: PresentationTeamContext) => Promise<Uint8Array> {
   const pageBackups = createPresentationPageBackupService(options)
   const existingPageBackups = createPresentationExistingPageBackupService(options)
   const attachments = createPresentationAttachmentService(options)
   const store = new PresentationStore(options.userDataPath)
+  const team = createPresentationTeamService({
+    userDataPath: options.userDataPath,
+    readPlan: (documentId, projectId) => {
+      const record = store.plan(projectId, documentId)
+      return record
+        ? { revision: record.revision, plan: parsePresentationPlan(record.plan) }
+        : undefined
+    },
+    acquireProjectLock: (projectId) => acquireProjectLock(options.userDataPath, projectId),
+  })
   const deliveryBundles = createPresentationDeliveryBundleService(options)
   const research = createPresentationResearchService({
     userDataPath: options.userDataPath,
@@ -193,7 +206,7 @@ export function createPresentationService(options: {
         fontAvailable: isInstalledFontFamily,
       }))
   const renderPdf = options.renderPdf ?? convertPresentationToPdf
-  return async (body, signal) => {
+  return async (body, signal, context) => {
     try {
       checkAbort(signal)
       if (
@@ -204,6 +217,8 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
+      if (typeof request.operation === 'string' && request.operation.startsWith('team_'))
+        return boundedResponse(await team(request, context, signal))
       if (typeof request.operation === 'string' && request.operation.startsWith('research_'))
         return boundedResponse(await research(request, signal))
       if (

@@ -58,9 +58,10 @@ async fn server_with_all_limits(
         .route(
             "/oidc/me",
             axum::routing::get(|headers: axum::http::HeaderMap| async move {
+            if headers.get("authorization").and_then(|v| v.to_str().ok()) == Some("Bearer slow-team-token") { tokio::time::sleep(Duration::from_millis(250)).await; }
             let subject = match headers.get("authorization").and_then(|v| v.to_str().ok()) {
                 Some("Bearer valid-test-token") => Some("test-user"),
-                Some("Bearer legitimate-test-token") => Some("legitimate-user"),
+                Some("Bearer legitimate-test-token") | Some("Bearer slow-team-token") => Some("legitimate-user"),
                 _ => None,
             };
             if let Some(subject) = subject {
@@ -1353,4 +1354,136 @@ async fn caps_diagnostics_at_one_hundred_per_session_without_mutating_request_st
     )
     .await;
     assert_eq!(recv(&mut pc).await["request_id"], "after_limit");
+}
+
+async fn approved_team_session(
+    url: &str,
+) -> (
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    Value,
+    Value,
+) {
+    let mut office = socket(url, ORIGIN).await;
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["presentation-team.v1"]}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    let mut pc = pc_socket(url).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":["presentation-team.v1"]}),
+    )
+    .await;
+    let claimed = recv(&mut pc).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["presentation-team.v1"]}),
+    )
+    .await;
+    let pc_ready = recv(&mut pc).await;
+    let office_ready = recv(&mut office).await;
+    (office, pc, office_ready, pc_ready)
+}
+
+#[tokio::test]
+async fn team_context_authenticates_actor_separately_and_never_forwards_bearer() {
+    let url = server().await;
+    let (mut office, mut pc, ready, _) = approved_team_session(&url).await;
+    send(&mut office,json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"team_request","capability_name":"presentation-team.v1","access_token":"legitimate-test-token","body":{"operation":"team_identity"}})).await;
+    let frame = recv(&mut pc).await;
+    assert_eq!(frame["capability_name"], "presentation-team.v1");
+    assert_eq!(frame["team_context"]["version"], 1);
+    use sha2::{Digest, Sha256};
+    let hex = |value: &str| {
+        Sha256::digest(value.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    assert_eq!(
+        frame["team_context"]["actorSubject"],
+        hex("legitimate-user")
+    );
+    assert_eq!(frame["team_context"]["pcSubject"], hex("test-user"));
+    assert!(frame.get("access_token").is_none());
+    assert!(!frame.to_string().contains("legitimate-test-token"));
+}
+
+#[tokio::test]
+async fn team_rejects_missing_bad_tokens_and_forged_context_before_forwarding() {
+    for scenario in [
+        "missing",
+        "bad",
+        "forged",
+        "body_token",
+        "ordinary_token",
+        "ordinary_team",
+    ] {
+        let url = server().await;
+        let (mut office, mut pc, ready, _) = approved_team_session(&url).await;
+        let mut frame = json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"team_request","capability_name":"presentation-team.v1","access_token":"legitimate-test-token","body":{"operation":"team_identity"}});
+        match scenario {
+            "missing" => {
+                frame.as_object_mut().unwrap().remove("access_token");
+            }
+            "bad" => frame["access_token"] = json!("invalid-token"),
+            "forged" => {
+                frame["team_context"] =
+                    json!({"version":1,"actorSubject":"fake","pcSubject":"fake"})
+            }
+            "body_token" => frame["body"]["access_token"] = json!("secret"),
+            "ordinary_token" => {
+                frame["capability_name"] = json!("agent.v1");
+                frame["body"]["operation"] = json!("ordinary");
+            }
+            "ordinary_team" => {
+                frame["capability_name"] = json!("agent.v1");
+                frame.as_object_mut().unwrap().remove("access_token");
+            }
+            _ => unreachable!(),
+        }
+        send(&mut office, frame).await;
+        assert_eq!(recv(&mut office).await["type"], "relay.error", "{scenario}");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(80), pc.next())
+                .await
+                .is_err(),
+            "{scenario}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn team_cancel_during_oidc_validation_never_forwards_request() {
+    for close in [false, true] {
+        let url = server().await;
+        let (mut office, mut pc, ready, _) = approved_team_session(&url).await;
+        send(&mut office,json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"slow_team","capability_name":"presentation-team.v1","access_token":"slow-team-token","body":{"operation":"team_project_create"}})).await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        if close {
+            office.close(None).await.unwrap();
+        } else {
+            send(&mut office,json!({"version":2,"type":"office.cancel","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"slow_team"})).await;
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(400), pc.next())
+                .await
+                .is_err(),
+            "close={close}"
+        );
+    }
+}
+#[tokio::test]
+async fn team_session_rejects_all_private_capability_combinations_before_pairing() {
+    for other in ["agent.v1", "presentation.v1", "presentation-attachments.v1"] {
+        let url = server().await;
+        let mut office = socket(&url, wiswork_relay::OFFICE_ORIGIN).await;
+        send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["presentation-team.v1",other]})).await;
+        let error = recv(&mut office).await;
+        assert_eq!(error["type"], "relay.error");
+        assert_eq!(error["code"], "invalid_capabilities");
+    }
 }
