@@ -11,6 +11,7 @@ import {
 import { handlePresentationJob, hasPresentationWorker } from '../src/main/presentation-jobs'
 import {
   registerPresentationProjectWork,
+  hasPresentationProjectWork,
   stopPresentationProjectWork,
 } from '../src/main/presentation-project-work'
 const roots: string[] = [],
@@ -36,6 +37,18 @@ function deferred() {
   })
   return { promise, resolve }
 }
+it('observes active foreground work only for the exact project and document', () => {
+  const scope = fixture(),
+    other = fixture()
+  expect(hasPresentationProjectWork(scope)).toBe(false)
+  const work = register(scope)
+  expect(hasPresentationProjectWork(scope)).toBe(true)
+  expect(hasPresentationProjectWork({ ...scope, documentId: 'other' })).toBe(false)
+  expect(hasPresentationProjectWork({ ...scope, projectId: 'other' })).toBe(false)
+  expect(hasPresentationProjectWork(other)).toBe(false)
+  work.finish()
+  expect(hasPresentationProjectWork(scope)).toBe(false)
+})
 it('keeps multiple same-scope requests and finishes only their own tokens', async () => {
   const scope = fixture(),
     first = register(scope),
@@ -128,6 +141,7 @@ it('drains actual background and foreground work while an unsignalled compiler m
     },
   )
   await entered.promise
+  expect(hasPresentationProjectWork(scope)).toBe(true)
   await stopPresentationProjectWork({ ...scope, documentId: 'other' })
   expect(hasPresentationWorker(key)).toBe(true)
   const foreground = register(scope),
@@ -144,6 +158,7 @@ it('drains actual background and foreground work while an unsignalled compiler m
   await drain
   expect(done).toBe(true)
   expect(hasPresentationWorker(key)).toBe(false)
+  expect(hasPresentationProjectWork(scope)).toBe(false)
 })
 
 it('waits for actual foreground compilation even when the compiler has no cancellation signal', async () => {

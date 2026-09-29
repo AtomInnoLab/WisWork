@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { assertPresentationId } from '@wiswork/project-store'
-import { stopPresentationWorkers } from './presentation-jobs'
+import { hasPresentationWorker, stopPresentationWorkers } from './presentation-jobs'
 
 export interface PresentationProjectWorkScope {
   root: string
@@ -72,6 +72,19 @@ export function registerPresentationProjectWork(options: {
       done()
     },
   })
+}
+
+/** Read-only admission observation. A background worker for this project conservatively keeps any document scope busy. */
+export function hasPresentationProjectWork(input: PresentationProjectWorkScope): boolean {
+  const scope = ownedScope(input)
+  return (
+    Array.from(foreground.values()).some(
+      (entry) =>
+        entry.scope.root === scope.root &&
+        entry.scope.projectId === scope.projectId &&
+        entry.scope.documentId === scope.documentId,
+    ) || hasPresentationWorker(`${scope.root}\0${scope.projectId}`)
+  )
 }
 
 /** Call after persistent freeze and outside the project lock. Abort is a request; drain waits for actual completion. */
