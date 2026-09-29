@@ -3,6 +3,7 @@ import {
   createPresentationResearchController,
   type PresentationResearchController,
   type PresentationResearchDeleteAttempt,
+  type PresentationResearchAbandonAttempt,
 } from './presentation-research.js'
 import { createPresentationHostBundleSkill } from '../skills/powerpoint/presentation-host-bundle.js'
 import {
@@ -171,6 +172,11 @@ export function createOfficeHostRuntime(
   host: OfficeHost,
   options: {
     presentation?: Omit<PresentationGenerationOptions, 'vfs'> & {
+      readResearchAbandonAttempt?(documentId: string): unknown
+      writeResearchAbandonAttempt?(
+        documentId: string,
+        value: PresentationResearchAbandonAttempt | undefined,
+      ): void
       readResearchDeleteAttempt?(documentId: string): unknown
       writeResearchDeleteAttempt?(
         documentId: string,
@@ -689,6 +695,8 @@ export function createOfficeHostRuntime(
           documentId: options.presentation.documentId,
           lastProject: options.presentation.lastProject,
           executeTool: researchSkill.executeTool,
+          readAbandonAttempt: options.presentation.readResearchAbandonAttempt,
+          writeAbandonAttempt: options.presentation.writeResearchAbandonAttempt,
           readDeleteAttempt: options.presentation.readResearchDeleteAttempt,
           writeDeleteAttempt: options.presentation.writeResearchDeleteAttempt,
         })

@@ -42,6 +42,32 @@ export function PresentationResearchCard({
     ledgerId: string
     draftDigest: string
   }>()
+  const [abandonTarget, setAbandonTarget] = useState<{
+    projectId: string
+    documentId: string
+    ledgerId: string
+    draftDigest: string
+  }>()
+  const [forgetConfirm, setForgetConfirm] = useState(false)
+  const [abandonRetryConfirm, setAbandonRetryConfirm] = useState(false)
+  useEffect(() => {
+    setAbandonTarget((target) =>
+      target &&
+      snapshot.recoveryAvailable &&
+      target.projectId === snapshot.projectId &&
+      target.documentId === snapshot.summary?.documentId &&
+      snapshot.summary.records.some(
+        (item) =>
+          item.id === target.ledgerId &&
+          item.draftDigest === target.draftDigest &&
+          item.state === 'running',
+      )
+        ? target
+        : undefined,
+    )
+    setAbandonRetryConfirm(false)
+    setForgetConfirm(false)
+  }, [snapshot.projectId, snapshot.summary, snapshot.recoveryAvailable, snapshot.abandonAttempt])
   const [retryConfirm, setRetryConfirm] = useState(false)
   useEffect(() => {
     setCleanupTarget((target) =>
@@ -76,15 +102,88 @@ export function PresentationResearchCard({
         <p>记录时间是研究整理操作时间；网页快照时间来自原资料，不表示本次重新抓取。</p>
         {busy && (
           <p role="status">
-            {snapshot.phase === 'deleting'
-              ? '正在提交研究归档清理…'
-              : snapshot.phase === 'checkingDelete'
-                ? '正在只读核对删除回执…'
-                : '正在读取或导出研究记录…'}
+            {snapshot.phase === 'abandoning'
+              ? '正在提交结束研究…'
+              : snapshot.phase === 'checkingAbandon'
+                ? '正在只读核对原研究记录…'
+                : snapshot.phase === 'deleting'
+                  ? '正在提交研究归档清理…'
+                  : snapshot.phase === 'checkingDelete'
+                    ? '正在只读核对删除回执…'
+                    : '正在读取或导出研究记录…'}
           </p>
         )}
         {(snapshot.phase === 'deleting' || snapshot.phase === 'checkingDelete') && (
           <p>停止等待不承诺撤销已提交的清理；可随后读取删除回执，勿自动重发。</p>
+        )}
+        {(snapshot.phase === 'abandoning' || snapshot.phase === 'checkingAbandon') && (
+          <p>停止等待只停止界面等待，不承诺撤销已提交的结束；随后只读核对原记录。</p>
+        )}
+        {snapshot.recoveryAvailable && snapshot.abandonAttempt && (
+          <div aria-label="待核对研究结束尝试">
+            <p>结束结果尚待核对；查询只读取原研究记录，不会结束或重跑。</p>
+            <button
+              type="button"
+              disabled={blocked}
+              onClick={() => void controller.checkAbandonStatus()}
+            >
+              读取结束状态
+            </button>
+            <button type="button" disabled={blocked} onClick={() => setAbandonRetryConfirm(true)}>
+              重试同一次结束
+            </button>
+            {abandonRetryConfirm && (
+              <div>
+                <p>
+                  明确重试使用原研究身份、摘要与版本；不会重跑研究。草稿和附件保留，活跃研究正常完成时不会覆盖其结果。
+                </p>
+                <button
+                  type="button"
+                  disabled={blocked}
+                  onClick={() => {
+                    setAbandonRetryConfirm(false)
+                    void controller.retryAbandon()
+                  }}
+                >
+                  确认重试同一次结束
+                </button>
+                <button type="button" onClick={() => setAbandonRetryConfirm(false)}>
+                  取消重试结束
+                </button>
+              </div>
+            )}
+            <button type="button" disabled={blocked} onClick={() => setForgetConfirm(true)}>
+              仅忘记本机恢复身份
+            </button>
+            {forgetConfirm && (
+              <div>
+                <p>
+                  仅清除本机恢复身份，不修改 PC
+                  研究记录，不结束、不删除、不重跑；此界面将失去原尝试核对身份，请先读取原记录。
+                </p>
+                <button
+                  type="button"
+                  disabled={blocked}
+                  onClick={() => {
+                    setForgetConfirm(false)
+                    void controller.forgetAbandon()
+                  }}
+                >
+                  确认忘记恢复身份
+                </button>
+                <button type="button" onClick={() => setForgetConfirm(false)}>
+                  取消忘记
+                </button>
+              </div>
+            )}
+            <details>
+              <summary>结束恢复身份</summary>
+              <p>
+                原研究 #{snapshot.abandonAttempt.sequence} · {snapshot.abandonAttempt.ledgerId}
+                ；原版本 {snapshot.abandonAttempt.expectedRevision}
+              </p>
+            </details>
+          </div>
         )}
         {snapshot.error && <p role="alert">{snapshot.error}</p>}
         {snapshot.notice && <p role="status">{snapshot.notice}</p>}
@@ -223,6 +322,50 @@ export function PresentationResearchCard({
                   >
                     导出研究 JSON 与 Markdown
                   </button>
+                  {snapshot.recoveryAvailable && item.state === 'running' && (
+                    <>
+                      <button
+                        type="button"
+                        disabled={blocked || !!snapshot.abandonAttempt}
+                        onClick={() =>
+                          setAbandonTarget({
+                            projectId: snapshot.projectId!,
+                            documentId: snapshot.summary!.documentId,
+                            ledgerId: item.id,
+                            draftDigest: item.draftDigest,
+                          })
+                        }
+                      >
+                        结束未完成研究
+                      </button>
+                      {abandonTarget?.ledgerId === item.id && (
+                        <div aria-label="确认结束研究">
+                          <p>
+                            仅结束这条未完成研究，保留草稿、原附件、PowerPoint
+                            文稿与导出副本，不会重跑。缺少结束回执不能证明后台已中断；活跃研究正常完成时不会覆盖其结果。
+                          </p>
+                          <button
+                            type="button"
+                            disabled={blocked || !!snapshot.abandonAttempt}
+                            onClick={() => {
+                              const target = abandonTarget
+                              setAbandonTarget(undefined)
+                              if (
+                                target.projectId === snapshot.projectId &&
+                                target.documentId === snapshot.summary?.documentId
+                              )
+                                void controller.abandonRecord(target.ledgerId, target.draftDigest)
+                            }}
+                          >
+                            确认结束此研究
+                          </button>
+                          <button type="button" onClick={() => setAbandonTarget(undefined)}>
+                            取消结束
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
                   {snapshot.cleanupAvailable &&
                     (item.state === 'running' ? (
                       <p>未收到结束回执，不能清理此归档。</p>

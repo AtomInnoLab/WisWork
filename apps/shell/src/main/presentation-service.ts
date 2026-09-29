@@ -74,6 +74,7 @@ const errorCodes = new Set([
   'upgrade_required',
   'record_deleted',
   'record_running',
+  'record_not_running',
   'record_protected',
   'cleanup_quota_exceeded',
   'acceptance_capacity',

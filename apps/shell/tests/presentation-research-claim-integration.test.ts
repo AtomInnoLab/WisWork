@@ -1,3 +1,6 @@
+import { createPresentationResearchAbandonPersistence } from '../../office-addin/src/agent/presentation-research-recovery-storage'
+import { PresentationResearchStore } from '@wiswork/project-store/presentation-research-store'
+import { createPresentationResearchController } from '../../office-addin/src/agent/presentation-research'
 import type { PresentationProfessionalContext } from '@wiswork/project-store/presentation-professional-context'
 import JSZip from 'jszip'
 import { createPresentationHostBundleSkill } from '../../office-addin/src/skills/powerpoint/presentation-host-bundle'
@@ -95,8 +98,8 @@ async function setup(
       },
     })
   let host = runtime()
-  const tool = (name: string, input: Record<string, unknown>) =>
-    host.skill.executeTool({ id: name, name, input })
+  const tool = (name: string, input: Record<string, unknown>, signal?: AbortSignal) =>
+    host.skill.executeTool({ id: name, name, input }, signal)
   const raw = async (operation: string, input: Record<string, unknown> = {}) =>
     JSON.parse(
       await (
@@ -1129,3 +1132,256 @@ it.each(['remove', 'hide_findings'] as const)(
     }
   },
 )
+
+it('ends a restarted orphan research without replay, then frees its capacity and continues under a new ID', async () => {
+  const f = await setup()
+  try {
+    const store = new PresentationResearchStore(f.root)
+    const orphan = (await store.begin('doc', f.plan.projectId, 2, 'orphan', f.draft)).record
+    f.restart()
+    const before = await f.tool('read_research_ledger', {
+      project_id: f.plan.projectId,
+      ledger_id: 'orphan',
+    })
+    expect(before.isError, before.output).toBeFalsy()
+    expect(JSON.parse(before.output)).toMatchObject({ state: 'running', sequence: 2 })
+    expect(
+      f
+        .toolNames()
+        .some((name) => /research.*(?:abandon|cancel)|(?:abandon|cancel).*research/.test(name)),
+    ).toBe(false)
+    const ended = await f.raw('research_abandon', {
+      ledgerId: 'orphan',
+      expectedRevision: 3,
+      expectedDraftDigest: orphan.draftDigest,
+    })
+    expect(ended).toMatchObject({
+      state: 'failed',
+      error: 'aborted',
+      id: 'orphan',
+      sequence: 2,
+      draftDigest: orphan.draftDigest,
+      draft: f.draft,
+    })
+    expect(ended).not.toHaveProperty('sources')
+    const failedRead = await f.tool('read_research_ledger', {
+      project_id: f.plan.projectId,
+      ledger_id: 'orphan',
+    })
+    expect(failedRead.isError, failedRead.output).toBeFalsy()
+    expect(JSON.parse(failedRead.output)).toEqual(ended)
+    const failedExport = await f.tool('export_research_ledger', {
+      project_id: f.plan.projectId,
+      ledger_id: 'orphan',
+    })
+    expect(failedExport.isError, failedExport.output).toBeFalsy()
+    f.restart()
+    expect(
+      await f.raw('research_abandon', {
+        ledgerId: 'orphan',
+        expectedRevision: 3,
+        expectedDraftDigest: orphan.draftDigest,
+      }),
+    ).toEqual(ended)
+    const same = await f.tool('build_research_ledger', {
+      project_id: f.plan.projectId,
+      ledger_id: 'orphan',
+      expected_revision: 4,
+      draft: f.draft,
+    })
+    expect(same.isError).toBe(true)
+    expect(JSON.parse(same.output)).toMatchObject({ record: ended, history: { revision: 4 } })
+    const next = await f.tool('build_research_ledger', {
+      project_id: f.plan.projectId,
+      ledger_id: 'new-after-orphan',
+      expected_revision: 4,
+      draft: f.draft,
+    })
+    expect(next.isError, next.output).toBeFalsy()
+    expect(JSON.parse(next.output)).toMatchObject({
+      record: { state: 'completed', sequence: 3 },
+      history: { revision: 6 },
+    })
+    const removed = await f.raw('research_delete', {
+      ledgerId: 'orphan',
+      deleteId: 'orphan-cleanup',
+      expectedRevision: 6,
+      expectedDraftDigest: orphan.draftDigest,
+    })
+    expect(removed).toMatchObject({ ledgerId: 'orphan', revision: 7 })
+    expect(await f.raw('research_list', { historyVersion: 2 })).not.toHaveProperty('error')
+    const listed = await f.tool('list_research_ledgers', { project_id: f.plan.projectId })
+    expect(listed.isError, listed.output).toBeFalsy()
+    expect(JSON.parse(listed.output)).toMatchObject({
+      version: 2,
+      totalRecords: 2,
+      lastSequence: 3,
+      revision: 7,
+    })
+    const original = await f.tool('read_presentation_claim_evidence', f.input)
+    expect(original.isError, original.output).toBeFalsy()
+    expect(JSON.parse(original.output).research.record).toEqual(f.recordA)
+  } finally {
+    f.close()
+  }
+})
+it('recovers a lost end ACK through the actual controller using read-only original-record status', async () => {
+  const f = await setup()
+  try {
+    await new PresentationResearchStore(f.root).begin('doc', f.plan.projectId, 2, 'orphan', f.draft)
+    let pending: unknown
+    let writes = 0
+    const request = async (body: unknown, signal?: AbortSignal) => {
+      const response = await f.request(body, signal)
+      if ((body as { operation: string }).operation === 'research_abandon') {
+        writes++
+        throw Error('private ACK loss')
+      }
+      return response
+    }
+    const controller = createPresentationResearchController({
+      available: () => true,
+      documentId: async () => 'doc',
+      lastProject: () => f.plan.projectId,
+      request,
+      executeTool: (call, signal) => f.tool(call.name, call.input, signal),
+      readAbandonAttempt: () => pending,
+      writeAbandonAttempt: (_doc, value) => {
+        pending = value
+      },
+    })
+    await controller.refresh()
+    expect(controller.snapshot().recoveryAvailable).toBe(true)
+    await controller.abandonRecord('orphan', f.recordA.draftDigest)
+    expect(controller.snapshot().error).toBeUndefined()
+    expect(controller.snapshot().abandonRecord).toMatchObject({
+      id: 'orphan',
+      state: 'failed',
+      error: 'aborted',
+    })
+    expect(pending).toBeUndefined()
+    expect(writes).toBe(1)
+    expect(controller.snapshot().summary?.revision).toBe(4)
+    await controller.deleteRecord('orphan', f.recordA.draftDigest)
+    expect(controller.snapshot().deleteReceipt).toMatchObject({ ledgerId: 'orphan', revision: 5 })
+    f.restart()
+    await controller.refresh()
+    expect(writes).toBe(1)
+    expect(await f.raw('research_read', { ledgerId: 'orphan' })).toEqual({
+      error: 'record_deleted',
+    })
+    expect(f.compile).not.toHaveBeenCalled()
+  } finally {
+    f.close()
+  }
+})
+it('preserves exact legacy capabilities and advertises end recovery only through explicit negotiation', async () => {
+  const f = await setup()
+  try {
+    const cap = async (fields: Record<string, unknown> = {}) =>
+      JSON.parse(
+        await (
+          await f.request({ operation: 'research_capabilities', documentId: 'doc', ...fields })
+        ).text(),
+      )
+    expect(await cap()).toEqual({ version: 1, available: true })
+    expect(await cap({ includeCleanup: true })).toEqual({
+      version: 1,
+      available: true,
+      cleanupAvailable: true,
+      historyVersions: [1, 2],
+    })
+    expect(await cap({ includeCleanup: true, includeRecovery: true })).toEqual({
+      version: 1,
+      available: true,
+      cleanupAvailable: true,
+      recoveryAvailable: true,
+      historyVersions: [1, 2],
+    })
+    expect(await cap({ includeRecovery: true })).toEqual({ error: 'invalid_request' })
+    expect(
+      await f.raw('research_abandon', {
+        ledgerId: f.recordA.id,
+        expectedRevision: 2,
+        expectedDraftDigest: f.recordA.draftDigest,
+      }),
+    ).toEqual({ error: 'record_not_running' })
+    expect(await f.raw('research_read', { ledgerId: f.recordA.id })).toEqual(f.recordA)
+  } finally {
+    f.close()
+  }
+})
+
+it('reopens durable end identity after cancellation and ignores a late ACK without automatically ending again', async () => {
+  const f = await setup()
+  let releaseAck!: () => void
+  const ackGate = new Promise<void>((resolve) => {
+    releaseAck = resolve
+  })
+  let entered!: () => void
+  const endEntered = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  try {
+    await new PresentationResearchStore(f.root).begin('doc', f.plan.projectId, 2, 'orphan', f.draft)
+    const values = new Map<string, string>()
+    const persistence = createPresentationResearchAbandonPersistence('doc', {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => {
+        values.set(key, value)
+      },
+      removeItem: (key) => {
+        values.delete(key)
+      },
+    })
+    let writes = 0
+    const request = async (body: unknown, signal?: AbortSignal) => {
+      const response = await f.request(body, signal)
+      if ((body as { operation: string }).operation === 'research_abandon') {
+        writes++
+        entered()
+        await ackGate
+      }
+      return response
+    }
+    const create = () =>
+      createPresentationResearchController({
+        available: () => true,
+        documentId: async () => 'doc',
+        lastProject: () => f.plan.projectId,
+        request,
+        executeTool: (call, signal) => f.tool(call.name, call.input, signal),
+        readAbandonAttempt: persistence.read,
+        writeAbandonAttempt: persistence.write,
+      })
+    const first = create()
+    await first.refresh()
+    const pending = first.abandonRecord('orphan', f.recordA.draftDigest)
+    await endEntered
+    first.cancel()
+    expect(persistence.read('doc')).toMatchObject({
+      ledgerId: 'orphan',
+      expectedRevision: 3,
+      draftDigest: f.recordA.draftDigest,
+    })
+    f.restart()
+    const reopened = create()
+    await reopened.refresh()
+    expect(reopened.snapshot().abandonRecord).toMatchObject({
+      id: 'orphan',
+      state: 'failed',
+      error: 'aborted',
+    })
+    expect(reopened.snapshot().summary?.revision).toBe(4)
+    expect(persistence.read('doc')).toBeUndefined()
+    expect(writes).toBe(1)
+    releaseAck()
+    await pending
+    expect(reopened.snapshot().abandonRecord).toMatchObject({ id: 'orphan', state: 'failed' })
+    expect(writes).toBe(1)
+    expect(f.compile).not.toHaveBeenCalled()
+  } finally {
+    releaseAck()
+    f.close()
+  }
+})

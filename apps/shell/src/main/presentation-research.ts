@@ -123,6 +123,7 @@ export function createPresentationResearchService(options: {
         research_list: ['projectId'],
         research_latest: ['projectId'],
         research_read: ['projectId', 'ledgerId'],
+        research_abandon: ['projectId', 'ledgerId', 'expectedDraftDigest', 'expectedRevision'],
         research_build: ['projectId', 'ledgerId', 'expectedRevision', 'draft'],
         research_delete: [
           'projectId',
@@ -137,7 +138,7 @@ export function createPresentationResearchService(options: {
     const required = ['operation', 'documentId', ...fields[op]!]
     const optional =
       op === 'research_capabilities'
-        ? ['includeCleanup']
+        ? ['includeCleanup', 'includeRecovery']
         : ['research_list', 'research_build'].includes(op)
           ? ['historyVersion']
           : []
@@ -146,6 +147,8 @@ export function createPresentationResearchService(options: {
       Object.keys(request).some((k) => !allowed.includes(k)) ||
       required.some((k) => !Object.hasOwn(request, k)) ||
       (Object.hasOwn(request, 'includeCleanup') && request.includeCleanup !== true) ||
+      (Object.hasOwn(request, 'includeRecovery') &&
+        (request.includeRecovery !== true || request.includeCleanup !== true)) ||
       (Object.hasOwn(request, 'historyVersion') && request.historyVersion !== 2) ||
       typeof request.documentId !== 'string' ||
       !request.documentId.trim() ||
@@ -155,9 +158,17 @@ export function createPresentationResearchService(options: {
       throw new Error('invalid_request')
     if (signal.aborted) throw new Error('aborted')
     if (op === 'research_capabilities')
-      return request.includeCleanup
-        ? { version: 1, available: true, cleanupAvailable: true, historyVersions: [1, 2] }
-        : { version: 1, available: true }
+      return request.includeRecovery
+        ? {
+            version: 1,
+            available: true,
+            cleanupAvailable: true,
+            recoveryAvailable: true,
+            historyVersions: [1, 2],
+          }
+        : request.includeCleanup
+          ? { version: 1, available: true, cleanupAvailable: true, historyVersions: [1, 2] }
+          : { version: 1, available: true }
     const projectId = request.projectId
     if (typeof projectId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId))
       throw new Error('invalid_request')
@@ -238,6 +249,24 @@ export function createPresentationResearchService(options: {
           projectId,
           request.expectedRevision as number,
           request.deleteId,
+          id,
+          request.expectedDraftDigest,
+          signal,
+        )
+      }
+      if (op === 'research_abandon') {
+        if (!options.acquireProjectLock) throw new Error('invalid_state')
+        if (
+          !Number.isSafeInteger(request.expectedRevision) ||
+          Number(request.expectedRevision) < 0 ||
+          typeof request.expectedDraftDigest !== 'string' ||
+          !/^[a-f0-9]{64}$/.test(request.expectedDraftDigest)
+        )
+          throw new Error('invalid_request')
+        return await store.abandon(
+          documentId,
+          projectId,
+          request.expectedRevision as number,
           id,
           request.expectedDraftDigest,
           signal,

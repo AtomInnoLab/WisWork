@@ -27,6 +27,10 @@ async function mount(snapshot: PresentationResearchSnapshot) {
     deleteRecord: vi.fn(async () => {}),
     retryDelete: vi.fn(async () => {}),
     checkDeleteStatus: vi.fn(async () => {}),
+    abandonRecord: vi.fn(async () => {}),
+    retryAbandon: vi.fn(async () => {}),
+    checkAbandonStatus: vi.fn(async () => {}),
+    forgetAbandon: vi.fn(async () => {}),
     cancel: vi.fn(),
     clear: vi.fn(),
   }
@@ -171,4 +175,82 @@ it('offers read-only receipt recovery and an explicit retry without claiming can
   await f.update({ ...f.controller.snapshot(), phase: 'deleting' })
   expect(f.node.textContent).toContain('停止等待不承诺撤销已提交的清理')
   expect(button('读取删除回执').disabled).toBe(true)
+})
+it('requires inline confirmation for running recovery and isolates confirmation on project change', async () => {
+  const summary = researchSummary()
+  summary.records[0]!.state = 'running'
+  delete summary.records[0]!.finishedAt
+  const f = await mount({
+    phase: 'idle',
+    available: true,
+    recoveryAvailable: true,
+    projectId: 'research',
+    summary,
+  })
+  const click = async (text: string) => {
+    const button = Array.from(f.node.querySelectorAll('button')).find(
+      (item) => item.textContent === text,
+    )!
+    expect(button).toBeDefined()
+    await act(async () => button.click())
+  }
+  await click('结束未完成研究')
+  expect(f.controller.abandonRecord).not.toHaveBeenCalled()
+  expect(f.node.textContent).toContain('活跃研究正常完成时不会覆盖其结果')
+  await click('取消结束')
+  expect(f.controller.abandonRecord).not.toHaveBeenCalled()
+  await click('结束未完成研究')
+  await click('确认结束此研究')
+  expect(f.controller.abandonRecord).toHaveBeenCalledWith(
+    'ledger1',
+    summary.records[0]!.draftDigest,
+  )
+  await click('结束未完成研究')
+  await f.update({
+    phase: 'idle',
+    available: true,
+    recoveryAvailable: true,
+    projectId: 'other',
+    summary: { ...summary, projectId: 'other' },
+  })
+  expect(f.node.textContent).not.toContain('确认结束此研究')
+  await f.update({ phase: 'idle', available: true, projectId: 'research', summary })
+  expect(f.node.textContent).not.toContain('结束未完成研究')
+})
+it('pending recovery queries only and requires confirmation for retry or local forgetting', async () => {
+  const summary = researchSummary()
+  const f = await mount({
+    phase: 'idle',
+    available: true,
+    recoveryAvailable: true,
+    projectId: 'research',
+    summary,
+    abandonAttempt: {
+      documentId: 'doc',
+      projectId: 'research',
+      ledgerId: 'ledger1',
+      sequence: 1,
+      draftDigest: summary.records[0]!.draftDigest,
+      expectedRevision: 1,
+    },
+  })
+  const click = async (text: string) => {
+    const button = Array.from(f.node.querySelectorAll('button')).find(
+      (item) => item.textContent === text,
+    )!
+    expect(button).toBeDefined()
+    await act(async () => button.click())
+  }
+  await click('读取结束状态')
+  expect(f.controller.checkAbandonStatus).toHaveBeenCalledOnce()
+  expect(f.controller.retryAbandon).not.toHaveBeenCalled()
+  await click('重试同一次结束')
+  expect(f.controller.retryAbandon).not.toHaveBeenCalled()
+  await click('确认重试同一次结束')
+  expect(f.controller.retryAbandon).toHaveBeenCalledOnce()
+  await click('仅忘记本机恢复身份')
+  expect(f.controller.forgetAbandon).not.toHaveBeenCalled()
+  expect(f.node.textContent).toContain('不修改 PC 研究记录')
+  await click('确认忘记恢复身份')
+  expect(f.controller.forgetAbandon).toHaveBeenCalledOnce()
 })

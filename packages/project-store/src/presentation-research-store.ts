@@ -388,6 +388,52 @@ export class PresentationResearchStore {
       signal,
     )
   }
+  /** Explicitly end one exact unfinished record; this does not prove which request ended it. */
+  abandon(
+    documentId: string,
+    projectId: string,
+    expectedRevision: number,
+    ledgerId: string,
+    expectedDraftDigest: string,
+    signal?: AbortSignal,
+  ): Promise<PresentationResearchRecord> {
+    validId(ledgerId)
+    if (
+      !Number.isSafeInteger(expectedRevision) ||
+      expectedRevision < 0 ||
+      typeof expectedDraftDigest !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(expectedDraftDigest)
+    )
+      throw new Error('invalid_request')
+    return this.update(
+      documentId,
+      projectId,
+      (state) => {
+        const index = state.records.findIndex((r) => r.id === ledgerId),
+          record = state.records[index]
+        if (!record)
+          throw new Error(
+            state.version === 2 && state.tombstones.some((t) => t.ledgerId === ledgerId)
+              ? 'record_deleted'
+              : 'not_found',
+          )
+        if (record.draftDigest !== expectedDraftDigest) throw new Error('request_conflict')
+        if (record.state === 'failed' && record.error === 'aborted') return record
+        if (record.state !== 'running') throw new Error('record_not_running')
+        if (state.revision !== expectedRevision) throw new Error('revision_conflict')
+        const ended = parsePresentationResearchRecord({
+          ...record,
+          state: 'failed',
+          error: 'aborted',
+          finishedAt: [new Date().toISOString(), this.lastTime(state)].sort().at(-1)!,
+        })
+        state.records[index] = ended
+        state.revision++
+        return ended
+      },
+      signal,
+    )
+  }
   begin(
     documentId: string,
     projectId: string,

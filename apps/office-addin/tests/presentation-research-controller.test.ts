@@ -53,7 +53,12 @@ it('probes and restores independent research before any plan or production exist
   await reopened.refresh()
   expect(reopened.snapshot().summary).toEqual(researchSummary())
   expect(f.request).toHaveBeenCalledWith(
-    { operation: 'research_capabilities', documentId: 'doc', includeCleanup: true },
+    {
+      operation: 'research_capabilities',
+      documentId: 'doc',
+      includeCleanup: true,
+      includeRecovery: true,
+    },
     expect.any(AbortSignal),
   )
 })

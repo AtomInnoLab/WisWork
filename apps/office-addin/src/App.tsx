@@ -1,3 +1,4 @@
+import { createPresentationResearchAbandonPersistence } from './agent/presentation-research-recovery-storage.js'
 import { createPresentationResearchDeletePersistence } from './agent/presentation-research-cleanup-storage.js'
 import { PresentationResearchCard } from './agent/presentation-research-card.js'
 import type { PresentationResearchController } from './agent/presentation-research.js'
@@ -1838,6 +1839,18 @@ function ConfiguredApp() {
                   })(),
                 )
               : undefined
+            const researchAbandonPersistence = boundPresentationDocumentId
+              ? createPresentationResearchAbandonPersistence(
+                  boundPresentationDocumentId,
+                  (() => {
+                    try {
+                      return window.localStorage
+                    } catch {
+                      return undefined
+                    }
+                  })(),
+                )
+              : undefined
             const interruptedRun = runRecovery?.scrubFailed ? undefined : runCheckpoint?.recovery()
             const environment = officeDiagnosticEnvironment(activeHost)
             const diagnostics = createOfficeDiagnostics({
@@ -1866,6 +1879,8 @@ function ConfiguredApp() {
                 ? {
                     presentation: {
                       ...presentationBinding!,
+                      readResearchAbandonAttempt: researchAbandonPersistence?.read,
+                      writeResearchAbandonAttempt: researchAbandonPersistence?.write,
                       readResearchDeleteAttempt: researchDeletePersistence?.read,
                       writeResearchDeleteAttempt: researchDeletePersistence?.write,
                       available: () => {

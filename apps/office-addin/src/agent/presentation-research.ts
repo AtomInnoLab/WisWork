@@ -8,6 +8,7 @@ import {
   type PresentationResearchSummary,
 } from '@wiswork/project-store/presentation-research'
 
+import { verifyPresentationResearchRecord } from '../skills/powerpoint/presentation-research.js'
 import { readPresentationResearchCapabilities } from '../skills/powerpoint/presentation-research-capabilities.js'
 export interface PresentationResearchDeleteAttempt {
   documentId: string
@@ -18,9 +19,49 @@ export interface PresentationResearchDeleteAttempt {
   deleteId: string
   expectedRevision: number
 }
+export interface PresentationResearchAbandonAttempt {
+  documentId: string
+  projectId: string
+  ledgerId: string
+  sequence: number
+  draftDigest: string
+  expectedRevision: number
+}
+function abandonAttempt(
+  value: unknown,
+  documentId: string,
+  projectId: string,
+): PresentationResearchAbandonAttempt | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const v = value as PresentationResearchAbandonAttempt
+  return Object.keys(v).sort().join(',') ===
+    'documentId,draftDigest,expectedRevision,ledgerId,projectId,sequence' &&
+    v.documentId === documentId &&
+    v.projectId === projectId &&
+    idValid(v.ledgerId) &&
+    idValid(v.projectId) &&
+    /^[a-f0-9]{64}$/.test(v.draftDigest) &&
+    Number.isSafeInteger(v.sequence) &&
+    v.sequence > 0 &&
+    Number.isSafeInteger(v.expectedRevision) &&
+    v.expectedRevision >= 0
+    ? structuredClone(v)
+    : undefined
+}
 export interface PresentationResearchSnapshot {
-  phase: 'idle' | 'loading' | 'reading' | 'exporting' | 'deleting' | 'checkingDelete'
+  phase:
+    | 'idle'
+    | 'loading'
+    | 'reading'
+    | 'exporting'
+    | 'deleting'
+    | 'checkingDelete'
+    | 'abandoning'
+    | 'checkingAbandon'
   available?: boolean
+  recoveryAvailable?: boolean
+  abandonAttempt?: PresentationResearchAbandonAttempt
+  abandonRecord?: PresentationResearchRecord
   cleanupAvailable?: boolean
   deleteAttempt?: PresentationResearchDeleteAttempt
   deleteReceipt?: PresentationResearchDeleteReceipt
@@ -40,6 +81,10 @@ export interface PresentationResearchController {
   deleteRecord(ledgerId: string, draftDigest: string): Promise<void>
   retryDelete(): Promise<void>
   checkDeleteStatus(): Promise<void>
+  abandonRecord(ledgerId: string, draftDigest: string): Promise<void>
+  retryAbandon(): Promise<void>
+  checkAbandonStatus(): Promise<void>
+  forgetAbandon(): Promise<void>
   cancel(): void
   clear(): void
 }
@@ -47,6 +92,12 @@ const idValid = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 const message = (error: unknown) => {
   const code = error instanceof Error ? error.message : ''
+  if (code === 'presentation_abandon_recovery_unavailable')
+    return '无法保存或清除结束恢复身份；请恢复本机界面存储，再只读核对原记录。'
+  if (code === 'presentation_record_not_running')
+    return '原研究记录已经结束；请刷新读取真实终态，不会覆盖其结果。'
+  if (code === 'presentation_record_deleted')
+    return '原研究归档已被清理；这不证明本次结束操作完成。'
   if (code === 'presentation_cleanup_recovery_unavailable')
     return '无法保存清理恢复身份，未执行删除；请恢复本机界面存储后重试。'
   if (code === 'presentation_upgrade_required')
@@ -63,7 +114,7 @@ const message = (error: unknown) => {
   if (code === 'presentation_quota_exceeded')
     return '研究账本已达本机容量上限；已有记录仍可读取，新记录暂无法保存。'
   if (code === 'presentation_revision_conflict')
-    return '研究记录已有更新；请刷新核对，当前删除尝试不能更换身份或重算版本。'
+    return '研究记录已有更新；请刷新核对，当前尝试不能更换身份或重算版本。'
   if (code === 'presentation_document_changed') return '文档已改变，请在目标文档刷新研究记录。'
   if (code === 'cancelled') return '已停止等待；本机可能已保存研究记录，请刷新读取，勿自动重放。'
   return '研究记录暂时无法读取或导出；已有资料保留，请刷新本机记录后重试。'
@@ -77,6 +128,11 @@ export function createPresentationResearchController(options: {
   writeDeleteAttempt?(
     documentId: string,
     value: PresentationResearchDeleteAttempt | undefined,
+  ): void
+  readAbandonAttempt?(documentId: string): unknown
+  writeAbandonAttempt?(
+    documentId: string,
+    value: PresentationResearchAbandonAttempt | undefined,
   ): void
   executeTool: AgentSkill['executeTool']
 }): PresentationResearchController {
@@ -94,7 +150,12 @@ export function createPresentationResearchController(options: {
     active?.abort()
     active = undefined
     selected = undefined
-    publish({ phase: 'idle', available: state.available, cleanupAvailable: state.cleanupAvailable })
+    publish({
+      phase: 'idle',
+      available: state.available,
+      cleanupAvailable: state.cleanupAvailable,
+      recoveryAvailable: state.recoveryAvailable,
+    })
   }
   const run = async (kind: 'list' | 'read' | 'export', ledgerId?: string) => {
     if (active) return
@@ -131,30 +192,38 @@ export function createPresentationResearchController(options: {
         check()
       }
       await current()
-      const capability = await readPresentationResearchCapabilities(async (operation, body) => {
-        await current()
-        const response = await options.request(
-          { operation, documentId, ...body },
-          controller.signal,
-        )
-        await current()
-        if (!response.ok) throw new Error('presentation_service_unavailable')
-        const text = await response.text()
-        await current()
-        if (new TextEncoder().encode(text).byteLength > 1024)
-          throw new Error('presentation_response_invalid')
-        const value = JSON.parse(text)
-        if (['invalid_request', 'upgrade_required'].includes(value?.error))
-          throw new Error('presentation_upgrade_required')
-        return value
-      })
+      const capability = await readPresentationResearchCapabilities(
+        async (operation, body) => {
+          await current()
+          const response = await options.request(
+            { operation, documentId, ...body },
+            controller.signal,
+          )
+          await current()
+          if (!response.ok) throw new Error('presentation_service_unavailable')
+          const text = await response.text()
+          await current()
+          if (new TextEncoder().encode(text).byteLength > 1024)
+            throw new Error('presentation_response_invalid')
+          const value = JSON.parse(text)
+          if (['invalid_request', 'upgrade_required'].includes(value?.error))
+            throw new Error('presentation_upgrade_required')
+          return value
+        },
+        { includeRecovery: true },
+      )
       supported = capability.available
       if (!capability.available) {
         publish({ phase: 'idle', available: false, cleanupAvailable: false })
         return
       }
       if (!projectId) {
-        publish({ phase: 'idle', available: true, cleanupAvailable: capability.cleanupAvailable })
+        publish({
+          phase: 'idle',
+          available: true,
+          recoveryAvailable: capability.recoveryAvailable,
+          cleanupAvailable: capability.cleanupAvailable,
+        })
         return
       }
       const execute = async (name: string, input: Record<string, unknown>, max: number) => {
@@ -228,10 +297,20 @@ export function createPresentationResearchController(options: {
             deleteAttempt = structuredClone(value)
         }
       }
+      let pendingAbandon = previous.abandonAttempt
+      if (!pendingAbandon && capability.recoveryAvailable && options.readAbandonAttempt)
+        pendingAbandon = abandonAttempt(
+          options.readAbandonAttempt(documentId),
+          documentId,
+          projectId,
+        )
       await current()
       publish({
+        ...(pendingAbandon ? { abandonAttempt: pendingAbandon } : {}),
+        ...(previous.abandonRecord ? { abandonRecord: previous.abandonRecord } : {}),
         phase: 'idle',
         available: true,
+        recoveryAvailable: capability.recoveryAvailable,
         cleanupAvailable: capability.cleanupAvailable,
         ...(deleteAttempt ? { deleteAttempt } : {}),
         ...(previous.deleteReceipt ? { deleteReceipt: previous.deleteReceipt } : {}),
@@ -248,7 +327,7 @@ export function createPresentationResearchController(options: {
       publish({
         ...(changed ? {} : { ...previous, available: supported }),
         ...(error instanceof Error && error.message === 'presentation_upgrade_required'
-          ? { available: false, cleanupAvailable: false }
+          ? { available: false, cleanupAvailable: false, recoveryAvailable: false }
           : {}),
         phase: 'idle',
         ...(changed ? {} : { projectId }),
@@ -427,6 +506,212 @@ export function createPresentationResearchController(options: {
       }
     }
   }
+  const runAbandon = async (
+    kind: 'abandon' | 'retry' | 'status',
+    ledgerId?: string,
+    draftDigest?: string,
+  ) => {
+    if (active || !state.recoveryAvailable || !state.projectId) return
+    const controller = new AbortController(),
+      captured = ++epoch,
+      previous = state
+    active = controller
+    let attempt = previous.abandonAttempt
+    let documentId: string | undefined
+    let sent = false
+    const check = async () => {
+      if (captured !== epoch || controller.signal.aborted) throw new Error('cancelled')
+      if (!options.available()) throw new Error('presentation_unavailable')
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      if (captured !== epoch || controller.signal.aborted) throw new Error('cancelled')
+    }
+    const request = async (operation: 'research_abandon' | 'research_read') => {
+      await check()
+      const response = await options.request(
+        {
+          operation,
+          documentId,
+          projectId: attempt!.projectId,
+          ledgerId: attempt!.ledgerId,
+          ...(operation === 'research_abandon'
+            ? {
+                expectedDraftDigest: attempt!.draftDigest,
+                expectedRevision: attempt!.expectedRevision,
+              }
+            : {}),
+        },
+        controller.signal,
+      )
+      await check()
+      if (!response.ok) throw new Error('presentation_service_unavailable')
+      const text = await response.text()
+      await check()
+      if (new TextEncoder().encode(text).length > 512 * 1024)
+        throw new Error('presentation_response_invalid')
+      const value = JSON.parse(text)
+      if (value?.error && !Object.hasOwn(value, 'version'))
+        throw new Error(`presentation_${value.error}`)
+      const record = await verifyPresentationResearchRecord(value)
+      await check()
+      if (
+        record.documentId !== documentId ||
+        record.projectId !== attempt!.projectId ||
+        record.id !== attempt!.ledgerId ||
+        record.sequence !== attempt!.sequence ||
+        record.draftDigest !== attempt!.draftDigest
+      )
+        throw new Error('presentation_response_invalid')
+      if (
+        operation === 'research_abandon' &&
+        (record.state !== 'failed' || record.error !== 'aborted')
+      )
+        throw new Error('presentation_response_invalid')
+      return record
+    }
+    try {
+      documentId = await options.documentId()
+      await check()
+      if (kind === 'abandon') {
+        if (previous.summary?.documentId !== documentId)
+          throw new Error('presentation_document_changed')
+        if (attempt) throw new Error('presentation_request_conflict')
+        const item = previous.summary?.records.find((r) => r.id === ledgerId)
+        if (!item || item.draftDigest !== draftDigest)
+          throw new Error('presentation_revision_conflict')
+        if (item.state !== 'running') throw new Error('presentation_record_not_running')
+        attempt = {
+          documentId,
+          projectId: previous.projectId!,
+          ledgerId: item.id,
+          sequence: item.sequence,
+          draftDigest: item.draftDigest,
+          expectedRevision: previous.summary!.revision,
+        }
+      }
+      if (!attempt) return
+      if (attempt.documentId !== documentId || attempt.projectId !== previous.projectId)
+        throw new Error('presentation_document_changed')
+      if (kind !== 'status') {
+        try {
+          if (!options.writeAbandonAttempt)
+            throw new Error('presentation_abandon_recovery_unavailable')
+          options.writeAbandonAttempt(documentId, attempt)
+        } catch {
+          throw new Error('presentation_abandon_recovery_unavailable')
+        }
+      }
+      publish({
+        ...previous,
+        abandonAttempt: attempt,
+        abandonRecord: undefined,
+        phase: kind === 'status' ? 'checkingAbandon' : 'abandoning',
+        error: undefined,
+        notice: undefined,
+      })
+      let record: PresentationResearchRecord
+      if (kind === 'status') record = await request('research_read')
+      else {
+        try {
+          sent = true
+          record = await request('research_abandon')
+        } catch (error) {
+          await check()
+          if (
+            error instanceof Error &&
+            /^presentation_(revision_conflict|record_not_running|record_deleted|aborted|upgrade_required|invalid_state|request_conflict)$/.test(
+              error.message,
+            )
+          )
+            throw error
+          record = await request('research_read')
+        }
+      }
+      await check()
+      if (record.state === 'running') {
+        publish({
+          ...state,
+          phase: 'idle',
+          abandonRecord: undefined,
+          notice: '原记录仍缺少结束回执；只读查询不会结束或重跑研究。',
+        })
+      } else {
+        try {
+          options.writeAbandonAttempt?.(documentId, undefined)
+        } catch {
+          throw new Error('presentation_abandon_recovery_unavailable')
+        }
+        publish({
+          ...state,
+          phase: 'idle',
+          abandonAttempt: undefined,
+          abandonRecord: record,
+          record,
+          summary: undefined,
+          notice: '原研究记录已结束；不证明由本次操作结束。草稿、附件与原记录保留，读取不会重跑。',
+          error: undefined,
+        })
+        const result = await options.executeTool(
+          {
+            id: `research-abandon-list-${captured}`,
+            name: 'list_research_ledgers',
+            input: { project_id: attempt.projectId },
+          },
+          controller.signal,
+        )
+        await check()
+        if (result.isError || new TextEncoder().encode(result.output).length > 64 * 1024)
+          throw new Error('presentation_response_invalid')
+        const summary = parsePresentationResearchSummary(JSON.parse(result.output))
+        if (summary.documentId !== documentId || summary.projectId !== attempt.projectId)
+          throw new Error('presentation_response_invalid')
+        publish({ ...state, summary })
+      }
+    } catch (error) {
+      if (captured !== epoch) return
+      const changed =
+        documentId && (await options.documentId().catch(() => undefined)) !== documentId
+      if (captured !== epoch) return
+      let safeError = error
+      if (
+        !changed &&
+        documentId &&
+        error instanceof Error &&
+        /^presentation_(revision_conflict|record_not_running)$/.test(error.message)
+      ) {
+        try {
+          options.writeAbandonAttempt?.(documentId, undefined)
+          attempt = undefined
+          state = { ...state, abandonAttempt: undefined }
+        } catch {
+          safeError = new Error('presentation_abandon_recovery_unavailable')
+        }
+      }
+      publish({
+        ...(changed ? {} : state),
+        phase: 'idle',
+        ...(changed || !attempt || state.abandonRecord ? {} : { abandonAttempt: attempt }),
+        error:
+          error instanceof Error && error.message === 'presentation_not_found'
+            ? '尚未找到原研究记录；不能据此判断已经结束，请核对原身份。'
+            : message(changed ? new Error('presentation_document_changed') : safeError),
+        ...(!changed &&
+        !state.abandonRecord &&
+        sent &&
+        !(
+          safeError instanceof Error &&
+          /^presentation_(revision_conflict|record_not_running)$/.test(safeError.message)
+        )
+          ? { notice: '结束结果尚待核对；请只读查询原记录，或明确确认重试原身份与版本。' }
+          : {}),
+      })
+    } finally {
+      if (captured === epoch) {
+        active = undefined
+        if (state.phase !== 'idle') publish({ ...state, phase: 'idle' })
+      }
+    }
+  }
   return {
     snapshot: () => state,
     subscribe: (listener) => {
@@ -438,6 +723,7 @@ export function createPresentationResearchController(options: {
     refresh: async () => {
       await run('list')
       if (state.deleteAttempt && !active) await runDelete('status')
+      if (state.abandonAttempt && state.recoveryAvailable && !active) await runAbandon('status')
     },
     selectProject: async (projectId) => {
       if (!idValid(projectId)) return
@@ -450,6 +736,39 @@ export function createPresentationResearchController(options: {
     deleteRecord: (ledgerId, draftDigest) => runDelete('delete', ledgerId, draftDigest),
     retryDelete: () => runDelete('retry'),
     checkDeleteStatus: () => runDelete('status'),
+    abandonRecord: (ledgerId, draftDigest) => runAbandon('abandon', ledgerId, draftDigest),
+    retryAbandon: () => runAbandon('retry'),
+    checkAbandonStatus: () => runAbandon('status'),
+    forgetAbandon: async () => {
+      if (active || !state.abandonAttempt) return
+      const previous = state,
+        captured = epoch,
+        attempt = state.abandonAttempt
+      try {
+        if ((await options.documentId()) !== attempt.documentId)
+          throw new Error('presentation_document_changed')
+        if (captured !== epoch) return
+        options.writeAbandonAttempt?.(attempt.documentId, undefined)
+        publish({
+          ...state,
+          abandonAttempt: undefined,
+          notice: '仅清除本机恢复身份，不修改或结束 PC 研究记录；原操作身份将不能由此界面恢复。',
+          error: undefined,
+        })
+      } catch (error) {
+        if (captured !== epoch) return
+        publish({
+          ...(error instanceof Error && error.message === 'presentation_document_changed'
+            ? { phase: 'idle' as const }
+            : previous),
+          error: message(
+            error instanceof Error && error.message === 'presentation_document_changed'
+              ? error
+              : new Error('presentation_abandon_recovery_unavailable'),
+          ),
+        })
+      }
+    },
     cancel: () => {
       epoch++
       active?.abort()
