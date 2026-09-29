@@ -16,6 +16,11 @@ import {
 } from './presentation-job.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
+  parsePresentationPlanAcceptances,
+  type PresentationPlanAcceptanceLedger,
+  type PresentationPlanAcceptance,
+} from './presentation-plan-acceptance.js'
+import {
   parsePresentationPlan,
   presentationSourceAttachmentId,
 } from '@wiswork/pptx-engine/presentation-plan'
@@ -1121,6 +1126,69 @@ export class PresentationStore {
       frozen,
     )
     return frozen
+  }
+  planAcceptances(projectId: string, documentId: string): PresentationPlanAcceptanceLedger {
+    const directory = this.bind(projectId, documentId, false)
+    const path = directory && join(directory, 'plan-acceptances.json')
+    if (!path || !present(path))
+      return parsePresentationPlanAcceptances({ version: 1, projectId, documentId, records: [] })
+    const value = this.read(path) as PresentationPlanAcceptanceLedger & { ledgerDigest: string }
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      throw new Error('invalid_state')
+    const { ledgerDigest, ...content } = value
+    const ledger = parsePresentationPlanAcceptances(content)
+    if (
+      ledger.projectId !== projectId ||
+      ledger.documentId !== documentId ||
+      ledgerDigest !== jsonDigest(ledger, 128 * 1024, 'invalid_state')
+    )
+      throw new Error('invalid_state')
+    return ledger
+  }
+  acceptPlan(
+    projectId: string,
+    documentId: string,
+    decisionId: string,
+    expectedRevision: number,
+    expectedDigest: string,
+  ): PresentationPlanAcceptance {
+    assertPresentationId(decisionId)
+    if (
+      !Number.isSafeInteger(expectedRevision) ||
+      expectedRevision < 1 ||
+      !/^[a-f0-9]{64}$/.test(expectedDigest)
+    )
+      throw new Error('invalid_request')
+    const ledger = this.planAcceptances(projectId, documentId)
+    const previous = ledger.records.find((record) => record.decisionId === decisionId)
+    if (previous) {
+      if (previous.planRevision !== expectedRevision || previous.planDigest !== expectedDigest)
+        throw new Error('request_conflict')
+      return previous
+    }
+    const saved = this.plan(projectId, documentId)
+    if (!saved) throw new Error('not_found')
+    if (saved.revision !== expectedRevision || saved.inputDigest !== expectedDigest)
+      throw new Error('revision_conflict')
+    if (ledger.records.length >= 64) throw new Error('acceptance_capacity')
+    const now = new Date().toISOString(),
+      last = ledger.records.at(-1)?.acceptedAt ?? ''
+    const acceptance: PresentationPlanAcceptance = {
+      decisionId,
+      planRevision: saved.revision,
+      planDigest: saved.inputDigest,
+      styleDigest: digest(presentationPlanSnapshotInputs(saved.plan).styleDigest),
+      acceptedAt: now < last ? last : now,
+    }
+    const next = parsePresentationPlanAcceptances({
+      ...ledger,
+      records: [...ledger.records, acceptance],
+    })
+    this.write(join(this.directory(projectId), 'plan-acceptances.json'), {
+      ...next,
+      ledgerDigest: jsonDigest(next, 128 * 1024, 'output_too_large'),
+    })
+    return structuredClone(acceptance)
   }
   sourceAudits(projectId: string, documentId: string): PresentationSourceAuditLedger {
     const directory = this.bind(projectId, documentId, false)

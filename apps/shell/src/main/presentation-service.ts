@@ -50,6 +50,7 @@ const errorCodes = new Set([
   'invalid_plan',
   'plan_mismatch',
   'revision_conflict',
+  'acceptance_capacity',
   'plan_revision_unavailable',
   'page_locked',
   'invalid_deck',
@@ -393,6 +394,7 @@ export function createPresentationService(options: {
           'status',
           'resume',
           'save_plan',
+          'accept_plan',
           'set_plan_page_lock',
           'get_plan',
           'read_import_source',
@@ -413,27 +415,14 @@ export function createPresentationService(options: {
         ].includes(request.operation as string)
       )
         throw new Error('invalid_request')
-      const allowedKeys = ['audit_sources', 'read_source_audit'].includes(
-        request.operation as string,
-      )
-        ? ['operation', 'documentId', 'projectId', 'auditId']
-        : presentationJobOperations.includes(request.operation as string)
-          ? ['operation', 'documentId', 'projectId', 'requestId']
-          : ['production_delivery_report', 'production_record_issue_action'].includes(
-                request.operation as string,
-              )
-            ? [
-                'operation',
-                'documentId',
-                'projectId',
-                'requestId',
-                ...(request.operation === 'production_record_issue_action'
-                  ? ['expectedRevision', 'action']
-                  : []),
-              ]
-            : request.operation === 'production_read_claim_review'
-              ? ['operation', 'documentId', 'projectId', 'requestId', 'reviewId']
-              : ['production_claim_evidence', 'production_record_claim_review'].includes(
+      const allowedKeys =
+        request.operation === 'accept_plan'
+          ? ['operation', 'documentId', 'projectId', 'decisionId', 'expectedRevision', 'planDigest']
+          : ['audit_sources', 'read_source_audit'].includes(request.operation as string)
+            ? ['operation', 'documentId', 'projectId', 'auditId']
+            : presentationJobOperations.includes(request.operation as string)
+              ? ['operation', 'documentId', 'projectId', 'requestId']
+              : ['production_delivery_report', 'production_record_issue_action'].includes(
                     request.operation as string,
                   )
                 ? [
@@ -441,70 +430,97 @@ export function createPresentationService(options: {
                     'documentId',
                     'projectId',
                     'requestId',
-                    'pageId',
-                    'claimId',
-                    'sourceId',
-                    'offset',
-                    'maxChars',
-                    ...(request.operation === 'production_record_claim_review'
-                      ? ['reviewId', 'evidenceDigest', 'outcome', 'notes']
+                    ...(request.operation === 'production_record_issue_action'
+                      ? ['expectedRevision', 'action']
                       : []),
                   ]
-                : request.operation === 'production_rebuild_page'
-                  ? [
-                      'operation',
-                      'documentId',
-                      'projectId',
-                      'parentRequestId',
-                      'requestId',
-                      'pageId',
-                      'slide',
-                    ]
-                  : request.operation === 'production_begin'
-                    ? ['operation', 'documentId', 'projectId', 'requestId', 'planRevision', 'deck']
-                    : request.operation === 'production_status'
-                      ? ['operation', 'documentId', 'projectId', 'requestId']
-                      : request.operation === 'production_run'
-                        ? ['operation', 'documentId', 'projectId', 'requestId']
-                        : [
-                              'production_page',
-                              'production_content_check',
-                              'production_page_reviews',
-                            ].includes(request.operation as string)
-                          ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
-                          : request.operation === 'compile'
-                            ? [
-                                'operation',
-                                'documentId',
-                                'projectId',
-                                'requestId',
-                                'deck',
-                                'planRevision',
-                              ]
-                            : request.operation === 'resume'
-                              ? ['operation', 'documentId', 'projectId', 'requestId']
-                              : request.operation === 'read_import_source'
-                                ? ['operation', 'documentId', 'projectId', 'requestId', 'source']
-                                : request.operation === 'set_plan_page_lock'
-                                  ? [
-                                      'operation',
-                                      'documentId',
-                                      'projectId',
-                                      'expectedRevision',
-                                      'pageId',
-                                      'locked',
-                                    ]
-                                  : request.operation === 'save_plan'
+                : request.operation === 'production_read_claim_review'
+                  ? ['operation', 'documentId', 'projectId', 'requestId', 'reviewId']
+                  : ['production_claim_evidence', 'production_record_claim_review'].includes(
+                        request.operation as string,
+                      )
+                    ? [
+                        'operation',
+                        'documentId',
+                        'projectId',
+                        'requestId',
+                        'pageId',
+                        'claimId',
+                        'sourceId',
+                        'offset',
+                        'maxChars',
+                        ...(request.operation === 'production_record_claim_review'
+                          ? ['reviewId', 'evidenceDigest', 'outcome', 'notes']
+                          : []),
+                      ]
+                    : request.operation === 'production_rebuild_page'
+                      ? [
+                          'operation',
+                          'documentId',
+                          'projectId',
+                          'parentRequestId',
+                          'requestId',
+                          'pageId',
+                          'slide',
+                        ]
+                      : request.operation === 'production_begin'
+                        ? [
+                            'operation',
+                            'documentId',
+                            'projectId',
+                            'requestId',
+                            'planRevision',
+                            'deck',
+                          ]
+                        : request.operation === 'production_status'
+                          ? ['operation', 'documentId', 'projectId', 'requestId']
+                          : request.operation === 'production_run'
+                            ? ['operation', 'documentId', 'projectId', 'requestId']
+                            : [
+                                  'production_page',
+                                  'production_content_check',
+                                  'production_page_reviews',
+                                ].includes(request.operation as string)
+                              ? ['operation', 'documentId', 'projectId', 'requestId', 'pageId']
+                              : request.operation === 'compile'
+                                ? [
+                                    'operation',
+                                    'documentId',
+                                    'projectId',
+                                    'requestId',
+                                    'deck',
+                                    'planRevision',
+                                  ]
+                                : request.operation === 'resume'
+                                  ? ['operation', 'documentId', 'projectId', 'requestId']
+                                  : request.operation === 'read_import_source'
                                     ? [
                                         'operation',
                                         'documentId',
                                         'projectId',
-                                        'expectedRevision',
-                                        'plan',
+                                        'requestId',
+                                        'source',
                                       ]
-                                    : request.operation === 'get_plan'
-                                      ? ['operation', 'documentId', 'projectId', 'revision']
-                                      : ['operation', 'documentId', 'projectId']
+                                    : request.operation === 'set_plan_page_lock'
+                                      ? [
+                                          'operation',
+                                          'documentId',
+                                          'projectId',
+                                          'expectedRevision',
+                                          'pageId',
+                                          'locked',
+                                        ]
+                                      : request.operation === 'save_plan'
+                                        ? [
+                                            'operation',
+                                            'documentId',
+                                            'projectId',
+                                            'expectedRevision',
+                                            'plan',
+                                          ]
+                                        : request.operation === 'get_plan'
+                                          ? ['operation', 'documentId', 'projectId', 'revision']
+                                          : ['operation', 'documentId', 'projectId']
       const requiredKeys = allowedKeys.filter(
         (key) =>
           !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)) &&
@@ -524,6 +540,16 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const documentId = request.documentId
+      if (
+        request.operation === 'accept_plan' &&
+        (typeof request.decisionId !== 'string' ||
+          !/^[A-Za-z0-9_-]{1,128}$/.test(request.decisionId) ||
+          !Number.isSafeInteger(request.expectedRevision) ||
+          (request.expectedRevision as number) < 1 ||
+          typeof request.planDigest !== 'string' ||
+          !/^[a-f0-9]{64}$/.test(request.planDigest))
+      )
+        throw new Error('invalid_request')
       if (
         ['audit_sources', 'read_source_audit'].includes(request.operation as string) &&
         request.auditId !== undefined
@@ -703,6 +729,16 @@ export function createPresentationService(options: {
               request.source as 'compiled' | 'production',
             ),
           )
+        if (request.operation === 'accept_plan') {
+          const acceptance = store.acceptPlan(
+            projectId,
+            documentId,
+            request.decisionId as string,
+            request.expectedRevision as number,
+            request.planDigest as string,
+          )
+          return boundedResponse({ projectId, documentId, acceptance })
+        }
         if (request.operation === 'set_plan_page_lock') {
           const record = store.setPlanPageLock(
             projectId,
@@ -789,6 +825,12 @@ export function createPresentationService(options: {
             commentsUnavailable = true
           }
           let sourceAuditStatus: Record<string, unknown>
+          let acceptanceStatus: Record<string, unknown>
+          try {
+            acceptanceStatus = { planAcceptance: store.planAcceptances(projectId, documentId) }
+          } catch {
+            acceptanceStatus = { planAcceptanceUnavailable: true }
+          }
           try {
             sourceAuditStatus = {
               sourceAuditHistory: presentationSourceAuditHistory(
@@ -974,6 +1016,7 @@ export function createPresentationService(options: {
               plan,
               ...commentStatus,
               ...sourceAuditStatus,
+              ...acceptanceStatus,
               ...preparationStatus,
             })
           }
@@ -1002,6 +1045,7 @@ export function createPresentationService(options: {
             })),
             ...commentStatus,
             ...sourceAuditStatus,
+            ...acceptanceStatus,
             ...preparationStatus,
             ...(checks
               ? {

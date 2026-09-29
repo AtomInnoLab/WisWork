@@ -127,7 +127,9 @@ export interface PresentationWorkflowSummary {
       | 'plan.proposed'
       | 'plan.revised'
       | 'style.proposed'
-    scope?: 'source_excerpt_audit' | 'saved_plan' | 'saved_style'
+      | 'plan.approved'
+      | 'style.approved'
+    scope?: 'source_excerpt_audit' | 'saved_plan' | 'saved_style' | 'explicit_user_decision'
     records?: { id: string; text: string; at: string }[]
   }[]
   attention: { id: string; text: string }[]
@@ -464,6 +466,31 @@ export function presentationWorkflowSummary(
   ]
   // Rebuild from durable records. Undated entries are current checkpoints, not events.
   const timeline: PresentationWorkflowSummary['timeline'] = []
+  if (project.planAcceptanceUnavailable)
+    attention.push({
+      id: 'plan-acceptance-unavailable',
+      text: '计划与样式接受记录暂不可读取；普通制作可继续，不沿用未知接受结论。',
+    })
+  else if (project.planAcceptance?.projectId === project.projectId) {
+    for (const record of project.planAcceptance.records) {
+      const current = project.planAcceptanceCurrent?.decisionId === record.decisionId
+      const key = JSON.stringify([project.projectId, record.decisionId])
+      timeline.push({
+        id: `plan-acceptance:${key}`,
+        type: 'plan.approved',
+        scope: 'explicit_user_decision',
+        at: record.acceptedAt,
+        text: `用户接受计划第 ${record.planRevision} 版${current ? '（当前版本）' : '（历史决定，不沿用到其它版本）'}；事实来源仍需核验`,
+      })
+      timeline.push({
+        id: `style-acceptance:${key}`,
+        type: 'style.approved',
+        scope: 'explicit_user_decision',
+        at: record.acceptedAt,
+        text: `用户接受计划第 ${record.planRevision} 版的样式${current ? '（当前版本）' : '（历史决定）'}；页面视觉效果仍需审查`,
+      })
+    }
+  }
   const sourceHistory = project.sourceAuditHistory
   if (project.sourceAuditHistoryUnavailable) {
     attention.push({

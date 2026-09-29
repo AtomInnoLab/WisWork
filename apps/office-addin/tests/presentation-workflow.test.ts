@@ -11,6 +11,49 @@ import type { PresentationQaRecord } from '../src/skills/powerpoint/presentation
 import { deliveryReportFixture } from './presentation-delivery-fixture.js'
 
 const plan = benchmarkPlan()
+it('replays only explicit plan and style acceptance decisions with their saved identity and historical scope', () => {
+  const acceptance = {
+    decisionId: 'decision',
+    planRevision: 1,
+    planDigest: 'a'.repeat(64),
+    styleDigest: 'b'.repeat(64),
+    acceptedAt: '2026-09-29T00:00:00.000Z',
+  }
+  const saved: PresentationProjectStatus = {
+    projectId: plan.projectId,
+    title: plan.title,
+    status: 'planned',
+    slideCount: plan.slides.length,
+    slides: plan.slides.map(({ id, title }) => ({ id, title })),
+    history: [],
+    plan: { revision: 2, value: plan },
+    planAcceptance: {
+      version: 1,
+      projectId: plan.projectId,
+      documentId: 'doc',
+      records: [acceptance],
+    },
+  }
+  const summary = presentationWorkflowSummary(saved, undefined, undefined)!
+  const events = summary.timeline.filter((event) => event.scope === 'explicit_user_decision')
+  expect(events.map((event) => event.type)).toEqual(['plan.approved', 'style.approved'])
+  expect(events[0]).toMatchObject({
+    at: acceptance.acceptedAt,
+    text: expect.stringContaining('历史决定'),
+  })
+  expect(
+    presentationWorkflowSummary(saved, undefined, undefined)!.timeline.filter(
+      (event) => event.scope === 'explicit_user_decision',
+    ),
+  ).toEqual(events)
+  expect(
+    presentationWorkflowSummary(
+      { ...saved, planAcceptanceUnavailable: true },
+      undefined,
+      undefined,
+    )!.timeline.some((event) => event.scope === 'explicit_user_decision'),
+  ).toBe(false)
+})
 it('folds durable source-excerpt research by frozen plan and keeps retry detail without claiming source truth', () => {
   const runs = [
     {

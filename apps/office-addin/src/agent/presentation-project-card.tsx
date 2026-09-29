@@ -116,6 +116,7 @@ export function PresentationProjectCard(props: {
               producing: '正在处理页任务',
               auditing: '正在核对计划引文与原文',
               planning: '正在更新制作计划',
+              accepting: '正在保存计划与样式接受决定',
             }[phase]
           : project
             ? `${project.slideCount} 页 · ${project.status === 'planned' ? '计划已保存，尚未编译' : project.status === 'pending' ? '已保存，待编译' : '已编译，尚未完成视觉验证'}`
@@ -482,6 +483,40 @@ export function PresentationProjectCard(props: {
       {project?.plan && (
         <details>
           <summary>制作计划 · 第 {project.plan.revision} 版</summary>
+          {(project.planAcceptance || project.planAcceptanceUnavailable) && (
+            <section aria-label="计划与样式接受决定">
+              {project.planAcceptanceCurrent && !project.planAcceptanceUnavailable ? (
+                <p>
+                  用户已接受第 {project.planAcceptanceCurrent.planRevision} 版计划与样式 ·{' '}
+                  <time dateTime={project.planAcceptanceCurrent.acceptedAt}>
+                    {project.planAcceptanceCurrent.acceptedAt}
+                  </time>
+                </p>
+              ) : (
+                <p>当前计划与样式尚无匹配的接受决定。</p>
+              )}
+              <p>
+                可选记录：只表示接受本版故事线与视觉方向；事实来源和页面质量仍需核验。普通制作可继续。
+              </p>
+              {project.planAcceptanceUnavailable && (
+                <p role="alert">接受决定记录暂不可读取，请刷新后核对。</p>
+              )}
+              {controller.acceptPlan && (
+                <button
+                  type="button"
+                  disabled={
+                    disabled ||
+                    active ||
+                    project.planAcceptanceUnavailable ||
+                    Boolean(project.planAcceptanceCurrent)
+                  }
+                  onClick={() => void controller.acceptPlan!(project.plan!.revision)}
+                >
+                  接受当前计划与样式
+                </button>
+              )}
+            </section>
+          )}
           {project.hostAssociationsUnavailable && (
             <p role="alert">宿主页关联暂不可读取，请刷新后核对导入记录和当前文档。</p>
           )}

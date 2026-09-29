@@ -7,6 +7,11 @@ import type { PresentationIssueActionInput } from '@wiswork/project-store/presen
 import type { PresentationProductionJob } from '@wiswork/project-store/presentation-job'
 import type { PresentationPlanRevisionSnapshot } from '@wiswork/project-store'
 import {
+  parsePresentationPlanAcceptances,
+  type PresentationPlanAcceptanceLedger,
+  type PresentationPlanAcceptance,
+} from '@wiswork/project-store/presentation-plan-acceptance'
+import {
   canonicalPresentationValue,
   presentationPlanSnapshotInputs,
 } from '@wiswork/project-store/presentation-canonical'
@@ -54,6 +59,9 @@ export interface PresentationProductionTask {
   }
 }
 export interface PresentationProjectStatus {
+  planAcceptance?: PresentationPlanAcceptanceLedger
+  planAcceptanceUnavailable?: boolean
+  planAcceptanceCurrent?: PresentationPlanAcceptance
   sourceAuditHistory?: PresentationSourceAuditHistory
   sourceAuditHistoryUnavailable?: boolean
   hostAssociations?: PresentationHostAssociations
@@ -136,7 +144,15 @@ export interface PresentationProjectSnapshot {
   }
   deliveryReport?: PresentationDeliveryReport
   deliveryNotice?: string
-  phase: 'idle' | 'loading' | 'restoring' | 'resuming' | 'producing' | 'auditing' | 'planning'
+  phase:
+    | 'idle'
+    | 'loading'
+    | 'restoring'
+    | 'resuming'
+    | 'producing'
+    | 'auditing'
+    | 'planning'
+    | 'accepting'
   project?: PresentationProjectStatus
   error?: string
 }
@@ -146,6 +162,7 @@ export type PresentationPlanEdit =
   | { kind: 'restore'; revision: number }
   | { kind: 'lock'; pageId: string; locked: boolean }
 export interface PresentationProjectController {
+  acceptPlan?(expectedRevision: number): Promise<void>
   editPlan?(expectedRevision: number, action: PresentationPlanEdit): Promise<void>
   pdfAvailable?(): boolean
   exportProductionPdf?(): Promise<void>
@@ -200,6 +217,21 @@ async function presentationDigest(input: string): Promise<string> {
 }
 async function parseStatus(value: unknown, projectId: string): Promise<PresentationProjectStatus> {
   const p = value as PresentationProjectStatus | undefined
+  let planAcceptance: PresentationPlanAcceptanceLedger | undefined
+  let planAcceptanceUnavailable = p?.planAcceptanceUnavailable === true
+  if (p?.planAcceptance !== undefined) {
+    try {
+      planAcceptance = parsePresentationPlanAcceptances(p.planAcceptance)
+      if (
+        planAcceptance.projectId !== projectId ||
+        (p.plan && planAcceptance.records.some((record) => record.planRevision > p.plan!.revision))
+      )
+        throw new Error('presentation_response_invalid')
+    } catch {
+      planAcceptance = undefined
+      planAcceptanceUnavailable = true
+    }
+  }
   let sourceAuditHistory: PresentationSourceAuditHistory | undefined
   let sourceAuditHistoryUnavailable = p?.sourceAuditHistoryUnavailable === true
   if (p?.sourceAuditHistory !== undefined) {
@@ -523,6 +555,8 @@ async function parseStatus(value: unknown, projectId: string): Promise<Presentat
     throw new Error('presentation_response_invalid')
   // Copy only the bounded public projection; never retain arbitrary server fields or binary data.
   return {
+    ...(planAcceptance ? { planAcceptance } : {}),
+    ...(planAcceptanceUnavailable ? { planAcceptanceUnavailable: true } : {}),
     ...(sourceAuditHistory ? { sourceAuditHistory } : {}),
     ...(sourceAuditHistoryUnavailable ? { sourceAuditHistoryUnavailable: true } : {}),
     ...(p.sourcePreparation ? { sourcePreparation: structuredClone(p.sourcePreparation) } : {}),
@@ -568,6 +602,8 @@ function message(error: unknown): string {
   )
     return '当前 PC 尚不支持此项目操作，请升级 WisWork PC 后重试。'
   if (code === 'presentation_revision_conflict') return '记录已有更新，请重新读取后继续。'
+  if (code === 'presentation_acceptance_capacity')
+    return '接受决定记录已达到容量上限；现有历史与页面保留，普通制作仍可继续。'
   if (code === 'presentation_page_locked')
     return '此操作影响锁定页，请先在工作台明确解除该页锁定后继续。'
   if (code === 'presentation_plan_revision_unavailable')
@@ -1019,6 +1055,31 @@ export function createPresentationProjectController(
         check()
       }
       projectDocument = documentId
+      if (project.planAcceptance && !project.planAcceptanceUnavailable) {
+        try {
+          if (project.planAcceptance.documentId !== documentId)
+            throw new Error('presentation_response_invalid')
+          if (project.plan) {
+            const [planDigest, styleDigest] = await Promise.all([
+              presentationDigest(canonicalPresentationValue(project.plan.value)),
+              presentationDigest(presentationPlanSnapshotInputs(project.plan.value).styleDigest),
+            ])
+            check()
+            project.planAcceptanceCurrent = project.planAcceptance.records
+              .filter(
+                (record) =>
+                  record.planRevision === project.plan!.revision &&
+                  record.planDigest === planDigest &&
+                  record.styleDigest === styleDigest,
+              )
+              .at(-1)
+          }
+        } catch {
+          project.planAcceptanceUnavailable = true
+          delete project.planAcceptance
+          delete project.planAcceptanceCurrent
+        }
+      }
       let sourceAudit: PresentationProjectSnapshot['sourceAudit']
       try {
         sourceAudit = await restoreSourceAudit(project, documentId, controller.signal, check)
@@ -1357,6 +1418,101 @@ export function createPresentationProjectController(
       })
     }
   }
+  const acceptPlan = async (expectedRevision: number) => {
+    if (active || !state.project?.plan || !projectDocument) return
+    const project = state.project,
+      plan = project.plan!,
+      documentId = projectDocument
+    if (expectedRevision !== plan.revision) {
+      publish({ ...state, error: message(new Error('presentation_revision_conflict')) })
+      return
+    }
+    if (!project.planAcceptance || project.planAcceptanceUnavailable) {
+      publish({
+        ...state,
+        error: '接受决定记录暂不可用，请刷新项目或升级 PC 后重试；普通制作仍可继续。',
+      })
+      return
+    }
+    stopPolling()
+    const controller = new AbortController(),
+      captured = ++epoch
+    active = controller
+    publish({ phase: 'accepting', project })
+    const check = () => {
+      if (controller.signal.aborted || captured !== epoch) throw new Error('aborted')
+    }
+    let committed = false
+    try {
+      const planDigest = await presentationDigest(canonicalPresentationValue(plan.value)),
+        decisionId = crypto.randomUUID()
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      check()
+      const response = await options.request(
+        {
+          operation: 'accept_plan',
+          projectId: project.projectId,
+          documentId,
+          decisionId,
+          expectedRevision,
+          planDigest,
+        },
+        controller.signal,
+      )
+      if (!response.ok) throw new Error('presentation_request_failed')
+      const text = await response.text()
+      check()
+      if (new TextEncoder().encode(text).byteLength > 128 * 1024)
+        throw new Error('presentation_response_invalid')
+      const value = JSON.parse(text)
+      if (value?.error) throw new Error(`presentation_${value.error}`)
+      if (
+        !value ||
+        Object.keys(value).sort().join(',') !== 'acceptance,documentId,projectId' ||
+        value.projectId !== project.projectId ||
+        value.documentId !== documentId
+      )
+        throw new Error('presentation_response_invalid')
+      const acceptance = parsePresentationPlanAcceptances({
+        version: 1,
+        projectId: project.projectId,
+        documentId,
+        records: [value.acceptance],
+      }).records[0]!
+      if (
+        acceptance.decisionId !== decisionId ||
+        acceptance.planRevision !== expectedRevision ||
+        acceptance.planDigest !== planDigest ||
+        acceptance.styleDigest !==
+          (await presentationDigest(presentationPlanSnapshotInputs(plan.value).styleDigest))
+      )
+        throw new Error('presentation_response_invalid')
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      check()
+      committed = true
+      publish({
+        phase: 'idle',
+        project,
+        planNotice: `已记录对计划第 ${expectedRevision} 版与该版样式的接受决定；事实来源和页面质量仍需核验。`,
+      })
+    } catch (error) {
+      if (captured === epoch) {
+        if (error instanceof Error && error.message === 'presentation_document_changed')
+          stop(message(error))
+        else if (!controller.signal.aborted)
+          publish({
+            phase: 'idle',
+            project,
+            error: `${message(error)} 请刷新核对接受决定记录，不自动重复提交。`,
+          })
+      }
+    } finally {
+      if (captured === epoch) active = undefined
+    }
+    if (committed && captured === epoch) await run('loading')
+  }
   const auditSources = async () => {
     if (active || !state.project?.plan || !projectDocument) return
     const project = state.project
@@ -1510,6 +1666,7 @@ export function createPresentationProjectController(
     }
   }
   return {
+    acceptPlan,
     editPlan,
     pdfAvailable: () => options.available() && options.productionPdfAvailable?.() === true,
     exportProductionPdf: () => deliveryAction('export_presentation_pdf'),

@@ -11,6 +11,7 @@
     "./presentation-canonical": "./src/presentation-canonical.ts",
     "./presentation-import-source": "./src/presentation-import-source.ts",
     "./presentation-source-audit": "./src/presentation-source-audit.ts",
+    "./presentation-plan-acceptance": "./src/presentation-plan-acceptance.ts",
     "./presentation-job": "./src/presentation-job.ts"
   },
   "scripts": {

@@ -30,6 +30,7 @@ afterEach(async () => {
 async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () => void) {
   const listeners = new Set<() => void>()
   const controller: PresentationProjectController = {
+    acceptPlan: vi.fn(async () => {}),
     editPlan: vi.fn(async () => {}),
     pdfAvailable: vi.fn(() => false),
     exportProductionPdf: vi.fn(async () => {}),
@@ -80,6 +81,47 @@ async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () =>
   }
 }
 describe('presentation project recovery card', () => {
+  it('records explicit acceptance by displayed revision, disables duplicate or pending decisions and keeps ordinary work available', async () => {
+    const plan = benchmarkPlan(),
+      acceptance = {
+        decisionId: 'decision',
+        planRevision: 1,
+        planDigest: 'a'.repeat(64),
+        styleDigest: 'b'.repeat(64),
+        acceptedAt: '2026-09-29T00:00:00.000Z',
+      }
+    const snapshot: Snapshot = {
+      phase: 'idle',
+      project: {
+        projectId: plan.projectId,
+        title: plan.title,
+        status: 'planned',
+        slideCount: plan.slides.length,
+        slides: plan.slides.map(({ id, title }) => ({ id, title })),
+        history: [],
+        plan: { revision: 1, value: plan },
+        planAcceptance: { version: 1, projectId: plan.projectId, documentId: 'doc', records: [] },
+      },
+    }
+    const ui = await mount(snapshot)
+    expect(ui.container.textContent).toContain('普通制作可继续')
+    await act(async () => ui.button('接受当前计划与样式').click())
+    expect(ui.controller.acceptPlan).toHaveBeenCalledWith(1)
+    await ui.update({ ...snapshot, phase: 'accepting' })
+    expect(ui.button('接受当前计划与样式').disabled).toBe(true)
+    await ui.update({
+      ...snapshot,
+      project: {
+        ...snapshot.project!,
+        planAcceptanceCurrent: acceptance,
+        planAcceptance: { ...snapshot.project!.planAcceptance!, records: [acceptance] },
+      },
+    })
+    expect(ui.container.textContent).toContain('用户已接受第 1 版')
+    expect(ui.button('接受当前计划与样式').disabled).toBe(true)
+    await ui.update({ ...snapshot, project: { ...snapshot.project!, planAcceptance: undefined } })
+    expect(ui.button('接受当前计划与样式')).toBeUndefined()
+  })
   it('shows recorded host association, missing pages and historical identity without claiming current content or QA', async () => {
     const plan = benchmarkPlan()
     const f = await mount({
