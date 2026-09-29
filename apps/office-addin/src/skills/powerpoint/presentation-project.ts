@@ -1,4 +1,11 @@
 import {
+  parsePresentationProductionFeedbackLedger,
+  parsePresentationProductionFeedbackPages,
+  MAX_PRESENTATION_PRODUCTION_FEEDBACK_BYTES,
+  type PresentationProductionFeedbackLedger,
+  type PresentationProductionFeedbackPage,
+} from '@wiswork/project-store/presentation-feedback'
+import {
   parsePresentationDeliveryBundleReceipt,
   type PresentationDeliveryBundleReceipt,
 } from '@wiswork/project-store/presentation-delivery-bundle'
@@ -152,6 +159,8 @@ export interface PresentationProjectStatus {
   }
 }
 export interface PresentationProjectSnapshot {
+  productionFeedback?: PresentationProductionFeedbackLedger | null
+  productionFeedbackUnavailable?: true
   deliveryBundlesUnavailable?: true
   deliveryBundles?: PresentationDeliveryBundleReceipt[]
   bundleNotice?: string
@@ -184,6 +193,8 @@ export type PresentationPlanEdit =
   | { kind: 'restore'; revision: number }
   | { kind: 'lock'; pageId: string; locked: boolean }
 export interface PresentationProjectController {
+  readProductionFeedback?(): Promise<void>
+  recordProductionFeedback?(pages: PresentationProductionFeedbackPage[]): Promise<void>
   readBoundResearch?(): Promise<void>
   currentBundleAvailable?(): boolean
   exportCurrentBundle?(includePdf?: boolean): Promise<void>
@@ -748,6 +759,7 @@ export function createPresentationProjectController(
     },
 ): PresentationProjectController {
   let state: PresentationProjectSnapshot = { phase: 'idle' }
+  let verifiedFeedback: PresentationProductionFeedbackLedger | undefined
   const listeners = new Set<() => void>()
   let epoch = 0
   let projectDocument: string | undefined
@@ -905,6 +917,7 @@ export function createPresentationProjectController(
   }
   const stop = (error?: string, resetSelection = false) => {
     stopPolling()
+    verifiedFeedback = undefined
     projectDocument = undefined
     selection = undefined
     ignoreStoredSelection = resetSelection
@@ -2024,7 +2037,182 @@ export function createPresentationProjectController(
       }
     }
   }
+  const feedbackAction = async (patch?: PresentationProductionFeedbackPage[]) => {
+    const previous = state,
+      project = previous.project,
+      production = project?.production,
+      documentId = projectDocument
+    if (
+      active ||
+      !options.available() ||
+      !project ||
+      !production ||
+      production.status !== 'compiled' ||
+      !documentId ||
+      (patch && previous.productionFeedback === undefined)
+    )
+      return
+    const fingerprint = JSON.stringify(production),
+      saved =
+        verifiedFeedback?.documentId === documentId &&
+        verifiedFeedback.projectId === project.projectId &&
+        verifiedFeedback.requestId === production.requestId
+          ? structuredClone(verifiedFeedback)
+          : previous.productionFeedback === undefined
+            ? undefined
+            : structuredClone(previous.productionFeedback)
+    const feedbackFingerprint = JSON.stringify(previous.productionFeedback)
+    stopPolling()
+    const controller = new AbortController(),
+      captured = ++epoch
+    active = controller
+    publish({ ...previous, phase: 'loading', error: undefined })
+    const check = () => {
+      if (captured !== epoch || controller.signal.aborted) throw new Error('cancelled')
+      if (!options.available()) throw new Error('presentation_unavailable')
+      if (JSON.stringify(state.productionFeedback) !== feedbackFingerprint)
+        throw new Error('presentation_revision_conflict')
+      if (
+        state.project?.projectId !== project.projectId ||
+        JSON.stringify(state.project.production) !== fingerprint
+      )
+        throw new Error('presentation_request_changed')
+    }
+    const current = async () => {
+      check()
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      check()
+    }
+    try {
+      const pages = patch ? parsePresentationProductionFeedbackPages(patch) : undefined
+      if (pages?.some((page) => !production.pages.some((item) => item.id === page.pageId)))
+        throw new Error('presentation_response_invalid')
+      await current()
+      check()
+      const response = await options.request(
+        {
+          operation: patch ? 'production_feedback_record' : 'production_feedback_read',
+          documentId,
+          projectId: project.projectId,
+          requestId: production.requestId,
+          ...(pages ? { expectedRevision: saved?.revision ?? 0, pages } : {}),
+        },
+        controller.signal,
+      )
+      check()
+      await current()
+      check()
+      const text = await response.text()
+      check()
+      await current()
+      check()
+      if (
+        new TextEncoder().encode(text).byteLength >
+        MAX_PRESENTATION_PRODUCTION_FEEDBACK_BYTES +
+          new TextEncoder().encode('{"feedback":}').byteLength
+      )
+        throw new Error('presentation_response_invalid')
+      const value = JSON.parse(text)
+      if (!response.ok || value?.error)
+        throw new Error(
+          value?.error === 'revision_conflict'
+            ? 'presentation_revision_conflict'
+            : 'presentation_service_unavailable',
+        )
+      if (
+        !value ||
+        typeof value !== 'object' ||
+        Array.isArray(value) ||
+        Object.keys(value).join(',') !== 'feedback' ||
+        (patch && value.feedback === null)
+      )
+        throw new Error('presentation_response_invalid')
+      const feedback =
+        value.feedback === null ? null : parsePresentationProductionFeedbackLedger(value.feedback)
+      if (
+        feedback &&
+        (feedback.documentId !== documentId ||
+          feedback.projectId !== project.projectId ||
+          feedback.requestId !== production.requestId ||
+          feedback.planRevision !== production.planRevision ||
+          JSON.stringify(feedback.pageIds) !==
+            JSON.stringify(production.pages.map((page) => page.id)))
+      )
+        throw new Error('presentation_response_invalid')
+      if (
+        !pages &&
+        saved &&
+        (!feedback ||
+          feedback.revision < saved.revision ||
+          feedback.inputDigest !== saved.inputDigest ||
+          feedback.planDigest !== saved.planDigest ||
+          canonicalPresentationValue(feedback.snapshots.slice(0, saved.snapshots.length)) !==
+            canonicalPresentationValue(saved.snapshots))
+      )
+        throw new Error('presentation_response_invalid')
+      if (pages && feedback) {
+        if (
+          feedback.revision !== (saved?.revision ?? 0) + 1 ||
+          (saved &&
+            (feedback.inputDigest !== saved.inputDigest ||
+              feedback.planDigest !== saved.planDigest ||
+              JSON.stringify(feedback.snapshots.slice(0, -1)) !== JSON.stringify(saved.snapshots)))
+        )
+          throw new Error('presentation_response_invalid')
+        const expected = production.pages.map(
+          (page) =>
+            pages.find((item) => item.pageId === page.id) ??
+            saved?.snapshots.at(-1)?.pages.find((item) => item.pageId === page.id) ?? {
+              pageId: page.id,
+              status: 'not_evaluated',
+            },
+        )
+        if (
+          canonicalPresentationValue(expected) !==
+          canonicalPresentationValue(feedback.snapshots.at(-1)?.pages)
+        )
+          throw new Error('presentation_response_invalid')
+      }
+      await current()
+      check()
+      verifiedFeedback = feedback ? structuredClone(feedback) : undefined
+      publish({
+        ...previous,
+        phase: 'idle',
+        productionFeedback: feedback,
+        productionFeedbackUnavailable: undefined,
+        error: undefined,
+      })
+    } catch (error) {
+      if (captured !== epoch) return
+      if (
+        await options.documentId().then(
+          (id) => id !== documentId,
+          () => true,
+        )
+      ) {
+        if (captured === epoch) stop(message(new Error('presentation_document_changed')))
+        return
+      }
+      if (captured !== epoch) return
+      publish({
+        ...previous,
+        phase: 'idle',
+        productionFeedback: undefined,
+        productionFeedbackUnavailable: true,
+        error:
+          error instanceof Error && error.message === 'presentation_revision_conflict'
+            ? '反馈已有更新，请重新读取后保存。'
+            : '人工修正反馈暂时不可读取或保存，请重新读取当前任务；页面与已有检查保留。',
+      })
+    } finally {
+      if (captured === epoch) active = undefined
+    }
+  }
   return {
+    readProductionFeedback: () => feedbackAction(),
+    recordProductionFeedback: (pages) => feedbackAction(pages),
     readBoundResearch,
     currentBundleAvailable: () =>
       options.available() && options.nativeDocumentExportAvailable?.() === true,

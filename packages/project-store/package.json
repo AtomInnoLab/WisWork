@@ -20,7 +20,8 @@
     "./presentation-research": "./src/presentation-research.ts",
     "./presentation-research-store": "./src/presentation-research-store.ts",
     "./presentation-source-assessment": "./src/presentation-source-assessment.ts",
-    "./presentation-professional-context": "./src/presentation-professional-context.ts"
+    "./presentation-professional-context": "./src/presentation-professional-context.ts",
+    "./presentation-feedback": "./src/presentation-feedback.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

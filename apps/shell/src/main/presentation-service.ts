@@ -1,3 +1,4 @@
+import { parsePresentationProductionFeedbackPages } from '@wiswork/project-store/presentation-feedback'
 import { createPresentationTeamService } from './presentation-team'
 import type { PresentationTeamContext } from '@wiswork/pptx-engine/presentation-team'
 import { parsePresentationSourceAssessment } from '@wiswork/project-store/presentation-source-assessment'
@@ -539,11 +540,24 @@ export function createPresentationService(options: {
           'production_read_claim_review',
           'production_delivery_report',
           'production_record_issue_action',
+          'production_feedback_read',
+          'production_feedback_record',
         ].includes(request.operation as string)
       )
         throw new Error('invalid_request')
-      const allowedKeys =
-        request.operation === 'accept_plan'
+      const allowedKeys = ['production_feedback_read', 'production_feedback_record'].includes(
+        request.operation as string,
+      )
+        ? [
+            'operation',
+            'documentId',
+            'projectId',
+            'requestId',
+            ...(request.operation === 'production_feedback_record'
+              ? ['expectedRevision', 'pages']
+              : []),
+          ]
+        : request.operation === 'accept_plan'
           ? ['operation', 'documentId', 'projectId', 'decisionId', 'expectedRevision', 'planDigest']
           : ['audit_sources', 'read_source_audit'].includes(request.operation as string)
             ? ['operation', 'documentId', 'projectId', 'auditId']
@@ -711,6 +725,8 @@ export function createPresentationService(options: {
           'production_read_claim_review',
           'production_delivery_report',
           'production_record_issue_action',
+          'production_feedback_read',
+          'production_feedback_record',
         ].includes(request.operation as string) ||
         (request.operation === 'production_status' && request.requestId !== undefined)
       )
@@ -817,6 +833,11 @@ export function createPresentationService(options: {
           throw new Error('invalid_plan')
         }
       }
+      if (request.operation === 'production_feedback_record') {
+        if (!Number.isSafeInteger(request.expectedRevision) || Number(request.expectedRevision) < 0)
+          throw new Error('invalid_request')
+        parsePresentationProductionFeedbackPages(request.pages)
+      }
       const projectId = request.projectId ?? deck?.id
       assertPresentationId(projectId)
       if (plan && plan.projectId !== projectId) throw new Error('invalid_plan')
@@ -825,6 +846,21 @@ export function createPresentationService(options: {
       const release = await acquireProjectLock(options.userDataPath, projectId)
       try {
         checkAbort(signal)
+        if (request.operation === 'production_feedback_read')
+          return boundedResponse({
+            feedback:
+              store.productionFeedback(projectId, documentId, request.requestId as string) ?? null,
+          })
+        if (request.operation === 'production_feedback_record')
+          return boundedResponse({
+            feedback: store.recordProductionFeedback(
+              projectId,
+              documentId,
+              request.requestId as string,
+              request.expectedRevision as number,
+              request.pages,
+            ),
+          })
         if (presentationJobOperations.includes(request.operation as string)) {
           if (
             ['production_job_start', 'production_job_resume'].includes(request.operation as string)

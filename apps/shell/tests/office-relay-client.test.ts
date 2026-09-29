@@ -1238,37 +1238,45 @@ it('advertises team transport only explicitly and passes verified context separa
   expect(f.socket.sent.every((value) => !value.includes('pc-token'))).toBe(true)
   f.client.revoke()
 })
-it.each(['missing', 'bad-subject', 'extra', 'unknown-operation', 'ordinary-operation', 'bearer'])(
-  'rejects %s team request context before proxying',
-  async (scenario) => {
-    const f = await teamPcClient(),
-      context: Record<string, unknown> = {
-        version: 1,
-        actorSubject: 'a'.repeat(64),
-        pcSubject: 'b'.repeat(64),
-      },
-      body: Record<string, unknown> = { operation: 'team_identity' }
-    if (scenario === 'bad-subject') context.actorSubject = 'raw-actor'
-    if (scenario === 'extra') context.token = 'private'
-    if (scenario === 'unknown-operation') body.operation = 'team_unknown'
-    if (scenario === 'ordinary-operation') body.operation = 'get_plan'
-    const frame: Record<string, unknown> = {
-      version: 2,
-      type: 'relay.request',
-      session_id: 'session_12345678',
-      request_id: 'request_12345678',
-      capability_name: 'presentation-team.v1',
-      team_context: context,
-      body,
-    }
-    if (scenario === 'missing') delete frame.team_context
-    if (scenario === 'bearer') frame.access_token = 'private-token'
-    f.socket.message(frame)
-    expect(f.presentationProxy).not.toHaveBeenCalled()
-    expect(f.socket.closedWith).toBeDefined()
-    f.client.revoke()
-  },
-)
+it.each([
+  'missing',
+  'bad-subject',
+  'extra',
+  'unknown-operation',
+  'ordinary-operation',
+  'feedback-read',
+  'feedback-record',
+  'bearer',
+])('rejects %s team request context before proxying', async (scenario) => {
+  const f = await teamPcClient(),
+    context: Record<string, unknown> = {
+      version: 1,
+      actorSubject: 'a'.repeat(64),
+      pcSubject: 'b'.repeat(64),
+    },
+    body: Record<string, unknown> = { operation: 'team_identity' }
+  if (scenario === 'bad-subject') context.actorSubject = 'raw-actor'
+  if (scenario === 'extra') context.token = 'private'
+  if (scenario === 'unknown-operation') body.operation = 'team_unknown'
+  if (scenario === 'ordinary-operation') body.operation = 'get_plan'
+  if (scenario === 'feedback-read') body.operation = 'production_feedback_read'
+  if (scenario === 'feedback-record') body.operation = 'production_feedback_record'
+  const frame: Record<string, unknown> = {
+    version: 2,
+    type: 'relay.request',
+    session_id: 'session_12345678',
+    request_id: 'request_12345678',
+    capability_name: 'presentation-team.v1',
+    team_context: context,
+    body,
+  }
+  if (scenario === 'missing') delete frame.team_context
+  if (scenario === 'bearer') frame.access_token = 'private-token'
+  f.socket.message(frame)
+  expect(f.presentationProxy).not.toHaveBeenCalled()
+  expect(f.socket.closedWith).toBeDefined()
+  f.client.revoke()
+})
 it('rejects team operations and forged context through an ordinary presentation capability', async () => {
   for (const withContext of [false, true]) {
     const f = await teamPcClient(false)

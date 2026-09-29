@@ -1,3 +1,10 @@
+import {
+  parsePresentationProductionFeedbackLedger,
+  parsePresentationProductionFeedbackPages,
+  MAX_PRESENTATION_PRODUCTION_FEEDBACK_BYTES,
+  MAX_PRESENTATION_PRODUCTION_FEEDBACK_REVISIONS,
+  type PresentationProductionFeedbackLedger,
+} from './presentation-feedback.js'
 import { parsePresentationSourceAssessment } from './presentation-source-assessment.js'
 import {
   canonicalPresentationValue as canonical,
@@ -42,6 +49,10 @@ import {
 import { presentationPageInput, presentationPlanPageInput } from './presentation-page-input.js'
 import {
   lstatSync,
+  openSync,
+  closeSync,
+  fstatSync,
+  constants,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -1083,6 +1094,127 @@ export class PresentationStore {
     return requestId === undefined
       ? records[0]
       : records.find((record) => record.requestId === requestId)
+  }
+  productionFeedback(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+  ): PresentationProductionFeedbackLedger | undefined {
+    const production = this.production(projectId, documentId, requestId)
+    if (!production) throw new Error('not_found')
+    const path = join(this.directory(projectId), `production-feedback-${digest(requestId)}.json`)
+    if (!present(path)) return undefined
+    let record: Record<string, unknown>
+    try {
+      const before = lstatSync(path)
+      if (!before.isFile() || before.isSymbolicLink()) throw new Error('invalid_state')
+      const file = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+      try {
+        const stat = fstatSync(file)
+        if (
+          !stat.isFile() ||
+          stat.dev !== before.dev ||
+          stat.ino !== before.ino ||
+          stat.size > MAX_PRESENTATION_PRODUCTION_FEEDBACK_BYTES + 1024
+        )
+          throw new Error('invalid_state')
+        record = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+      } finally {
+        closeSync(file)
+      }
+    } catch {
+      throw new Error('invalid_state')
+    }
+    if (
+      !record ||
+      typeof record !== 'object' ||
+      Array.isArray(record) ||
+      Object.keys(record).sort().join(',') !== 'checksum,feedback,version' ||
+      record.version !== 1 ||
+      record.checksum !==
+        jsonDigest(record.feedback, MAX_PRESENTATION_PRODUCTION_FEEDBACK_BYTES, 'invalid_state')
+    )
+      throw new Error('invalid_state')
+    const feedback = parsePresentationProductionFeedbackLedger(record.feedback)
+    if (
+      feedback.projectId !== projectId ||
+      feedback.documentId !== documentId ||
+      feedback.requestId !== requestId ||
+      feedback.inputDigest !== production.inputDigest ||
+      feedback.planDigest !== production.planDigest ||
+      feedback.planRevision !== production.plan.revision ||
+      canonical(feedback.pageIds) !== canonical(production.pages.map((page) => page.pageId))
+    )
+      throw new Error('invalid_state')
+    return feedback
+  }
+  recordProductionFeedback(
+    projectId: string,
+    documentId: string,
+    requestId: string,
+    expectedRevision: number,
+    pages: unknown,
+  ): PresentationProductionFeedbackLedger {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+      throw new Error('invalid_request')
+    const patch = parsePresentationProductionFeedbackPages(pages)
+    const production = this.production(projectId, documentId, requestId)
+    if (!production) throw new Error('not_found')
+    if (production.pages.some((page) => page.state !== 'compiled'))
+      throw new Error('page_not_ready')
+    const pageIds = production.pages.map((page) => page.pageId)
+    if (patch.some((page) => !pageIds.includes(page.pageId))) throw new Error('invalid_request')
+    const previous = this.productionFeedback(projectId, documentId, requestId)
+    const currentRevision = previous?.revision ?? 0
+    const atExpected =
+      previous?.snapshots[expectedRevision - 1]?.pages ??
+      pageIds.map((pageId) => ({ pageId, status: 'not_evaluated' as const }))
+    const merged = atExpected.map(
+      (page) => patch.find((update) => update.pageId === page.pageId) ?? page,
+    )
+    if (
+      previous &&
+      expectedRevision === currentRevision - 1 &&
+      canonical(merged) === canonical(previous.snapshots.at(-1)!.pages)
+    )
+      return previous
+    if (expectedRevision !== currentRevision) throw new Error('revision_conflict')
+    if (currentRevision >= MAX_PRESENTATION_PRODUCTION_FEEDBACK_REVISIONS)
+      throw new Error('output_too_large')
+    const now = new Date().toISOString(),
+      lastTime = previous?.snapshots.at(-1)?.recordedAt ?? now
+    const value = {
+      version: 1,
+      source: 'user_reported',
+      projectId,
+      documentId,
+      requestId,
+      inputDigest: production.inputDigest,
+      planDigest: production.planDigest,
+      planRevision: production.plan.revision,
+      pageIds,
+      revision: currentRevision + 1,
+      snapshots: [
+        ...(previous?.snapshots ?? []),
+        {
+          revision: currentRevision + 1,
+          recordedAt: now < lastTime ? lastTime : now,
+          pages: merged,
+        },
+      ],
+    }
+    jsonDigest(value, MAX_PRESENTATION_PRODUCTION_FEEDBACK_BYTES, 'output_too_large')
+    const feedback = parsePresentationProductionFeedbackLedger(value)
+    this.write(join(this.directory(projectId), `production-feedback-${digest(requestId)}.json`), {
+      version: 1,
+      feedback,
+      checksum: jsonDigest(
+        feedback,
+        MAX_PRESENTATION_PRODUCTION_FEEDBACK_BYTES,
+        'output_too_large',
+      ),
+    })
+    return feedback
   }
   updateProductionPage(
     record: PresentationProductionRecord,

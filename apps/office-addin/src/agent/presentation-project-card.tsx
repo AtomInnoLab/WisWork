@@ -1,8 +1,172 @@
+import { downloadLocalFile } from './session-download.js'
+import type {
+  PresentationProductionFeedbackLedger,
+  PresentationProductionFeedbackPage,
+} from '@wiswork/project-store/presentation-feedback'
 import { presentationProductionEventRows } from './presentation-workflow.js'
 import { PRESENTATION_WIDTH, PRESENTATION_HEIGHT } from '@wiswork/pptx-engine/presentation'
 import { PresentationDeliveryReportCard } from './presentation-delivery-report-card.js'
 import { useState, useSyncExternalStore } from 'react'
 import type { PresentationProjectController } from '../skills/powerpoint/presentation-project.js'
+
+function ProductionFeedback({
+  controller,
+  feedback,
+  unavailable,
+  disabled,
+  pages,
+}: {
+  controller: PresentationProjectController
+  feedback?: PresentationProductionFeedbackLedger | null
+  unavailable?: true
+  disabled: boolean
+  pages: { id: string; title: string }[]
+}) {
+  const latest =
+    feedback?.snapshots.at(-1)?.pages ??
+    pages.map((page) => ({ pageId: page.id, status: 'not_evaluated' as const }))
+  const [draft, setDraft] = useState<PresentationProductionFeedbackPage[]>(() =>
+    structuredClone(latest),
+  )
+  const [downloadError, setDownloadError] = useState(false)
+  const assessed = latest.filter((page) => page.status !== 'not_evaluated').length,
+    needs = latest.filter((page) => page.status === 'needs_correction').length
+  return (
+    <section aria-label="人工修正反馈">
+      <h4>人工修正反馈</h4>
+      <p>请按这次生成版本逐页评价是否需要人工修改。未评估页面保持未知，评价不代表验收通过。</p>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => void controller.readProductionFeedback?.()}
+      >
+        读取当前任务反馈
+      </button>
+      {unavailable && (
+        <p role="status">人工修正反馈不可用，请重新读取；未评估页不能算作无需修正。</p>
+      )}
+      {feedback !== undefined && (
+        <>
+          <p>
+            已评估 {assessed} / {pages.length} 页 · 需要人工修正 {needs} 页 · 未评估（未知）{' '}
+            {pages.length - assessed} 页
+          </p>
+          <p>
+            {assessed
+              ? `已评估页需要修正比例：${needs} / ${assessed}`
+              : '需要修正比例：未计算（尚未评估）'}
+          </p>
+          <ol>
+            {pages.map((page) => {
+              const entry = draft.find((item) => item.pageId === page.id)!
+              const noteTooLong = new TextEncoder().encode(entry.note ?? '').byteLength > 2000
+              return (
+                <li key={page.id}>
+                  <p>{page.title}</p>
+                  <label>
+                    人工修正评价
+                    <select
+                      aria-label={`人工修正评价 ${page.title}`}
+                      disabled={disabled}
+                      value={entry.status}
+                      onChange={(event) =>
+                        setDraft((items) =>
+                          items.map((item) =>
+                            item.pageId === page.id
+                              ? {
+                                  ...item,
+                                  status: event.target
+                                    .value as PresentationProductionFeedbackPage['status'],
+                                }
+                              : item,
+                          ),
+                        )
+                      }
+                    >
+                      <option value="not_evaluated">未评估</option>
+                      <option value="needs_correction">需要人工修正</option>
+                      <option value="no_correction">无需修正</option>
+                    </select>
+                  </label>
+                  <label>
+                    可选说明
+                    <textarea
+                      aria-label={`人工修正说明 ${page.title}`}
+                      maxLength={2000}
+                      disabled={disabled}
+                      value={entry.note ?? ''}
+                      onChange={(event) =>
+                        setDraft((items) =>
+                          items.map((item) =>
+                            item.pageId === page.id
+                              ? {
+                                  ...item,
+                                  ...(event.target.value
+                                    ? { note: event.target.value }
+                                    : { note: undefined }),
+                                }
+                              : item,
+                          ),
+                        )
+                      }
+                    />
+                  </label>
+                  <p>用户自报评价</p>
+                  {noteTooLong && <p role="alert">说明过长，请缩短后保存。</p>}
+                </li>
+              )
+            })}
+          </ol>
+          <button
+            type="button"
+            disabled={
+              disabled ||
+              draft.some((entry) => new TextEncoder().encode(entry.note ?? '').byteLength > 2000)
+            }
+            onClick={() =>
+              void controller.recordProductionFeedback?.(
+                draft.map((entry) => ({
+                  pageId: entry.pageId,
+                  status: entry.status,
+                  ...(entry.note ? { note: entry.note } : {}),
+                })),
+              )
+            }
+          >
+            保存人工修正反馈
+          </button>
+          {feedback && (
+            <>
+              <p>
+                已保存 {feedback.revision} 次用户评价 · 最近记录{' '}
+                {feedback.snapshots.at(-1)?.recordedAt}
+              </p>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => {
+                  try {
+                    downloadLocalFile(
+                      new TextEncoder().encode(JSON.stringify(feedback, null, 2)),
+                      `presentation-feedback-${feedback.requestId}.json`,
+                      'application/json',
+                    )
+                    setDownloadError(false)
+                  } catch {
+                    setDownloadError(true)
+                  }
+                }}
+              >
+                下载人工修正反馈 JSON
+              </button>
+              {downloadError && <p role="status">本地下载未完成，请重试；已保存反馈保留。</p>}
+            </>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
 
 export function PresentationProjectCard(props: {
   controller: PresentationProjectController
@@ -14,6 +178,8 @@ export function PresentationProjectCard(props: {
     phase,
     project,
     error,
+    productionFeedback,
+    productionFeedbackUnavailable,
     deliveryReport,
     deliveryNotice,
     sourceAudit,
@@ -549,6 +715,18 @@ export function PresentationProjectCard(props: {
           </ol>
         </section>
       )}
+      {project?.production?.status === 'compiled' &&
+        controller.readProductionFeedback &&
+        controller.recordProductionFeedback && (
+          <ProductionFeedback
+            key={`${project.projectId}:${project.production.requestId}:${productionFeedback?.revision ?? 'unread'}:${productionFeedback === null}`}
+            controller={controller}
+            feedback={productionFeedback}
+            unavailable={productionFeedbackUnavailable}
+            disabled={disabled}
+            pages={project.production.pages}
+          />
+        )}
       {project?.production && (
         <div className="presentation-project-actions">
           <button

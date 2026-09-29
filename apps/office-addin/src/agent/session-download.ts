@@ -10,12 +10,19 @@ export function downloadSessionFile(vfs: InMemoryVfs, path: string): void {
       : path.endsWith('.json')
         ? 'application/json'
         : 'application/octet-stream'
+  downloadLocalFile(
+    bytes,
+    /^\/home\/user\/generated\/[^/]+\/[^/]+\/[^/]+$/.test(path)
+      ? path.split('/').slice(-2).join('-')
+      : (path.split('/').at(-1) ?? 'download'),
+    mime,
+  )
+}
+export function downloadLocalFile(bytes: Uint8Array, filename: string, mime: string): void {
   const url = URL.createObjectURL(new Blob([bytes.slice().buffer as ArrayBuffer], { type: mime }))
   const link = document.createElement('a')
   link.href = url
-  link.download = /^\/home\/user\/generated\/[^/]+\/[^/]+\/[^/]+$/.test(path)
-    ? path.split('/').slice(-2).join('-')
-    : (path.split('/').at(-1) ?? 'download')
+  link.download = filename
   document.body.append(link)
   link.click()
   link.remove()
