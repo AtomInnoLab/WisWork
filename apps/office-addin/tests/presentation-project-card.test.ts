@@ -79,6 +79,77 @@ async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () =>
   }
 }
 describe('presentation project recovery card', () => {
+  it('projects the current blueprint and style without treating saved plans as verified', async () => {
+    const plan = benchmarkPlan()
+    plan.style.fontFallbacks = ['Arial', '微软雅黑']
+    plan.brief.constraints = ['禁止虚构数字']
+    plan.slides[0]!.layout = 'chart'
+    plan.slides[0]!.requiredAssets = ['收入趋势图']
+    plan.slides[0]!.claimIds = [plan.claims[0]!.id]
+    plan.slides[1]!.dependsOn = [plan.slides[0]!.id]
+    const view = await mount({
+      phase: 'idle',
+      project: { ...pending.project!, plan: { revision: 1, value: plan } },
+    })
+    const blueprint = view.container.querySelector('[aria-label="逐页施工图"]')!
+    expect(blueprint.textContent).toContain('页型：图表')
+    expect(blueprint.textContent).toContain(plan.claims[0]!.statement)
+    expect(blueprint.textContent).toContain('依据：合成基准 · 待核验')
+    expect(blueprint.textContent).toContain('所需素材：收入趋势图')
+    expect(blueprint.textContent).toContain(`依赖页面：${plan.slides[0]!.title}`)
+    expect(blueprint.textContent).toContain('可编辑文本')
+    expect(view.container.querySelector('[aria-label="样式规范"]')!.textContent).toContain(
+      'Arial、微软雅黑',
+    )
+    expect(view.container.textContent).toContain('约束：禁止虚构数字')
+    const updated = structuredClone(plan)
+    updated.claims[0]!.statement = '修订后的结论'
+    updated.slides[0]!.requiredAssets = []
+    await view.update({
+      phase: 'idle',
+      project: { ...pending.project!, plan: { revision: 2, value: updated } },
+    })
+    expect(view.container.querySelector('[aria-label="逐页施工图"]')!.textContent).toContain(
+      '修订后的结论',
+    )
+    expect(view.container.querySelector('[aria-label="逐页施工图"]')!.textContent).not.toContain(
+      '收入趋势图',
+    )
+    expect(view.controller.prepareProduction).not.toHaveBeenCalled()
+  })
+
+  it('shows at most three accessible brand layout previews without fetching brand assets', async () => {
+    const plan = benchmarkPlan()
+    plan.brandKit = {
+      id: 'brand',
+      revision: 2,
+      name: '示例品牌',
+      allowedColors: ['112233'],
+      logo: { assetId: 'logo', assetDigest: 'a'.repeat(64), placement: 'all' },
+      layoutComponents: Array.from({ length: 4 }, (_, index) => ({
+        id: `component-${index}`,
+        name: `布局 ${index}`,
+        layout: 'content' as const,
+        slots: [{ id: 'image', kind: 'image' as const, x: 1, y: 2, w: 3, h: 4 }],
+      })),
+    }
+    plan.slides[0]!.layoutComponentId = 'component-0'
+    const view = await mount({
+      phase: 'idle',
+      project: { ...pending.project!, plan: { revision: 1, value: plan } },
+    })
+    const style = view.container.querySelector('[aria-label="样式规范"]')!
+    expect(style.querySelectorAll('svg[role="img"]')).toHaveLength(3)
+    expect(
+      style.querySelector('[aria-label="布局 0布局示意"] rect[x="1"]')?.getAttribute('height'),
+    ).toBe('4')
+    expect(style.textContent).toContain('品牌色板：#112233')
+    expect(style.textContent).toContain('每页使用')
+    expect(style.textContent).toContain('非成品预览')
+    expect(view.container.textContent).toContain('布局组件：布局 0')
+    expect(style.querySelectorAll('img, image')).toHaveLength(0)
+  })
+
   it('shows planned attachment source readiness and recovers after refresh', async () => {
     const plan = benchmarkPlan()
     const attachmentId = 'a'.repeat(64)

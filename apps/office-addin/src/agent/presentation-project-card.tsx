@@ -1,4 +1,5 @@
 import { presentationProductionEventRows } from './presentation-workflow.js'
+import { PRESENTATION_WIDTH, PRESENTATION_HEIGHT } from '@wiswork/pptx-engine/presentation'
 import { PresentationDeliveryReportCard } from './presentation-delivery-report-card.js'
 import { useSyncExternalStore } from 'react'
 import type { PresentationProjectController } from '../skills/powerpoint/presentation-project.js'
@@ -512,6 +513,97 @@ export function PresentationProjectCard(props: {
           <p>
             字体：{project.plan.value.style.fontFace} · 主色 #{project.plan.value.style.accentColor}
           </p>
+          <details aria-label="样式规范">
+            <summary>样式规范</summary>
+            <p>
+              背景 #{project.plan.value.style.background} · 正文 #
+              {project.plan.value.style.textColor}
+            </p>
+            <p>备用字体：{project.plan.value.style.fontFallbacks?.join('、') || '未指定'}</p>
+            {project.plan.value.brandKit && (
+              <>
+                <p>
+                  品牌：{project.plan.value.brandKit.name} · 第{' '}
+                  {project.plan.value.brandKit.revision} 版
+                </p>
+                <p>
+                  品牌色板：
+                  {project.plan.value.brandKit.allowedColors.map((color) => `#${color}`).join('、')}
+                </p>
+                <p>
+                  标志：
+                  {project.plan.value.brandKit.logo
+                    ? project.plan.value.brandKit.logo.placement === 'all'
+                      ? '每页使用'
+                      : '封面使用'
+                    : '未指定'}
+                </p>
+                <ul>
+                  {project.plan.value.brandKit.layoutComponents?.map((component) => (
+                    <li key={component.id}>
+                      {component.name} · {component.slots.length} 个布局区域
+                    </li>
+                  ))}
+                </ul>
+                {project.plan.value.brandKit.layoutComponents?.slice(0, 3).map((component) => (
+                  <figure key={component.id}>
+                    <svg
+                      role="img"
+                      aria-label={`${component.name}布局示意`}
+                      viewBox={`0 0 ${PRESENTATION_WIDTH} ${PRESENTATION_HEIGHT}`}
+                      width="100%"
+                      style={{ maxWidth: 240 }}
+                    >
+                      <rect
+                        width={PRESENTATION_WIDTH}
+                        height={PRESENTATION_HEIGHT}
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={0.04}
+                      />
+                      {component.slots.map((slot) => (
+                        <g key={slot.id}>
+                          <rect
+                            x={slot.x}
+                            y={slot.y}
+                            width={slot.w}
+                            height={slot.h}
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth={0.04}
+                          />
+                          <text
+                            x={slot.x + 0.06}
+                            y={slot.y + 0.25}
+                            fill="currentColor"
+                            fontSize={0.2}
+                          >
+                            {
+                              {
+                                text: '文本',
+                                shape: '形状',
+                                image: '图片',
+                                table: '表格',
+                                chart: '图表',
+                              }[slot.kind]
+                            }
+                          </text>
+                        </g>
+                      ))}
+                    </svg>
+                    <figcaption>{component.name} · 布局示意，非成品预览</figcaption>
+                  </figure>
+                ))}
+              </>
+            )}
+            <p>此处展示已保存的样式选择；实际字体、素材和布局效果仍需视觉检查。</p>
+          </details>
+          {project.plan.value.brief.requiredContent.length > 0 && (
+            <p>必含内容：{project.plan.value.brief.requiredContent.join('；')}</p>
+          )}
+          {project.plan.value.brief.constraints.length > 0 && (
+            <p>约束：{project.plan.value.brief.constraints.join('；')}</p>
+          )}
           <p>
             {project.plan.value.sources.length} 个来源 · {project.plan.value.claims.length}{' '}
             条主张（未核验）
@@ -523,10 +615,81 @@ export function PresentationProjectCard(props: {
                 : '计划已有更新或尚未关联：现有编译成果不代表当前计划。'}
             </p>
           )}
-          <ol>
+          <ol aria-label="逐页施工图">
             {project.plan.value.slides.map((slide) => (
               <li key={slide.id}>
-                {slide.title}：{slide.purpose}
+                <strong>{slide.title}</strong>
+                <p>用途：{slide.purpose}</p>
+                <p>
+                  页型：
+                  {
+                    {
+                      cover: '封面',
+                      content: '内容',
+                      comparison: '对比',
+                      process: '流程',
+                      chart: '图表',
+                      summary: '总结',
+                    }[slide.layout]
+                  }
+                </p>
+                <p>页面结论与主张（待核验）：</p>
+                {slide.claimIds.length === 0 ? (
+                  <p>尚未登记主张</p>
+                ) : (
+                  <ul>
+                    {slide.claimIds.map((id) => {
+                      const claim = project.plan!.value.claims.find((item) => item.id === id)
+                      return (
+                        <li key={id}>
+                          {claim?.statement ?? `未找到主张 ${id}`}
+                          {claim && (
+                            <p>
+                              依据：
+                              {claim.sourceIds
+                                .map(
+                                  (sourceId) =>
+                                    project.plan!.value.sources.find(
+                                      (source) => source.id === sourceId,
+                                    )?.title ?? sourceId,
+                                )
+                                .join('、') || '未登记来源'}{' '}
+                              · 待核验
+                            </p>
+                          )}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+                <p>所需素材：{slide.requiredAssets.join('、') || '未指定'}</p>
+                {slide.dependsOn && slide.dependsOn.length > 0 && (
+                  <p>
+                    依赖页面：
+                    {slide.dependsOn
+                      .map(
+                        (id) =>
+                          project.plan!.value.slides.find((item) => item.id === id)?.title ?? id,
+                      )
+                      .join('、')}
+                  </p>
+                )}
+                {slide.layoutComponentId && (
+                  <p>
+                    布局组件：
+                    {project.plan!.value.brandKit?.layoutComponents?.find(
+                      (item) => item.id === slide.layoutComponentId,
+                    )?.name ?? slide.layoutComponentId}
+                  </p>
+                )}
+                <details>
+                  <summary>本页验收要求</summary>
+                  <ul>
+                    {slide.acceptanceCriteria.map((criterion, index) => (
+                      <li key={index}>{criterion}</li>
+                    ))}
+                  </ul>
+                </details>
               </li>
             ))}
           </ol>
