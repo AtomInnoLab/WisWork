@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { PresentationStore } from '../../../packages/project-store/src/presentation-store.js'
 import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan.js'
+import { createPresentationService } from '../../shell/src/main/presentation-service.js'
 import { presentationWorkflowSummary } from '../src/agent/presentation-workflow.js'
 import { createPresentationProjectController } from '../src/skills/powerpoint/presentation-project.js'
 
@@ -54,24 +55,19 @@ describe('persisted plan snapshots through the Office workbench', () => {
       revised.claims[0]!.statement = '第二版待核验结论'
       revised.slides[0]!.purpose = '解释修订后的研究结果'
       store.savePlan(plan.projectId, 'document', 1, revised)
-      const saved = new PresentationStore(root).plan(plan.projectId, 'document')!
-      const value = {
-        projectId: plan.projectId,
-        title: plan.title,
-        status: 'planned',
-        slideCount: revised.slides.length,
-        slides: revised.slides.map(({ id, title }) => ({ id, title })),
-        history: [],
-        plan: { revision: saved.revision, value: saved.plan, revisions: saved.revisions },
-      }
-      const open = () =>
-        createPresentationProjectController({
+      const open = () => {
+        const service = createPresentationService({ userDataPath: root })
+        return createPresentationProjectController({
           available: () => true,
           lastProject: () => plan.projectId,
           documentId: async () => 'document',
           executeTool: async () => ({ output: '{}', summary: 'read' }),
-          request: async () => new Response(JSON.stringify(value)),
+          request: async (body, signal) =>
+            new Response(
+              new TextDecoder().decode(await service(body, signal ?? new AbortController().signal)),
+            ),
         })
+      }
       const first = open()
       await first.refresh()
       expect(first.snapshot().error).toBeUndefined()
