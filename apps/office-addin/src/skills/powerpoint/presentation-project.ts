@@ -1,4 +1,9 @@
 import {
+  parsePresentationFeedbackComparison,
+  MAX_PRESENTATION_FEEDBACK_COMPARISON_RESPONSE_BYTES,
+  type PresentationFeedbackComparison,
+} from '@wiswork/pptx-engine/presentation-feedback-comparison'
+import {
   parsePresentationProductionFeedbackLedger,
   parsePresentationProductionFeedbackPages,
   MAX_PRESENTATION_PRODUCTION_FEEDBACK_BYTES,
@@ -159,6 +164,9 @@ export interface PresentationProjectStatus {
   }
 }
 export interface PresentationProjectSnapshot {
+  feedbackComparisonBaselineRequestId?: string
+  feedbackComparison?: PresentationFeedbackComparison
+  feedbackComparisonUnavailable?: true
   productionFeedback?: PresentationProductionFeedbackLedger | null
   productionFeedbackUnavailable?: true
   deliveryBundlesUnavailable?: true
@@ -193,6 +201,8 @@ export type PresentationPlanEdit =
   | { kind: 'restore'; revision: number }
   | { kind: 'lock'; pageId: string; locked: boolean }
 export interface PresentationProjectController {
+  selectFeedbackComparisonBaseline?(requestId?: string): void
+  readFeedbackComparison?(): Promise<void>
   readProductionFeedback?(): Promise<void>
   recordProductionFeedback?(pages: PresentationProductionFeedbackPage[]): Promise<void>
   readBoundResearch?(): Promise<void>
@@ -759,6 +769,8 @@ export function createPresentationProjectController(
     },
 ): PresentationProjectController {
   let state: PresentationProjectSnapshot = { phase: 'idle' }
+  let comparisonPending = false
+  let verifiedComparison: PresentationFeedbackComparison | undefined
   let verifiedFeedback: PresentationProductionFeedbackLedger | undefined
   const listeners = new Set<() => void>()
   let epoch = 0
@@ -917,6 +929,8 @@ export function createPresentationProjectController(
   }
   const stop = (error?: string, resetSelection = false) => {
     stopPolling()
+    comparisonPending = false
+    verifiedComparison = undefined
     verifiedFeedback = undefined
     projectDocument = undefined
     selection = undefined
@@ -2037,6 +2051,234 @@ export function createPresentationProjectController(
       }
     }
   }
+  const selectFeedbackComparisonBaseline = (requestId?: string) => {
+    const project = state.project,
+      production = project?.production
+    if (active && !comparisonPending) return
+    if (
+      requestId !== undefined &&
+      (!production ||
+        production.status !== 'compiled' ||
+        requestId === production.requestId ||
+        !project?.productionTasks?.some(
+          (task) =>
+            task.requestId === requestId &&
+            task.status === 'compiled' &&
+            task.compiledCount === task.total,
+        ))
+    )
+      return
+    if (requestId === state.feedbackComparisonBaselineRequestId) return
+    verifiedComparison = undefined
+    if (comparisonPending) {
+      epoch++
+      active?.abort()
+      active = undefined
+      comparisonPending = false
+    }
+    publish({
+      ...state,
+      phase: 'idle',
+      feedbackComparisonBaselineRequestId: requestId,
+      feedbackComparison: undefined,
+      feedbackComparisonUnavailable: undefined,
+      error: undefined,
+    })
+  }
+  const readFeedbackComparison = async () => {
+    const previous = state,
+      project = previous.project,
+      production = project?.production,
+      baselineRequestId = previous.feedbackComparisonBaselineRequestId,
+      documentId = projectDocument
+    const baseline = project?.productionTasks?.find((task) => task.requestId === baselineRequestId)
+    if (
+      active ||
+      !options.available() ||
+      !project ||
+      !production ||
+      production.status !== 'compiled' ||
+      !baselineRequestId ||
+      baselineRequestId === production.requestId ||
+      !baseline ||
+      baseline.status !== 'compiled' ||
+      baseline.compiledCount !== baseline.total ||
+      !documentId
+    )
+      return
+    const fingerprint = JSON.stringify({ production, baseline })
+    stopPolling()
+    const controller = new AbortController(),
+      captured = ++epoch
+    active = controller
+    comparisonPending = true
+    publish({ ...previous, phase: 'loading', error: undefined })
+    const check = () => {
+      if (captured !== epoch || controller.signal.aborted) throw new Error('cancelled')
+      if (!options.available()) throw new Error('presentation_unavailable')
+      if (
+        state.project?.projectId !== project.projectId ||
+        state.feedbackComparisonBaselineRequestId !== baselineRequestId ||
+        JSON.stringify({
+          production: state.project.production,
+          baseline: state.project.productionTasks?.find(
+            (task) => task.requestId === baselineRequestId,
+          ),
+        }) !== fingerprint
+      )
+        throw new Error('presentation_request_changed')
+    }
+    const current = async () => {
+      check()
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      check()
+    }
+    try {
+      await current()
+      check()
+      const response = await options.request(
+        {
+          operation: 'production_feedback_compare',
+          documentId,
+          projectId: project.projectId,
+          requestId: production.requestId,
+          baselineRequestId,
+        },
+        controller.signal,
+      )
+      check()
+      await current()
+      check()
+      const text = await response.text()
+      check()
+      await current()
+      check()
+      if (
+        new TextEncoder().encode(text).byteLength >
+        MAX_PRESENTATION_FEEDBACK_COMPARISON_RESPONSE_BYTES
+      )
+        throw new Error('presentation_response_invalid')
+      const value = JSON.parse(text)
+      if (value?.error)
+        throw new Error(
+          ['invalid_request', 'unsupported', 'unsupported_operation', 'upgrade_required'].includes(
+            value.error,
+          )
+            ? 'presentation_upgrade_required'
+            : 'presentation_service_unavailable',
+        )
+      if (
+        !response.ok ||
+        !value ||
+        typeof value !== 'object' ||
+        Array.isArray(value) ||
+        Object.keys(value).join(',') !== 'comparison'
+      )
+        throw new Error('presentation_response_invalid')
+      const comparison = parsePresentationFeedbackComparison(value.comparison)
+      if (
+        comparison.documentId !== documentId ||
+        comparison.projectId !== project.projectId ||
+        comparison.candidate.requestId !== production.requestId ||
+        comparison.baseline.requestId !== baselineRequestId ||
+        comparison.candidate.planRevision !== production.planRevision ||
+        comparison.baseline.planRevision !== baseline.planRevision ||
+        comparison.baseline.pages.length !== baseline.total ||
+        JSON.stringify(comparison.candidate.pages.map((page) => page.pageId)) !==
+          JSON.stringify(production.pages.map((page) => page.id))
+      )
+        throw new Error('presentation_response_invalid')
+      if (
+        verifiedFeedback?.documentId === documentId &&
+        verifiedFeedback.projectId === project.projectId &&
+        verifiedFeedback.requestId === production.requestId
+      ) {
+        const selected = comparison.candidate,
+          latest = verifiedFeedback.snapshots.at(-1)!
+        if (
+          selected.inputDigest !== verifiedFeedback.inputDigest ||
+          selected.planDigest !== verifiedFeedback.planDigest ||
+          selected.feedbackRevision === null ||
+          selected.feedbackRevision < verifiedFeedback.revision ||
+          selected.feedbackRecordedAt === null ||
+          selected.feedbackRecordedAt < latest.recordedAt ||
+          (selected.feedbackRevision === verifiedFeedback.revision &&
+            (selected.feedbackRecordedAt !== latest.recordedAt ||
+              canonicalPresentationValue(selected.pages) !==
+                canonicalPresentationValue(
+                  latest.pages.map(({ pageId, status }) => ({ pageId, status })),
+                )))
+        )
+          throw new Error('presentation_response_invalid')
+      }
+      if (
+        verifiedComparison?.documentId === documentId &&
+        verifiedComparison.projectId === project.projectId &&
+        verifiedComparison.baseline.requestId === baselineRequestId &&
+        verifiedComparison.candidate.requestId === production.requestId
+      ) {
+        for (const role of ['baseline', 'candidate'] as const) {
+          const old = verifiedComparison[role],
+            next = comparison[role]
+          if (
+            old.inputDigest !== next.inputDigest ||
+            old.planDigest !== next.planDigest ||
+            old.planRevision !== next.planRevision ||
+            canonicalPresentationValue(old.plan) !== canonicalPresentationValue(next.plan) ||
+            (old.feedbackRevision !== null &&
+              (next.feedbackRevision === null ||
+                next.feedbackRevision < old.feedbackRevision ||
+                (next.feedbackRevision === old.feedbackRevision &&
+                  (next.feedbackRecordedAt !== old.feedbackRecordedAt ||
+                    canonicalPresentationValue(next.pages) !==
+                      canonicalPresentationValue(old.pages))) ||
+                (next.feedbackRecordedAt !== null &&
+                  old.feedbackRecordedAt !== null &&
+                  next.feedbackRecordedAt < old.feedbackRecordedAt)))
+          )
+            throw new Error('presentation_response_invalid')
+        }
+      }
+      await current()
+      check()
+      verifiedComparison = structuredClone(comparison)
+      publish({
+        ...previous,
+        phase: 'idle',
+        feedbackComparison: comparison,
+        feedbackComparisonUnavailable: undefined,
+        error: undefined,
+      })
+    } catch (error) {
+      if (captured !== epoch) return
+      if (
+        await options.documentId().then(
+          (id) => id !== documentId,
+          () => true,
+        )
+      ) {
+        if (captured === epoch) stop(message(new Error('presentation_document_changed')))
+        return
+      }
+      if (captured !== epoch) return
+      publish({
+        ...previous,
+        phase: 'idle',
+        feedbackComparison: undefined,
+        feedbackComparisonUnavailable: true,
+        error:
+          error instanceof Error && error.message === 'presentation_upgrade_required'
+            ? '当前 PC 不支持制作反馈对照，请升级后重新读取。'
+            : '制作反馈对照暂时不可读取，请核对当前任务与基线版本后重试。',
+      })
+    } finally {
+      if (captured === epoch) {
+        active = undefined
+        comparisonPending = false
+      }
+    }
+  }
   const feedbackAction = async (patch?: PresentationProductionFeedbackPage[]) => {
     const previous = state,
       project = previous.project,
@@ -2211,6 +2453,8 @@ export function createPresentationProjectController(
     }
   }
   return {
+    selectFeedbackComparisonBaseline,
+    readFeedbackComparison,
     readProductionFeedback: () => feedbackAction(),
     recordProductionFeedback: (pages) => feedbackAction(pages),
     readBoundResearch,

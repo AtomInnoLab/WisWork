@@ -1,3 +1,4 @@
+import { buildPresentationFeedbackComparison } from '@wiswork/pptx-engine/presentation-feedback-comparison'
 import { parsePresentationProductionFeedbackPages } from '@wiswork/project-store/presentation-feedback'
 import { createPresentationTeamService } from './presentation-team'
 import type { PresentationTeamContext } from '@wiswork/pptx-engine/presentation-team'
@@ -542,17 +543,21 @@ export function createPresentationService(options: {
           'production_record_issue_action',
           'production_feedback_read',
           'production_feedback_record',
+          'production_feedback_compare',
         ].includes(request.operation as string)
       )
         throw new Error('invalid_request')
-      const allowedKeys = ['production_feedback_read', 'production_feedback_record'].includes(
-        request.operation as string,
-      )
+      const allowedKeys = [
+        'production_feedback_read',
+        'production_feedback_record',
+        'production_feedback_compare',
+      ].includes(request.operation as string)
         ? [
             'operation',
             'documentId',
             'projectId',
             'requestId',
+            ...(request.operation === 'production_feedback_compare' ? ['baselineRequestId'] : []),
             ...(request.operation === 'production_feedback_record'
               ? ['expectedRevision', 'pages']
               : []),
@@ -727,6 +732,7 @@ export function createPresentationService(options: {
           'production_record_issue_action',
           'production_feedback_read',
           'production_feedback_record',
+          'production_feedback_compare',
         ].includes(request.operation as string) ||
         (request.operation === 'production_status' && request.requestId !== undefined)
       )
@@ -833,6 +839,10 @@ export function createPresentationService(options: {
           throw new Error('invalid_plan')
         }
       }
+      if (request.operation === 'production_feedback_compare') {
+        assertPresentationId(request.baselineRequestId)
+        if (request.baselineRequestId === request.requestId) throw new Error('invalid_request')
+      }
       if (request.operation === 'production_feedback_record') {
         if (!Number.isSafeInteger(request.expectedRevision) || Number(request.expectedRevision) < 0)
           throw new Error('invalid_request')
@@ -846,6 +856,46 @@ export function createPresentationService(options: {
       const release = await acquireProjectLock(options.userDataPath, projectId)
       try {
         checkAbort(signal)
+        if (request.operation === 'production_feedback_compare') {
+          const baseline = store.production(
+            projectId,
+            documentId,
+            request.baselineRequestId as string,
+          )
+          const candidate = store.production(projectId, documentId, request.requestId as string)
+          if (!baseline || !candidate) throw new Error('not_found')
+          if (
+            [baseline, candidate].some((task) =>
+              task.pages.some((page) => page.state !== 'compiled'),
+            )
+          )
+            throw new Error('page_not_ready')
+          try {
+            const side = (task: NonNullable<typeof baseline>) => ({
+              requestId: task.requestId,
+              inputDigest: task.inputDigest,
+              planDigest: task.planDigest,
+              planRevision: task.plan.revision,
+              plan: parsePresentationPlan(task.plan.plan),
+              feedback: store.productionFeedback(projectId, documentId, task.requestId) ?? null,
+            })
+            return boundedResponse({
+              comparison: buildPresentationFeedbackComparison({
+                projectId,
+                documentId,
+                baseline: side(baseline),
+                candidate: side(candidate),
+              }),
+            })
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message === 'presentation_feedback_comparison_invalid'
+            )
+              throw new Error('invalid_state', { cause: error })
+            throw error
+          }
+        }
         if (request.operation === 'production_feedback_read')
           return boundedResponse({
             feedback:

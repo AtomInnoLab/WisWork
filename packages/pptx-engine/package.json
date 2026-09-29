@@ -22,7 +22,8 @@
     "./presentation-source-limits": "./src/presentation-source-limits.ts",
     "./presentation-chart-data": "./src/presentation-chart-data.ts",
     "./presentation-preference": "./src/presentation-preference.ts",
-    "./presentation-team": "./src/presentation-team.ts"
+    "./presentation-team": "./src/presentation-team.ts",
+    "./presentation-feedback-comparison": "./src/presentation-feedback-comparison.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

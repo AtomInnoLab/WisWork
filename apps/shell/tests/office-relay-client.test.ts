@@ -1246,6 +1246,7 @@ it.each([
   'ordinary-operation',
   'feedback-read',
   'feedback-record',
+  'feedback-compare',
   'bearer',
 ])('rejects %s team request context before proxying', async (scenario) => {
   const f = await teamPcClient(),
@@ -1261,6 +1262,7 @@ it.each([
   if (scenario === 'ordinary-operation') body.operation = 'get_plan'
   if (scenario === 'feedback-read') body.operation = 'production_feedback_read'
   if (scenario === 'feedback-record') body.operation = 'production_feedback_record'
+  if (scenario === 'feedback-compare') body.operation = 'production_feedback_compare'
   const frame: Record<string, unknown> = {
     version: 2,
     type: 'relay.request',

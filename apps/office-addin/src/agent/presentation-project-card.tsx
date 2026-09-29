@@ -1,3 +1,4 @@
+import type { PresentationFeedbackComparison } from '@wiswork/pptx-engine/presentation-feedback-comparison'
 import { downloadLocalFile } from './session-download.js'
 import type {
   PresentationProductionFeedbackLedger,
@@ -7,7 +8,10 @@ import { presentationProductionEventRows } from './presentation-workflow.js'
 import { PRESENTATION_WIDTH, PRESENTATION_HEIGHT } from '@wiswork/pptx-engine/presentation'
 import { PresentationDeliveryReportCard } from './presentation-delivery-report-card.js'
 import { useState, useSyncExternalStore } from 'react'
-import type { PresentationProjectController } from '../skills/powerpoint/presentation-project.js'
+import type {
+  PresentationProjectController,
+  PresentationProjectStatus,
+} from '../skills/powerpoint/presentation-project.js'
 
 function ProductionFeedback({
   controller,
@@ -168,6 +172,182 @@ function ProductionFeedback({
   )
 }
 
+const comparisonConditionLabels: Record<
+  PresentationFeedbackComparison['conditions'][number]['key'],
+  string
+> = {
+  brief: '制作要求',
+  sources: '来源声明',
+  claims: '主张声明',
+  research: '研究绑定',
+  style: '样式',
+  brandKit: '品牌规范',
+  parallelism: '有效并行方式',
+}
+const comparisonGapLabels: Record<PresentationFeedbackComparison['gaps'][number], string> = {
+  baseline_not_generic: '基线不是未指定行业的通用计划',
+  candidate_not_industry: '当前任务不是五类行业计划',
+  input_conditions_differ: '两次制作的声明输入条件不同',
+  baseline_feedback_missing: '基线没有保存人工评价',
+  candidate_feedback_missing: '当前任务没有保存人工评价',
+  baseline_not_fully_evaluated: '基线仍有未评估页面',
+  candidate_not_fully_evaluated: '当前任务仍有未评估页面',
+}
+function FeedbackComparison({
+  controller,
+  project,
+  baselineRequestId,
+  comparison,
+  unavailable,
+  disabled,
+}: {
+  controller: PresentationProjectController
+  project: PresentationProjectStatus
+  baselineRequestId?: string
+  comparison?: PresentationFeedbackComparison
+  unavailable?: true
+  disabled: boolean
+}) {
+  const [downloadError, setDownloadError] = useState(false)
+  const tasks =
+    project.productionTasks?.filter(
+      (task) =>
+        task.status === 'compiled' &&
+        task.compiledCount === task.total &&
+        task.requestId !== project.production?.requestId,
+    ) ?? []
+  const domains: Record<string, string> = {
+    pitch: '路演',
+    report: '汇报',
+    training: '培训',
+    research: '研究报告',
+    sales: '销售方案',
+    science: '科研',
+    law: '法律',
+    finance: '金融',
+  }
+  const signed = (value: number) => (value > 0 ? `+${value}` : String(value))
+  return (
+    <section aria-label="两次制作反馈对照">
+      <h4>两次制作反馈对照</h4>
+      <p>两次制作反馈对照，不代表技能效果或验收通过。用户自报评价；未评估页面保持未知。</p>
+      <label>
+        选择通用制作基线
+        <select
+          aria-label="选择反馈对照基线"
+          disabled={disabled}
+          value={baselineRequestId ?? ''}
+          onChange={(event) =>
+            controller.selectFeedbackComparisonBaseline?.(event.target.value || undefined)
+          }
+        >
+          <option value="">请选择已编译的其它任务</option>
+          {tasks.map((task) => (
+            <option key={task.requestId} value={task.requestId}>
+              制作 {task.sequence} · 计划第 {task.planRevision} 版 · {task.total} 页
+            </option>
+          ))}
+        </select>
+      </label>
+      {!tasks.length && <p>尚无其它已编译任务可作基线。通用计划与行业计划的角色会在读取后核对。</p>}
+      <button
+        type="button"
+        disabled={disabled || !baselineRequestId}
+        onClick={() => void controller.readFeedbackComparison?.()}
+      >
+        读取两次制作反馈对照
+      </button>
+      {unavailable && (
+        <p role="status">反馈对照不可用，请核对所选任务后重新读取；未显示差值不代表零修正。</p>
+      )}
+      {comparison && (
+        <>
+          <p>
+            此报告保留比较时读取的反馈版本，后续评价不会改动本报告。计划条件相同不证明原资料、模型或环境相同，也不证明实际使用了行业技能。
+          </p>
+          {(['baseline', 'candidate'] as const).map((role) => {
+            const side = comparison[role],
+              counts = side.counts
+            return (
+              <section
+                key={role}
+                aria-label={role === 'baseline' ? '对照基线版本' : '对照行业版本'}
+              >
+                <h5>
+                  {role === 'baseline' ? '通用基线' : '当前制作'} · {side.requestId}
+                </h5>
+                <p>
+                  冻结计划第 {side.planRevision} 版 · 领域：
+                  {side.plan.domain
+                    ? (domains[side.plan.domain] ?? side.plan.domain)
+                    : '未指定（通用）'}
+                </p>
+                <p>
+                  反馈版本：{side.feedbackRevision ?? '未保存'} · 记录时间：
+                  {side.feedbackRecordedAt ?? '未知'}
+                </p>
+                <p>
+                  已评估 {counts.evaluatedPages} / {counts.totalPages} 页 · 需要人工修正{' '}
+                  {counts.needsCorrectionPages} 页 · 无需修正 {counts.noCorrectionPages} 页 ·
+                  未评估（未知） {counts.notEvaluatedPages} 页
+                </p>
+                <p>
+                  评价覆盖：{counts.notEvaluatedPages === 0 ? '完整' : '尚不完整'} ·
+                  已评估页需要修正比例：
+                  {counts.needsCorrectionRate === null
+                    ? '未知'
+                    : `${counts.needsCorrectionPages} / ${counts.evaluatedPages}（${(counts.needsCorrectionRate * 100).toFixed(1)}%）`}
+                </p>
+              </section>
+            )
+          })}
+          <h5>对照条件</h5>
+          <ul>
+            {comparison.conditions.map((condition) => (
+              <li key={condition.key}>
+                {comparisonConditionLabels[condition.key]}：{condition.match ? '相同' : '不同'}
+              </li>
+            ))}
+          </ul>
+          {comparison.gaps.length > 0 && (
+            <ul aria-label="反馈对照缺口">
+              {comparison.gaps.map((gap) => (
+                <li key={gap}>{comparisonGapLabels[gap]}</li>
+              ))}
+            </ul>
+          )}
+          <p>
+            描述性差值（当前制作减通用基线）：
+            {comparison.delta
+              ? `需要修正页数 ${signed(comparison.delta.needsCorrectionPages)} 页；已评估页修正比例 ${comparison.delta.needsCorrectionRate * 100 > 0 ? '+' : ''}${(comparison.delta.needsCorrectionRate * 100).toFixed(1)} 个百分点。`
+              : '不可计算；缺失评价、未评估页面或比较条件不满足时保持未知。'}
+            仅描述这一对观察，不作因果或显著性结论。
+          </p>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              try {
+                downloadLocalFile(
+                  new TextEncoder().encode(JSON.stringify(comparison, null, 2)),
+                  `presentation-feedback-comparison-${comparison.candidate.requestId}.json`,
+                  'application/json',
+                )
+                setDownloadError(false)
+              } catch {
+                setDownloadError(true)
+              }
+            }}
+          >
+            下载制作反馈对照 JSON
+          </button>
+          {downloadError && <p role="status">本地下载未完成，请重试；对照报告保留。</p>}
+        </>
+      )}
+    </section>
+  )
+}
+
 export function PresentationProjectCard(props: {
   controller: PresentationProjectController
   disabled: boolean
@@ -178,6 +358,9 @@ export function PresentationProjectCard(props: {
     phase,
     project,
     error,
+    feedbackComparisonBaselineRequestId,
+    feedbackComparison,
+    feedbackComparisonUnavailable,
     productionFeedback,
     productionFeedbackUnavailable,
     deliveryReport,
@@ -725,6 +908,19 @@ export function PresentationProjectCard(props: {
             unavailable={productionFeedbackUnavailable}
             disabled={disabled}
             pages={project.production.pages}
+          />
+        )}
+      {project?.production?.status === 'compiled' &&
+        controller.selectFeedbackComparisonBaseline &&
+        controller.readFeedbackComparison && (
+          <FeedbackComparison
+            key={`${project.projectId}:${project.production.requestId}:${feedbackComparisonBaselineRequestId ?? ''}`}
+            controller={controller}
+            project={project}
+            baselineRequestId={feedbackComparisonBaselineRequestId}
+            comparison={feedbackComparison}
+            unavailable={feedbackComparisonUnavailable}
+            disabled={disabled}
           />
         )}
       {project?.production && (
