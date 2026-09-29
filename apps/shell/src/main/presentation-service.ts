@@ -51,6 +51,7 @@ const errorCodes = new Set([
   'invalid_plan',
   'plan_mismatch',
   'revision_conflict',
+  'plan_revision_unavailable',
   'invalid_deck',
   'invalid_state',
   'asset_unavailable',
@@ -477,11 +478,14 @@ export function createPresentationService(options: {
                             ? ['operation', 'documentId', 'projectId', 'requestId']
                             : request.operation === 'save_plan'
                               ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'plan']
-                              : ['operation', 'documentId', 'projectId']
+                              : request.operation === 'get_plan'
+                                ? ['operation', 'documentId', 'projectId', 'revision']
+                                : ['operation', 'documentId', 'projectId']
       const requiredKeys = allowedKeys.filter(
         (key) =>
           !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)) &&
-          !(request.operation === 'production_status' && key === 'requestId'),
+          !(request.operation === 'production_status' && key === 'requestId') &&
+          !(request.operation === 'get_plan' && key === 'revision'),
       )
       if (
         Object.keys(request).some((key) => !allowedKeys.includes(key)) ||
@@ -604,6 +608,12 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       let plan: ReturnType<typeof parsePresentationPlan> | undefined
+      if (
+        request.operation === 'get_plan' &&
+        request.revision !== undefined &&
+        (!Number.isSafeInteger(request.revision) || Number(request.revision) < 1)
+      )
+        throw new Error('invalid_request')
       if (request.operation === 'save_plan') {
         if (!Number.isSafeInteger(request.expectedRevision) || Number(request.expectedRevision) < 0)
           throw new Error('invalid_request')
@@ -662,8 +672,13 @@ export function createPresentationService(options: {
           const record =
             request.operation === 'save_plan'
               ? store.savePlan(projectId, documentId, request.expectedRevision as number, plan)
-              : store.plan(projectId, documentId)
-          if (!record) throw new Error('not_found')
+              : request.revision === undefined
+                ? store.plan(projectId, documentId)
+                : store.planRevision(projectId, documentId, request.revision as number)
+          if (!record)
+            throw new Error(
+              request.revision === undefined ? 'not_found' : 'plan_revision_unavailable',
+            )
           return boundedResponse({
             projectId,
             revision: record.revision,

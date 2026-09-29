@@ -1,7 +1,7 @@
 import { presentationProductionEventRows } from './presentation-workflow.js'
 import { PRESENTATION_WIDTH, PRESENTATION_HEIGHT } from '@wiswork/pptx-engine/presentation'
 import { PresentationDeliveryReportCard } from './presentation-delivery-report-card.js'
-import { useSyncExternalStore } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import type { PresentationProjectController } from '../skills/powerpoint/presentation-project.js'
 
 export function PresentationProjectCard(props: {
@@ -17,6 +17,20 @@ export function PresentationProjectCard(props: {
       () => controller.snapshot(),
     )
   const productionEvents = presentationProductionEventRows(project)
+  const [revisionChoice, setRevisionChoice] = useState<{
+    projectId: string
+    current: number
+    revision: number
+  }>()
+  const history =
+    project?.plan?.revisions?.filter((event) => event.revision < project.plan!.revision) ?? []
+  const selectedRevision =
+    revisionChoice &&
+    revisionChoice.projectId === project?.projectId &&
+    revisionChoice.current === project?.plan?.revision &&
+    history.some((event) => event.revision === revisionChoice.revision)
+      ? revisionChoice.revision
+      : history.at(-1)?.revision
   const job = project?.productionJob
   const active = phase !== 'idle'
   const disabled = props.disabled || active
@@ -468,6 +482,51 @@ export function PresentationProjectCard(props: {
       {project?.plan && (
         <details>
           <summary>制作计划 · 第 {project.plan.revision} 版</summary>
+          {controller.editPlan && history.length > 0 && (
+            <details aria-label="历史计划恢复">
+              <summary>恢复历史计划</summary>
+              <p>
+                恢复将创建新修订；已有 PowerPoint
+                页面保留。内容相同时无需新建修订，部分旧版本可能无法恢复。
+              </p>
+              <label>
+                选择历史计划版本
+                <select
+                  aria-label="选择历史计划版本"
+                  disabled={disabled}
+                  value={selectedRevision ?? ''}
+                  onChange={(event) =>
+                    setRevisionChoice({
+                      projectId: project.projectId,
+                      current: project.plan!.revision,
+                      revision: Number(event.target.value),
+                    })
+                  }
+                >
+                  {history.map((event) => (
+                    <option key={event.revision} value={event.revision}>
+                      第 {event.revision} 版
+                      {event.snapshot ? ` · ${event.snapshot.slideCount} 页` : ''} · 登记于{' '}
+                      {new Date(event.createdAt).toLocaleString()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                disabled={disabled || !selectedRevision}
+                onClick={() => {
+                  if (selectedRevision)
+                    void controller.editPlan?.(project.plan!.revision, {
+                      kind: 'restore',
+                      revision: selectedRevision,
+                    })
+                }}
+              >
+                恢复为新计划修订
+              </button>
+            </details>
+          )}
           {project.plan.value.sources.some((source) =>
             /^attachment:[a-f0-9]{64}$/.test(source.uri),
           ) && (

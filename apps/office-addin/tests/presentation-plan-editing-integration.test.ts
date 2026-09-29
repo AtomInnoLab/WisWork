@@ -129,6 +129,37 @@ it('persists workbench reorder/delete through the real PC service and recovers v
       new AbortController().signal,
     )
     expect(compile).toHaveBeenCalledTimes(8)
+    await second.runtime.presentation!.editPlan!(3, { kind: 'restore', revision: 1 })
+    expect(second.runtime.presentation!.snapshot().error).toBeUndefined()
+    expect(second.runtime.presentation!.snapshot().project?.plan?.revision).toBe(4)
+    expect(second.runtime.presentation!.snapshot().project?.plan?.value).toEqual(plan)
+    const restored = JSON.parse(
+      Buffer.from(
+        await second.service(
+          {
+            operation: 'production_begin',
+            documentId: 'doc',
+            projectId: plan.projectId,
+            requestId: 'restored',
+            planRevision: 4,
+            deck,
+          },
+          new AbortController().signal,
+        ),
+      ).toString('utf8'),
+    )
+    expect(restored).toMatchObject({ status: 'compiled', compiledCount: 8, planRevision: 4 })
+    expect(compile).toHaveBeenCalledTimes(8)
+    const saves = second.request.mock.calls.filter(
+      ([body]) => (body as { operation: string }).operation === 'save_plan',
+    ).length
+    await second.runtime.presentation!.editPlan!(4, { kind: 'restore', revision: 1 })
+    expect(second.runtime.presentation!.snapshot().planNotice).toContain('无需新建修订')
+    expect(
+      second.request.mock.calls.filter(
+        ([body]) => (body as { operation: string }).operation === 'save_plan',
+      ),
+    ).toHaveLength(saves)
   } finally {
     first.runtime.dispose()
     second?.runtime.dispose()

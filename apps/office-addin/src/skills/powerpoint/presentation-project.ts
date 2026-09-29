@@ -124,7 +124,9 @@ export interface PresentationProjectSnapshot {
   error?: string
 }
 export type PresentationPlanEdit =
-  { kind: 'move'; pageId: string; direction: 'up' | 'down' } | { kind: 'delete'; pageId: string }
+  | { kind: 'move'; pageId: string; direction: 'up' | 'down' }
+  | { kind: 'delete'; pageId: string }
+  | { kind: 'restore'; revision: number }
 export interface PresentationProjectController {
   editPlan?(expectedRevision: number, action: PresentationPlanEdit): Promise<void>
   pdfAvailable?(): boolean
@@ -173,6 +175,10 @@ function validRevisionSnapshot(value: unknown): value is PresentationPlanRevisio
       snapshot.styleDigest,
     ].every((hash) => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))
   )
+}
+async function presentationDigest(input: string): Promise<string> {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 async function parseStatus(value: unknown, projectId: string): Promise<PresentationProjectStatus> {
   const p = value as PresentationProjectStatus | undefined
@@ -230,18 +236,13 @@ async function parseStatus(value: unknown, projectId: string): Promise<Presentat
     const latestSnapshot = revisions?.at(-1)?.snapshot
     if (latestSnapshot) {
       const inputs = presentationPlanSnapshotInputs(p.plan.value)
-      const digest = async (input: string) => {
-        const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
-        return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join(
-          '',
-        )
-      }
       for (const key of Object.keys(inputs) as (keyof typeof inputs)[]) {
-        const hash = await digest(inputs[key])
+        const hash = await presentationDigest(inputs[key])
         if (hash !== latestSnapshot[key]) throw new Error('presentation_response_invalid')
       }
       if (
-        (await digest(canonicalPresentationValue(p.plan.value))) !== revisions!.at(-1)!.inputDigest
+        (await presentationDigest(canonicalPresentationValue(p.plan.value))) !==
+        revisions!.at(-1)!.inputDigest
       )
         throw new Error('presentation_response_invalid')
     }
@@ -532,6 +533,10 @@ function message(error: unknown): string {
   )
     return '当前 PC 尚不支持此项目操作，请升级 WisWork PC 后重试。'
   if (code === 'presentation_revision_conflict') return '记录已有更新，请重新读取后继续。'
+  if (code === 'presentation_plan_revision_unavailable')
+    return '该历史版本的完整计划不可用，请选择其它版本或保留当前计划。'
+  if (code === 'presentation_invalid_plan')
+    return 'PC 未接受此计划，请核对品牌版本和计划约束后继续。'
   if (code === 'presentation_plan_invalid:page_dependency')
     return '页面依赖不允许这次排序或删除，请先调整依赖再继续。'
   if (code === 'presentation_plan_invalid:domain_section')
@@ -941,48 +946,91 @@ export function createPresentationProjectController(
       if (!options.available()) throw new Error('presentation_unavailable')
     }
     let committed = false
+    let unchangedPlan: string | undefined
     publish({ phase: 'planning', project })
     try {
       check()
-      const plan = structuredClone(saved.value)
-      const index = plan.slides.findIndex((slide) => slide.id === action.pageId)
-      if (index < 0) throw new Error('presentation_plan_page_missing')
-      if (action.kind === 'delete') {
-        if (plan.slides.length === 1) throw new Error('presentation_plan_last_page')
-        plan.slides.splice(index, 1)
-      } else if (action.kind === 'move' && ['up', 'down'].includes(action.direction)) {
-        const target = index + (action.direction === 'up' ? -1 : 1)
-        if (target < 0 || target >= plan.slides.length) return
-        ;[plan.slides[index], plan.slides[target]] = [plan.slides[target]!, plan.slides[index]!]
-      } else throw new Error('presentation_plan_page_missing')
+      let plan = structuredClone(saved.value)
+      if (action.kind === 'restore') {
+        const historical = saved.revisions?.find((event) => event.revision === action.revision)
+        if (
+          !Number.isSafeInteger(action.revision) ||
+          action.revision < 1 ||
+          action.revision >= saved.revision ||
+          !historical
+        )
+          throw new Error('presentation_plan_revision_unavailable')
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
+        const read = await options.executeTool(
+          {
+            id: `presentation-plan-history-${captured}`,
+            name: 'read_presentation_plan',
+            input: { project_id: project.projectId, revision: action.revision },
+          },
+          controller.signal,
+        )
+        check()
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
+        if (read.isError) throw new Error(read.output)
+        if (new TextEncoder().encode(read.output).byteLength > 512 * 1024)
+          throw new Error('presentation_response_invalid')
+        const value = JSON.parse(read.output)
+        if (value.projectId !== project.projectId || value.revision !== action.revision)
+          throw new Error('presentation_response_invalid')
+        plan = parsePresentationPlan(value.plan)
+        if ((await presentationDigest(canonicalPresentationValue(plan))) !== historical.inputDigest)
+          throw new Error('presentation_response_invalid')
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
+        if (canonicalPresentationValue(plan) === canonicalPresentationValue(saved.value))
+          unchangedPlan = canonicalPresentationValue(plan)
+      } else {
+        const index = plan.slides.findIndex((slide) => slide.id === action.pageId)
+        if (index < 0) throw new Error('presentation_plan_page_missing')
+        if (action.kind === 'delete') {
+          if (plan.slides.length === 1) throw new Error('presentation_plan_last_page')
+          plan.slides.splice(index, 1)
+        } else if (action.kind === 'move' && ['up', 'down'].includes(action.direction)) {
+          const target = index + (action.direction === 'up' ? -1 : 1)
+          if (target < 0 || target >= plan.slides.length) return
+          ;[plan.slides[index], plan.slides[target]] = [plan.slides[target]!, plan.slides[index]!]
+        } else throw new Error('presentation_plan_page_missing')
+      }
       const proposed = parsePresentationPlan(plan)
       if ((await options.documentId()) !== documentId)
         throw new Error('presentation_document_changed')
       check()
-      const result = await options.executeTool(
-        {
-          id: `presentation-plan-edit-${captured}`,
-          name: 'save_presentation_plan',
-          input: { expected_revision: expectedRevision, plan: proposed },
-        },
-        controller.signal,
-      )
-      check()
-      if ((await options.documentId()) !== documentId)
-        throw new Error('presentation_document_changed')
-      check()
-      if (result.isError) throw new Error(result.output)
-      if (new TextEncoder().encode(result.output).byteLength > 512 * 1024)
-        throw new Error('presentation_response_invalid')
-      const acknowledgement = JSON.parse(result.output)
-      if (
-        acknowledgement.projectId !== project.projectId ||
-        acknowledgement.revision !== expectedRevision + 1 ||
-        canonicalPresentationValue(parsePresentationPlan(acknowledgement.plan)) !==
-          canonicalPresentationValue(proposed)
-      )
-        throw new Error('presentation_response_invalid')
-      committed = true
+      if (!unchangedPlan) {
+        const result = await options.executeTool(
+          {
+            id: `presentation-plan-edit-${captured}`,
+            name: 'save_presentation_plan',
+            input: { expected_revision: expectedRevision, plan: proposed },
+          },
+          controller.signal,
+        )
+        check()
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed')
+        check()
+        if (result.isError) throw new Error(result.output)
+        if (new TextEncoder().encode(result.output).byteLength > 512 * 1024)
+          throw new Error('presentation_response_invalid')
+        const acknowledgement = JSON.parse(result.output)
+        if (
+          acknowledgement.projectId !== project.projectId ||
+          acknowledgement.revision !== expectedRevision + 1 ||
+          canonicalPresentationValue(parsePresentationPlan(acknowledgement.plan)) !==
+            canonicalPresentationValue(proposed)
+        )
+          throw new Error('presentation_response_invalid')
+        committed = true
+      }
     } catch (error) {
       if (captured !== epoch) return
       if (
@@ -1007,13 +1055,23 @@ export function createPresentationProjectController(
           }, 1500)
       }
     }
-    if (!committed || captured !== epoch) return
+    if ((!committed && !unchangedPlan) || captured !== epoch) return
     await run('loading')
     if (
       captured + 1 === epoch &&
       state.project?.projectId === project.projectId &&
       projectDocument === documentId
     ) {
+      if (unchangedPlan) {
+        if (state.error) return
+        publish({
+          ...state,
+          ...(canonicalPresentationValue(state.project.plan?.value) === unchangedPlan
+            ? { planNotice: '当前计划已与所选版本一致，无需新建修订；已有 PowerPoint 页面保留。' }
+            : { error: message(new Error('presentation_revision_conflict')) }),
+        })
+        return
+      }
       publish({
         ...state,
         planNotice: `调整已保存为计划第 ${expectedRevision + 1} 版；已有 PowerPoint 页面保留。${state.project.plan && state.project.plan.revision >= expectedRevision + 1 ? '继续制作时需使用当前计划；旧后台任务按原快照继续。' : '项目状态尚未刷新，请刷新后继续制作。'}`,

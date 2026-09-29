@@ -25,6 +25,34 @@ function setup(history?: PresentationHistoryEntry[], vfs = new InMemoryVfs()) {
   return { skill, vfs, request, rememberProject, documentId, available }
 }
 describe('saved presentation planning tools', () => {
+  it('reads an exact historical revision and refuses a substituted latest plan', async () => {
+    const f = setup()
+    const call = {
+      id: 'historical',
+      name: 'read_presentation_plan',
+      input: { project_id: plan.projectId, revision: 1 },
+    }
+    const result = await f.skill.executeTool(call)
+    expect(result.isError).not.toBe(true)
+    expect(f.request).toHaveBeenCalledWith(
+      { operation: 'get_plan', documentId: 'doc-1', projectId: plan.projectId, revision: 1 },
+      undefined,
+    )
+    f.request.mockResolvedValue(
+      new Response(JSON.stringify({ projectId: plan.projectId, revision: 2, plan })),
+    )
+    expect(await f.skill.executeTool(call)).toMatchObject({
+      isError: true,
+      output: 'presentation_response_invalid',
+    })
+    f.request.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'plan_revision_unavailable' })),
+    )
+    expect(await f.skill.executeTool(call)).toMatchObject({
+      isError: true,
+      output: 'presentation_plan_revision_unavailable',
+    })
+  })
   it('exposes bounded literal source audit without claiming factual verification', async () => {
     const f = setup()
     const auditPlan = structuredClone(plan)

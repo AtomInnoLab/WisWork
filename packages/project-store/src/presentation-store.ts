@@ -1185,7 +1185,22 @@ export class PresentationStore {
     if (expectedRevision !== revision || revision === Number.MAX_SAFE_INTEGER)
       throw new Error('revision_conflict')
     const directory = this.bind(projectId, documentId, true)!
-    const previousTime = previous?.revisions?.at(-1)?.createdAt
+    const legacySnapshot =
+      previous && !previous.revisions ? planRevisionSnapshot(previous.plan) : undefined
+    // Register the observed legacy revision at migration time; do not invent earlier versions.
+    const history =
+      previous?.revisions ??
+      (previous
+        ? [
+            {
+              revision: previous.revision,
+              inputDigest: previous.inputDigest,
+              createdAt: new Date().toISOString(),
+              ...(legacySnapshot ? { snapshot: legacySnapshot } : {}),
+            },
+          ]
+        : [])
+    const previousTime = history.at(-1)?.createdAt
     const snapshot = planRevisionSnapshot(plan)
     const record: PresentationPlanRecord = {
       version: 1,
@@ -1195,7 +1210,7 @@ export class PresentationStore {
       plan,
       inputDigest,
       revisions: [
-        ...(previous?.revisions ?? []),
+        ...history,
         {
           revision: revision + 1,
           inputDigest,
@@ -1206,8 +1221,80 @@ export class PresentationStore {
         },
       ].slice(-32),
     }
+    if (previous) {
+      const archive = {
+        version: 1,
+        projectId,
+        documentId,
+        revision: previous.revision,
+        inputDigest: previous.inputDigest,
+        plan: previous.plan,
+      }
+      const path = join(directory, `plan-revision-${previous.revision}.json`)
+      if (present(path)) {
+        if (canonical(this.read(path)) !== canonical(archive)) throw new Error('invalid_state')
+      } else this.write(path, archive)
+    }
     this.write(join(directory, 'plan.json'), record)
+    const earliest = record.revisions![0]!.revision
+    for (const file of readdirSync(directory)) {
+      const match = /^plan-revision-([1-9]\d*)\.json$/.exec(file)
+      if (match && Number(match[1]) < earliest) rmSync(join(directory, file))
+    }
     return record
+  }
+  planRevision(
+    projectId: string,
+    documentId: string,
+    revision: number,
+  ): PresentationPlanRecord | undefined {
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('invalid_request')
+    const current = this.plan(projectId, documentId)
+    if (!current) return undefined
+    if (current.revision === revision) return current
+    const event = current.revisions?.find((value) => value.revision === revision)
+    if (!event) return undefined
+    const path = join(this.directory(projectId), `plan-revision-${revision}.json`)
+    if (present(path)) {
+      const record = this.read(path) as PresentationPlanRecord | null
+      if (
+        !record ||
+        Array.isArray(record) ||
+        Object.keys(record).sort().join(',') !==
+          'documentId,inputDigest,plan,projectId,revision,version' ||
+        record.version !== 1 ||
+        record.projectId !== projectId ||
+        record.documentId !== documentId ||
+        record.revision !== revision ||
+        record.inputDigest !== event.inputDigest ||
+        planDigest(record.plan, 'invalid_state') !== event.inputDigest
+      )
+        throw new Error('invalid_state')
+      return record
+    }
+    // Pre-archive installations may still have an exact full plan frozen in a
+    // production/compile request. Never substitute the current plan or guesses.
+    const bindings = [
+      ...this.productionHistory(projectId, documentId).map((record) => record.plan),
+      ...this.history(projectId, documentId).flatMap((record) =>
+        record.plan ? [record.plan] : [],
+      ),
+    ]
+    const binding = bindings.find(
+      (value) =>
+        value.revision === revision &&
+        planDigest(value.plan, 'invalid_state') === event.inputDigest,
+    )
+    return binding
+      ? {
+          version: 1,
+          projectId,
+          documentId,
+          revision,
+          inputDigest: event.inputDigest,
+          plan: binding.plan,
+        }
+      : undefined
   }
   begin(
     projectId: string,

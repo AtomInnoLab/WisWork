@@ -165,14 +165,15 @@ describe('durable plans', () => {
       index === 0 ? { ...entry, revision: 2 } : entry) }))
     expect(() => new PresentationStore(root).plan('p', 'd')).toThrow('invalid_state')
   })
-  it('loads pre-history plans and starts revision events on the next save', () => {
+  it('loads pre-history plans and registers the complete prior version on the next save', () => {
     const { store, directory } = planFixture()
     const first = store.savePlan('p', 'd', 0, { title: 'A' })
     const path = join(directory(), 'plan.json')
     const { revisions: _revisions, ...legacy } = first
     writeFileSync(path, JSON.stringify(legacy))
     expect(store.plan('p', 'd')?.revisions).toBeUndefined()
-    expect(store.savePlan('p', 'd', 1, { title: 'B' }).revisions?.map((entry) => entry.revision)).toEqual([2])
+    expect(store.savePlan('p', 'd', 1, { title: 'B' }).revisions?.map((entry) => entry.revision)).toEqual([1, 2])
+    expect(store.planRevision('p', 'd', 1)?.plan).toEqual(first.plan)
   })
   it('records bounded plan section snapshots without copying source text into events', () => {
     const { store, directory } = planFixture()

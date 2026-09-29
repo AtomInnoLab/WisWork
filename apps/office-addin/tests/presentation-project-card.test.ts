@@ -80,6 +80,43 @@ async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () =>
   }
 }
 describe('presentation project recovery card', () => {
+  it('restores the chosen historical plan into the displayed current revision and resets stale choices', async () => {
+    const plan = benchmarkPlan()
+    const revisions = [1, 2, 3].map((revision) => ({
+      revision,
+      inputDigest: 'a'.repeat(64),
+      createdAt: '2026-09-29T00:00:00.000Z',
+    }))
+    const project = { ...pending.project!, plan: { revision: 3, value: plan, revisions } }
+    const view = await mount({ phase: 'idle', project })
+    const select = view.container.querySelector(
+      '[aria-label="选择历史计划版本"]',
+    ) as HTMLSelectElement
+    expect(select.value).toBe('2')
+    await act(async () => {
+      select.value = '1'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await act(async () => view.button('恢复为新计划修订').click())
+    expect(view.controller.editPlan).toHaveBeenCalledWith(3, { kind: 'restore', revision: 1 })
+    expect(view.container.textContent).toContain('恢复将创建新修订；已有 PowerPoint 页面保留')
+    await view.update({
+      phase: 'idle',
+      project: {
+        ...project,
+        plan: {
+          ...project.plan,
+          revision: 4,
+          revisions: [...revisions, { ...revisions[0]!, revision: 4 }],
+        },
+      },
+    })
+    expect(
+      (view.container.querySelector('[aria-label="选择历史计划版本"]') as HTMLSelectElement).value,
+    ).toBe('3')
+    await view.update({ phase: 'planning', project })
+    expect(view.button('恢复为新计划修订').disabled).toBe(true)
+  })
   it('edits the visible plan revision through accessible page controls and disables boundaries', async () => {
     const plan = benchmarkPlan()
     const view = await mount({
