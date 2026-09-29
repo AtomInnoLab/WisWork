@@ -351,9 +351,9 @@ describe('Office agent session', () => {
   })
 
   it.each([
-    ['complete', '导入回执：2 页完成'],
-    ['partial', '导入回执：1/2 页完成'],
-    ['uncertain', '下一页结果不确定'],
+    ['complete', '导入回执：2/2 页已记录导入'],
+    ['partial', '导入回执：1/2 页已记录导入'],
+    ['uncertain', '下一页写入结果不确定'],
   ] as const)(
     'shows the matched %s import receipt without replaying the tool',
     (status, detail) => {
@@ -383,7 +383,7 @@ describe('Office agent session', () => {
       })
       if (status === 'uncertain')
         expect(session.snapshot().timeline[0]).toMatchObject({
-          text: expect.stringContaining('reconcile_presentation_production_import'),
+          text: expect.stringContaining('核对宿主页面'),
         })
       expect(harness.stream).not.toHaveBeenCalled()
     },

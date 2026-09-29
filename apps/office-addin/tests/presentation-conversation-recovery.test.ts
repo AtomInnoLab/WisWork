@@ -235,6 +235,7 @@ describe('presentation completed-read conversation checkpoints', () => {
     expect(f.stream).toHaveBeenCalledTimes(1)
     expect(f.checkpoint().recovery()?.phase).toBe('tool_completed')
     expect(session.snapshot().errorMessage).toContain('读取结果未能保存')
+    expect(session.snapshot().errorMessage).not.toContain('未自动重放写入')
     session.dispose()
   })
   it('rejects a changed result snapshot while document validation is waiting', async () => {

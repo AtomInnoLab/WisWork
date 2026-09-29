@@ -9,6 +9,7 @@ import {
   type ToolExecutionOutcome,
 } from '@wiswork/agent-core'
 import { acpToolActivity, createAgentHarness } from '@wiswork/agent-harness'
+import { presentationRecoveryReceiptFeedback } from './presentation-recovery-feedback.js'
 import { useSyncExternalStore } from 'react'
 import type { OfficeHost } from '../office-document.js'
 import type {
@@ -269,18 +270,7 @@ export function createOfficeAgentSession(dependencies: {
   }
   const listeners = new Set<() => void>()
   let disposed = false
-  const importReceipt = dependencies.runCheckpoint?.recovery?.importReceipt
-  const importReceiptText = importReceipt
-    ? importReceipt.state === 'complete'
-      ? `已找到对应导入回执：${importReceipt.completed} 页完成。请核对宿主页面，勿重复导入。`
-      : importReceipt.state === 'uncertain'
-        ? `已找到对应导入回执：${importReceipt.completed} 页完成，下一页结果不确定。${dependencies.runCheckpoint?.recovery?.toolName === 'import_presentation_production' ? '可让 Agent 调用 reconcile_presentation_production_import 核对该页；核对失败时请人工检查。' : '请先核对宿主页面。'}勿直接重试。`
-        : `已找到对应导入回执：${importReceipt.completed}/${importReceipt.total ?? '?'} 页完成。可核对后从剩余页面继续。`
-    : ''
-  const changeReceipt = dependencies.runCheckpoint?.recovery?.changeReceipt
-  const changeReceiptText = changeReceipt
-    ? `已找到对应修改历史 ${changeReceipt.total} 项，其中 ${changeReceipt.unresolved} 项未结算。请在变更历史中核对保存点、宿主对象和撤销状态；未自动重放修改。`
-    : ''
+  const receiptFeedback = presentationRecoveryReceiptFeedback(dependencies.runCheckpoint?.recovery)
   let state: Omit<OfficeAgentSnapshot, 'proposal'> = {
     assistantText: '',
     activity: '',
@@ -308,7 +298,7 @@ export function createOfficeAgentSession(dependencies: {
           kind: 'system',
           text: dependencies.runCheckpoint.scrubFailed
             ? '上次运行已中断。旧版检查点中的请求原文仍保留在本 PPTX：清理保存失败。请先保存可写副本并重新打开，期间不能继续该运行。'
-            : `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}${dependencies.runCheckpoint.recovery?.messages ? '已保留完整只读结果，可在核对文档后继续；旧结果代表历史读取，当前状态仍需重新核对。' : dependencies.runCheckpoint.recovery?.phase === 'running' ? '尚未调用工具，可在核对文档后主动重新运行原请求。' : dependencies.runCheckpoint.recovery?.restartSafe ? '此前仅运行了可重读工具，可在核对文档后主动重新运行原请求。' : '请先核对项目、页面和写入记录；未自动重放写入。'}${importReceiptText}${changeReceiptText}运行阶段保存在演示文稿设置中，请求与可恢复的读取结果仅保存在本机浏览器。`,
+            : `上次前台 Agent 运行在面板关闭时中断。${receiptFeedback}${dependencies.runCheckpoint.recovery?.messages ? '已保留完整只读结果，可在核对文档后继续；旧结果代表历史读取，当前状态仍需重新核对。' : dependencies.runCheckpoint.recovery?.phase === 'running' ? '尚未调用工具，可在核对文档后主动重新运行原请求。' : dependencies.runCheckpoint.recovery?.restartSafe ? '此前仅运行了可重读工具，可在核对文档后主动重新运行原请求。' : '请先核对项目、页面和写入记录；未自动重放写入。'}运行阶段保存在演示文稿设置中，请求与可恢复的读取结果仅保存在本机浏览器。`,
         })
       : emptyPresentationTimeline(),
   }
@@ -678,17 +668,23 @@ export function createOfficeAgentSession(dependencies: {
         const retryable =
           safeError.retryable &&
           (!dependencies.runCheckpoint || (transient && Boolean(safeRecovery())))
-        const message =
+        const latestRecovery = readRecovery()
+        const baseMessage =
           error === 'presentation_run_checkpoint_unavailable' &&
-          readRecovery()?.restartSafe === true
+          latestRecovery?.restartSafe === true
             ? '读取结果未能保存，后续模型请求已停止，运行检查点已保留。请检查本机浏览器存储，重新打开后核对文档并恢复任务。'
             : dependencies.runCheckpoint && transient && !retryable
               ? '运行已中断，检查点已保留。请核对项目、页面和写入记录；不能重跑可能已写入的原请求。'
               : dependencies.runCheckpoint && transient
-                ? readRecovery()?.messages
+                ? latestRecovery?.messages
                   ? '服务暂时中断，读取结果已保留。可在核对当前文档后主动继续，已完成读取不自动重放。'
                   : '服务暂时中断，运行阶段已保留。可在核对当前文档后主动重新运行安全请求；未自动重放。'
                 : safeError.message
+        const message =
+          dependencies.runCheckpoint &&
+          (transient || error === 'presentation_run_checkpoint_unavailable')
+            ? `${baseMessage}影响范围：本次前台运行；后台进度以项目工作台为准。${presentationRecoveryReceiptFeedback(latestRecovery)}${latestRecovery?.restartSafe === true ? '' : '未自动重放写入，请按工作台记录核对后继续。'}`
+            : baseMessage
         diagnose((diagnostics) => {
           diagnostics.setTool('agent_run')
           diagnostics.record({
