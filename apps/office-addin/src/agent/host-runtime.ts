@@ -729,7 +729,9 @@ export function createOfficeHostRuntime(
                 ? executeProductionJob(call, signal)
                 : production?.tools.some((tool) => tool.name === call.name)
                   ? executeProduction(call, signal)
-                  : executeGeneration(call, signal),
+                  : planning?.tools.some((tool) => tool.name === call.name)
+                    ? planning.executeTool(call, signal)
+                    : executeGeneration(call, signal),
         })
       : undefined
   let productionEpoch = 0

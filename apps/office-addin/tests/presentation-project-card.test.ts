@@ -30,6 +30,7 @@ afterEach(async () => {
 async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () => void) {
   const listeners = new Set<() => void>()
   const controller: PresentationProjectController = {
+    editPlan: vi.fn(async () => {}),
     pdfAvailable: vi.fn(() => false),
     exportProductionPdf: vi.fn(async () => {}),
     auditSources: vi.fn(async () => {}),
@@ -79,6 +80,46 @@ async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () =>
   }
 }
 describe('presentation project recovery card', () => {
+  it('edits the visible plan revision through accessible page controls and disables boundaries', async () => {
+    const plan = benchmarkPlan()
+    const view = await mount({
+      phase: 'idle',
+      project: { ...pending.project!, plan: { revision: 3, value: plan } },
+    })
+    const rows = view.container.querySelectorAll('[aria-label="逐页施工图"] > li')
+    const up = rows[0]!.querySelector('button[aria-label^="上移计划页"]') as HTMLButtonElement
+    const down = rows[1]!.querySelector('button[aria-label^="下移计划页"]') as HTMLButtonElement
+    const remove = rows[1]!.querySelector('button[aria-label^="删除计划页"]') as HTMLButtonElement
+    expect(up.disabled).toBe(true)
+    expect(
+      (
+        rows[rows.length - 1]!.querySelector(
+          'button[aria-label^="下移计划页"]',
+        ) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true)
+    await act(async () => down.click())
+    expect(view.controller.editPlan).toHaveBeenCalledWith(3, {
+      kind: 'move',
+      pageId: plan.slides[1]!.id,
+      direction: 'down',
+    })
+    await act(async () => remove.click())
+    expect(view.controller.editPlan).toHaveBeenLastCalledWith(3, {
+      kind: 'delete',
+      pageId: plan.slides[1]!.id,
+    })
+    expect(view.container.textContent).toContain('只调整制作计划；已有 PowerPoint 页面保留')
+    await view.update({
+      phase: 'planning',
+      project: { ...pending.project!, plan: { revision: 3, value: plan } },
+    })
+    expect(
+      Array.from(view.container.querySelectorAll('[aria-label="逐页施工图"] button')).every(
+        (button) => (button as HTMLButtonElement).disabled,
+      ),
+    ).toBe(true)
+  })
   it('shows retained compile provenance without marking host delivery or QA complete', async () => {
     const view = await mount({
       phase: 'idle',

@@ -10,7 +10,7 @@ export function PresentationProjectCard(props: {
   onEndFrontend?: () => void
 }) {
   const { controller } = props
-  const { phase, project, error, deliveryReport, deliveryNotice, sourceAudit } =
+  const { phase, project, error, deliveryReport, deliveryNotice, sourceAudit, planNotice } =
     useSyncExternalStore(
       (listener) => controller.subscribe(listener),
       () => controller.snapshot(),
@@ -101,6 +101,7 @@ export function PresentationProjectCard(props: {
               resuming: '正在编译已保存版本',
               producing: '正在处理页任务',
               auditing: '正在核对计划引文与原文',
+              planning: '正在更新制作计划',
             }[phase]
           : project
             ? `${project.slideCount} 页 · ${project.status === 'planned' ? '计划已保存，尚未编译' : project.status === 'pending' ? '已保存，待编译' : '已编译，尚未完成视觉验证'}`
@@ -113,6 +114,7 @@ export function PresentationProjectCard(props: {
           {error}
         </p>
       )}
+      {planNotice && <p role="status">{planNotice}</p>}
       {project?.commentsUnavailable && <p>本机审阅评论暂不可读取；项目与页面状态不受影响。</p>}
       {project?.reviewComments && (
         <details aria-label="本机审阅评论">
@@ -620,10 +622,64 @@ export function PresentationProjectCard(props: {
                 : '计划已有更新或尚未关联：现有编译成果不代表当前计划。'}
             </p>
           )}
+          {controller.editPlan && (
+            <p>
+              只调整制作计划；已有 PowerPoint
+              页面保留。旧后台任务按原快照继续，新制作使用更新后的计划。
+            </p>
+          )}
           <ol aria-label="逐页施工图">
-            {project.plan.value.slides.map((slide) => (
+            {project.plan.value.slides.map((slide, index) => (
               <li key={slide.id}>
                 <strong>{slide.title}</strong>
+                {controller.editPlan && (
+                  <details>
+                    <summary>调整本页计划</summary>
+                    <div className="presentation-project-actions">
+                      <button
+                        type="button"
+                        aria-label={`上移计划页 ${index + 1}：${slide.title}`}
+                        disabled={disabled || index === 0}
+                        onClick={() =>
+                          void controller.editPlan?.(project.plan!.revision, {
+                            kind: 'move',
+                            pageId: slide.id,
+                            direction: 'up',
+                          })
+                        }
+                      >
+                        上移
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`下移计划页 ${index + 1}：${slide.title}`}
+                        disabled={disabled || index === project.plan!.value.slides.length - 1}
+                        onClick={() =>
+                          void controller.editPlan?.(project.plan!.revision, {
+                            kind: 'move',
+                            pageId: slide.id,
+                            direction: 'down',
+                          })
+                        }
+                      >
+                        下移
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`删除计划页 ${index + 1}：${slide.title}`}
+                        disabled={disabled || project.plan!.value.slides.length === 1}
+                        onClick={() =>
+                          void controller.editPlan?.(project.plan!.revision, {
+                            kind: 'delete',
+                            pageId: slide.id,
+                          })
+                        }
+                      >
+                        删除计划页
+                      </button>
+                    </div>
+                  </details>
+                )}
                 <p>用途：{slide.purpose}</p>
                 <p>
                   页型：
