@@ -1,0 +1,2776 @@
+
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<!-- Meta info -->
+		<meta charset="UTF-8">
+		<meta name="language" content="english">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, shrink-to-fit=no">
+		<meta name="author" content="
+	
+		Gavin A. Schmidt
+	
+		 and Mark SubbaRao
+	
+">
+		<meta
+			name="description"
+			content="This color-coded map in Robinson projection displays a progression of changing global surface temperature anomalies. Normal temperatures are shown in white. Higher than normal temperatures are shown in red and lower than normal temperatures are shown in blue. Normal temperatures are calculated over the 30 year baseline period 1951-1980. The maps are averages over a running 24 month window. The final frame represents global temperature anomalies in 2024."
+		>
+		<meta
+			name="keywords"
+			content="NASA, SVS, Scientific Visualization Studio, Scientific Visualization, Anomaly, Climate, Climate Variability and Change, Earth Information Center, Earth Science, Global Warming, Hyperwall, Model Data, Science On a Sphere"
+		>
+
+		<!-- Open graph protocol properties --> 
+		<meta property="og:title" content="NASA Scientific Visualization Studio | Global Temperature Anomalies from 1880 to 2024">
+		<meta property="og:type" content="article">
+		<meta property="og:image" content="/vis/a000000/a005400/a005450/2024GISTEMPMap_2K.png">
+		<meta property="og:description" content="This color-coded map in Robinson projection displays a progression of changing global surface temperature anomalies. Normal temperatures are shown in white. Higher than normal temperatures are shown in red and lower than normal temperatures are shown in blue. Normal temperatures are calculated over the 30 year baseline period 1951-1980. The maps are averages over a running 24 month window. The final frame represents global temperature anomalies in 2024.">
+		
+	<meta property="article:published_time" content="2025-01-10T11:00:00-05:00">
+	<meta property="article:modified_time" content="2026-01-20T00:19:30.917595-05:00">
+	
+	
+		<meta property="og:video" content="/vis/a000000/a005400/a005450/2024GISTEMP_Map4K.mp4">
+	
+	
+	
+		<meta property="article:author" content="Gavin A. Schmidt">
+	
+		<meta property="article:author" content="Mark SubbaRao">
+	
+	
+	
+		<meta property="article:tag" content="Anomaly">
+	
+		<meta property="article:tag" content="Climate">
+	
+		<meta property="article:tag" content="Climate Variability and Change">
+	
+		<meta property="article:tag" content="Earth Information Center">
+	
+		<meta property="article:tag" content="Earth Science">
+	
+		<meta property="article:tag" content="Global Warming">
+	
+		<meta property="article:tag" content="Hyperwall">
+	
+		<meta property="article:tag" content="Model Data">
+	
+		<meta property="article:tag" content="Science On a Sphere">
+	
+
+		
+		<meta property="og:url" content="https://svs.gsfc.nasa.gov/5450/">
+		<meta property="og:locale" content="en_US">
+		<meta property="og:site_name" content="NASA Scientific Visualization Studio">
+
+		<!-- json-ld properties -->
+		<script type="application/ld+json">
+			{"@context": "http://schema.org", "@type": "Article", "headline": "Global Temperature Anomalies from 1880 to 2024", "url": "https://svs.gsfc.nasa.gov/5450/", "thumbnailUrl": "/vis/a000000/a005400/a005450/2024GISTEMPMap_2K.png", "datePublished": "2025-01-10T11:00:00-05:00", "articleSection": "Visualization", "creator": ["Gavin A. Schmidt","Mark SubbaRao"], "keywords": ["Anomaly","Climate","Climate Variability and Change","Earth Information Center","Earth Science","Global Warming","Hyperwall","Model Data","Science On a Sphere"]}
+		</script>
+
+		<!-- Icons -->
+		<link rel="icon" sizes="16x16" type="image/png" href="https://nasa.gov/wp-content/plugins/nasa-hds-core-setup/assets/favicons/favicon-16x16.png">
+		<link rel="icon" sizes="32x32" type="image/png" href="https://nasa.gov/wp-content/plugins/nasa-hds-core-setup/assets/favicons/favicon-32x32.png">
+		<link rel="icon" sizes="57x57" type="image/png" href="https://nasa.gov/wp-content/plugins/nasa-hds-core-setup/assets/favicons/favicon-57x57.png">
+		<link rel="icon" sizes="76x76" type="image/png" href="https://nasa.gov/wp-content/plugins/nasa-hds-core-setup/assets/favicons/favicon-76x76.png">
+		<link rel="icon" sizes="96x96" type="image/png" href="https://nasa.gov/wp-content/plugins/nasa-hds-core-setup/assets/favicons/favicon-96x96.png">
+		<link rel="icon" sizes="128x128" type="image/png" href="https://nasa.gov/wp-content/plugins/nasa-hds-core-setup/assets/favicons/favicon-128x128.png">
+		<link rel="icon" sizes="192x192" type="image/png" href="https://nasa.gov/wp-content/plugins/nasa-hds-core-setup/assets/favicons/favicon-192x192.png">
+		<link rel="icon" sizes="196x196" type="image/png" href="https://nasa.gov/wp-content/plugins/nasa-hds-core-setup/assets/favicons/favicon-196x196.png">
+		<link rel="icon" sizes="228x228" type="image/png" href="https://nasa.gov/wp-content/plugins/nasa-hds-core-setup/assets/favicons/favicon-228x228.png">
+
+		<!-- Tab title -->
+		<title>NASA SVS | Global Temperature Anomalies from 1880 to 2024</title>
+
+		<!-- Resources -->
+		<script
+			src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js"
+			onerror="document.write(`<script src='/static/svs/js/jquery-3.6.0.min.js'>\x3C/script>`)"
+		>
+		</script>
+		<script
+			src="https://cdn.jsdelivr.net/npm/underscore@1.13.6/underscore-min.min.js"
+			onerror="document.write(`<script src='/static/svs/js/underscore-umd-min.js'>\x3C/script>`)"
+		>
+		</script>
+		
+	
+
+
+		<!-- Stylesheets -->
+		<link href="/static/svs/css/bootstrap.min.css" rel="stylesheet">
+		<link href="/static/svs/css/bootstrap-icons.min.css" rel="stylesheet">
+		<link href="/static/svs/css/style.css" rel="stylesheet">
+		
+	<link href="/static/detailspage/css/detailspage.css" rel="stylesheet">
+
+	</head>
+	<body>
+		<header>
+			<!-- Top navigation bar -->
+			<nav id="top-navbar" class="navbar navbar-expand-md navbar-dark position-fixed">
+				<div class="container-fluid">
+					<!-- NASA brand -->
+					<a class="navbar-brand p-0 m-0" href="https://www.nasa.gov/">
+						<img
+							src="/static/svs/images/nasa-meatball.svg"
+							alt="NASA Logo"
+							height="40px"
+						>
+					</a>
+
+					<span class="d-flex flex-nowrap overflow-hidden">
+						
+							<!-- SVS brand -->
+							<a class="navbar-brand py-0 px-2 m-0 svs-brand svs-brand-svs" href="/">Scientific Visualization Studio</a>
+						
+
+						
+							
+						
+					</span>
+
+					<!-- Toggle button for collapsed navbar links -->
+					<button
+						class="navbar-toggler ms-auto"
+						type="button"
+						data-bs-toggle="offcanvas"
+						data-bs-target="#navbar-offcanvas"
+						aria-controls="navbar-offcanvas"
+						aria-expanded="false"
+						aria-label="Toggle navigation"
+					>
+						<span class="navbar-toggler-icon"></span>
+					</button>
+
+					<!-- Nav links + search box -->
+					<div class="offcanvas offcanvas-end text-bg-dark flex-shrink-0 flex-grow-1" id="navbar-offcanvas">
+						<div class="offcanvas-header position-absolute top-0 end-0">
+							<button type="button" class="btn-close btn-close-white p-3" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+						</div>
+						<div class="offcanvas-body">
+							<ul class="navbar-nav ms-auto justify-content-end">
+								<!-- Nav links -->
+								
+									
+										
+									
+									<li class="nav-item">
+										<a class="nav-link" href="/gallery/the-galleries/"><span class="bi bi-images" aria-hidden="true"></span> Galleries</a>
+									</li>
+									<li class="nav-item">
+										<a class="nav-link" href="/help/"><span class="bi bi-question-circle" aria-hidden="true"></span> Help</a>
+									</li>
+								
+								
+								
+								
+									<!-- Search box -->
+									<form id="navbar_search_form" class="ps-0 ps-md-2" role="search" action="/search" method="get">
+										<div class="input-group flex-nowrap w-100">
+	
+		
+		<input
+			type="text"
+			id="navbar_search_box"
+			class="form-control ckempty border border-end-0  text-light bg-dark border-light"
+			name="search"
+			value=""
+			placeholder="Search..."
+			aria-label="Search..."
+		>
+		<label
+			for="navbar_search_box"
+			class="visually-hidden"
+		>
+			Search
+		</label>
+		<button
+			id="navbar_search_box_clear"
+			type="reset"
+			class="btn btn-primary border-start-0 border border-end-0 pe-1 bg-dark border-light"
+			title="Clear search text"
+			aria-label="Clear search text"
+			
+			onclick="$('#navbar_search_box').val('')"
+			
+		>
+			<span
+				class="bi bi-backspace text-light"
+				aria-hidden="true"
+			> </span>
+		</button>
+		<button
+			id="navbar_search_box_submit"
+			type="submit"
+			title="Search!"
+			aria-label="Search!"
+			class="btn btn-primary border border-start-0 pe-3 bg-dark border-light"
+		>
+			<span
+				class="bi bi-search text-light"
+				aria-hidden="true"
+			> </span>
+		</button>
+	
+</div>
+
+									</form>
+								
+							</ul>
+						</div>
+					</div>
+				</div>
+			</nav>
+		</header>
+		<main class="flex-fill">
+			<div id="alerts" class="position-fixed w-100 p-2" style="z-index: 999">
+				
+					
+
+
+				
+				
+					
+				
+			</div>
+			<div id="main-container" class="position-relative vstack container-md py-2">
+				
+	<article class="mt-2">
+		<!-- Header (Title, release date, etc.) -->
+		<section class="position-relative">
+			<!-- Navigation line -->
+			<nav class="row mb-2">
+				<div class="w-100 d-flex">
+					
+						
+							<span class="bi bi-chevron-left text-muted opacity-50" aria-hidden="true"></span>
+						
+						<a
+							href="/5376"
+							class="me-auto link text-muted opacity-50 text-truncate"
+							style="max-width: 30vw"
+							aria-label="Previous page"
+						>
+							5376: Record Temperature Years: 2024, 2023, and 20...
+						</a>
+					
+					
+						<a
+							href="/5451"
+							class="ms-auto link text-muted opacity-50 text-truncate"
+							style="max-width: 30vw"
+							aria-label="Next page"
+						>
+							5451: Zonal Climate Anomalies 1880-2024
+						</a>
+						
+						
+							<span class="bi bi-chevron-right text-muted opacity-50" aria-hidden="true"></span>
+						
+					
+					
+						<a
+							href="/5675"
+							class="link text-muted opacity-50 ms-3"
+							aria-label="Newest page"
+						><span class="bi bi-chevron-bar-right" aria-hidden="true"></span></a>
+					
+				</div>
+			</nav>
+
+			<!-- Alerts -->
+			
+			
+				<!-- Newer version alert -->
+				
+
+
+<div id="5450" class="alert  alert-info mb-2" role="alert">
+	
+	<div class="hstack gap-2">
+		<div class="bi bi-info-circle fs-2 me-2" aria-hidden="true"></div>
+		<div class="vr"></div>
+		<div class="vstack mb-0-last-p justify-content-center">
+			
+				<h4>
+					A newer version of this visualization is available.
+				</h4>
+			
+			
+				<p><a class="link" href="/5603/">5603: Global Temperature Anomalies from 1880 to 20...</a></p>
+			
+		</div>
+	</div>
+</div>
+
+
+			
+			
+
+			<!-- Title -->
+			<div class="row">
+				<h1 id="title" class="mb-0">Global Temperature Anomalies from 1880 to 2024</h1>
+			</div>
+
+			<!-- Release date + ID + social media icons -->
+			<div class="row">
+				<div class="hstack flex-wrap align-items-center">
+					<ul class="list-unstyled vstack gap-1 mb-1 justify-content-center">
+						
+						
+							<li class="mb-0 fs-5"><b>Released</b> Friday, January 10, 2025</li>
+						
+						
+					</ul>
+					<div>
+						<ul class="list-unstyled hstack gap-2 mb-1">
+							<li>
+								<span class="btn btn-secondary disabled">ID: 5450</span>
+							</li>
+							<li class="vr"></li>
+							
+
+							<li>
+								<a
+									href="/api/5450"
+									target="_blank"
+									class="btn btn-light btn-sm px-1"
+									title="View this page in our API"
+								> <span class="bi bi-file-earmark-code fs-4" aria-hidden="true"></span> </a>
+							</li>
+							<li class="vr"></li>
+							
+
+<li>
+	
+
+
+	<button
+		type="button"
+		class="svs-copy-link-to-this-page-button btn btn-light px-1 py-0 fs-4"
+		title="Copy a link to this page"
+		tabindex="0"
+		aria-label="Copy a link to this page"
+		data-copy-url="https://svs.gsfc.nasa.gov/5450/"
+		data-bs-title="Copied!"
+		data-bs-trigger="manual"
+	><span class="bi bi-link-45deg" aria-hidden="true"></span></button>
+
+
+</li>
+<li>
+	<a
+		href="https://twitter.com/intent/tweet"
+		target="_blank"
+		class="btn btn-light btn-sm px-1"
+		title="Share this page on Twitter"
+	> <span class="bi bi-twitter fs-4" aria-hidden="true"></span> </a>
+</li>
+<li>
+	 <a
+	href="https://www.facebook.com/share.php?u=https%3A//svs.gsfc.nasa.gov/5450/%3F"
+	target="_blank"
+	class="btn btn-light btn-sm px-1"
+	title="Share this page on Facebook"
+> <span class="bi bi-facebook fs-4" aria-hidden="true"></span> </a>
+</li>
+
+						</ul>
+					</div>
+				</div>
+			</div>
+
+			<!-- Main credits -->
+			<div class="row">
+				<div class="hstack flex-wrap gap-3">
+					
+
+
+	<ul class="hstack list-unstyled gap-1 mb-0 hide-last-vr flex-wrap">
+		
+			
+				<li>
+					<ul class="hstack list-unstyled gap-1 mb-0 flex-wrap">
+						
+							<li class="fw-bold">
+								Scientific consulting by:
+							</li>
+						
+						
+							
+								<li>
+									<a href="/search?people=Gavin%20A.%20Schmidt" class="link fw-bold">Gavin A. Schmidt</a>
+								</li>
+							
+						
+					</ul>
+				</li>
+				<li class="vr" aria-hidden="true">
+				</li>
+			
+		
+			
+				<li>
+					<ul class="hstack list-unstyled gap-1 mb-0 flex-wrap">
+						
+							<li class="fw-bold">
+								Visualizations by:
+							</li>
+						
+						
+							
+								<li>
+									<a href="/search?people=Mark%20SubbaRao" class="link fw-bold">Mark SubbaRao</a>
+								</li>
+							
+						
+					</ul>
+				</li>
+				<li class="vr" aria-hidden="true">
+				</li>
+			
+		
+	</ul>
+
+ <a href="#section_credits" class="link" onclick="$('#section_credits')[0].scrollTo({behavior: 'smooth'})"><span class="bi bi-arrow-bar-down me-1" aria-hidden="true"></span>View full credits</a>
+				</div>
+			</div>
+			<hr>
+		</section>
+
+		
+		
+			<!-- Media groups -->
+			<div class="vstack gap-3">
+				
+					
+						
+
+<section id="media_group_376889" ><div class="card bg-gray-300 position-relative rounded overflow-hidden p-0"><!-- Content --><div class="card-body p-0"><div class="d-flex justify-content-center position-relative bg-dark"><!-- Video player --><video
+				controls
+				poster="/vis/a000000/a005400/a005450/2024GISTEMPMap.png"
+				preload="metadata"
+				class="img-fluid w-100"
+				style="min-height: 20vh; max-height: 65vh;"
+			><source
+						src="/vis/a000000/a005400/a005450/2024GISTEMP_Map4K.mp4"
+						type="video/mp4"
+					><p class="text-white">
+					This color-coded map in Robinson projection displays a progression of changing global surface temperature anomalies. Normal temperatures are shown in white. Higher than normal temperatures are shown in red and lower than normal temperatures are shown in blue. Normal temperatures are calculated over the 30 year baseline period 1951-1980. The maps are averages over a running 24 month window. The final frame represents global temperature anomalies in 2024.
+				</p></video></div><div class="p-2 p-md-3 mb-0-last-p clearfix"><div class="hstack gap-2 flex-wrap flex-lg-nowrap float-end"><ul class="hstack list-unstyled ms-auto gap-2 flex-shrink-0 mb-0"><li><button
+		type="button"
+		class="svs-copy-link-to-this-page-button btn btn-light px-1 py-0 fs-4 bg-transparent border-0"
+		title="Copy a link to this media item"
+		tabindex="0"
+		aria-label="Copy a link to this media item"
+		data-copy-url="{ current_url }#media_group_376889"
+		data-bs-title="Copied!"
+		data-bs-trigger="manual"
+	><span class="bi bi-link-45deg" aria-hidden="true"></span></button></li></ul><div class="vr"></div><!-- Download Options --><div class="dropdown flex-shrink-0"><button
+		class="btn btn-sm btn-secondary dropdown-toggle text-wrap"
+		data-bs-toggle="dropdown"
+		aria-expanded="false"
+		data-bs-popper-config='{"strategy":"fixed"}'
+	><span class="bi bi-download me-1" aria-hidden="true"></span> Download
+	</button><ul id="media_group_376889_download" class="dropdown-menu dropdown-menu-dark"><li id="media_group_376889_movies_download" class="dropdown-header"><h6 class="mb-0">Movies</h6></li><li><a id="media_group_376889_download_movies_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/2024GISTEMP_Map4K.mp4" target="_blank">
+									2024GISTEMP_Map4K.mp4 (3840x2160) [85.9 MB]
+								</a></li><li><hr class="dropdown-divider"></li><li id="media_group_376889_frame sets_download" class="dropdown-header"><h6 class="mb-0">Frame sets</h6></li><li><a id="media_group_376889_download_frame sets_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/frames/3840x2160_16x9_30p/" target="_blank">
+									3840x2160_16x9_30p (3840x2160) [900 Item(s)]
+								</a></li><li><hr class="dropdown-divider"></li><li id="media_group_376889_images_download" class="dropdown-header"><h6 class="mb-0">Images</h6></li><li><a id="media_group_376889_download_images_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/2024GISTEMPMap.png" target="_blank">
+									2024GISTEMPMap.png (3840x2160) [3.4 MB]
+								</a></li><li><a id="media_group_376889_download_images_1" class="dropdown-item" href="/vis/a000000/a005400/a005450/2024GISTEMPMap_2K.png" target="_blank">
+									2024GISTEMPMap_2K.png (1920x1080) [1.5 MB]
+								</a></li><li><hr class="dropdown-divider"></li></ul></div></div><!-- Description --><p>This color-coded map in Robinson projection displays a progression of changing global surface temperature anomalies. Normal temperatures are shown in white. Higher than normal temperatures are shown in red and lower than normal temperatures are shown in blue. Normal temperatures are calculated over the 30 year baseline period 1951-1980. The maps are averages over a running 24 month window. The final frame represents global temperature anomalies in 2024.</p></div></div></div></section>
+
+					
+				
+					
+						
+
+<section id="media_group_376776" ><div class="px-0 px-md-3 px-lg-4 mb-0-last-p"><!-- Description --><p>Earth’s average surface temperature in 2024 was the warmest on record, according to an analysis led by NASA scientists. <br>Global temperatures in 2024 were 2.30 degrees Fahrenheit (1.28 degrees Celsius) above the agency’s 20th-century baseline (1951-1980), which tops the record set in 2023. The new record comes after 15 consecutive months (June 2023 through August 2024) of monthly temperature records — an unprecedented <a class="link" href="https://www.nasa.gov/earth/nasa-analysis-confirms-a-year-of-monthly-temperature-records/">heat streak</a>. <br><br>NASA scientists further estimate Earth in 2024 was about 2.65 degrees Fahrenheit (1.47 degrees Celsius) warmer than the mid-19th century average (1850-1900). For more than half of 2024, average temperatures were more than 1.5 degrees Celsius above the baseline, and the annual average, with mathematical uncertainties, may have exceeded the level for the first time.<br><br>NASA's <a class="link" href="https://data.giss.nasa.gov/gistemp/" target="_blank">full dataset of global surface temperatures </a> as well as full details with code of how NASA scientists conducted the analysis, are publicly available from GISS. GISS is a NASA laboratory managed by the Earth Sciences Division of the agency's Goddard Space Flight Center in Greenbelt, Maryland. The laboratory is affiliated with Columbia University's Earth Institute and School of Engineering and Applied Science in New York.<br><br>For more information about NASA's Earth science programs, visit: <a class="link" href="https://www.nasa.gov/earth" target="_blank">www.nasa.gov/earth</a></p></div></section>
+
+					
+				
+					
+						
+
+<section id="media_group_376890" ><div class="card bg-gray-300 position-relative rounded overflow-hidden p-0"><!-- Content --><div class="card-body p-0"><div class="d-flex justify-content-center position-relative bg-dark"><!-- Video player --><video
+				controls
+				poster="/vis/a000000/a005400/a005450/2024GISTEMP_MapVert.00875_print.jpg"
+				preload="metadata"
+				class="img-fluid w-100"
+				style="min-height: 20vh; max-height: 65vh;"
+			><source
+						src="/vis/a000000/a005400/a005450/2024GISTEMP_MapVert.mp4"
+						type="video/mp4"
+					><p class="text-white">
+					This color-coded map in Orthographic projection displays a progression of changing global surface temperature anomalies. Normal temperatures are shown in white. Higher than normal temperatures are shown in red and lower than normal temperatures are shown in blue. Normal temperatures are calculated over the 30 year baseline period 1951-1980. The maps are averages over a running 24 month window. The final frame represents global temperature anomalies in 2024.
+				</p></video></div><div class="p-2 p-md-3 mb-0-last-p clearfix"><div class="hstack gap-2 flex-wrap flex-lg-nowrap float-end"><ul class="hstack list-unstyled ms-auto gap-2 flex-shrink-0 mb-0"><li><button
+		type="button"
+		class="svs-copy-link-to-this-page-button btn btn-light px-1 py-0 fs-4 bg-transparent border-0"
+		title="Copy a link to this media item"
+		tabindex="0"
+		aria-label="Copy a link to this media item"
+		data-copy-url="{ current_url }#media_group_376890"
+		data-bs-title="Copied!"
+		data-bs-trigger="manual"
+	><span class="bi bi-link-45deg" aria-hidden="true"></span></button></li></ul><div class="vr"></div><!-- Download Options --><div class="dropdown flex-shrink-0"><button
+		class="btn btn-sm btn-secondary dropdown-toggle text-wrap"
+		data-bs-toggle="dropdown"
+		aria-expanded="false"
+		data-bs-popper-config='{"strategy":"fixed"}'
+	><span class="bi bi-download me-1" aria-hidden="true"></span> Download
+	</button><ul id="media_group_376890_download" class="dropdown-menu dropdown-menu-dark"><li id="media_group_376890_movies_download" class="dropdown-header"><h6 class="mb-0">Movies</h6></li><li><a id="media_group_376890_download_movies_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/2024GISTEMP_MapVert.mp4" target="_blank">
+									2024GISTEMP_MapVert.mp4 (1080x1920) [43.0 MB]
+								</a></li><li><hr class="dropdown-divider"></li><li id="media_group_376890_frame sets_download" class="dropdown-header"><h6 class="mb-0">Frame sets</h6></li><li><a id="media_group_376890_download_frame sets_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/frames/1080x1920_9x16_30p/" target="_blank">
+									1080x1920_9x16_30p (1080x1920) [900 Item(s)]
+								</a></li><li><hr class="dropdown-divider"></li><li id="media_group_376890_images_download" class="dropdown-header"><h6 class="mb-0">Images</h6></li><li><a id="media_group_376890_download_images_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/2024GISTEMP_MapVert.00875_print.jpg" target="_blank">
+									2024GISTEMP_MapVert.00875_print.jpg (1024x1820) [355.1 KB]
+								</a></li><li><hr class="dropdown-divider"></li></ul></div></div><!-- Description --><p>This color-coded map in Orthographic projection displays a progression of changing global surface temperature anomalies. Normal temperatures are shown in white. Higher than normal temperatures are shown in red and lower than normal temperatures are shown in blue. Normal temperatures are calculated over the 30 year baseline period 1951-1980. The maps are averages over a running 24 month window. The final frame represents global temperature anomalies in 2024.</p></div></div></div></section>
+
+					
+				
+					
+						
+
+<section id="media_group_376891" ><!-- Title --><div class="p-2 p-md-3 mb-0"><h2 class="fs-3 mb-0">Global Temperature Science On a Sphere Content</h2></div><div class="card bg-gray-300 position-relative rounded overflow-hidden p-0"><!-- Content --><div class="card-body p-0"><div class="d-flex justify-content-center position-relative bg-dark"><div class="ratio ratio-16x9"><iframe
+			src="/webapps/widgets/globe-viewer/?url=/vis/a000000/a005400/a005450/2024GISTEMP_MapSOS_h264.mp4&labels=on&buttons=on&colorbarURL=/vis/a000000/a005400/a005450/SOS_GlobalTemperatures_cbar_1000px.png&datetimeURL=/vis/a000000/a005400/a005450/time.txt"
+			
+			allow="fullscreen"
+		></iframe></div></div><div class="p-2 p-md-3 mb-0-last-p clearfix"><div class="hstack gap-2 flex-wrap flex-lg-nowrap float-end"><ul class="hstack list-unstyled ms-auto gap-2 flex-shrink-0 mb-0"><li><button
+		type="button"
+		class="svs-copy-link-to-this-page-button btn btn-light px-1 py-0 fs-4 bg-transparent border-0"
+		title="Copy a link to this media item"
+		tabindex="0"
+		aria-label="Copy a link to this media item"
+		data-copy-url="{ current_url }#media_group_376891"
+		data-bs-title="Copied!"
+		data-bs-trigger="manual"
+	><span class="bi bi-link-45deg" aria-hidden="true"></span></button></li></ul><div class="vr"></div><!-- Download Options --><div class="dropdown flex-shrink-0"><button
+		class="btn btn-sm btn-secondary dropdown-toggle text-wrap"
+		data-bs-toggle="dropdown"
+		aria-expanded="false"
+		data-bs-popper-config='{"strategy":"fixed"}'
+	><span class="bi bi-download me-1" aria-hidden="true"></span> Download
+	</button><ul id="media_group_376891_download" class="dropdown-menu dropdown-menu-dark"><li id="media_group_376891_movies_download" class="dropdown-header"><h6 class="mb-0">Movies</h6></li><li><a id="media_group_376891_download_movies_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/2024GISTEMP_MapSOS_h264.mp4" target="_blank">
+									2024GISTEMP_MapSOS_h264.mp4 (4096x2048) [85.8 MB]
+								</a></li><li><a id="media_group_376891_download_movies_1" class="dropdown-item" href="/vis/a000000/a005400/a005450/GlobalTemperatures_sos.mp4" target="_blank">
+									GlobalTemperatures_sos.mp4 (4096x2048) [92.6 MB]
+								</a></li><li><hr class="dropdown-divider"></li><li id="media_group_376891_frame sets_download" class="dropdown-header"><h6 class="mb-0">Frame sets</h6></li><li><a id="media_group_376891_download_frame sets_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/frames/4096x2048_2x1_30p/" target="_blank">
+									4096x2048_2x1_30p (4096x2048) [900 Item(s)]
+								</a></li><li><hr class="dropdown-divider"></li><li id="media_group_376891_thumbnail_download" class="dropdown-header"><h6 class="mb-0">Thumbnails</h6></li><li><a id="media_group_376891_download_thumbnail_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/thumbnail_big.jpg" target="_blank">
+					thumbnail_big.jpg (800x800) [246.7 KB]
+				</a></li><li><a id="media_group_376891_download_thumbnail_1" class="dropdown-item" href="/vis/a000000/a005400/a005450/thumbnail_small.jpg" target="_blank">
+						thumbnail_small.jpg (128x128) [22.3 KB]
+					</a></li><li><hr class="dropdown-divider"></li><li id="media_group_376891_colorbar_download" class="dropdown-header"><h6 class="mb-0">Colorbar</h6></li><li><a id="media_group_376891_download_colorbar_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/SOS_GlobalTemperatures_cbar_1000px.png" target="_blank">
+					SOS_GlobalTemperatures_cbar_1000px.png (1000x346) [43.1 KB]
+				</a></li><li><hr class="dropdown-divider"></li><li id="media_group_376891_datetime_download" class="dropdown-header"><h6 class="mb-0">Timestamp List</h6></li><li><a id="media_group_376891_download_datetime_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/time.txt" target="_blank">
+					time.txt [4.4 KB]
+				</a></li><li><hr class="dropdown-divider"></li></ul></div></div><div class="d-block d-md-none"><small class="text-muted mb-2">
+			This is an interactive 3D model! <b>Swipe with one finger</b> to <b>rotate</b> the model.
+		</small></div><div class="d-none d-md-block"><small class="text-muted mb-2">
+			This is an interactive 3D model! <b>Click and drag</b> to <b>rotate</b> the model.
+		</small></div><!-- Description --><p>This map displays changing surface temperature anomalies from 1880 to 2024. It does not show absolute temperatures; instead, it shows how much warmer or cooler each region of Earth was compared to the average from 1951 to 1980. Average temperatures are shown in white, with higher-than-normal temperatures shown in red and lower-than-normal temperatures in blue. Earth’s global surface temperatures in 2024 were the warmest on record -- 1.28 degrees Celsius (2.30 degrees Fahrenheit) above the agency’s 20th-century baseline (1951–1980).</p></div></div></div></section>
+
+					
+				
+					
+						
+
+<section id="media_group_376898" ><div class="card bg-gray-300 position-relative rounded overflow-hidden p-0"><!-- Content --><div class="card-body p-0"><div class="d-flex justify-content-center position-relative bg-dark"><!-- Image --><picture><source
+						srcset="/vis/a000000/a005400/a005450/giss_navy_anomaly_Vertical-both.png"
+						type="image/png"
+					><img
+					class="img-fluid w-100"
+					style="min-height: 20vh; max-height: 65vh;"
+					src="/static/svs/images/no_preview_web_black.png"
+					title="Colortable in both degrees Fahrenheit and degrees Celsius."
+					alt="Colortable in both degrees Fahrenheit and degrees Celsius."
+					loading="lazy"
+					type="image/png"
+				></picture></div><div class="p-2 p-md-3 mb-0-last-p clearfix"><div class="hstack gap-2 flex-wrap flex-lg-nowrap float-end"><ul class="hstack list-unstyled ms-auto gap-2 flex-shrink-0 mb-0"><li><button
+		type="button"
+		class="svs-copy-link-to-this-page-button btn btn-light px-1 py-0 fs-4 bg-transparent border-0"
+		title="Copy a link to this media item"
+		tabindex="0"
+		aria-label="Copy a link to this media item"
+		data-copy-url="{ current_url }#media_group_376898"
+		data-bs-title="Copied!"
+		data-bs-trigger="manual"
+	><span class="bi bi-link-45deg" aria-hidden="true"></span></button></li></ul><div class="vr"></div><!-- Download Options --><div class="dropdown flex-shrink-0"><button
+		class="btn btn-sm btn-secondary dropdown-toggle text-wrap"
+		data-bs-toggle="dropdown"
+		aria-expanded="false"
+		data-bs-popper-config='{"strategy":"fixed"}'
+	><span class="bi bi-download me-1" aria-hidden="true"></span> Download
+	</button><ul id="media_group_376898_download" class="dropdown-menu dropdown-menu-dark"><li id="media_group_376898_images_download" class="dropdown-header"><h6 class="mb-0">Images</h6></li><li><a id="media_group_376898_download_images_0" class="dropdown-item" href="/vis/a000000/a005400/a005450/giss_navy_anomaly_Vertical-both.png" target="_blank">
+									giss_navy_anomaly_Vertical-both.png (314x680) [14.4 KB]
+								</a></li><li><hr class="dropdown-divider"></li></ul></div></div><!-- Description --><p>Colortable in both degrees Fahrenheit and degrees Celsius.</p></div></div></div></section>
+
+					
+				
+			</div>
+			<hr>
+		
+
+		
+		
+			<section id="section_keywords" class="vstack gap-2">
+				
+					<!-- NASA science categories -->
+					<ul id="nasa_science_categories" class="list-unstyled hstack flex-wrap gap-2 mb-0">
+						
+							<li>
+								<a
+									href="/search?nasa_science_categories=Earth"
+									class="btn btn-primary hover-grow fw-bold"
+								>
+									<span class="bi bi-globe-americas me-1" aria-hidden="true"></span> Earth
+								</a>
+							</li>
+						
+					</ul>
+				
+
+				
+					<!-- Keywords -->
+					<ul id="keywords" class="list-unstyled hstack flex-wrap gap-2 mb-0">
+						
+							<li>
+								<a
+									href="/search?keywords=Anomaly"
+									class="btn btn-sm btn-secondary hover-grow"
+								>Anomaly</a>
+							</li>
+						
+							<li>
+								<a
+									href="/search?keywords=Climate"
+									class="btn btn-sm btn-secondary hover-grow"
+								>Climate</a>
+							</li>
+						
+							<li>
+								<a
+									href="/search?keywords=Climate Variability and Change"
+									class="btn btn-sm btn-secondary hover-grow"
+								>Climate Variability and Change</a>
+							</li>
+						
+							<li>
+								<a
+									href="/search?keywords=Earth Information Center"
+									class="btn btn-sm btn-secondary hover-grow"
+								>Earth Information Center</a>
+							</li>
+						
+							<li>
+								<a
+									href="/search?keywords=Earth Science"
+									class="btn btn-sm btn-secondary hover-grow"
+								>Earth Science</a>
+							</li>
+						
+							<li>
+								<a
+									href="/search?keywords=Global Warming"
+									class="btn btn-sm btn-secondary hover-grow"
+								>Global Warming</a>
+							</li>
+						
+							<li>
+								<a
+									href="/search?keywords=Hyperwall"
+									class="btn btn-sm btn-secondary hover-grow"
+								>Hyperwall</a>
+							</li>
+						
+							<li>
+								<a
+									href="/search?keywords=Model Data"
+									class="btn btn-sm btn-secondary hover-grow"
+								>Model Data</a>
+							</li>
+						
+							<li>
+								<a
+									href="/search?keywords=Science On a Sphere"
+									class="btn btn-sm btn-secondary hover-grow"
+								>Science On a Sphere</a>
+							</li>
+						
+					</ul>
+				
+			</section>
+			<hr>
+		
+
+		
+		
+			<section id="section_credits">
+				<h2 class="fs-3">Credits</h2>
+				
+					<!-- Credit header box -->
+					<div class="card p-3 mb-2 mb-0-last-p">
+						<p><b>Please give credit for this item to:</b><br /> NASA's Scientific Visualization Studio<br/><br/>Data provided by Robert B. Schmunk (NASA/GSFC GISS)</p>
+					</div>
+				
+				
+					<!-- Credit list -->
+					<ul class="list-unstyled vstack gap-2">
+						
+							<li class="row">
+								<div class="col-6 col-md-4 col-lg-3 text-end">
+									<h3 class="fs-6 mb-0 lh-base">
+										
+											Scientists
+										
+									</h3>
+								</div>
+								<div class="col-6 col-md-8 col-lg-9 text-start border-start">
+									<ul class="list-unstyled">
+										
+											<li>
+												
+
+
+
+<a href="/search/?people=Gavin%20A.%20Schmidt" class="link">
+		Gavin A. Schmidt
+	</a>
+	
+		(NASA/GSFC GISS)
+	
+	
+		<a href="https://orcid.org/0000-0002-2258-0486"><img
+				src="/static/detailspage/images/ORCID-iD_icon_vector.svg"
+				alt="ORCID logo. It consists of the text 'id' in lowercase inside of a green circle."
+				title="See this person's other publications"
+				class="bg-transparent"
+				style="height: 1.5rem; width: 1.5rem;"
+			></a>
+
+											</li>
+										
+											<li>
+												
+
+
+
+<a href="/search/?people=Robert%20B%20Schmunk" class="link">
+		Robert B Schmunk
+	</a>
+	
+		(SIGMA Space Partners, LLC.)
+	
+	
+		<a href="https://orcid.org/0000-0002-1897-6509"><img
+				src="/static/detailspage/images/ORCID-iD_icon_vector.svg"
+				alt="ORCID logo. It consists of the text 'id' in lowercase inside of a green circle."
+				title="See this person's other publications"
+				class="bg-transparent"
+				style="height: 1.5rem; width: 1.5rem;"
+			></a>
+
+											</li>
+										
+											<li>
+												
+
+
+
+<a href="/search/?people=Reto%20A.%20Ruedy" class="link">
+		Reto A. Ruedy
+	</a>
+	
+		(SIGMA Space Partners, LLC.)
+	
+	
+		<a href="https://orcid.org/0000-0002-1270-1088"><img
+				src="/static/detailspage/images/ORCID-iD_icon_vector.svg"
+				alt="ORCID logo. It consists of the text 'id' in lowercase inside of a green circle."
+				title="See this person's other publications"
+				class="bg-transparent"
+				style="height: 1.5rem; width: 1.5rem;"
+			></a>
+
+											</li>
+										
+									</ul>
+								</div>
+							</li>
+						
+							<li class="row">
+								<div class="col-6 col-md-4 col-lg-3 text-end">
+									<h3 class="fs-6 mb-0 lh-base">
+										
+											Public affairs officer
+										
+									</h3>
+								</div>
+								<div class="col-6 col-md-8 col-lg-9 text-start border-start">
+									<ul class="list-unstyled">
+										
+											<li>
+												
+
+
+
+<a href="/search/?people=Peter%20H.%20Jacobs" class="link">
+		Peter H. Jacobs
+	</a>
+	
+		(NASA/GSFC)
+	
+	
+		<a href="https://orcid.org/0000-0002-6951-7126"><img
+				src="/static/detailspage/images/ORCID-iD_icon_vector.svg"
+				alt="ORCID logo. It consists of the text 'id' in lowercase inside of a green circle."
+				title="See this person's other publications"
+				class="bg-transparent"
+				style="height: 1.5rem; width: 1.5rem;"
+			></a>
+
+											</li>
+										
+									</ul>
+								</div>
+							</li>
+						
+							<li class="row">
+								<div class="col-6 col-md-4 col-lg-3 text-end">
+									<h3 class="fs-6 mb-0 lh-base">
+										
+											Visualizer
+										
+									</h3>
+								</div>
+								<div class="col-6 col-md-8 col-lg-9 text-start border-start">
+									<ul class="list-unstyled">
+										
+											<li>
+												
+
+
+
+<a href="/search/?people=Mark%20SubbaRao" class="link">
+		Mark SubbaRao
+	</a>
+	
+		(NASA/GSFC)
+	
+	
+		<a href="https://orcid.org/0000-0002-5668-9674"><img
+				src="/static/detailspage/images/ORCID-iD_icon_vector.svg"
+				alt="ORCID logo. It consists of the text 'id' in lowercase inside of a green circle."
+				title="See this person's other publications"
+				class="bg-transparent"
+				style="height: 1.5rem; width: 1.5rem;"
+			></a>
+
+											</li>
+										
+									</ul>
+								</div>
+							</li>
+						
+							<li class="row">
+								<div class="col-6 col-md-4 col-lg-3 text-end">
+									<h3 class="fs-6 mb-0 lh-base">
+										
+											Writers
+										
+									</h3>
+								</div>
+								<div class="col-6 col-md-8 col-lg-9 text-start border-start">
+									<ul class="list-unstyled">
+										
+											<li>
+												
+
+
+
+<a href="/search/?people=Sally%20Younger" class="link">
+		Sally Younger
+	</a>
+	
+		(NASA/JPL)
+
+											</li>
+										
+											<li>
+												
+
+
+
+<a href="/search/?people=Jenny%20Marder%20Fadoul" class="link">
+		Jenny Marder Fadoul
+	</a>
+	
+		(Telophase)
+
+											</li>
+										
+									</ul>
+								</div>
+							</li>
+						
+					</ul>
+				
+			</section>
+			<hr>
+		
+
+
+
+		
+			
+				<!-- Other misc. info -->
+				<section id="section_misc_info" class="row">
+					
+					
+						<!-- Series -->
+						<div class="col-12 col-md-6">
+							<h2 class="fs-3">Series</h2>
+							This page can be found in the following series:
+							<ul class="mb-0">
+								
+									<li>
+										<a href="/search/?series=Global%20Temperature%20Anomalies" class="link">
+											Global Temperature Anomalies
+										</a>
+									</li>
+								
+							</ul>
+						</div>
+					
+					
+				</section>
+				<hr>
+			
+		
+
+		
+		
+
+		
+		
+			<!-- Datasets -->
+			<section id="section_datasets" class="row">
+				<h2 class="fs-3">Datasets used</h2>
+				<ul class="list-unstyled  mx-0">
+					
+						
+							
+
+	<li class="dataset card p-3 mb-2">
+		<div class="card-title hstack flex-wrap">
+			<h2 class="fs-5 fw-normal search-text me-auto search-text mb-0">
+				GISTEMP [GISS Surface Temperature Analysis (GISTEMP)]
+			</h2>
+			<span class="btn btn-sm btn-secondary disabled">ID: 585</span>
+		</div>
+
+		<div class="card-subtitle hstack flex-wrap hide-last-vr gap-2 search-text">
+			
+				<span>Type: Model</span> <span class="vr"></span>
+			
+			
+				<span>Sensor: GISS Surface Temperature Analysis (GISTEMP)</span> <span class="vr"></span>
+			
+			
+				<span>Collected by: NASA/GISS</span>
+				<span class="vr"></span>
+			
+			
+		</div>
+
+		<div class="card-body vstack p-2 gap-2">
+			
+				<p class="mb-0 search-text">
+					The GISS Surface Temperature Analysis version 4 (GISTEMP v4) is an estimate of global surface temperature change. Graphs and tables are updated around the middle of every month using current data files from NOAA GHCN v4 (meteorological stations) and ERSST v5 (ocean areas), combined as described in our publications <a class="link" href="https://pubs.giss.nasa.gov/abs/ha00510u.html">Hansen et al. (2010)</a>, <a class="link" href="https://pubs.giss.nasa.gov/abs/le05800h.html">Lenssen et al. (2019)</a>, and <a class="link" href="https://pubs.giss.nasa.gov/abs/le07900t.html">Lenssen et al. (2024)</a>.
+				</p>
+			
+			
+				<p class="mb-0">
+					<span class="text-muted search-text">Credit: Lenssen, N., G.A. Schmidt, M. Hendrickson, P. Jacobs, M. Menne, and R. Ruedy, 2024: <a class="link" href="https://pubs.giss.nasa.gov/abs/le07900t.html">A GISTEMPv4 observational uncertainty ensemble</a>. J. Geophys. Res. Atmos., 129, no. 17, e2023JD040179, doi:10.1029/2023JD040179.</span>
+				</p>
+			
+			
+				<p class="mb-0">
+					This dataset can be found at: <a href="https://data.giss.nasa.gov/gistemp/" class="link">https://data.giss.nasa.gov/gistemp/</a>
+				</p>
+			
+			
+			<a href="/search/?datasets=585" class="link">See all pages that use this dataset<span class="bi bi-chevron-right mx-2" aria-hidden="true"></span></a>
+		</div>
+	</li>
+
+
+						
+					
+				</ul>
+				<p class="text-muted mb-0">
+					Note: While we identify the data sets used on this page, we do not store any further details, nor the data sets themselves on our site.
+				</p>
+			</section>
+			<hr>
+		
+
+		
+		
+			<!-- Citing this page -->
+			<section id="section_citing" class="row">
+				<h2 class="fs-3">Citing this page</h2>
+				<p class="mb-0 text-muted">
+					DOI: <a href="https://zenodo.org/records/15922553" target="_blank" class="link">10.5281/zenodo.15922553</a>
+				</p>
+			</section>
+			<hr>
+		
+
+		
+		
+			<!-- Related pages -->
+			<section id="section_related_pages">
+				
+
+<div class="row">
+	
+		<!-- Related pages -->
+		<div class="col-auto">
+			
+
+
+
+
+
+
+	
+		
+			<!-- Title -->
+			<h2 class="fs-3">Related</h2>
+		
+		
+		
+		<div class="position-relative">
+			<ul id="accordion_related_pages_related_card_gallery" class="list-unstyled hstack flex-wrap">
+				<!-- Pages -->
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5376 --><li
+			id="tile_details_page_5376"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5376_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5376/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005300/a005376/GISTEMP_Records_English_C.00001_print.jpg"
+									alt="A visualization of global temperature anomalies highlighting the record years of 2024, 2023, and 2016. The visualizations morphs between a data grid showing monthly temperatures and a bar chart of annual temperatures. This version is labeled in English and temperatures are in Celsius."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5376 </span></div><div
+					id="tile_details_page_5376_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5376_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5376/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Record Temperature Years: 2024, 2023, and 2016
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5451 --><li
+			id="tile_details_page_5451"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5451_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5451/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005400/a005451/GISTEMP_Zonal_1880-2024_C_2160p30.00850_print.jpg"
+									alt="A visualization of zonal temperature anomalies. The latitude zones are 90N-64N, 64N-44N, 44N-24N, 24N-EQU, EQU-24S, 24S-44S, 44S-64S, 64S-90S. The anomalies are calculated relative to a baseline period of 1951-1980. This version is in Celsius, an alternate version in Fahrenheit is also available."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5451 </span></div><div
+					id="tile_details_page_5451_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5451_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5451/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Zonal Climate Anomalies 1880-2024
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5452 --><li
+			id="tile_details_page_5452"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5452_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5452/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005400/a005452/GISTEMPDist_2024_C.00850_print.jpg"
+									alt="The change in the distribution of land temperature anomalies over the years 1964 to 2024. This version is in Celsius, a Fahrenheit version is also available."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5452 </span></div><div
+					id="tile_details_page_5452_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5452_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5452/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Shifting Distribution of Land Temperature Anomalies, 1964-2024
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_14743 --><li
+			id="tile_details_page_14743"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_14743_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/14743/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a010000/a014700/a014743/250109_GTU_January_2025_3840x2160_THUMBNAIL_ENGLISH_GAW_FINALCUT.jpg"
+									alt="Global Temperature Update 2024 Horizontal Verison (3840x2160)Universal Production Music: Time Passing Marimba Instrumental by ChevalierThis video can be freely shared and downloaded. For more information on NASA’s media guidelines, visit https://www.nasa.gov/nasa-brand-center/images-and-media/Complete transcript available.Watch this video on the NASA.gov Video YouTube channel."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 14743 </span></div><div
+					id="tile_details_page_14743_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-person-video me-1" aria-hidden="true"></span> Produced Video
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_14743_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/14743/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											2024 is the Warmest Year on Record
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5383 --><li
+			id="tile_details_page_5383"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5383_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5383/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005300/a005383/GISTEMP_Spiral_SR_1.01400_print.jpg"
+									alt="Slide #1 - just the animated spiralBefore playing, ask students what they notice and what they wonder as they are watching.  Play it through several times before having the group share.  Depending on your group, have them share with an elbow partner or small group first."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5383 </span></div><div
+					id="tile_details_page_5383_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5383_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5383/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Slow Reveal Graphs: Climate Spiral
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5311 --><li
+			id="tile_details_page_5311"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5311_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5311/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005300/a005311/GISTEMP_Lines_Rotate_2024_degF.00650_print.jpg"
+									alt="This visualization shows monthly global surface temperatures from 1880 to May 2024. The last 12 months (June 2023 through May 2024) each set a record as the warmest month in the temperature record. This version of the graph is in Fahrenheit."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5311 </span></div><div
+					id="tile_details_page_5311_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5311_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5311/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Twelve consecutive months of global surface temperature records: June 2023 - May 2024
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5327 --><li
+			id="tile_details_page_5327"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5327_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5327/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005300/a005327/GISTEMP_Lines_Rotate_SR_SBS.jpg"
+									alt="Static View: Side by sideQuestions to ask:What&#x27;s the same and what&#x27;s different between these two?Which do you like better and why?What information is easier to see in one over the other?Where do we see the months and years represented in each graph?How do you think each of these representations would look different if we fast forward and add 2, 5 or 10 more years of data?"
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5327 </span></div><div
+					id="tile_details_page_5327_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5327_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5327/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Slow Reveal Graphs: Twelve consecutive months of global surface temperature records (June 2023 - May 2024)
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5209 --><li
+			id="tile_details_page_5209"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5209_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5209/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005200/a005209/GISTEMP_Zonal_1880-2023_C.00899_print.jpg"
+									alt="A visualization of zonal temperature anomalies. The latitude zones are 90N-64N, 64N-44N, 44N-24N, 24N-EQU, EQU-24S, 24S-44S, 44S-64S, 64S-90S. The anomalies are calculated relative to a baseline period of 1951-1980. This version is in Celsius, an alternate version in Fahrenheit is also available."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5209 </span></div><div
+					id="tile_details_page_5209_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5209_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5209/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Zonal Climate Anomalies 1880-2023
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5211 --><li
+			id="tile_details_page_5211"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5211_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5211/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005200/a005211/2023_GISTEMP_Dist_C.00899_print.jpg"
+									alt="The change in the distribution of land temperature anomalies over the years 1963 to 2023. This version is in Celsius, a Fahrenheit version is also available."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5211 </span></div><div
+					id="tile_details_page_5211_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5211_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5211/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Shifting Distribution of Land Temperature Anomalies, 1963-2023
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5191 --><li
+			id="tile_details_page_5191"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5191_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5191/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005100/a005191/GISTEMP_Curves_English_degC_2160p60.01750_print.jpg"
+									alt="The seasonal cycle of temperature variation on the earth&#x27;s surface. This version is labeled in English and Celsius."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5191 </span></div><div
+					id="tile_details_page_5191_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5191_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5191/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Global Temperature Graph 1880-2024
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5161 --><li
+			id="tile_details_page_5161"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5161_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5161/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005100/a005161/GISTEMP_Summer2023_English_2160p30.00899_print.jpg"
+									alt="This &#x27;map shows monthly temperature anomalies measure from 1880 to August 2023 measured with respect to a the baseline period 1951-1980.Versions are provided in both English and Spanish."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5161 </span></div><div
+					id="tile_details_page_5161_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5161_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5161/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Summer 2023 Record High Global Temperatures
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5137 --><li
+			id="tile_details_page_5137"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5137_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5137/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005100/a005137/GISTEMP_Curves_July2023_1080p60.01800_print.jpg"
+									alt="Monthly temperature anomalies measure from 1880 to July 2023 measured with respect to a  the baseline period 1951-1980. This graph includes the seasonal cycle (from MERRA2) showing that July 2023 was the warmest month on record. Temperatures measured in Celsius, a Fahrenheit version of this graph is also available."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5137 </span></div><div
+					id="tile_details_page_5137_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5137_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5137/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											July 2023 Record High Global Temperatures
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5065 --><li
+			id="tile_details_page_5065"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5065_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5065/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005000/a005065/GISTEMPDist2022_C.00890_print.jpg"
+									alt="The change in the distribution of land temperature anomalies over the years 1962 to 2022. This version is in Celsius, a Fahrenheit version is also available."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5065 </span></div><div
+					id="tile_details_page_5065_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5065_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5065/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Shifting Distribution of Land Temperature Anomalies, 1962-2022
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_14327 --><li
+			id="tile_details_page_14327"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_14327_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/14327/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a010000/a014300/a014327/2023-EarthDay.V8.00001_print.jpg"
+									alt="Cut b-roll for the live shots. TRT 5:31. Clips are separated by a slate with associated question. No audio on clips."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 14327 </span></div><div
+					id="tile_details_page_14327_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-person-video me-1" aria-hidden="true"></span> Produced Video
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_14327_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/14327/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											NASA Interview Opportunity: Celebrate our Dynamic Planet with a NASA Expert this Earth Day
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5057 --><li
+			id="tile_details_page_5057"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5057_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5057/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005000/a005057/GISTEMP_Spiral_60sec_C.01400_print.jpg"
+									alt="The NASA climate spiral 1880-2022. This version is in Celsius; see below for an alternate version in Fahrenheit. Both a 30 fps, 60 second duration video and 60 fps, 30 second duration video are available."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5057 </span></div><div
+					id="tile_details_page_5057_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5057_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5057/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											NASA Climate Spiral 1880-2022
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5059 --><li
+			id="tile_details_page_5059"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5059_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5059/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005000/a005059/GISTEMP_Zonal_F.00899_print.jpg"
+									alt="A visualization of zonal temperature anomalies. The latitude zones are 90N-64N, 64N-44N, 44N-24N, 24N-EQU, EQU-24S, 24S-44S, 44S-64S, 64S-90S. The anomalies are calculated relative to a baseline period of 1951-1980. This version is in Fahrenheit, an alternate version in Celsius is also available."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5059 </span></div><div
+					id="tile_details_page_5059_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5059_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5059/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Zonal Climate Anomalies 1880-2022
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_14273 --><li
+			id="tile_details_page_14273"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_14273_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/14273/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a010000/a014200/a014273/New_Thumbnail_final2.jpg"
+									alt="Complete transcript available. 2022 effectively tied for Earth’s 5th warmest year since 1880, and the last 9 consecutive years have been the warmest 9 on record. NASA looks back at how heat was expressed in different ways around the world in 2022.Music credit: “Ad Infinitum,” “Arctic Blue,” and “Recovery” from Universal Production Music"
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 14273 </span></div><div
+					id="tile_details_page_14273_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-person-video me-1" aria-hidden="true"></span> Produced Video
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_14273_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/14273/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											A Look Back: 2022's Temperature Record
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4978 --><li
+			id="tile_details_page_4978"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4978_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4978/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004900/a004978/GISTEMP_Zonal_2022-02-11_1520.01418_print.jpg"
+									alt="A visualization of zonal temperature anomalies. The latitude zones are 90N-64N, 64N-44N, 44N-24N, 24N-EQU, EQU-24S, 24S-44S, 44S-64S, 64S-90S. The anomalies are calculated relative to a baseline period of 1951-1980."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4978 </span></div><div
+					id="tile_details_page_4978_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4978_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4978/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Zonal Climate Anomalies
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4975 --><li
+			id="tile_details_page_4975"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4975_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4975/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004900/a004975/GISTEMP_Spiral_2022-03-06_2257.01710_print.jpg"
+									alt="The GISTEMP climate spiral 1880-2021. This version is in Celsius, see below for an alternate version in Fahrenheit."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4975 </span></div><div
+					id="tile_details_page_4975_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4975_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4975/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											GISTEMP Climate Spiral
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_14069 --><li
+			id="tile_details_page_14069"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_14069_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/14069/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a010000/a014000/a014069/temp_2021_banneer.jpeg"
+									alt="Quick link to latest release: 2021 Tied for 6th Warmest Year in Continued Trend, NASA Analysis ShowsQuick link to announcement soundbite with Dr. Gavin Schmidt***** Quick link to latest graphic showing the  2021 global temperature update. ******Quick link to associated B-ROLL for questions 2-6 on the advisoryQuick link to canned interview with Dr. Gavin SchmidtNote that the new graphic showing the 2021 average will be released Thursday, Jan 13 at 11 a.m. EST**Click here for information about the NASA NOAA announcement  on Thursday, Jan 13 at 11:00 a.m. EST"
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 14069 </span></div><div
+					id="tile_details_page_14069_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-person-video me-1" aria-hidden="true"></span> Produced Video
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_14069_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/14069/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											The Numbers Are In: Where Does 2021 Rank for Global Temperatures Live Shots
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4961 --><li
+			id="tile_details_page_4961"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4961_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4961/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004900/a004961/GISTEMP_stations_2160p60.00001_print.jpg"
+									alt="Weather stations currently used in the GISS Surface Temperature Analysis (v4). The size of the station markers is varied to reduce overplotting and is not indicative of any properties of that station."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4961 </span></div><div
+					id="tile_details_page_4961_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4961_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4961/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Temperature Measurement Stations
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4908 --><li
+			id="tile_details_page_4908"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4908_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4908/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004900/a004908/ClimateDrivers_3840x2160_30fps_923_print.jpg"
+									alt="Data visualization of human and natural drivers of climate change for the period 1850-2018, showcasing data products from NASA&#x27;s GISS Model E 2.1-G and observations.Dr. Gavin Schmidt uses this visual to explain NASA&#x27;s role in tracking and predicting climate at the 2021 COP26 conference -   https://www.youtube.com/watch?v=CCAcKuJaJOg."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4908 </span></div><div
+					id="tile_details_page_4908_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4908_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4908/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Climate Drivers
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4891 --><li
+			id="tile_details_page_4891"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4891_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4891/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004800/a004891/GISTempDist_searchweb.png"
+									alt="The change in the distribution of land temperature anomalies over the years 1951 to 2020"
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4891 </span></div><div
+					id="tile_details_page_4891_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4891_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4891/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Shifting Distribution of Land Temperature Anomalies, 1951-2020
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_13791 --><li
+			id="tile_details_page_13791"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_13791_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/13791/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a010000/a013700/a013791/banner2.jpg"
+									alt="NASA Finds 2020 Tied for Hottest Year on Record The Climate Events of 2020 Show How Excess Heat is Expressed on EarthEl 2020 empató con 2016 como el año más cálido en el registro, según un análisis de la NASA"
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 13791 </span></div><div
+					id="tile_details_page_13791_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-person-video me-1" aria-hidden="true"></span> Produced Video
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_13791_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/13791/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											2020 Global Temperature Announcement Live Shots
+										</a></h3></div></div></div></li>
+
+				
+			</ul>
+		</div>
+	
+
+
+		</div>
+	
+	
+		<!-- Newer versions -->
+		<div class="col-auto">
+			
+
+
+
+
+
+
+	
+		
+			<!-- Title -->
+			<h2 class="fs-3">Newer Versions</h2>
+		
+		
+		
+		<div class="position-relative">
+			<ul id="accordion_related_pages_newer_versions_card_gallery" class="list-unstyled hstack flex-wrap">
+				<!-- Pages -->
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5603 --><li
+			id="tile_details_page_5603"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5603_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5603/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005600/a005603/Map_HD_2025_nosmoothing.png"
+									alt=""
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5603 </span></div><div
+					id="tile_details_page_5603_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5603_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5603/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Global Temperature Anomalies from 1880 to 2025
+										</a></h3></div></div></div></li>
+
+				
+			</ul>
+		</div>
+	
+
+
+		</div>
+	
+	
+		<!-- Older versions -->
+		<div class="col-auto">
+			
+
+
+
+
+
+
+	
+		
+			<!-- Title -->
+			<h2 class="fs-3">Older Versions</h2>
+		
+		
+		
+		<div class="position-relative">
+			<ul id="accordion_related_pages_older_versions_card_gallery" class="list-unstyled hstack flex-wrap">
+				<!-- Pages -->
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5207 --><li
+			id="tile_details_page_5207"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5207_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5207/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005200/a005207/2023GISTEMP_Map.00899_print.jpg"
+									alt="This color-coded map in Robinson projection displays a progression of changing global surface temperature anomalies. Normal temperatures are shown in white. Higher than normal temperatures are shown in red and lower than normal temperatures are shown in blue. Normal temperatures are calculated over the 30 year baseline period 1951-1980. The maps are averages over a running 24 month window. The final frame represents  global temperature anomalies in 2023."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5207 </span></div><div
+					id="tile_details_page_5207_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5207_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5207/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Global Temperature Anomalies from 1880 to 2023
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_5060 --><li
+			id="tile_details_page_5060"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_5060_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/5060/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a005000/a005060/GISTEMP-2022-TemperatureAnomalyBothCelsiusFahrenheit.00899_print.jpg"
+									alt="This color-coded map in Robinson projection displays a progression of changing global surface temperature anomalies. Normal temperatures are shown in white. Higher than normal temperatures are shown in red and lower than normal temperatures are shown in blue. Normal temperatures are calculated over the 30 year baseline period 1951-1980. The final frame represents the 5 year global temperature anomalies from 2018-2022. "
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 5060 </span></div><div
+					id="tile_details_page_5060_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_5060_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/5060/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Global Temperature Anomalies from 1880 to 2022
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4964 --><li
+			id="tile_details_page_4964"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4964_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4964/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004900/a004964/2021f-TemperatureAnomalyF.0900_print.jpg"
+									alt="This color-coded map in Robinson projection displays a progression of changing global surface temperature anomalies. Normal temperatures are shown in white. Higher than normal temperatures are shown in red and lower than normal temperatures are shown in blue. Normal temperatures are calculated over the 30 year baseline period 1951-1980. The final frame represents the 5 year global temperature anomalies from 2017-2021. Scale in degrees Fahrenheit."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4964 </span></div><div
+					id="tile_details_page_4964_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4964_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4964/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Global Temperature Anomalies from 1880 to 2021
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4882 --><li
+			id="tile_details_page_4882"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4882_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4882/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004800/a004882/print_cel2020_00000_print.jpg"
+									alt="This color-coded map in Robinson projection displays a progression of changing global surface temperature anomalies. Normal temperatures are the average over the 30 year baseline period 1951-1980. Higher than normal temperatures are shown in red and lower than normal temperatures are shown in blue. The final frame represents the 5 year global temperature anomalies from 2016-2020. Scale in degrees Celsius."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4882 </span></div><div
+					id="tile_details_page_4882_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4882_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4882/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Global Temperature Anomalies from 1880 to 2020
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4626 --><li
+			id="tile_details_page_4626"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4626_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4626/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004600/a004626/2018HD_celsius_0900_print.jpg"
+									alt="This color-coded map in Robinson projection displays a progression of changing global surface temperature anomalies from 1880 through 2018. Higher than normal temperatures are shown in red and lower then normal termperatures are shown in blue. The final frame represents the global temperatures 5-year averaged from 2014 through 2018. Scale in degree Celsius."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4626 </span></div><div
+					id="tile_details_page_4626_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4626_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4626/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Global Temperature Anomalies from 1880 to 2018
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4609 --><li
+			id="tile_details_page_4609"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4609_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4609/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004600/a004609/gistemp2017_celsius_1072_print.jpg"
+									alt="This color-coded map in Robinson projection displays a progression of changing global surface temperature anomalies from 1880 through 2017. Higher than normal temperatures are shown in red and lower then normal termperatures are shown in blue. The final frame represents the global temperatures 5-year averaged from 2013 through 2017. Scale in degree Celsius.This video is also available on our YouTube channel."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4609 </span></div><div
+					id="tile_details_page_4609_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4609_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4609/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Global Temperature Anomalies from 1880 to 2017
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4252 --><li
+			id="tile_details_page_4252"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4252_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4252/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004200/a004252/GISTEMP_2014update.0905_print.jpg"
+									alt="This color-coded map in Robinson projection displays a progression of changing global surface temperature anomalies from 1880 through 2014.  Higher than normal temperatures are shown in red and lower then normal termperatures are shown in blue.  The final frame represents the global temperatures 5-year averaged from 2010 through 2014."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4252 </span></div><div
+					id="tile_details_page_4252_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4252_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4252/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Five-Year Global Temperature Anomalies from 1880 to 2014
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4135 --><li
+			id="tile_details_page_4135"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4135_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4135/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004100/a004135/GCM2013update_robinson_composite.0790.jpg"
+									alt="This color-coded map in Robinson projection displays a progression of changing global surface temperatures anomalies from 1880 through 2013. Higher than normal temperatures are shown in red and lower then normal temperatures are shown in blue.The final frame represents global temperature anomalies averaged from 2009 through 2013. "
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4135 </span></div><div
+					id="tile_details_page_4135_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4135_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4135/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Five-Year Global Temperature Anomalies from 1880 to 2013
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_4030 --><li
+			id="tile_details_page_4030"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_4030_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/4030/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a000000/a004000/a004030/doublespeed.0777_web.png"
+									alt="Abbreviated 13 second movie starting from 1950 through 2012 with dates and colorbar applied."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 4030 </span></div><div
+					id="tile_details_page_4030_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-pie-chart-fill me-1" aria-hidden="true"></span> Visualization
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_4030_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/4030/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											Five-Year Global Temperature Anomalies from 1880 to 2012
+										</a></h3></div></div></div></li>
+
+				
+			</ul>
+		</div>
+	
+
+
+		</div>
+	
+	
+	
+	
+		<!-- Products -->
+		<div class="col-auto">
+			
+
+
+
+
+
+
+	
+		
+			<!-- Title -->
+			<h2 class="fs-3">Used as a Source In</h2>
+		
+		
+		
+		<div class="position-relative">
+			<ul id="accordion_related_pages_products_card_gallery" class="list-unstyled hstack flex-wrap">
+				<!-- Pages -->
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_31168 --><li
+			id="tile_details_page_31168"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_31168_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/31168/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a030000/a031100/a031168/KarenStGermain_4k_COP26_Presentation_Final_103850_print.jpg"
+									alt="Karen St. Germain, NASA&#x27;s Director of Earth Science, gave this presentation to the 2021 United Nations Climate Change ConferenceWatch this video on the NASA Goddard YouTube channel."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 31168 </span></div><div
+					id="tile_details_page_31168_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-grid-3x2-gap-fill me-1" aria-hidden="true"></span> Hyperwall Visual
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_31168_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/31168/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											What NASA Knows from Decades of Earth System Observations
+										</a></h3></div></div></div></li>
+
+				
+					
+
+
+
+
+<!-- Tile tile_details_page_13909 --><li
+			id="tile_details_page_13909"
+			class="tile-gallery-tile card flex-shrink-0 rounded overflow-hidden position-relative p-0 m-0"
+			style="width: 320px; max-width: 80vw; flex: none;"
+		><!-- Card header --><div
+					id="tile_details_page_13909_header"
+					class="position-relative"
+				><!-- Image topper --><a
+							href="/13909/"
+							title="Go to this page"
+							class="card-img-top bg-dark"
+						><div class="ratio ratio-16x9"><img
+									src="/vis/a010000/a013900/a013909/gpmclimatethumb.png"
+									alt="Music: &quot;Connections Established,&quot; &quot;Data Visions,&quot; Universal Production MusicComplete transcript available."
+									style="object-fit: cover"
+									loading="lazy"
+								></div></a><!-- ID Badge --><span class="position-absolute top-0 start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-bottom-right-radius: var(--bs-border-radius) !important;"> ID: 13909 </span></div><div
+					id="tile_details_page_13909_body"
+					class="position-absolute bottom-0 w-100"
+				><!-- Type badge --><span class="start-0 badge bg-dark bg-opacity-75 fs-6 fw-normal rounded-0" style="border-top-right-radius: var(--bs-border-radius) !important;"><span class="bi bi-person-video me-1" aria-hidden="true"></span> Produced Video
+							</span><!-- Card body --><div class="bg-dark bg-opacity-75 w-100 fs-6 text-white py-1 px-2"><div
+								style="max-height: 225px;"
+							><h3
+										id="tile_details_page_13909_body_title"
+										class="flex-shrink-0 mb-0 fs-6"
+									><a
+											href="/13909/"
+											title="Go to this page"
+											class="link link-light card-title overflow-hidden mb-0"
+											tabindex="-1"
+											style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;"
+										>
+											How NASA Satellites Help Model the Future of Climate
+										</a></h3></div></div></div></li>
+
+				
+			</ul>
+		</div>
+	
+
+
+		</div>
+	
+</div>
+<hr>
+
+			</section>
+		
+
+		
+		<section id="release_time">
+			<h2 class="visually-hidden">Release date</h2>
+			<p class="text-muted mb-0">
+				
+					This page was originally published on Friday, January 10, 2025.
+					<br>
+				
+				This page was last updated on Tuesday, January 20, 2026 at 12:19 AM EST.
+			</p>
+		</section>
+		<hr>
+
+		
+		<section id="section_recommended_pages">
+			 
+
+
+
+<div id="recommended_pages" class="card-gallery-ajax-wrapper">
+	<input type="hidden" id="recommended_pages_var_can_load" value="true">
+	<input type="hidden" id="recommended_pages_var_is_loading" value="false" class="card-gallery-ajax-trigger">
+	<input type="hidden" id="recommended_pages_var_url" value="/api/detailspage/5450/recommended/display">
+	<input type="hidden" id="recommended_pages_var_params" value="">
+	
+		<!-- Title -->
+		<h2 class="fs-3">You may also like...</h2>
+	
+	
+	<div class="position-relative" style="height: 480px; width: 100%">
+		<div id="recommended_pages_results">
+			<!-- This gets filled in dynamically via. AJAX -->
+		</div>
+		<div id="recommended_pages_loader" class="w-100 h-100 position-relative rounded">
+			<div class="position-absolute w-100 h-100">
+				<div class="d-flex justify-content-center align-items-center h-100">
+					<div class="loader"></div>
+				</div>
+			</div>
+			<div class="placeholder-wave w-100 h-100">
+				<div class="card bg-gray-300 placeholder w-100 h-100"></div>
+			</div>
+		</div>
+		<div id="recommended_pages_no_results_warning" class="w-100 h-100 position-relative" style="display: none;">
+			<div class="d-flex justify-content-center align-items-center h-100">
+				<h4 class="fs-3 my-auto">No results.</h4>
+			</div>
+		</div>
+		<div id="recommended_pages_error_warning" class="w-100 h-100 position-relative" style="display: none;">
+			<div class="d-flex justify-content-center align-items-center h-100">
+				<h4 class="fs-3 my-auto">An error occurred. Please reload this page and try again.</h4>
+			</div>
+		</div>
+	</div>
+</div>
+
+		</section>
+	</article>
+
+			</div>
+		</main>
+		<footer>
+			<!-- Footer Javascript -->
+			
+				
+				<script id="_fed_an_ua_tag" src="https://dap.digitalgov.gov/Universal-Federated-Analytics-Min.js?agency=NASA&subagency=GSFC&yt=true&dclink=true"></script>
+				<script id="parsely-cfg" src="https://cdn.parsely.com/keys/svs.gsfc.nasa.gov/p.js" async="" defer=""></script>
+			
+			<script
+				src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.0/dist/js/bootstrap.bundle.min.js"
+				onerror="document.write(`<script src='/static/svs/js/bootstrap.bundle.min.js'>\x3C/script>`)"
+			></script>
+
+			<script src="/static/svs/js/script.js"></script>
+			
+	<script src="/static/svs/js/card-galleries.js"></script>
+
+
+			<!-- Bottom navigation bar -->
+			<nav id="bottom-navbar" class="navbar navbar-dark text-light">
+				<div class="container">
+					<div class="row w-100">
+						<!-- Brands -->
+						<div class="col-12 col-lg d-flex justify-content-center align-items-center">
+							<!-- NASA brand -->
+							<a href="https://www.nasa.gov/" class="link">
+								<img src="/static/svs/images/nasa-meatball.svg" height="60" alt="NASA Home Page">
+							</a>
+							<!-- USA.gov brand -->
+							<a
+								href="https://www.usa.gov/" class="link"
+							>
+								<img src="/static/svs/images/USAgov_logo.svg" height="60" alt="USA.gov Home Page">
+							</a>
+						</div>
+						<hr class="d-block d-lg-none my-2">
+						<div class="col-12 col-sm d-flex align-items-center">
+							<!-- Privacy and guidelines links -->
+							<div class="text-sm-end w-100">
+								
+									<div class="navbar-text">
+										<a href="https://www.nasa.gov/about/highlights/HP_Privacy.html" class="link link-light">Privacy Policy and Important Notices</a>
+										<br>
+										<a href="https://www.nasa.gov/multimedia/guidelines/index.html" class="link link-light">Reproduction Guidelines</a>
+									</div>
+								
+							</div>
+						</div>
+						<div class="col-auto d-none d-sm-flex align-items-center justify-content-center">
+							<div class="vr h-100 start-50"></div>
+						</div>
+						<div class="col-12 col-sm d-flex align-items-center">
+							<!-- Contact links -->
+							<div class="text-sm-start w-100">
+								
+									<div id="site-contacts" class="navbar-text">
+										<div>
+	NASA Official: <span class="email-link flex-nowrap" data-user="mark.u.subbarao" data-linktext="Mark SubbaRao"></span>
+</div>
+ <div>
+	Site Curator: <span class="email-link flex-nowrap" data-user="ella.kaplan" data-linktext="Ella Kaplan"></span>
+</div>
+
+									</div>
+								
+							</div>
+						</div>
+					</div>
+				</div>
+			</nav>
+		</footer>
+	</body>
+</html>

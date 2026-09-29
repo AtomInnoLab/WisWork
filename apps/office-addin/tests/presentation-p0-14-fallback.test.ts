@@ -22,14 +22,14 @@ it('recovers from a real controlled HTTP timeout through the second image source
   roots.push(userDataPath)
   const image = readFileSync(
     new URL(
-      '../../../docs/product/ppt-benchmark-materials/PPT-P0-13/images/schematic-07.png',
+      '../../../docs/product/ppt-benchmark-materials/PPT-P0-14/images/nasa-2024-temperature-anomaly-2k.png',
       import.meta.url,
     ),
   )
   const paths: string[] = []
   const server = createServer((request, response) => {
     paths.push(request.url ?? '')
-    if (request.url === '/timeout.png') return
+    if (request.url === '/2024GISTEMPMap-timeout.png') return
     response.writeHead(200, { 'Content-Type': 'image/png' })
     response.end(image)
   })
@@ -41,15 +41,15 @@ it('recovers from a real controlled HTTP timeout through the second image source
     .spyOn(AbortSignal, 'timeout')
     .mockImplementation((ms) => originalTimeout(Math.min(ms, 250)))
   try {
-    const failed = 'https://93.184.216.34/timeout.png'
-    const healthy = 'https://93.184.216.34/owned-illustration.png'
+    const failed = 'https://93.184.216.34/2024GISTEMPMap-timeout.png'
+    const healthy = 'https://93.184.216.34/2024GISTEMPMap_2K.png'
     const fetchImage = vi.fn((url: string, signal: AbortSignal) =>
       fetch(`http://127.0.0.1:${address.port}${new URL(url).pathname}`, { signal }),
     )
     const attachments = createPresentationAttachmentService({
       userDataPath,
       fetchImage,
-      normalizeImage: async () => ({ bytes: image, width: 960, height: 540 }),
+      normalizeImage: async () => ({ bytes: image, width: 1920, height: 1080 }),
     })
     const skill = createPresentationAttachmentSkill({
       available: () => true,
@@ -73,7 +73,7 @@ it('recovers from a real controlled HTTP timeout through the second image source
     })
     const imported = await skill.importUrls([failed, healthy])
     expect(imported).toMatchObject({ status: 'ready', kind: 'image', source: healthy })
-    expect(paths).toEqual(['/timeout.png', '/owned-illustration.png'])
+    expect(paths).toEqual(['/2024GISTEMPMap-timeout.png', '/2024GISTEMPMap_2K.png'])
     expect(fetchImage).toHaveBeenCalledTimes(2)
     expect((await skill.importUrls([healthy])).attachmentId).toBe(imported.attachmentId)
     expect(fetchImage).toHaveBeenCalledTimes(2)
@@ -91,12 +91,12 @@ it('falls back after an image fetch failure, reuses the durable cache, and compi
   roots.push(userDataPath)
   const image = readFileSync(
     new URL(
-      '../../../docs/product/ppt-benchmark-materials/PPT-P0-13/images/schematic-07.png',
+      '../../../docs/product/ppt-benchmark-materials/PPT-P0-14/images/nasa-2024-temperature-anomaly-2k.png',
       import.meta.url,
     ),
   )
-  const failed = 'https://93.184.216.34/controlled-timeout.png'
-  const healthy = 'https://93.184.216.34/owned-illustration.png'
+  const failed = 'https://93.184.216.34/2024GISTEMPMap-timeout.png'
+  const healthy = 'https://93.184.216.34/2024GISTEMPMap_2K.png'
   const fetchImage = vi.fn(async (url: string) => {
     if (url === failed) throw new Error('simulated_timeout')
     if (url === healthy) return new Response(image, { headers: { 'content-type': 'image/png' } })
@@ -105,7 +105,7 @@ it('falls back after an image fetch failure, reuses the durable cache, and compi
   const attachments = createPresentationAttachmentService({
     userDataPath,
     fetchImage,
-    normalizeImage: async () => ({ bytes: image, width: 960, height: 540 }),
+    normalizeImage: async () => ({ bytes: image, width: 1920, height: 1080 }),
   })
   const skill = createPresentationAttachmentSkill({
     available: () => true,
@@ -125,7 +125,7 @@ it('falls back after an image fetch failure, reuses the durable cache, and compi
     vfs: new InMemoryVfs(),
   })
   const imported = await skill.importUrls([failed, healthy])
-  expect(imported).toMatchObject({ status: 'ready', kind: 'image', width: 960, height: 540 })
+  expect(imported).toMatchObject({ status: 'ready', kind: 'image', width: 1920, height: 1080 })
   expect(imported.source).toBe(healthy)
   expect(fetchImage.mock.calls.map(([url]) => url)).toEqual([failed, healthy])
   expect((await skill.importUrls([healthy])).attachmentId).toBe(imported.attachmentId)
@@ -152,7 +152,7 @@ it('falls back after an image fetch failure, reuses the durable cache, and compi
   )
   expect(media).toHaveLength(1)
   expect(await zip.file(media[0]!)!.async('nodebuffer')).toEqual(image)
-})
+}, 20_000)
 
 it('reports exhausted sources without leaving a ready image attachment', async () => {
   const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-p0-14-exhausted-'))

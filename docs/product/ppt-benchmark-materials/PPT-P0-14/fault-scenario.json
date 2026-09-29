@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "caseId": "PPT-P0-14",
+  "topic": "2024 global surface temperature anomaly",
+  "asOf": "2025-01-11",
+  "sourceDocuments": [
+    {
+      "url": "https://science.nasa.gov/earth/earth-observatory/2024-was-the-warmest-year-on-record-153806/",
+      "localFile": "nasa-2024-article.html"
+    },
+    {
+      "url": "https://svs.gsfc.nasa.gov/5450",
+      "localFile": "nasa-svs-5450.html"
+    }
+  ],
+  "assetId": "nasa-svs-5450-2024-map",
+  "injection": "Delay or time out the primary 4K image once before any page write; allow the official 2K fallback URL to succeed",
+  "requiredEvidence": [
+    "attempt log with candidate order and failure time",
+    "fallback URL, image SHA256 and rights record",
+    "durable cache hit without a second download",
+    "same project and request across retry",
+    "no repeated write of already completed pages",
+    "eight final page screenshots and saved/reopened editable PowerPoint"
+  ],
+  "caution": "The checked-in synthetic test maps validated public URL placeholders to local HTTP and does not prove a NASA network failure or real Office behavior."
+}

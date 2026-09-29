@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "assetId": "nasa-svs-5450-2024-map",
+  "sourcePage": "https://svs.gsfc.nasa.gov/5450",
+  "guidelines": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+  "svsPolicy": "https://svs.gsfc.nasa.gov/help/",
+  "credit": "NASA's Scientific Visualization Studio; data provided by Robert B. Schmunk (NASA/GSFC GISS)",
+  "usage": "Internal educational and informational benchmark; no NASA endorsement implied",
+  "rightsAssessment": "NASA guidance says its media generally is not subject to U.S. copyright and may be used for educational or informational purposes, but NASA logos, identifiable people and separately credited third-party material require separate review. This NASA SVS item names NASA/GSFC GISS contributors and requests credit; human review of item-specific exceptions remains pending.",
+  "reviewStatus": "pending_human",
+  "candidates": [
+    {
+      "role": "primary",
+      "url": "https://svs.gsfc.nasa.gov/vis/a000000/a005400/a005450/2024GISTEMPMap.png",
+      "localBackup": "images/nasa-2024-temperature-anomaly-4k.png",
+      "width": 3840,
+      "height": 2160,
+      "sha256": "446fc86e7076be014e7604b0a03ae7bb3d3884a119b6515519fb2daf23140371"
+    },
+    {
+      "role": "fallback",
+      "url": "https://svs.gsfc.nasa.gov/vis/a000000/a005400/a005450/2024GISTEMPMap_2K.png",
+      "localBackup": "images/nasa-2024-temperature-anomaly-2k.png",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "ddbd57640789b4d60fe1dd0c57bd7563d7ad9d109732dcada2d814c3fa957cbe"
+    }
+  ]
+}
