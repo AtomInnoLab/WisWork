@@ -709,10 +709,14 @@ async fn v2_negotiates_master_backups_and_denies_unnegotiated_requests() {
 }
 
 async fn check_v2_capability(capability: &str) {
+    check_v2_body(capability, None).await;
+}
+async fn check_v2_body(capability: &str, rejected: Option<(&str, serde_json::Value)>) {
     let url = server().await;
     let host = if [
         "presentation-master-backups.v1",
         "presentation-package-backups.v1",
+        "presentation-governance.v1",
     ]
     .contains(&capability)
     {
@@ -766,18 +770,25 @@ async fn check_v2_capability(capability: &str) {
     .await;
     assert_eq!(recv(&mut office).await["code"], "capability_not_negotiated");
 
+    if let Some((name, body)) = rejected {
+        send(&mut office,json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"bad_governance","capability_name":name,"body":body})).await;
+        assert_eq!(recv(&mut office).await["code"], "invalid_request");
+        return;
+    }
+    let body = if capability == "presentation-governance.v1" {
+        json!({"operation":"project_lifecycle_read"})
+    } else {
+        json!({"query":"office agents","max_results":5})
+    };
     send(
         &mut office,
-        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"web_request_2","capability_name":capability,"body":{"query":"office agents","max_results":5}}),
+        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"web_request_2","capability_name":capability,"body":body}),
     )
     .await;
     let forwarded = recv(&mut pc).await;
     assert_eq!(forwarded["version"], 2);
     assert_eq!(forwarded["capability_name"], capability);
-    assert_eq!(
-        forwarded["body"],
-        json!({"query":"office agents","max_results":5})
-    );
+    assert_eq!(forwarded["body"], body);
     assert_eq!(pc_ready["capabilities"], office_ready["capabilities"]);
     send(&mut pc, json!({"version":2,"type":"pc.start","session_id":office_ready["session_id"],"capability":pc_ready["capability"],"request_id":"web_request_2","status":200,"content_type":"application/json"})).await;
     assert_eq!(recv(&mut office).await["version"], 2);
@@ -1523,7 +1534,7 @@ async fn master_backup_capability_budget_accepts_sixteen_and_rejects_seventeen()
         "presentation-production-pdf.v1",
         "presentation-master-backups.v1",
         "presentation-package-backups.v1",
-        "future-two.v1"
+        "presentation-governance.v1"
     ]);
     send(
         &mut office,
@@ -1536,7 +1547,7 @@ async fn master_backup_capability_budget_accepts_sixteen_and_rejects_seventeen()
     send(&mut pc,json!({"version":2,"type":"pc.negotiate","verification_code":created["verification_code"],"capabilities":caps})).await;
     let negotiated = recv(&mut pc).await;
     assert_eq!(negotiated["type"], "pc.negotiated");
-    assert_eq!(negotiated["capabilities"].as_array().unwrap().len(), 15);
+    assert_eq!(negotiated["capabilities"].as_array().unwrap().len(), 16);
     assert!(
         negotiated["capabilities"]
             .as_array()
@@ -1587,4 +1598,39 @@ async fn old_pc_without_package_backups_cannot_forward_master_requests() {
     let ready = recv(&mut office).await;
     send(&mut office,json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"missing_master","capability_name":"presentation-package-backups.v1","body":{"operation":"package_backup_status"}})).await;
     assert_eq!(recv(&mut office).await["code"], "capability_not_negotiated");
+}
+
+#[tokio::test]
+async fn governance_capability_negotiates() {
+    check_v2_capability("presentation-governance.v1").await;
+}
+
+#[tokio::test]
+async fn governance_refuses_non_powerpoint() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(&mut office,json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1","presentation-governance.v1"]})).await;
+    assert_eq!(recv(&mut office).await["code"], "unsupported_host");
+}
+
+#[tokio::test]
+async fn governance_wrong_family_and_context_denied() {
+    for rejected in [
+        ("presentation-governance.v1", json!({"operation":"unknown"})),
+        (
+            "presentation-governance.v1",
+            json!({"operation":"package_backup_read"}),
+        ),
+        ("agent.v1", json!({"operation":"project_deletion_confirm"})),
+        (
+            "presentation-governance.v1",
+            json!({"operation":"project_lifecycle_read","team_context":{}}),
+        ),
+        (
+            "presentation-governance.v1",
+            json!({"operation":"project_lifecycle_read","access_token":"private"}),
+        ),
+    ] {
+        check_v2_body("presentation-governance.v1", Some(rejected)).await;
+    }
 }

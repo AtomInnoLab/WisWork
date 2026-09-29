@@ -87,6 +87,7 @@ export type OfficeRelayCapability =
   | 'presentation-production-pdf.v1'
   | 'presentation-master-backups.v1'
   | 'presentation-package-backups.v1'
+  | 'presentation-governance.v1'
 
 interface Dependencies {
   getTeamAccessToken?: () => Promise<string | null>
@@ -315,6 +316,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
               'presentation-team.v1',
               'presentation-master-backups.v1',
               'presentation-package-backups.v1',
+              'presentation-governance.v1',
             ].includes(value) ||
               activeHost === 'powerpoint') &&
             values.indexOf(value) === index,
@@ -603,6 +605,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
                                   'presentation-team.v1',
                                   'presentation-master-backups.v1',
                                   'presentation-package-backups.v1',
+                                  'presentation-governance.v1',
                                 ].includes(name) || activeHost === 'powerpoint',
                             ),
                           }
@@ -701,6 +704,26 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         throw new Error('relay_capability_unavailable')
       if (request) throw new Error('relay_busy')
       if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody))
+        throw new Error('relay_invalid_request')
+      const governanceOperations = [
+        'project_deletion_preview',
+        'project_deletion_confirm',
+        'project_deletion_resume',
+        'project_lifecycle_initialize',
+        'project_lifecycle_read',
+        'project_lifecycle_set_policy',
+        'project_lifecycle_export_audit',
+      ]
+      const governance = governanceOperations.includes(
+        String((parsedBody as Record<string, unknown>).operation),
+      )
+      if (
+        capabilityName === 'presentation-governance.v1'
+          ? activeHost !== 'powerpoint' || !governance
+          : governanceOperations
+              .slice(0, 3)
+              .includes(String((parsedBody as Record<string, unknown>).operation))
+      )
         throw new Error('relay_invalid_request')
       if ('team_context' in parsedBody || 'access_token' in parsedBody)
         throw new Error('relay_invalid_request')

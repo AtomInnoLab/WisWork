@@ -52,6 +52,7 @@ const SUPPORTED_CAPABILITIES: &[&str] = &[
     "presentation-production-pdf.v1",
     "presentation-master-backups.v1",
     "presentation-package-backups.v1",
+    "presentation-governance.v1",
 ];
 
 #[derive(Clone)]
@@ -807,7 +808,7 @@ async fn create(
     if host != "PowerPoint"
         && requested_capabilities
             .iter()
-            .any(|name| name == "presentation-team.v1")
+            .any(|name| name == "presentation-team.v1" || name == "presentation-governance.v1")
     {
         return Err("unsupported_host");
     }
@@ -1606,6 +1607,29 @@ async fn request(
     } else {
         None
     };
+    let governance_operation = [
+        "project_deletion_preview",
+        "project_deletion_confirm",
+        "project_deletion_resume",
+        "project_lifecycle_initialize",
+        "project_lifecycle_read",
+        "project_lifecycle_set_policy",
+        "project_lifecycle_export_audit",
+    ]
+    .contains(&m["body"]["operation"].as_str().unwrap_or(""));
+    let governance_capability = capability_name.as_deref() == Some("presentation-governance.v1");
+    let deletion_operation = [
+        "project_deletion_preview",
+        "project_deletion_confirm",
+        "project_deletion_resume",
+    ]
+    .contains(&m["body"]["operation"].as_str().unwrap_or(""));
+    if (governance_capability && !governance_operation)
+        || (deletion_operation && !governance_capability)
+        || (governance_capability && session.host != "PowerPoint")
+    {
+        return Err("invalid_request");
+    }
     if session.active.is_some() {
         return Err("request_active");
     }

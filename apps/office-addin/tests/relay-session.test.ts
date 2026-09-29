@@ -1513,3 +1513,274 @@ it('filters package backup capability from non-PowerPoint handshakes', async () 
   session.disconnect()
   await pending
 })
+it('filters governance from non-PowerPoint handshakes', async () => {
+  const socket = new FakeSocket(),
+    session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1', 'presentation-governance.v1'],
+    })
+  const pending = session.connect('word')
+  socket.open()
+  expect(frame(socket, 0).capabilities).toEqual(['agent.v1'])
+  session.disconnect()
+  await pending
+})
+
+it('negotiates governance and preserves bounded streamed response and missing-cap failure', async () => {
+  const socket = new FakeSocket(),
+    session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1', 'presentation-governance.v1'],
+    })
+  const pending = session.connect('powerpoint')
+  socket.open()
+  expect(frame(socket, 0).capabilities).toEqual(['agent.v1', 'presentation-governance.v1'])
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.created',
+      pairing_id: 'pair',
+      verification_code: '123456',
+      expires_in: 120,
+    }),
+  )
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.approved',
+      session_id: 'session',
+      capability: 'secret',
+      expires_in: 1800,
+      capabilities: ['agent.v1', 'presentation-governance.v1'],
+    }),
+  )
+  await pending
+  for (const operation of ['unknown', 'package_backup_status', 'team_project_read']) {
+    await expect(
+      session.capabilityFetch('presentation-governance.v1', { operation }),
+    ).rejects.toThrow('relay_invalid_request')
+  }
+  await expect(
+    session.capabilityFetch('agent.v1', { operation: 'project_deletion_confirm' }),
+  ).rejects.toThrow('relay_invalid_request')
+  await expect(
+    session.capabilityFetch('presentation-governance.v1', {
+      operation: 'project_lifecycle_read',
+      team_context: {},
+    }),
+  ).rejects.toThrow('relay_invalid_request')
+  await expect(
+    session.capabilityFetch('presentation-governance.v1', {
+      operation: 'project_lifecycle_read',
+      access_token: 'private',
+    }),
+  ).rejects.toThrow('relay_invalid_request')
+  const responsePending = session.capabilityFetch('presentation-governance.v1', {
+    operation: 'project_lifecycle_read',
+    documentId: 'doc',
+    changeId: 'change',
+    key: 'snapshot',
+  })
+  const request = frame(socket, 1)
+  expect(request).toMatchObject({
+    capability_name: 'presentation-governance.v1',
+    body: { operation: 'project_lifecycle_read' },
+  })
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'relay.start',
+      session_id: 'session',
+      request_id: request.request_id,
+      status: 200,
+      content_type: 'application/json',
+    }),
+  )
+  const response = await responsePending
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'relay.chunk',
+      session_id: 'session',
+      request_id: request.request_id,
+      sequence: 0,
+      data: btoa('{}'),
+    }),
+  )
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'relay.done',
+      session_id: 'session',
+      request_id: request.request_id,
+    }),
+  )
+  expect(await response.text()).toBe('{}')
+  session.disconnect()
+  const oldSocket = new FakeSocket(),
+    old = createOfficeRelaySession({
+      createSocket: () => oldSocket,
+      capabilities: ['agent.v1', 'presentation-governance.v1'],
+    })
+  const connected = old.connect('powerpoint')
+  oldSocket.open()
+  oldSocket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.created',
+      pairing_id: 'pair',
+      verification_code: '123456',
+      expires_in: 120,
+    }),
+  )
+  oldSocket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.approved',
+      session_id: 'session',
+      capability: 'secret',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+    }),
+  )
+  await connected
+  await expect(
+    old.capabilityFetch('presentation-governance.v1', { operation: 'project_lifecycle_read' }),
+  ).rejects.toThrow('relay_capability_unavailable')
+  expect(oldSocket.sent).toHaveLength(1)
+  old.disconnect()
+})
+
+it('requests the complete sixteen-capability primary set without mixing TeamOnly', async () => {
+  const capabilities = [
+    'agent.v1',
+    'web-search.v1',
+    'web-fetch.v1',
+    'image-search.v1',
+    'presentation.v1',
+    'presentation-attachments.v1',
+    'presentation-assets.v1',
+    'presentation-remote-images.v1',
+    'presentation-webpages.v1',
+    'presentation-asset-rights.v1',
+    'presentation-animation-frame.v1',
+    'presentation-pdf.v1',
+    'presentation-production-pdf.v1',
+    'presentation-master-backups.v1',
+    'presentation-package-backups.v1',
+    'presentation-governance.v1',
+  ] as const
+  const socket = new FakeSocket(),
+    session = createOfficeRelaySession({ createSocket: () => socket, capabilities })
+  const pending = session.connect('powerpoint')
+  socket.open()
+  expect(frame(socket, 0).capabilities).toEqual(capabilities)
+  expect(frame(socket, 0).capabilities).toHaveLength(16)
+  session.disconnect()
+  await pending
+})
+
+it('preserves existing presentation lifecycle compatibility and preserves bounded streamed response and missing-cap failure', async () => {
+  const socket = new FakeSocket(),
+    session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1', 'presentation.v1'],
+    })
+  const pending = session.connect('powerpoint')
+  socket.open()
+  expect(frame(socket, 0).capabilities).toEqual(['agent.v1', 'presentation.v1'])
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.created',
+      pairing_id: 'pair',
+      verification_code: '123456',
+      expires_in: 120,
+    }),
+  )
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.approved',
+      session_id: 'session',
+      capability: 'secret',
+      expires_in: 1800,
+      capabilities: ['agent.v1', 'presentation.v1'],
+    }),
+  )
+  await pending
+  const responsePending = session.capabilityFetch('presentation.v1', {
+    operation: 'project_lifecycle_read',
+    documentId: 'doc',
+    changeId: 'change',
+    key: 'snapshot',
+  })
+  const request = frame(socket, 1)
+  expect(request).toMatchObject({
+    capability_name: 'presentation.v1',
+    body: { operation: 'project_lifecycle_read' },
+  })
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'relay.start',
+      session_id: 'session',
+      request_id: request.request_id,
+      status: 200,
+      content_type: 'application/json',
+    }),
+  )
+  const response = await responsePending
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'relay.chunk',
+      session_id: 'session',
+      request_id: request.request_id,
+      sequence: 0,
+      data: btoa('{}'),
+    }),
+  )
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'relay.done',
+      session_id: 'session',
+      request_id: request.request_id,
+    }),
+  )
+  expect(await response.text()).toBe('{}')
+  session.disconnect()
+  const oldSocket = new FakeSocket(),
+    old = createOfficeRelaySession({
+      createSocket: () => oldSocket,
+      capabilities: ['agent.v1', 'presentation.v1'],
+    })
+  const connected = old.connect('powerpoint')
+  oldSocket.open()
+  oldSocket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.created',
+      pairing_id: 'pair',
+      verification_code: '123456',
+      expires_in: 120,
+    }),
+  )
+  oldSocket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.approved',
+      session_id: 'session',
+      capability: 'secret',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+    }),
+  )
+  await connected
+  await expect(
+    old.capabilityFetch('presentation.v1', { operation: 'project_lifecycle_read' }),
+  ).rejects.toThrow('relay_capability_unavailable')
+  expect(oldSocket.sent).toHaveLength(1)
+  old.disconnect()
+})
