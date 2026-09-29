@@ -53,6 +53,7 @@ import {
   presentationQaMutationScope,
   presentationQaRecheckBytes,
   PRESENTATION_QA_RECHECK_FIELD_BYTES,
+  PRESENTATION_QA_INVALIDATED_FIELD_BYTES,
   type PresentationQaRecord,
 } from './presentation-qa.js'
 import { validPresentationImportRecord } from './presentation-page-delivery.js'
@@ -241,7 +242,8 @@ export function createPresentationDocumentBinding(
     if (
       typeof raw !== 'string' ||
       new TextEncoder().encode(raw).byteLength >
-        256 * 1024 + 8 * 32 * PRESENTATION_QA_RECHECK_FIELD_BYTES
+        256 * 1024 +
+          8 * 32 * (PRESENTATION_QA_RECHECK_FIELD_BYTES + PRESENTATION_QA_INVALIDATED_FIELD_BYTES)
     )
       throw new Error('presentation_qa_state_invalid')
     let records: Record<string, PresentationQaRecord>
@@ -1572,7 +1574,19 @@ export function createPresentationDocumentBinding(
             {
               ...record,
               pages: record.pages.map((page) =>
-                matches(page.hostSlideId) ? { ...page, recheckRequired: true as const } : page,
+                matches(page.hostSlideId) && !page.recheckRequired
+                  ? {
+                      ...page,
+                      recheckRequired: true as const,
+                      invalidatedAt: new Date(
+                        Math.max(
+                          Date.now(),
+                          Date.parse(page.capturedAt),
+                          Date.parse(page.visual.reviewedAt ?? '') || 0,
+                        ),
+                      ).toISOString(),
+                    }
+                  : page,
               ),
             },
           ]),

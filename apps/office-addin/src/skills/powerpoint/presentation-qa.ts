@@ -27,6 +27,7 @@ export interface PresentationQaRecord {
     screenshotBytes: number
     screenshotRenderer?: 'libreoffice'
     recheckRequired?: true
+    invalidatedAt?: string
     structure: {
       status: 'passed' | 'warning' | 'incomplete'
       shapeCount: number
@@ -45,10 +46,15 @@ export interface PresentationQaRecord {
 }
 // Bookkeeping has a fixed JSON cost, separate from the original source/review content budget.
 export const PRESENTATION_QA_RECHECK_FIELD_BYTES = ',"recheckRequired":true'.length
+export const PRESENTATION_QA_INVALIDATED_FIELD_BYTES = ',"invalidatedAt":"0000-00-00T00:00:00.000Z"'
+  .length
 export function presentationQaRecheckBytes(record: Pick<PresentationQaRecord, 'pages'>): number {
-  return (
-    record.pages.filter((page) => page?.recheckRequired === true).length *
-    PRESENTATION_QA_RECHECK_FIELD_BYTES
+  return record.pages.reduce(
+    (sum, page) =>
+      sum +
+      (page?.recheckRequired === true ? PRESENTATION_QA_RECHECK_FIELD_BYTES : 0) +
+      (page?.invalidatedAt !== undefined ? PRESENTATION_QA_INVALIDATED_FIELD_BYTES : 0),
+    0,
   )
 }
 export interface PresentationQaOptions {
@@ -122,6 +128,7 @@ export function validatePresentationQaRecord(value: unknown): value is Presentat
           'screenshotBytes',
           'screenshotRenderer',
           'recheckRequired',
+          'invalidatedAt',
           'structure',
           'visual',
         ]) ||
@@ -168,6 +175,14 @@ export function validatePresentationQaRecord(value: unknown): value is Presentat
       if (
         !object(v, ['status', 'reviewer', 'notes', 'reviewedAt']) ||
         !['needs_review', 'pass', 'needs_changes'].includes(String(v.status))
+      )
+        return false
+      if (
+        Object.hasOwn(p, 'invalidatedAt') &&
+        (p.recheckRequired !== true ||
+          !iso(p.invalidatedAt) ||
+          p.invalidatedAt < p.capturedAt ||
+          (v.reviewedAt !== undefined && (!iso(v.reviewedAt) || p.invalidatedAt < v.reviewedAt)))
       )
         return false
       if (v.status === 'needs_review') {

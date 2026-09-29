@@ -209,13 +209,18 @@ it('invalidates a near-64KiB captured record without consuming its content budge
     ...restored,
     pages: restored.pages.map((page, i) => {
       if (i) return page
-      const { recheckRequired: _flag, ...rest } = page
+      const { recheckRequired: _flag, invalidatedAt: _time, ...rest } = page
       return rest
     }),
   }
   await f.binding.writeQa('project/request-1', recaptured)
   await f.binding.invalidateQa()
-  expect(f.create().readQa('project/request-1')).toEqual(restored)
+  const endedAgain = f.create().readQa('project/request-1')!
+  expect(endedAgain.pages[0]!.invalidatedAt! >= restored.pages[0]!.invalidatedAt!).toBe(true)
+  expect(endedAgain.pages.slice(1)).toEqual(restored.pages.slice(1))
+  expect(endedAgain.pages.map((page) => page.visual)).toEqual(
+    restored.pages.map((page) => page.visual),
+  )
 })
 it('invalidates near-256KiB history and retains the original aggregate content ceiling', async () => {
   const f = fixture(),
@@ -427,4 +432,53 @@ it('treats known empty dependencies as no invalidation and no settings save', as
   f.fail()
   await f.binding.invalidateQa([])
   expect(f.create().readQa('project/request-1')).toEqual(value)
+})
+it('records the first scoped invalidation with clock clamping and retains it on repeat and reopen', async () => {
+  const f = fixture(),
+    doc = await f.binding.documentId(),
+    value = record(doc)
+  value.pages[0]!.capturedAt = '2099-01-01T00:00:00.000Z'
+  value.pages[0]!.visual = {
+    status: 'pass',
+    reviewer: 'agent',
+    notes: 'historical opinion',
+    reviewedAt: '2099-01-01T00:00:01.000Z',
+  }
+  value.pages.push({ ...structuredClone(value.pages[0]!), pageId: 'page2', hostSlideId: '257' })
+  await f.binding.writeQa('project/request-1', value)
+  await f.binding.invalidateQa(['256'])
+  const first = f.create().readQa('project/request-1')!
+  expect(first.pages[0]!.invalidatedAt).toBe('2099-01-01T00:00:01.000Z')
+  expect(first.pages[1]).not.toHaveProperty('invalidatedAt')
+  await f.binding.invalidateQa(['256'])
+  expect(f.create().readQa('project/request-1')).toEqual(first)
+  await f.binding.invalidateQa()
+  const whole = f.create().readQa('project/request-1')!
+  expect(whole.pages[0]).toEqual(first.pages[0])
+  expect(whole.pages[1]!.invalidatedAt).toBe('2099-01-01T00:00:01.000Z')
+})
+it('does not invent an old stale time and rolls back a first timestamp when settings saving fails', async () => {
+  const f = fixture(),
+    value = record(await f.binding.documentId())
+  value.pages[0]!.recheckRequired = true
+  value.pages.push({ ...structuredClone(value.pages[0]!), pageId: 'page2', hostSlideId: '257' })
+  delete value.pages[1]!.recheckRequired
+  await f.binding.writeQa('project/request-1', value)
+  f.fail()
+  await expect(f.binding.invalidateQa()).rejects.toThrow('save_failed')
+  expect(f.create().readQa('project/request-1')).toEqual(value)
+  const g = fixture(),
+    original = record(await g.binding.documentId())
+  original.pages[0]!.recheckRequired = true
+  original.pages.push({
+    ...structuredClone(original.pages[0]!),
+    pageId: 'page2',
+    hostSlideId: '257',
+  })
+  delete original.pages[1]!.recheckRequired
+  await g.binding.writeQa('project/request-1', original)
+  await g.binding.invalidateQa()
+  const result = g.create().readQa('project/request-1')!
+  expect(result.pages[0]).not.toHaveProperty('invalidatedAt')
+  expect(result.pages[1]!.invalidatedAt).toEqual(expect.any(String))
 })

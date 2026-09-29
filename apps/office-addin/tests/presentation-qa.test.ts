@@ -819,3 +819,43 @@ it('locks an explicitly empty mutation scope without discarding any live capture
     }),
   ).not.toHaveProperty('isError', true)
 })
+it('validates canonical first invalidation times only on stale evidence after capture and review', async () => {
+  const f = setup()
+  await f.skill.executeTool({
+    id: 'capture',
+    name: 'capture_presentation_page_qa',
+    input: { page_id: 'first' },
+  })
+  const record = structuredClone(f.readQa()!)
+  const page = record.pages[0]!
+  const timestamp = page.capturedAt
+  const valid = { ...page, recheckRequired: true as const, invalidatedAt: timestamp }
+  expect(validatePresentationQaRecord({ ...record, pages: [valid] })).toBe(true)
+  for (const patch of [
+    { recheckRequired: undefined },
+    { recheckRequired: false },
+    { invalidatedAt: undefined },
+    { invalidatedAt: timestamp.replace(/\.\d{3}Z$/, 'Z') },
+    { invalidatedAt: '2000-01-01T00:00:00.000Z' },
+    { invalidatedAt: '2026-02-30T00:00:00.000Z' },
+    {
+      visual: {
+        status: 'pass',
+        reviewer: 'agent',
+        notes: 'opinion',
+        reviewedAt: '2099-01-01T00:00:00.000Z',
+      },
+    },
+  ]) {
+    expect(validatePresentationQaRecord({ ...record, pages: [{ ...valid, ...patch }] })).toBe(false)
+  }
+  await f.writeQa('project/request', { ...record, pages: [valid] })
+  const captured = await f.skill.executeTool({
+    id: 'recapture',
+    name: 'capture_presentation_page_qa',
+    input: { page_id: 'first' },
+  })
+  expect(captured.isError, captured.output).not.toBe(true)
+  expect(f.readQa()!.pages[0]).not.toHaveProperty('invalidatedAt')
+  expect(f.readQa()!.pages[0]).not.toHaveProperty('recheckRequired')
+})

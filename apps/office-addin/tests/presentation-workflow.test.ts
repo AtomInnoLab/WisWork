@@ -170,7 +170,12 @@ const imported: PresentationImportProgress = {
   total: production.total,
   completed: production.total,
   status: 'complete',
-  pages: production.pages.map(({ id, title }) => ({ id, title, state: 'complete' })),
+  pages: production.pages.map(({ id, title }) => ({
+    id,
+    title,
+    state: 'complete',
+    slideId: `host-${id}`,
+  })),
 }
 const qa: PresentationQaRecord = {
   version: 1,
@@ -194,7 +199,12 @@ const qa: PresentationQaRecord = {
       shapesTruncated: false,
       overlapsTruncated: false,
     },
-    visual: { status: 'pass', reviewer: 'agent', reviewedAt: '2026-09-24T00:01:00.000Z' },
+    visual: {
+      status: 'pass',
+      reviewer: 'agent',
+      notes: '历史Agent视觉意见',
+      reviewedAt: '2026-09-24T00:01:00.000Z',
+    },
   })),
 }
 
@@ -352,9 +362,9 @@ it('identifies a fallback visual review as pending PowerPoint host appearance', 
   expect(summary.stages.find((stage) => stage.name === '页面审查')?.detail).toContain(
     '1 页使用备用预览',
   )
-  expect(
-    summary.timeline.find((event) => event.id === `capture-${fallback.pages[0]!.pageId}`)?.text,
-  ).toContain('LibreOffice 备用预览')
+  expect(summary.timeline.find((event) => event.scope === 'saved_page_qa')?.text).toContain(
+    'LibreOffice 备用预览',
+  )
 })
 
 it('marks durable phase problems for attention without claiming delivery completion', async () => {
@@ -596,12 +606,16 @@ it('rebuilds recovery events from saved records and isolates the selected reques
       'qa',
     ]),
   )
-  expect(first.timeline.filter((item) => item.id.startsWith('capture-'))).toHaveLength(
+  expect(first.timeline.filter((item) => item.scope === 'saved_page_qa')).toHaveLength(
     qa.pages.length,
   )
-  expect(first.timeline.filter((item) => item.id.startsWith('review-'))).toHaveLength(
-    qa.pages.length,
-  )
+  expect(
+    first.timeline.filter(
+      (item) =>
+        item.scope === 'saved_page_qa' &&
+        item.records?.some((record) => record.type === 'qa.visual.recorded'),
+    ),
+  ).toHaveLength(qa.pages.length)
   expect(
     first.timeline.find(
       (item) =>
@@ -666,7 +680,7 @@ it('replays page import and historical QA times only for the current request', (
     ...imported,
     pages: imported.pages.map((page, index) => ({
       ...page,
-      slideId: `${256 + index}#`,
+      slideId: `host-${page.id}`,
       completedAt: `2026-09-24T00:0${index}:00.000Z`,
     })),
   }
@@ -682,16 +696,16 @@ it('replays page import and historical QA times only for the current request', (
     at: timed.pages[0]!.completedAt,
     text: expect.stringContaining('不代表视觉'),
   })
-  expect(
-    summary.timeline.find((item) => item.id === `review-${qa.pages[0]!.pageId}`)?.text,
-  ).toContain('历史视觉复核')
+  expect(summary.timeline.find((item) => item.scope === 'saved_page_qa')?.text).toContain(
+    '历史视觉复核',
+  )
   expect(
     presentationWorkflowSummary(
       { ...project, production },
       { ...timed, requestId: 'old' },
       { ...qa, requestId: 'old' },
     )?.timeline.some(
-      (event) => event.scope === 'host_page_import' || /^(capture-|review-)/.test(event.id),
+      (event) => event.scope === 'host_page_import' || event.scope === 'saved_page_qa',
     ),
   ).toBe(false)
 })

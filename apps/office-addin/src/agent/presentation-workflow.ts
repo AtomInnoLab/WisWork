@@ -4,7 +4,10 @@ import {
 } from '@wiswork/project-store/presentation-delivery-bundle'
 import type { PresentationProjectStatus } from '../skills/powerpoint/presentation-project.js'
 import type { PresentationImportProgress } from '../skills/powerpoint/presentation-page-delivery.js'
-import type { PresentationQaRecord } from '../skills/powerpoint/presentation-qa.js'
+import {
+  validatePresentationQaRecord,
+  type PresentationQaRecord,
+} from '../skills/powerpoint/presentation-qa.js'
 import type { PresentationDeliveryReport } from '@wiswork/pptx-engine/presentation-delivery-report'
 import { PRESENTATION_DOMAIN_PROFILES } from '@wiswork/pptx-engine/presentation-plan'
 import type { PresentationSourceAuditHistory } from '@wiswork/project-store/presentation-source-audit'
@@ -144,6 +147,9 @@ export interface PresentationWorkflowSummary {
       | 'host.import.started'
       | 'host.import.recorded'
       | 'host.import.uncertain'
+      | 'qa.capture.recorded'
+      | 'qa.visual.recorded'
+      | 'qa.evidence.invalidated'
     scope?:
       | 'production_asset_resolution'
       | 'source_excerpt_audit'
@@ -153,12 +159,18 @@ export interface PresentationWorkflowSummary {
       | 'explicit_user_decision'
       | 'current_document_delivery_bundle'
       | 'host_page_import'
+      | 'saved_page_qa'
     recordsLabel?: string
     records?: {
       id: string
       text: string
       at: string
-      type?: 'host.import.started' | 'host.import.recorded'
+      type?:
+        | 'host.import.started'
+        | 'host.import.recorded'
+        | 'qa.capture.recorded'
+        | 'qa.visual.recorded'
+        | 'qa.evidence.invalidated'
     }[]
   }[]
   attention: { id: string; text: string }[]
@@ -851,18 +863,56 @@ export function presentationWorkflowSummary(
       id: 'qa',
       text: `历史页面审查：${reviewed}/${qa!.pages.length} 页结构与视觉通过`,
     })
-    for (const page of qa!.pages) {
-      timeline.push({
-        id: `capture-${page.pageId}`,
-        text: `已采集页面 ${page.title} 的历史${page.screenshotRenderer ? 'LibreOffice 备用预览' : '宿主截图'}${page.recheckRequired ? '；需重审' : ''}`,
-        at: page.capturedAt,
-      })
+  }
+  if (
+    production?.projectId === project.projectId &&
+    qa?.source === 'production' &&
+    qa.projectId === project.projectId &&
+    qa.requestId === production.requestId &&
+    validatePresentationQaRecord(qa) &&
+    qa.pages.every((page) => pageIds?.includes(page.pageId)) &&
+    (!reportMatches || qa.documentId === report!.documentId)
+  ) {
+    for (const page of qa.pages) {
+      if (importMatches) {
+        const host = imported!.pages.find((item) => item.id === page.pageId)?.slideId
+        if (host !== page.hostSlideId) continue
+      }
+      const id = `page-qa:${JSON.stringify([qa.documentId, qa.projectId, qa.requestId, page.pageId, page.hostSlideId, page.capturedAt, page.screenshotDigest])}`
+      const fallback = page.screenshotRenderer === 'libreoffice'
+      const caveat = `${fallback ? 'LibreOffice 备用预览；宿主外观未验；' : ''}历史记录不代表当前宿主外观、专业事实或保存重开验收通过`
+      const records: NonNullable<PresentationWorkflowSummary['timeline'][number]['records']> = [
+        {
+          id: `${id}:capture`,
+          type: 'qa.capture.recorded',
+          at: page.capturedAt,
+          text: `已记录页面 ${page.title} 的历史${fallback ? 'LibreOffice 备用预览' : '宿主截图'}；${caveat}`,
+        },
+      ]
       if (page.visual.reviewedAt)
-        timeline.push({
-          id: `review-${page.pageId}`,
-          text: `已记录页面 ${page.title} 的历史视觉复核：${page.visual.status === 'pass' ? '通过' : '需修改'}${page.screenshotRenderer ? '；宿主外观待核验' : ''}${page.recheckRequired ? '；结果已失效' : ''}`,
+        records.push({
+          id: `${id}:visual:${page.visual.reviewedAt}`,
+          type: 'qa.visual.recorded',
           at: page.visual.reviewedAt,
+          text: `Agent 历史视觉复核：${page.visual.status === 'pass' ? '通过' : '需修改'}；${page.visual.notes}；${caveat}`,
         })
+      if (page.invalidatedAt)
+        records.push({
+          id: `${id}:invalidated:${page.invalidatedAt}`,
+          type: 'qa.evidence.invalidated',
+          at: page.invalidatedAt,
+          text: `页面 ${page.title} 的截图与复核证据首次失效；需重新采集和核对，不代表原记录丢失。`,
+        })
+      const latest = records.at(-1)!
+      timeline.push({
+        id,
+        scope: 'saved_page_qa',
+        type: latest.type,
+        at: latest.at,
+        text: `页面 ${page.title}：${page.invalidatedAt ? 'QA 证据已记录失效' : page.visual.reviewedAt ? `已记录 Agent 历史视觉复核：${page.visual.status === 'pass' ? '通过' : '需修改'}` : '已记录历史截图'}${page.recheckRequired ? '；结果已失效，需重审' : ''}${page.recheckRequired && !page.invalidatedAt ? '（失效时间未知）' : ''}；${caveat}`,
+        recordsLabel: '页面 QA 记录',
+        records,
+      })
     }
   }
   if (reportMatches) {
