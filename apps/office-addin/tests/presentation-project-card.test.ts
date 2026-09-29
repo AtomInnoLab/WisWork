@@ -1,3 +1,4 @@
+import { hostBundleReceipt } from './presentation-host-bundle-fixture.js'
 // @vitest-environment jsdom
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -30,6 +31,11 @@ afterEach(async () => {
 async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () => void) {
   const listeners = new Set<() => void>()
   const controller: PresentationProjectController = {
+    currentBundleAvailable: vi.fn(() => true),
+    exportCurrentBundle: vi.fn(async () => {}),
+    restoreDeliveryBundle: vi.fn(async () => {}),
+    readDeliveryBundles: vi.fn(async () => {}),
+    deleteDeliveryBundle: vi.fn(async () => {}),
     acceptPlan: vi.fn(async () => {}),
     editPlan: vi.fn(async () => {}),
     pdfAvailable: vi.fn(() => false),
@@ -1065,4 +1071,78 @@ it('keeps one collapsed page event row across retries and preserves run chronolo
       (time) => time.textContent,
     ),
   ).toEqual(['2026-09-24T00:00:01.000Z', '2026-09-24T00:00:04.000Z'])
+})
+
+it('shows current-host bundle actions only for new PCs and states the history/completion boundary', async () => {
+  const snapshot: Snapshot = {
+    ...pending,
+    project: {
+      ...pending.project!,
+      deliveryBundlesAvailable: true,
+      production: {
+        projectId: 'p1',
+        requestId: 'pages',
+        planRevision: 1,
+        status: 'compiled',
+        compiledCount: 1,
+        total: 1,
+        pages: [{ id: 's1', title: '目标', state: 'compiled', attempt: 1 }],
+      },
+    },
+  }
+  const ui = await mount(snapshot)
+  expect(ui.container.textContent).toContain('当前 PowerPoint 文稿交付包')
+  expect(ui.container.textContent).toContain('历史 QA 与保存点')
+  expect(ui.container.textContent).toContain('检查待完成')
+  await act(async () => ui.button('导出当前文稿交付包').click())
+  expect(ui.controller.exportCurrentBundle).toHaveBeenCalledWith(false)
+  await act(async () => ui.button('导出当前文稿交付包（含宿主 PDF）').click())
+  expect(ui.controller.exportCurrentBundle).toHaveBeenCalledWith(true)
+  await act(async () => ui.button('刷新本机交付包').click())
+  expect(ui.controller.readDeliveryBundles).toHaveBeenCalledOnce()
+  await ui.update(pending)
+  expect(ui.container.textContent).not.toContain('当前 PowerPoint 文稿交付包')
+})
+
+it('offers ZIP restoration from persisted receipts and disables it while a bundle operation is pending', async () => {
+  const snapshot: Snapshot = {
+    ...pending,
+    deliveryBundles: [hostBundleReceipt('doc', 'p1')],
+    project: { ...pending.project!, deliveryBundlesAvailable: true },
+  }
+  const ui = await mount(snapshot)
+  await act(async () => ui.button('恢复 ZIP 到会话附件').click())
+  expect(ui.controller.restoreDeliveryBundle).toHaveBeenCalledWith('a'.repeat(64))
+  expect(ui.container.textContent).toContain('包含已有记录')
+  await ui.update({ ...snapshot, phase: 'bundling' })
+  expect(ui.button('恢复 ZIP 到会话附件').disabled).toBe(true)
+  expect(ui.container.textContent).toContain('正在处理当前文稿交付包')
+})
+
+it('deletes a local ready or uploading bundle only after explicit confirmation', async () => {
+  const receipt = hostBundleReceipt('doc', 'p1')
+  const snapshot: Snapshot = {
+    ...pending,
+    deliveryBundles: [receipt],
+    project: { ...pending.project!, deliveryBundlesAvailable: true },
+  }
+  const ui = await mount(snapshot)
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  try {
+    await act(async () => ui.button('删除本机包').click())
+    expect(ui.controller.deleteDeliveryBundle).not.toHaveBeenCalled()
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('原始 PowerPoint 文稿不受影响'))
+    confirm.mockReturnValue(true)
+    await act(async () => ui.button('删除本机包').click())
+    expect(ui.controller.deleteDeliveryBundle).toHaveBeenCalledWith(receipt.bundleId)
+    const { completedAt: _completedAt, ...uploading } = receipt
+    await ui.update({
+      ...snapshot,
+      deliveryBundles: [{ ...uploading, state: 'uploading', receivedBytes: 0 }],
+    })
+    await act(async () => ui.button('删除本机包').click())
+    expect(ui.controller.deleteDeliveryBundle).toHaveBeenCalledTimes(2)
+  } finally {
+    confirm.mockRestore()
+  }
 })

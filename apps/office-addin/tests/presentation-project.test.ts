@@ -1,3 +1,5 @@
+import type { AgentSkill } from '@wiswork/agent-core'
+import { hostBundleReceipt } from './presentation-host-bundle-fixture.js'
 import { describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import {
@@ -23,7 +25,11 @@ function fixture() {
   const request = vi.fn(
     async (_body: unknown, _signal?: AbortSignal) => new Response(JSON.stringify(project)),
   )
-  const executeTool = vi.fn(async () => ({ output: '{}', mutated: false, summary: '已恢复' }))
+  const executeTool = vi.fn<AgentSkill['executeTool']>(async () => ({
+    output: '{}',
+    mutated: false,
+    summary: '已恢复',
+  }))
   const documentId = vi.fn(async () => 'document-1')
   const available = vi.fn(() => true)
   const pdfAvailable = vi.fn(() => true)
@@ -1176,3 +1182,233 @@ it.each(['valid', 'foreign-document', 'foreign-task', 'unsafe-error'] as const)(
     }
   },
 )
+
+const bundleProject = () => ({
+  ...project,
+  deliveryBundlesAvailable: true,
+  production: {
+    projectId: 'project-1',
+    requestId: 'pages',
+    planRevision: 1,
+    status: 'compiled',
+    compiledCount: 1,
+    total: 1,
+    pages: [{ id: 'slide-1', title: '研究结论', state: 'compiled', attempt: 1 }],
+  },
+})
+function bundleFixture() {
+  const f = fixture()
+  f.request.mockImplementation(
+    async (body: unknown) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'status'
+            ? bundleProject()
+            : (body as { operation: string }).operation === 'delivery_bundle_list'
+              ? { bundles: [] }
+              : { error: 'invalid_request' },
+        ),
+      ),
+  )
+  const controller = createPresentationProjectController({
+    request: f.request,
+    executeTool: f.executeTool,
+    documentId: f.documentId,
+    available: f.available,
+    lastProject: f.lastProject,
+    nativeDocumentExportAvailable: () => true,
+  })
+  return { ...f, controller }
+}
+it('restores delivery receipt lists on reopen and dispatches explicit current-host export without completing the project', async () => {
+  const f = bundleFixture()
+  await f.controller.refresh()
+  expect(f.controller.snapshot().project?.deliveryBundlesAvailable).toBe(true)
+  expect(f.controller.snapshot().deliveryBundles).toEqual([])
+  await f.controller.exportCurrentBundle?.(true)
+  expect(f.executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'export_current_presentation_bundle',
+      input: { project_id: 'project-1', request_id: 'pages', include_pdf: true },
+    }),
+    expect.any(AbortSignal),
+  )
+  expect(f.controller.snapshot().project?.status).toBe('pending')
+  expect(f.request).toHaveBeenCalledWith(
+    {
+      operation: 'delivery_bundle_list',
+      documentId: 'document-1',
+      projectId: 'project-1',
+      requestId: 'pages',
+    },
+    expect.any(AbortSignal),
+  )
+})
+it('hides old-PC bundle capability, rejects malformed capability and ignores cancelled or cross-document lists', async () => {
+  const f = bundleFixture()
+  f.request.mockResolvedValueOnce(new Response(JSON.stringify(project)))
+  await f.controller.refresh()
+  expect(f.controller.snapshot().project?.deliveryBundlesAvailable).toBeUndefined()
+  await f.controller.exportCurrentBundle?.()
+  expect(f.executeTool).not.toHaveBeenCalled()
+  f.request.mockResolvedValueOnce(
+    new Response(JSON.stringify({ ...project, deliveryBundlesAvailable: 'yes' })),
+  )
+  await f.controller.refresh()
+  expect(f.controller.snapshot().project).toBeUndefined()
+  for (const cancel of [true, false]) {
+    const item = bundleFixture()
+    let resolve!: (response: Response) => void
+    item.request.mockImplementation(async (body: unknown) =>
+      (body as { operation: string }).operation === 'delivery_bundle_list'
+        ? new Promise<Response>((done) => {
+            resolve = done
+          })
+        : new Response(
+            JSON.stringify(
+              (body as { operation: string }).operation === 'status'
+                ? bundleProject()
+                : { error: 'invalid_request' },
+            ),
+          ),
+    )
+    const pending = item.controller.refresh()
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'))
+    if (cancel) item.controller.cancel()
+    else item.documentId.mockResolvedValue('other')
+    resolve(new Response(JSON.stringify({ bundles: [] })))
+    await pending
+    expect(item.controller.snapshot().deliveryBundles).toBeUndefined()
+  }
+})
+
+it('recovers listed ZIP receipts after lost export response and on a new controller without replaying export', async () => {
+  const f = bundleFixture()
+  const receipt = hostBundleReceipt()
+  f.request.mockImplementation(
+    async (body: unknown) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'status'
+            ? bundleProject()
+            : (body as { operation: string }).operation === 'delivery_bundle_list'
+              ? { bundles: [receipt] }
+              : { error: 'invalid_request' },
+        ),
+      ),
+  )
+  await f.controller.refresh()
+  f.executeTool.mockRejectedValueOnce(new Error('private-http-detail'))
+  await f.controller.exportCurrentBundle?.()
+  expect(f.controller.snapshot().deliveryBundles).toEqual([receipt])
+  expect(f.controller.snapshot().bundleNotice).toContain('未确认成功')
+  expect(f.controller.snapshot().bundleNotice).not.toContain('private-http-detail')
+  const reopened = createPresentationProjectController({
+    request: f.request,
+    executeTool: f.executeTool,
+    documentId: f.documentId,
+    available: f.available,
+    lastProject: f.lastProject,
+    nativeDocumentExportAvailable: () => true,
+  })
+  await reopened.refresh()
+  expect(reopened.snapshot().deliveryBundles).toEqual([receipt])
+  expect(f.executeTool).toHaveBeenCalledTimes(1)
+  await reopened.restoreDeliveryBundle?.(receipt.bundleId)
+  expect(f.executeTool).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      name: 'restore_presentation_delivery_bundle',
+      input: { project_id: 'project-1', request_id: 'pages', bundle_id: receipt.bundleId },
+    }),
+    expect.any(AbortSignal),
+  )
+})
+it('rejects cross-document receipts and drops a late export after cancellation', async () => {
+  const f = bundleFixture()
+  await f.controller.refresh()
+  f.request.mockImplementation(
+    async (body: unknown) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'delivery_bundle_list'
+            ? { bundles: [hostBundleReceipt('other')] }
+            : bundleProject(),
+        ),
+      ),
+  )
+  await f.controller.readDeliveryBundles?.()
+  expect(f.controller.snapshot().deliveryBundles).toEqual([])
+  expect(f.controller.snapshot().bundleNotice).toContain('无法确认')
+  const late = bundleFixture()
+  await late.controller.refresh()
+  let finish!: (value: { output: string; mutated: boolean; summary: string }) => void
+  late.executeTool.mockImplementation(
+    () =>
+      new Promise((done) => {
+        finish = done
+      }),
+  )
+  const pending = late.controller.exportCurrentBundle?.()
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+  late.controller.cancel()
+  finish({ output: '{}', mutated: false, summary: 'late' })
+  await pending
+  expect(late.controller.snapshot().phase).toBe('idle')
+  expect(late.controller.snapshot().project).toBeUndefined()
+  expect(late.controller.snapshot().deliveryBundles).toBeUndefined()
+})
+
+it('explicitly deletes only the scoped local bundle and refreshes its receipt list', async () => {
+  const f = bundleFixture()
+  await f.controller.refresh()
+  const receipt = hostBundleReceipt()
+  f.request.mockImplementation(
+    async (body: unknown) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'delivery_bundle_delete'
+            ? { bundleId: receipt.bundleId, deleted: true }
+            : { bundles: [] },
+        ),
+      ),
+  )
+  await f.controller.deleteDeliveryBundle?.(receipt.bundleId)
+  expect(f.request).toHaveBeenCalledWith(
+    {
+      operation: 'delivery_bundle_delete',
+      documentId: 'document-1',
+      projectId: 'project-1',
+      requestId: 'pages',
+      bundleId: receipt.bundleId,
+    },
+    expect.any(AbortSignal),
+  )
+  expect(f.controller.snapshot().deliveryBundles).toEqual([])
+  expect(f.controller.snapshot().bundleNotice).toContain('原始 PowerPoint 文稿不受影响')
+  f.request.mockResolvedValueOnce(
+    new Response(JSON.stringify({ bundleId: receipt.bundleId, deleted: true, unsafe: true })),
+  )
+  await f.controller.deleteDeliveryBundle?.(receipt.bundleId)
+  expect(f.controller.snapshot().bundleNotice).toContain('未确认成功')
+})
+
+it('reports actionable local quota failures and preserves native PDF-unavailable success detail', async () => {
+  const f = bundleFixture()
+  await f.controller.refresh()
+  f.executeTool.mockResolvedValueOnce({
+    output: 'presentation_quota_exceeded',
+    isError: true,
+    mutated: false,
+    summary: 'failed',
+  })
+  await f.controller.exportCurrentBundle?.()
+  expect(f.controller.snapshot().bundleNotice).toContain('容量已满')
+  expect(f.controller.snapshot().bundleNotice).toContain('刷新或恢复已有包')
+  f.executeTool.mockResolvedValueOnce({
+    output: '{}',
+    mutated: false,
+    summary: '当前文稿 PPTX 交付包已保存；宿主 PDF 不可用，PPTX 已保留。',
+  })
+  await f.controller.exportCurrentBundle?.(true)
+  expect(f.controller.snapshot().bundleNotice).toContain('宿主 PDF 不可用，PPTX 已保留')
+})

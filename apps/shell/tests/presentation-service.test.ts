@@ -168,6 +168,7 @@ describe('durable project recovery', () => {
     expect(decode(await reload(query, signal()))).toEqual({
       projectId: 'deck',
       title: 'Second',
+      deliveryBundlesAvailable: true,
       status: 'pending',
       latestRequestId: 'second',
       latestCompiledRequestId: 'first',

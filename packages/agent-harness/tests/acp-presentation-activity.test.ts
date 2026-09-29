@@ -62,6 +62,8 @@ it.each([
   ['save_presentation_brand_kit', 'style'],
   ['save_presentation_page_backup', 'checkpoint'],
   ['export_presentation_pdf', 'delivery'],
+  ['export_current_presentation_bundle', 'delivery'],
+  ['restore_presentation_delivery_bundle', 'delivery'],
 ])('classifies registered %s as %s', (tool, stage) => {
   expect(acpPresentationStage(tool)).toBe(stage)
 })

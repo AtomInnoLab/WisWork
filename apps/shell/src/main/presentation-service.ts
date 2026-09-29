@@ -1,3 +1,4 @@
+import { createPresentationDeliveryBundleService } from './presentation-delivery-bundles'
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import { readPresentationImportSource } from './presentation-import-source'
 import { handlePresentationDeliveryReport } from './presentation-delivery-report'
@@ -118,6 +119,7 @@ export function createPresentationService(options: {
   const pageBackups = createPresentationPageBackupService(options)
   const existingPageBackups = createPresentationExistingPageBackupService(options)
   const attachments = createPresentationAttachmentService(options)
+  const deliveryBundles = createPresentationDeliveryBundleService(options)
   const store = new PresentationStore(options.userDataPath)
   const brandLibrary = new PresentationBrandLibrary(options.userDataPath)
   const preferenceLibrary = new PresentationPreferenceLibrary(options.userDataPath)
@@ -141,6 +143,8 @@ export function createPresentationService(options: {
       )
         throw new Error('invalid_request')
       const request = body as Record<string, unknown>
+      if (typeof request.operation === 'string' && request.operation.startsWith('delivery_bundle_'))
+        return boundedResponse(await deliveryBundles(request, signal))
       if (request.operation === 'export_pdf') {
         if (
           Object.keys(request).some(
@@ -1027,6 +1031,7 @@ export function createPresentationService(options: {
               projectId,
               title: plan.value.title,
               status: 'planned',
+              deliveryBundlesAvailable: true,
               ...(production ? { production, productionTasks } : {}),
               slideCount: plan.value.slides.length,
               slides: plan.value.slides.map(({ id, title }) => ({ id, title })),
@@ -1049,6 +1054,7 @@ export function createPresentationService(options: {
             projectId,
             title: latestDeck.title,
             status: latest.status,
+            deliveryBundlesAvailable: true,
             ...(production ? { production, productionTasks } : {}),
             latestRequestId: latest.requestId,
             ...(plan ? { plan } : {}),

@@ -1,4 +1,8 @@
 import {
+  parsePresentationDeliveryBundleReceipt,
+  type PresentationDeliveryBundleReceipt,
+} from '@wiswork/project-store/presentation-delivery-bundle'
+import {
   parsePresentationAssetLedger,
   type PresentationAssetLedger,
 } from '@wiswork/project-store/presentation-asset-events'
@@ -63,6 +67,7 @@ export interface PresentationProductionTask {
   }
 }
 export interface PresentationProjectStatus {
+  deliveryBundlesAvailable?: true
   assetHistory?: PresentationAssetLedger
   assetHistoryUnavailable?: boolean
   planAcceptance?: PresentationPlanAcceptanceLedger
@@ -141,6 +146,8 @@ export interface PresentationProjectStatus {
   }
 }
 export interface PresentationProjectSnapshot {
+  deliveryBundles?: PresentationDeliveryBundleReceipt[]
+  bundleNotice?: string
   planNotice?: string
   sourceAudit?: {
     auditId?: string
@@ -159,6 +166,7 @@ export interface PresentationProjectSnapshot {
     | 'auditing'
     | 'planning'
     | 'accepting'
+    | 'bundling'
   project?: PresentationProjectStatus
   error?: string
 }
@@ -168,6 +176,11 @@ export type PresentationPlanEdit =
   | { kind: 'restore'; revision: number }
   | { kind: 'lock'; pageId: string; locked: boolean }
 export interface PresentationProjectController {
+  currentBundleAvailable?(): boolean
+  exportCurrentBundle?(includePdf?: boolean): Promise<void>
+  restoreDeliveryBundle?(bundleId: string): Promise<void>
+  readDeliveryBundles?(): Promise<void>
+  deleteDeliveryBundle?(bundleId: string): Promise<void>
   acceptPlan?(expectedRevision: number): Promise<void>
   editPlan?(expectedRevision: number, action: PresentationPlanEdit): Promise<void>
   pdfAvailable?(): boolean
@@ -223,6 +236,8 @@ async function presentationDigest(input: string): Promise<string> {
 }
 async function parseStatus(value: unknown, projectId: string): Promise<PresentationProjectStatus> {
   const p = value as PresentationProjectStatus | undefined
+  if (p?.deliveryBundlesAvailable !== undefined && p.deliveryBundlesAvailable !== true)
+    throw new Error('presentation_response_invalid')
   let planAcceptance: PresentationPlanAcceptanceLedger | undefined
   let planAcceptanceUnavailable = p?.planAcceptanceUnavailable === true
   if (p?.planAcceptance !== undefined) {
@@ -583,6 +598,7 @@ async function parseStatus(value: unknown, projectId: string): Promise<Presentat
   }
   // Copy only the bounded public projection; never retain arbitrary server fields or binary data.
   return {
+    ...(p.deliveryBundlesAvailable ? { deliveryBundlesAvailable: true } : {}),
     ...(assetHistory ? { assetHistory } : {}),
     ...(assetHistoryUnavailable ? { assetHistoryUnavailable: true } : {}),
     ...(planAcceptance ? { planAcceptance } : {}),
@@ -625,6 +641,28 @@ async function parseStatus(value: unknown, projectId: string): Promise<Presentat
 }
 function message(error: unknown): string {
   const code = error instanceof Error ? error.message : ''
+  if (code === 'presentation_quota_exceeded')
+    return '本机交付包容量已满，请明确删除不再需要的本机包后重试。'
+  if (code === 'presentation_delivery_bundle_limit' || code === 'vfs_limit')
+    return '交付包超过本机或会话容量限制，请减小文稿体积后重试。'
+  if (code === 'office_document_export_unavailable')
+    return '当前 Office 宿主不支持原生文稿导出，请使用支持的 PowerPoint 环境。'
+  if (code === 'office_document_export_failed')
+    return 'Office 未能完成文稿导出，原始文稿保留，请检查宿主状态后重试。'
+  if (code === 'office_document_export_cancelled') return '宿主文稿导出已取消，原始文稿保留。'
+  if (code === 'office_document_export_timeout')
+    return '宿主文稿导出等待超时，请检查 Office 状态后重试。'
+  if (
+    code === 'office_document_export_invalid' ||
+    code === 'presentation_response_invalid' ||
+    code === 'presentation_invalid_state'
+  )
+    return '交付包内容或回执校验未通过，请刷新已有包后核对。'
+  if (code === 'presentation_delivery_bundle_history_invalid')
+    return '历史 QA 或保存点记录不一致，请刷新相关记录后重试。'
+  if (code === 'presentation_delivery_bundle_incomplete')
+    return '本机包尚未完整保存，可明确删除未完成包释放容量。'
+
   if (
     ['presentation_upgrade_required', 'presentation_invalid_request', 'invalid_request'].includes(
       code,
@@ -676,6 +714,7 @@ export function createPresentationProjectController(
     | 'rememberSelectedProduction'
   > &
     Pick<AgentSkill, 'executeTool'> & {
+      nativeDocumentExportAvailable?(): boolean
       listReceipts?(): { key: string; record: PresentationImportRecord }[]
       hostSlideIds?(signal?: AbortSignal): Promise<string[]>
     },
@@ -696,6 +735,53 @@ export function createPresentationProjectController(
   const publish = (next: PresentationProjectSnapshot) => {
     state = next
     for (const listener of listeners) listener()
+  }
+  const readBundleList = async (
+    project: PresentationProjectStatus,
+    documentId: string,
+    signal: AbortSignal,
+    check: () => void,
+  ) => {
+    const requestId = project.production?.requestId
+    if (!project.deliveryBundlesAvailable || !requestId) return undefined
+    const response = await options.request(
+      { operation: 'delivery_bundle_list', documentId, projectId: project.projectId, requestId },
+      signal,
+    )
+    check()
+    if ((await options.documentId()) !== documentId)
+      throw new Error('presentation_document_changed')
+    check()
+    if (!response.ok) throw new Error('presentation_service_unavailable')
+    const text = await response.text()
+    check()
+    if (new TextEncoder().encode(text).byteLength > 256 * 1024)
+      throw new Error('presentation_response_invalid')
+    const value = JSON.parse(text)
+    if (
+      !value ||
+      Object.keys(value).join(',') !== 'bundles' ||
+      !Array.isArray(value.bundles) ||
+      value.bundles.length > 32
+    )
+      throw new Error('presentation_response_invalid')
+    const bundles: PresentationDeliveryBundleReceipt[] = value.bundles.map(
+      parsePresentationDeliveryBundleReceipt,
+    )
+    if (
+      bundles.some(
+        (receipt) =>
+          receipt.documentId !== documentId ||
+          receipt.projectId !== project.projectId ||
+          receipt.requestId !== requestId,
+      ) ||
+      new Set(bundles.map((item) => item.bundleId)).size !== bundles.length
+    )
+      throw new Error('presentation_response_invalid')
+    if ((await options.documentId()) !== documentId)
+      throw new Error('presentation_document_changed')
+    check()
+    return bundles
   }
   const restoreSourceAudit = async (
     project: PresentationProjectStatus,
@@ -1133,7 +1219,25 @@ export function createPresentationProjectController(
       if ((await options.documentId()) !== documentId)
         throw new Error('presentation_document_changed')
       check()
-      publish({ phase: 'idle', project, ...(sourceAudit ? { sourceAudit } : {}) })
+      let deliveryBundles: PresentationDeliveryBundleReceipt[] | undefined
+      let bundleNotice: string | undefined
+      try {
+        deliveryBundles = await readBundleList(project, documentId, controller.signal, check)
+      } catch (error) {
+        check()
+        if ((await options.documentId()) !== documentId)
+          throw new Error('presentation_document_changed', { cause: error })
+        if (error instanceof Error && error.message === 'presentation_document_changed') throw error
+        bundleNotice = '本机交付包暂时无法读取；已有成果保留，请刷新查看。'
+      }
+      check()
+      publish({
+        phase: 'idle',
+        project,
+        ...(sourceAudit ? { sourceAudit } : {}),
+        ...(deliveryBundles ? { deliveryBundles } : {}),
+        ...(bundleNotice ? { bundleNotice } : {}),
+      })
       if (
         captured === epoch &&
         project.productionJob &&
@@ -1166,6 +1270,140 @@ export function createPresentationProjectController(
         if (captured !== epoch) return
         publish({ phase: 'idle', ...(retain ? { project: previous } : {}), error: message(error) })
       }
+    } finally {
+      if (captured === epoch) active = undefined
+    }
+  }
+  const bundleAction = async (
+    tool?: 'export_current_presentation_bundle' | 'restore_presentation_delivery_bundle',
+    includePdf = false,
+    bundleId?: string,
+    deleteBundleId?: string,
+  ) => {
+    const project = state.project
+    const requestId = project?.production?.requestId
+    if (
+      active ||
+      !project?.deliveryBundlesAvailable ||
+      !requestId ||
+      !projectDocument ||
+      !options.available()
+    )
+      return
+    if (tool === 'export_current_presentation_bundle' && !options.nativeDocumentExportAvailable?.())
+      return
+    if (
+      tool === 'restore_presentation_delivery_bundle' &&
+      (!bundleId || !/^[a-f0-9]{64}$/.test(bundleId))
+    )
+      return
+    if (deleteBundleId !== undefined && !/^[a-f0-9]{64}$/.test(deleteBundleId)) return
+    const documentId = projectDocument
+    const previous = state
+    stopPolling()
+    const controller = new AbortController()
+    active = controller
+    const captured = ++epoch
+    const check = () => {
+      if (captured !== epoch || controller.signal.aborted) throw new Error('cancelled')
+      if (!options.available()) throw new Error('presentation_unavailable')
+    }
+    publish({ ...previous, phase: 'bundling', error: undefined, bundleNotice: undefined })
+    try {
+      check()
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      check()
+      let actionError: unknown
+      let resultSummary: string | undefined
+      if (deleteBundleId) {
+        try {
+          const response = await options.request(
+            {
+              operation: 'delivery_bundle_delete',
+              documentId,
+              projectId: project.projectId,
+              requestId,
+              bundleId: deleteBundleId,
+            },
+            controller.signal,
+          )
+          check()
+          if ((await options.documentId()) !== documentId)
+            throw new Error('presentation_document_changed')
+          check()
+          if (!response.ok) throw new Error('presentation_service_unavailable')
+          const text = await response.text()
+          check()
+          if (new TextEncoder().encode(text).byteLength > 256 * 1024)
+            throw new Error('presentation_response_invalid')
+          const value = JSON.parse(text)
+          if (
+            !value ||
+            Object.keys(value).sort().join(',') !== 'bundleId,deleted' ||
+            value.bundleId !== deleteBundleId ||
+            value.deleted !== true
+          )
+            throw new Error('presentation_response_invalid')
+        } catch (error) {
+          actionError = error
+        }
+      }
+      if (tool) {
+        try {
+          const result = await options.executeTool(
+            {
+              id: `presentation-bundle-${captured}`,
+              name: tool,
+              input: {
+                project_id: project.projectId,
+                request_id: requestId,
+                ...(tool === 'export_current_presentation_bundle'
+                  ? { include_pdf: includePdf }
+                  : { bundle_id: bundleId }),
+              },
+            },
+            controller.signal,
+          )
+          check()
+          if (result.isError) throw new Error(result.output)
+          resultSummary = result.summary
+        } catch (error) {
+          actionError = error
+        }
+      }
+      check()
+      if ((await options.documentId()) !== documentId)
+        throw new Error('presentation_document_changed')
+      const deliveryBundles = await readBundleList(project, documentId, controller.signal, check)
+      check()
+      publish({
+        ...previous,
+        phase: 'idle',
+        deliveryBundles,
+        bundleNotice: actionError
+          ? `${message(actionError)} 本次交付包操作未确认成功；本机可能已保存包，请刷新或恢复已有包，勿自动重复导出。`
+          : deleteBundleId
+            ? '本机交付包已删除；原始 PowerPoint 文稿不受影响。'
+            : tool
+              ? `${resultSummary ?? '交付包已放回会话附件。'} 历史 QA 与保存点不代表当前宿主验收，检查待完成。`
+              : undefined,
+        error: undefined,
+      })
+    } catch (error) {
+      if (captured !== epoch) return
+      const changed = (await options.documentId().catch(() => undefined)) !== documentId
+      if (captured !== epoch) return
+      publish(
+        changed
+          ? { phase: 'idle', error: '文档已改变，请在目标文档刷新项目。' }
+          : {
+              ...previous,
+              phase: 'idle',
+              bundleNotice:
+                '交付包操作暂时无法确认；已有成果保留，请刷新本机包后恢复，勿自动重复导出。',
+            },
+      )
     } finally {
       if (captured === epoch) active = undefined
     }
@@ -1704,6 +1942,14 @@ export function createPresentationProjectController(
     }
   }
   return {
+    currentBundleAvailable: () =>
+      options.available() && options.nativeDocumentExportAvailable?.() === true,
+    exportCurrentBundle: (includePdf = false) =>
+      bundleAction('export_current_presentation_bundle', includePdf),
+    restoreDeliveryBundle: (bundleId) =>
+      bundleAction('restore_presentation_delivery_bundle', false, bundleId),
+    readDeliveryBundles: () => bundleAction(),
+    deleteDeliveryBundle: (bundleId) => bundleAction(undefined, false, undefined, bundleId),
     acceptPlan,
     editPlan,
     pdfAvailable: () => options.available() && options.productionPdfAvailable?.() === true,

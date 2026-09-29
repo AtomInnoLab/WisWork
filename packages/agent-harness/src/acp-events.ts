@@ -76,7 +76,10 @@ const PRESENTATION_STAGES: ReadonlyArray<readonly [PresentationStage, RegExp]> =
     /^(?:read_presentation_baseline(?:_page|_complex_page|_chart_source|_notes|_source_links|_rich_text)?|check_presentation_baseline(?:_windows)?|list_slide_shapes|read_slide_text|read_presentation_page|read_presentation_page_geometry)$/,
   ],
   ['checkpoint', /^(?:save|read)_presentation_page_backup$/],
-  ['delivery', /^export_presentation_pdf$/],
+  [
+    'delivery',
+    /^(?:export_presentation_pdf|export_current_presentation_bundle|restore_presentation_delivery_bundle)$/,
+  ],
   [
     'import',
     /^(?:prepare_presentation_production_import|import_generated_presentation|import_presentation_production|read_presentation_import_status|read_presentation_production_import_status|reconcile_presentation_production_import)$/,

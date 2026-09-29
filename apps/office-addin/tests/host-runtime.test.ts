@@ -816,3 +816,34 @@ it.each([
     runtime.dispose()
   }
 })
+
+it('registers and routes delivery ZIP restore through the actual runtime while native export is unavailable', async () => {
+  const request = vi.fn(async () => new Response(JSON.stringify({ error: 'invalid_request' })))
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request,
+      documentId: async () => 'document-1',
+      lastProject: () => 'project-1',
+      rememberProject: async () => undefined,
+    },
+  })
+  try {
+    expect(
+      runtime.skill.tools.some((tool) => tool.name === 'restore_presentation_delivery_bundle'),
+    ).toBe(true)
+    expect(
+      runtime.skill.tools.some((tool) => tool.name === 'export_current_presentation_bundle'),
+    ).toBe(false)
+    const result = await runtime.skill.executeTool({
+      id: 'restore',
+      name: 'restore_presentation_delivery_bundle',
+      input: { project_id: 'project-1', request_id: 'pages', bundle_id: 'a'.repeat(64) },
+    })
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('presentation_upgrade_required')
+    expect(request).toHaveBeenCalled()
+  } finally {
+    runtime.dispose()
+  }
+})

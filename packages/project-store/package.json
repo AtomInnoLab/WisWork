@@ -15,7 +15,8 @@
     "./presentation-asset-events": "./src/presentation-asset-events.ts",
     "./presentation-job": "./src/presentation-job.ts",
     "./presentation-acquisition": "./src/presentation-acquisition.ts",
-    "./presentation-acquisition-store": "./src/presentation-acquisition-store.ts"
+    "./presentation-acquisition-store": "./src/presentation-acquisition-store.ts",
+    "./presentation-delivery-bundle": "./src/presentation-delivery-bundle.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

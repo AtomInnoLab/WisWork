@@ -10,12 +10,21 @@ export function PresentationProjectCard(props: {
   onEndFrontend?: () => void
 }) {
   const { controller } = props
-  const { phase, project, error, deliveryReport, deliveryNotice, sourceAudit, planNotice } =
-    useSyncExternalStore(
-      (listener) => controller.subscribe(listener),
-      () => controller.snapshot(),
-      () => controller.snapshot(),
-    )
+  const {
+    phase,
+    project,
+    error,
+    deliveryReport,
+    deliveryNotice,
+    sourceAudit,
+    planNotice,
+    deliveryBundles,
+    bundleNotice,
+  } = useSyncExternalStore(
+    (listener) => controller.subscribe(listener),
+    () => controller.snapshot(),
+    () => controller.snapshot(),
+  )
   const productionEvents = presentationProductionEventRows(project)
   const [revisionChoice, setRevisionChoice] = useState<{
     projectId: string
@@ -117,6 +126,7 @@ export function PresentationProjectCard(props: {
               auditing: '正在核对计划引文与原文',
               planning: '正在更新制作计划',
               accepting: '正在保存计划与样式接受决定',
+              bundling: '正在处理当前文稿交付包',
             }[phase]
           : project
             ? `${project.slideCount} 页 · ${project.status === 'planned' ? '计划已保存，尚未编译' : project.status === 'pending' ? '已保存，待编译' : '已编译，尚未完成视觉验证'}`
@@ -130,6 +140,93 @@ export function PresentationProjectCard(props: {
         </p>
       )}
       {planNotice && <p role="status">{planNotice}</p>}
+      {project?.deliveryBundlesAvailable && (
+        <details aria-label="当前 PowerPoint 文稿交付包">
+          <summary>当前 PowerPoint 文稿交付包</summary>
+          <p>
+            导出当前打开的 PowerPoint 文稿，并附历史 QA
+            与保存点；这些记录不代表当前宿主内容已通过验收，检查待完成。
+          </p>
+          {controller.currentBundleAvailable?.() && (
+            <>
+              <button
+                type="button"
+                disabled={disabled || !project.production}
+                onClick={() => void controller.exportCurrentBundle?.(false)}
+              >
+                导出当前文稿交付包
+              </button>
+              <button
+                type="button"
+                disabled={disabled || !project.production}
+                onClick={() => void controller.exportCurrentBundle?.(true)}
+              >
+                导出当前文稿交付包（含宿主 PDF）
+              </button>
+              <p>宿主 PDF 不可用时仍保留 PPTX 包，并标明 PDF 未包含。</p>
+            </>
+          )}
+          <button
+            type="button"
+            disabled={disabled || !project.production}
+            onClick={() => void controller.readDeliveryBundles?.()}
+          >
+            刷新本机交付包
+          </button>
+          {bundleNotice && <p role="status">{bundleNotice}</p>}
+          {deliveryBundles?.length === 0 && <p>所选页任务暂无本机交付包。</p>}
+          <ol>
+            {deliveryBundles?.map((bundle) => (
+              <li key={bundle.bundleId}>
+                {bundle.state === 'ready' ? '本机包已保存' : '上传未完成'} ·{' '}
+                <time dateTime={bundle.createdAt}>{bundle.createdAt}</time> · 检查待完成
+                {bundle.state === 'ready' && (
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => void controller.restoreDeliveryBundle?.(bundle.bundleId)}
+                  >
+                    恢复 ZIP 到会话附件
+                  </button>
+                )}
+                {controller.deleteDeliveryBundle && (
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          '仅删除 PC 缓存的交付包，以释放本机容量。原始 PowerPoint 文稿不受影响；已下载的会话附件保留。确定删除吗？',
+                        )
+                      )
+                        void controller.deleteDeliveryBundle?.(bundle.bundleId)
+                    }}
+                  >
+                    删除本机包
+                  </button>
+                )}
+                <details>
+                  <summary>包与历史检查详情</summary>
+                  <p>包 ID：{bundle.bundleId}</p>
+                  <p>
+                    历史 QA：
+                    {bundle.manifest.checks.hostQa === 'historical_records_only'
+                      ? '包含已有记录'
+                      : '未检查'}
+                    ；PDF：
+                    {bundle.manifest.checks.pdf === 'included'
+                      ? '已包含宿主 PDF'
+                      : bundle.manifest.checks.pdf === 'unavailable'
+                        ? '宿主不可用'
+                        : '未请求'}
+                    。
+                  </p>
+                </details>
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
       {project?.commentsUnavailable && <p>本机审阅评论暂不可读取；项目与页面状态不受影响。</p>}
       {project?.reviewComments && (
         <details aria-label="本机审阅评论">
@@ -371,6 +468,9 @@ export function PresentationProjectCard(props: {
                 导出 PDF 预览
               </button>
             )}
+          {project.production.status === 'compiled' && controller.pdfAvailable?.() && (
+            <p>PDF 预览来自已编译页任务，不是当前 PowerPoint 宿主文稿。</p>
+          )}
           <ol>
             {project.production.pages.map((page) => (
               <li key={page.id}>

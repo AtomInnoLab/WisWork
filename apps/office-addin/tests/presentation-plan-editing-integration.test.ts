@@ -135,7 +135,7 @@ it('persists workbench reorder/delete through the real PC service and recovers v
     expect(stored.revisions?.map((revision) => revision.snapshot?.slideCount)).toEqual([8, 8, 7])
     expect(
       first.request.mock.calls.every(([body]) =>
-        ['status', 'save_plan', 'production_job_status'].includes(
+        ['status', 'save_plan', 'production_job_status', 'delivery_bundle_list'].includes(
           (body as { operation: string }).operation,
         ),
       ),
