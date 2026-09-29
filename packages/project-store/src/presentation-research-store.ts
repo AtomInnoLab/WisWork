@@ -40,6 +40,9 @@ function validId(value: string) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value))
     throw new Error('invalid_request')
 }
+export type PresentationResearchWriteGuard = (
+  scope: Readonly<{ documentId: string; projectId: string }>,
+) => void
 export type PresentationResearchFinish =
   | { state: 'completed'; sources: PresentationResearchEvidence[] }
   | {
@@ -47,12 +50,15 @@ export type PresentationResearchFinish =
       error: 'aborted' | 'source_unavailable' | 'invalid_state'
       sources?: PresentationResearchEvidence[]
     }
-async function directory(path: string, create = false) {
+async function directory(path: string, create = false, assertWritable?: () => void) {
   try {
-    if (create)
+    if (create) {
+      assertWritable?.()
       await mkdir(path, { mode: 0o700 }).catch((e) => {
         if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
       })
+      assertWritable?.()
+    }
     const s = await lstat(path)
     if (!s.isDirectory() || s.isSymbolicLink()) throw new Error('invalid_state')
     return true
@@ -243,9 +249,16 @@ export class PresentationResearchStore {
     projectId: string,
     change: (state: State) => T,
     signal?: AbortSignal,
+    assertWritable?: PresentationResearchWriteGuard,
   ): Promise<T> {
-    check(signal)
     const project = this.path(documentId, projectId)
+    const scope = Object.freeze({ documentId, projectId })
+    const guard = () => {
+      check(signal)
+      assertWritable?.(scope)
+      check(signal)
+    }
+    guard()
     const previous = locks.get(project) ?? Promise.resolve()
     let release!: () => void
     const tail = new Promise<void>((r) => {
@@ -254,14 +267,18 @@ export class PresentationResearchStore {
     locks.set(project, tail)
     await previous
     try {
-      check(signal)
+      guard()
       const state = await this.load(documentId, projectId)
-      check(signal)
+      guard()
       const result = change(state)
       this.toHistory(state)
-      await directory(this.root, true)
-      await directory(dirname(project), true)
-      await directory(project, true)
+      guard()
+      await directory(this.root, true, guard)
+      guard()
+      await directory(dirname(project), true, guard)
+      guard()
+      await directory(project, true, guard)
+      guard()
       const pattern =
         /^state\.json\.[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.tmp$/
       for (const name of await readdir(project)) {
@@ -269,25 +286,31 @@ export class PresentationResearchStore {
         const path = join(project, name),
           s = await lstat(path)
         if (!s.isFile() || s.isSymbolicLink()) throw new Error('invalid_state')
-        await rm(path)
+        // Other processes may still own this staging file; validate it without removing it.
+        guard()
       }
-      check(signal)
+      guard()
       const raw = JSON.stringify({ state, checksum: hash(JSON.stringify(state)) })
       if (Buffer.byteLength(raw) > LIMIT) throw new Error('quota_exceeded')
       const tmp = join(project, 'state.json.' + randomUUID() + '.tmp')
       try {
+        guard()
         const f = await open(tmp, 'wx', 0o600)
         try {
+          guard()
           await f.writeFile(raw)
+          guard()
           await f.sync()
         } finally {
           await f.close()
         }
-        check(signal)
+        guard()
         await rename(tmp, join(project, 'state.json'))
         if (process.platform !== 'win32') {
+          guard()
           const d = await open(project, constants.O_RDONLY | constants.O_NOFOLLOW)
           try {
+            guard()
             await d.sync()
           } finally {
             await d.close()
@@ -334,6 +357,7 @@ export class PresentationResearchStore {
     ledgerId: string,
     expectedDraftDigest: string,
     signal?: AbortSignal,
+    assertWritable?: PresentationResearchWriteGuard,
   ): Promise<PresentationResearchDeleteReceipt> {
     validId(deleteId)
     validId(ledgerId)
@@ -386,6 +410,7 @@ export class PresentationResearchStore {
         return receipt
       },
       signal,
+      assertWritable,
     )
   }
   /** Explicitly end one exact unfinished record; this does not prove which request ended it. */
@@ -396,6 +421,7 @@ export class PresentationResearchStore {
     ledgerId: string,
     expectedDraftDigest: string,
     signal?: AbortSignal,
+    assertWritable?: PresentationResearchWriteGuard,
   ): Promise<PresentationResearchRecord> {
     validId(ledgerId)
     if (
@@ -432,6 +458,7 @@ export class PresentationResearchStore {
         return ended
       },
       signal,
+      assertWritable,
     )
   }
   begin(
@@ -440,75 +467,95 @@ export class PresentationResearchStore {
     expectedRevision: number,
     id: string,
     draft: PresentationResearchDraft,
+    assertWritable?: PresentationResearchWriteGuard,
   ) {
     const parsed = parsePresentationResearchDraft(draft),
       draftDigest = hash(canonicalPresentationValue(parsed))
-    return this.update(documentId, projectId, (state) => {
-      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
-        throw new Error('invalid_request')
-      if (state.version === 2 && state.tombstones.some((t) => t.ledgerId === id))
-        throw new Error('record_deleted')
-      const existing = state.records.find((r) => r.id === id)
-      if (existing) {
-        if (existing.draftDigest !== draftDigest) throw new Error('request_conflict')
-        return { record: existing, created: false }
-      }
-      if (state.revision !== expectedRevision) throw new Error('revision_conflict')
-      if (state.totalRecords >= 128) throw new Error('quota_exceeded')
-      const last = this.lastTime(state)
-      const record = parsePresentationResearchRecord({
-        version: 1,
-        documentId,
-        projectId,
-        id,
-        sequence: (state.version === 2 ? state.lastSequence : state.totalRecords) + 1,
-        draftDigest,
-        draft: parsed,
-        state: 'running',
-        startedAt: [new Date().toISOString(), last].sort().at(-1)!,
-        checks: presentationResearchChecks,
-      })
-      state.records.push(record)
-      state.totalRecords++
-      if (state.version === 2) state.lastSequence++
-      state.revision++
-      return { record, created: true }
-    })
-  }
-  finish(documentId: string, projectId: string, id: string, result: PresentationResearchFinish) {
-    return this.update(documentId, projectId, (state) => {
-      if (
-        !result ||
-        Object.keys(result).some((k) => !['state', 'sources', 'error'].includes(k)) ||
-        !['completed', 'failed'].includes(result.state)
-      )
-        throw new Error('invalid_state')
-      const index = state.records.findIndex((r) => r.id === id),
-        r = state.records[index]
-      if (!r)
-        throw new Error(
-          state.version === 2 && state.tombstones.some((t) => t.ledgerId === id)
-            ? 'record_deleted'
-            : 'not_found',
-        )
-      if (r.state !== 'running') {
-        const old = {
-          state: r.state,
-          ...(r.sources ? { sources: r.sources } : {}),
-          ...(r.error ? { error: r.error } : {}),
+    return this.update(
+      documentId,
+      projectId,
+      (state) => {
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+          throw new Error('invalid_request')
+        if (state.version === 2 && state.tombstones.some((t) => t.ledgerId === id))
+          throw new Error('record_deleted')
+        const existing = state.records.find((r) => r.id === id)
+        if (existing) {
+          if (existing.draftDigest !== draftDigest) throw new Error('request_conflict')
+          return { record: existing, created: false }
         }
-        if (canonicalPresentationValue(old) !== canonicalPresentationValue(result))
-          throw new Error('request_conflict')
-        return r
-      }
-      const next = parsePresentationResearchRecord({
-        ...r,
-        ...result,
-        finishedAt: [new Date().toISOString(), this.lastTime(state)].sort().at(-1)!,
-      })
-      state.records[index] = next
-      state.revision++
-      return next
-    })
+        if (state.revision !== expectedRevision) throw new Error('revision_conflict')
+        if (state.totalRecords >= 128) throw new Error('quota_exceeded')
+        const last = this.lastTime(state)
+        const record = parsePresentationResearchRecord({
+          version: 1,
+          documentId,
+          projectId,
+          id,
+          sequence: (state.version === 2 ? state.lastSequence : state.totalRecords) + 1,
+          draftDigest,
+          draft: parsed,
+          state: 'running',
+          startedAt: [new Date().toISOString(), last].sort().at(-1)!,
+          checks: presentationResearchChecks,
+        })
+        state.records.push(record)
+        state.totalRecords++
+        if (state.version === 2) state.lastSequence++
+        state.revision++
+        return { record, created: true }
+      },
+      undefined,
+      assertWritable,
+    )
+  }
+  finish(
+    documentId: string,
+    projectId: string,
+    id: string,
+    resultValue: PresentationResearchFinish,
+    assertWritable?: PresentationResearchWriteGuard,
+  ) {
+    const result = structuredClone(resultValue)
+    return this.update(
+      documentId,
+      projectId,
+      (state) => {
+        if (
+          !result ||
+          Object.keys(result).some((k) => !['state', 'sources', 'error'].includes(k)) ||
+          !['completed', 'failed'].includes(result.state)
+        )
+          throw new Error('invalid_state')
+        const index = state.records.findIndex((r) => r.id === id),
+          r = state.records[index]
+        if (!r)
+          throw new Error(
+            state.version === 2 && state.tombstones.some((t) => t.ledgerId === id)
+              ? 'record_deleted'
+              : 'not_found',
+          )
+        if (r.state !== 'running') {
+          const old = {
+            state: r.state,
+            ...(r.sources ? { sources: r.sources } : {}),
+            ...(r.error ? { error: r.error } : {}),
+          }
+          if (canonicalPresentationValue(old) !== canonicalPresentationValue(result))
+            throw new Error('request_conflict')
+          return r
+        }
+        const next = parsePresentationResearchRecord({
+          ...r,
+          ...result,
+          finishedAt: [new Date().toISOString(), this.lastTime(state)].sort().at(-1)!,
+        })
+        state.records[index] = next
+        state.revision++
+        return next
+      },
+      undefined,
+      assertWritable,
+    )
   }
 }
