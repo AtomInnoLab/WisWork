@@ -54,3 +54,23 @@ it('rejects corrupt and symlinked binding metadata', () => {
   symlinkSync(foreign, path)
   expect(() => f.store.projectScope('p', 'doc')).toThrow('invalid_state')
 })
+it('reads the 4096 character governance binding while ordinary writes retain their 2048 limit', () => {
+  const f = fixture(),
+    documentId = 'd'.repeat(4096)
+  f.store.begin('p', 'doc', 'request', {})
+  const path = join(
+    f.root,
+    'projects',
+    'presentations',
+    createHash('sha256').update('p').digest('hex'),
+    'project.json',
+  )
+  writeFileSync(path, JSON.stringify({ version: 1, projectId: 'p', documentId }))
+  const before = readFileSync(path)
+  expect(f.store.projectScope('p', documentId)).toEqual({ projectId: 'p', documentId })
+  expect(f.store.projectScope('absent', documentId)).toBeUndefined()
+  expect(() => f.store.projectScope('p', documentId + 'd')).toThrow('invalid_request')
+  expect(() => f.store.projectScope('p', 'x'.repeat(4096))).toThrow('document_mismatch')
+  expect(() => f.store.begin('p', documentId, 'next', {})).toThrow('invalid_request')
+  expect(readFileSync(path)).toEqual(before)
+})

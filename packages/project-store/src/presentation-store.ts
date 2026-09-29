@@ -509,10 +509,15 @@ export class PresentationStore {
     projectId: string,
     documentId: string,
   ): { projectId: string; documentId: string } | undefined {
-    return this.bind(projectId, documentId, false) ? { projectId, documentId } : undefined
+    return this.bind(projectId, documentId, false, 4096) ? { projectId, documentId } : undefined
   }
-  private bind(projectId: string, documentId: string, create: boolean): string | undefined {
-    if (typeof documentId !== 'string' || !documentId.trim() || documentId.length > 2048)
+  private bind(
+    projectId: string,
+    documentId: string,
+    create: boolean,
+    documentLimit = 2048,
+  ): string | undefined {
+    if (typeof documentId !== 'string' || !documentId.trim() || documentId.length > documentLimit)
       throw new Error('invalid_request')
     const directory = this.directory(projectId)
     const path = join(directory, 'project.json')
