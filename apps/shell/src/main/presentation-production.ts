@@ -114,6 +114,7 @@ export function presentationProductionSummary(record: PresentationProductionReco
       title: deck.slides[index]!.title,
       state: page.state,
       attempt: page.attempt,
+      ...(page.reusedFrom ? { reusedFromRequestId: page.reusedFrom.requestId } : {}),
       ...(page.error ? { error: page.error } : {}),
     })),
   }
@@ -274,10 +275,17 @@ export async function handlePresentationProduction(
     } catch {
       throw new Error(record ? 'request_conflict' : 'plan_mismatch')
     }
-    record = store.beginProduction(projectId, documentId, requestId!, deck, {
-      revision: saved.revision,
-      plan: saved.plan,
-    })
+    record = store.beginProduction(
+      projectId,
+      documentId,
+      requestId!,
+      deck,
+      {
+        revision: saved.revision,
+        plan: saved.plan,
+      },
+      true,
+    )
   }
   if (!record) throw new Error('not_found')
   const deck = parsePresentationDeck(record.deck)

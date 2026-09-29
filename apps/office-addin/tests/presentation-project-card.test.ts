@@ -79,6 +79,34 @@ async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () =>
   }
 }
 describe('presentation project recovery card', () => {
+  it('shows retained compile provenance without marking host delivery or QA complete', async () => {
+    const view = await mount({
+      phase: 'idle',
+      project: {
+        ...pending.project!,
+        production: {
+          projectId: 'p1',
+          requestId: 'revised',
+          planRevision: 2,
+          status: 'compiled',
+          compiledCount: 1,
+          total: 1,
+          pages: [
+            {
+              id: 's1',
+              title: '保留页',
+              state: 'compiled',
+              attempt: 1,
+              reusedFromRequestId: 'original',
+            },
+          ],
+        },
+      },
+    })
+    expect(view.container.textContent).toContain('保留既有编译成果 · 来源任务 original')
+    expect(view.container.textContent).toContain('当前内容与视觉仍需核验')
+    expect(view.container.textContent).toContain('已编译（未导入验收）')
+  })
   it('projects the current blueprint and style without treating saved plans as verified', async () => {
     const plan = benchmarkPlan()
     plan.style.fontFallbacks = ['Arial', '微软雅黑']

@@ -58,6 +58,16 @@ const run = {
   name: 'run_presentation_production',
   input: { project_id: 'p', request_id: 'r' },
 }
+it('accepts scoped compiled-page provenance and rejects pending or self-referencing reuse', () => {
+  const value = structuredClone(summary)
+  Object.assign(value.pages[0]!, { reusedFromRequestId: 'previous' })
+  expect(parsePresentationProductionStatus(value).pages[0]!.reusedFromRequestId).toBe('previous')
+  Object.assign(value.pages[0]!, { reusedFromRequestId: 'r' })
+  expect(() => parsePresentationProductionStatus(value)).toThrow('presentation_response_invalid')
+  Object.assign(value.pages[0]!, { reusedFromRequestId: 'previous' })
+  Object.assign(value.pages[1]!, { reusedFromRequestId: 'previous' })
+  expect(() => parsePresentationProductionStatus(value)).toThrow('presentation_response_invalid')
+})
 it('runs partial production and keeps compiled distinct from host delivery', async () => {
   const f = fixture()
   expect(await f.skill.executeTool(run)).toMatchObject({

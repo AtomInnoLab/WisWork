@@ -108,6 +108,51 @@ async function setup(compile = vi.fn(compilePresentationDeck), documentId = 'doc
   expect((await call('save_plan', { expectedRevision: 0, plan })).revision).toBe(1)
   return { call, service, userDataPath, compile, deck, plan }
 }
+it('reuses unchanged compiled pages across plan revisions and compiles only the affected page', async () => {
+  const f = await setup()
+  await f.call('production_begin', { requestId: 'original', planRevision: 1, deck: f.deck })
+  await f.call('production_run', { requestId: 'original' })
+  expect(f.compile).toHaveBeenCalledTimes(f.deck.slides.length)
+  f.compile.mockClear()
+  const plan = structuredClone(f.plan)
+  plan.slides[2]!.purpose = '更新本页讲述重点'
+  expect(await f.call('save_plan', { expectedRevision: 1, plan })).toMatchObject({ revision: 2 })
+  const started = await f.call('production_begin', {
+    requestId: 'revised',
+    planRevision: 2,
+    deck: f.deck,
+  })
+  expect(started.compiledCount).toBe(f.deck.slides.length - 1)
+  expect(started.pages[2]).toMatchObject({ state: 'pending', attempt: 0 })
+  expect(started.pages[0]).toMatchObject({ state: 'compiled', reusedFromRequestId: 'original' })
+  const finished = await f.call('production_run', { requestId: 'revised' })
+  expect(finished.status).toBe('compiled')
+  expect(f.compile).toHaveBeenCalledTimes(1)
+  expect(parsePresentationDeck(f.compile.mock.calls[0]![0]).slides[0]!.id).toBe(
+    f.deck.slides[2]!.id,
+  )
+  const page = await f.call('production_page', {
+    requestId: 'revised',
+    pageId: f.deck.slides[0]!.id,
+  })
+  expect(page.planRevision).toBe(2)
+  expect((await openPptx(Buffer.from(page.pptxBase64, 'base64'))).deck.slides).toHaveLength(1)
+  const reopened = createPresentationService({ userDataPath: f.userDataPath, compile: f.compile })
+  const response = decode(
+    await reopened(
+      {
+        operation: 'production_status',
+        documentId: 'doc',
+        projectId: f.deck.id,
+        requestId: 'revised',
+      },
+      new AbortController().signal,
+    ),
+  )
+  expect(response).toEqual(finished)
+  expect((await f.call('production_status', { requestId: 'original' })).planRevision).toBe(1)
+})
+
 it('persists eight separate native pages, continues after one failure, and resumes only that page', async () => {
   let fail = true
   const compile = vi.fn(async (input: unknown) => {
@@ -241,7 +286,17 @@ it('compiles opted-in independent pages concurrently and waits for declared depe
     await waiting[index]!.promise
     return compilePresentationDeck(input)
   })
-  await f.call('production_begin', { requestId: 'dependent', planRevision: 3, deck: f.deck })
+  // Both pages have new content so this tests scheduling pending dependencies,
+  // rather than the now-supported reuse of an already completed predecessor.
+  const dependencyDeck = {
+    ...f.deck,
+    slides: f.deck.slides.map((slide) => ({ ...slide, notes: '更新后的讲述内容' })),
+  }
+  await f.call('production_begin', {
+    requestId: 'dependent',
+    planRevision: 3,
+    deck: dependencyDeck,
+  })
   const dependent = f.call('production_run', { requestId: 'dependent' })
   await vi.waitFor(() => expect(entered[0]).toBe(1))
   expect(entered[1]).toBe(0)

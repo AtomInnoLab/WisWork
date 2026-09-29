@@ -15,6 +15,7 @@ import {
   type PresentationProductionJobEventInput,
 } from './presentation-job.js'
 import { createHash, randomUUID } from 'node:crypto'
+import { presentationPageInput } from './presentation-page-input.js'
 import {
   lstatSync,
   mkdirSync,
@@ -172,6 +173,7 @@ export interface PresentationProductionPage {
   error?: string
   result?: { pptxBase64: string; sourceSlideId: string; report: unknown }
   resultDigest?: string
+  reusedFrom?: { requestId: string; inputDigest: string; planDigest: string }
 }
 export interface PresentationProductionRecord {
   version: 1
@@ -271,11 +273,27 @@ function productionPage(page: PresentationProductionPage): number {
     !page ||
     typeof page !== 'object' ||
     Object.keys(page).some(
-      (key) => !['pageId', 'state', 'attempt', 'error', 'result', 'resultDigest'].includes(key),
+      (key) =>
+        !['pageId', 'state', 'attempt', 'error', 'result', 'resultDigest', 'reusedFrom'].includes(
+          key,
+        ),
     ) ||
     !Number.isSafeInteger(page.attempt) ||
     page.attempt < 0 ||
     !['pending', 'building', 'compiled', 'failed'].includes(page.state)
+  )
+    invalid()
+  if (
+    page.reusedFrom !== undefined &&
+    (page.state !== 'compiled' ||
+      !page.reusedFrom ||
+      typeof page.reusedFrom !== 'object' ||
+      Array.isArray(page.reusedFrom) ||
+      Object.keys(page.reusedFrom).sort().join(',') !== 'inputDigest,planDigest,requestId' ||
+      typeof page.reusedFrom.requestId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(page.reusedFrom.requestId) ||
+      !/^[a-f0-9]{64}$/.test(page.reusedFrom.inputDigest) ||
+      !/^[a-f0-9]{64}$/.test(page.reusedFrom.planDigest))
   )
     invalid()
   if (page.state === 'pending' ? page.attempt !== 0 : page.attempt < 1) invalid()
@@ -513,6 +531,24 @@ export class PresentationStore {
       return record
     })
     for (const record of records) {
+      for (const page of record.pages) {
+        if (!page.reusedFrom) continue
+        const parent = records.find((value) => value.requestId === page.reusedFrom!.requestId)
+        const original = parent?.pages.find((value) => value.pageId === page.pageId)
+        const input = parent && presentationPageInput(parent.deck, parent.plan, page.pageId)
+        const { reusedFrom: _reuse, ...payload } = page
+        const { reusedFrom: _originalReuse, ...originalPayload } = original ?? {}
+        if (
+          !parent ||
+          parent.sequence >= record.sequence ||
+          parent.inputDigest !== page.reusedFrom.inputDigest ||
+          parent.planDigest !== page.reusedFrom.planDigest ||
+          !input ||
+          input !== presentationPageInput(record.deck, record.plan, page.pageId) ||
+          canonical(payload) !== canonical(originalPayload)
+        )
+          throw new Error('invalid_state')
+      }
       if (!record.revision) continue
       const parent = records.find((value) => value.requestId === record.revision!.parentRequestId)
       if (
@@ -525,6 +561,8 @@ export class PresentationStore {
         record.pages.some(
           (page, index) =>
             page.pageId !== record.revision!.pageId &&
+            presentationPageInput(parent.deck, parent.plan, page.pageId) ===
+              presentationPageInput(record.deck, record.plan, page.pageId) &&
             canonical(page) !== canonical(parent.pages[index]),
         )
       )
@@ -863,6 +901,7 @@ export class PresentationStore {
     requestId: string,
     deck: unknown,
     plan: PresentationPlanBinding,
+    reuseUnchanged = false,
   ): PresentationProductionRecord {
     assertPresentationId(requestId)
     const ids = productionIds(deck, 'invalid_request')
@@ -894,6 +933,38 @@ export class PresentationStore {
       plan,
       planDigest: planHash,
       pages: ids.map((pageId) => ({ pageId, state: 'pending', attempt: 0 })),
+    }
+    // Only opt in from the schema-validated page production path. Never infer
+    // factual/visual approval or host import state from a compiled page.
+    const candidates = reuseUnchanged
+      ? records
+          .filter((value) => value.plan.revision !== plan.revision)
+          .sort((a, b) => b.sequence - a.sequence)
+      : []
+    if (candidates.length) {
+      record.pages = record.pages.map((page) => {
+        const input = presentationPageInput(deck, plan, page.pageId)
+        const parent =
+          input &&
+          candidates.find(
+            (value) =>
+              value.pages.some(
+                (previousPage) =>
+                  previousPage.pageId === page.pageId && previousPage.state === 'compiled',
+              ) && input === presentationPageInput(value.deck, value.plan, page.pageId),
+          )
+        const previousPage = parent && parent.pages.find((value) => value.pageId === page.pageId)!
+        return parent && previousPage
+          ? {
+              ...previousPage,
+              reusedFrom: {
+                requestId: parent.requestId,
+                inputDigest: parent.inputDigest,
+                planDigest: parent.planDigest,
+              },
+            }
+          : page
+      })
     }
     productionRecord(record, 'output_too_large')
     const frozen = JSON.parse(canonical(record)) as PresentationProductionRecord
@@ -945,7 +1016,11 @@ export class PresentationStore {
       planDigest: parent.planDigest,
       revision,
       pages: parent.pages.map((page) =>
-        page.pageId === pageId ? { pageId, state: 'pending', attempt: 0 } : page,
+        page.pageId === pageId ||
+        presentationPageInput(parent.deck, parent.plan, page.pageId) !==
+          presentationPageInput(deck, parent.plan, page.pageId)
+          ? { pageId: page.pageId, state: 'pending', attempt: 0 }
+          : page,
       ),
     }
     productionRecord(child, 'output_too_large')

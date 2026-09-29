@@ -43,6 +43,7 @@ export interface PresentationProductionStatus {
     title: string
     state: 'pending' | 'building' | 'compiled' | 'failed'
     attempt: number
+    reusedFromRequestId?: string
     error?: (typeof errors)[number]
   }[]
 }
@@ -78,13 +79,17 @@ export function parsePresentationProductionStatus(value: unknown): PresentationP
     throw new Error('presentation_response_invalid')
   for (const page of value.pages) {
     if (
-      !object(page, ['id', 'title', 'state', 'attempt', 'error']) ||
+      !object(page, ['id', 'title', 'state', 'attempt', 'error', 'reusedFromRequestId']) ||
       !id(page.id) ||
       typeof page.title !== 'string' ||
       !page.title ||
       page.title.length > 300 ||
       !['pending', 'building', 'compiled', 'failed'].includes(String(page.state)) ||
       !integer(page.attempt) ||
+      (page.reusedFromRequestId !== undefined &&
+        (page.state !== 'compiled' ||
+          !id(page.reusedFromRequestId) ||
+          page.reusedFromRequestId === value.requestId)) ||
       (page.state === 'pending' ? page.attempt !== 0 : Number(page.attempt) < 1) ||
       (page.state === 'failed'
         ? !errors.includes(page.error as (typeof errors)[number])
@@ -220,11 +225,11 @@ const tools: AgentToolDef[] = Object.keys(operations).map((name) => ({
             : name === 'check_presentation_page_content'
               ? 'Read a deterministic content/evidence precheck for one exact frozen production page, even before compilation. Bounded arithmetic reproduces a configured calculation result, including explicit round(value, 0..6) for displayed decimal precision, but never verifies inputs, units, currency rate source or source truth. Findings include missing or different source as-of labels when a claim specifies one. Different labels can reflect valid multi-period comparisons; equal labels do not verify timeliness. Findings require human/agent review; this does not verify sources, timeliness or current host content. Does not change production, import or QA state.'
               : name === 'rebuild_presentation_page'
-                ? 'Create a derived production task by changing one SlideIR page from a fully compiled parent. Reuse the frozen plan, title, claims, style and registered assets. Does not run compilation or replace a host page. Derived tasks cannot be bulk imported; download the changed page for inspection.'
+                ? 'Create a derived production task by changing one SlideIR page from a fully compiled parent. Reuse the frozen plan, title, claims, style and registered assets. Changed declared dependents are queued again; unaffected compiled pages are preserved. Does not run compilation or replace a host page. Derived tasks cannot be bulk imported; download the changed page for inspection.'
                 : name === 'prepare_presentation_production_import'
                   ? 'Prepare all compiled pages of one exact production request for separately confirmed import. All pages must be compiled; preserves order and verifies the shared plan revision. Keeps only the latest prepared project in memory, within a 10 MiB decoded budget. Does not insert slides or perform QA.'
                   : name === 'start_presentation_production'
-                    ? 'Freeze a saved plan revision and SlideIR as a durable page compilation task. Reuse request_id for unchanged retries. Does not import slides.'
+                    ? 'Freeze a saved plan revision and SlideIR as a durable page compilation task. After a plan revision, unchanged compiled page inputs and declared dependencies can reuse artifacts from earlier tasks; the response identifies their source request. Shared style changes invalidate matching pages. Reuse request_id for unchanged retries. Compilation reuse never transfers evidence reviews, host imports or visual QA. Does not import slides.'
                     : name === 'run_presentation_production'
                       ? 'Compile remaining pages of a saved task. Failed pages do not discard successful pages; retry the same request. This is PC preparation, not host delivery or QA.'
                       : name === 'read_presentation_production'
