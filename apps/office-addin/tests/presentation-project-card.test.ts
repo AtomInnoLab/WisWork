@@ -707,3 +707,77 @@ it('fails closed at both completion and existing background entries for unknown 
   expect(view.button('继续后台任务')).toBeUndefined()
   expect(view.button('取消后台任务')).toBeUndefined()
 })
+
+it('keeps one collapsed page event row across retries and preserves run chronology', async () => {
+  const snapshot = completionSnapshot('running')
+  const job = snapshot.project!.productionJob!
+  job.revision = 4
+  job.events = [
+    { sequence: 1, createdAt: '2026-09-24T00:00:01.000Z', type: 'run.started' },
+    {
+      sequence: 2,
+      createdAt: '2026-09-24T00:00:02.000Z',
+      type: 'page.started',
+      pageId: 'b',
+      attempt: 1,
+    },
+    {
+      sequence: 3,
+      createdAt: '2026-09-24T00:00:03.000Z',
+      type: 'page.failed',
+      pageId: 'b',
+      attempt: 1,
+      error: 'compile_failed',
+    },
+    { sequence: 4, createdAt: '2026-09-24T00:00:04.000Z', type: 'run.paused' },
+  ]
+  const view = await mount(snapshot)
+  const pageRows = () =>
+    view.container.querySelectorAll('.presentation-job-events > ol > li[data-page-id]')
+  expect(pageRows()).toHaveLength(1)
+  const detail = pageRows()[0]!.querySelector('details') as HTMLDetailsElement
+  expect(detail.open).toBe(false)
+  expect(detail.querySelector('summary')!.textContent).toContain('B')
+  expect(detail.querySelector('summary')!.textContent).toContain('第 1 次')
+  await act(async () => detail.querySelector('summary')!.click())
+  expect(detail.open).toBe(true)
+  await view.update({
+    ...snapshot,
+    project: {
+      ...snapshot.project!,
+      productionJob: {
+        ...job,
+        revision: 6,
+        events: [
+          ...job.events,
+          {
+            sequence: 5,
+            createdAt: '2026-09-24T00:00:05.000Z',
+            type: 'page.started',
+            pageId: 'b',
+            attempt: 2,
+          },
+          {
+            sequence: 6,
+            createdAt: '2026-09-24T00:00:06.000Z',
+            type: 'page.compiled',
+            pageId: 'b',
+            attempt: 2,
+          },
+        ],
+      },
+    },
+  })
+  expect(pageRows()).toHaveLength(1)
+  const updatedDetail = pageRows()[0]!.querySelector('details') as HTMLDetailsElement
+  expect(updatedDetail).toBe(detail)
+  expect(updatedDetail.open).toBe(true)
+  expect(updatedDetail.querySelector('summary')!.textContent).toContain('第 2 次')
+  expect(updatedDetail.querySelector('summary')!.textContent).toContain('未导入验收')
+  expect(updatedDetail.querySelectorAll('ol li')).toHaveLength(4)
+  expect(
+    Array.from(view.container.querySelectorAll('.presentation-job-events > ol > li > time')).map(
+      (time) => time.textContent,
+    ),
+  ).toEqual(['2026-09-24T00:00:01.000Z', '2026-09-24T00:00:04.000Z'])
+})

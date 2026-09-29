@@ -1,7 +1,10 @@
 import { expect, it } from 'vitest'
 import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan.js'
 import { PRESENTATION_DOMAIN_PROFILES } from '@wiswork/pptx-engine/presentation-plan'
-import { presentationWorkflowSummary } from '../src/agent/presentation-workflow.js'
+import {
+  presentationWorkflowSummary,
+  presentationProductionEventRows,
+} from '../src/agent/presentation-workflow.js'
 import type { PresentationProjectStatus } from '../src/skills/powerpoint/presentation-project.js'
 import type { PresentationImportProgress } from '../src/skills/powerpoint/presentation-page-delivery.js'
 import type { PresentationQaRecord } from '../src/skills/powerpoint/presentation-qa.js'
@@ -75,11 +78,15 @@ it('shows document-bound source preparation without claiming source truth', () =
   expect(missing.timeline).toContainEqual(expect.objectContaining({ id: 'source-preparation' }))
   withSource.sourcePreparation[0]!.status = 'excerpt_mismatch'
   const mismatch = presentationWorkflowSummary(withSource, undefined, undefined)!
-  expect(mismatch.attention.find((item) => item.id === 'source-preparation')?.text).toContain('摘录不在原文中')
+  expect(mismatch.attention.find((item) => item.id === 'source-preparation')?.text).toContain(
+    '摘录不在原文中',
+  )
   expect(mismatch.nextAction).toContain('修订计划摘录')
   withSource.sourcePreparation[0]!.status = 'ready'
   const legacy = presentationWorkflowSummary(withSource, undefined, undefined)!
-  expect(legacy.attention.find((item) => item.id === 'source-preparation')?.text).toContain('旧版 PC 未核对摘录')
+  expect(legacy.attention.find((item) => item.id === 'source-preparation')?.text).toContain(
+    '旧版 PC 未核对摘录',
+  )
   withSource.sourcePreparation[0]!.status = 'excerpt_matched'
   const ready = presentationWorkflowSummary(withSource, undefined, undefined)!
   expect(ready.attention.some((item) => item.id === 'source-preparation')).toBe(false)
@@ -447,7 +454,13 @@ it('rebuilds recovery events from saved records and isolates the selected reques
   const replayed = presentationWorkflowSummary(selected, imported, qa)!
   expect(replayed.timeline).toEqual(first.timeline)
   expect(first.timeline.map((item) => item.id)).toEqual(
-    expect.arrayContaining(['plan', 'production', 'job-4', 'import', 'qa']),
+    expect.arrayContaining([
+      'plan',
+      'production',
+      `job-page:${JSON.stringify([project.projectId, production.requestId, event.pageId])}`,
+      'import',
+      'qa',
+    ]),
   )
   expect(first.timeline.filter((item) => item.id.startsWith('capture-'))).toHaveLength(
     qa.pages.length,
@@ -455,9 +468,15 @@ it('rebuilds recovery events from saved records and isolates the selected reques
   expect(first.timeline.filter((item) => item.id.startsWith('review-'))).toHaveLength(
     qa.pages.length,
   )
-  expect(first.timeline.find((item) => item.id === 'job-4')).toMatchObject({
+  expect(
+    first.timeline.find(
+      (item) =>
+        item.id ===
+        `job-page:${JSON.stringify([project.projectId, production.requestId, event.pageId])}`,
+    ),
+  ).toMatchObject({
     at: event.createdAt,
-    text: expect.stringContaining(event.pageId),
+    text: expect.stringContaining(production.pages[0]!.title),
   })
   const withHistory = presentationWorkflowSummary(
     {
@@ -651,4 +670,205 @@ it('labels old QA as historical after a brand or style revision', () => {
   expect(summary.pages[0]?.qa).toBe('旧样式版本历史通过')
   expect(summary.pages[0]?.nextAction).toBe('先确认继续旧计划或选择新任务')
   expect(summary.nextTool).toBeUndefined()
+})
+
+function eventProject(): PresentationProjectStatus {
+  const pageId = production.pages[0]!.id
+  const events = [
+    { sequence: 1, createdAt: '2026-09-24T00:00:01.000Z', type: 'run.started' as const },
+    {
+      sequence: 2,
+      createdAt: '2026-09-24T00:00:02.000Z',
+      type: 'page.started' as const,
+      pageId,
+      attempt: 1,
+    },
+    {
+      sequence: 3,
+      createdAt: '2026-09-24T00:00:03.000Z',
+      type: 'page.failed' as const,
+      pageId,
+      attempt: 1,
+      error: 'compile_failed' as const,
+    },
+    { sequence: 4, createdAt: '2026-09-24T00:00:04.000Z', type: 'run.paused' as const },
+    {
+      sequence: 5,
+      createdAt: '2026-09-24T00:00:05.000Z',
+      type: 'page.started' as const,
+      pageId,
+      attempt: 2,
+    },
+    {
+      sequence: 6,
+      createdAt: '2026-09-24T00:00:06.000Z',
+      type: 'page.compiled' as const,
+      pageId,
+      attempt: 2,
+    },
+    { sequence: 7, createdAt: '2026-09-24T00:00:07.000Z', type: 'run.completed' as const },
+  ]
+  return {
+    ...project,
+    production,
+    productionJob: {
+      projectId: project.projectId,
+      requestId: production.requestId,
+      revision: 7,
+      events,
+    } as NonNullable<PresentationProjectStatus['productionJob']>,
+  }
+}
+
+it('folds retries by stable request/page identity at the latest event position, preserving raw history', () => {
+  const selected = eventProject()
+  const original = structuredClone(selected)
+  const grouped = presentationProductionEventRows(selected)!
+  expect(grouped.rows).toHaveLength(4)
+  const row = grouped.rows.find((row) => row.pageId)!
+  expect(row.text).toContain(production.pages[0]!.title)
+  expect(row.text).toContain('第 2 次')
+  expect(row.text).toContain('未导入验收')
+  expect(row.at).toBe('2026-09-24T00:00:06.000Z')
+  expect(row.attempts).toHaveLength(4)
+  expect(row.attempts?.map((event) => event.at)).toEqual(
+    selected
+      .productionJob!.events.filter((event) => 'pageId' in event)
+      .map((event) => event.createdAt),
+  )
+  expect(grouped.rows.map((row) => row.at)).toEqual([
+    '2026-09-24T00:00:01.000Z',
+    '2026-09-24T00:00:04.000Z',
+    '2026-09-24T00:00:06.000Z',
+    '2026-09-24T00:00:07.000Z',
+  ])
+  expect(presentationProductionEventRows(structuredClone(selected))).toEqual(grouped)
+  const beforeRetry = {
+    ...selected,
+    productionJob: {
+      ...selected.productionJob!,
+      events: selected.productionJob!.events.slice(0, 3),
+      revision: 3,
+    },
+  }
+  expect(presentationProductionEventRows(beforeRetry)!.rows.find((event) => event.pageId)!.id).toBe(
+    row.id,
+  )
+  expect(selected).toEqual(original)
+  const timeline = presentationWorkflowSummary(selected, undefined, undefined)!.timeline
+  expect(timeline.filter((event) => event.id === row.id)).toHaveLength(1)
+  expect(timeline.filter((event) => event.id.startsWith('job-')).length).toBe(4)
+})
+
+it('bounds visible event history and never invents failure totals when earlier attempts were truncated', () => {
+  const selected = eventProject()
+  selected.productionJob!.revision = 130
+  selected.productionJob!.events = Array.from({ length: 30 }, (_, index) => ({
+    sequence: index + 101,
+    createdAt: `2026-09-24T00:00:${String(index).padStart(2, '0')}.000Z`,
+    type: 'page.failed' as const,
+    pageId: production.pages[0]!.id,
+    attempt: index + 1,
+    error: 'compile_failed' as const,
+  }))
+  const grouped = presentationProductionEventRows(selected)!
+  expect(grouped.retainedEventCount).toBe(20)
+  expect(grouped.truncated).toBe(true)
+  expect(grouped.rows).toHaveLength(1)
+  expect(grouped.rows[0]!.attempts).toHaveLength(20)
+  expect(grouped.rows[0]!.text).toContain('第 30 次')
+  expect(grouped.rows[0]!.text).not.toContain('失败 30 次')
+  expect(
+    presentationWorkflowSummary(selected, undefined, undefined)!.timeline.some((row) =>
+      row.text.includes('更早历史已截断'),
+    ),
+  ).toBe(true)
+})
+
+it('isolates event grouping by project/request and uses only matching title metadata', () => {
+  const selected = eventProject()
+  expect(
+    presentationProductionEventRows({
+      ...selected,
+      productionJob: { ...selected.productionJob!, requestId: 'other' },
+    }),
+  ).toBeUndefined()
+  expect(
+    presentationProductionEventRows({
+      ...selected,
+      productionJob: { ...selected.productionJob!, projectId: 'other' },
+    }),
+  ).toBeUndefined()
+  const changedRequest = {
+    ...selected,
+    production: { ...production, requestId: 'other' },
+    productionJob: { ...selected.productionJob!, requestId: 'other' },
+  }
+  expect(
+    presentationProductionEventRows(changedRequest)!.rows.find((row) => row.pageId)!.id,
+  ).not.toBe(presentationProductionEventRows(selected)!.rows.find((row) => row.pageId)!.id)
+  const noPage = { ...selected, production: { ...production, pages: [] } }
+  expect(presentationProductionEventRows(noPage)!.rows.find((row) => row.pageId)?.text).toContain(
+    plan.slides[0]!.title,
+  )
+  const oldPlan = { ...noPage, plan: { ...project.plan!, revision: 2 } }
+  expect(presentationProductionEventRows(oldPlan)!.rows.find((row) => row.pageId)?.text).toContain(
+    production.pages[0]!.id,
+  )
+  expect(
+    presentationProductionEventRows(oldPlan)!.rows.find((row) => row.pageId)?.text,
+  ).not.toContain(plan.slides[0]!.title)
+})
+
+it('keeps distinct page groups through interleaved attempts and lifecycle checkpoints', () => {
+  const selected = eventProject()
+  const first = production.pages[0]!.id
+  const second = production.pages[1]!.id
+  selected.productionJob!.events = [
+    {
+      sequence: 1,
+      createdAt: '2026-09-24T00:00:01.000Z',
+      type: 'page.started',
+      pageId: first,
+      attempt: 1,
+    },
+    {
+      sequence: 2,
+      createdAt: '2026-09-24T00:00:02.000Z',
+      type: 'page.started',
+      pageId: second,
+      attempt: 1,
+    },
+    {
+      sequence: 3,
+      createdAt: '2026-09-24T00:00:03.000Z',
+      type: 'page.failed',
+      pageId: first,
+      attempt: 1,
+      error: 'compile_failed',
+    },
+    { sequence: 4, createdAt: '2026-09-24T00:00:04.000Z', type: 'run.interrupted' },
+    {
+      sequence: 5,
+      createdAt: '2026-09-24T00:00:05.000Z',
+      type: 'page.compiled',
+      pageId: second,
+      attempt: 1,
+    },
+    {
+      sequence: 6,
+      createdAt: '2026-09-24T00:00:06.000Z',
+      type: 'page.started',
+      pageId: first,
+      attempt: 2,
+    },
+  ]
+  selected.productionJob!.revision = 6
+  const grouped = presentationProductionEventRows(selected)!
+  expect(grouped.rows.map((row) => row.pageId ?? 'run')).toEqual(['run', second, first])
+  expect(grouped.rows.filter((row) => row.pageId)).toHaveLength(2)
+  expect(grouped.rows.find((row) => row.pageId === first)?.text).toContain('开始编译')
+  expect(grouped.rows.find((row) => row.pageId === first)?.text).not.toContain('编译完成')
+  expect(grouped.rows.find((row) => row.pageId === first)?.attempts).toHaveLength(3)
+  expect(grouped.rows.find((row) => row.pageId === second)?.attempts).toHaveLength(2)
 })

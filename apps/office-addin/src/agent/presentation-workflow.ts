@@ -18,6 +18,97 @@ const jobEventLabels = {
   'page.failed': '编译失败',
 } as const
 
+export interface PresentationProductionEventRow {
+  id: string
+  text: string
+  at: string
+  pageId?: string
+  attempts?: { id: string; text: string; at: string }[]
+}
+
+/** Fold only retained display events; persisted events and page progress stay unchanged. */
+export function presentationProductionEventRows(
+  project: PresentationProjectStatus | undefined,
+):
+  | { rows: PresentationProductionEventRow[]; retainedEventCount: number; truncated: boolean }
+  | undefined {
+  const job = project?.productionJob
+  const production = project?.production
+  if (
+    !project ||
+    !job ||
+    !production ||
+    job.projectId !== project.projectId ||
+    production.projectId !== project.projectId ||
+    job.requestId !== production.requestId
+  )
+    return undefined
+  const events = job.events.slice(-20)
+  type PageEvent = Extract<(typeof events)[number], { pageId: string }>
+  const pages = new Map<string, PageEvent[]>()
+  for (const event of events) {
+    if (!('pageId' in event)) continue
+    const attempts = pages.get(event.pageId) ?? []
+    attempts.push(event)
+    pages.set(event.pageId, attempts)
+  }
+  const rows: PresentationProductionEventRow[] = []
+  for (const event of events) {
+    if (!('pageId' in event)) {
+      rows.push({
+        id: `job-run:${JSON.stringify([project.projectId, job.requestId, event.sequence])}`,
+        text: jobEventLabels[event.type],
+        at: event.createdAt,
+      })
+      continue
+    }
+    const attempts = pages.get(event.pageId)!
+    if (attempts.at(-1) !== event) continue
+    const page = production.pages.find((page) => page.id === event.pageId)
+    const planned =
+      project.plan?.revision === production.planRevision
+        ? project.plan.value.slides.find((page) => page.id === event.pageId)
+        : undefined
+    const id = `job-page:${JSON.stringify([project.projectId, job.requestId, event.pageId])}`
+    const eventText = (attempt: PageEvent) =>
+      `第 ${attempt.attempt} 次 · ${jobEventLabels[attempt.type]}${attempt.type === 'page.compiled' ? '（未导入验收）' : ''}${
+        'error' in attempt && attempt.error
+          ? ` · ${
+              {
+                compile_failed: '编译失败',
+                invalid_deck: '页面内容无效',
+                aborted: '已停止',
+                output_too_large: '成果过大',
+                asset_unavailable: '素材不可用',
+                source_unavailable: '附件不可读或来源摘录未匹配',
+                font_unavailable: '指定字体及回退字体均不可用',
+                invalid_state: '任务状态异常',
+              }[attempt.error]
+            }`
+          : ''
+      }`
+    rows.push({
+      id,
+      pageId: event.pageId,
+      text: `页面 ${page?.title ?? planned?.title ?? event.pageId} · ${eventText(event)}`,
+      at: event.createdAt,
+      attempts: attempts.map((attempt) => ({
+        id: `${id}:event-${attempt.sequence}`,
+        text: eventText(attempt),
+        at: attempt.createdAt,
+      })),
+    })
+  }
+  return {
+    rows,
+    retainedEventCount: events.length,
+    truncated:
+      job.events.length > events.length ||
+      job.revision > job.events.length ||
+      (events[0]?.sequence ?? 1) > 1,
+  }
+}
+
 export interface PresentationWorkflowSummary {
   stages: {
     name: string
@@ -419,18 +510,14 @@ export function presentationWorkflowSummary(
       id: 'production',
       text: `当前页任务 ${production.requestId}：已编译 ${production.compiledCount}/${production.total} 页`,
     })
-    if (
-      project.productionJob?.requestId === production.requestId &&
-      project.productionJob.projectId === project.projectId
-    ) {
-      for (const event of project.productionJob.events.slice(-20)) {
-        const pageText = 'pageId' in event ? ` · ${event.pageId}（第 ${event.attempt} 次）` : ''
+    const grouped = presentationProductionEventRows(project)
+    if (grouped) {
+      timeline.push(...grouped.rows)
+      if (grouped.truncated)
         timeline.push({
-          id: `job-${event.sequence}`,
-          text: `${jobEventLabels[event.type]}${pageText}`,
-          at: event.createdAt,
+          id: `job-history:${JSON.stringify([project.projectId, production.requestId])}`,
+          text: '仅展示最近保留的生产事件；更早历史已截断，此处不是完整审计记录或失败次数统计。',
         })
-      }
     }
   }
   for (const task of project.productionTasks?.slice(0, 20) ?? []) {

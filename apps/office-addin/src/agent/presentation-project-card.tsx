@@ -1,3 +1,4 @@
+import { presentationProductionEventRows } from './presentation-workflow.js'
 import { PresentationDeliveryReportCard } from './presentation-delivery-report-card.js'
 import { useSyncExternalStore } from 'react'
 import type { PresentationProjectController } from '../skills/powerpoint/presentation-project.js'
@@ -14,6 +15,7 @@ export function PresentationProjectCard(props: {
       () => controller.snapshot(),
       () => controller.snapshot(),
     )
+  const productionEvents = presentationProductionEventRows(project)
   const job = project?.productionJob
   const active = phase !== 'idle'
   const disabled = props.disabled || active
@@ -280,35 +282,34 @@ export function PresentationProjectCard(props: {
             )}
           </div>
           <details className="presentation-job-events">
-            <summary>生产事件 · 最近 {job.events.length} 条</summary>
-            {job.revision > job.events.length && <p>更早历史已截断，此处不是完整审计记录。</p>}
-            <p>仅记录冻结页面编译，不包含研究、宿主写入或 QA。</p>
+            <summary>
+              生产事件 · 最近 {productionEvents?.retainedEventCount ?? 0} 条（按页合并）
+            </summary>
+            {productionEvents?.truncated && (
+              <p>更早历史已截断，此处不是完整审计记录或失败次数统计。</p>
+            )}
+            <p>仅记录冻结页面编译，不包含研究、宿主写入或 QA。页内详情只含当前保留的尝试事件。</p>
             <ol>
-              {job.events.map((event) => (
-                <li key={event.sequence}>
-                  <time dateTime={event.createdAt}>{event.createdAt}</time> ·{' '}
-                  {
-                    {
-                      'run.started': '开始后台制作',
-                      'run.pause_requested': '已请求暂停',
-                      'run.paused': '已暂停',
-                      'run.cancel_requested': '已请求取消',
-                      'run.cancelled': '已取消',
-                      'run.interrupted': '运行已中断',
-                      'run.completed': '编译完成',
-                      'run.failed': '运行失败',
-                      'page.started': '页面开始编译',
-                      'page.compiled': '页面编译完成',
-                      'page.failed': '页面编译失败',
-                    }[event.type]
-                  }
-                  {'pageId' in event
-                    ? ` · 页面 ${project.production?.pages.find((page) => page.id === event.pageId)?.title ?? '未知页面'}`
-                    : ''}
-                  {'attempt' in event ? ` · 尝试 ${event.attempt}` : ''}
-                  {'error' in event && event.error
-                    ? ` · ${{ compile_failed: '编译失败', invalid_deck: '页面内容无效', aborted: '已停止', output_too_large: '成果过大', asset_unavailable: '素材不可用', source_unavailable: '附件不可读或来源摘录未匹配', font_unavailable: '指定字体及回退字体均不可用', invalid_state: '任务状态异常' }[event.error]}`
-                    : ''}
+              {productionEvents?.rows.map((row) => (
+                <li key={row.id} data-page-id={row.pageId}>
+                  {row.attempts ? (
+                    <details>
+                      <summary>
+                        <time dateTime={row.at}>{row.at}</time> · {row.text}
+                      </summary>
+                      <ol>
+                        {row.attempts.map((attempt) => (
+                          <li key={attempt.id}>
+                            <time dateTime={attempt.at}>{attempt.at}</time> · {attempt.text}
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  ) : (
+                    <>
+                      <time dateTime={row.at}>{row.at}</time> · {row.text}
+                    </>
+                  )}
                 </li>
               ))}
             </ol>
