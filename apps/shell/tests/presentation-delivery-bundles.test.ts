@@ -10,115 +10,17 @@ it('rejects unknown manifest fields and operations before writing', async () => 
     service({ operation: 'delivery_bundle_unknown' }, new AbortController().signal),
   ).rejects.toThrow('invalid_request')
 })
-import { mkdtempSync, rmSync, writeFileSync, symlinkSync, mkdirSync, existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync, symlinkSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import JSZip from 'jszip'
 import { afterEach } from 'vitest'
-import { PresentationStore } from '@wiswork/project-store'
+import { parsePresentationDeliveryBundleReceipt } from '@wiswork/project-store/presentation-delivery-bundle'
 import {
-  presentationDeliveryBundleFiles,
-  parsePresentationDeliveryBundleReceipt,
-} from '@wiswork/project-store/presentation-delivery-bundle'
-import { buildPresentationDeliveryReport } from '@wiswork/pptx-engine/presentation-delivery-report'
-import {
-  benchmarkPlan,
-  benchmarkPlannedDeck,
-} from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
-const roots: string[] = []
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
-})
+  deliveryBundleFixture as fixture,
+  cleanupDeliveryBundleFixtures,
+} from './helpers/delivery-bundle-fixture'
+afterEach(cleanupDeliveryBundleFixtures)
 const hash = (v: string | Uint8Array) => createHash('sha256').update(v).digest('hex')
-async function fixture(modify?: (files: Map<string, Buffer>) => void) {
-  const root = mkdtempSync(join(tmpdir(), 'delivery-bundle-'))
-  roots.push(root)
-  const store = new PresentationStore(root)
-  const plan = benchmarkPlan(),
-    deck = benchmarkPlannedDeck()
-  const production = store.beginProduction(plan.projectId, 'doc', 'req', deck, {
-    revision: 1,
-    plan,
-  })
-  const report = await buildPresentationDeliveryReport({
-    plan,
-    deck,
-    metadata: {
-      projectId: plan.projectId,
-      documentId: 'doc',
-      requestId: 'req',
-      planRevision: 1,
-      inputDigest: production.inputDigest,
-      planDigest: production.planDigest,
-    },
-    pageStates: production.pages.map((p) => ({ pageId: p.pageId, state: p.state })),
-    reviews: [],
-    issueLedger: store.issueActions(plan.projectId, 'doc', 'req'),
-  })
-  const files = new Map(
-    presentationDeliveryBundleFiles.map(
-      (name) =>
-        [
-          name,
-          Buffer.from(
-            name === 'presentation.pptx'
-              ? 'PK\u0003\u0004host current bytes'
-              : name === 'evidence.json'
-                ? JSON.stringify(report)
-                : name === 'claims.json'
-                  ? JSON.stringify(plan.claims)
-                  : name === 'sources.json'
-                    ? JSON.stringify(plan.sources)
-                    : 'historical not verified',
-          ),
-        ] as [string, Buffer],
-    ),
-  )
-  modify?.(files)
-  const manifest = {
-    version: 1 as const,
-    scope: 'current_office_document' as const,
-    documentId: 'doc',
-    projectId: plan.projectId,
-    requestId: 'req',
-    planRevision: 1,
-    inputDigest: production.inputDigest,
-    planDigest: production.planDigest,
-    createdAt: new Date().toISOString(),
-    files: [...files].map(([name, data]) => ({ name, sizeBytes: data.length, sha256: hash(data) })),
-    checks: {
-      completion: 'not_verified' as const,
-      sourceAuthority: 'not_verified' as const,
-      timeliness: 'not_verified' as const,
-      roundTrip: 'not_run' as const,
-      hostQa: 'not_checked' as const,
-      pdf: 'not_requested' as const,
-    },
-  }
-  const zip = new JSZip()
-  for (const [name, data] of files) zip.file(name, data)
-  zip.file('manifest.json', JSON.stringify(manifest))
-  const raw = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
-  const base = {
-    documentId: 'doc',
-    projectId: plan.projectId,
-    requestId: 'req',
-    bundleId: hash(raw),
-  }
-  const service = createPresentationDeliveryBundleService({ userDataPath: root })
-  const call = (operation: string, fields: Record<string, unknown> = {}) =>
-    service(
-      { ...base, operation: 'delivery_bundle_' + operation, ...fields },
-      new AbortController().signal,
-    )
-  const begin = () => call('begin', { sha256: hash(raw), sizeBytes: raw.length, manifest })
-  const upload = async () => {
-    await begin()
-    await call('chunk', { offset: 0, base64: raw.toString('base64') })
-  }
-  return { root, manifest, raw, call, begin, upload, base }
-}
 it('uploads with overlapping retry, restores ready metadata/read/list and explicit cleanup', async () => {
   const f = await fixture()
   const begun = await f.begin()
@@ -279,7 +181,7 @@ it('rejects inconsistent manifests and ready receipts and returns detached copie
     }),
   ).toThrow('invalid_state')
 })
-it('restores a durable chunk after its metadata acknowledgment was interrupted', async () => {
+it('keeps metadata read-only and restores a durable chunk through explicit exact-overlap retry', async () => {
   const f = await fixture()
   await f.begin()
   const dir = join(
@@ -291,11 +193,16 @@ it('restores a durable chunk after its metadata acknowledgment was interrupted',
   )
   writeFileSync(join(dir, 'bundle.zip'), f.raw)
   const recovered = await f.call('metadata')
-  expect(parsePresentationDeliveryBundleReceipt(recovered).receivedBytes).toBe(f.raw.length)
+  expect(parsePresentationDeliveryBundleReceipt(recovered).receivedBytes).toBe(0)
+  expect(
+    parsePresentationDeliveryBundleReceipt(
+      await f.call('chunk', { offset: 0, base64: f.raw.toString('base64') }),
+    ).receivedBytes,
+  ).toBe(f.raw.length)
   expect(parsePresentationDeliveryBundleReceipt(await f.call('finish')).state).toBe('ready')
 })
 
-it('cleans only the locked project crash stages and recognized bundle temporary files on restart', async () => {
+it('preserves recognized crash stages and other invocation temporary files on readonly restart', async () => {
   const f = await fixture()
   await f.upload()
   const ready = await f.call('finish')
@@ -327,15 +234,18 @@ it('cleans only the locked project crash stages and recognized bundle temporary 
       new AbortController().signal,
     ),
   ).toEqual(ready)
-  expect(existsSync(stage)).toBe(false)
-  expect(existsSync(zipTmp)).toBe(false)
-  expect(existsSync(metadataTmp)).toBe(false)
+  expect(existsSync(stage)).toBe(true)
+  expect(existsSync(zipTmp)).toBe(true)
+  expect(existsSync(metadataTmp)).toBe(true)
   expect(existsSync(active)).toBe(true)
   expect(existsSync(join(dir, 'keep.txt'))).toBe(true)
   expect(await f.call('read', { offset: 0, length: 128 * 1024 })).toMatchObject({
     base64: f.raw.toString('base64'),
   })
-  symlinkSync(join(dir, 'bundle.zip'), zipTmp)
+  symlinkSync(
+    join(dir, 'bundle.zip'),
+    join(dir, 'bundle.zip.12345678-1234-4234-8234-123456789abd.tmp'),
+  )
   await expect(f.call('metadata')).rejects.toThrow('invalid_state')
   expect(existsSync(join(dir, 'bundle.zip'))).toBe(true)
 })

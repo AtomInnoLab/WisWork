@@ -1,8 +1,9 @@
+import { registerPresentationProjectWork } from './presentation-project-work'
 import { parsePresentationResearchRecord } from '@wiswork/project-store/presentation-research'
 import { PresentationResearchStore } from '@wiswork/project-store/presentation-research-store'
 import { createHash, randomUUID } from 'node:crypto'
-import { constants } from 'node:fs'
-import { lstat, mkdir, open, readdir, rename, rm } from 'node:fs/promises'
+import { constants, renameSync, rmSync } from 'node:fs'
+import { lstat, mkdir, open, readdir, rm } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
 import JSZip from 'jszip'
@@ -27,81 +28,115 @@ const digest = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{
 const check = (signal: AbortSignal) => {
   if (signal.aborted) fail('aborted')
 }
-async function directory(path: string, create = true) {
+type Guard = () => void
+async function directory(path: string, create = true, guard?: Guard) {
+  guard?.()
   if (create)
     await mkdir(path, { mode: 0o700 }).catch((e) => {
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
     })
+  guard?.()
   const s = await lstat(path)
+  guard?.()
   if (s.isSymbolicLink() || !s.isDirectory()) fail('invalid_state')
 }
 const uuidPattern = '[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}'
 const stagePattern = new RegExp('^\\.tmp-' + uuidPattern + '$')
 const atomicPattern = new RegExp('^(bundle\\.zip|metadata\\.json)\\.' + uuidPattern + '\\.tmp$')
-// Called only while holding the owning project's lock; another project may still be uploading.
-async function cleanupTemporary(path: string, stages: boolean) {
-  for (const name of await readdir(path)) {
-    if (!(stages ? stagePattern : atomicPattern).test(name)) continue
-    const temporary = join(path, name)
-    const stat = await lstat(temporary)
-    if (stat.isSymbolicLink() || (stages ? !stat.isDirectory() : !stat.isFile()))
-      fail('invalid_state')
-    await rm(temporary, { recursive: stages, force: true })
+// Readers validate recognized leftovers without assuming another invocation's ownership.
+async function canonicalEntries(path: string, guard?: Guard) {
+  const entries = await readdir(path)
+  guard?.()
+  const canonical: string[] = []
+  for (const name of entries) {
+    if (stagePattern.test(name)) {
+      const stat = await lstat(join(path, name))
+      guard?.()
+      if (stat.isSymbolicLink() || !stat.isDirectory()) fail('invalid_state')
+    } else if (!digest(name)) fail('invalid_state')
+    else canonical.push(name)
+  }
+  if (canonical.length > 32) fail('invalid_state')
+  return canonical
+}
+async function validateTemporaryFiles(path: string, guard?: Guard) {
+  const entries = await readdir(path)
+  guard?.()
+  for (const name of entries.filter((name) => atomicPattern.test(name))) {
+    const stat = await lstat(join(path, name))
+    guard?.()
+    if (stat.isSymbolicLink() || !stat.isFile()) fail('invalid_state')
   }
 }
-async function bytes(path: string, limit: number) {
+async function bytes(path: string, limit: number, guard?: Guard) {
+  guard?.()
   const f = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   try {
+    guard?.()
     const stat = await f.stat()
+    guard?.()
     if (!stat.isFile() || stat.size > limit) fail('invalid_state')
     const raw = await f.readFile()
+    guard?.()
     if (raw.length > limit) fail('invalid_state')
     return raw
   } finally {
     await f.close()
+    guard?.()
   }
 }
-async function atomic(path: string, value: string | Buffer) {
+async function atomic(path: string, value: string | Buffer, guard?: Guard) {
   const tmp = path + '.' + randomUUID() + '.tmp'
+  let created = false
   try {
+    guard?.()
     const f = await open(tmp, 'wx', 0o600)
+    created = true
     try {
+      guard?.()
       await f.writeFile(value)
+      guard?.()
       await f.sync()
     } finally {
       await f.close()
     }
-    await rename(tmp, path)
+    guard?.()
+    renameSync(tmp, path)
+    created = false
     if (process.platform !== 'win32') {
+      guard?.()
       const parent = await open(dirname(path), constants.O_RDONLY | constants.O_NOFOLLOW)
       try {
+        guard?.()
         await parent.sync()
       } finally {
         await parent.close()
       }
     }
   } finally {
-    await rm(tmp, { force: true })
+    if (created) await rm(tmp, { force: true })
   }
 }
-async function save(dir: string, r: PresentationDeliveryBundleReceipt) {
+async function save(dir: string, r: PresentationDeliveryBundleReceipt, guard?: Guard) {
   parsePresentationDeliveryBundleReceipt(r)
   await atomic(
     join(dir, 'metadata.json'),
     JSON.stringify({ receipt: r, checksum: hash(JSON.stringify(r)) }),
+    guard,
   )
+  guard?.()
 }
-async function metadata(dir: string) {
-  await directory(dir, false)
-  await cleanupTemporary(dir, false)
-  const v = JSON.parse((await bytes(join(dir, 'metadata.json'), 256 * 1024)).toString())
+async function metadata(dir: string, guard?: Guard) {
+  await directory(dir, false, guard)
+  await validateTemporaryFiles(dir, guard)
+  const v = JSON.parse((await bytes(join(dir, 'metadata.json'), 256 * 1024, guard)).toString())
   if (
     Object.keys(v).sort().join(',') !== 'checksum,receipt' ||
     v.checksum !== hash(JSON.stringify(v.receipt))
   )
     fail('invalid_state')
   const receipt = parsePresentationDeliveryBundleReceipt(v.receipt)
-  const raw = await bytes(join(dir, 'bundle.zip'), LIMIT)
+  const raw = await bytes(join(dir, 'bundle.zip'), LIMIT, guard)
   if (
     raw.length < receipt.receivedBytes ||
     raw.length > receipt.sizeBytes ||
@@ -203,7 +238,15 @@ async function validateBundleZip(raw: Buffer) {
     fail('unsupported_file')
   }
 }
-export function createPresentationDeliveryBundleService(options: { userDataPath: string }) {
+export function createPresentationDeliveryBundleService(options: {
+  userDataPath: string
+  captureProjectLease?(
+    scope: Readonly<{ documentId: string; projectId: string }>,
+    mode: 'read' | 'write',
+    signal: AbortSignal,
+  ): { assertCurrent(): void }
+}) {
+  options = { ...options, userDataPath: resolve(options.userDataPath) }
   const root = join(resolve(options.userDataPath), 'presentation-delivery-bundles')
   const store = new PresentationStore(options.userDataPath)
   const service = async (
@@ -211,6 +254,7 @@ export function createPresentationDeliveryBundleService(options: { userDataPath:
     signal: AbortSignal,
   ): Promise<unknown> => {
     check(signal)
+    request = structuredClone(request)
     const fields: Record<string, string[]> = {
       delivery_bundle_begin: ['bundleId', 'sha256', 'sizeBytes', 'manifest'],
       delivery_bundle_chunk: ['bundleId', 'offset', 'base64'],
@@ -235,282 +279,363 @@ export function createPresentationDeliveryBundleService(options: { userDataPath:
     assertPresentationId(request.projectId)
     assertPresentationId(request.requestId)
     if (op !== 'delivery_bundle_list' && !digest(request.bundleId)) fail('invalid_request')
-    const documentId = request.documentId,
+    const documentId = request.documentId as string,
       projectId = request.projectId as string,
       requestId = request.requestId as string
-    const project = join(root, hash(documentId), hash(projectId))
-    const previous = locks.get(project) ?? Promise.resolve()
-    let release!: () => void
-    const tail = new Promise<void>((r) => {
-      release = r
+    const accepted = store.production(projectId, documentId, requestId)
+    if (!accepted) fail('not_found')
+    const mode = [
+      'delivery_bundle_list',
+      'delivery_bundle_metadata',
+      'delivery_bundle_read',
+    ].includes(op)
+      ? 'read'
+      : 'write'
+    const work = registerPresentationProjectWork({
+      scope: {
+        root: options.userDataPath,
+        projectId: accepted.projectId,
+        documentId: accepted.documentId,
+      },
+      signal,
     })
-    locks.set(project, tail)
-    await previous
+    signal = work.signal
     try {
-      check(signal)
-      const production = store.production(projectId, documentId, requestId)
-      if (!production) fail('not_found')
-      await directory(root)
-      await directory(join(root, hash(documentId)))
-      await directory(project)
-      await cleanupTemporary(project, true)
-      const entries = await readdir(project)
-      if (entries.length > 32 || entries.some((e) => !digest(e))) fail('invalid_state')
-      const binding = (r: PresentationDeliveryBundleReceipt) => {
-        if (
-          r.documentId !== documentId ||
-          r.projectId !== projectId ||
-          r.requestId !== requestId ||
-          r.manifest.planRevision !== production.plan.revision ||
-          r.manifest.inputDigest !== production.inputDigest ||
-          r.manifest.planDigest !== production.planDigest
-        )
-          fail('invalid_state')
+      const lease = options.captureProjectLease?.(
+        Object.freeze({ projectId: accepted.projectId, documentId: accepted.documentId }),
+        mode,
+        signal,
+      )
+      const guard = () => {
+        check(signal)
+        lease?.assertCurrent()
+        check(signal)
       }
-      if (op === 'delivery_bundle_list') {
-        const bundles = []
-        for (const entry of entries) {
-          const r = await metadata(join(project, entry))
-          if (
-            hash(r.bundleId) !== entry ||
-            r.documentId !== documentId ||
-            r.projectId !== projectId
-          )
-            fail('invalid_state')
-          if (r.requestId === requestId) {
-            binding(r)
-            bundles.push(r)
+      guard()
+      const project = join(root, hash(documentId), hash(projectId))
+      const previous = locks.get(project) ?? Promise.resolve()
+      let release!: () => void
+      const tail = new Promise<void>((r) => {
+        release = r
+      })
+      locks.set(project, tail)
+      await previous
+      try {
+        guard()
+        const production = store.production(projectId, documentId, requestId)
+        if (!production) fail('not_found')
+        if (
+          production.inputDigest !== accepted.inputDigest ||
+          production.planDigest !== accepted.planDigest ||
+          production.plan.revision !== accepted.plan.revision
+        )
+          fail('revision_conflict')
+        guard()
+        for (const path of [root, join(root, hash(documentId)), project]) {
+          try {
+            await directory(path, mode === 'write', guard)
+          } catch (error) {
+            if (mode === 'read' && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+              guard()
+              if (op === 'delivery_bundle_list') return { bundles: [] }
+              fail('not_found')
+            }
+            throw error
           }
         }
-        return { bundles }
-      }
-      const bundleId = request.bundleId as string,
-        dir = join(project, hash(bundleId)),
-        exists = entries.includes(hash(bundleId))
-      if (op === 'delivery_bundle_begin') {
-        const manifest = parsePresentationDeliveryBundleManifest(request.manifest)
-        if (request.sha256 !== bundleId || !integer(request.sizeBytes, 1, LIMIT))
-          fail('invalid_request')
-        const receipt: PresentationDeliveryBundleReceipt = {
-          version: 1,
-          documentId,
-          projectId,
-          requestId,
-          bundleId,
-          sha256: bundleId,
-          sizeBytes: request.sizeBytes,
-          receivedBytes: 0,
-          state: 'uploading',
-          createdAt: new Date().toISOString(),
-          manifest,
-        }
-        binding(receipt)
-        parsePresentationDeliveryBundleReceipt(receipt)
-        if (exists) {
-          const old = await metadata(dir)
-          binding(old)
-          if (
-            old.bundleId !== bundleId ||
-            old.sizeBytes !== receipt.sizeBytes ||
-            canonicalPresentationValue(old.manifest) !== canonicalPresentationValue(manifest)
-          )
-            fail('attachment_conflict')
-          return old
-        }
-        let reserved = 0
-        for (const entry of entries) {
-          const r = await metadata(join(project, entry))
+        const entries = await canonicalEntries(project, guard)
+        const binding = (r: PresentationDeliveryBundleReceipt) => {
           if (
             r.documentId !== documentId ||
             r.projectId !== projectId ||
-            hash(r.bundleId) !== entry
+            r.requestId !== requestId ||
+            r.manifest.planRevision !== production.plan.revision ||
+            r.manifest.inputDigest !== production.inputDigest ||
+            r.manifest.planDigest !== production.planDigest
           )
             fail('invalid_state')
-          reserved += r.sizeBytes
         }
-        if (entries.length >= 32 || reserved + receipt.sizeBytes > 100 * 1024 * 1024)
-          fail('quota_exceeded')
-        const staging = join(project, '.tmp-' + randomUUID())
-        try {
-          await directory(staging)
-          await atomic(join(staging, 'bundle.zip'), Buffer.alloc(0))
-          await save(staging, receipt)
+        if (op === 'delivery_bundle_list') {
+          const bundles = []
+          for (const entry of entries) {
+            const r = await metadata(join(project, entry), guard)
+            if (
+              hash(r.bundleId) !== entry ||
+              r.documentId !== documentId ||
+              r.projectId !== projectId
+            )
+              fail('invalid_state')
+            if (r.requestId === requestId) {
+              binding(r)
+              bundles.push(r)
+            }
+          }
+          guard()
+          return { bundles }
+        }
+        const bundleId = request.bundleId as string,
+          dir = join(project, hash(bundleId)),
+          exists = entries.includes(hash(bundleId))
+        if (op === 'delivery_bundle_begin') {
+          const manifest = parsePresentationDeliveryBundleManifest(request.manifest)
+          if (request.sha256 !== bundleId || !integer(request.sizeBytes, 1, LIMIT))
+            fail('invalid_request')
+          const receipt: PresentationDeliveryBundleReceipt = {
+            version: 1,
+            documentId,
+            projectId,
+            requestId,
+            bundleId,
+            sha256: bundleId,
+            sizeBytes: request.sizeBytes,
+            receivedBytes: 0,
+            state: 'uploading',
+            createdAt: new Date().toISOString(),
+            manifest,
+          }
+          binding(receipt)
+          parsePresentationDeliveryBundleReceipt(receipt)
+          if (exists) {
+            const old = await metadata(dir, guard)
+            binding(old)
+            if (
+              old.bundleId !== bundleId ||
+              old.sizeBytes !== receipt.sizeBytes ||
+              canonicalPresentationValue(old.manifest) !== canonicalPresentationValue(manifest)
+            )
+              fail('attachment_conflict')
+            guard()
+            return old
+          }
+          let reserved = 0
+          for (const entry of entries) {
+            const r = await metadata(join(project, entry), guard)
+            if (
+              r.documentId !== documentId ||
+              r.projectId !== projectId ||
+              hash(r.bundleId) !== entry
+            )
+              fail('invalid_state')
+            reserved += r.sizeBytes
+          }
+          if (entries.length >= 32 || reserved + receipt.sizeBytes > 100 * 1024 * 1024)
+            fail('quota_exceeded')
+          const staging = join(project, '.tmp-' + randomUUID())
+          let created = false
+          try {
+            guard()
+            await mkdir(staging, { mode: 0o700 })
+            created = true
+            await directory(staging, false, guard)
+            await atomic(join(staging, 'bundle.zip'), Buffer.alloc(0), guard)
+            await save(staging, receipt, guard)
+            guard()
+            renameSync(staging, dir)
+            created = false
+          } finally {
+            if (created) await rm(staging, { recursive: true, force: true })
+          }
+          guard()
+          return receipt
+        }
+        if (!exists) fail('not_found')
+        let r = await metadata(dir, guard)
+        binding(r)
+        if (r.bundleId !== bundleId) fail('invalid_state')
+        if (op === 'delivery_bundle_delete') {
+          guard()
+          rmSync(dir, { recursive: true })
+          return { bundleId, deleted: true }
+        }
+        const raw = await bytes(join(dir, 'bundle.zip'), LIMIT, guard)
+        if (
+          raw.length < r.receivedBytes ||
+          raw.length > r.sizeBytes ||
+          (r.state === 'ready' && (raw.length !== r.receivedBytes || hash(raw) !== r.sha256))
+        )
+          fail('invalid_state')
+        if (mode === 'write' && r.state === 'uploading' && raw.length !== r.receivedBytes) {
+          r = { ...r, receivedBytes: raw.length }
+          await save(dir, r, guard)
+        }
+        if (op === 'delivery_bundle_metadata') {
+          guard()
+          return r
+        }
+        if (op === 'delivery_bundle_read') {
+          if (r.state !== 'ready') fail('invalid_state')
+          if (!integer(request.offset, 0, raw.length) || !integer(request.length, 1, CHUNK))
+            fail('invalid_request')
           check(signal)
-          await rename(staging, dir)
-        } finally {
-          await rm(staging, { recursive: true, force: true })
+          return {
+            bundleId,
+            offset: request.offset,
+            totalBytes: raw.length,
+            base64: raw
+              .subarray(request.offset, request.offset + request.length)
+              .toString('base64'),
+          }
         }
-        return receipt
-      }
-      if (!exists) fail('not_found')
-      let r = await metadata(dir)
-      binding(r)
-      if (r.bundleId !== bundleId) fail('invalid_state')
-      if (op === 'delivery_bundle_delete') {
-        check(signal)
-        await rm(dir, { recursive: true })
-        return { bundleId, deleted: true }
-      }
-      const raw = await bytes(join(dir, 'bundle.zip'), LIMIT)
-      if (
-        raw.length < r.receivedBytes ||
-        raw.length > r.sizeBytes ||
-        (r.state === 'ready' && (raw.length !== r.receivedBytes || hash(raw) !== r.sha256))
-      )
-        fail('invalid_state')
-      if (r.state === 'uploading' && raw.length !== r.receivedBytes) {
-        r = { ...r, receivedBytes: raw.length }
-        await save(dir, r)
-      }
-      if (op === 'delivery_bundle_metadata') return r
-      if (op === 'delivery_bundle_read') {
-        if (r.state !== 'ready') fail('invalid_state')
-        if (!integer(request.offset, 0, raw.length) || !integer(request.length, 1, CHUNK))
-          fail('invalid_request')
-        check(signal)
-        return {
-          bundleId,
-          offset: request.offset,
-          totalBytes: raw.length,
-          base64: raw.subarray(request.offset, request.offset + request.length).toString('base64'),
+        if (op === 'delivery_bundle_chunk') {
+          if (
+            !integer(request.offset, 0, r.sizeBytes) ||
+            typeof request.base64 !== 'string' ||
+            request.base64.length > Math.ceil(CHUNK / 3) * 4 ||
+            !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(request.base64)
+          )
+            fail('invalid_request')
+          const chunk = Buffer.from(request.base64, 'base64')
+          if (
+            !chunk.length ||
+            chunk.length > CHUNK ||
+            request.offset > raw.length ||
+            request.offset + chunk.length > r.sizeBytes
+          )
+            fail('invalid_request')
+          const overlap = Math.min(chunk.length, raw.length - request.offset)
+          if (
+            !raw
+              .subarray(request.offset, request.offset + overlap)
+              .equals(chunk.subarray(0, overlap))
+          )
+            fail('attachment_conflict')
+          if (overlap === chunk.length) {
+            guard()
+            return r
+          }
+          if (r.state !== 'uploading') fail('invalid_state')
+          check(signal)
+          // ponytail: copying each chunk is bounded by the 20MiB bundle cap; use a journaled append if larger bundles are supported.
+          const next = Buffer.concat([raw, chunk.subarray(overlap)])
+          await atomic(join(dir, 'bundle.zip'), next, guard)
+          const updated = { ...r, receivedBytes: next.length }
+          await save(dir, updated, guard)
+          return updated
         }
-      }
-      if (op === 'delivery_bundle_chunk') {
+        if (raw.length !== r.sizeBytes) fail('invalid_state')
+        if (hash(raw) !== r.sha256) fail('digest_mismatch')
+        if (r.state === 'ready') {
+          guard()
+          return r
+        }
+        const zip = await validateBundleZip(raw)
+        guard()
+        const names = Object.keys(zip.files).sort()
         if (
-          !integer(request.offset, 0, r.sizeBytes) ||
-          typeof request.base64 !== 'string' ||
-          request.base64.length > Math.ceil(CHUNK / 3) * 4 ||
-          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(request.base64)
+          names.join(',') !==
+          [...r.manifest.files.map((f) => f.name), 'manifest.json'].sort().join(',')
         )
-          fail('invalid_request')
-        const chunk = Buffer.from(request.base64, 'base64')
-        if (
-          !chunk.length ||
-          chunk.length > CHUNK ||
-          request.offset > raw.length ||
-          request.offset + chunk.length > r.sizeBytes
+          fail('unsupported_file')
+        const files = new Map<string, Buffer>()
+        for (const file of r.manifest.files) {
+          const data = await zip.file(file.name)!.async('nodebuffer')
+          guard()
+          if (data.length !== file.sizeBytes || hash(data) !== file.sha256) fail('digest_mismatch')
+          files.set(file.name, data)
+        }
+        const manifest = parsePresentationDeliveryBundleManifest(
+          JSON.parse(await zip.file('manifest.json')!.async('string')),
         )
-          fail('invalid_request')
-        const overlap = Math.min(chunk.length, raw.length - request.offset)
-        if (
-          !raw.subarray(request.offset, request.offset + overlap).equals(chunk.subarray(0, overlap))
-        )
+        guard()
+        if (canonicalPresentationValue(manifest) !== canonicalPresentationValue(r.manifest))
           fail('attachment_conflict')
-        if (overlap === chunk.length) return r
-        if (r.state !== 'uploading') fail('invalid_state')
+        const evidence = parsePresentationDeliveryReport(
+          JSON.parse(files.get('evidence.json')!.toString()),
+        )
+        if (
+          evidence.documentId !== documentId ||
+          evidence.projectId !== projectId ||
+          evidence.requestId !== requestId ||
+          evidence.planRevision !== production.plan.revision ||
+          evidence.inputDigest !== production.inputDigest ||
+          evidence.planDigest !== production.planDigest ||
+          canonicalPresentationValue(evidence.plan) !==
+            canonicalPresentationValue(production.plan.plan) ||
+          evidence.pages.map((p) => p.pageId).join(',') !==
+            production.pages.map((p) => p.pageId).join(',')
+        )
+          fail('invalid_state')
+        if (
+          canonicalPresentationValue(JSON.parse(files.get('claims.json')!.toString())) !==
+            canonicalPresentationValue(evidence.plan.claims) ||
+          canonicalPresentationValue(JSON.parse(files.get('sources.json')!.toString())) !==
+            canonicalPresentationValue(evidence.plan.sources)
+        )
+          fail('invalid_state')
+        if (evidence.plan.research && !files.has('research.json')) fail('invalid_state')
+        if (files.has('research.json')) {
+          const research = parsePresentationResearchRecord(
+            JSON.parse(files.get('research.json')!.toString()),
+          )
+          if (
+            research.documentId !== documentId ||
+            research.projectId !== projectId ||
+            research.state !== 'completed'
+          )
+            fail('invalid_state')
+          if (
+            evidence.plan.research &&
+            canonicalPresentationValue(research) !==
+              canonicalPresentationValue(evidence.research?.record)
+          )
+            fail('invalid_state')
+          const original = await new PresentationResearchStore(options.userDataPath).read(
+            documentId,
+            projectId,
+            research.id,
+          )
+          guard()
+          if (canonicalPresentationValue(research) !== canonicalPresentationValue(original))
+            fail('invalid_state')
+        }
+        if (
+          !files
+            .get('presentation.pptx')!
+            .subarray(0, 4)
+            .equals(Buffer.from([80, 75, 3, 4])) ||
+          (files.has('presentation.pdf') &&
+            !files.get('presentation.pdf')!.subarray(0, 5).equals(Buffer.from('%PDF-')))
+        )
+          fail('unsupported_file')
         check(signal)
-        // ponytail: copying each chunk is bounded by the 20MiB bundle cap; use a journaled append if larger bundles are supported.
-        const next = Buffer.concat([raw, chunk.subarray(overlap)])
-        await atomic(join(dir, 'bundle.zip'), next)
-        const updated = { ...r, receivedBytes: next.length }
-        await save(dir, updated)
-        return updated
-      }
-      if (raw.length !== r.sizeBytes) fail('invalid_state')
-      if (hash(raw) !== r.sha256) fail('digest_mismatch')
-      if (r.state === 'ready') return r
-      const zip = await validateBundleZip(raw)
-      const names = Object.keys(zip.files).sort()
-      if (
-        names.join(',') !==
-        [...r.manifest.files.map((f) => f.name), 'manifest.json'].sort().join(',')
-      )
-        fail('unsupported_file')
-      const files = new Map<string, Buffer>()
-      for (const file of r.manifest.files) {
-        const data = await zip.file(file.name)!.async('nodebuffer')
-        if (data.length !== file.sizeBytes || hash(data) !== file.sha256) fail('digest_mismatch')
-        files.set(file.name, data)
-      }
-      const manifest = parsePresentationDeliveryBundleManifest(
-        JSON.parse(await zip.file('manifest.json')!.async('string')),
-      )
-      if (canonicalPresentationValue(manifest) !== canonicalPresentationValue(r.manifest))
-        fail('attachment_conflict')
-      const evidence = parsePresentationDeliveryReport(
-        JSON.parse(files.get('evidence.json')!.toString()),
-      )
-      if (
-        evidence.documentId !== documentId ||
-        evidence.projectId !== projectId ||
-        evidence.requestId !== requestId ||
-        evidence.planRevision !== production.plan.revision ||
-        evidence.inputDigest !== production.inputDigest ||
-        evidence.planDigest !== production.planDigest ||
-        canonicalPresentationValue(evidence.plan) !==
-          canonicalPresentationValue(production.plan.plan) ||
-        evidence.pages.map((p) => p.pageId).join(',') !==
-          production.pages.map((p) => p.pageId).join(',')
-      )
-        fail('invalid_state')
-      if (
-        canonicalPresentationValue(JSON.parse(files.get('claims.json')!.toString())) !==
-          canonicalPresentationValue(evidence.plan.claims) ||
-        canonicalPresentationValue(JSON.parse(files.get('sources.json')!.toString())) !==
-          canonicalPresentationValue(evidence.plan.sources)
-      )
-        fail('invalid_state')
-      if (evidence.plan.research && !files.has('research.json')) fail('invalid_state')
-      if (files.has('research.json')) {
-        const research = parsePresentationResearchRecord(
-          JSON.parse(files.get('research.json')!.toString()),
-        )
+        const ready = {
+          ...r,
+          state: 'ready' as const,
+          completedAt: [new Date().toISOString(), r.createdAt].sort().at(-1)!,
+        }
+        await save(dir, ready, guard)
+        return ready
+      } catch (e) {
+        let code = ''
+        try {
+          const message = e instanceof Error ? e.message : undefined
+          if (typeof message === 'string') code = message
+        } catch {}
         if (
-          research.documentId !== documentId ||
-          research.projectId !== projectId ||
-          research.state !== 'completed'
+          [
+            'invalid_request',
+            'invalid_state',
+            'not_found',
+            'attachment_conflict',
+            'quota_exceeded',
+            'unsupported_file',
+            'digest_mismatch',
+            'aborted',
+            'revision_conflict',
+            'project_deleting',
+            'project_deleted',
+            'project_not_found',
+            'document_mismatch',
+          ].includes(code)
         )
-          fail('invalid_state')
-        if (
-          evidence.plan.research &&
-          canonicalPresentationValue(research) !==
-            canonicalPresentationValue(evidence.research?.record)
-        )
-          fail('invalid_state')
-        const original = await new PresentationResearchStore(options.userDataPath).read(
-          documentId,
-          projectId,
-          research.id,
-        )
-        if (canonicalPresentationValue(research) !== canonicalPresentationValue(original))
-          fail('invalid_state')
+          throw e
+        return fail('invalid_state')
+      } finally {
+        release()
+        if (locks.get(project) === tail) locks.delete(project)
       }
-      if (
-        !files
-          .get('presentation.pptx')!
-          .subarray(0, 4)
-          .equals(Buffer.from([80, 75, 3, 4])) ||
-        (files.has('presentation.pdf') &&
-          !files.get('presentation.pdf')!.subarray(0, 5).equals(Buffer.from('%PDF-')))
-      )
-        fail('unsupported_file')
-      check(signal)
-      const ready = {
-        ...r,
-        state: 'ready' as const,
-        completedAt: [new Date().toISOString(), r.createdAt].sort().at(-1)!,
-      }
-      await save(dir, ready)
-      return ready
-    } catch (e) {
-      const code = e instanceof Error ? e.message : ''
-      if (
-        [
-          'invalid_request',
-          'invalid_state',
-          'not_found',
-          'attachment_conflict',
-          'quota_exceeded',
-          'unsupported_file',
-          'digest_mismatch',
-          'aborted',
-        ].includes(code)
-      )
-        throw e
-      return fail('invalid_state')
     } finally {
-      release()
-      if (locks.get(project) === tail) locks.delete(project)
+      work.finish()
     }
   }
   return Object.assign(service, {
@@ -524,8 +649,7 @@ export function createPresentationDeliveryBundleService(options: { userDataPath:
           throw new Error('invalid_state', { cause: error })
         }
       }
-      const entries = await readdir(project)
-      if (entries.length > 32 || entries.some((entry) => !digest(entry))) fail('invalid_state')
+      const entries = await canonicalEntries(project)
       for (const entry of entries) {
         const receipt = await metadata(join(project, entry))
         if (
