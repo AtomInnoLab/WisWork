@@ -48,7 +48,11 @@ function snapshot(role: 'owner' | 'reviewer' | 'viewer' = 'owner'): Presentation
     },
   }
 }
-async function mount(initial: PresentationTeamSnapshot, disabled = false) {
+async function mount(
+  initial: PresentationTeamSnapshot,
+  disabled = false,
+  account?: import('../src/agent/team-connection.js').OfficeTeamConnection,
+) {
   let state = initial
   const listeners = new Set<() => void>()
   const controller: PresentationTeamController = {
@@ -70,7 +74,7 @@ async function mount(initial: PresentationTeamSnapshot, disabled = false) {
   const root = createRoot(node)
   roots.push(root)
   await act(async () =>
-    root.render(React.createElement(PresentationTeamCard, { controller, disabled })),
+    root.render(React.createElement(PresentationTeamCard, { controller, disabled, account })),
   )
   return {
     node,
@@ -217,4 +221,81 @@ it('hides stale identity and all shared content whenever authenticated availabil
   expect(f.node.textContent).not.toContain(stale.identity!.actorSubject)
   expect(f.node.textContent).not.toContain(stale.team!.publishedPlan.plan.sources[0]!.uri)
   expect(f.node.querySelector('textarea')).toBeNull()
+})
+it('optional authenticated account UI signs in, shows pairing and permits signout without treating display ID as author', async () => {
+  const listeners = new Set<() => void>()
+  let state: import('../src/agent/team-connection.js').OfficeTeamConnectionSnapshot = {
+    phase: 'signed_out',
+  }
+  const account: import('../src/agent/team-connection.js').OfficeTeamConnection = {
+    snapshot: () => state,
+    subscribe: (l) => {
+      listeners.add(l)
+      return () => listeners.delete(l)
+    },
+    signIn: vi.fn(async () => {}),
+    connect: vi.fn(async () => {}),
+    signOut: vi.fn(async () => {}),
+    request: vi.fn(),
+    dispose: vi.fn(),
+    available: () => state.phase === 'ready',
+  }
+  const f = await mount({ available: false, phase: 'idle' }, false, account)
+  await click(f.node, '登录团队账号')
+  expect(account.signIn).toHaveBeenCalledOnce()
+  state = {
+    phase: 'pairing',
+    account: { loggedIn: true, email: 'reader@example.com', userId: 'display-not-author' },
+    relayStatus: 'pending',
+    verificationCode: '123456',
+  }
+  await act(async () => listeners.forEach((l) => l()))
+  expect(f.node.textContent).toContain('123456')
+  expect(f.node.textContent).toContain('reader@example.com')
+  expect(f.node.textContent).not.toContain('当前已验证账号 ID：display-not-author')
+  await click(f.node, '退出团队账号')
+  expect(account.signOut).toHaveBeenCalledOnce()
+})
+it('without a configured account provider there is no invented login button', async () => {
+  const f = await mount({ available: false, phase: 'idle' })
+  expect(f.node.textContent).not.toContain('登录团队账号')
+  expect(f.node.textContent).not.toContain('退出团队账号')
+})
+it('an authenticated ready connection permits explicit permission refresh before the team snapshot is available', async () => {
+  const accountState: import('../src/agent/team-connection.js').OfficeTeamConnectionSnapshot = {
+    phase: 'ready',
+    account: { loggedIn: true },
+  }
+  const account: import('../src/agent/team-connection.js').OfficeTeamConnection = {
+    snapshot: () => accountState,
+    subscribe: () => () => {},
+    signIn: vi.fn(),
+    connect: vi.fn(),
+    signOut: vi.fn(),
+    request: vi.fn(),
+    dispose: vi.fn(),
+    available: () => true,
+  }
+  const f = await mount({ available: false, phase: 'idle' }, false, account)
+  await click(f.node, '刷新身份与权限')
+  expect(f.controller.refresh).toHaveBeenCalledWith(undefined)
+})
+it('a signed-out account immediately hides a stale authorized team snapshot', async () => {
+  const accountState: import('../src/agent/team-connection.js').OfficeTeamConnectionSnapshot = {
+    phase: 'signed_out',
+  }
+  const account: import('../src/agent/team-connection.js').OfficeTeamConnection = {
+    snapshot: () => accountState,
+    subscribe: () => () => {},
+    signIn: vi.fn(),
+    connect: vi.fn(),
+    signOut: vi.fn(),
+    request: vi.fn(),
+    dispose: vi.fn(),
+    available: () => false,
+  }
+  const f = await mount(snapshot(), false, account)
+  expect(f.node.textContent).not.toContain('Historical review')
+  expect(f.node.textContent).not.toContain('当前已验证账号 ID')
+  expect(f.node.textContent).not.toContain('创建新版本发布提案')
 })

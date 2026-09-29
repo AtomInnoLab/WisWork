@@ -1,5 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
+import type { OfficeTeamConnection, OfficeTeamConnectionSnapshot } from './team-connection.js'
 import type { PresentationTeamController } from './presentation-team-controller.js'
+const signedOutSnapshot: OfficeTeamConnectionSnapshot = Object.freeze({ phase: 'signed_out' })
 const roles = { owner: '项目所有者', reviewer: '审阅成员', viewer: '只读成员' }
 const kinds = { slide: '页面', claim: '结论', source: '来源' }
 function errorText(code: string) {
@@ -23,14 +25,21 @@ function errorText(code: string) {
 export function PresentationTeamCard({
   controller,
   disabled,
+  account,
 }: {
   controller: PresentationTeamController
   disabled: boolean
+  account?: OfficeTeamConnection
 }) {
   const snapshot = useSyncExternalStore(
     (listener) => controller.subscribe(listener),
     () => controller.snapshot(),
     () => controller.snapshot(),
+  )
+  const accountState = useSyncExternalStore(
+    (listener) => account?.subscribe(listener) ?? (() => {}),
+    () => account?.snapshot() ?? signedOutSnapshot,
+    () => account?.snapshot() ?? signedOutSnapshot,
   )
   const [teamId, setTeamId] = useState('')
   const [projectId, setProjectId] = useState('')
@@ -41,7 +50,9 @@ export function PresentationTeamCard({
   const [target, setTarget] = useState('')
   const [text, setText] = useState('')
   const [localError, setLocalError] = useState(false)
-  const team = snapshot.available ? snapshot.team : undefined
+  const sharedAvailable =
+    snapshot.available && (!account || (accountState.phase === 'ready' && account.available()))
+  const team = sharedAvailable ? snapshot.team : undefined
   useEffect(() => {
     if (snapshot.team?.teamId && /^team_[a-f0-9]{64}$/.test(snapshot.team.teamId))
       setTeamId(snapshot.team.teamId)
@@ -53,9 +64,14 @@ export function PresentationTeamCard({
     setRevision('')
   }, [team?.teamId, team?.publishedPlan.revision])
   const busy = snapshot.phase !== 'idle'
-  const blocked = disabled || busy || !snapshot.available
+  const blocked = disabled || busy || !sharedAvailable
+  const readBlocked = disabled || busy || (!snapshot.available && !account?.available())
+  const accountBusy = accountState.phase === 'signing_in' || accountState.phase === 'pairing'
+  const accountRun = (action: () => Promise<void>) => {
+    void action().catch(() => setLocalError(true))
+  }
   const owner =
-    snapshot.available &&
+    sharedAvailable &&
     (snapshot.role === 'owner' ||
       (!team &&
         snapshot.identity?.actorSubject === snapshot.identity?.pcSubject &&
@@ -77,9 +93,63 @@ export function PresentationTeamCard({
     <section aria-label="团队审阅工作台" aria-busy={busy}>
       <details>
         <summary>团队审阅工作台</summary>
+        {account && (
+          <div aria-label="团队账号连接">
+            {accountState.account?.loggedIn && (
+              <p>
+                登录账号：{accountState.account.email ?? accountState.account.userId ?? '已登录'}
+                。团队权限以验证后的账号身份为准。
+              </p>
+            )}
+            {accountState.phase === 'signing_in' && <p role="status">正在登录团队账号…</p>}
+            {accountState.phase === 'pairing' && (
+              <p role="status">
+                等待配对 PC 批准团队连接。
+                {accountState.verificationCode && <>验证码：{accountState.verificationCode}</>}
+              </p>
+            )}
+            {accountState.phase === 'ready' && (
+              <p role="status">团队连接已建立；请刷新身份与权限。</p>
+            )}
+            {accountState.error && (
+              <p role="alert">
+                团队登录或连接未完成，请核对账号或重新连接。
+                {accountState.error === 'team_auth_dialog_cancelled' ||
+                accountState.error === 'team_connection_cancelled'
+                  ? '登录已取消。'
+                  : accountState.error === 'team_auth_dialog_timeout'
+                    ? '登录等待已超时。'
+                    : ''}
+              </p>
+            )}
+            {!accountState.account?.loggedIn && (
+              <button
+                type="button"
+                disabled={disabled || accountBusy}
+                onClick={() => accountRun(() => account.signIn())}
+              >
+                登录团队账号
+              </button>
+            )}
+            {accountState.account?.loggedIn && (
+              <button
+                type="button"
+                disabled={disabled || accountBusy || accountState.phase === 'ready'}
+                onClick={() => accountRun(() => account.connect())}
+              >
+                连接团队
+              </button>
+            )}
+            {(accountState.account?.loggedIn || accountBusy) && (
+              <button type="button" onClick={() => accountRun(() => account.signOut())}>
+                退出团队账号
+              </button>
+            )}
+          </div>
+        )}
         <p>显示已明确共享的计划。私人修改不会自动发布；评论不表示内容已核验。</p>
-        {!snapshot.available && <p>团队协作暂不可用。请先连接团队账号。</p>}
-        {snapshot.available && snapshot.identity && (
+        {!sharedAvailable && <p>团队协作暂不可用。请先连接团队账号。</p>}
+        {sharedAvailable && snapshot.identity && (
           <div>
             <p>当前已验证账号 ID：{snapshot.identity.actorSubject}</p>
             <p>配对 PC 账号 ID：{snapshot.identity.pcSubject}</p>
@@ -95,8 +165,8 @@ export function PresentationTeamCard({
         )}
         {snapshot.error && <p role="alert">{errorText(snapshot.error)}</p>}
         {localError && <p role="alert">操作未完成，请刷新核对真实团队记录。</p>}
-        {snapshot.available && snapshot.notice && <p role="status">{snapshot.notice}</p>}
-        {snapshot.available && snapshot.phase === 'awaiting_confirmation' && (
+        {sharedAvailable && snapshot.notice && <p role="status">{snapshot.notice}</p>}
+        {sharedAvailable && snapshot.phase === 'awaiting_confirmation' && (
           <p role="status">提案等待确认，请在确认面板审阅并决定。</p>
         )}
         <label>
@@ -105,22 +175,27 @@ export function PresentationTeamCard({
             aria-label="团队 ID"
             value={teamId}
             onChange={(e) => setTeamId(e.target.value)}
-            disabled={blocked}
+            disabled={readBlocked}
           />
         </label>
         <button
           type="button"
-          disabled={blocked || !/^team_[a-f0-9]{64}$/.test(teamId)}
-          onClick={() => run(() => controller.refresh(teamId))}
+          disabled={readBlocked || !/^team_[a-f0-9]{64}$/.test(teamId)}
+          onClick={() => {
+            if (!readBlocked) void controller.refresh(teamId).catch(() => setLocalError(true))
+          }}
         >
           读取团队
         </button>
         <button
           type="button"
-          disabled={blocked}
-          onClick={() =>
-            run(() => controller.refresh(/^team_[a-f0-9]{64}$/.test(teamId) ? teamId : undefined))
-          }
+          disabled={readBlocked}
+          onClick={() => {
+            if (!readBlocked)
+              void controller
+                .refresh(/^team_[a-f0-9]{64}$/.test(teamId) ? teamId : undefined)
+                .catch(() => setLocalError(true))
+          }}
         >
           刷新身份与权限
         </button>

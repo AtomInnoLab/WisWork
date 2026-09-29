@@ -7,6 +7,7 @@
   "description": "Confirmation-first WisWork Agent task pane for Word, Excel, and PowerPoint",
   "dependencies": {
     "@wiswork/agent-core": "*",
+    "@wiswork/auth": "*",
     "@wiswork/agent-harness": "*",
     "@wiswork/ai-provider": "*",
     "@wiswork/ui": "*",

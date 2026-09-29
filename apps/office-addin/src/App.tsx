@@ -1,3 +1,7 @@
+import { createBrowserAuthClient, createMemorySessionStore } from '@wiswork/auth/browser'
+import { officeTeamAuthConfig } from './agent/team-auth-config.js'
+import { createOfficeTeamLoginDialog } from './agent/team-login-dialog.js'
+import { createOfficeTeamConnection, type OfficeTeamConnection } from './agent/team-connection.js'
 import { PresentationTeamCard } from './agent/presentation-team-card.js'
 import type { PresentationTeamController } from './agent/presentation-team-controller.js'
 import { createPresentationResearchAbandonPersistence } from './agent/presentation-research-recovery-storage.js'
@@ -267,6 +271,7 @@ interface SessionFile {
 
 export interface OfficeWorkspaceUi {
   readonly team?: PresentationTeamController
+  readonly teamConnection?: OfficeTeamConnection
   readonly research?: PresentationResearchController
   readonly project?: PresentationProjectController
   readonly importProgress?: PresentationImportProgressController
@@ -352,9 +357,11 @@ export function createOfficeWorkspaceUi(
   clipboard: { writeText(value: string): Promise<void> } | undefined = globalThis.navigator
     ?.clipboard,
   interruptedChange?: { agentRunId: string; toolCallId: string },
+  teamConnection?: OfficeTeamConnection,
 ): OfficeWorkspaceUi {
   return Object.freeze({
     team: runtime.team,
+    teamConnection,
     research: runtime.research,
     project: runtime.presentation,
     importProgress: runtime.importProgress,
@@ -1553,6 +1560,7 @@ export function AgentWorkspace(props: {
         {host === 'powerpoint' && ui.team && (
           <PresentationTeamCard
             controller={ui.team}
+            account={ui.teamConnection}
             disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
           />
         )}
@@ -1737,6 +1745,17 @@ export function workspaceComponentForMode(mode: 'workspace' | 'legacy') {
 function ConfiguredApp() {
   const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
   const transportMode = useMemo(() => officeTransportMode(import.meta.env), [])
+  const teamRuntime = useRef<OfficeHostRuntime | undefined>(undefined)
+  const teamConnection = useMemo(() => {
+    const config = officeTeamAuthConfig(import.meta.env, window.location.origin)
+    if (!config || transportMode !== 'relay') return undefined
+    return createOfficeTeamConnection({
+      auth: createBrowserAuthClient({ config, store: createMemorySessionStore() }),
+      loginDialog: createOfficeTeamLoginDialog({ ...config, addinOrigin: window.location.origin }),
+      onUnavailable: () => teamRuntime.current?.team?.clear(),
+    })
+  }, [transportMode])
+  useEffect(() => () => teamConnection?.dispose(), [teamConnection])
   const remoteDiagnosticsEnabled = useMemo(
     () => transportMode === 'relay' && officeRemoteDiagnosticsEnabled(import.meta.env),
     [transportMode],
@@ -1896,6 +1915,11 @@ function ConfiguredApp() {
                 ? {
                     presentation: {
                       ...presentationBinding!,
+                      teamAvailable: () => teamConnection?.available() === true,
+                      teamRequest: teamConnection
+                        ? (body: unknown, signal?: AbortSignal) =>
+                            teamConnection.request(body, signal)
+                        : undefined,
                       readResearchAbandonAttempt: researchAbandonPersistence?.read,
                       writeResearchAbandonAttempt: researchAbandonPersistence?.write,
                       readResearchDeleteAttempt: researchDeletePersistence?.read,
@@ -2032,6 +2056,7 @@ function ConfiguredApp() {
                   }
                 : {}),
             })
+            teamRuntime.current = runtime
             created = {
               runtime,
               session,
@@ -2042,6 +2067,7 @@ function ConfiguredApp() {
                 interruptedRun?.changeReceipt && interruptedRun.toolCallId
                   ? { agentRunId: interruptedRun.runId, toolCallId: interruptedRun.toolCallId }
                   : undefined,
+                teamConnection,
               ),
             }
             setWorkspace(created)
@@ -2060,6 +2086,7 @@ function ConfiguredApp() {
     })()
     return () => {
       active = false
+      if (teamRuntime.current === created?.runtime) teamRuntime.current = undefined
       created?.session.dispose()
       created?.runtime.dispose()
       bridge.disconnect()
@@ -2071,6 +2098,7 @@ function ConfiguredApp() {
     document,
     presentationRolloutPercent,
     remoteDiagnosticsEnabled,
+    teamConnection,
   ])
 
   useEffect(() => {
@@ -2137,6 +2165,7 @@ function ConfiguredApp() {
     return <StatusScreen title="Starting WisWork Agent" detail="Loading tools…" busy />
   const disconnect = () => {
     reconnectEligible.current = false
+    void teamConnection?.signOut()
     workspace.session.logout()
     workspace.runtime.dispose()
     bridge.disconnect()

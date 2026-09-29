@@ -9,6 +9,8 @@ const dist = resolve(appRoot, 'dist')
 beforeAll(async () => {
   const configured = {
     VITE_WISWORK_ADDIN_ORIGIN: 'https://office.example',
+    VITE_WISWORK_TEAM_CLIENT_ID: 'registered-fixture-client',
+    VITE_WISWORK_TEAM_REDIRECT_URI: 'https://office.example/team-auth-callback.html',
     VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT: '25',
     VITE_WISWORK_OFFICE_DIAGNOSTIC_SAMPLE_PERCENT: '10',
   }
@@ -49,10 +51,19 @@ describe('configured Office build output', () => {
     expect(manifest).not.toContain('*')
   })
 
-  it('emits one task pane with the fixed relay policy and no legacy auth assets', async () => {
+  it('emits a task pane and constrained team dialog pages without legacy auth assets', async () => {
     const taskpane = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
     const files = await readdir(dist, { recursive: true })
     expect(taskpane).toContain("connect-src 'self' wss://office.8-216-134-194.sslip.io")
+    expect(taskpane).toContain('https://gateway.wispaper.ai')
+    for (const page of ['team-auth-start.html', 'team-auth-callback.html']) {
+      const html = await readFile(resolve(dist, page), 'utf8')
+      expect(html).toContain('name="referrer" content="no-referrer"')
+      expect(html).toContain("connect-src 'none'")
+      expect(html).toContain('https://appsforoffice.microsoft.com/lib/1/hosted/office.js')
+      expect(html).not.toContain('unsafe-inline')
+      expect(html).not.toContain('access_token=')
+    }
     expect(taskpane).not.toContain('http://127.0.0.1')
     const scriptPath = taskpane.match(/src="(\/assets\/taskpane-[^"]+\.js)"/)?.[1]
     expect(scriptPath).toBeDefined()
@@ -66,7 +77,12 @@ describe('configured Office build output', () => {
   })
 
   it('omits a deployable manifest from an unconfigured build', async () => {
-    const keys = ['VITE_WISWORK_ADDIN_ORIGIN', 'VITE_WISWORK_PC_BRIDGE_PORTS']
+    const keys = [
+      'VITE_WISWORK_ADDIN_ORIGIN',
+      'VITE_WISWORK_PC_BRIDGE_PORTS',
+      'VITE_WISWORK_TEAM_CLIENT_ID',
+      'VITE_WISWORK_TEAM_REDIRECT_URI',
+    ]
     const prior = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
     for (const key of keys) process.env[key] = ''
     try {

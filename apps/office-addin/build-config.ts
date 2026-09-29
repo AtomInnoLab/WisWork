@@ -1,3 +1,4 @@
+import { officeTeamAuthConfig } from './src/agent/team-auth-config.js'
 export const PREFERRED_OFFICE_BRIDGE_PORT = 43_127
 export const OFFICE_RELAY_CONNECT_ORIGIN = 'wss://office.8-216-134-194.sslip.io'
 export const DEFAULT_OFFICE_BRIDGE_PORTS = Object.freeze([
@@ -144,9 +145,15 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
 
 export function deploymentConnectOrigins(env: BuildEnv): string {
   try {
-    return officeTransportMode(env) === 'relay'
-      ? OFFICE_RELAY_CONNECT_ORIGIN
-      : officeBridgeEndpoints(env).join(' ')
+    const origins =
+      officeTransportMode(env) === 'relay'
+        ? OFFICE_RELAY_CONNECT_ORIGIN
+        : officeBridgeEndpoints(env).join(' ')
+    const auth = officeTeamAuthConfig(
+      env,
+      env.VITE_WISWORK_ADDIN_ORIGIN || 'https://localhost:3000',
+    )
+    return auth ? `${origins} ${new URL(auth.callbackEndpoint).origin}` : origins
   } catch {
     return ''
   }

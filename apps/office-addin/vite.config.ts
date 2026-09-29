@@ -89,6 +89,8 @@ export default defineConfig(async ({ command, mode }) => {
       rollupOptions: {
         input: {
           taskpane: resolve(here, 'src/taskpane.html'),
+          teamAuthStart: resolve(here, 'src/team-auth-start.html'),
+          teamAuthCallback: resolve(here, 'src/team-auth-callback.html'),
         },
       },
     },

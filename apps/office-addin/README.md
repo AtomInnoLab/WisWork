@@ -252,3 +252,14 @@ npm run typecheck -w @wiswork/office-bridge
 npm run typecheck -w @wiswork/office-addin
 VITE_WISWORK_ADDIN_ORIGIN=https://office.example npm run build -w @wiswork/office-addin
 ```
+
+## PowerPoint 团队登录
+
+团队工作台使用独立的 `presentation-team.v1` Relay 会话。网页登录需同时配置两个公开注册参数：
+
+- `VITE_WISWORK_TEAM_CLIENT_ID`：身份服务已注册的网页客户端 ID。
+- `VITE_WISWORK_TEAM_REDIRECT_URI`：与任务窗格同源的 HTTPS 地址，路径必须为 `/team-auth-callback.html`，不能含查询或片段。生产构建还需设置匹配的 `VITE_WISWORK_ADDIN_ORIGIN`。
+
+两项未配置时不显示登录操作；不能默认沿用桌面 `wiswork://oauth/callback` 注册。Vite 输出 `team-auth-start.html`、`team-auth-callback.html`，发布时须与任务窗格共同提供。登录对话框要求宿主支持 `DialogOrigin 1.1`；网页注册、网关 CORS 和实际 Office 登录需单独验证。
+
+凭证仅保留在任务窗格内存中，重开后需要重新登录。登录显示账号信息不充当团队权限证明，权限仍由 Relay 校验的身份和 PC 账本决定。退出或团队连接失效会清除团队内容与未确认的团队提案；团队账号操作不改变私人工作台的登录。
