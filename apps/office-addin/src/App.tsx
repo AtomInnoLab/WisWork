@@ -822,7 +822,7 @@ export function AgentWorkspace(props: {
             disabled={state.busy || state.applying || projectPhase !== 'idle'}
             onClick={() => void session.resumeInterrupted?.()}
           >
-            重新运行上次请求
+            恢复上次任务
           </button>
         )}
         {proposal &&
@@ -1908,6 +1908,8 @@ function ConfiguredApp() {
                         (await presentationBinding.documentId()) === boundPresentationDocumentId,
                       begin: runCheckpoint!.begin,
                       tool: runCheckpoint!.tool,
+                      conversation: runCheckpoint!.conversation,
+                      adopt: runCheckpoint!.adopt,
                       finish: runCheckpoint!.finish,
                     },
                   }

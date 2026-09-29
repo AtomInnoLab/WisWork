@@ -1,3 +1,4 @@
+import { parseAgentResumeMessages, type AgentMessage } from '@wiswork/agent-core'
 import {
   validatePresentationExistingChange,
   type PresentationExistingChange,
@@ -79,6 +80,7 @@ export interface PresentationAgentRunRecovery {
   toolName?: string
   toolCallId?: string
   restartSafe?: boolean
+  messages?: AgentMessage[]
   importReceipt?: { state: 'complete' | 'partial' | 'uncertain'; completed: number; total?: number }
   changeReceipt?: { total: number; unresolved: number }
 }
@@ -115,8 +117,38 @@ const restartSafeTools = new Set([
 ])
 const AGENT_RUN_LOCAL_PREFIX = 'wiswork.presentation.agent-run.prompt.v1.'
 const AGENT_RUN_LOCAL_TTL_MS = 7 * 24 * 60 * 60 * 1000
-const AGENT_RUN_LOCAL_RECORD_LIMIT = 12 * 1024
+const AGENT_RUN_LOCAL_RECORD_LIMIT = 144 * 1024
 const AGENT_RUN_INSTRUCTION_LIMIT = 8 * 1024
+function recoveryMessages(
+  value: unknown,
+  record: PresentationAgentRunRecovery,
+): AgentMessage[] | undefined {
+  if (record.phase !== 'tool_completed' || record.restartSafe !== true || !record.toolCallId)
+    return undefined
+  const messages = parseAgentResumeMessages(value)
+  const user = messages
+    ? [...messages].reverse().find((message) => message.role === 'user')
+    : undefined
+  const currentMessages = messages && user ? messages.slice(messages.indexOf(user)) : undefined
+  if (
+    !messages ||
+    currentMessages?.some(
+      (message) =>
+        message.role === 'assistant' &&
+        message.toolCalls?.some((call) => !restartSafeTools.has(call.name)),
+    )
+  )
+    return undefined
+  if (
+    !record.instruction ||
+    user?.role !== 'user' ||
+    (user.text !== record.instruction && !user.text.startsWith(`${record.instruction}\n\n`))
+  )
+    return undefined
+  const last = messages.at(-1)
+  const result = last?.role === 'tool' ? last.results.at(-1) : undefined
+  return result?.id === record.toolCallId && result.name === record.toolName ? messages : undefined
+}
 const validId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 
@@ -1905,6 +1937,7 @@ export function createPresentationAgentRunCheckpoint(
             'runId',
             ...(value.toolCallId === undefined ? [] : ['toolCallId']),
             ...(value.toolName === undefined ? [] : ['toolName']),
+            ...(value.messages === undefined ? [] : ['messages']),
           ]
             .sort()
             .join(',') ||
@@ -1934,13 +1967,36 @@ export function createPresentationAgentRunCheckpoint(
         value.restartSafe !== record.restartSafe
       )
         return { ...record, instruction: '', restartSafe: false }
-      return { ...record, instruction: changeReceipt ? '' : value.instruction }
+      const messages = !changeReceipt
+        ? recoveryMessages(value.messages, { ...record, instruction: value.instruction })
+        : undefined
+      return {
+        ...record,
+        instruction: changeReceipt ? '' : value.instruction,
+        ...(messages ? { messages } : {}),
+      }
     } catch {
       return record
     }
   }
   return {
     recovery,
+    async adopt(runId: string, messages: readonly AgentMessage[]) {
+      const current = recovery()
+      if (
+        !current?.messages ||
+        current.runId !== runId ||
+        JSON.stringify(current.messages) !== JSON.stringify(messages)
+      )
+        throw new Error('presentation_run_checkpoint_unavailable')
+      const captured = JSON.stringify(current)
+      if ((await binding.documentId()) !== boundDocumentId)
+        throw new Error('presentation_document_changed')
+      if (JSON.stringify(recovery()) !== captured)
+        throw new Error('presentation_run_checkpoint_unavailable')
+      runDocuments.set(runId, boundDocumentId)
+      mirroredRuns.add(runId)
+    },
     async begin(runId: string, instruction = '') {
       sweepExpiredPrompts()
       if ((await binding.documentId()) !== boundDocumentId)
@@ -2038,6 +2094,7 @@ export function createPresentationAgentRunCheckpoint(
         try {
           const nextLocal = { ...localRecord }
           delete nextLocal.toolCallId
+          if (phase === 'tool_pending') delete nextLocal.messages
           const raw = JSON.stringify({
             ...nextLocal,
             phase: current.phase,
@@ -2052,6 +2109,45 @@ export function createPresentationAgentRunCheckpoint(
           throw new Error('presentation_run_checkpoint_unavailable')
         }
       }
+    },
+    async conversation(runId: string, value: readonly AgentMessage[]) {
+      const id = runDocuments.get(runId)
+      if (!id || (await binding.documentId()) !== id)
+        throw new Error('presentation_document_changed')
+      if (!mirroredRuns.has(runId)) return
+      const current = binding.agentRunRecovery(id)
+      if (!current || current.runId !== runId)
+        throw new Error('presentation_run_checkpoint_unavailable')
+      try {
+        const raw = storage!.getItem(localKey(runId))
+        if (!raw || new TextEncoder().encode(raw).byteLength > AGENT_RUN_LOCAL_RECORD_LIMIT)
+          throw new Error('presentation_run_checkpoint_unavailable')
+        const localRecord = JSON.parse(raw) as Record<string, unknown>
+        if (
+          localRecord.documentId !== id ||
+          localRecord.runId !== runId ||
+          localRecord.phase !== current.phase ||
+          localRecord.toolName !== current.toolName ||
+          localRecord.toolCallId !== current.toolCallId ||
+          localRecord.restartSafe !== current.restartSafe
+        )
+          throw new Error('presentation_run_checkpoint_unavailable')
+        const messages = recoveryMessages(value, {
+          ...current,
+          instruction: typeof localRecord.instruction === 'string' ? localRecord.instruction : '',
+        })
+        delete localRecord.messages
+        const next = JSON.stringify({ ...localRecord, ...(messages ? { messages } : {}) })
+        if (new TextEncoder().encode(next).byteLength > AGENT_RUN_LOCAL_RECORD_LIMIT)
+          throw new Error('presentation_run_checkpoint_unavailable')
+        storage!.setItem(localKey(runId), next)
+        if (storage!.getItem(localKey(runId)) !== next)
+          throw new Error('presentation_run_checkpoint_unavailable')
+      } catch {
+        throw new Error('presentation_run_checkpoint_unavailable')
+      }
+      if ((await binding.documentId()) !== id || binding.agentRunRecovery(id)?.runId !== runId)
+        throw new Error('presentation_document_changed')
     },
     async finish(runId: string) {
       const id = runDocuments.get(runId)

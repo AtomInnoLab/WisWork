@@ -1,5 +1,7 @@
 import {
   suspendToolExecution,
+  parseAgentResumeMessages,
+  type AgentMessage,
   type AgentSkill,
   type AgentToolCall,
   type AgentTransport,
@@ -229,6 +231,7 @@ export function createOfficeAgentSession(dependencies: {
       toolName?: string
       toolCallId?: string
       restartSafe?: boolean
+      messages?: AgentMessage[]
       importReceipt?: {
         state: 'complete' | 'partial' | 'uncertain'
         completed: number
@@ -249,6 +252,8 @@ export function createOfficeAgentSession(dependencies: {
       toolCallId?: string,
     ): Promise<void>
     finish(runId: string): Promise<void>
+    conversation?(runId: string, messages: readonly AgentMessage[]): Promise<void>
+    adopt?(runId: string, messages: readonly AgentMessage[]): Promise<void>
   }
 }): OfficeAgentSession {
   const { proposals } = dependencies
@@ -286,6 +291,13 @@ export function createOfficeAgentSession(dependencies: {
     recoveryAvailable:
       !dependencies.runCheckpoint?.scrubFailed &&
       dependencies.runCheckpoint?.recovery?.restartSafe !== false &&
+      (!dependencies.runCheckpoint?.recovery?.messages ||
+        Boolean(
+          dependencies.runCheckpoint.recovery.runId &&
+          dependencies.runCheckpoint.adopt &&
+          dependencies.runCheckpoint.conversation &&
+          parseAgentResumeMessages(dependencies.runCheckpoint.recovery.messages),
+        )) &&
       (dependencies.runCheckpoint?.recovery?.phase === 'running' ||
         (dependencies.runCheckpoint?.recovery?.phase === 'tool_completed' &&
           dependencies.runCheckpoint?.recovery?.restartSafe === true)) &&
@@ -296,7 +308,7 @@ export function createOfficeAgentSession(dependencies: {
           kind: 'system',
           text: dependencies.runCheckpoint.scrubFailed
             ? '上次运行已中断。旧版检查点中的请求原文仍保留在本 PPTX：清理保存失败。请先保存可写副本并重新打开，期间不能继续该运行。'
-            : `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}${dependencies.runCheckpoint.recovery?.phase === 'running' ? '尚未调用工具，可在核对文档后主动重新运行原请求。' : dependencies.runCheckpoint.recovery?.restartSafe ? '此前仅运行了可重读工具，可在核对文档后主动重新运行原请求。' : '请先核对项目、页面和写入记录；未自动重放写入。'}${importReceiptText}${changeReceiptText}运行阶段保存在演示文稿设置中，请求仅保存在本机浏览器。`,
+            : `上次前台 Agent 运行在面板关闭时中断。${dependencies.runCheckpoint.recovery?.toolName ? `最近工具：${dependencies.runCheckpoint.recovery.toolName}（${dependencies.runCheckpoint.recovery.phase}）。` : ''}${dependencies.runCheckpoint.recovery?.messages ? '已保留完整只读结果，可在核对文档后继续；旧结果代表历史读取，当前状态仍需重新核对。' : dependencies.runCheckpoint.recovery?.phase === 'running' ? '尚未调用工具，可在核对文档后主动重新运行原请求。' : dependencies.runCheckpoint.recovery?.restartSafe ? '此前仅运行了可重读工具，可在核对文档后主动重新运行原请求。' : '请先核对项目、页面和写入记录；未自动重放写入。'}${importReceiptText}${changeReceiptText}运行阶段保存在演示文稿设置中，请求与可恢复的读取结果仅保存在本机浏览器。`,
         })
       : emptyPresentationTimeline(),
   }
@@ -346,6 +358,14 @@ export function createOfficeAgentSession(dependencies: {
     )
       return { instruction: lastInstruction, phase: 'running' as const }
     if (record?.restartSafe === false) return undefined
+    if (
+      record?.messages &&
+      (!record.runId ||
+        !checkpoint.adopt ||
+        !checkpoint.conversation ||
+        !parseAgentResumeMessages(record.messages))
+    )
+      return undefined
     if (
       !record?.instruction ||
       new TextEncoder().encode(record.instruction).byteLength > 8 * 1024 ||
@@ -574,6 +594,10 @@ export function createOfficeAgentSession(dependencies: {
   const harness = createAgentHarness({
     transport: dependencies.transport,
     skill: sessionSkill,
+    systemSuffix: () =>
+      resumingReadConversation
+        ? '\nThis run resumes a saved read-only conversation. Restored tool results are historical observations. Revalidate relevant live document/project state before making changes or claiming its current state; do not treat cached results as proof that the document is unchanged.'
+        : '',
     events: {
       onText: (assistantText) => {
         // Presentation is driven by ACP agent_message_chunk updates below.
@@ -610,7 +634,13 @@ export function createOfficeAgentSession(dependencies: {
         toolStartedAt.delete(event.call.id)
         appendPendingProposal()
       },
-      onTurnEnd: () => {
+      onTurnEnd: async () => {
+        const runId = activeRunId
+        const epoch = sessionEpoch
+        if (runId && dependencies.runCheckpoint?.conversation) {
+          await dependencies.runCheckpoint.conversation(runId, harness.messages)
+          if (disposed || epoch !== sessionEpoch || runId !== activeRunId) return
+        }
         activeAssistantId = undefined
         publish({ activity: 'Thinking…' })
       },
@@ -652,7 +682,9 @@ export function createOfficeAgentSession(dependencies: {
           dependencies.runCheckpoint && transient && !retryable
             ? '运行已中断，检查点已保留。请核对项目、页面和写入记录；不能重跑可能已写入的原请求。'
             : dependencies.runCheckpoint && transient
-              ? '服务暂时中断，运行阶段已保留。可在核对当前文档后主动重新运行安全请求；未自动重放。'
+              ? readRecovery()?.messages
+                ? '服务暂时中断，读取结果已保留。可在核对当前文档后主动继续，已完成读取不自动重放。'
+                : '服务暂时中断，运行阶段已保留。可在核对当前文档后主动重新运行安全请求；未自动重放。'
               : safeError.message
         diagnose((diagnostics) => {
           diagnostics.setTool('agent_run')
@@ -764,7 +796,12 @@ export function createOfficeAgentSession(dependencies: {
     }
   })
 
-  const startRun = (instruction: string) => {
+  let resumingReadConversation = false
+  const startRun = (
+    instruction: string,
+    messages?: readonly AgentMessage[],
+    resumedRunId?: string,
+  ) => {
     const value = instruction.trim()
     if (!value || harness.snapshot.busy || pendingStart || state.applying || disposed) return
     diagnose((diagnostics) => diagnostics.startTrace())
@@ -772,10 +809,15 @@ export function createOfficeAgentSession(dependencies: {
     checkpointBeginFailed = false
     toolsStarted = false
     runStartedAt = Date.now()
+    resumingReadConversation = Boolean(messages)
     proposals.newTurn()
     lastInstruction = value
     activeAssistantId = undefined
-    append({ id: eventId(), kind: 'user', text: boundedText(value) })
+    append({
+      id: eventId(),
+      kind: messages ? 'assistant' : 'user',
+      text: messages ? '从已保存的读取结果继续。' : boundedText(value),
+    })
     publish({
       assistantText: '',
       activity: 'Thinking…',
@@ -792,27 +834,39 @@ export function createOfficeAgentSession(dependencies: {
     }
     pendingStart = true
     const epoch = sessionEpoch
-    const runId = crypto.randomUUID()
-    void dependencies.runCheckpoint
-      .begin(runId, value)
-      .then(() => {
-        pendingStart = false
+    const runId = messages && resumedRunId ? resumedRunId : crypto.randomUUID()
+    const checkpointStart =
+      messages && resumedRunId && dependencies.runCheckpoint.adopt
+        ? dependencies.runCheckpoint.adopt(runId, messages)
+        : dependencies.runCheckpoint.begin(runId, value)
+    void checkpointStart
+      .then(async () => {
         if (disposed || epoch !== sessionEpoch) {
+          pendingStart = false
           void dependencies.runCheckpoint?.finish(runId).catch(() => undefined)
           return
         }
         activeRunId = runId
-        harness.run(value)
+        if (messages) {
+          pendingStart = false
+          if (!harness.resume(messages)) throw new Error('presentation_run_checkpoint_unavailable')
+        } else {
+          pendingStart = false
+          harness.run(value)
+        }
       })
       .catch(() => {
         pendingStart = false
         if (disposed || epoch !== sessionEpoch) return
         if (activeRunId && !unsettledToolRuns.has(activeRunId)) activeRunId = undefined
-        checkpointBeginFailed = true
+        checkpointBeginFailed = !messages
+        const checkpointError = messages
+          ? '无法恢复运行上下文，检查点已保留。请核对当前文档和本地存储后重试。'
+          : '无法保存运行检查点，请确认文档可保存后重试。'
         append({
           id: eventId(),
           kind: 'error',
-          text: '无法保存运行检查点，请确认文档可保存后重试。',
+          text: checkpointError,
           code: 'presentation_run_checkpoint_unavailable',
         })
         publish({
@@ -820,8 +874,8 @@ export function createOfficeAgentSession(dependencies: {
           activity: '',
           status: 'error',
           error: 'presentation_run_checkpoint_unavailable',
-          errorMessage: '无法保存运行检查点，请确认文档可保存后重试。',
-          retryable: true,
+          errorMessage: checkpointError,
+          retryable: messages ? Boolean(safeRecovery()) : true,
         })
       })
   }
@@ -866,7 +920,12 @@ export function createOfficeAgentSession(dependencies: {
       )
         return
       const record = candidate()
-      if (record && JSON.stringify(record) === originalSnapshot) startRun(record.instruction)
+      if (record && JSON.stringify(record) === originalSnapshot)
+        startRun(
+          record.instruction,
+          'messages' in record ? record.messages : undefined,
+          'runId' in record ? record.runId : undefined,
+        )
     } catch {
       /* identity or recovery unavailable: do not replay */
     } finally {
