@@ -1080,7 +1080,7 @@ describe('PowerPoint compatibility skill', () => {
     expect(fake.exportSlidePackage).not.toHaveBeenCalled()
   })
 
-  it('accepts strict declarative geometry, text-box creation, and shape deletion families', async () => {
+  it('rejects mixed native additions and existing edits before writing', async () => {
     const fake = adapter({
       exportSlidePackage: vi.fn().mockResolvedValue({
         slideId: 's1',
@@ -1117,10 +1117,11 @@ describe('PowerPoint compatibility skill', () => {
     })
     await expect(skill.executeTool(call('execute_office_js', { code }))).resolves.toMatchObject({
       mutated: false,
-      output: expect.stringContaining('set_shape_geometry'),
+      output: 'office_api_unsupported',
+      isError: true,
     })
-    expect(proposals.pending()?.impact.count).toBe(3)
-    proposals.reject()
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
     await expect(
       skill.executeTool(
         call('execute_office_js', {
@@ -1143,54 +1144,36 @@ describe('PowerPoint compatibility skill', () => {
     ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
   })
 
-  it('accepts host-normalized PowerPoint geometry when verifying a created text box', async () => {
-    const fake = adapter({
-      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['4'] }),
-      listSlideShapes: vi
-        .fn()
-        .mockResolvedValueOnce({ slideId: 's1', slideIndex: 0, shapes: [] })
-        .mockResolvedValue({
-          slideId: 's1',
-          slideIndex: 0,
-          shapes: [
+  it('rejects raw text additions without durable savepoints before creating a proposal', async () => {
+    const fake = adapter(),
+      proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const result = await skill.executeTool(
+      call('execute_office_js', {
+        program: {
+          version: 1,
+          operations: [
             {
-              id: '4',
+              op: 'add_text_box',
+              slide_index: 0,
               name: 'Status',
-              type: 'TextBox',
-              left: 300.00003,
-              top: 449.99997,
-              width: 360.00003,
-              height: 50.00003,
+              text: 'New',
+              left: 300,
+              top: 450,
+              width: 360,
+              height: 50,
             },
           ],
-        }),
-      readSlideText: vi.fn().mockResolvedValue({
-        slideId: 's1',
-        shapeId: '4',
-        text: 'PASS',
-        paragraphs: ['PASS'],
-      }),
-    })
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
-    const code = JSON.stringify({
-      version: 1,
-      operations: [
-        {
-          op: 'add_text_box',
-          slide_index: 0,
-          name: 'Status',
-          text: 'PASS',
-          left: 300,
-          top: 450,
-          width: 360,
-          height: 50,
         },
-      ],
+      }),
+    )
+    expect(result).toMatchObject({
+      isError: true,
+      mutated: false,
+      output: 'office_api_unsupported',
     })
-
-    await skill.executeTool(call('execute_office_js', { code }))
-    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
   })
 
   it('waits for delayed PowerPoint text readback before rejecting an applied edit', async () => {
@@ -1653,48 +1636,41 @@ describe('browser PowerPoint adapter', () => {
     })
   })
 
-  it('confirms and verifies a native geometric shape creation', async () => {
-    const fake = adapter({
-      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['new-shape'] }),
-      listSlideShapes: vi.fn().mockResolvedValue({
-        slideId: 'slide-1',
-        slideIndex: 0,
-        shapes: [
-          {
-            id: 'new-shape',
-            name: 'step',
-            type: 'GeometricShape',
-            left: 72,
-            top: 180,
-            width: 216,
-            height: 144,
-          },
-        ],
-      }),
-    })
-    const proposals = createStructuredProposalController()
+  it('rejects raw geometric additions without durable savepoints', async () => {
+    const fake = adapter(),
+      proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
-    const operation = {
-      op: 'add_geometric_shape',
-      slide_index: 0,
-      name: 'step',
-      shape: 'roundRect',
-      left: 72,
-      top: 180,
-      width: 216,
-      height: 144,
-      fill: '2255AA',
-      lineColor: '2255AA',
-    }
-    await skill.executeTool(
-      call('execute_office_js', { code: JSON.stringify({ version: 1, operations: [operation] }) }),
+    const result = await skill.executeTool(
+      call('execute_office_js', {
+        program: {
+          version: 1,
+          operations: [
+            {
+              op: 'add_geometric_shape',
+              slide_index: 0,
+              name: 'step',
+              shape: 'roundRect',
+              left: 72,
+              top: 180,
+              width: 216,
+              height: 144,
+              fill: '2255AA',
+              lineColor: '2255AA',
+            },
+          ],
+        },
+      }),
     )
+    expect(result).toMatchObject({
+      isError: true,
+      mutated: false,
+      output: 'office_api_unsupported',
+    })
+    expect(proposals.pending()).toBeUndefined()
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
-    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
-    expect(fake.executeDeclarative).toHaveBeenCalledWith([operation], expect.any(AbortSignal))
   })
 
-  it('creates and verifies a native table with exact cell values', async () => {
+  it('creates a styled native table in the adapter but refuses a skill write without its savepoint', async () => {
     const created = { id: 'new-table', name: '', load: vi.fn() }
     const addTable = vi.fn(() => created)
     const slide = { id: 's1', load: vi.fn(), shapes: { addTable } }
@@ -1771,91 +1747,38 @@ describe('browser PowerPoint adapter', () => {
     })
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
-    await skill.executeTool(
-      call('execute_office_js', { code: JSON.stringify({ version: 1, operations: [operation] }) }),
-    )
-    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
-    expect(fake.readSlideTable).toHaveBeenCalledWith(0, 'new-table', expect.any(AbortSignal))
+    expect(
+      await skill.executeTool(
+        call('execute_office_js', {
+          code: JSON.stringify({ version: 1, operations: [operation] }),
+        }),
+      ),
+    ).toMatchObject({ isError: true, mutated: false, output: 'office_api_unsupported' })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
+    expect(fake.readSlideTable).not.toHaveBeenCalled()
   })
 
-  it('confirms a complete supported SlideIR page and rejects unsupported pages before writing', async () => {
-    const deck = benchmarkDeck()
-    const fake = adapter({
-      executeDeclarative: vi
-        .fn()
-        .mockResolvedValue({ createdShapeIds: ['title-host', 'shape-host', 'source-host'] }),
-      listSlideShapes: vi
-        .fn()
-        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
-        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
-        .mockResolvedValue({
-          slideId: 'slide-1',
-          slideIndex: 0,
-          shapes: [
-            {
-              id: 'title-host',
-              name: 'title',
-              type: 'TextBox',
-              left: 72,
-              top: 72,
-              width: 720,
-              height: 72,
-            },
-            {
-              id: 'shape-host',
-              name: 'step',
-              type: 'GeometricShape',
-              left: 72,
-              top: 180,
-              width: 216,
-              height: 144,
-            },
-            {
-              id: 'source-host',
-              name: 'source-attribution',
-              type: 'TextBox',
-              left: 36,
-              top: 507.6,
-              width: 885.6,
-              height: 21.6,
-            },
-          ],
-        }),
-      readSlideText: vi.fn().mockImplementation(async (_index, shapeId) => ({
-        slideId: 'slide-1',
-        shapeId,
-        text: shapeId === 'source-host' ? '[source-1] 研究报告（合成基准） · 第 1 页' : '研究流程',
-        paragraphs: [
-          shapeId === 'source-host' ? '[source-1] 研究报告（合成基准） · 第 1 页' : '研究流程',
-        ],
-      })),
-    })
-    const proposals = createStructuredProposalController()
+  it('rejects supported and unsupported SlideIR pages without durable savepoints before any native write', async () => {
+    const deck = benchmarkDeck(),
+      fake = adapter(),
+      proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
-    const proposed = await skill.executeTool(
-      call('add_slide_ir_objects', {
-        slide_index: 0,
-        slide: deck.slides[3],
-        style: deck.style,
-        claims: deck.claims,
-      }),
-    )
-    expect(proposed).toMatchObject({
-      mutated: false,
-      summary: 'Proposed declarative PowerPoint execution',
-    })
-    expect(fake.executeDeclarative).not.toHaveBeenCalled()
-    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
-    expect(fake.executeDeclarative).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({ op: 'add_text_box', name: 'title' }),
-        expect.objectContaining({ op: 'add_geometric_shape', name: 'step' }),
-      ]),
-      expect.any(AbortSignal),
-    )
-    const count = (fake.executeDeclarative as ReturnType<typeof vi.fn>).mock.calls.length
-    await expect(
-      skill.executeTool(
+    for (const index of [3, 5]) {
+      expect(
+        await skill.executeTool(
+          call('add_slide_ir_objects', {
+            slide_index: 0,
+            slide: deck.slides[index],
+            style: deck.style,
+            claims: deck.claims,
+          }),
+        ),
+      ).toMatchObject({ isError: true, mutated: false, output: 'office_api_unsupported' })
+      expect(proposals.pending()).toBeUndefined()
+    }
+    expect(
+      await skill.executeTool(
         call('add_slide_ir_objects', {
           slide_index: 0,
           slide: deck.slides[2],
@@ -1863,8 +1786,9 @@ describe('browser PowerPoint adapter', () => {
           claims: deck.claims,
         }),
       ),
-    ).resolves.toMatchObject({ isError: true })
-    expect((fake.executeDeclarative as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(count)
+    ).toMatchObject({ isError: true, mutated: false })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
   })
 
   it('requires a declared resolved font before proposing direct SlideIR writes', async () => {
@@ -1891,78 +1815,45 @@ describe('browser PowerPoint adapter', () => {
     const result = await skill.executeTool(
       call('add_slide_ir_objects', { ...input, resolved_font_face: 'Noto Sans CJK SC' }),
     )
-    expect(result.isError).not.toBe(true)
-    expect(proposals.pending()).toBeTruthy()
+    expect(result).toMatchObject({
+      isError: true,
+      mutated: false,
+      output: 'office_api_unsupported',
+    })
+    expect(proposals.pending()).toBeUndefined()
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
   })
 
-  it('routes a SlideIR table page through native table readback', async () => {
-    const deck = benchmarkDeck()
-    const rows = (deck.slides[5]!.elements[1] as { rows: string[][] }).rows
-    const fake = adapter({
-      executeDeclarative: vi
-        .fn()
-        .mockResolvedValue({ createdShapeIds: ['title-host', 'table-host', 'source-host'] }),
-      listSlideShapes: vi
-        .fn()
-        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
-        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
-        .mockResolvedValue({
-          slideId: 'slide-1',
-          slideIndex: 0,
-          shapes: [
-            {
-              id: 'title-host',
-              name: 'title',
-              type: 'TextBox',
-              left: 72,
-              top: 72,
-              width: 720,
-              height: 72,
-            },
-            {
-              id: 'table-host',
-              name: 'table',
-              type: 'Table',
-              left: 72,
-              top: 180,
-              width: 576,
-              height: 144,
-            },
-            {
-              id: 'source-host',
-              name: 'source-attribution',
-              type: 'TextBox',
-              left: 36,
-              top: 507.6,
-              width: 885.6,
-              height: 21.6,
-            },
-          ],
-        }),
-      readSlideText: vi.fn().mockImplementation(async (_index, shapeId) => ({
-        slideId: 'slide-1',
-        shapeId,
-        text: shapeId === 'source-host' ? '[source-1] 研究报告（合成基准） · 第 1 页' : '实验表格',
-        paragraphs: [
-          shapeId === 'source-host' ? '[source-1] 研究报告（合成基准） · 第 1 页' : '实验表格',
-        ],
-      })),
-      readSlideTable: vi.fn().mockResolvedValue(rows),
+  it('rejects a native table SlideIR page when original-page export is unavailable even with a durable binding', async () => {
+    const deck = benchmarkDeck(),
+      fake = adapter(),
+      proposals = createStructuredProposalController()
+    const request = vi.fn(),
+      writeExistingBatch = vi.fn()
+    const skill = createPowerPointSkill({
+      adapter: fake,
+      proposals,
+      nativeAddSavepoint: {
+        documentId: async () => 'doc',
+        request,
+        readExistingBatch: () => undefined,
+        writeExistingBatch,
+      },
     })
-    const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter: fake, proposals })
-    const proposed = await skill.executeTool(
-      call('add_slide_ir_objects', {
-        slide_index: 0,
-        slide: deck.slides[5],
-        style: deck.style,
-        claims: deck.claims,
-      }),
-    )
-    expect(proposed.mutated).toBe(false)
-    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
-    expect(fake.readSlideTable).toHaveBeenCalledWith(0, 'table-host', expect.any(AbortSignal))
+    expect(
+      await skill.executeTool(
+        call('add_slide_ir_objects', {
+          slide_index: 0,
+          slide: deck.slides[5],
+          style: deck.style,
+          claims: deck.claims,
+        }),
+      ),
+    ).toMatchObject({ isError: true, mutated: false, output: 'office_api_unsupported' })
+    expect(proposals.pending()).toBeUndefined()
+    expect(request).not.toHaveBeenCalled()
+    expect(writeExistingBatch).not.toHaveBeenCalled()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
   })
 
   it('rejects a SlideIR page when the host already has an object with a planned name', async () => {
@@ -1992,46 +1883,20 @@ describe('browser PowerPoint adapter', () => {
     expect(fake.executeDeclarative).not.toHaveBeenCalled()
   })
 
-  it('does not accept a created SlideIR shape whose host name differs from the planned name', async () => {
-    const deck = benchmarkDeck()
-    const slide = {
-      ...deck.slides[0]!,
-      claimIds: [],
-      elements: [deck.slides[0]!.elements[0]!],
-    }
-    const fake = adapter({
-      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['created'] }),
-      listSlideShapes: vi
-        .fn()
-        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
-        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 0, shapes: [] })
-        .mockResolvedValue({
-          slideId: 'slide-1',
-          slideIndex: 0,
-          shapes: [
-            {
-              id: 'created',
-              name: 'wrong-name',
-              type: 'TextBox',
-              left: 72,
-              top: 72,
-              width: 720,
-              height: 72,
-            },
-          ],
-        }),
-    })
-    const proposals = createStructuredProposalController()
+  it('does not expose recovery tools when native-add persistence is unavailable', async () => {
+    const fake = adapter(),
+      proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
-    await skill.executeTool(
-      call('add_slide_ir_objects', {
-        slide_index: 0,
-        slide,
-        style: deck.style,
-        claims: deck.claims,
-      }),
-    )
-    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_verify_failed')
+    expect(skill.tools.some((tool) => tool.name === 'inspect_slide_ir_addition')).toBe(false)
+    expect(skill.tools.some((tool) => tool.name === 'resume_slide_ir_addition')).toBe(false)
+    for (const name of ['inspect_slide_ir_addition', 'resume_slide_ir_addition'])
+      expect(await skill.executeTool(call(name, { change_id: 'add' }))).toMatchObject({
+        isError: true,
+        output: 'office_api_unsupported',
+        mutated: false,
+      })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
   })
 
   it('reads native table values with bounded dimensions', async () => {

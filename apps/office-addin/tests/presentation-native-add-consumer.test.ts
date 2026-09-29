@@ -126,3 +126,43 @@ it('shows a pending native addition as historical metadata without offering unco
   expect(controller.snapshot().entries[0].after).toContain('尚未记录创建身份')
   expect(executeTool).not.toHaveBeenCalled()
 })
+
+it('routes an enabled native-addition workbench inspection to the dedicated read-only tool', async () => {
+  const executeTool = vi.fn(async () => ({
+    output: JSON.stringify({
+      visualQaVerified: false,
+      operationCount: 1,
+      nextIndex: 0,
+      observation: { status: 'complete', completedCount: 1 },
+    }),
+    summary: 'Read-only inspection',
+  }))
+  const controller = createPresentationChangesController({
+    available: () => false,
+    existingAvailable: () => true,
+    nativeAdditionAvailable: () => true,
+    artifact: () => undefined,
+    documentId: async () => 'doc',
+    listChangeHistory: () => [
+      {
+        id: 'existing_batch:add',
+        kind: 'existing_batch',
+        sequence: 1,
+        legacy: false,
+        record: structuredClone(record),
+      },
+    ],
+    executeTool,
+  })
+  await controller.refresh()
+  expect(controller.snapshot().entries[0].actions).toEqual(['inspect', 'resume'])
+  expect(executeTool).not.toHaveBeenCalled()
+  await controller.run('existing_batch:add', 'inspect')
+  expect(controller.snapshot().notice).toContain('已核对新增对象 1/1；持久回执 0/1')
+  expect(controller.snapshot().notice).toContain('不代表视觉或专业 QA 通过')
+  expect(executeTool).toHaveBeenCalledOnce()
+  expect(executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({ name: 'inspect_slide_ir_addition', input: { change_id: 'add' } }),
+    expect.any(AbortSignal),
+  )
+})

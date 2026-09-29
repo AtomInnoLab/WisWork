@@ -392,6 +392,18 @@ export function createOfficeHostRuntime(
                 }
               }
             : undefined,
+        nativeAddSavepoint:
+          localBinding?.readExistingBatch &&
+          localBinding.writeExistingBatch &&
+          options.presentation?.request
+            ? {
+                documentId: localBinding.documentId,
+                request: options.presentation.request,
+                readExistingBatch: localBinding.readExistingBatch,
+                readExistingPageChange: localBinding.readExistingPageChange,
+                writeExistingBatch: localBinding.writeExistingBatch,
+              }
+            : undefined,
         chartSavepoint:
           localBinding?.readExistingChartChange &&
           localBinding.writeExistingChartChange &&
@@ -1011,7 +1023,13 @@ export function createOfficeHostRuntime(
               ? pageEditing
               : pageReplacement?.tools.some((tool) => tool.name === call.name)
                 ? pageReplacement
-                : undefined
+                : [
+                      'inspect_slide_ir_addition',
+                      'resume_slide_ir_addition',
+                      'finalize_slide_ir_addition_restore',
+                    ].includes(call.name) && hostSkill.tools.some((tool) => tool.name === call.name)
+                  ? hostSkill
+                  : undefined
     return owner
       ? owner.executeTool(call, signal)
       : Promise.resolve({
@@ -1042,6 +1060,8 @@ export function createOfficeHostRuntime(
         options.presentation.listImageReplacements))
   )
     changes = createPresentationChangesController({
+      nativeAdditionAvailable: () =>
+        hostSkill.tools.some((tool) => tool.name === 'inspect_slide_ir_addition'),
       available: options.presentation?.available ?? (() => false),
       existingAvailable: () =>
         Boolean(

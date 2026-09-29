@@ -1,8 +1,30 @@
 import { expect, it } from 'vitest'
+import JSZip from 'jszip'
+import { XMLParser } from 'fast-xml-parser'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { openPptx } from '@wiswork/pptx-engine'
 import { officeOperationsForSlideIR } from '../src/skills/powerpoint/presentation-office-ir'
+
+it('compiles source attribution with the same explicit alignment as the Office IR', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const footer = officeOperationsForSlideIR(deck.slides[0]!, deck.style, 0, deck.claims).find(
+    (operation) => operation.name === 'source-attribution',
+  )!
+  expect(footer).toMatchObject({ op: 'add_text_box', verticalAlignment: 'top', align: 'left' })
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const node = [...xml.matchAll(/<p:sp\b[^]*?<\/p:sp>/g)].find((match) =>
+    match[0].includes('name="source-attribution"'),
+  )![0]
+  const body = new XMLParser({ ignoreAttributes: false, parseAttributeValue: false }).parse(node)[
+    'p:sp'
+  ]['p:txBody']
+  expect(body['a:bodyPr']['@_anchor']).toBe('t')
+  expect(body['a:p']['a:pPr']['@_algn']).toBe('l')
+})
 
 it('maps shared SlideIR text and shape into native Office point geometry and style', () => {
   const deck = benchmarkDeck()

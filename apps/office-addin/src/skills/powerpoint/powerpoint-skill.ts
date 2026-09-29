@@ -3,7 +3,7 @@ import {
   parsePowerPointStyleDependencies,
   type PowerPointStyleDependencies,
 } from './presentation-style-dependencies.js'
-import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
+import type { AgentSkill, AgentToolDef, ToolExecution } from '@wiswork/agent-core'
 import { parsePresentationDeck, PRESENTATION_DECK_SCHEMA } from '@wiswork/pptx-engine/presentation'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
@@ -33,6 +33,14 @@ import {
   validatePresentationExistingChartChange,
   type PresentationExistingChartChange,
 } from './presentation-existing-chart.js'
+import { createPresentationNativeAddRestoration } from './presentation-native-add-restoration.js'
+import type { PresentationExistingPageChange } from './presentation-existing-page.js'
+import { createPresentationNativeAddExecution } from './presentation-native-add-execution.js'
+import { createPresentationNativeAddProposal } from './presentation-native-add-proposal.js'
+import type {
+  PresentationExistingBatch,
+  NativeAddOperation,
+} from './presentation-existing-batch.js'
 import { officeOperationsForSlideIR } from './presentation-office-ir.js'
 
 const MAX_SLIDE_INDEX = 100_000
@@ -441,7 +449,7 @@ const tools = [
   {
     name: 'execute_office_js',
     description:
-      'Execute a confirmation-gated bounded declarative PowerPoint program. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields. Supported operations are set_shape_text, set_shape_geometry, add_text_box, add_geometric_shape, add_native_table (bounded string cells), delete_shape, and duplicate_slide (it must be the only operation).',
+      'Execute a confirmation-gated bounded declarative PowerPoint program. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields. Native additions require a durable paired-PC savepoint; use one page of pure additions with explicit styling, or validated SlideIR. Mixed modification/addition and multi-page addition programs are rejected before writing. Supported operations are set_shape_text, set_shape_geometry, add_text_box, add_geometric_shape, add_native_table (bounded string cells), delete_shape, and duplicate_slide (it must be the only operation).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -455,7 +463,7 @@ const tools = [
   {
     name: 'add_slide_ir_objects',
     description:
-      'Propose adding all text, shape and table objects plus a visible source footer from one validated SlideIR and Claim Ledger to an existing PowerPoint slide using native Office.js objects. If style.fontFallbacks is set, pass resolved_font_face from a checked PC compilation report or another explicitly reviewed choice; it must match style.fontFace or one of its declared candidates. The host still needs visual font review. Source truth is not verified here. Unsupported image/chart pages are rejected before writing. This does not create a slide or provide page-level atomic rollback; review the resulting page.',
+      'Propose adding all text, shape and table objects plus a visible source footer from one validated SlideIR and Claim Ledger to an existing PowerPoint slide using native Office.js objects. If style.fontFallbacks is set, pass resolved_font_face from a checked PC compilation report or another explicitly reviewed choice; it must match style.fontFace or one of its declared candidates. The host still needs visual font review. Source truth is not verified here. Unsupported image/chart pages are rejected before writing. Requires a paired PC original-page savepoint and durable per-object receipts. Interrupted writes require explicit inspection and recovery; no automatic replay. Original-page restoration uses the separately confirmed package restore flow. This does not create a slide; visual and professional QA remain required.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -636,6 +644,15 @@ function errorCode(error: unknown, write = false): string {
       'office_api_unsupported',
       'office_concurrent_change',
       'presentation_page_backup_cleanup_failed',
+      'presentation_native_add_conflict',
+      'presentation_native_add_pending',
+      'presentation_existing_batch_missing',
+      'presentation_existing_batch_stale',
+      'presentation_existing_batch_state_invalid',
+      'presentation_chart_backup_invalid',
+      'presentation_existing_backup_capacity',
+      'presentation_document_changed',
+      'presentation_baseline_changed',
       'cancelled',
     ].includes(code)
   )
@@ -1390,6 +1407,16 @@ export function createPowerPointSkill(options: {
     signal?: AbortSignal,
     expectedSlideId?: string,
   ): Promise<{ slideId: string; base64: string; mime: 'image/png'; renderer?: 'libreoffice' }>
+  nativeAddSavepoint?: {
+    documentId(): Promise<string>
+    request(body: unknown, signal?: AbortSignal): Promise<Response>
+    readExistingBatch(id: string): PresentationExistingBatch | undefined
+    readExistingPageChange?(id: string): PresentationExistingPageChange | undefined
+    writeExistingBatch(
+      record: PresentationExistingBatch,
+      expected: PresentationExistingBatch | undefined,
+    ): Promise<void>
+  }
   chartSavepoint?: {
     documentId(): Promise<string>
     request(body: unknown, signal?: AbortSignal): Promise<Response>
@@ -1400,6 +1427,60 @@ export function createPowerPointSkill(options: {
     ): Promise<void>
   }
 }): AgentSkill {
+  const nativeExecution = options.nativeAddSavepoint
+    ? createPresentationNativeAddExecution({
+        ...options.nativeAddSavepoint,
+        adapter: options.adapter,
+      })
+    : undefined
+  const nativeRestoration =
+    options.nativeAddSavepoint?.readExistingPageChange &&
+    options.adapter.exportPresentationPagePackage
+      ? createPresentationNativeAddRestoration({
+          ...options.nativeAddSavepoint,
+          readExistingPageChange: options.nativeAddSavepoint.readExistingPageChange,
+          exportPresentationPagePackage: options.adapter.exportPresentationPagePackage.bind(
+            options.adapter,
+          ),
+        })
+      : undefined
+  const nativeRestorationTool: AgentToolDef = {
+    name: 'finalize_slide_ir_addition_restore',
+    description:
+      'Close a native-addition journal only after the separately confirmed original-page restore is durably applied. Verify the exact restoration source, both original backups, complete page order and live original package before recording the actual restored page ID. Never writes the host or certifies visual QA.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+        restoration_change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+      },
+      required: ['change_id', 'restoration_change_id'],
+      additionalProperties: false,
+    },
+  }
+  const nativeProposal =
+    options.nativeAddSavepoint && nativeExecution
+      ? createPresentationNativeAddProposal({
+          ...options.nativeAddSavepoint,
+          adapter: options.adapter,
+          proposals: options.proposals,
+          execution: nativeExecution,
+        })
+      : undefined
+  const nativeTools: AgentToolDef[] = ['inspect_slide_ir_addition', 'resume_slide_ir_addition'].map(
+    (name) => ({
+      name,
+      description: name.startsWith('inspect')
+        ? 'Read-only inspect a durable native addition against the original page backup and actual SDK identities. Does not replay writes or certify visual QA.'
+        : 'Propose explicit continuation of a verified native addition. Claim a proven lost receipt before further stepwise writes. Unproven in-flight writes remain pending; restore the original page through the controlled package workflow.',
+      inputSchema: {
+        type: 'object',
+        properties: { change_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$' } },
+        required: ['change_id'],
+        additionalProperties: false,
+      },
+    }),
+  )
   const masterXmlEditingSupported = options.platform?.toLowerCase() !== 'mac'
   const nativeMasterEditingSupported = options.nativeMasterEditingSupported !== false
   async function proposePackageEdit(
@@ -1992,21 +2073,25 @@ export function createPowerPointSkill(options: {
     systemPrompt:
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
       ' Prefer inspect_slide_masters and native edit_slide_master for backgrounds, theme colors, and layout inheritance. PowerPoint for Mac must never use edit_slide_master_xml.',
-    tools: tools.filter(
-      (tool) =>
-        (Boolean(options.chartSavepoint) ||
-          ![
-            'update_slide_chart_values',
-            'inspect_slide_chart_values_change',
-            'resume_slide_chart_values_change',
-            'undo_slide_chart_values_change',
-            'release_slide_chart_values_change',
-            'reapply_slide_chart_values_change',
-          ].includes(tool.name)) &&
-        (masterXmlEditingSupported || tool.name !== 'edit_slide_master_xml') &&
-        (nativeMasterEditingSupported ||
-          !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
-    ),
+    tools: [
+      ...tools.filter(
+        (tool) =>
+          (Boolean(options.chartSavepoint) ||
+            ![
+              'update_slide_chart_values',
+              'inspect_slide_chart_values_change',
+              'resume_slide_chart_values_change',
+              'undo_slide_chart_values_change',
+              'release_slide_chart_values_change',
+              'reapply_slide_chart_values_change',
+            ].includes(tool.name)) &&
+          (masterXmlEditingSupported || tool.name !== 'edit_slide_master_xml') &&
+          (nativeMasterEditingSupported ||
+            !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
+      ),
+      ...(nativeExecution ? nativeTools : []),
+      ...(nativeRestoration ? [nativeRestorationTool] : []),
+    ],
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
         return failure(
@@ -2016,6 +2101,118 @@ export function createPowerPointSkill(options: {
         )
       try {
         assertNotCancelled(signal)
+        if (call.name === 'finalize_slide_ir_addition_restore') {
+          if (!nativeRestoration) throw new Error('office_api_unsupported')
+          const input = exactRecord(call.input, ['change_id', 'restoration_change_id'])
+          if (
+            [input.change_id, input.restoration_change_id].some(
+              (value) => typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value),
+            )
+          )
+            throw new Error('invalid_tool_input')
+          const record = await nativeRestoration.finalize(
+            input.change_id as string,
+            input.restoration_change_id as string,
+            signal,
+          )
+          return {
+            output: boundedJson({
+              changeId: record.changeId,
+              state: record.state,
+              restoredSlideId: record.restoredSlideId,
+              createdShapeIds: record.createdShapeIds,
+              historicalOnly: true,
+              visualQaVerified: false,
+            }),
+            mutated: false,
+            summary: 'Reconciled original-page restoration receipt',
+          }
+        }
+        if (call.name === 'inspect_slide_ir_addition' || call.name === 'resume_slide_ir_addition') {
+          if (!nativeExecution || !options.nativeAddSavepoint)
+            throw new Error('office_api_unsupported')
+          const input = exactRecord(call.input, ['change_id'])
+          if (
+            typeof input.change_id !== 'string' ||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(input.change_id)
+          )
+            throw new Error('invalid_tool_input')
+          const changeId = input.change_id
+          const saved = options.nativeAddSavepoint.readExistingBatch(changeId)
+          if (!saved || saved.version !== 2 || saved.changeId !== changeId)
+            throw new Error('presentation_existing_batch_missing')
+          const record = structuredClone(saved)
+          const observed = await nativeExecution.inspect(changeId, signal)
+          if (call.name === 'inspect_slide_ir_addition')
+            return {
+              output: boundedJson({
+                changeId,
+                state: record.state,
+                nextIndex: record.nextIndex,
+                operationCount: record.operations.length,
+                observation: observed.observation,
+                createdShapeIds: observed.createdShapeIds,
+                visualQaVerified: false,
+              }),
+              mutated: false,
+              summary: 'Inspected durable native addition',
+            }
+          if (record.state !== 'applying') throw new Error('presentation_native_add_conflict')
+          if (
+            record.inFlightIndex !== undefined &&
+            observed.observation.completedCount === record.nextIndex
+          )
+            throw new Error('presentation_native_add_pending')
+          const stillCurrent = async (s?: AbortSignal) => {
+            const proof = await nativeExecution.inspect(changeId, s)
+            return (
+              JSON.stringify(options.nativeAddSavepoint!.readExistingBatch(changeId)) ===
+                JSON.stringify(record) &&
+              proof.packageDigest === observed.packageDigest &&
+              JSON.stringify(proof.createdShapeIds) === JSON.stringify(observed.createdShapeIds)
+            )
+          }
+          const proposal = options.proposals.propose({
+            operation: call.name,
+            toolName: call.name,
+            title: '继续已核对的原生对象添加',
+            preview: {
+              changeId,
+              completed: observed.observation.completedCount,
+              total: record.operations.length,
+              receiptRecovery: record.inFlightIndex !== undefined,
+              visualQaVerified: false,
+            },
+            impact: {
+              host: 'powerpoint',
+              targets: [record.hostSlideId],
+              count: record.operations.length - record.nextIndex,
+            },
+            fingerprint: fingerprint(JSON.stringify(record) + observed.packageDigest),
+            validate: stillCurrent,
+            execute: async (s) => {
+              if (!(await stillCurrent(s))) throw new Error('office_concurrent_change')
+              for (let index = record.nextIndex; index < record.operations.length; index++)
+                await nativeExecution.step(changeId, s)
+            },
+            verify: async (s) => {
+              const proof = await nativeExecution.inspect(changeId, s)
+              const latest = options.nativeAddSavepoint!.readExistingBatch(changeId)
+              if (
+                !latest ||
+                latest.version !== 2 ||
+                latest.state !== 'applied' ||
+                proof.observation.status !== 'complete'
+              )
+                throw new Error('office_verify_failed')
+            },
+          })
+          return {
+            output: boundedJson(proposal),
+            mutated: false,
+            summary: 'Proposed durable native addition continuation',
+          }
+        }
         if (call.name === 'edit_slide_master_xml' && !masterXmlEditingSupported)
           return failure(call.name, 'office_api_unsupported')
         if (
@@ -2061,6 +2258,15 @@ export function createPowerPointSkill(options: {
                     'office_concurrent_change',
                     'presentation_qa_stale',
                     'presentation_page_backup_cleanup_failed',
+                    'presentation_native_add_conflict',
+                    'presentation_native_add_pending',
+                    'presentation_existing_batch_missing',
+                    'presentation_existing_batch_stale',
+                    'presentation_existing_batch_state_invalid',
+                    'presentation_chart_backup_invalid',
+                    'presentation_existing_backup_capacity',
+                    'presentation_document_changed',
+                    'presentation_baseline_changed',
                   ].includes(fallbackError.message))
               )
                 throw fallbackError
@@ -2342,6 +2548,30 @@ export function createPowerPointSkill(options: {
               current.shapes.some((shape) => plannedNames.has(shape.name))
             )
               throw new Error('office_concurrent_change')
+          }
+          const additions = program.operations.filter(
+            (operation): operation is NativeAddOperation =>
+              ['add_text_box', 'add_geometric_shape', 'add_native_table'].includes(operation.op),
+          )
+          if (
+            additions.length &&
+            (additions.length !== program.operations.length ||
+              new Set(additions.map((operation) => operation.slide_index)).size !== 1)
+          )
+            throw new Error('office_api_unsupported')
+          if (additions.length) {
+            if (!nativeProposal) throw new Error('office_api_unsupported')
+            const proposed = await nativeProposal.propose(
+              additions,
+              input.explanation,
+              signal,
+              call.name as 'add_slide_ir_objects' | 'execute_office_js',
+            )
+            return {
+              output: boundedJson(proposed),
+              mutated: false,
+              summary: 'Proposed durable native SlideIR addition',
+            }
           }
           await options.adapter.verifySlides(signal)
           const slideIndexes = [

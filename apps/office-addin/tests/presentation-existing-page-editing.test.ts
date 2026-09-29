@@ -2,6 +2,9 @@ import { afterEach, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
 import { readFileSync } from 'node:fs'
 import { PNG } from 'pngjs'
+import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill'
+import type { PowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter'
+import { validExistingBatchTransition } from '../src/skills/powerpoint/presentation-existing-batch'
 import { createStructuredProposalController } from '../src/agent/proposal-controller'
 import { createPresentationExistingPageEditingSkill } from '../src/skills/powerpoint/presentation-existing-page-editing'
 import {
@@ -452,6 +455,12 @@ async function fixture() {
     },
     originalSourceRecord,
     batchSourceRecord,
+    readBatchSourceRecord: () => structuredClone(batchSourceRecord),
+    exportPage: async (slideId: string) => ({
+      slideId,
+      slideIds: [...slideIds],
+      base64: base64(currentPageBytes),
+    }),
     setBatchSourceRecord: (record: PresentationExistingBatch) => {
       batchSourceRecord = structuredClone(record)
     },
@@ -1258,8 +1267,67 @@ it('prepares a pending native-add V2 original page for separately confirmed rest
     sourceHostSlideId: 'old',
   })
   expect(f.adapter.stage).toHaveBeenCalledOnce()
+  const hostWrite = vi.fn()
+  const metadataWrite = vi.fn(
+    async (next: PresentationExistingBatch, expected: PresentationExistingBatch | undefined) => {
+      expect(f.readBatchSourceRecord()).toEqual(expected)
+      expect(validExistingBatchTransition(expected, next)).toBe(true)
+      f.setBatchSourceRecord(next)
+    },
+  )
+  const recovery = createPowerPointSkill({
+    adapter: {
+      exportPresentationPagePackage: f.exportPage,
+      executeDeclarative: hostWrite,
+    } as unknown as PowerPointAdapter,
+    proposals: createStructuredProposalController(),
+    nativeAddSavepoint: {
+      documentId: async () => 'doc',
+      request: f.request,
+      readExistingBatch: () => f.readBatchSourceRecord(),
+      writeExistingBatch: metadataWrite,
+      readExistingPageChange: (id) => f.records.get(id),
+    },
+  })
+  const close = () =>
+    recovery.executeTool({
+      id: 'finalize-native',
+      name: 'finalize_slide_ir_addition_restore',
+      input: { change_id: record.changeId, restoration_change_id: restore.changeId },
+    })
+  expect(await close()).toMatchObject({
+    isError: true,
+    mutated: false,
+    output: 'presentation_native_add_conflict',
+  })
+  expect(metadataWrite).not.toHaveBeenCalled()
+  expect(f.readBatchSourceRecord()).toMatchObject({ state: 'applying', inFlightIndex: 0 })
   await f.call('commit', { change_id: restore.changeId })
   await f.confirm()
   expect(f.records.get(restore.changeId)?.state).toBe('applied')
+  // The simulated host now exports the exact original package actually passed to the confirmed stage.
+  f.setCurrentPage(binary(f.adapter.stage.mock.calls[0]![1]))
+  const finalized = await close()
+  expect(finalized.isError, finalized.output).not.toBe(true)
+  expect(finalized.mutated).toBe(false)
+  expect(JSON.parse(finalized.output)).toMatchObject({
+    state: 'undone',
+    restoredSlideId: restore.newSlideId,
+    historicalOnly: true,
+    visualQaVerified: false,
+  })
+  expect(f.readBatchSourceRecord()).toMatchObject({
+    state: 'undone',
+    nextIndex: 0,
+    createdShapeIds: [],
+    restoredSlideId: restore.newSlideId,
+  })
+  expect(f.readBatchSourceRecord()).not.toHaveProperty('inFlightIndex')
+  expect(metadataWrite).toHaveBeenCalledTimes(2)
+  await close()
+  expect(metadataWrite).toHaveBeenCalledTimes(2)
+  expect(hostWrite).not.toHaveBeenCalled()
+  expect(f.adapter.stage).toHaveBeenCalledOnce()
+  expect(f.adapter.commit).toHaveBeenCalledOnce()
   expect(record).toMatchObject({ state: 'applying', nextIndex: 0, inFlightIndex: 0 })
 })

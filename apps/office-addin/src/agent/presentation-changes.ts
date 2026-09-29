@@ -99,6 +99,7 @@ export interface PresentationChangesOptions {
       sizeBytes: number
     }[]
   >
+  nativeAdditionAvailable?: () => boolean
   existingAvailable?: () => boolean
   available(): boolean
   artifact(): CompiledPresentationArtifact | undefined
@@ -200,6 +201,21 @@ function inspectionNotice(output: string): string {
     if (output.length <= 256 * 1024) {
       const value = JSON.parse(output)
       if (
+        value?.visualQaVerified === false &&
+        Number.isSafeInteger(value?.operationCount) &&
+        value.operationCount >= 1 &&
+        value.operationCount <= 32 &&
+        Number.isSafeInteger(value?.nextIndex) &&
+        value.nextIndex >= 0 &&
+        value.nextIndex <= value.operationCount &&
+        Number.isSafeInteger(value?.observation?.completedCount) &&
+        value.observation.completedCount >= value.nextIndex &&
+        value.observation.completedCount <= Math.min(value.nextIndex + 1, value.operationCount) &&
+        ['none', 'prefix_partial', 'complete'].includes(value?.observation?.status)
+      ) {
+        return `已核对新增对象 ${value.observation.completedCount}/${value.operationCount}；持久回执 ${value.nextIndex}/${value.operationCount}。继续操作仍需确认，未自动重放。此检查不代表视觉或专业 QA 通过。`
+      }
+      if (
         value?.currentHostVerified === true &&
         (value?.state === 'applying' || value?.state === 'undoing') &&
         Array.isArray(value?.values) &&
@@ -250,6 +266,8 @@ function inspectionNotice(output: string): string {
 }
 function workbenchError(error: unknown): string {
   const code = error instanceof Error ? error.message : ''
+  if (code === 'presentation_native_add_pending')
+    return '尚未确认写入完成，保留原页备份与未决记录。未自动重放；请检查页面，必要时使用原页包恢复流程。'
   if (code === 'presentation_existing_backup_capacity')
     return '本机 PC 保存点容量已满。请检查并释放已撤销或已丢弃记录的备份后重新发起；释放后无法重新应用，未自动重试。'
   if (
@@ -268,6 +286,7 @@ function workbenchError(error: unknown): string {
   if (
     [
       'presentation_existing_batch_conflict',
+      'presentation_native_add_conflict',
       'presentation_existing_change_conflict',
       'presentation_existing_image_conflict',
       'presentation_existing_page_conflict',
@@ -468,7 +487,13 @@ export function createPresentationChangesController(
                               ? `原页备份已释放：${saved.record.backupReleasedAt}`
                               : '原页包已保存；原有对象须完整保留',
                             after: nativeAdditionDescription(saved.record),
-                            actions: [],
+                            actions:
+                              options.nativeAdditionAvailable?.() &&
+                              ['applying', 'applied'].includes(saved.record.state)
+                                ? saved.record.state === 'applying'
+                                  ? ['inspect', 'resume']
+                                  : ['inspect']
+                                : [],
                           },
                           record: copy(saved.record),
                           fingerprint: JSON.stringify(saved),
@@ -879,7 +904,9 @@ export function createPresentationChangesController(
                   : selected.entry.source === 'existing_image'
                     ? `${action}_existing_presentation_image_change`
                     : selected.entry.source === 'existing_batch'
-                      ? `${action}_existing_presentation_batch`
+                      ? (r as PresentationExistingBatch).version === 2
+                        ? `${action}_slide_ir_addition`
+                        : `${action}_existing_presentation_batch`
                       : selected.entry.source === 'existing'
                         ? `${action}_existing_presentation_change`
                         : `${action}_presentation_${suffix}`,

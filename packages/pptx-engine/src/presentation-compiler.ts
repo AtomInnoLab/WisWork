@@ -848,6 +848,8 @@ export async function compilePresentationDeck(
         fontSize: 8,
         color: deck.style.textColor,
         margin: 0,
+        valign: 'top',
+        align: 'left',
         objectName: 'source-attribution',
       })
     const assetSources = ir.elements
