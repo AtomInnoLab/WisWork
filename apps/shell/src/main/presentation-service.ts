@@ -1,4 +1,8 @@
 import {
+  capturePresentationProjectWriteLease,
+  capturePresentationProjectReadLease,
+} from './presentation-project-write-lease'
+import {
   createPresentationProjectLifecycleService,
   presentationProjectLifecycleOperations,
 } from './presentation-project-lifecycle'
@@ -41,7 +45,11 @@ import {
   presentationSourceAttachmentId,
 } from '@wiswork/pptx-engine/presentation-plan'
 import { resolve } from 'node:path'
-import { PresentationStore, assertPresentationId } from '@wiswork/project-store'
+import {
+  PresentationLifecycleStore,
+  PresentationStore,
+  assertPresentationId,
+} from '@wiswork/project-store'
 import {
   parsePresentationDeck,
   type PresentationCompileReport,
@@ -57,6 +65,17 @@ import { isInstalledFontFamily } from '@wiswork/font-metrics'
 import { handlePresentationSourceAudit } from './presentation-source-audit-history'
 import { presentationSourceAuditHistory } from '@wiswork/project-store/presentation-source-audit'
 
+const readonlyProductionOperations = new Set([
+  'production_status',
+  'production_page',
+  'production_content_check',
+  'production_page_reviews',
+  'production_claim_evidence',
+  'production_read_claim_review',
+  'production_delivery_report',
+  'production_feedback_read',
+  'production_feedback_compare',
+])
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
 async function acquireProjectLock(root: string, projectId: string): Promise<() => void> {
@@ -78,6 +97,9 @@ const errorCodes = new Set([
   'presentation_master_backup_capacity',
   'presentation_package_backup_invalid',
   'presentation_package_backup_capacity',
+  'project_not_found',
+  'project_deleting',
+  'project_deleted',
   'access_denied',
   'busy',
   'issue_changed',
@@ -166,6 +188,7 @@ export function createPresentationService(options: {
   const masterBackups = createPresentationMasterBackupService(options)
   const attachments = createPresentationAttachmentService(options)
   const store = new PresentationStore(options.userDataPath)
+  const lifecycleStore = new PresentationLifecycleStore(options.userDataPath)
   const team = createPresentationTeamService({
     userDataPath: options.userDataPath,
     readPlan: (documentId, projectId) => {
@@ -233,7 +256,9 @@ export function createPresentationService(options: {
         Buffer.byteLength(JSON.stringify(body)) > 256 * 1024
       )
         throw new Error('invalid_request')
-      const request = body as Record<string, unknown>
+      let request = body as Record<string, unknown>
+      if (typeof request.operation === 'string' && request.operation.startsWith('production_'))
+        request = structuredClone(request)
       if (
         presentationProjectLifecycleOperations.some((operation) => operation === request.operation)
       )
@@ -989,9 +1014,31 @@ export function createPresentationService(options: {
       if (plan && plan.projectId !== projectId) throw new Error('invalid_plan')
       if (deck && deck.id !== projectId) throw new Error('invalid_request')
       const key = `${resolve(options.userDataPath)}\0${projectId}`
+      const readonlyProduction = readonlyProductionOperations.has(request.operation as string)
+      const productionLease = (request.operation as string).startsWith('production_')
+        ? (readonlyProduction
+            ? capturePresentationProjectReadLease
+            : capturePresentationProjectWriteLease)({
+            store: lifecycleStore,
+            scope: { projectId, documentId },
+            readExistingProject: (scope) => store.projectScope(scope.projectId, scope.documentId),
+            ...(presentationJobOperations.includes(request.operation as string) ? {} : { signal }),
+          })
+        : undefined
+      const assertProductionCurrent = productionLease
+        ? 'assertCurrent' in productionLease
+          ? productionLease.assertCurrent
+          : productionLease.assertWritable
+        : undefined
+      const assertProductionWrite = readonlyProduction
+        ? () => {
+            throw new Error('access_denied')
+          }
+        : assertProductionCurrent
       const release = await acquireProjectLock(options.userDataPath, projectId)
       try {
         checkAbort(signal)
+        assertProductionCurrent?.()
         if (request.operation === 'production_feedback_compare') {
           const baseline = store.production(
             projectId,
@@ -1037,7 +1084,8 @@ export function createPresentationService(options: {
             feedback:
               store.productionFeedback(projectId, documentId, request.requestId as string) ?? null,
           })
-        if (request.operation === 'production_feedback_record')
+        if (request.operation === 'production_feedback_record') {
+          assertProductionCurrent?.()
           return boundedResponse({
             feedback: store.recordProductionFeedback(
               projectId,
@@ -1047,6 +1095,7 @@ export function createPresentationService(options: {
               request.pages,
             ),
           })
+        }
         if (presentationJobOperations.includes(request.operation as string)) {
           if (
             ['production_job_start', 'production_job_resume'].includes(request.operation as string)
@@ -1061,11 +1110,14 @@ export function createPresentationService(options: {
                 signal,
               )
           }
+          checkAbort(signal)
+          assertProductionCurrent?.()
           const response = encode(
             handlePresentationJob(key, request, {
               store,
               compile,
               attachments,
+              assertWritable: assertProductionWrite,
               readResearch: (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
             }),
           )
@@ -1078,29 +1130,33 @@ export function createPresentationService(options: {
           ['production_delivery_report', 'production_record_issue_action'].includes(
             request.operation as string,
           )
-        )
-          return boundedResponse(
-            await handlePresentationDeliveryReport(
-              request,
+        ) {
+          const result = await handlePresentationDeliveryReport(
+            request,
+            store,
+            attachments,
+            signal,
+            (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
+            assertProductionWrite,
+          )
+          assertProductionCurrent?.()
+          return boundedResponse(result)
+        }
+        if ((request.operation as string).startsWith('production_')) {
+          const result = await handlePresentationProduction(
+            request,
+            {
               store,
+              compile,
               attachments,
-              signal,
-              (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
-            ),
+              assertWritable: assertProductionWrite,
+              readResearch: (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
+            },
+            signal,
           )
-        if ((request.operation as string).startsWith('production_'))
-          return boundedResponse(
-            await handlePresentationProduction(
-              request,
-              {
-                store,
-                compile,
-                attachments,
-                readResearch: (ledgerId) => researchStore.read(documentId, projectId, ledgerId),
-              },
-              signal,
-            ),
-          )
+          assertProductionCurrent?.()
+          return boundedResponse(result)
+        }
         if (request.operation === 'read_import_source')
           return boundedResponse(
             readPresentationImportSource(

@@ -17,7 +17,14 @@ export async function handlePresentationDeliveryReport(
   attachments: (body: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>,
   signal: AbortSignal,
   readResearch?: PresentationResearchReader,
+  assertWritable?: () => void,
 ) {
+  request = structuredClone(request)
+  const beforeWrite = () => {
+    if (signal.aborted) throw new Error('aborted')
+    assertWritable?.()
+    if (signal.aborted) throw new Error('aborted')
+  }
   const projectId = request.projectId as string
   const documentId = request.documentId as string
   const requestId = request.requestId as string
@@ -81,6 +88,7 @@ export async function handlePresentationDeliveryReport(
   const previous = issueLedger.actions.find((item) => item.actionId === action.actionId)
   if (previous) {
     // Store checks exact content before CAS; retry remains valid after the evidence changes.
+    beforeWrite()
     issueLedger = store.appendIssueAction(
       projectId,
       documentId,
@@ -95,6 +103,7 @@ export async function handlePresentationDeliveryReport(
     .find((item) => item.id === action.issueId)
   if (!issue || issue.digest !== action.issueDigest) throw new Error('issue_changed')
   if (signal.aborted) throw new Error('aborted')
+  beforeWrite()
   issueLedger = store.appendIssueAction(
     projectId,
     documentId,

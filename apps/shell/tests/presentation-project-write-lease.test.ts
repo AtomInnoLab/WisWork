@@ -1,9 +1,12 @@
 import { afterEach, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PresentationLifecycleStore } from '@wiswork/project-store'
-import { capturePresentationProjectWriteLease } from '../src/main/presentation-project-write-lease'
+import {
+  capturePresentationProjectWriteLease,
+  capturePresentationProjectReadLease,
+} from '../src/main/presentation-project-write-lease'
 const roots: string[] = []
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -116,4 +119,44 @@ it('captures an existing revision across reopen and rejects subsequent deletion'
   })
   expect(() => lease.assertWritable()).toThrow('revision_conflict')
   expect(f.store.read(f.scope)?.state).toBe('deleting')
+})
+
+it('reads an existing historical project without creating lifecycle files and fixes absence', () => {
+  const f = fixture(),
+    before = readdirSync(f.root),
+    lease = capturePresentationProjectReadLease(f)
+  expect(lease.revision).toBeUndefined()
+  expect('assertWritable' in lease).toBe(false)
+  lease.assertCurrent()
+  expect(readdirSync(f.root)).toEqual(before)
+  f.store.initialize(f.scope)
+  expect(() => lease.assertCurrent()).toThrow('revision_conflict')
+})
+it('read leases preserve existing active revision and reject deleting or cancelled scopes', () => {
+  const f = fixture(),
+    controller = new AbortController()
+  f.store.initialize(f.scope)
+  const lease = capturePresentationProjectReadLease({ ...f, signal: controller.signal })
+  expect(lease.revision).toBe(0)
+  lease.assertCurrent()
+  f.scope.projectId = 'foreign'
+  expect(lease.scope.projectId).toBe('p')
+  controller.abort()
+  expect(() => lease.assertCurrent()).toThrow('aborted')
+  const actual = { projectId: 'p', documentId: 'doc' }
+  f.store.beginDeletion(actual, 0, {
+    deletionId: 'delete',
+    reason: 'user',
+    resources: [{ resourceId: 'own', kind: 'project', ownership: 'project_exclusive' }],
+  })
+  expect(() => capturePresentationProjectReadLease({ ...f, scope: actual })).toThrow(
+    'project_deleting',
+  )
+})
+it('read leases do not establish ownership for missing projects', () => {
+  const f = fixture()
+  expect(() =>
+    capturePresentationProjectReadLease({ ...f, readExistingProject: () => undefined }),
+  ).toThrow('project_not_found')
+  expect(readdirSync(f.root)).toEqual([])
 })

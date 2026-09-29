@@ -1,20 +1,25 @@
 import { PresentationLifecycleStore, type PresentationLifecycleScope } from '@wiswork/project-store'
 
-export interface PresentationProjectWriteLease {
-  readonly scope: Readonly<PresentationLifecycleScope>
-  readonly revision: number
-  assertWritable(): void
-}
-
-/** A request owns one lifecycle revision; this guard never renews it or creates project content. */
-export function capturePresentationProjectWriteLease(options: {
+interface LeaseOptions {
   store: PresentationLifecycleStore
   scope: PresentationLifecycleScope
   readExistingProject: (
     scope: Readonly<PresentationLifecycleScope>,
   ) => PresentationLifecycleScope | undefined
   signal?: AbortSignal
-}): PresentationProjectWriteLease {
+}
+export interface PresentationProjectWriteLease {
+  readonly scope: Readonly<PresentationLifecycleScope>
+  readonly revision: number
+  assertWritable(): void
+}
+export interface PresentationProjectReadLease {
+  readonly scope: Readonly<PresentationLifecycleScope>
+  readonly revision: number | undefined
+  assertCurrent(): void
+}
+
+function capture(options: LeaseOptions, initializeMissing: boolean): PresentationProjectReadLease {
   const { store, signal, readExistingProject } = options
   const scope = Object.freeze({
     projectId: options.scope.projectId,
@@ -34,18 +39,35 @@ export function capturePresentationProjectWriteLease(options: {
       existing.documentId !== scope.documentId
     )
       throw Error('project_not_found')
-    record = store.initialize(scope)
+    if (initializeMissing) record = store.initialize(scope)
   }
-  check()
-  const revision = record.revision
-  store.assertActive(scope, revision)
+  const revision = record?.revision
+  const assertCurrent = () => {
+    check()
+    if (revision === undefined) {
+      if (store.read(scope) !== undefined) throw Error('revision_conflict')
+    } else store.assertActive(scope, revision)
+    check()
+  }
+  assertCurrent()
+  return Object.freeze({ scope, revision, assertCurrent })
+}
+
+/** A write request owns one lifecycle revision; this guard never renews it or creates project content. */
+export function capturePresentationProjectWriteLease(
+  options: LeaseOptions,
+): PresentationProjectWriteLease {
+  const lease = capture(options, true)
   return Object.freeze({
-    scope,
-    revision,
-    assertWritable() {
-      check()
-      store.assertActive(scope, revision)
-      check()
-    },
+    scope: lease.scope,
+    revision: lease.revision!,
+    assertWritable: lease.assertCurrent,
   })
+}
+
+/** Pure reads preserve absent legacy control metadata and grant no write permission. */
+export function capturePresentationProjectReadLease(
+  options: LeaseOptions,
+): PresentationProjectReadLease {
+  return capture(options, false)
 }

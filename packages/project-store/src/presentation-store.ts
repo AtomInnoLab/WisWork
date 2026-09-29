@@ -504,6 +504,13 @@ export class PresentationStore {
       rmSync(temporary, { force: true })
     }
   }
+  /** Prove an existing project binding without creating directories or reading document content. */
+  projectScope(
+    projectId: string,
+    documentId: string,
+  ): { projectId: string; documentId: string } | undefined {
+    return this.bind(projectId, documentId, false) ? { projectId, documentId } : undefined
+  }
   private bind(projectId: string, documentId: string, create: boolean): string | undefined {
     if (typeof documentId !== 'string' || !documentId.trim() || documentId.length > 2048)
       throw new Error('invalid_request')
