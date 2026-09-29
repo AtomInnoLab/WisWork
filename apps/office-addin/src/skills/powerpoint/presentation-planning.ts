@@ -112,6 +112,7 @@ const tools: AgentToolDef[] = [
   {
     name: 'save_presentation_plan',
     description:
+      'A locked slide must keep its position, content, cited evidence, dependencies and shared style. Never remove locked or change a protected input to bypass a lock. The user can explicitly unlock the page in the workbench. ' +
       'Persist the brief, evidence/claim ledger, shared style, optional brand kit color/logo rules, and ordered slide tasks before compiling. For an uploaded original of a URL source, keep the URL in source.uri and set source.snapshotAttachmentId to its attachment ID. If a plan using this field returns invalid_plan, check the PC version and the plan rather than silently removing the field. For a font that may be missing on the paired PC, set style.fontFallbacks to an ordered list of candidate family names; the PC checks installed families before PptxGenJS compilation and records any substitution, while PowerPoint visual appearance still needs host review. Optional parallelism=2 requires every slide to declare dependsOn (empty for independent pages); default is serial. Use expected_revision=0 for a new project; after reading the plan, use that revision to update it. On a revision conflict read again; never overwrite a concurrent change blindly. Saving is not source verification or host editing.',
     inputSchema: {
       type: 'object',
@@ -713,6 +714,7 @@ export function createPresentationPlanningSkill(
           [
             'revision_conflict',
             'plan_revision_unavailable',
+            'page_locked',
             'invalid_plan',
             'invalid_request',
             'not_found',
@@ -776,13 +778,15 @@ export function createPresentationPlanningSkill(
           isError: true,
           mutated: false,
           summary:
-            code === 'presentation_revision_conflict'
-              ? '计划已有更新，请读取最新计划后再修改'
-              : code === 'presentation_invalid_plan' && savingSnapshotPlan
-                ? 'PC 拒绝了含原文快照的计划；请检查计划字段与 PC 版本，不要移除快照绑定来绕过核验。'
-                : code === 'presentation_session_storage_full'
-                  ? '会话附件空间不足；PC 已保存的计划仍保留。请下载所需文件后开启新会话，再从项目恢复计划。'
-                  : '计划操作未完成，已有成果已保留',
+            code === 'presentation_page_locked'
+              ? '此操作影响锁定页，请先在工作台明确解除锁定后继续。'
+              : code === 'presentation_revision_conflict'
+                ? '计划已有更新，请读取最新计划后再修改'
+                : code === 'presentation_invalid_plan' && savingSnapshotPlan
+                  ? 'PC 拒绝了含原文快照的计划；请检查计划字段与 PC 版本，不要移除快照绑定来绕过核验。'
+                  : code === 'presentation_session_storage_full'
+                    ? '会话附件空间不足；PC 已保存的计划仍保留。请下载所需文件后开启新会话，再从项目恢复计划。'
+                    : '计划操作未完成，已有成果已保留',
         }
       }
     },

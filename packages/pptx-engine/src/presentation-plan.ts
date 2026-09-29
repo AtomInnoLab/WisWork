@@ -137,6 +137,7 @@ export interface PresentationPlan {
     id: string
     title: string
     purpose: string
+    locked?: boolean
     claimIds: string[]
     layout: 'cover' | 'content' | 'comparison' | 'process' | 'chart' | 'summary'
     domainSection?: PresentationDomainSection
@@ -258,6 +259,7 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object(
           id,
           title: text(300, 1),
           purpose: text(2000, 1),
+          locked: { type: 'boolean' },
           claimIds: array(id, 32),
           layout: choice('cover', 'content', 'comparison', 'process', 'chart', 'summary'),
           domainSection: choice(...domainSections),

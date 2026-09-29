@@ -11,6 +11,58 @@ import {
 import { createPresentationService } from '../../shell/src/main/presentation-service.js'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
 
+it('locks and explicitly unlocks plans through the real workbench, preserving the lock across reopen', async () => {
+  const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-plan-lock-workbench-'))
+  const plan = benchmarkPlan()
+  const service = createPresentationService({ userDataPath })
+  const request = async (body: unknown, signal?: AbortSignal) =>
+    new Response(
+      Buffer.from(await service(body, signal ?? new AbortController().signal)).toString('utf8'),
+    )
+  const create = () =>
+    createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        request,
+        documentId: async () => 'doc',
+        available: () => true,
+        lastProject: () => plan.projectId,
+        rememberProject: async () => undefined,
+      },
+    })
+  const first = create()
+  let second: ReturnType<typeof create> | undefined
+  try {
+    await request({
+      operation: 'save_plan',
+      documentId: 'doc',
+      projectId: plan.projectId,
+      expectedRevision: 0,
+      plan,
+    })
+    await first.presentation!.refresh()
+    const pageId = plan.slides[1]!.id
+    await first.presentation!.editPlan!(1, { kind: 'lock', pageId, locked: true })
+    expect(first.presentation!.snapshot().project?.plan?.value.slides[1]?.locked).toBe(true)
+    expect(first.presentation!.snapshot().project?.plan?.revision).toBe(2)
+    first.presentation!.clear()
+    second = create()
+    await second.presentation!.refresh()
+    await second.presentation!.editPlan!(2, { kind: 'delete', pageId })
+    expect(second.presentation!.snapshot().error).toContain('锁定')
+    expect(second.presentation!.snapshot().project?.plan?.revision).toBe(2)
+    await second.presentation!.editPlan!(2, { kind: 'restore', revision: 1 })
+    expect(second.presentation!.snapshot().error).toContain('锁定')
+    await second.presentation!.editPlan!(2, { kind: 'lock', pageId, locked: false })
+    expect(second.presentation!.snapshot().error).toBeUndefined()
+    expect(second.presentation!.snapshot().project?.plan?.revision).toBe(3)
+    expect(second.presentation!.snapshot().project?.plan?.value.slides[1]?.locked).toBeUndefined()
+  } finally {
+    first.presentation!.clear()
+    second?.presentation?.clear()
+    rmSync(userDataPath, { recursive: true, force: true })
+  }
+})
+
 it('persists workbench reorder/delete through the real PC service and recovers verified revision history', async () => {
   const userDataPath = mkdtempSync(join(tmpdir(), 'ppt-plan-adjustment-'))
   const plan = benchmarkPlan()

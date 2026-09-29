@@ -80,6 +80,30 @@ async function mount(snapshot: Snapshot, disabled = false, onEndFrontend?: () =>
   }
 }
 describe('presentation project recovery card', () => {
+  it('shows persistent page locks and dispatches an explicit unlock while preventing page removal', async () => {
+    const plan = benchmarkPlan()
+    plan.slides[1]!.locked = true
+    const f = await mount({
+      ...pending,
+      project: { ...pending.project!, plan: { revision: 5, value: plan } },
+    })
+    expect(f.container.textContent).toContain('计划页已锁定')
+    const unlock = f.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="解除计划页锁定 2：' + plan.slides[1]!.title + '"]',
+    )!
+    expect(unlock).not.toBeNull()
+    await act(async () => unlock.click())
+    expect(f.controller.editPlan).toHaveBeenCalledWith(5, {
+      kind: 'lock',
+      pageId: plan.slides[1]!.id,
+      locked: false,
+    })
+    expect(
+      f.container.querySelector<HTMLButtonElement>(
+        'button[aria-label="删除计划页 2：' + plan.slides[1]!.title + '"]',
+      )!.disabled,
+    ).toBe(true)
+  })
   it('restores the chosen historical plan into the displayed current revision and resets stale choices', async () => {
     const plan = benchmarkPlan()
     const revisions = [1, 2, 3].map((revision) => ({

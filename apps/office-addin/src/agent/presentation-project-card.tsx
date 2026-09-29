@@ -694,11 +694,29 @@ export function PresentationProjectCard(props: {
                 {controller.editPlan && (
                   <details>
                     <summary>调整本页计划</summary>
+                    <p>
+                      {slide.locked ? '计划页已锁定' : '计划页未锁定'}
+                      ；锁定保护计划及后续生产输入，宿主页请另行核对。
+                    </p>
                     <div className="presentation-project-actions">
                       <button
                         type="button"
+                        disabled={disabled}
+                        aria-label={`${slide.locked ? '解除计划页锁定' : '锁定计划页'} ${index + 1}：${slide.title}`}
+                        onClick={() =>
+                          void controller.editPlan?.(project.plan!.revision, {
+                            kind: 'lock',
+                            pageId: slide.id,
+                            locked: !slide.locked,
+                          })
+                        }
+                      >
+                        {slide.locked ? '解除计划页锁定' : '锁定计划页'}
+                      </button>
+                      <button
+                        type="button"
                         aria-label={`上移计划页 ${index + 1}：${slide.title}`}
-                        disabled={disabled || index === 0}
+                        disabled={disabled || slide.locked || index === 0}
                         onClick={() =>
                           void controller.editPlan?.(project.plan!.revision, {
                             kind: 'move',
@@ -712,7 +730,11 @@ export function PresentationProjectCard(props: {
                       <button
                         type="button"
                         aria-label={`下移计划页 ${index + 1}：${slide.title}`}
-                        disabled={disabled || index === project.plan!.value.slides.length - 1}
+                        disabled={
+                          disabled ||
+                          slide.locked ||
+                          index === project.plan!.value.slides.length - 1
+                        }
                         onClick={() =>
                           void controller.editPlan?.(project.plan!.revision, {
                             kind: 'move',
@@ -726,7 +748,9 @@ export function PresentationProjectCard(props: {
                       <button
                         type="button"
                         aria-label={`删除计划页 ${index + 1}：${slide.title}`}
-                        disabled={disabled || project.plan!.value.slides.length === 1}
+                        disabled={
+                          disabled || slide.locked || project.plan!.value.slides.length === 1
+                        }
                         onClick={() =>
                           void controller.editPlan?.(project.plan!.revision, {
                             kind: 'delete',

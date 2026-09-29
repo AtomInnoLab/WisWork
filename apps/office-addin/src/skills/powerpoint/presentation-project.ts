@@ -127,6 +127,7 @@ export type PresentationPlanEdit =
   | { kind: 'move'; pageId: string; direction: 'up' | 'down' }
   | { kind: 'delete'; pageId: string }
   | { kind: 'restore'; revision: number }
+  | { kind: 'lock'; pageId: string; locked: boolean }
 export interface PresentationProjectController {
   editPlan?(expectedRevision: number, action: PresentationPlanEdit): Promise<void>
   pdfAvailable?(): boolean
@@ -533,6 +534,8 @@ function message(error: unknown): string {
   )
     return '当前 PC 尚不支持此项目操作，请升级 WisWork PC 后重试。'
   if (code === 'presentation_revision_conflict') return '记录已有更新，请重新读取后继续。'
+  if (code === 'presentation_page_locked')
+    return '此操作影响锁定页，请先在工作台明确解除该页锁定后继续。'
   if (code === 'presentation_plan_revision_unavailable')
     return '该历史版本的完整计划不可用，请选择其它版本或保留当前计划。'
   if (code === 'presentation_invalid_plan')
@@ -992,7 +995,13 @@ export function createPresentationProjectController(
       } else {
         const index = plan.slides.findIndex((slide) => slide.id === action.pageId)
         if (index < 0) throw new Error('presentation_plan_page_missing')
-        if (action.kind === 'delete') {
+        if (action.kind === 'lock') {
+          if (typeof action.locked !== 'boolean') throw new Error('presentation_invalid_request')
+          if ((plan.slides[index]!.locked === true) === action.locked) return
+          if (action.locked) plan.slides[index]!.locked = true
+          else delete plan.slides[index]!.locked
+        } else if (plan.slides[index]!.locked) throw new Error('presentation_page_locked')
+        else if (action.kind === 'delete') {
           if (plan.slides.length === 1) throw new Error('presentation_plan_last_page')
           plan.slides.splice(index, 1)
         } else if (action.kind === 'move' && ['up', 'down'].includes(action.direction)) {
@@ -1006,14 +1015,47 @@ export function createPresentationProjectController(
         throw new Error('presentation_document_changed')
       check()
       if (!unchangedPlan) {
-        const result = await options.executeTool(
-          {
-            id: `presentation-plan-edit-${captured}`,
-            name: 'save_presentation_plan',
-            input: { expected_revision: expectedRevision, plan: proposed },
-          },
-          controller.signal,
-        )
+        const result =
+          action.kind === 'lock'
+            ? await (async () => {
+                const response = await options.request(
+                  {
+                    operation: 'set_plan_page_lock',
+                    documentId,
+                    projectId: project.projectId,
+                    expectedRevision,
+                    pageId: action.pageId,
+                    locked: action.locked,
+                  },
+                  controller.signal,
+                )
+                check()
+                if (!response.ok) throw new Error('presentation_service_unavailable')
+                const output = await response.text()
+                if (new TextEncoder().encode(output).byteLength > 512 * 1024)
+                  throw new Error('presentation_response_invalid')
+                const value = JSON.parse(output)
+                if (value.error)
+                  throw new Error(
+                    [
+                      'revision_conflict',
+                      'document_mismatch',
+                      'page_locked',
+                      'invalid_request',
+                    ].includes(value.error)
+                      ? `presentation_${value.error}`
+                      : 'presentation_response_invalid',
+                  )
+                return { output, isError: false }
+              })()
+            : await options.executeTool(
+                {
+                  id: `presentation-plan-edit-${captured}`,
+                  name: 'save_presentation_plan',
+                  input: { expected_revision: expectedRevision, plan: proposed },
+                },
+                controller.signal,
+              )
         check()
         if ((await options.documentId()) !== documentId)
           throw new Error('presentation_document_changed')

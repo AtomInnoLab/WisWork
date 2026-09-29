@@ -71,9 +71,10 @@ export function presentationPageInput(
       .sort()
       .map((assetId) => assets.find((asset) => asset.id === assetId))
     if (pageSources.some((source) => !source) || pageAssets.some((asset) => !asset)) return false
+    const { locked: _locked, ...contentTask } = task
     inputs.set(id, {
       slide,
-      task,
+      task: contentTask,
       claims: pageClaims,
       plannedClaims: pagePlannedClaims,
       sources: pageSources,
@@ -89,4 +90,18 @@ export function presentationPageInput(
     sharedPlan,
     pages: [...inputs].sort(([a], [b]) => a.localeCompare(b)),
   })
+}
+
+/** Plan-only input uses the same claim/source/dependency rules as page reuse. */
+export function presentationPlanPageInput(plan: unknown, pageId: string): string | undefined {
+  if (!object(plan) || !rows(plan.slides) || !rows(plan.claims)) return
+  return presentationPageInput(
+    {
+      slides: plan.slides.map((page) => ({ id: page.id, claimIds: page.claimIds, elements: [] })),
+      claims: plan.claims,
+      assets: [],
+    },
+    { revision: 1, plan },
+    pageId,
+  )
 }

@@ -15,7 +15,7 @@ import {
   type PresentationProductionJobEventInput,
 } from './presentation-job.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { presentationPageInput } from './presentation-page-input.js'
+import { presentationPageInput, presentationPlanPageInput } from './presentation-page-input.js'
 import {
   lstatSync,
   mkdirSync,
@@ -67,6 +67,12 @@ function planDigest(plan: unknown, error = 'invalid_plan'): string {
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) throw new Error(error)
   return jsonDigest(plan, MAX_PLAN_BYTES, error)
 }
+function planTasks(plan: unknown): { id: string; locked?: boolean }[] {
+  const slides = (plan as { slides?: unknown } | undefined)?.slides
+  return Array.isArray(slides)
+    ? slides.filter((page) => page && typeof page === 'object' && typeof page.id === 'string')
+    : []
+}
 export interface PresentationPlanBinding {
   revision: number
   plan: unknown
@@ -76,6 +82,8 @@ export interface PresentationPlanRecord extends PresentationPlanBinding {
   projectId: string
   documentId: string
   inputDigest: string
+  pageLocks?: { pageId: string; productionInputDigest?: string }[]
+  pageLocksDigest?: string
   revisions?: {
     revision: number
     inputDigest: string
@@ -921,6 +929,7 @@ export class PresentationStore {
         throw new Error('request_conflict')
       return previous
     }
+    this.assertLockedPageInputs(projectId, documentId, deck, plan)
     if (records.length >= 32) throw new Error('output_too_large')
     const record: PresentationProductionRecord = {
       version: 1,
@@ -1002,6 +1011,7 @@ export class PresentationStore {
         throw new Error('request_conflict')
       return previous
     }
+    this.assertLockedPageInputs(projectId, documentId, deck, parent.plan, pageId)
     if (!sameUnchangedPages(parent.deck, deck, pageId)) throw new Error('invalid_request')
     if (records.length >= 32) throw new Error('output_too_large')
     const child: PresentationProductionRecord = {
@@ -1117,6 +1127,32 @@ export class PresentationStore {
       record.inputDigest !== planDigest(record.plan, 'invalid_state')
     )
       throw new Error('invalid_state')
+    if (
+      record.pageLocks !== undefined ||
+      record.pageLocksDigest !== undefined ||
+      planTasks(record.plan).some((page) => page.locked === true)
+    ) {
+      const lockedIds = planTasks(record.plan)
+        .filter((page) => page.locked === true)
+        .map((page) => page.id)
+      if (
+        !Array.isArray(record.pageLocks) ||
+        record.pageLocks.length > 32 ||
+        canonical(record.pageLocks.map((entry) => entry?.pageId)) !== canonical(lockedIds) ||
+        record.pageLocks.some(
+          (entry) =>
+            !entry ||
+            Object.keys(entry).sort().join(',') !==
+              (entry.productionInputDigest === undefined
+                ? 'pageId'
+                : 'pageId,productionInputDigest') ||
+            (entry.productionInputDigest !== undefined &&
+              !/^[a-f0-9]{64}$/.test(entry.productionInputDigest)),
+        ) ||
+        record.pageLocksDigest !== jsonDigest(record.pageLocks, MAX_PLAN_BYTES, 'invalid_state')
+      )
+        throw new Error('invalid_state')
+    }
     if (record.revisions !== undefined) {
       if (
         !Array.isArray(record.revisions) ||
@@ -1171,6 +1207,15 @@ export class PresentationStore {
     expectedRevision: number,
     plan: unknown,
   ): PresentationPlanRecord {
+    return this.commitPlan(projectId, documentId, expectedRevision, plan)
+  }
+  private commitPlan(
+    projectId: string,
+    documentId: string,
+    expectedRevision: number,
+    plan: unknown,
+    unlockedPageId?: string,
+  ): PresentationPlanRecord {
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
       throw new Error('invalid_request')
     const inputDigest = planDigest(plan)
@@ -1184,6 +1229,21 @@ export class PresentationStore {
       return previous
     if (expectedRevision !== revision || revision === Number.MAX_SAFE_INTEGER)
       throw new Error('revision_conflict')
+    if (previous) {
+      const before = planTasks(previous.plan)
+      const after = planTasks(plan)
+      for (const [index, page] of before.entries()) {
+        if (page.locked !== true || page.id === unlockedPageId) continue
+        const input = presentationPlanPageInput(previous.plan, page.id)
+        if (
+          !input ||
+          after?.[index]?.id !== page.id ||
+          after[index]?.locked !== true ||
+          input !== presentationPlanPageInput(plan, page.id)
+        )
+          throw new Error('page_locked')
+      }
+    }
     const directory = this.bind(projectId, documentId, true)!
     const legacySnapshot =
       previous && !previous.revisions ? planRevisionSnapshot(previous.plan) : undefined
@@ -1202,6 +1262,7 @@ export class PresentationStore {
         : [])
     const previousTime = history.at(-1)?.createdAt
     const snapshot = planRevisionSnapshot(plan)
+    const pageLocks = this.planLockInputs(projectId, documentId, plan, previous)
     const record: PresentationPlanRecord = {
       version: 1,
       projectId,
@@ -1209,6 +1270,9 @@ export class PresentationStore {
       revision: revision + 1,
       plan,
       inputDigest,
+      ...(pageLocks.length
+        ? { pageLocks, pageLocksDigest: jsonDigest(pageLocks, MAX_PLAN_BYTES, 'invalid_plan') }
+        : {}),
       revisions: [
         ...history,
         {
@@ -1242,6 +1306,37 @@ export class PresentationStore {
       if (match && Number(match[1]) < earliest) rmSync(join(directory, file))
     }
     return record
+  }
+  setPlanPageLock(
+    projectId: string,
+    documentId: string,
+    expectedRevision: number,
+    pageId: string,
+    locked: boolean,
+  ): PresentationPlanRecord {
+    assertPresentationId(pageId)
+    if (
+      !Number.isSafeInteger(expectedRevision) ||
+      expectedRevision < 1 ||
+      typeof locked !== 'boolean'
+    )
+      throw new Error('invalid_request')
+    const current = this.plan(projectId, documentId)
+    if (!current) throw new Error('not_found')
+    if (current.revision !== expectedRevision) throw new Error('revision_conflict')
+    const plan = structuredClone(current.plan) as { slides?: { id: string; locked?: boolean }[] }
+    const page = plan.slides?.find((value) => value.id === pageId)
+    if (!page || !presentationPlanPageInput(plan, pageId)) throw new Error('invalid_request')
+    if ((page.locked === true) === locked) return current
+    if (locked) page.locked = true
+    else delete page.locked
+    return this.commitPlan(
+      projectId,
+      documentId,
+      expectedRevision,
+      plan,
+      locked ? undefined : pageId,
+    )
   }
   planRevision(
     projectId: string,
@@ -1314,6 +1409,7 @@ export class PresentationStore {
         throw new Error('request_conflict')
       return previous
     }
+    this.assertLockedPageInputs(projectId, documentId, deck, planBinding)
     const record: PresentationReceipt = {
       version: 1,
       projectId,
@@ -1327,6 +1423,70 @@ export class PresentationStore {
     }
     this.write(join(directory, `${digest(requestId)}.json`), record)
     return record
+  }
+  private planLockInputs(
+    projectId: string,
+    documentId: string,
+    plan: unknown,
+    previous?: PresentationPlanRecord,
+  ): NonNullable<PresentationPlanRecord['pageLocks']> {
+    const tasks = planTasks(plan)
+    const locked = tasks.filter((page) => page.locked === true)
+    if (!locked.length) return []
+    const candidates = [
+      ...this.productionHistory(projectId, documentId),
+      ...this.history(projectId, documentId).filter((record) => record.plan),
+    ]
+    return locked.map((page) => {
+      const retained = previous?.pageLocks?.find((entry) => entry.pageId === page.id)
+      if (retained) return { ...retained }
+      const expected = presentationPlanPageInput(plan, page.id)
+      if (!expected) throw new Error('page_locked')
+      const baseline = candidates.find(
+        (record) =>
+          record.plan && presentationPlanPageInput(record.plan.plan, page.id) === expected,
+      )
+      const input = baseline && presentationPageInput(baseline.deck, baseline.plan!, page.id)
+      if (baseline && !input) throw new Error('page_locked')
+      return { pageId: page.id, ...(input ? { productionInputDigest: digest(input) } : {}) }
+    })
+  }
+  private assertLockedPageInputs(
+    projectId: string,
+    documentId: string,
+    deck: unknown,
+    binding?: PresentationPlanBinding,
+    rebuildingPageId?: string,
+  ): void {
+    const current = this.plan(projectId, documentId)
+    const tasks = planTasks(current?.plan)
+    const locked = tasks.filter((page) => page.locked === true)
+    if (!locked.length) return
+    if (!binding) throw new Error('page_locked')
+    const pageLocks = this.planLockInputs(projectId, documentId, current!.plan, current)
+    for (const page of locked) {
+      if (page.id === rebuildingPageId) throw new Error('page_locked')
+      const expected = presentationPlanPageInput(current!.plan, page.id)
+      const boundTasks = (binding.plan as { slides?: { id: string }[] }).slides
+      if (
+        !expected ||
+        boundTasks?.[tasks!.findIndex((task) => task.id === page.id)]?.id !== page.id ||
+        presentationPlanPageInput(binding.plan, page.id) !== expected
+      )
+        throw new Error('page_locked')
+      const input = presentationPageInput(deck, binding, page.id)
+      if (!input) throw new Error('page_locked')
+      const lock = pageLocks.find((entry) => entry.pageId === page.id)!
+      if (lock.productionInputDigest !== undefined && lock.productionInputDigest !== digest(input))
+        throw new Error('page_locked')
+      lock.productionInputDigest = digest(input)
+    }
+    if (canonical(current!.pageLocks ?? []) !== canonical(pageLocks))
+      this.write(join(this.directory(projectId), 'plan.json'), {
+        ...current,
+        pageLocks,
+        pageLocksDigest: jsonDigest(pageLocks, MAX_PLAN_BYTES, 'invalid_state'),
+      })
   }
   complete(record: PresentationReceipt, result: unknown): void {
     const existing = this.begin(

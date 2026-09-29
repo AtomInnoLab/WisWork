@@ -542,6 +542,7 @@ export function createPresentationProductionSkill(
                 'document_mismatch',
                 'request_conflict',
                 'plan_mismatch',
+                'page_locked',
                 'revision_conflict',
                 'invalid_deck',
                 'aborted',
@@ -888,25 +889,27 @@ export function createPresentationProductionSkill(
           isError: true,
           mutated: false,
           summary:
-            code === 'presentation_session_storage_full'
-              ? '会话附件空间不足；PC 已编译页面仍保留。请下载所需文件后开启新会话，再读取页面成果。'
-              : code === 'presentation_evidence_read_required'
-                ? '请先在当前会话读取同一主张和来源的证据窗口，再记录复核'
-                : code === 'presentation_evidence_changed'
-                  ? '证据已变化，请重新读取后复核；本次未保存复核记录'
-                  : code === 'presentation_evidence_excerpt_not_found'
-                    ? '当前证据窗口没有计划引用的原文摘录；请调整读取范围后再记录“支持”'
-                    : code === 'presentation_evidence_locator_mismatch'
-                      ? '当前证据的页码或段落与计划不一致；请核对来源定位后再记录“支持”'
-                      : code === 'presentation_evidence_source_unsupported'
-                        ? '当前证据读取仅支持已上传附件来源；此来源不能通过本工具读取'
-                        : code === 'presentation_evidence_source_mismatch'
-                          ? '计划来源网址与网页快照的实际抓取网址不一致；请核对来源后重新读取证据'
-                          : code === 'presentation_page_replacement_required'
-                            ? '当前修订尚无已提交页面映射，不能整批追加导入；请先完成页面替换'
-                            : code === 'presentation_upgrade_required'
-                              ? '当前 PC 尚不支持页级生产，请升级 WisWork PC 后重试'
-                              : '页级生产操作未完成；已保存成果保留，可刷新查看',
+            code === 'presentation_page_locked'
+              ? '此生产操作影响锁定页，请先在工作台明确解除锁定后继续；已有成果保留。'
+              : code === 'presentation_session_storage_full'
+                ? '会话附件空间不足；PC 已编译页面仍保留。请下载所需文件后开启新会话，再读取页面成果。'
+                : code === 'presentation_evidence_read_required'
+                  ? '请先在当前会话读取同一主张和来源的证据窗口，再记录复核'
+                  : code === 'presentation_evidence_changed'
+                    ? '证据已变化，请重新读取后复核；本次未保存复核记录'
+                    : code === 'presentation_evidence_excerpt_not_found'
+                      ? '当前证据窗口没有计划引用的原文摘录；请调整读取范围后再记录“支持”'
+                      : code === 'presentation_evidence_locator_mismatch'
+                        ? '当前证据的页码或段落与计划不一致；请核对来源定位后再记录“支持”'
+                        : code === 'presentation_evidence_source_unsupported'
+                          ? '当前证据读取仅支持已上传附件来源；此来源不能通过本工具读取'
+                          : code === 'presentation_evidence_source_mismatch'
+                            ? '计划来源网址与网页快照的实际抓取网址不一致；请核对来源后重新读取证据'
+                            : code === 'presentation_page_replacement_required'
+                              ? '当前修订尚无已提交页面映射，不能整批追加导入；请先完成页面替换'
+                              : code === 'presentation_upgrade_required'
+                                ? '当前 PC 尚不支持页级生产，请升级 WisWork PC 后重试'
+                                : '页级生产操作未完成；已保存成果保留，可刷新查看',
         }
       }
     },

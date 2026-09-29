@@ -57,6 +57,83 @@ function setup() {
   return { root, store, original, parent: record }
 }
 describe('compiled page reuse after plan revisions', () => {
+  it('retains compiled pages when locking and prevents changed production, compile, or rebuild inputs', () => {
+    const f = setup()
+    f.store.savePlan('project', 'doc', 0, f.original.binding.plan)
+    const locked = f.store.setPlanPageLock('project', 'doc', 1, 'b', true)
+    expect(locked.pageLocks?.[0]?.productionInputDigest).toMatch(/^[a-f0-9]{64}$/)
+    const binding = { revision: locked.revision, plan: locked.plan }
+    const reused = f.store.beginProduction(
+      'project',
+      'doc',
+      'locked',
+      f.original.deck,
+      binding,
+      true,
+    )
+    expect(reused.pages.every((page) => page.state === 'compiled')).toBe(true)
+    const changed = structuredClone(f.original.deck)
+    changed.slides[1]!.title += ' changed'
+    expect(() =>
+      f.store.beginProduction('project', 'doc', 'changed', changed, binding, true),
+    ).toThrow('page_locked')
+    expect(() => f.store.begin('project', 'doc', 'compile-changed', changed, binding)).toThrow(
+      'page_locked',
+    )
+    expect(() => f.store.begin('project', 'doc', 'unplanned', changed)).toThrow('page_locked')
+    expect(() =>
+      f.store.deriveProduction('project', 'doc', 'parent', 'rebuild-locked', 'b', f.original.deck),
+    ).toThrow('page_locked')
+    expect(f.store.production('project', 'doc', 'changed')).toBeUndefined()
+  })
+  it('pins the first reserved production input when a page is locked before production', () => {
+    const f = setup()
+    const plan = structuredClone(f.original.binding.plan)
+    plan.slides[1]!.title = 'new plan'
+    f.store.savePlan('project', 'doc', 0, plan)
+    const locked = f.store.setPlanPageLock('project', 'doc', 1, 'b', true)
+    expect(locked.pageLocks?.[0]?.productionInputDigest).toBeUndefined()
+    const binding = { revision: 2, plan: locked.plan }
+    const deck = structuredClone(f.original.deck)
+    deck.slides[1]!.title = 'new plan'
+    f.store.beginProduction('project', 'doc', 'first-reservation', deck, binding)
+    const reopened = new PresentationStore(f.root)
+    expect(reopened.plan('project', 'doc')?.pageLocks?.[0]?.productionInputDigest).toMatch(
+      /^[a-f0-9]{64}$/,
+    )
+    deck.slides[1]!.elements.push({ kind: 'image', assetId: 'changed' })
+    expect(() =>
+      reopened.beginProduction('project', 'doc', 'changed-reservation', deck, binding),
+    ).toThrow('page_locked')
+  })
+  it('prevents rebuilding an unlocked predecessor that would invalidate a locked dependent page', () => {
+    const f = setup()
+    const dependent = structuredClone(f.original)
+    dependent.binding.revision = 2
+    dependent.binding.plan.slides[1]!.dependsOn = ['a']
+    let record = f.store.beginProduction(
+      'project',
+      'doc',
+      'dependent',
+      dependent.deck,
+      dependent.binding,
+    )
+    for (const page of record.pages) {
+      record = f.store.updateProductionPage(record, page.pageId, { state: 'building', attempt: 1 })
+      record = f.store.updateProductionPage(record, page.pageId, {
+        state: 'compiled',
+        attempt: 1,
+        result: f.parent.pages.find((original) => original.pageId === page.pageId)!.result!,
+      })
+    }
+    f.store.savePlan('project', 'doc', 0, dependent.binding.plan)
+    f.store.setPlanPageLock('project', 'doc', 1, 'b', true)
+    const changed = structuredClone(dependent.deck)
+    changed.slides[0]!.title += ' changed'
+    expect(() =>
+      f.store.deriveProduction('project', 'doc', 'dependent', 'indirect', 'a', changed),
+    ).toThrow('page_locked')
+  })
   it('keeps compiled inputs unchanged when only the production concurrency changes', () => {
     const original = input()
     const changed = structuredClone(original)

@@ -294,6 +294,7 @@ export function createPresentationGenerationSkill(
             'invalid_plan',
             'revision_conflict',
             'plan_mismatch',
+            'page_locked',
             'invalid_deck',
             'invalid_state',
             'document_mismatch',
@@ -442,19 +443,21 @@ export function createPresentationGenerationSkill(
           isError: true,
           mutated: false,
           summary:
-            code === 'presentation_session_storage_full'
-              ? '会话附件空间不足；PC 成果仍保留。请下载所需文件后开启新会话，并从项目恢复。'
-              : code === 'presentation_assets_unavailable'
-                ? '请更新并连接支持图片素材的 PC 端后重试'
-                : code === 'presentation_source_unavailable'
-                  ? '引用的来源附件不可读取，或计划摘录未出现在附件原文中；请补齐资料，或修订计划摘录后重新编译。'
-                  : code === 'presentation_font_unavailable'
-                    ? '指定字体及候选回退字体在本机均不可用；请在样式中选择已安装字体并修订计划后重试。'
-                    : call.name === 'export_presentation_pdf'
-                      ? code === 'presentation_pdf_unavailable'
-                        ? '当前 PC 尚不支持 PDF 导出，请更新后重试'
-                        : 'PDF 导出未完成，请检查本机 LibreOffice 或稍后重试'
-                      : 'PPT 生成未完成，已有成果已保留',
+            code === 'presentation_page_locked'
+              ? '此编译操作影响锁定页，请先在工作台明确解除锁定后继续；已有成果保留。'
+              : code === 'presentation_session_storage_full'
+                ? '会话附件空间不足；PC 成果仍保留。请下载所需文件后开启新会话，并从项目恢复。'
+                : code === 'presentation_assets_unavailable'
+                  ? '请更新并连接支持图片素材的 PC 端后重试'
+                  : code === 'presentation_source_unavailable'
+                    ? '引用的来源附件不可读取，或计划摘录未出现在附件原文中；请补齐资料，或修订计划摘录后重新编译。'
+                    : code === 'presentation_font_unavailable'
+                      ? '指定字体及候选回退字体在本机均不可用；请在样式中选择已安装字体并修订计划后重试。'
+                      : call.name === 'export_presentation_pdf'
+                        ? code === 'presentation_pdf_unavailable'
+                          ? '当前 PC 尚不支持 PDF 导出，请更新后重试'
+                          : 'PDF 导出未完成，请检查本机 LibreOffice 或稍后重试'
+                        : 'PPT 生成未完成，已有成果已保留',
         }
       }
     },

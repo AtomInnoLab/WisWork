@@ -52,6 +52,7 @@ const errorCodes = new Set([
   'plan_mismatch',
   'revision_conflict',
   'plan_revision_unavailable',
+  'page_locked',
   'invalid_deck',
   'invalid_state',
   'asset_unavailable',
@@ -393,6 +394,7 @@ export function createPresentationService(options: {
           'status',
           'resume',
           'save_plan',
+          'set_plan_page_lock',
           'get_plan',
           'audit_sources',
           'production_begin',
@@ -476,11 +478,26 @@ export function createPresentationService(options: {
                             ]
                           : request.operation === 'resume'
                             ? ['operation', 'documentId', 'projectId', 'requestId']
-                            : request.operation === 'save_plan'
-                              ? ['operation', 'documentId', 'projectId', 'expectedRevision', 'plan']
-                              : request.operation === 'get_plan'
-                                ? ['operation', 'documentId', 'projectId', 'revision']
-                                : ['operation', 'documentId', 'projectId']
+                            : request.operation === 'set_plan_page_lock'
+                              ? [
+                                  'operation',
+                                  'documentId',
+                                  'projectId',
+                                  'expectedRevision',
+                                  'pageId',
+                                  'locked',
+                                ]
+                              : request.operation === 'save_plan'
+                                ? [
+                                    'operation',
+                                    'documentId',
+                                    'projectId',
+                                    'expectedRevision',
+                                    'plan',
+                                  ]
+                                : request.operation === 'get_plan'
+                                  ? ['operation', 'documentId', 'projectId', 'revision']
+                                  : ['operation', 'documentId', 'projectId']
       const requiredKeys = allowedKeys.filter(
         (key) =>
           !(request.operation === 'compile' && ['projectId', 'planRevision'].includes(key)) &&
@@ -658,6 +675,20 @@ export function createPresentationService(options: {
           return boundedResponse(
             await handlePresentationProduction(request, { store, compile, attachments }, signal),
           )
+        if (request.operation === 'set_plan_page_lock') {
+          const record = store.setPlanPageLock(
+            projectId,
+            documentId,
+            request.expectedRevision as number,
+            request.pageId as string,
+            request.locked as boolean,
+          )
+          return boundedResponse({
+            projectId,
+            revision: record.revision,
+            plan: parsePresentationPlan(record.plan),
+          })
+        }
         if (request.operation === 'save_plan' || request.operation === 'get_plan') {
           if (request.operation === 'save_plan') {
             const previousPlan = store.plan(projectId, documentId)
