@@ -1,4 +1,5 @@
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from './presentation-source-limits'
+import { parsePresentationProfessionalContext } from '@wiswork/project-store/presentation-professional-context'
 import {
   presentationSourceAttachmentId,
   PRESENTATION_PLAN_SCHEMA,
@@ -186,6 +187,8 @@ function validateResearchContext(evidence: PresentationClaimEvidence) {
     fail()
   const record = parsePresentationResearchRecord(context.record),
     binding = context.binding
+  if (Object.hasOwn(claim, 'professionalContext'))
+    parsePresentationProfessionalContext(claim.professionalContext)
   if (
     record.state !== 'completed' ||
     record.documentId !== evidence.documentId ||
@@ -244,8 +247,12 @@ function validateResearchContext(evidence: PresentationClaimEvidence) {
   if (mapping) {
     const fact = record.draft.facts.find((f) => f.claimId === mapping.researchClaimId)!
     if (
-      canonical(pick(claim, ['statement', 'type', 'asOf', 'jurisdiction'])) !==
-        canonical(pick(fact, ['statement', 'type', 'asOf', 'jurisdiction'])) ||
+      canonical(
+        pick(claim, ['statement', 'type', 'asOf', 'jurisdiction', 'professionalContext']),
+      ) !==
+        canonical(
+          pick(fact, ['statement', 'type', 'asOf', 'jurisdiction', 'professionalContext']),
+        ) ||
       canonical(
         claim.calculation
           ? pick(claim.calculation, ['formula', 'inputs', 'unit', 'currency'])
@@ -284,7 +291,42 @@ export function parsePresentationClaimEvidence(value: unknown): PresentationClai
   const report = value as PresentationClaimEvidence
   const { attachment, source } = report
   if (report.research !== undefined) validateResearchContext(report)
-  else if (
+  else if (report.claim?.professionalContext !== undefined) {
+    const claim = report.claim
+    if (
+      !valid(claim, PRESENTATION_PLAN_SCHEMA.properties!.claims!.items!) ||
+      typeof report.documentId !== 'string' ||
+      !report.documentId.trim() ||
+      report.documentId.length > 4096 ||
+      claim.id !== report.claimId ||
+      claim.statement !== report.statement ||
+      !claim.sourceIds.includes(source.id) ||
+      new Set(claim.sourceIds).size !== claim.sourceIds.length ||
+      (claim.type === 'calculation' && !claim.calculation) ||
+      Object.hasOwn(report, 'research') ||
+      (source.asOf !== undefined && !valid(source.asOf, text(100, 1)))
+    )
+      reject()
+    parsePresentationProfessionalContext(claim.professionalContext)
+    const reproduction = claim.calculation?.reproduction
+    if (
+      reproduction &&
+      (claim.type !== 'calculation' ||
+        reproduction.bindings.length !== claim.calculation!.inputs.length ||
+        new Set(reproduction.bindings.map((binding) => binding.name)).size !==
+          reproduction.bindings.length ||
+        new Set(reproduction.bindings.map((binding) => binding.inputIndex)).size !==
+          reproduction.bindings.length ||
+        reproduction.bindings.some(
+          (binding) =>
+            !Number.isInteger(binding.inputIndex) ||
+            binding.inputIndex >= claim.calculation!.inputs.length ||
+            ['prototype', 'constructor', '__proto__'].includes(binding.name) ||
+            !claim.sourceIds.includes(binding.sourceId),
+        ))
+    )
+      reject()
+  } else if (
     Object.hasOwn(report, 'research') ||
     Object.hasOwn(report, 'documentId') ||
     Object.hasOwn(report, 'claim') ||

@@ -1,4 +1,8 @@
 import { useState } from 'react'
+import {
+  presentationProfessionalContextMissingFields,
+  type PresentationProfessionalContext,
+} from '@wiswork/project-store/presentation-professional-context'
 import type {
   PresentationDeliveryReport,
   DeliveryIssue,
@@ -186,6 +190,87 @@ function SourceAssessmentHistory({
     </>
   )
 }
+const professionalReasons: Record<string, string> = {
+  professional_context_incomplete: '专业上下文尚有缺失',
+  professional_source_secondary: '专业结论来源为二手或未核验资料',
+  professional_legal_rule_inactive: '法律材料不在明确适用日期范围内',
+  professional_jurisdiction_mismatch: '通用与专业适用范围不同',
+  professional_financial_time_mixed: '通用与专业数据时点不同',
+  professional_financial_unit_mismatch: '计算与专业上下文单位不同',
+  professional_financial_currency_mismatch: '计算与专业上下文币种不同',
+}
+const professionalLabels: Record<string, string> = {
+  materialKind: '材料类型',
+  publicationId: '出版或发布标识',
+  version: '版本',
+  sample: '样本',
+  method: '方法',
+  statisticalBasis: '统计依据',
+  limitations: '局限',
+  jurisdiction: '适用范围',
+  effectLevel: '效力层级',
+  effectiveFrom: '生效日期',
+  effectiveUntil: '失效日期',
+  applicabilityDate: '适用日期',
+  caseNumber: '案号',
+  originalLocation: '原文位置',
+  reportingPeriod: '报告期间',
+  asOf: '数据时点',
+  currency: '币种',
+  unit: '单位',
+  accountingBasis: '会计口径',
+  formula: '公式',
+}
+const professionalKinds: Record<string, string> = {
+  paper: '论文',
+  dataset: '数据集',
+  standard: '标准',
+  institution: '机构资料',
+  statute: '法律条文',
+  case: '判例',
+  regulation: '法规',
+  contract: '合同',
+  disclosure: '披露资料',
+  financial_statement: '财务报表',
+  ir: '投资者关系资料',
+  market_data: '市场数据',
+}
+function ProfessionalContext({
+  context,
+  claimId,
+  claimType,
+}: {
+  context?: PresentationProfessionalContext
+  claimId: string
+  claimType?: string
+}) {
+  if (!context) return null
+  const missing = presentationProfessionalContextMissingFields(context, claimType)
+  return (
+    <details aria-label={`专业上下文 ${claimId}`}>
+      <summary>
+        专业上下文 · {claimId} · {{ science: '科研', law: '法律', finance: '金融' }[context.domain]}
+      </summary>
+      <p>
+        保留原专业限定，不补猜缺失值。完整字段仍不代表事实支持、权威认证或时效核验；说明与暂缓不会关闭问题。
+      </p>
+      {context.domain === 'law' && <p>未提供失效日期时，不据此推断法律材料仍然有效。</p>}
+      {Object.entries(context)
+        .filter(([field]) => field !== 'domain')
+        .map(([field, value]) => (
+          <p key={field}>
+            {professionalLabels[field]}：
+            {field === 'materialKind' ? professionalKinds[value] : value}
+          </p>
+        ))}
+      <p>
+        {missing.length
+          ? `专业字段缺失：${missing.map((field) => professionalLabels[field]).join('、')}`
+          : '未发现必要专业字段缺失，仍需人工核对。'}
+      </p>
+    </details>
+  )
+}
 function ResearchIssueContext({
   issue,
   report,
@@ -245,6 +330,11 @@ function ResearchIssueContext({
           </p>
           <p>原研究来源：{fact.sourceRefs.join('、') || '未提供'}</p>
           {fact.asOf && <p>数据时点：{fact.asOf}</p>}
+          <ProfessionalContext
+            context={fact.professionalContext}
+            claimId={fact.claimId}
+            claimType={fact.type}
+          />
           {fact.jurisdiction && <p>适用范围：{fact.jurisdiction}</p>}
           {fact.calculation && (
             <p>
@@ -311,7 +401,8 @@ function IssueList({
                   ? '网页快照与计划网址不匹配'
                   : issue.code === 'source_locator_mismatch'
                     ? '计划定位与原文实际位置不匹配'
-                    : (sourceAssessmentReasons[issue.code] ??
+                    : (professionalReasons[issue.code] ??
+                      sourceAssessmentReasons[issue.code] ??
                       researchReasons[issue.code] ??
                       issue.code)}{' '}
               · 主张 {issue.claimId}：
@@ -444,6 +535,11 @@ export function PresentationDeliveryReportCard({
                     </p>
                   )}
                   {fact.asOf && <p>数据时点：{fact.asOf}</p>}
+                  <ProfessionalContext
+                    context={fact.professionalContext}
+                    claimId={fact.claimId}
+                    claimType={fact.type}
+                  />
                   {fact.jurisdiction && <p>适用范围：{fact.jurisdiction}</p>}
                   {fact.calculation && (
                     <p>
@@ -522,6 +618,19 @@ export function PresentationDeliveryReportCard({
               />
             )
           })}
+          {report.plan.slides
+            ?.find((slide) => slide.id === page.pageId)
+            ?.claimIds.map((claimId) => {
+              const claim = report.plan.claims.find((claim) => claim.id === claimId)
+              return (
+                <ProfessionalContext
+                  key={claimId}
+                  context={claim?.professionalContext}
+                  claimId={claimId}
+                  claimType={claim?.type}
+                />
+              )
+            })}
           <SourceAssessmentHistory report={report} pageId={page.pageId} />
         </section>
       ))}

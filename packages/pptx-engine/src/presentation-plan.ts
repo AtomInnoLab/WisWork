@@ -1,5 +1,10 @@
 import type { PresentationClaim, PresentationDeck, PresentationStyle } from './presentation'
 import {
+  PROFESSIONAL_CONTEXT_SCHEMA,
+  parsePresentationProfessionalContext,
+  type PresentationProfessionalContext,
+} from '@wiswork/project-store/presentation-professional-context'
+import {
   PRESENTATION_DECK_SCHEMA,
   PRESENTATION_HEIGHT,
   PRESENTATION_TEXT_BUDGET,
@@ -106,6 +111,7 @@ export interface PresentationPlan {
     reviewStatus: 'needs_review'
     asOf?: string
     jurisdiction?: string
+    professionalContext?: PresentationProfessionalContext
     calculation?: {
       formula: string
       inputs: string[]
@@ -203,6 +209,7 @@ export const PRESENTATION_PLAN_SCHEMA: Schema = object(
           reviewStatus: choice('needs_review'),
           asOf: text(100, 1),
           jurisdiction: text(300, 1),
+          professionalContext: PROFESSIONAL_CONTEXT_SCHEMA as Schema,
           calculation: object(
             {
               formula: text(2000, 1),
@@ -333,6 +340,15 @@ export function presentationSourceAttachmentId(
 export function parsePresentationPlan(input: unknown): PresentationPlan {
   if (!valid(input, PRESENTATION_PLAN_SCHEMA)) reject('schema')
   const plan = input as PresentationPlan
+  for (const claim of plan.claims) {
+    if (Object.hasOwn(claim, 'professionalContext')) {
+      try {
+        parsePresentationProfessionalContext(claim.professionalContext)
+      } catch {
+        reject('professional_context')
+      }
+    }
+  }
   if (
     plan.style.fontFallbacks &&
     new Set([plan.style.fontFace, ...plan.style.fontFallbacks]).size !==

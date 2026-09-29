@@ -39,6 +39,33 @@ it('parses a report and checks UTF16 literal offsets', () => {
   })
   expect(matchPresentationClaimExcerpt(' \n', '原文', 0)).toEqual({ status: 'empty_excerpt' })
 })
+it('accepts unbound professional full claim and rejects partial omissions and malformed context', () => {
+  const claim = {
+    id: 'claim',
+    statement: 'claim',
+    type: 'fact',
+    sourceIds: ['source'],
+    confidence: 'high',
+    reviewStatus: 'needs_review',
+    professionalContext: { domain: 'science' },
+  }
+  const value = {
+    ...report(),
+    documentId: 'doc',
+    claim,
+    source: { ...report().source, asOf: 'Declared date' },
+  }
+  expect(parsePresentationClaimEvidence(value)).toEqual(value)
+  for (const patch of [
+    { documentId: undefined },
+    { claim: { ...claim, professionalContext: undefined } },
+    { claim: { ...claim, professionalContext: { domain: 'science', currency: 'USD' } } },
+    { claim: { ...claim, professionalContext: { domain: 'law', effectiveFrom: '2026-02-30' } } },
+  ]) {
+    expect(() => parsePresentationClaimEvidence({ ...value, ...patch })).toThrow()
+  }
+  expect(parsePresentationClaimEvidence(report())).toEqual(report())
+})
 it('binds a repeated excerpt to the preferred indexed page and rejects forged locators', () => {
   const value = {
     ...report(),

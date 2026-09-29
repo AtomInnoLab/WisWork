@@ -1,4 +1,5 @@
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from './presentation-source-limits'
+import { presentationProfessionalContextMissingFields } from '@wiswork/project-store/presentation-professional-context'
 import { canonicalPresentationValue } from '@wiswork/project-store/presentation-canonical'
 import {
   parsePresentationResearchRecord,
@@ -155,6 +156,7 @@ function seeds(
     const add = (code: string, sourceId?: string): void => {
       const unverifiable = [
         'claim_no_sources',
+        'professional_context_incomplete',
         'source_excerpt_missing',
         'source_excerpt_not_in_attachment',
         'source_attachment_missing',
@@ -186,6 +188,49 @@ function seeds(
       })
     }
     if (missing.has(claimId)) add('claim_text_not_found')
+    const professional = claim.professionalContext
+    if (professional) {
+      if (presentationProfessionalContextMissingFields(professional, claim.type).length)
+        add('professional_context_incomplete')
+      const mapping = report.plan.research?.claims.find((item) => item.claimId === claimId)
+      const original = report.research?.record.draft.facts.find(
+        (fact) => fact.claimId === mapping?.researchClaimId,
+      )
+      if (original && ['secondary', 'unverified'].includes(original.sourceTier))
+        add('professional_source_secondary')
+      if (professional.domain === 'law') {
+        if (
+          professional.applicabilityDate &&
+          ((professional.effectiveFrom &&
+            professional.applicabilityDate < professional.effectiveFrom) ||
+            (professional.effectiveUntil &&
+              professional.applicabilityDate > professional.effectiveUntil))
+        )
+          add('professional_legal_rule_inactive')
+        if (
+          claim.jurisdiction &&
+          professional.jurisdiction &&
+          claim.jurisdiction !== professional.jurisdiction
+        )
+          add('professional_jurisdiction_mismatch')
+      }
+      if (professional.domain === 'finance') {
+        if (claim.asOf && professional.asOf && claim.asOf !== professional.asOf)
+          add('professional_financial_time_mixed')
+        if (
+          claim.calculation?.unit &&
+          professional.unit &&
+          claim.calculation.unit !== professional.unit
+        )
+          add('professional_financial_unit_mismatch')
+        if (
+          claim.calculation?.currency &&
+          professional.currency &&
+          claim.calculation.currency !== professional.currency
+        )
+          add('professional_financial_currency_mismatch')
+      }
+    }
     if (!claim.sourceIds.length) add('claim_no_sources')
     for (const sourceId of claim.sourceIds) {
       const source = report.plan.sources.find((item) => item.id === sourceId)!
@@ -487,7 +532,11 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
       !['pending', 'building', 'compiled', 'failed'].includes(page.productionState) ||
       !Array.isArray(page.issues) ||
       page.issues.length >
-        (plan.research || report.reviews.some((review) => review.sourceAssessment) ? 1056 : 608)
+        (plan.claims.some((claim) => claim.professionalContext)
+          ? 1280
+          : plan.research || report.reviews.some((review) => review.sourceAssessment)
+            ? 1056
+            : 608)
     )
       invalid()
     const calculations = slide.claimIds
@@ -620,6 +669,17 @@ export async function buildPresentationDeliveryReport(
           ? { sourceAudit: report.sourceAudit.find((item) => item.sourceId === seed.sourceId) }
           : {}),
         relevantReviews,
+        ...(seed.code.startsWith('professional_')
+          ? {
+              professionalClaim: plan.claims.find((claim) => claim.id === seed.claimId),
+              professionalOriginal: report.research?.record.draft.facts.find(
+                (fact) =>
+                  fact.claimId ===
+                  plan.research?.claims.find((mapping) => mapping.claimId === seed.claimId)
+                    ?.researchClaimId,
+              ),
+            }
+          : {}),
         ...(sourceAssessmentIssue
           ? {
               sourceAssessmentContext: {
@@ -793,6 +853,10 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
     '## All source review history',
   )
   for (const review of report.reviews) lines.push(`- ${safe(JSON.stringify(review))}`)
+  for (const claim of report.plan.claims.filter((claim) => claim.professionalContext))
+    lines.push(
+      `Professional context ${safe(claim.id)}: ${safe(JSON.stringify(claim.professionalContext))}; missing fields: ${safe(JSON.stringify(presentationProfessionalContextMissingFields(claim.professionalContext!, claim.type)))}. This context does not certify truth, legal applicability or financial calculations.`,
+    )
   if (report.reviews.some((review) => review.sourceAssessment))
     lines.push(
       '',

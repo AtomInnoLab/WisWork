@@ -1,3 +1,4 @@
+import { presentationProfessionalContextMissingFields } from '@wiswork/project-store/presentation-professional-context'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import {
   PRESENTATION_RESEARCH_DRAFT_SCHEMA,
@@ -72,6 +73,16 @@ export function presentationResearchMarkdown(record: PresentationResearchRecord)
         `输入：${fact.calculation.inputs.map(safeText).join('、')}`,
         `单位/币种：${safeText(fact.calculation.unit ?? '未声明')} / ${safeText(fact.calculation.currency ?? '未声明')}`,
       )
+    if (fact.professionalContext) {
+      lines.push('专业上下文（原始声明，不代表专业认证或适用性结论）：')
+      for (const [key, value] of Object.entries(fact.professionalContext))
+        lines.push(`${key}：${safeText(value)}`)
+      const missing = presentationProfessionalContextMissingFields(
+        fact.professionalContext,
+        fact.type,
+      )
+      lines.push(`专业字段缺口：${missing.join('、') || '无缺字段；完整仍不代表认证'}`)
+    }
     if (fact.conflictsWith.length)
       for (const otherId of fact.conflictsWith) {
         const other = draft.facts.find((f) => f.claimId === otherId)!
@@ -228,7 +239,7 @@ export function createPresentationResearchSkill(options: Options): AgentSkill & 
     name,
     description:
       name === names[0]
-        ? 'Persist a structured pre-plan research ledger from originals already read with attachment/web tools. Preserve fact/quote/calculation/judgment/assumption, source IDs, proposed slide IDs and both sides of conflicts. Source tier/confidence are declarations, not verification. PC checks uploaded original excerpts, not search snippets. No saved plan or production required. Same ledger ID only for identical retries; failures and interrupted starts remain historical, use a new ID for a new attempt.'
+        ? 'Persist a structured pre-plan research ledger from originals already read with attachment/web tools. Preserve fact/quote/calculation/judgment/assumption, source IDs, proposed slide IDs and both sides of conflicts. Source tier/confidence are declarations, not verification. PC checks uploaded original excerpts, not search snippets. Prefer original papers, official datasets, academic and standards bodies for science; official statutes, judicial cases, regulators and formal contracts for law; regulatory or exchange filings, audited statements, company IR and authoritative market data for finance. Accept user-provided materials without pretending these preferences or declared materialKind/sourceTier certify them. Optional professionalContext preserves science identifiers/version/sample/method/statisticalBasis/limitations; law jurisdiction/effectLevel/effective dates/applicability/caseNumber/originalLocation/limitations; finance reportingPeriod/asOf/currency/unit/accountingBasis/formula/limitations. Copy declared context from originals; never guess missing values or infer validity from an absent expiry. Preserve generic labels separately even if they disagree. Partial context is permitted and remains incomplete, not professionally authenticated. No saved plan or production required. Same ledger ID only for identical retries; failures and interrupted starts remain historical, use a new ID for a new attempt.'
         : 'Read/list independent historical research or export its complete JSON and readable Markdown to session attachments. Records do not verify factual support, source authority or timeliness; completed means the organizing operation ended.',
     inputSchema: {
       type: 'object',

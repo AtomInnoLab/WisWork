@@ -524,3 +524,201 @@ it('shows every scoped historical source assessment and Chinese source issue rea
     container.remove()
   }
 })
+
+it('shows frozen page professional context, missing fields and original research context with isolated actions', async () => {
+  const reasons = {
+    professional_context_incomplete: '专业上下文尚有缺失',
+    professional_source_secondary: '专业结论来源为二手或未核验资料',
+    professional_legal_rule_inactive: '法律材料不在明确适用日期范围内',
+    professional_jurisdiction_mismatch: '通用与专业适用范围不同',
+    professional_financial_time_mixed: '通用与专业数据时点不同',
+    professional_financial_unit_mismatch: '计算与专业上下文单位不同',
+    professional_financial_currency_mismatch: '计算与专业上下文币种不同',
+  }
+  const contexts = [
+    {
+      domain: 'science',
+      materialKind: 'paper',
+      publicationId: 'DOI:original',
+      version: 'v1',
+      sample: '样本100',
+      method: '随机分组',
+      statisticalBasis: '95%区间',
+      limitations: '仅覆盖样本',
+    },
+    {
+      domain: 'law',
+      materialKind: 'case',
+      jurisdiction: '中国大陆',
+      effectLevel: '参考裁判',
+      effectiveFrom: '2020-01-01',
+      effectiveUntil: '2025-12-31',
+      applicabilityDate: '2026-09-29',
+      caseNumber: '原案号',
+      originalLocation: '原裁判第3段',
+      limitations: '仅限原案情',
+    },
+    {
+      domain: 'finance',
+      materialKind: 'financial_statement',
+      reportingPeriod: '2025年度',
+      asOf: '2025-12-31',
+      currency: 'CNY',
+      unit: '万元',
+      accountingBasis: '原会计准则',
+      formula: 'a+b',
+      limitations: '未审计',
+    },
+    { domain: 'science' },
+  ]
+  const { researchRecord } = await import('./presentation-research-fixture.js')
+  const record = researchRecord()
+  const claims = contexts.map((professionalContext, index) => ({
+    id: `claim-${index}`,
+    type: index === 2 ? 'calculation' : 'fact',
+    statement: `原主张${index}`,
+    professionalContext,
+  }))
+  const issues = Object.keys(reasons).map((code, index) => ({
+    id: `professional-${index}`,
+    code,
+    claimId: 'claim-0',
+    digest: 'c'.repeat(64),
+    category: 'needs_human',
+    disposition: { state: 'open', stale: false },
+  }))
+  const report = {
+    requestId: 'professional-task',
+    planRevision: 1,
+    plan: {
+      sources: [],
+      claims,
+      slides: [
+        { id: 'page-a', claimIds: claims.map((c) => c.id) },
+        { id: 'page-b', claimIds: ['claim-1'] },
+      ],
+    },
+    pages: [
+      { pageId: 'page-a', title: '专业页', productionState: 'compiled', calculations: [], issues },
+      {
+        pageId: 'page-b',
+        title: '法律页',
+        productionState: 'compiled',
+        calculations: [],
+        issues: [{ ...issues[0], id: 'other-professional' }],
+      },
+    ],
+    reviews: [],
+    sourceAudit: [],
+    issueLedger: { revision: 0, actions: [] },
+    research: {
+      record: {
+        ...record,
+        draft: {
+          ...record.draft,
+          facts: record.draft.facts.map((fact) => ({ ...fact, professionalContext: contexts[0] })),
+        },
+      },
+      findings: [],
+    },
+  } as unknown as PresentationDeliveryReport
+  const recordIssueAction = vi.fn()
+  const controller = { recordIssueAction } as unknown as PresentationProjectController
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+  const render = async (value = report) =>
+    act(async () =>
+      root.render(
+        React.createElement(PresentationDeliveryReportCard, {
+          report: value,
+          controller,
+          disabled: false,
+        }),
+      ),
+    )
+  try {
+    await render()
+    for (const reason of Object.values(reasons)) expect(container.textContent).toContain(reason)
+    const page = container.querySelector('[aria-label="证据页面 专业页"]')!
+    const details = page.querySelectorAll('details[aria-label^="专业上下文"]')
+    expect(details).toHaveLength(4)
+    for (const detail of Array.from(details))
+      expect((detail as HTMLDetailsElement).open).toBe(false)
+    for (const text of [
+      '科研',
+      '法律',
+      '金融',
+      'DOI:original',
+      '样本100',
+      '随机分组',
+      '95%区间',
+      '原案号',
+      '原裁判第3段',
+      '2020-01-01',
+      '2025-12-31',
+      '2026-09-29',
+      '原会计准则',
+      'CNY',
+      '万元',
+      'a+b',
+      '专业字段缺失：材料类型、出版或发布标识、版本、样本、方法、统计依据、局限',
+      '完整字段仍不代表事实支持',
+    ])
+      expect(page.textContent).toContain(text)
+    expect(container.querySelector('[aria-label="证据页面 法律页"]')!.textContent).not.toContain(
+      'DOI:original',
+    )
+    expect(
+      container.querySelector('[aria-label="冻结计划绑定研究"] [aria-label="专业上下文 claim1"]')
+        ?.textContent,
+    ).toContain('DOI:original')
+    const note = container.querySelector(
+      '[aria-label="处置理由 professional-0"]',
+    ) as HTMLTextAreaElement
+    await act(async () => {
+      const select = container.querySelector(
+        '[aria-label="处置状态 professional-0"]',
+      ) as HTMLSelectElement
+      select.value = 'explained'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        note,
+        '保留专业限制',
+      )
+      note.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () =>
+      (note.closest('form')!.querySelector('button') as HTMLButtonElement).click(),
+    )
+    expect(recordIssueAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId: 'professional-0',
+        issueDigest: 'c'.repeat(64),
+        state: 'explained',
+        note: '保留专业限制',
+      }),
+    )
+    expect(
+      (container.querySelector('[aria-label="处置理由 other-professional"]') as HTMLTextAreaElement)
+        .value,
+    ).toBe('')
+    await render({
+      ...report,
+      requestId: 'next-task',
+      research: undefined,
+      plan: {
+        ...report.plan,
+        claims: report.plan.claims.map(({ professionalContext: _context, ...claim }) => claim),
+      },
+    })
+    expect(container.querySelector('[aria-label^="专业上下文"]')).toBeNull()
+    expect(
+      (container.querySelector('[aria-label="处置理由 professional-0"]') as HTMLTextAreaElement)
+        .value,
+    ).toBe('')
+  } finally {
+    await act(async () => root.unmount())
+    container.remove()
+  }
+})

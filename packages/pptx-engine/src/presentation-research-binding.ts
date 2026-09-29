@@ -55,8 +55,12 @@ export function assertPresentationResearchBinding(
       const original = record.draft.facts.find((item) => item.claimId === mapping.researchClaimId)
       if (
         !original ||
-        canonical(fields(claim, ['statement', 'type', 'asOf', 'jurisdiction'])) !==
-          canonical(fields(original, ['statement', 'type', 'asOf', 'jurisdiction']))
+        canonical(
+          fields(claim, ['statement', 'type', 'asOf', 'jurisdiction', 'professionalContext']),
+        ) !==
+          canonical(
+            fields(original, ['statement', 'type', 'asOf', 'jurisdiction', 'professionalContext']),
+          )
       )
         invalid()
       const calculation = (value: typeof claim | typeof original) =>

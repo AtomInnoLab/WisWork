@@ -1,3 +1,4 @@
+import type { PresentationProfessionalContext } from '@wiswork/project-store/presentation-professional-context'
 import JSZip from 'jszip'
 import { createPresentationHostBundleSkill } from '../../office-addin/src/skills/powerpoint/presentation-host-bundle'
 import { InMemoryVfs } from '../../office-addin/src/skills/shared/vfs'
@@ -20,13 +21,19 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex')
-async function setup(large = false) {
+async function setup(
+  large = false,
+  professionalContext?: PresentationProfessionalContext,
+  boundResearch = true,
+) {
   const root = mkdtempSync(join(tmpdir(), 'research-claim-cross-'))
   roots.push(root)
   const compile = vi.fn()
   let service = createPresentationService({ userDataPath: root, compile })
   let corruptEvidence = false
   let hideAssessmentReply = false
+  let omitProfessionalContext = false
+  let stripProfessionalContext = false
   const documentId = 'doc',
     plan = benchmarkPlan(),
     deck = benchmarkPlannedDeck()
@@ -45,6 +52,20 @@ async function setup(large = false) {
     ) {
       hideAssessmentReply = false
       delete value.sourceAssessment
+    }
+    if (
+      omitProfessionalContext &&
+      (body as { operation: string }).operation === 'production_claim_evidence' &&
+      value.claim
+    )
+      delete value.claim.professionalContext
+    if (
+      stripProfessionalContext &&
+      (body as { operation: string }).operation === 'production_claim_evidence'
+    ) {
+      delete value.claim
+      delete value.documentId
+      delete value.source.asOf
     }
     return Response.json(value)
   }
@@ -130,6 +151,8 @@ async function setup(large = false) {
       },
     ],
   }
+  if (professionalContext)
+    draft.facts[0]!.professionalContext = structuredClone(professionalContext)
   if (large) {
     for (let index = 0; index < 22; index++)
       draft.sources.push({
@@ -164,6 +187,7 @@ async function setup(large = false) {
       reviewStatus: 'needs_review',
       asOf: draft.facts[0]!.asOf,
       jurisdiction: draft.facts[0]!.jurisdiction,
+      ...(professionalContext ? { professionalContext: structuredClone(professionalContext) } : {}),
     },
   ]
   plan.research = {
@@ -173,6 +197,7 @@ async function setup(large = false) {
     sources: [{ sourceId: 'source', researchSourceId: 'original-source' }],
     claims: [{ claimId: 'source-1', researchClaimId: 'original-fact' }],
   }
+  if (!boundResearch) delete plan.research
   deck.claims = presentationPlanClaims(plan)
   expect(await raw('save_plan', { expectedRevision: 0, plan })).not.toHaveProperty('error')
   expect(
@@ -201,6 +226,12 @@ async function setup(large = false) {
     input,
     raw,
     tool,
+    stripProfessionalContext: () => {
+      stripProfessionalContext = true
+    },
+    omitProfessionalContext: () => {
+      omitProfessionalContext = true
+    },
     corrupt: () => {
       corruptEvidence = true
     },
@@ -567,6 +598,188 @@ it('includes the actual immutable source assessment and unresolved source issues
     )
     expect(report.checks.sourceAuthority).toBe('not_verified')
     expect(await zip.file('evidence.md')!.async('string')).toContain('2026&#45;09&#45;29')
+    expect(f.compile).not.toHaveBeenCalled()
+  } finally {
+    f.close()
+  }
+})
+
+const professionalContexts: PresentationProfessionalContext[] = [
+  {
+    domain: 'science',
+    materialKind: 'paper',
+    publicationId: 'synthetic-paper-id',
+    version: '1',
+    sample: '仅测试样本',
+    method: '合成材料测试',
+    statisticalBasis: '样本描述，无总体推断',
+    limitations: '不构成真实科研结论',
+  },
+  {
+    domain: 'law',
+    materialKind: 'case',
+    jurisdiction: '合成法域',
+    effectLevel: '仅测试',
+    effectiveFrom: '2026-01-01',
+    effectiveUntil: '2026-06-30',
+    applicabilityDate: '2026-09-01',
+    caseNumber: 'synthetic-case',
+    originalLocation: '第一段',
+    limitations: '不构成法律意见',
+  },
+  {
+    domain: 'finance',
+    materialKind: 'financial_statement',
+    reportingPeriod: '2025年度',
+    asOf: '2025-12-31',
+    currency: 'CNY',
+    unit: '万元',
+    accountingBasis: '合成口径',
+    limitations: '不构成投资建议',
+  },
+]
+it.each(professionalContexts)(
+  'preserves actual $domain research context through frozen evidence, historical reviews and delivery',
+  async (context) => {
+    const f = await setup(false, context)
+    try {
+      const evidence = await f.tool('read_presentation_claim_evidence', f.input)
+      expect(evidence.isError, evidence.output).toBeFalsy()
+      const read = JSON.parse(evidence.output)
+      expect(read.claim.professionalContext).toEqual(context)
+      expect(read.research.record.draft.facts[0].professionalContext).toEqual(context)
+      const saved = await f.tool('record_presentation_claim_review', {
+        ...f.input,
+        review_id: 'professional-review',
+        outcome: 'supported',
+        notes: '仅原窗口支持，不认证专业事实',
+      })
+      expect(saved.isError, saved.output).toBeFalsy()
+      const report = await f.raw('production_delivery_report', { requestId: 'frozen' })
+      expect(report.plan.claims[0].professionalContext).toEqual(context)
+      const codes = report.pages[0].issues.map((issue: { code: string }) => issue.code)
+      if (context.domain === 'law')
+        expect(codes).toEqual(
+          expect.arrayContaining([
+            'professional_legal_rule_inactive',
+            'professional_jurisdiction_mismatch',
+          ]),
+        )
+      if (context.domain === 'finance') expect(codes).toContain('professional_financial_time_mixed')
+      if (context.domain === 'science')
+        expect(codes).not.toContain('professional_context_incomplete')
+      expect(report.checks.sourceAuthority).toBe('not_verified')
+      const altered = structuredClone(f.plan)
+      altered.claims[0]!.professionalContext = { ...context, limitations: '删改原专业限定' }
+      expect(await f.raw('save_plan', { expectedRevision: 1, plan: altered })).toMatchObject({
+        error: 'research_binding_invalid',
+      })
+      f.restart()
+      const history = await f.tool('read_presentation_claim_review', {
+        project_id: f.plan.projectId,
+        request_id: 'frozen',
+        review_id: 'professional-review',
+      })
+      expect(history.isError, history.output).toBeFalsy()
+      expect(JSON.parse(history.output).reviewId).toBe('professional-review')
+      const reread = await f.tool('read_presentation_claim_evidence', f.input)
+      expect(JSON.parse(reread.output).claim.professionalContext).toEqual(context)
+      f.omitProfessionalContext()
+      const forged = await f.tool('read_presentation_claim_evidence', f.input)
+      expect(forged).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+      expect(f.compile).not.toHaveBeenCalled()
+    } finally {
+      f.close()
+    }
+  },
+)
+it('carries professional context without a research binding and prevents omitted context from authorizing a review', async () => {
+  const context = professionalContexts[0]!
+  const f = await setup(false, context, false)
+  try {
+    const evidence = await f.tool('read_presentation_claim_evidence', f.input)
+    expect(evidence.isError, evidence.output).toBeFalsy()
+    const read = JSON.parse(evidence.output)
+    expect(read.research).toBeUndefined()
+    expect(read.documentId).toBe('doc')
+    expect(read.claim.professionalContext).toEqual(context)
+    const saved = await f.tool('record_presentation_claim_review', {
+      ...f.input,
+      review_id: 'unbound-professional',
+      outcome: 'supported',
+      notes: '仅测试原文',
+    })
+    expect(saved.isError, saved.output).toBeFalsy()
+    f.omitProfessionalContext()
+    expect(await f.tool('read_presentation_claim_evidence', f.input)).toMatchObject({
+      isError: true,
+      output: 'presentation_response_invalid',
+    })
+    expect(f.compile).not.toHaveBeenCalled()
+  } finally {
+    f.close()
+  }
+})
+
+it('refuses to write when a professional response is stripped to a legacy shape', async () => {
+  const f = await setup(false, professionalContexts[0]!, false)
+  try {
+    f.stripProfessionalContext()
+    const read = await f.tool('read_presentation_claim_evidence', f.input)
+    expect(read.isError, read.output).toBeFalsy()
+    expect(JSON.parse(read.output).claim).toBeUndefined()
+    const saved = await f.tool('record_presentation_claim_review', {
+      ...f.input,
+      review_id: 'stripped-review',
+      outcome: 'supported',
+      notes: '不可保存丢失的专业上下文',
+    })
+    expect(saved).toMatchObject({ isError: true, output: 'presentation_evidence_changed' })
+    expect(
+      await f.raw('production_read_claim_review', {
+        requestId: 'frozen',
+        reviewId: 'stripped-review',
+      }),
+    ).toMatchObject({ error: 'not_found' })
+  } finally {
+    f.close()
+  }
+})
+it('exports professional context and source warnings from the actual immutable production into the delivery ZIP', async () => {
+  const context = professionalContexts[1]!
+  const f = await setup(false, context)
+  try {
+    const native = await new JSZip()
+      .file('ppt/slides/slide1.xml', '<test-native-current/>')
+      .generateAsync({ type: 'uint8array' })
+    const vfs = new InMemoryVfs()
+    const skill = createPresentationHostBundleSkill({
+      available: () => true,
+      documentId: async () => 'doc',
+      nativeAvailable: () => true,
+      exportDocument: async () => native,
+      request: f.request,
+      vfs,
+    })
+    const exported = await skill.executeTool({
+      id: 'professional-package',
+      name: 'export_current_presentation_bundle',
+      input: { project_id: f.plan.projectId, request_id: 'frozen' },
+    })
+    expect(exported.isError, exported.output).toBeFalsy()
+    const zip = await JSZip.loadAsync(vfs.readBytes(JSON.parse(exported.output).paths[0]))
+    const report = JSON.parse(await zip.file('evidence.json')!.async('string'))
+    expect(report.plan.claims[0].professionalContext).toEqual(context)
+    expect(report.research.record.draft.facts[0].professionalContext).toEqual(context)
+    expect(report.pages[0].issues.map((i: { code: string }) => i.code)).toContain(
+      'professional_legal_rule_inactive',
+    )
+    const research = JSON.parse(await zip.file('research.json')!.async('string'))
+    expect(research.draft.facts[0].professionalContext).toEqual(context)
+    const markdown = await zip.file('evidence.md')!.async('string')
+    expect(markdown).toContain('professionalContext')
+    expect(markdown).toContain('synthetic&#45;case')
+    expect(report.checks.timeliness).toBe('not_verified')
     expect(f.compile).not.toHaveBeenCalled()
   } finally {
     f.close()

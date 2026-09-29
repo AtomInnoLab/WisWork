@@ -1,3 +1,8 @@
+import {
+  PROFESSIONAL_CONTEXT_SCHEMA,
+  parsePresentationProfessionalContext,
+  type PresentationProfessionalContext,
+} from './presentation-professional-context.js'
 export interface PresentationResearchSource {
   id: string
   title: string
@@ -19,6 +24,7 @@ export interface PresentationResearchFact {
   conflictsWith: string[]
   asOf?: string
   jurisdiction?: string
+  professionalContext?: PresentationProfessionalContext
   calculation?: { formula: string; inputs: string[]; unit?: string; currency?: string }
 }
 export interface PresentationResearchDraft {
@@ -131,6 +137,7 @@ export const PRESENTATION_RESEARCH_DRAFT_SCHEMA = objectSchema({
         conflictsWith: arraySchema(idSchema),
         asOf: textSchema(100, 1),
         jurisdiction: textSchema(300, 1),
+        professionalContext: PROFESSIONAL_CONTEXT_SCHEMA,
         calculation: objectSchema(
           {
             formula: textSchema(2000, 1),
@@ -259,7 +266,7 @@ export function parsePresentationResearchDraft(value: unknown): PresentationRese
           'reviewStatus',
           'conflictsWith',
         ],
-        ['asOf', 'jurisdiction', 'calculation'],
+        ['asOf', 'jurisdiction', 'calculation', 'professionalContext'],
       ) ||
       !id(f.claimId) ||
       factIds.has(f.claimId) ||
@@ -277,6 +284,13 @@ export function parsePresentationResearchDraft(value: unknown): PresentationRese
       (f.jurisdiction !== undefined && !text(f.jurisdiction, 300, 1))
     )
       fail()
+    if (Object.hasOwn(f, 'professionalContext')) {
+      try {
+        parsePresentationProfessionalContext(f.professionalContext)
+      } catch {
+        fail()
+      }
+    }
     factIds.add(f.claimId)
     if (f.type === 'calculation' && !f.calculation) fail()
     if (f.calculation !== undefined) {

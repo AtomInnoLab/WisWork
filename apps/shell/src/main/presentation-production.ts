@@ -470,10 +470,11 @@ export async function handlePresentationProduction(
       pageId: page.id,
       claimId: claim.id,
       statement: claim.statement,
+      ...(plan.research || claim.professionalContext
+        ? { documentId, claim: structuredClone(claim) }
+        : {}),
       ...(plan.research
         ? {
-            documentId,
-            claim: structuredClone(claim),
             research: {
               binding: plan.research,
               record: boundResearch!,
@@ -491,7 +492,9 @@ export async function handlePresentationProduction(
           : {}),
         excerpt: source.excerpt,
         ...(source.locator !== undefined ? { locator: source.locator } : {}),
-        ...(plan.research && source.asOf !== undefined ? { asOf: source.asOf } : {}),
+        ...((plan.research || claim.professionalContext) && source.asOf !== undefined
+          ? { asOf: source.asOf }
+          : {}),
       },
       attachment: {
         id: attachmentId,

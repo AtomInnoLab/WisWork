@@ -19,7 +19,8 @@
     "./presentation-delivery-bundle": "./src/presentation-delivery-bundle.ts",
     "./presentation-research": "./src/presentation-research.ts",
     "./presentation-research-store": "./src/presentation-research-store.ts",
-    "./presentation-source-assessment": "./src/presentation-source-assessment.ts"
+    "./presentation-source-assessment": "./src/presentation-source-assessment.ts",
+    "./presentation-professional-context": "./src/presentation-professional-context.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
