@@ -152,6 +152,7 @@ export interface PresentationProjectStatus {
   }
 }
 export interface PresentationProjectSnapshot {
+  deliveryBundlesUnavailable?: true
   deliveryBundles?: PresentationDeliveryBundleReceipt[]
   bundleNotice?: string
   planNotice?: string
@@ -1267,7 +1268,7 @@ export function createPresentationProjectController(
         project,
         ...(sourceAudit ? { sourceAudit } : {}),
         ...(deliveryBundles ? { deliveryBundles } : {}),
-        ...(bundleNotice ? { bundleNotice } : {}),
+        ...(bundleNotice ? { bundleNotice, deliveryBundlesUnavailable: true as const } : {}),
       })
       if (
         captured === epoch &&
@@ -1448,8 +1449,10 @@ export function createPresentationProjectController(
         throw new Error('presentation_document_changed')
       const deliveryBundles = await readBundleList(project, documentId, controller.signal, check)
       check()
+      const settled = { ...previous }
+      delete settled.deliveryBundlesUnavailable
       publish({
-        ...previous,
+        ...settled,
         phase: 'idle',
         deliveryBundles,
         bundleNotice: actionError
@@ -1471,6 +1474,7 @@ export function createPresentationProjectController(
           : {
               ...previous,
               phase: 'idle',
+              deliveryBundlesUnavailable: true,
               bundleNotice:
                 '交付包操作暂时无法确认；已有成果保留，请刷新本机包后恢复，勿自动重复导出。',
             },

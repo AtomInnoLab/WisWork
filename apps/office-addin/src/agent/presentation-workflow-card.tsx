@@ -42,6 +42,7 @@ export function PresentationWorkflowCard({
     importRecord,
     qaRecord,
     snapshot.deliveryReport,
+    { bundles: snapshot.deliveryBundles, unavailable: snapshot.deliveryBundlesUnavailable },
   )
   if (!workflow) return null
   const runNext = () => {

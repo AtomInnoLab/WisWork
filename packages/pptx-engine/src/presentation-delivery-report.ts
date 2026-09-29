@@ -1,3 +1,4 @@
+import { assertPresentationProfessionalAssessmentContext } from '@wiswork/project-store/presentation-source-assessment'
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from './presentation-source-limits'
 import {
   parsePresentationChartDataCheck,
@@ -287,6 +288,26 @@ function seeds(
       else if (outcomes.size > 1) add('source_review_mixed', sourceId)
       else if (outcomes.has('contradicted')) add('source_review_contradicted', sourceId)
       else if (outcomes.has('insufficient_evidence')) add('source_review_insufficient', sourceId)
+      const professionalAssessments = relevant.flatMap((review) =>
+        review.sourceAssessment?.professional ? [review.sourceAssessment.professional] : [],
+      )
+      for (const aspect of [
+        'conclusion_scope',
+        'qualifications',
+        'comparability',
+        'forecast',
+      ] as const) {
+        const outcomes = new Set(
+          professionalAssessments.flatMap((assessment) =>
+            assessment.checks
+              .filter((check) => check.aspect === aspect)
+              .map((check) => check.outcome),
+          ),
+        )
+        if (outcomes.size > 1) add(`professional_review_${aspect}_mixed`, sourceId)
+        else if (outcomes.has('conflict')) add(`professional_review_${aspect}_conflict`, sourceId)
+        else if (outcomes.has('uncertain')) add(`professional_review_${aspect}_uncertain`, sourceId)
+      }
       if (report.plan.research || report.reviews.some((review) => review.sourceAssessment)) {
         const assessments = relevant.flatMap((review) =>
           review.sourceAssessment ? [review.sourceAssessment] : [],
@@ -548,6 +569,16 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
       presentationSourceAttachmentId(source) !== review.attachmentId
     )
       invalid()
+    if (review.sourceAssessment?.professional) {
+      try {
+        assertPresentationProfessionalAssessmentContext(
+          review.sourceAssessment,
+          claim!.professionalContext,
+        )
+      } catch {
+        invalid()
+      }
+    }
     reviewIds.add(review.reviewId)
   }
   for (const [index, page] of report.pages.entries()) {
@@ -575,7 +606,12 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
             : plan.research || report.reviews.some((review) => review.sourceAssessment)
               ? 1056
               : 608) +
-          (page.chartData ? 256 : 0)
+          (page.chartData ? 256 : 0) +
+          (report.reviews.some(
+            (review) => review.pageId === slide.id && review.sourceAssessment?.professional,
+          )
+            ? 256
+            : 0)
     )
       invalid()
     const calculations = slide.claimIds
@@ -718,6 +754,21 @@ export async function buildPresentationDeliveryReport(
         ...(seed.code.startsWith('professional_')
           ? {
               professionalClaim: plan.claims.find((claim) => claim.id === seed.claimId),
+              ...(input.reviews.some(
+                (review) =>
+                  review.pageId === page.id &&
+                  review.claimId === seed.claimId &&
+                  review.sourceAssessment?.professional &&
+                  (seed.sourceId === undefined || review.sourceId === seed.sourceId),
+              )
+                ? {
+                    professionalAssessmentContext: presentationProfessionalIssueContext(
+                      report,
+                      seed,
+                      page.id,
+                    ),
+                  }
+                : {}),
               ...(presentationProfessionalWorkflow(plan.domain)
                 ? { professionalWorkflow: report.professionalWorkflow }
                 : {}),
@@ -811,6 +862,46 @@ function researchIssueContext(report: PresentationDeliveryReport, seed: Seed) {
     facts,
     sources: record.draft.sources.filter((source) => sources.has(source.id)),
     evidence: record.sources!.filter((source) => sources.has(source.sourceId)),
+  }
+}
+
+/** Derived immutable history for one page/claim/source; opinions are never certification. */
+export function presentationProfessionalIssueContext(
+  report: PresentationDeliveryReport,
+  issue: Pick<DeliveryIssue, 'code' | 'claimId' | 'sourceId'> & { id?: string },
+  pageId?: string,
+) {
+  if (!issue.code.startsWith('professional_')) return undefined
+  const page =
+    pageId ??
+    report.pages.find((page) =>
+      page.issues.some(
+        (item) => item === issue || (issue.id !== undefined && item.id === issue.id),
+      ),
+    )?.pageId
+  if (
+    !page ||
+    !report.plan.slides.find((slide) => slide.id === page)?.claimIds.includes(issue.claimId)
+  )
+    return undefined
+  const claim = report.plan.claims.find((claim) => claim.id === issue.claimId)
+  const mapping = report.plan.research?.claims.find((item) => item.claimId === issue.claimId)
+  const original = report.research?.record.draft.facts.find(
+    (fact) => fact.claimId === mapping?.researchClaimId,
+  )
+  return {
+    claim,
+    ...(issue.sourceId
+      ? { source: report.plan.sources.find((source) => source.id === issue.sourceId) }
+      : {}),
+    ...(original ? { original } : {}),
+    reviews: report.reviews.filter(
+      (review) =>
+        review.pageId === page &&
+        review.claimId === issue.claimId &&
+        review.sourceAssessment?.professional &&
+        (issue.sourceId === undefined || review.sourceId === issue.sourceId),
+    ),
   }
 }
 
@@ -909,6 +1000,19 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
     '## All source review history',
   )
   for (const review of report.reviews) lines.push(`- ${safe(JSON.stringify(review))}`)
+  if (report.reviews.some((review) => review.sourceAssessment?.professional))
+    lines.push(
+      '',
+      '## Professional assessment history (Agent opinions; NOT certification)',
+      'All original contexts, checks, reasons and literal basis remain in the immutable reviews above. Positive and non-applicable opinions do not close professional, research, source or chart findings.',
+      ...report.pages.flatMap((page) =>
+        page.issues
+          .filter((issue) => issue.code.startsWith('professional_review_'))
+          .map((issue) =>
+            safe(JSON.stringify(presentationProfessionalIssueContext(report, issue, page.pageId))),
+          ),
+      ),
+    )
   const workflow = report.professionalWorkflow
   if (workflow)
     lines.push(

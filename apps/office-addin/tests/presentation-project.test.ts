@@ -1339,6 +1339,20 @@ it('rejects cross-document receipts and drops a late export after cancellation',
   await f.controller.readDeliveryBundles?.()
   expect(f.controller.snapshot().deliveryBundles).toEqual([])
   expect(f.controller.snapshot().bundleNotice).toContain('无法确认')
+  expect(f.controller.snapshot().deliveryBundlesUnavailable).toBe(true)
+  f.request.mockImplementation(
+    async (body: unknown) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'delivery_bundle_list'
+            ? { bundles: [hostBundleReceipt()] }
+            : bundleProject(),
+        ),
+      ),
+  )
+  await f.controller.readDeliveryBundles?.()
+  expect(f.controller.snapshot().deliveryBundlesUnavailable).toBeUndefined()
+  expect(f.controller.snapshot().deliveryBundles).toEqual([hostBundleReceipt()])
   const late = bundleFixture()
   await late.controller.refresh()
   let finish!: (value: { output: string; mutated: boolean; summary: string }) => void

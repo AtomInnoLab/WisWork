@@ -1,3 +1,9 @@
+import {
+  PROFESSIONAL_CONTEXT_SCHEMA,
+  parsePresentationProfessionalContext,
+  type PresentationProfessionalContext,
+} from './presentation-professional-context'
+import { canonicalPresentationValue } from './presentation-canonical'
 /** Historical Agent opinions; literal basis never authenticates a source or its claims. */
 export interface PresentationSourceAssessment {
   scope: string
@@ -18,10 +24,20 @@ export interface PresentationSourceAssessment {
     outcome: 'applicable' | 'mismatch' | 'uncertain'
     reason: string
   }
+  professional?: {
+    context: PresentationProfessionalContext
+    checks: {
+      aspect: 'conclusion_scope' | 'qualifications' | 'comparability' | 'forecast'
+      outcome: 'consistent' | 'conflict' | 'uncertain' | 'not_applicable'
+      reason: string
+    }[]
+  }
   basis: { offset: number; text: string }[]
 }
 interface Schema {
-  type: string
+  type?: string
+  anyOf?: Schema[]
+  minItems?: number
   properties?: Record<string, Schema>
   required?: string[]
   additionalProperties?: boolean
@@ -65,6 +81,19 @@ export const PRESENTATION_SOURCE_ASSESSMENT_SCHEMA = object(
       outcome: choice('applicable', 'mismatch', 'uncertain'),
       reason: text(600),
     }),
+    professional: object({
+      context: PROFESSIONAL_CONTEXT_SCHEMA,
+      checks: {
+        type: 'array',
+        minItems: 2,
+        maxItems: 2,
+        items: object({
+          aspect: choice('conclusion_scope', 'qualifications', 'comparability', 'forecast'),
+          outcome: choice('consistent', 'conflict', 'uncertain', 'not_applicable'),
+          reason: text(600),
+        }),
+      },
+    }),
     basis: {
       type: 'array',
       maxItems: 4,
@@ -77,6 +106,14 @@ function invalid(): never {
   throw new Error('source_assessment_invalid')
 }
 function validate(value: unknown, schema: Schema, literal = false): void {
+  if (schema.anyOf) {
+    try {
+      parsePresentationProfessionalContext(value)
+    } catch {
+      invalid()
+    }
+    return
+  }
   if (schema.type === 'object') {
     if (!value || typeof value !== 'object' || Array.isArray(value)) invalid()
     const v = value as Record<string, unknown>
@@ -88,7 +125,12 @@ function validate(value: unknown, schema: Schema, literal = false): void {
     for (const [k, vv] of Object.entries(v))
       validate(vv, schema.properties![k]!, literal || k === 'basis')
   } else if (schema.type === 'array') {
-    if (!Array.isArray(value) || value.length > schema.maxItems!) invalid()
+    if (
+      !Array.isArray(value) ||
+      value.length > schema.maxItems! ||
+      value.length < (schema.minItems ?? 0)
+    )
+      invalid()
     value.forEach((v) => validate(v, schema.items!, literal))
   } else if (schema.type === 'integer') {
     if (
@@ -137,6 +179,23 @@ export function parsePresentationSourceAssessment(value: unknown): PresentationS
       result.jurisdiction?.outcome === 'applicable')
   )
     invalid()
+  if (result.professional) {
+    const { context, checks } = result.professional
+    const required =
+      context.domain === 'finance'
+        ? ['comparability', 'forecast']
+        : ['conclusion_scope', 'qualifications']
+    if (
+      new Set(checks.map((c) => c.aspect)).size !== 2 ||
+      checks.some(
+        (c) =>
+          !required.includes(c.aspect) ||
+          (c.outcome === 'not_applicable' && c.aspect !== 'forecast') ||
+          (c.outcome !== 'uncertain' && !result.basis.length),
+      )
+    )
+      invalid()
+  }
   return structuredClone(result)
 }
 export function assertPresentationSourceAssessmentBasis(
@@ -154,5 +213,24 @@ export function assertPresentationSourceAssessmentBasis(
       window.text.slice(start, start + basis.text.length) !== basis.text
     )
       invalid()
+  }
+}
+
+/** Bind historical opinions to the complete frozen declared context, without authenticating it. */
+export function assertPresentationProfessionalAssessmentContext(
+  value: PresentationSourceAssessment,
+  context?: PresentationProfessionalContext,
+): void {
+  const assessment = parsePresentationSourceAssessment(value)
+  if (!assessment.professional) return
+  try {
+    if (
+      !context ||
+      canonicalPresentationValue(assessment.professional.context) !==
+        canonicalPresentationValue(parsePresentationProfessionalContext(context))
+    )
+      invalid()
+  } catch {
+    invalid()
   }
 }

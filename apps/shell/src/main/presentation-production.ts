@@ -1,6 +1,7 @@
 import {
   parsePresentationSourceAssessment,
   assertPresentationSourceAssessmentBasis,
+  assertPresentationProfessionalAssessmentContext,
 } from '@wiswork/project-store/presentation-source-assessment'
 import { presentationResearchBindingFindings } from '@wiswork/pptx-engine/presentation-research-binding'
 import type { PresentationResearchRecord } from '@wiswork/project-store/presentation-research'
@@ -204,6 +205,7 @@ export async function handlePresentationProduction(
           const plan = parsePresentationPlan(frozen.plan.plan)
           const claim = plan.claims.find((c) => c.id === evidence.claimId)!
           const source = plan.sources.find((s) => s.id === evidence.source.id)!
+          assertPresentationProfessionalAssessmentContext(assessment, claim.professionalContext)
           if (
             assessment.timeliness.claimAsOf !== claim.asOf ||
             assessment.timeliness.sourceAsOf !== source.asOf ||

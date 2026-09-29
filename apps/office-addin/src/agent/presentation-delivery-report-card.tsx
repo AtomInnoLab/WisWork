@@ -1,3 +1,4 @@
+import { presentationProfessionalIssueContext } from '@wiswork/pptx-engine/presentation-delivery-report'
 import { useState } from 'react'
 import {
   presentationProfessionalContextMissingFields,
@@ -187,6 +188,140 @@ function SourceAssessmentHistory({
           })}
         </details>
       ))}
+    </>
+  )
+}
+const professionalReviewReasons: Record<string, string> = {
+  professional_review_conclusion_scope_conflict: '结论适用范围存在历史专业冲突判断',
+  professional_review_conclusion_scope_uncertain: '结论适用范围尚有历史专业不确定判断',
+  professional_review_conclusion_scope_mixed: '结论适用范围的历史专业判断不同',
+  professional_review_qualifications_conflict: '专业限定存在历史专业冲突判断',
+  professional_review_qualifications_uncertain: '专业限定尚有历史专业不确定判断',
+  professional_review_qualifications_mixed: '专业限定的历史专业判断不同',
+  professional_review_comparability_conflict: '可比口径存在历史专业冲突判断',
+  professional_review_comparability_uncertain: '可比口径尚有历史专业不确定判断',
+  professional_review_comparability_mixed: '可比口径的历史专业判断不同',
+  professional_review_forecast_conflict: '预测与前瞻存在历史专业冲突判断',
+  professional_review_forecast_uncertain: '预测与前瞻尚有历史专业不确定判断',
+  professional_review_forecast_mixed: '预测与前瞻的历史专业判断不同',
+}
+const professionalAspects = {
+  conclusion_scope: '结论适用范围',
+  qualifications: '专业限定',
+  comparability: '可比口径',
+  forecast: '预测与前瞻',
+}
+function ProfessionalAssessmentHistory({
+  report,
+  pageId,
+}: {
+  report: PresentationDeliveryReport
+  pageId: string
+}) {
+  const reviews = (report.reviews ?? []).filter(
+    (review) =>
+      review.pageId === pageId &&
+      review.projectId === report.projectId &&
+      review.requestId === report.requestId &&
+      review.planRevision === report.planRevision &&
+      review.sourceAssessment?.professional,
+  )
+  const groups = new Map<string, typeof reviews>()
+  for (const review of reviews) {
+    const key = JSON.stringify([
+      report.documentId,
+      report.requestId,
+      pageId,
+      review.claimId,
+      review.sourceId,
+    ])
+    groups.set(key, [...(groups.get(key) ?? []), review])
+  }
+  return (
+    <>
+      {Array.from(groups, ([key, items]) => {
+        const first = items[0]!,
+          context = presentationProfessionalIssueContext(
+            report,
+            {
+              code: 'professional_review_history',
+              claimId: first.claimId,
+              sourceId: first.sourceId,
+            },
+            pageId,
+          )
+        return (
+          <details key={key} aria-label={`专业评估历史 ${first.claimId} ${first.sourceId}`}>
+            <summary>
+              专业评估历史 · 主张 {first.claimId} · 来源 {first.sourceId} · {items.length} 条
+            </summary>
+            <p>
+              全部是历史 Agent
+              专业判断，不以最新意见覆盖旧意见；不代表专业结论成立或来源已认证，事实支持、权威性与时效仍待核验。正向或不适用意见不会关闭已有问题；说明与暂缓也不会关闭专业冲突。
+            </p>
+            <p>
+              原计划主张：{context?.claim?.statement}；来源：{context?.source?.title}
+            </p>
+            <ProfessionalContext
+              context={context?.claim?.professionalContext}
+              claimId={first.claimId}
+              claimType={context?.claim?.type}
+            />
+            {context?.original && (
+              <>
+                <p>原研究结论：{context.original.statement}</p>
+                <ProfessionalContext
+                  context={context.original.professionalContext}
+                  claimId={context.original.claimId}
+                  claimType={context.original.type}
+                />
+              </>
+            )}
+            {items.map((review) => {
+              const assessment = review.sourceAssessment!,
+                professional = assessment.professional!
+              return (
+                <section key={review.reviewId}>
+                  <p>
+                    原复核 ID：{review.reviewId} · {review.createdAt} ·{' '}
+                    {{ science: '科研', law: '法律', finance: '金融' }[professional.context.domain]}
+                  </p>
+                  <p>
+                    原文窗口 UTF-16 {review.offset} · 最多 {review.maxChars} 字符；原评估范围：
+                    {assessment.scope}
+                  </p>
+                  <ProfessionalContext
+                    context={professional.context}
+                    claimId={review.reviewId}
+                    claimType={context?.claim?.type}
+                  />
+                  {professional.checks.map((check) => (
+                    <p key={check.aspect}>
+                      {professionalAspects[check.aspect]}：
+                      {
+                        {
+                          consistent: '一致（历史意见，未认证）',
+                          conflict: '冲突（历史意见）',
+                          uncertain: '不确定',
+                          not_applicable: '不适用（仅预测维度）',
+                        }[check.outcome]
+                      }
+                      ；理由：{check.reason}
+                    </p>
+                  ))}
+                  <p>原文依据只证明字面存在，不证明来源真实或专业判断正确。</p>
+                  {!assessment.basis.length && <p>未提供可核验原文依据。</p>}
+                  {assessment.basis.map((basis, index) => (
+                    <blockquote key={index}>
+                      UTF-16 {basis.offset}：{basis.text}
+                    </blockquote>
+                  ))}
+                </section>
+              )
+            })}
+          </details>
+        )
+      })}
     </>
   )
 }
@@ -403,6 +538,7 @@ function IssueList({
                   : issue.code === 'source_locator_mismatch'
                     ? '计划定位与原文实际位置不匹配'
                     : (chartReasons[issue.code] ??
+                      professionalReviewReasons[issue.code] ??
                       professionalReasons[issue.code] ??
                       sourceAssessmentReasons[issue.code] ??
                       researchReasons[issue.code] ??
@@ -839,6 +975,7 @@ export function PresentationDeliveryReportCard({
               )
             })}
           <ChartDataDetails report={report} page={page} />
+          <ProfessionalAssessmentHistory report={report} pageId={page.pageId} />
           <SourceAssessmentHistory report={report} pageId={page.pageId} />
         </section>
       ))}

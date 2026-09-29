@@ -42,6 +42,7 @@ async function setup(
   const compile = vi.fn()
   let service = createPresentationService({ userDataPath: root, compile })
   let corruptEvidence = false
+  let professionalReportTamper: 'hide_issues' | 'context' | undefined
   let chartReportTamper: 'remove' | 'hide_findings' | undefined
   let hideAssessmentReply = false
   let omitProfessionalContext = false
@@ -86,6 +87,16 @@ async function setup(
     ) {
       if (chartReportTamper === 'remove') delete value.pages[0].chartData
       else value.pages[0].chartData.charts[0].findings = []
+    }
+    if (
+      professionalReportTamper &&
+      (body as { operation: string }).operation === 'production_delivery_report'
+    ) {
+      if (professionalReportTamper === 'hide_issues')
+        value.pages[0].issues = value.pages[0].issues.filter(
+          (issue: { code: string }) => !issue.code.startsWith('professional_review_'),
+        )
+      else value.reviews[0].sourceAssessment.professional.context.limitations = '伪造删改原限制'
     }
     return Response.json(value)
   }
@@ -285,6 +296,9 @@ async function setup(
   }
   return {
     root,
+    tamperProfessionalReport: (mode: 'hide_issues' | 'context') => {
+      professionalReportTamper = mode
+    },
     tamperChartReport: (mode: 'remove' | 'hide_findings') => {
       chartReportTamper = mode
     },
@@ -1506,3 +1520,229 @@ it('reflects actual end and cleanup gaps without creating fictitious research ev
     f.close()
   }
 })
+
+it.each(professionalContexts)(
+  'keeps actual $domain professional conflict opinions, stale explanations, and full originals in the frozen delivery archive',
+  async (context) => {
+    const f = await setup(false, context)
+    try {
+      expect((await f.tool('read_presentation_claim_evidence', f.input)).isError).toBeFalsy()
+      const aspects =
+        context.domain === 'finance'
+          ? ['comparability', 'forecast']
+          : ['conclusion_scope', 'qualifications']
+      const assessment = {
+        ...sourceAssessmentFixture(),
+        professional: {
+          context: structuredClone(context),
+          checks: aspects.map((aspect, index) => ({
+            aspect,
+            outcome: index === 0 ? 'conflict' : 'uncertain',
+            reason: '原窗口不能支持超出原声明范围的结论；仅历史Agent意见',
+          })),
+        },
+      }
+      const write = async (review_id: string, source_assessment: unknown) =>
+        f.tool('record_presentation_claim_review', {
+          ...f.input,
+          review_id,
+          outcome: 'supported',
+          notes: '字面支持不消除专业冲突',
+          source_assessment,
+        })
+      const saved = await write('professional-negative', assessment)
+      expect(saved.isError, saved.output).toBeFalsy()
+      expect(JSON.parse(saved.output).sourceAssessment.professional).toEqual(
+        assessment.professional,
+      )
+      const readReport = async () => {
+        const result = await f.tool('read_presentation_delivery_report', {
+          project_id: f.plan.projectId,
+          request_id: 'frozen',
+        })
+        expect(result.isError, result.output).toBeFalsy()
+        return JSON.parse(result.output)
+      }
+      const first = await readReport()
+      const code = `professional_review_${aspects[0]}_conflict`
+      const issue = first.pages[0].issues.find((item: { code: string }) => item.code === code)
+      expect(issue).toMatchObject({
+        sourceId: 'source',
+        claimId: 'source-1',
+        category: 'needs_human',
+        disposition: { state: 'open' },
+      })
+      const action = await f.tool('record_presentation_issue_action', {
+        project_id: f.plan.projectId,
+        request_id: 'frozen',
+        expected_revision: 0,
+        action: {
+          actionId: 'professional-explain',
+          issueId: issue.id,
+          issueDigest: issue.digest,
+          state: 'explained',
+          note: '记录解释，不认证专业内容',
+        },
+      })
+      expect(action.isError, action.output).toBeFalsy()
+      const explained = await readReport()
+      expect(
+        explained.pages[0].issues.find((item: { code: string }) => item.code === code).disposition
+          .state,
+      ).toBe('explained')
+      const negative = structuredClone(assessment)
+      negative.professional.checks[0]!.reason = '再次复核仍存在超出范围的结论；新的原历史理由'
+      expect((await write('professional-negative-again', negative)).isError).toBeFalsy()
+      const changed = await readReport()
+      const changedIssue = changed.pages[0].issues.find(
+        (item: { code: string }) => item.code === code,
+      )
+      expect(changedIssue.id).toBe(issue.id)
+      expect(changedIssue.digest).not.toBe(issue.digest)
+      expect(changedIssue.disposition).toMatchObject({ state: 'open', stale: true })
+      const positive = structuredClone(assessment)
+      positive.professional.checks.forEach((item) => {
+        item.outcome = 'consistent'
+        item.reason = '不同的历史意见，仅原窗口，不认证专业正确性'
+      })
+      const accepted = await write('professional-positive', positive)
+      expect(accepted.isError, accepted.output).toBeFalsy()
+      f.restart()
+      const report = await readReport()
+      expect(report.pages[0].issues.map((item: { code: string }) => item.code)).toContain(
+        `professional_review_${aspects[0]}_mixed`,
+      )
+      expect(report.pages[0].issues.map((item: { code: string }) => item.code)).toContain(
+        'research_claim_conflict',
+      )
+      expect(
+        report.reviews.map((item: { sourceAssessment: unknown }) => item.sourceAssessment),
+      ).toEqual([assessment, negative, positive])
+      expect(report.issueLedger.actions).toHaveLength(1)
+      expect(report.checks).toMatchObject({
+        sourceAuthority: 'not_verified',
+        timeliness: 'not_verified',
+        host: 'not_checked',
+        roundTrip: 'not_run',
+      })
+      const native = await new JSZip()
+        .file('ppt/slides/slide1.xml', '<test-native-professional/>')
+        .generateAsync({ type: 'uint8array' })
+      const vfs = new InMemoryVfs()
+      const skill = createPresentationHostBundleSkill({
+        available: () => true,
+        nativeAvailable: () => true,
+        exportDocument: async () => native,
+        documentId: async () => 'doc',
+        request: f.request,
+        vfs,
+      })
+      const exported = await skill.executeTool({
+        id: 'professional-package',
+        name: 'export_current_presentation_bundle',
+        input: { project_id: f.plan.projectId, request_id: 'frozen' },
+      })
+      expect(exported.isError, exported.output).toBeFalsy()
+      const zip = await JSZip.loadAsync(vfs.readBytes(JSON.parse(exported.output).paths[0]))
+      expect(JSON.parse(await zip.file('evidence.json')!.async('string')).reviews).toEqual(
+        report.reviews,
+      )
+      expect(
+        JSON.parse(await zip.file('research.json')!.async('string')).draft.facts[0]
+          .professionalContext,
+      ).toEqual(context)
+      expect(await zip.file('evidence.md')!.async('string')).toContain('professional')
+      const controller = researchProjectController(f)
+      await controller.refresh()
+      expect(controller.snapshot().error).toBeUndefined()
+      const snapshot = controller.snapshot()
+      expect(snapshot.deliveryBundles).toHaveLength(1)
+      const workflow = presentationWorkflowSummary(snapshot.project, undefined, undefined, report, {
+        bundles: snapshot.deliveryBundles,
+      })!
+      expect(
+        workflow.timeline.filter((event) => event.scope === 'current_document_delivery_bundle'),
+      ).toHaveLength(1)
+      expect(
+        workflow.timeline.find((event) => event.scope === 'current_document_delivery_bundle')!.type,
+      ).toBe('delivery.bundle.ready')
+      expect(f.compile).not.toHaveBeenCalled()
+      controller.cancel()
+    } finally {
+      f.close()
+    }
+  },
+)
+it('refuses direct professional context substitution against the actual PC frozen source window', async () => {
+  const context = professionalContexts[0]!,
+    f = await setup(false, context)
+  try {
+    const read = await f.tool('read_presentation_claim_evidence', f.input)
+    expect(read.isError).toBeFalsy()
+    const evidence = JSON.parse(read.output)
+    const professional = {
+      context: { ...context, limitations: '删掉原限制' },
+      checks: [
+        { aspect: 'conclusion_scope', outcome: 'conflict', reason: 'test' },
+        { aspect: 'qualifications', outcome: 'uncertain', reason: 'test' },
+      ],
+    }
+    const reply = await f.raw('production_record_claim_review', {
+      requestId: 'frozen',
+      pageId: f.input.page_id,
+      claimId: f.input.claim_id,
+      sourceId: f.input.source_id,
+      offset: 0,
+      maxChars: 8000,
+      reviewId: 'forged-professional',
+      evidenceDigest: hash(Buffer.from(presentationClaimEvidenceContent(evidence))),
+      outcome: 'supported',
+      notes: 'forged',
+      sourceAssessment: { ...sourceAssessmentFixture(), professional },
+    })
+    expect(reply).toEqual({ error: 'invalid_request' })
+    expect(
+      (await f.raw('production_delivery_report', { requestId: 'frozen' })).reviews,
+    ).toHaveLength(0)
+  } finally {
+    f.close()
+  }
+})
+
+it.each(['hide_issues', 'context'] as const)(
+  'rejects an actual Agent professional report with %s tampering',
+  async (mode) => {
+    const context = professionalContexts[0]!,
+      f = await setup(false, context)
+    try {
+      expect((await f.tool('read_presentation_claim_evidence', f.input)).isError).toBeFalsy()
+      const source_assessment = {
+        ...sourceAssessmentFixture(),
+        professional: {
+          context,
+          checks: [
+            { aspect: 'conclusion_scope', outcome: 'conflict', reason: '局限仍需保留' },
+            { aspect: 'qualifications', outcome: 'uncertain', reason: '未证明限定完整' },
+          ],
+        },
+      }
+      const saved = await f.tool('record_presentation_claim_review', {
+        ...f.input,
+        review_id: 'tamper-original',
+        outcome: 'supported',
+        notes: '原窗口支持，不关闭专业范围缺口',
+        source_assessment,
+      })
+      expect(saved.isError, saved.output).toBeFalsy()
+      f.tamperProfessionalReport(mode)
+      const reply = await f.tool('read_presentation_delivery_report', {
+        project_id: f.plan.projectId,
+        request_id: 'frozen',
+      })
+      expect(reply).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+      expect(f.compile).not.toHaveBeenCalled()
+    } finally {
+      f.close()
+    }
+  },
+)

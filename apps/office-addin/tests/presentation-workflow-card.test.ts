@@ -1,3 +1,4 @@
+import { hostBundleReceipt } from './presentation-host-bundle-fixture.js'
 // @vitest-environment jsdom
 import { researchSummary } from './presentation-research-fixture.js'
 import React, { act } from 'react'
@@ -200,4 +201,70 @@ it('shows original research start and end in folded records and updates in place
   expect(findRecords().querySelectorAll('time')).toHaveLength(2)
   expect(findRecords().textContent).toContain(record.startedAt)
   expect(findRecords().textContent).toContain(ended.records[0]!.finishedAt!)
+})
+
+it('renders saved current-document delivery times from the actual project snapshot and removes stale history on read failure', async () => {
+  const receipt = hostBundleReceipt()
+  receipt.completedAt = '2026-09-29T00:00:03.000Z'
+  let snapshot: ReturnType<PresentationProjectController['snapshot']> = {
+    phase: 'idle',
+    project: {
+      projectId: 'project-1',
+      title: 'delivery',
+      status: 'compiled',
+      slideCount: 0,
+      slides: [],
+      history: [],
+      production: {
+        projectId: 'project-1',
+        requestId: 'pages',
+        planRevision: 1,
+        status: 'compiled',
+        compiledCount: 0,
+        total: 0,
+        pages: [],
+      },
+    },
+    deliveryBundles: [receipt],
+  }
+  const listeners = new Set<() => void>()
+  const project = {
+    snapshot: () => snapshot,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+  } as unknown as PresentationProjectController
+  const node = document.createElement('div'),
+    root = createRoot(node)
+  roots.push(root)
+  await act(async () => root.render(React.createElement(PresentationWorkflowCard, { project })))
+  const records = Array.from(node.querySelectorAll('details')).find((item) =>
+    item.querySelector(':scope > summary')?.textContent?.includes('交付包归档记录'),
+  )!
+  expect(records).toBeDefined()
+  expect(records.open).toBe(false)
+  await act(async () => records.querySelector('summary')!.click())
+  expect(records.open).toBe(true)
+  expect(Array.from(records.querySelectorAll('time')).map((item) => item.dateTime)).toEqual([
+    receipt.createdAt,
+    receipt.completedAt,
+  ])
+  expect(node.textContent).toContain('验收')
+  expect(node.textContent).toContain('PDF')
+  snapshot = { ...snapshot, bundleNotice: '交付包已放回会话附件' }
+  await act(async () => listeners.forEach((listener) => listener()))
+  expect(node.textContent).toContain('交付包归档记录')
+  snapshot = {
+    ...snapshot,
+    deliveryBundlesUnavailable: true,
+    bundleNotice: '本机交付包暂时无法读取',
+  }
+  await act(async () => listeners.forEach((listener) => listener()))
+  expect(node.textContent).not.toContain('交付包归档记录')
+  expect(node.querySelector('[aria-label="待处理问题"]')?.textContent).toContain(
+    '本机交付包历史暂不可读取',
+  )
 })

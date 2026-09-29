@@ -1,3 +1,7 @@
+import {
+  parsePresentationDeliveryBundleReceipt,
+  type PresentationDeliveryBundleReceipt,
+} from '@wiswork/project-store/presentation-delivery-bundle'
 import type { PresentationProjectStatus } from '../skills/powerpoint/presentation-project.js'
 import type { PresentationImportProgress } from '../skills/powerpoint/presentation-page-delivery.js'
 import type { PresentationQaRecord } from '../skills/powerpoint/presentation-qa.js'
@@ -135,6 +139,8 @@ export interface PresentationWorkflowSummary {
       | 'style.proposed'
       | 'plan.approved'
       | 'style.approved'
+      | 'delivery.bundle.started'
+      | 'delivery.bundle.ready'
     scope?:
       | 'production_asset_resolution'
       | 'source_excerpt_audit'
@@ -142,6 +148,7 @@ export interface PresentationWorkflowSummary {
       | 'saved_plan'
       | 'saved_style'
       | 'explicit_user_decision'
+      | 'current_document_delivery_bundle'
     recordsLabel?: string
     records?: { id: string; text: string; at: string }[]
   }[]
@@ -166,6 +173,7 @@ export function presentationWorkflowSummary(
   imported: PresentationImportProgress | undefined,
   qa: PresentationQaRecord | undefined,
   report?: PresentationDeliveryReport,
+  delivery?: { bundles?: PresentationDeliveryBundleReceipt[]; unavailable?: boolean },
 ): PresentationWorkflowSummary | undefined {
   if (!project) return undefined
   const plan = project.plan?.value
@@ -840,6 +848,73 @@ export function presentationWorkflowSummary(
         text: `内容问题 ${action.issueId}：${label}${stale ? '；对应证据已变化，需重新处理' : ''}；未验证来源真实性或结论`,
         at: action.createdAt,
       })
+    }
+  }
+  if (delivery) {
+    let unavailable = delivery.unavailable === true
+    let bundles: PresentationDeliveryBundleReceipt[] = []
+    if (!unavailable && delivery.bundles !== undefined) {
+      try {
+        if (!Array.isArray(delivery.bundles) || delivery.bundles.length > 32)
+          throw Error('invalid_state')
+        bundles = delivery.bundles.map(parsePresentationDeliveryBundleReceipt)
+        if (
+          new Set(bundles.map((bundle) => bundle.bundleId)).size !== bundles.length ||
+          new Set(bundles.map((bundle) => bundle.documentId)).size > 1 ||
+          bundles.some(
+            (bundle) =>
+              bundle.projectId !== project.projectId ||
+              bundle.requestId !== production?.requestId ||
+              bundle.manifest.planRevision !== production?.planRevision ||
+              (reportMatches &&
+                (bundle.documentId !== report!.documentId ||
+                  bundle.manifest.inputDigest !== report!.inputDigest ||
+                  bundle.manifest.planDigest !== report!.planDigest)),
+          )
+        )
+          throw Error('invalid_state')
+      } catch {
+        unavailable = true
+        bundles = []
+      }
+    }
+    if (unavailable)
+      attention.push({
+        id: 'delivery-bundle-history-unavailable',
+        text: '本机交付包历史暂不可读取；不沿用未知归档状态，已有文稿保留，请刷新核对。',
+      })
+    else {
+      for (const bundle of bundles) {
+        const id = `delivery-bundle:${JSON.stringify([bundle.documentId, bundle.projectId, bundle.requestId, bundle.bundleId, bundle.sha256])}`
+        const ready = bundle.state === 'ready'
+        const records = [
+          {
+            id: `${id}:upload`,
+            at: bundle.createdAt,
+            text: '本机交付包上传开始；没有结束回执不能证明仍在上传。',
+          },
+        ]
+        if (bundle.completedAt)
+          records.push({
+            id: `${id}:ready`,
+            at: bundle.completedAt,
+            text: '本机交付包归档完成；不是专业内容或PowerPoint验收通过。',
+          })
+        timeline.push({
+          id,
+          type: ready ? 'delivery.bundle.ready' : 'delivery.bundle.started',
+          scope: 'current_document_delivery_bundle',
+          at: bundle.completedAt ?? bundle.createdAt,
+          text: `${ready ? '本机交付包已归档' : '本机交付包上传未完成'} · 计划第 ${bundle.manifest.planRevision} 版 · PDF：${bundle.manifest.checks.pdf === 'included' ? '已包含宿主PDF' : bundle.manifest.checks.pdf === 'unavailable' ? '宿主PDF不可用' : '未请求'}；专业内容、来源权威性、时效、当前宿主验收及保存重开检查待完成`,
+          recordsLabel: '交付包归档记录',
+          records,
+        })
+      }
+      if (bundles.some((bundle) => bundle.state === 'uploading'))
+        attention.push({
+          id: 'delivery-bundle-unfinished',
+          text: '本机交付包有上传开始但未归档的记录；请只读刷新核对，不自动再次导出当前文稿。',
+        })
     }
   }
   timeline.sort((a, b) => (a.at && b.at ? a.at.localeCompare(b.at) : a.at ? -1 : b.at ? 1 : 0))
