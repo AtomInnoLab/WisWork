@@ -44,6 +44,21 @@ export function presentationProductionEventRows(
   )
     return undefined
   const events = job.events.slice(-20)
+  const errorText = (event: (typeof events)[number]) =>
+    'error' in event && event.error
+      ? ` · ${
+          {
+            compile_failed: '编译失败',
+            invalid_deck: '页面内容无效',
+            aborted: '已停止',
+            output_too_large: '成果过大',
+            asset_unavailable: '素材不可用',
+            source_unavailable: '附件不可读或来源摘录未匹配',
+            font_unavailable: '指定字体及回退字体均不可用',
+            invalid_state: '任务状态异常',
+          }[event.error]
+        }`
+      : ''
   type PageEvent = Extract<(typeof events)[number], { pageId: string }>
   const pages = new Map<string, PageEvent[]>()
   for (const event of events) {
@@ -57,7 +72,7 @@ export function presentationProductionEventRows(
     if (!('pageId' in event)) {
       rows.push({
         id: `job-run:${JSON.stringify([project.projectId, job.requestId, event.sequence])}`,
-        text: jobEventLabels[event.type],
+        text: `${jobEventLabels[event.type]}${errorText(event)}`,
         at: event.createdAt,
       })
       continue
@@ -71,22 +86,7 @@ export function presentationProductionEventRows(
         : undefined
     const id = `job-page:${JSON.stringify([project.projectId, job.requestId, event.pageId])}`
     const eventText = (attempt: PageEvent) =>
-      `第 ${attempt.attempt} 次 · ${jobEventLabels[attempt.type]}${attempt.type === 'page.compiled' ? '（未导入验收）' : ''}${
-        'error' in attempt && attempt.error
-          ? ` · ${
-              {
-                compile_failed: '编译失败',
-                invalid_deck: '页面内容无效',
-                aborted: '已停止',
-                output_too_large: '成果过大',
-                asset_unavailable: '素材不可用',
-                source_unavailable: '附件不可读或来源摘录未匹配',
-                font_unavailable: '指定字体及回退字体均不可用',
-                invalid_state: '任务状态异常',
-              }[attempt.error]
-            }`
-          : ''
-      }`
+      `第 ${attempt.attempt} 次 · ${jobEventLabels[attempt.type]}${attempt.type === 'page.compiled' ? '（未导入验收）' : ''}${errorText(attempt)}`
     rows.push({
       id,
       pageId: event.pageId,

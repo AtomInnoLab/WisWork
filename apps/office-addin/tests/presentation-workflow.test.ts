@@ -872,3 +872,18 @@ it('keeps distinct page groups through interleaved attempts and lifecycle checkp
   expect(grouped.rows.find((row) => row.pageId === first)?.attempts).toHaveLength(3)
   expect(grouped.rows.find((row) => row.pageId === second)?.attempts).toHaveLength(2)
 })
+
+it('retains bounded saved run failure reasons alongside page grouping', () => {
+  const selected = eventProject()
+  selected.productionJob!.events.push({
+    sequence: 8,
+    createdAt: '2026-09-24T00:00:08.000Z',
+    type: 'run.failed',
+    error: 'invalid_state',
+  })
+  selected.productionJob!.revision = 8
+  expect(presentationProductionEventRows(selected)!.rows.at(-1)).toMatchObject({
+    text: '页任务失败 · 任务状态异常',
+    at: '2026-09-24T00:00:08.000Z',
+  })
+})
