@@ -1,3 +1,11 @@
+import { createHash } from 'node:crypto'
+import { canonicalPresentationValue } from '@wiswork/project-store/presentation-canonical'
+import {
+  parseSavedPresentationPreference,
+  parsePresentationPreferenceSource,
+  parsePresentationPreferenceOrigin,
+} from '@wiswork/pptx-engine/presentation-preference'
+import { parsePresentationManualObservationShape } from '@wiswork/pptx-engine/presentation-manual-observation'
 import {
   registerPresentationProjectWork,
   type PresentationProjectWork,
@@ -80,6 +88,22 @@ const readonlyProductionOperations = new Set([
   'production_delivery_report',
   'production_feedback_read',
   'production_feedback_compare',
+])
+const synchronousLibraryOperations = new Set([
+  'comment_list',
+  'comment_add',
+  'comment_resolve',
+  'manual_observation_begin',
+  'manual_observation_complete',
+  'manual_observation_get',
+  'manual_observation_list',
+  'manual_observation_delete',
+  'preference_save_observation',
+  'preference_get',
+  'preference_import',
+  'preference_save',
+  'preference_list',
+  'preference_delete',
 ])
 const ordinaryProjectReadOperations = new Set([
   'get',
@@ -283,7 +307,8 @@ export function createPresentationService(options: {
         (request.operation.startsWith('production_') ||
           request.operation === 'export_pdf' ||
           ordinaryProjectReadOperations.has(request.operation) ||
-          ordinaryProjectWriteOperations.has(request.operation))
+          ordinaryProjectWriteOperations.has(request.operation) ||
+          synchronousLibraryOperations.has(request.operation))
       )
         request = structuredClone(request)
       if (
@@ -424,6 +449,84 @@ export function createPresentationService(options: {
           throw error
         }
       }
+      const registerLibrary = (scope: { documentId: string; projectId: string }) => {
+        foregroundWork = registerPresentationProjectWork({
+          scope: { root: options.userDataPath, ...scope },
+          signal,
+        })
+        signal = foregroundWork.signal
+      }
+      const scopedGuard =
+        (scope: { documentId: string; projectId: string }, check: () => void) =>
+        (actual: Readonly<{ documentId: string; projectId: string }>) => {
+          if (actual.documentId !== scope.documentId || actual.projectId !== scope.projectId)
+            throw new Error('invalid_request')
+          check()
+        }
+      const readLibrary = <T>(
+        scope: { documentId: string; projectId: string },
+        load: () => T,
+        proven: (value: T) => boolean,
+      ) => {
+        let value!: T,
+          loaded = false,
+          empty = false
+        const read = () => {
+          if (!loaded) {
+            value = load()
+            loaded = true
+          }
+          return value
+        }
+        let lease
+        try {
+          lease = capturePresentationProjectReadLease({
+            store: lifecycleStore,
+            scope,
+            signal,
+            readExistingProject: () => {
+              const project = store.projectScope(scope.projectId, scope.documentId)
+              const data = read()
+              if (project || proven(data)) return scope
+              empty = true
+              return undefined
+            },
+          })
+        } catch (error) {
+          if (error instanceof Error && error.message === 'document_mismatch') {
+            const data = read()
+            if (!proven(data)) return { value: data, assertCurrent: () => checkAbort(signal) }
+          }
+          if (!empty) throw error
+          // Empty queries prove no ownership and grant no write permission; keep control absence fixed.
+          const assertCurrent = () => {
+            checkAbort(signal)
+            if (lifecycleStore.read(scope) !== undefined) throw new Error('revision_conflict')
+          }
+          assertCurrent()
+          return { value, assertCurrent }
+        }
+        lease.assertCurrent()
+        read()
+        lease.assertCurrent()
+        return { value, assertCurrent: lease.assertCurrent }
+      }
+      const libraryWrite = (
+        scope: { documentId: string; projectId: string },
+        proof: boolean,
+        creation = false,
+      ) => {
+        const project = store.projectScope(scope.projectId, scope.documentId)
+        const lease = creation
+          ? capturePresentationProjectCreationLease({ store: lifecycleStore, scope, signal })
+          : capturePresentationProjectWriteLease({
+              store: lifecycleStore,
+              scope,
+              signal,
+              readExistingProject: () => project || (proof ? scope : undefined),
+            })
+        return scopedGuard(scope, lease.assertWritable)
+      }
       if (
         ['comment_list', 'comment_add', 'comment_resolve'].includes(request.operation as string)
       ) {
@@ -450,8 +553,31 @@ export function createPresentationService(options: {
         assertPresentationId(request.projectId)
         const record = store.plan(request.projectId, request.documentId)
         if (!record) throw new Error('not_found')
-        if (request.operation === 'comment_list')
-          return boundedResponse(commentLibrary.list(request.documentId, request.projectId))
+        const bound = { documentId: record.documentId, projectId: record.projectId }
+        registerLibrary(bound)
+        if (request.operation === 'comment_list') {
+          const access = readLibrary(
+            bound,
+            () => commentLibrary.list(bound.documentId, bound.projectId),
+            () => true,
+          )
+          access.assertCurrent()
+          return boundedResponse(access.value)
+        }
+        const readLease = capturePresentationProjectReadLease({
+          store: lifecycleStore,
+          scope: bound,
+          signal,
+          readExistingProject: () => record,
+        })
+        let admittedGuard: ReturnType<typeof libraryWrite> | undefined
+        const guard = scopedGuard(bound, () => {
+          if (!admittedGuard) {
+            readLease.assertCurrent()
+            admittedGuard = libraryWrite(bound, true)
+          }
+          admittedGuard(bound)
+        })
         if (request.operation === 'comment_resolve')
           return boundedResponse(
             commentLibrary.resolve(
@@ -459,6 +585,7 @@ export function createPresentationService(options: {
               request.projectId,
               request.expectedRevision as number,
               request.commentId as string,
+              guard,
             ),
           )
         return boundedResponse(
@@ -469,6 +596,7 @@ export function createPresentationService(options: {
             request.planRevision as number,
             request.comment,
             { revision: record.revision, plan: parsePresentationPlan(record.plan) },
+            guard,
           ),
         )
       }
@@ -504,28 +632,52 @@ export function createPresentationService(options: {
         const documentId = request.documentId as string,
           projectId = request.projectId as string,
           observationId = request.observationId as string
-        if (request.operation === 'manual_observation_list')
-          return boundedResponse({ observations: manualObservations.list(documentId, projectId) })
-        if (request.operation === 'manual_observation_begin')
+        const bound = { documentId, projectId }
+        registerLibrary(bound)
+        if (request.operation === 'manual_observation_list') {
+          const access = readLibrary(
+            bound,
+            () => manualObservations.list(documentId, projectId),
+            (value) => value.length > 0,
+          )
+          access.assertCurrent()
+          return boundedResponse({ observations: access.value })
+        }
+        if (typeof observationId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(observationId))
+          throw new Error('invalid_request')
+        if (request.operation === 'manual_observation_begin') {
+          const shape = parsePresentationManualObservationShape(request.shape)
+          if (
+            typeof request.slideId !== 'string' ||
+            !request.slideId ||
+            request.slideId.length > 256 ||
+            Array.from(request.slideId).some(
+              (c) => c.charCodeAt(0) < 32 || (c.charCodeAt(0) >= 127 && c.charCodeAt(0) <= 159),
+            )
+          )
+            throw new Error('invalid_request')
           return boundedResponse({
             observation: manualObservations.begin(
               documentId,
               projectId,
               observationId,
-              request.slideId as string,
-              request.shape,
+              request.slideId,
+              shape,
+              libraryWrite(bound, false, true),
             ),
           })
-        if (request.operation === 'manual_observation_complete')
-          return boundedResponse({
-            observation: manualObservations.complete(
-              documentId,
-              projectId,
-              observationId,
-              request.expectedBeforeDigest,
-              request.shape,
-            ),
-          })
+        }
+        const access = readLibrary(
+          bound,
+          () => manualObservations.get(documentId, projectId, observationId),
+          (value) => !!value,
+        )
+        const observation = access.value
+        if (request.operation === 'manual_observation_get') {
+          if (!observation) throw new Error('not_found')
+          access.assertCurrent()
+          return boundedResponse({ observation })
+        }
         if (
           request.operation === 'manual_observation_delete' ||
           request.operation === 'preference_save_observation'
@@ -538,25 +690,66 @@ export function createPresentationService(options: {
                 !/^[a-f0-9]{64}$/.test(request.expectedAfterDigest)))
           )
             throw new Error('invalid_request')
-          const current = manualObservations.get(documentId, projectId, observationId)
           if (
-            current &&
-            (current.before.digest !== request.expectedBeforeDigest ||
-              (current.after?.digest ?? null) !== request.expectedAfterDigest)
+            observation &&
+            (observation.before.digest !== request.expectedBeforeDigest ||
+              (observation.after?.digest ?? null) !== request.expectedAfterDigest)
           )
             throw new Error('revision_conflict')
         }
+        if (!observation) {
+          access.assertCurrent()
+          if (request.operation === 'manual_observation_delete')
+            return boundedResponse({ deleted: false })
+          throw new Error('not_found')
+        }
+        const actualScope = { documentId: observation.documentId, projectId: observation.projectId }
+        if (request.operation === 'manual_observation_complete') {
+          const shape = parsePresentationManualObservationShape(request.shape)
+          if (shape.id !== observation.shapeId) throw new Error('invalid_request')
+          if (request.expectedBeforeDigest !== observation.before.digest)
+            throw new Error('revision_conflict')
+          return boundedResponse({
+            observation: manualObservations.complete(
+              documentId,
+              projectId,
+              observationId,
+              request.expectedBeforeDigest,
+              shape,
+              libraryWrite(actualScope, true),
+            ),
+          })
+        }
         if (request.operation === 'manual_observation_delete')
           return boundedResponse({
-            deleted: manualObservations.delete(documentId, projectId, observationId),
+            deleted: manualObservations.delete(
+              documentId,
+              projectId,
+              observationId,
+              libraryWrite(actualScope, true),
+            ),
           })
-        const observation = manualObservations.get(documentId, projectId, observationId)
-        if (!observation) throw new Error('not_found')
-        if (request.operation === 'preference_save_observation')
-          return boundedResponse({
-            preference: preferenceLibrary.saveObservation(documentId, observation, request.text),
-          })
-        return boundedResponse({ observation })
+        if (!observation.after || observation.before.digest === observation.after.digest)
+          throw new Error('invalid_request')
+        parseSavedPresentationPreference({
+          projectId: observation.projectId,
+          changeId: 'manual_' + observation.observationId,
+          text: request.text,
+          origin: {
+            version: 1,
+            observationId,
+            beforeDigest: observation.before.digest,
+            afterDigest: observation.after.digest,
+          },
+        })
+        return boundedResponse({
+          preference: preferenceLibrary.saveObservation(
+            documentId,
+            observation,
+            request.text,
+            libraryWrite(actualScope, true),
+          ),
+        })
       }
       if (request.operation === 'preference_get' || request.operation === 'preference_import') {
         const required =
@@ -578,24 +771,74 @@ export function createPresentationService(options: {
           request.documentId.length > 2048
         )
           throw new Error('invalid_request')
-        if (request.operation === 'preference_get')
-          return boundedResponse({
-            preference: preferenceLibrary.get(
-              request.documentId,
-              request.projectId as string,
-              request.changeId as string,
-            ),
-          })
-        return boundedResponse({
-          preference: preferenceLibrary.import(
-            request.documentId,
-            request.projectId as string,
-            request.source,
-            request.expectedTextDigest,
+        const target = { documentId: request.documentId, projectId: request.projectId as string }
+        registerLibrary(target)
+        if (request.operation === 'preference_get') {
+          const access = readLibrary(
+            target,
+            () =>
+              preferenceLibrary.get(
+                target.documentId,
+                target.projectId,
+                request.changeId as string,
+              ),
+            (value) => !!value,
+          )
+          access.assertCurrent()
+          return boundedResponse({ preference: access.value })
+        }
+        const source = parsePresentationPreferenceSource(request.source)
+        if (source.documentId === target.documentId && source.projectId === target.projectId)
+          throw new Error('invalid_request')
+        const sourceScope = { documentId: source.documentId, projectId: source.projectId }
+        const access = readLibrary(
+          sourceScope,
+          () => preferenceLibrary.get(source.documentId, source.projectId, source.changeId),
+          (value) => !!value,
+        )
+        const original = access.value
+        if (!original) throw new Error('not_found')
+        if (
+          original.reuse ||
+          typeof request.approvalId !== 'string' ||
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(
             request.approvalId,
-            request.expectedOrigin,
-          ),
-        })
+          ) ||
+          typeof request.expectedTextDigest !== 'string' ||
+          !/^[a-f0-9]{64}$/.test(request.expectedTextDigest)
+        )
+          throw new Error('invalid_request')
+        if (createHash('sha256').update(original.text).digest('hex') !== request.expectedTextDigest)
+          throw new Error('revision_conflict')
+        const origin =
+          request.expectedOrigin === undefined || request.expectedOrigin === null
+            ? request.expectedOrigin
+            : parsePresentationPreferenceOrigin(request.expectedOrigin)
+        if (
+          (original.origin && origin === undefined) ||
+          (origin !== undefined &&
+            canonicalPresentationValue(origin) !==
+              canonicalPresentationValue(original.origin ?? null))
+        )
+          throw new Error('revision_conflict')
+        access.assertCurrent()
+        const targetGuard = libraryWrite(target, false, true)
+        access.assertCurrent()
+        const preference = preferenceLibrary.import(
+          target.documentId,
+          target.projectId,
+          source,
+          request.expectedTextDigest,
+          request.approvalId,
+          origin,
+          {
+            assertWritable: targetGuard,
+            assertSourceCurrent: scopedGuard(sourceScope, access.assertCurrent),
+          },
+        )
+        access.assertCurrent()
+        targetGuard(target)
+        return boundedResponse({ preference })
       }
       if (
         request.operation === 'preference_save' ||
@@ -615,21 +858,50 @@ export function createPresentationService(options: {
           request.documentId.length > 2048
         )
           throw new Error('invalid_request')
-        if (request.operation === 'preference_save')
+        if (request.operation === 'preference_save') {
+          const input = parseSavedPresentationPreference(request.preference)
+          if (input.origin !== undefined || input.reuse !== undefined)
+            throw new Error('invalid_request')
+          const bound = { documentId: request.documentId, projectId: input.projectId }
+          registerLibrary(bound)
           return boundedResponse({
-            preference: preferenceLibrary.save(request.documentId, request.preference),
-          })
-        if (request.operation === 'preference_delete')
-          return boundedResponse({
-            deleted: preferenceLibrary.delete(
-              request.documentId,
-              request.projectId as string,
-              request.changeId as string,
+            preference: preferenceLibrary.save(
+              bound.documentId,
+              input,
+              libraryWrite(bound, false, true),
             ),
           })
-        return boundedResponse({
-          preferences: preferenceLibrary.list(request.documentId, request.projectId as string),
-        })
+        }
+        const bound = { documentId: request.documentId, projectId: request.projectId as string }
+        registerLibrary(bound)
+        if (request.operation === 'preference_delete') {
+          const access = readLibrary(
+            bound,
+            () =>
+              preferenceLibrary.get(bound.documentId, bound.projectId, request.changeId as string),
+            (value) => !!value,
+          )
+          if (!access.value) {
+            access.assertCurrent()
+            return boundedResponse({ deleted: false })
+          }
+          const actualScope = { documentId: bound.documentId, projectId: access.value.projectId }
+          return boundedResponse({
+            deleted: preferenceLibrary.delete(
+              bound.documentId,
+              actualScope.projectId,
+              request.changeId as string,
+              libraryWrite(actualScope, true),
+            ),
+          })
+        }
+        const access = readLibrary(
+          bound,
+          () => preferenceLibrary.list(bound.documentId, bound.projectId),
+          (value) => value.length > 0,
+        )
+        access.assertCurrent()
+        return boundedResponse({ preferences: access.value })
       }
       if (
         ['brand_kit_save', 'brand_kit_get', 'brand_kit_list'].includes(request.operation as string)

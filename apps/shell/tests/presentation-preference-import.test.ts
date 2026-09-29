@@ -187,11 +187,11 @@ it('retries after a lost service response and source key reordering without repl
 it('bounds imported metadata by the unchanged 64KiB quota before reaching 64 records', async () => {
   const f = await fixture(),
     library = new PresentationPreferenceLibrary(f.root),
-    longSource = { ...source, documentId: 'd'.repeat(2048) }
+    longSource = { ...source, projectId: 'long-source-project', documentId: 'd'.repeat(2048) }
   let accepted = 0
   for (let i = 0; i < 64; i++) {
     const changeId = 'item_' + i
-    library.save(longSource.documentId, { ...original, changeId })
+    library.save(longSource.documentId, { ...original, projectId: longSource.projectId, changeId })
     const result = await f.call({ ...f.request, source: { ...longSource, changeId } })
     if (result.error) {
       expect(result.error).toBe('quota_exceeded')
