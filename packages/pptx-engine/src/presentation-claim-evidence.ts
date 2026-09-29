@@ -1,5 +1,18 @@
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from './presentation-source-limits'
-import { presentationSourceAttachmentId } from './presentation-plan'
+import {
+  presentationSourceAttachmentId,
+  PRESENTATION_PLAN_SCHEMA,
+  type PresentationPlan,
+} from './presentation-plan'
+import {
+  parsePresentationResearchRecord,
+  type PresentationResearchRecord,
+} from '@wiswork/project-store/presentation-research'
+import { canonicalPresentationValue as canonical } from '@wiswork/project-store/presentation-canonical'
+import {
+  presentationResearchClaimBindingFindings,
+  type PresentationResearchBindingFinding,
+} from './presentation-research-binding'
 import { array, choice, id, number, object, text, valid } from './presentation-schema'
 
 export interface PresentationClaimEvidence {
@@ -12,12 +25,20 @@ export interface PresentationClaimEvidence {
   pageId: string
   claimId: string
   statement: string
+  documentId?: string
+  claim?: PresentationPlan['claims'][number]
+  research?: {
+    binding: NonNullable<PresentationPlan['research']>
+    record: PresentationResearchRecord
+    findings: PresentationResearchBindingFinding[]
+  }
   source: {
     id: string
     uri: string
     snapshotAttachmentId?: string
     excerpt: string
     locator?: string
+    asOf?: string
   }
   attachment: {
     id: string
@@ -139,6 +160,109 @@ const schema = object({
     host: choice('not_checked'),
   }),
 })
+export const PRESENTATION_CLAIM_EVIDENCE_LIMIT = 256 * 1024
+export const PRESENTATION_BOUND_CLAIM_EVIDENCE_LIMIT = 512 * 1024
+export function presentationClaimEvidenceLimit(value: unknown): number {
+  return (value as Partial<PresentationClaimEvidence> | null)?.research !== undefined
+    ? PRESENTATION_BOUND_CLAIM_EVIDENCE_LIMIT
+    : PRESENTATION_CLAIM_EVIDENCE_LIMIT
+}
+function validateResearchContext(evidence: PresentationClaimEvidence) {
+  function fail(): never {
+    throw new Error('presentation_claim_evidence_invalid:research')
+  }
+  const context = evidence.research,
+    claim = evidence.claim
+  if (
+    !context ||
+    !claim ||
+    typeof evidence.documentId !== 'string' ||
+    !evidence.documentId.trim() ||
+    evidence.documentId.length > 4096 ||
+    !valid(claim, PRESENTATION_PLAN_SCHEMA.properties!.claims!.items!) ||
+    !valid(context.binding, PRESENTATION_PLAN_SCHEMA.properties!.research!) ||
+    Object.keys(context).sort().join(',') !== 'binding,findings,record'
+  )
+    fail()
+  const record = parsePresentationResearchRecord(context.record),
+    binding = context.binding
+  if (
+    record.state !== 'completed' ||
+    record.documentId !== evidence.documentId ||
+    record.projectId !== evidence.projectId ||
+    record.id !== binding.ledgerId ||
+    record.sequence !== binding.sequence ||
+    record.draftDigest !== binding.draftDigest ||
+    !Number.isSafeInteger(binding.sequence) ||
+    claim.id !== evidence.claimId ||
+    claim.statement !== evidence.statement ||
+    !claim.sourceIds.includes(evidence.source.id) ||
+    new Set(claim.sourceIds).size !== claim.sourceIds.length ||
+    new Set(binding.sources.map((m) => m.sourceId)).size !== binding.sources.length ||
+    new Set(binding.claims.map((m) => m.claimId)).size !== binding.claims.length
+  )
+    fail()
+  if (['fact', 'quote', 'calculation'].includes(claim.type) && !claim.sourceIds.length) fail()
+  if (claim.type === 'calculation' && !claim.calculation) fail()
+  const reproduction = claim.calculation?.reproduction
+  if (
+    reproduction &&
+    (claim.type !== 'calculation' ||
+      reproduction.bindings.length !== claim.calculation!.inputs.length ||
+      new Set(reproduction.bindings.map((b) => b.name)).size !== reproduction.bindings.length ||
+      new Set(reproduction.bindings.map((b) => b.inputIndex)).size !==
+        reproduction.bindings.length ||
+      reproduction.bindings.some(
+        (b) =>
+          !Number.isInteger(b.inputIndex) ||
+          b.inputIndex >= claim.calculation!.inputs.length ||
+          ['prototype', 'constructor', '__proto__'].includes(b.name) ||
+          !claim.sourceIds.includes(b.sourceId),
+      ))
+  )
+    fail()
+  const sources = new Map(binding.sources.map((m) => [m.sourceId, m.researchSourceId]))
+  if (
+    binding.sources.some((m) => !record.draft.sources.some((s) => s.id === m.researchSourceId)) ||
+    binding.claims.some((m) => !record.draft.facts.some((f) => f.claimId === m.researchClaimId))
+  )
+    fail()
+  const pick = (v: object, keys: string[]) =>
+    Object.fromEntries(keys.map((k) => [k, (v as Record<string, unknown>)[k]]))
+  const sourceMapping = sources.get(evidence.source.id)
+  if (sourceMapping) {
+    const original = record.draft.sources.find((s) => s.id === sourceMapping)!
+    if (
+      canonical(
+        pick(evidence.source, ['uri', 'snapshotAttachmentId', 'excerpt', 'locator', 'asOf']),
+      ) !== canonical(pick(original, ['uri', 'snapshotAttachmentId', 'excerpt', 'locator', 'asOf']))
+    )
+      fail()
+  }
+  if (evidence.source.asOf !== undefined && !valid(evidence.source.asOf, text(100, 1))) fail()
+  const mapping = binding.claims.find((m) => m.claimId === claim.id)
+  if (mapping) {
+    const fact = record.draft.facts.find((f) => f.claimId === mapping.researchClaimId)!
+    if (
+      canonical(pick(claim, ['statement', 'type', 'asOf', 'jurisdiction'])) !==
+        canonical(pick(fact, ['statement', 'type', 'asOf', 'jurisdiction'])) ||
+      canonical(
+        claim.calculation
+          ? pick(claim.calculation, ['formula', 'inputs', 'unit', 'currency'])
+          : undefined,
+      ) !==
+        canonical(
+          fact.calculation
+            ? pick(fact.calculation, ['formula', 'inputs', 'unit', 'currency'])
+            : undefined,
+        ) ||
+      claim.sourceIds.some((id) => !sources.has(id) || !fact.sourceRefs.includes(sources.get(id)!))
+    )
+      fail()
+  }
+  const findings = presentationResearchClaimBindingFindings(claim, binding, record)
+  if (canonical(context.findings) !== canonical(findings)) fail()
+}
 /** Validates literal evidence only; matching does not verify truth or source authority. */
 export function parsePresentationClaimEvidence(value: unknown): PresentationClaimEvidence {
   const reject = (): never => {
@@ -147,18 +271,26 @@ export function parsePresentationClaimEvidence(value: unknown): PresentationClai
   // Parsed attachment text is not XML: preserve form feeds and other original code units.
   const rawText = (value as Partial<PresentationClaimEvidence> | null)?.attachment?.text
   if (typeof rawText !== 'string' || rawText.length > 8000) reject()
-  if (
-    !valid(
-      {
-        ...(value as object),
-        attachment: { ...(value as PresentationClaimEvidence).attachment, text: '' },
-      },
-      schema,
-    )
-  )
-    reject()
+  const base = {
+    ...(value as PresentationClaimEvidence),
+    attachment: { ...(value as PresentationClaimEvidence).attachment, text: '' },
+    source: { ...(value as PresentationClaimEvidence).source },
+  }
+  delete base.documentId
+  delete base.claim
+  delete base.research
+  delete base.source.asOf
+  if (!valid(base, schema)) reject()
   const report = value as PresentationClaimEvidence
   const { attachment, source } = report
+  if (report.research !== undefined) validateResearchContext(report)
+  else if (
+    Object.hasOwn(report, 'research') ||
+    Object.hasOwn(report, 'documentId') ||
+    Object.hasOwn(report, 'claim') ||
+    Object.hasOwn(source, 'asOf')
+  )
+    reject()
   let attachmentId: string | undefined
   try {
     attachmentId = presentationSourceAttachmentId(source)
@@ -166,7 +298,8 @@ export function parsePresentationClaimEvidence(value: unknown): PresentationClai
     reject()
   }
   if (
-    new TextEncoder().encode(JSON.stringify(report)).byteLength > 256 * 1024 ||
+    new TextEncoder().encode(JSON.stringify(report)).byteLength >
+      presentationClaimEvidenceLimit(report) ||
     ![report.planRevision, attachment.offset, attachment.totalChars].every(Number.isSafeInteger) ||
     attachmentId !== attachment.id ||
     attachment.offset + attachment.text.length > attachment.totalChars ||

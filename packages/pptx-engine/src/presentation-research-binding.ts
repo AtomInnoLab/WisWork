@@ -83,18 +83,27 @@ export function presentationResearchBindingFindings(
   assertPresentationResearchBinding(plan, recordValue)
   if (!plan.research) return []
   const record = parsePresentationResearchRecord(recordValue)
+  return plan.claims.flatMap((claim) =>
+    presentationResearchClaimBindingFindings(claim, plan.research!, record),
+  )
+}
+
+/** Callers validate their full plan or evidence context before deriving claim findings. */
+export function presentationResearchClaimBindingFindings(
+  claim: PresentationPlan['claims'][number],
+  binding: NonNullable<PresentationPlan['research']>,
+  record: PresentationResearchRecord,
+): PresentationResearchBindingFinding[] {
   const findings: PresentationResearchBindingFinding[] = []
-  const mappedResearchClaims = new Set(
-    plan.research.claims.map((mapping) => mapping.researchClaimId),
-  )
+  const mappedResearchClaims = new Set(binding.claims.map((mapping) => mapping.researchClaimId))
   const sourceMappings = new Map(
-    plan.research.sources.map((mapping) => [mapping.sourceId, mapping.researchSourceId]),
+    binding.sources.map((mapping) => [mapping.sourceId, mapping.researchSourceId]),
   )
-  for (const claim of plan.claims) {
-    const mapping = plan.research.claims.find((item) => item.claimId === claim.id)
+  {
+    const mapping = binding.claims.find((item) => item.claimId === claim.id)
     if (!mapping) {
       findings.push({ code: 'unmapped_claim', claimId: claim.id })
-      continue
+      return findings
     }
     const original = record.draft.facts.find((item) => item.claimId === mapping.researchClaimId)!
     const base = { claimId: claim.id, researchClaimId: original.claimId }

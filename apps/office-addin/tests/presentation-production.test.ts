@@ -1381,3 +1381,14 @@ it('accepts a maximum bounded content report above 64 KiB and rejects transport 
     output: 'presentation_response_invalid',
   })
 })
+
+it('keeps the original 256KiB wire response bound for evidence without research context', async () => {
+  const f = fixture()
+  f.request.mockResolvedValue(
+    new Response(JSON.stringify(evidenceResponse()) + ' '.repeat(256 * 1024)),
+  )
+  expect(await f.skill.executeTool(evidenceCall)).toMatchObject({
+    isError: true,
+    output: 'presentation_response_invalid',
+  })
+})

@@ -58,7 +58,7 @@ export function createPresentationEvidenceDeliverySkill(
   return {
     id: 'office-presentation-evidence-delivery',
     systemPrompt:
-      'Delivery reports describe frozen content evidence only. Arithmetic reproduction verifies calculation only. Sources, timeliness, host QA and Office round trip remain unverified. Keep unresolved issues and stale dispositions visible. Recording an explanation never proves a claim.',
+      'Delivery reports describe frozen content evidence only. Arithmetic reproduction verifies calculation only. Sources, timeliness, host QA and Office round trip remain unverified. Keep unresolved issues and stale dispositions visible. Bound research conflicts and omitted or unavailable references are page-scoped issues with original research context. One supported source-window review never resolves these findings. Read both sides and retain qualifiers; explanations and deferrals are dispositions, not source authority or timeliness checks. Recording an explanation never proves a claim.',
     get tools() {
       return options.available() ? tools : []
     },

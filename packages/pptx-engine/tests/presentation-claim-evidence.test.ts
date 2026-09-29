@@ -188,3 +188,45 @@ it('requires fetched URL provenance to carry a bounded retrieval time and snapsh
     ).toThrow()
   expect(() => parsePresentationClaimEvidence({ ...value, attachment })).toThrow()
 })
+import { researchFixture } from './fixtures/presentation-research'
+import { presentationResearchBindingFindings } from '../src/presentation-research-binding'
+it('retains complete bound frozen claim and original research with professional qualifiers', () => {
+  const { plan, record } = researchFixture()
+  const source = plan.sources[0]!,
+    claim = plan.claims[0]!
+  const evidence = {
+    ...report(),
+    projectId: plan.projectId,
+    claimId: claim.id,
+    statement: claim.statement,
+    documentId: record.documentId,
+    claim,
+    source: {
+      id: source.id,
+      uri: source.uri,
+      snapshotAttachmentId: source.snapshotAttachmentId,
+      excerpt: source.excerpt,
+      locator: source.locator,
+      asOf: source.asOf,
+    },
+    research: {
+      binding: plan.research!,
+      record,
+      findings: presentationResearchBindingFindings(plan, record).filter(
+        (f) => f.claimId === claim.id,
+      ),
+    },
+  }
+  evidence.source.uri = `attachment:${hash}`
+  delete evidence.source.snapshotAttachmentId
+  evidence.source.excerpt = '原文'
+  delete evidence.source.locator
+  delete evidence.source.asOf
+  // Bind the same actual source literal used by the original text window.
+  record.draft.sources[0]!.uri = evidence.source.uri
+  record.draft.sources[0]!.excerpt = evidence.source.excerpt
+  delete record.draft.sources[0]!.locator
+  delete record.draft.sources[0]!.snapshotAttachmentId
+  delete record.draft.sources[0]!.asOf
+  expect(parsePresentationClaimEvidence(evidence).research?.record).toEqual(record)
+})

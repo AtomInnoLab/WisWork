@@ -38,7 +38,7 @@ function IssueForm({
           disabled={disabled}
           onChange={(event) => setState(event.target.value as typeof state)}
         >
-          <option value="open">待处理</option>
+          <option value="open">待处理（重新打开）</option>
           <option value="deferred">暂缓</option>
           <option value="explained">已说明</option>
         </select>
@@ -58,6 +58,109 @@ function IssueForm({
         记录处置
       </button>
     </form>
+  )
+}
+const researchReasons: Record<string, string> = {
+  research_unmapped_claim: '计划主张未映射研究',
+  research_conflict_partner_omitted: '未选用冲突另一方',
+  research_source_reference_unselected: '研究引用未选入计划',
+  research_source_unavailable: '原文尚不可用',
+  research_claim_conflict: '研究结论存在冲突',
+}
+function ResearchIssueContext({
+  issue,
+  report,
+}: {
+  issue: DeliveryIssue
+  report: PresentationDeliveryReport
+}) {
+  const binding = issue.research
+  const record = report.research?.record
+  if (
+    !binding ||
+    !record ||
+    binding.ledgerId !== record.id ||
+    binding.sequence !== record.sequence ||
+    binding.draftDigest !== record.draftDigest
+  )
+    return null
+  const claimIds = [binding.researchClaimId, ...binding.relatedClaimIds].filter(Boolean)
+  const facts = record.draft.facts.filter((fact) => claimIds.includes(fact.claimId))
+  const sourceIds = new Set([...binding.sourceIds, ...facts.flatMap((fact) => fact.sourceRefs)])
+  return (
+    <details aria-label="逐页研究问题上下文">
+      <summary>原研究结论、冲突与来源</summary>
+      <p>
+        原研究 ID：{binding.ledgerId} · 版本 #{binding.sequence}
+      </p>
+      <p>已说明或暂缓仍保留研究缺口；重新打开继续审查，不代表事实支持、来源认证或核验完成。</p>
+      {!binding.researchClaimId && <p>此计划主张没有绑定原研究结论，需人工核对。</p>}
+      {facts.map((fact) => (
+        <section key={fact.claimId}>
+          <p>
+            {fact.claimId === binding.researchClaimId ? '对应原结论' : '相关或相反结论'}{' '}
+            {fact.claimId}：{fact.statement}
+          </p>
+          <p>
+            类型：
+            {
+              {
+                fact: '事实主张',
+                quote: '引文',
+                calculation: '计算',
+                judgment: '判断',
+                assumption: '假设',
+              }[fact.type]
+            }
+            ； 声明来源级别：
+            {
+              {
+                primary: '一手来源',
+                authoritative_secondary: '权威二手来源',
+                secondary: '二手来源',
+                unverified: '未核验',
+              }[fact.sourceTier]
+            }
+            ； 声明可信度：{{ high: '高', medium: '中', low: '低' }[fact.confidence]}
+            ，仍待独立审查。
+          </p>
+          <p>原研究来源：{fact.sourceRefs.join('、') || '未提供'}</p>
+          {fact.asOf && <p>数据时点：{fact.asOf}</p>}
+          {fact.jurisdiction && <p>适用范围：{fact.jurisdiction}</p>}
+          {fact.calculation && (
+            <p>
+              计算：{fact.calculation.formula}；输入：{fact.calculation.inputs.join('、')}
+              {fact.calculation.unit && `；单位：${fact.calculation.unit}`}
+              {fact.calculation.currency && `；币种：${fact.calculation.currency}`}
+            </p>
+          )}
+        </section>
+      ))}
+      {record.draft.sources
+        .filter((source) => sourceIds.has(source.id))
+        .map((source) => (
+          <section key={source.id}>
+            <p>
+              原研究来源 {source.id}：
+              {/^https?:/.test(source.uri) ? (
+                <a href={source.uri} target="_blank" rel="noreferrer">
+                  {source.title}
+                </a>
+              ) : (
+                source.title
+              )}
+            </p>
+            <blockquote>{source.excerpt || '未提供原文摘录'}</blockquote>
+            <p>
+              {record.sources?.find((item) => item.sourceId === source.id)?.status === 'found'
+                ? '找到原文摘录，不证明主张成立'
+                : '原文尚不可用，仍需核对完整资料'}
+            </p>
+            {source.locator && <p>原文位置：{source.locator}</p>}
+            {source.asOf && <p>资料数据时点：{source.asOf}</p>}
+          </section>
+        ))}
+    </details>
   )
 }
 function IssueList({
@@ -89,7 +192,7 @@ function IssueList({
                   ? '网页快照与计划网址不匹配'
                   : issue.code === 'source_locator_mismatch'
                     ? '计划定位与原文实际位置不匹配'
-                    : issue.code}{' '}
+                    : (researchReasons[issue.code] ?? issue.code)}{' '}
               · 主张 {issue.claimId}：
               {report.plan.claims.find((claim) => claim.id === issue.claimId)?.statement}
               {issue.sourceId && (
@@ -100,9 +203,10 @@ function IssueList({
                   </a>
                 </>
               )}{' '}
-              · {issue.disposition.state}
+              · {{ open: '待处理', deferred: '暂缓', explained: '已说明' }[issue.disposition.state]}
               {issue.disposition.stale ? ' · 原处置已过期，当前待处理' : ''}
             </p>
+            <ResearchIssueContext issue={issue} report={report} />
             <IssueForm
               key={`${issue.id}-${issue.digest}-${report.issueLedger.revision}`}
               issue={issue}

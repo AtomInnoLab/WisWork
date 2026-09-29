@@ -1,3 +1,5 @@
+import { presentationResearchBindingFindings } from '@wiswork/pptx-engine/presentation-research-binding'
+import type { PresentationResearchRecord } from '@wiswork/project-store/presentation-research'
 import {
   readBoundPresentationResearch,
   type PresentationResearchReader,
@@ -10,6 +12,7 @@ import {
 } from '@wiswork/pptx-engine/presentation-claim-review'
 import {
   parsePresentationClaimEvidence,
+  presentationClaimEvidenceLimit,
   matchPresentationClaimExcerpt,
 } from '@wiswork/pptx-engine/presentation-claim-evidence'
 import type {
@@ -233,6 +236,7 @@ export async function handlePresentationProduction(
   }
   let record = store.production(projectId, documentId, requestId)
   let researchValidated = false
+  let boundResearch: PresentationResearchRecord | undefined
   if (request.operation === 'production_rebuild_page') {
     const parent = store.production(projectId, documentId, request.parentRequestId as string)
     if (!parent) throw new Error('not_found')
@@ -315,7 +319,13 @@ export async function handlePresentationProduction(
   const deck = parsePresentationDeck(record.deck)
   const plan = parsePresentationPlan(record.plan.plan)
   if (!researchValidated)
-    await readBoundPresentationResearch(plan, documentId, projectId, options.readResearch, signal)
+    boundResearch = await readBoundPresentationResearch(
+      plan,
+      documentId,
+      projectId,
+      options.readResearch,
+      signal,
+    )
   assertDeckMatchesPresentationPlan(deck, plan)
   if (request.operation === 'production_page_reviews') {
     check(signal)
@@ -433,6 +443,19 @@ export async function handlePresentationProduction(
       pageId: page.id,
       claimId: claim.id,
       statement: claim.statement,
+      ...(plan.research
+        ? {
+            documentId,
+            claim: structuredClone(claim),
+            research: {
+              binding: plan.research,
+              record: boundResearch!,
+              findings: presentationResearchBindingFindings(plan, boundResearch!).filter(
+                (finding) => finding.claimId === claim.id,
+              ),
+            },
+          }
+        : {}),
       source: {
         id: source.id,
         uri: source.uri,
@@ -441,6 +464,7 @@ export async function handlePresentationProduction(
           : {}),
         excerpt: source.excerpt,
         ...(source.locator !== undefined ? { locator: source.locator } : {}),
+        ...(plan.research && source.asOf !== undefined ? { asOf: source.asOf } : {}),
       },
       attachment: {
         id: attachmentId,
@@ -466,7 +490,8 @@ export async function handlePresentationProduction(
         host: 'not_checked',
       },
     }
-    if (Buffer.byteLength(JSON.stringify(report)) > 256 * 1024) throw new Error('output_too_large')
+    if (Buffer.byteLength(JSON.stringify(report)) > presentationClaimEvidenceLimit(report))
+      throw new Error('output_too_large')
     return parsePresentationClaimEvidence(report)
   }
   if (request.operation === 'production_content_check') {

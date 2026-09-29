@@ -37,6 +37,14 @@ export interface DeliveryIssue {
   code: string
   claimId: string
   sourceId?: string
+  research?: {
+    ledgerId: string
+    sequence: number
+    draftDigest: string
+    researchClaimId?: string
+    relatedClaimIds: string[]
+    sourceIds: string[]
+  }
   digest: string
   category: 'needs_human' | 'unverifiable'
   disposition: { state: 'open' | 'deferred' | 'explained'; stale: boolean; actionId?: string }
@@ -134,7 +142,7 @@ function exact(value: unknown, keys: string[]): asserts value is Record<string, 
 const digestValid = (value: unknown): boolean =>
   typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const normalize = (value: string): string => value.replace(/\s+/g, ' ').trim()
-type Seed = Pick<DeliveryIssue, 'id' | 'code' | 'claimId' | 'sourceId' | 'category'>
+type Seed = Pick<DeliveryIssue, 'id' | 'code' | 'claimId' | 'sourceId' | 'category' | 'research'>
 function seeds(
   report: PresentationDeliveryReport,
   pageIndex: number,
@@ -218,6 +226,66 @@ function seeds(
         reproduced: '',
       }[calculation.status]
       if (code) add(code)
+    }
+    if (report.research) {
+      const { record, findings } = report.research
+      const mapping = report.plan.research!.claims.find((item) => item.claimId === claimId)
+      const original = record.draft.facts.find((item) => item.claimId === mapping?.researchClaimId)
+      const researchIssue = (
+        code: string,
+        relatedClaimIds: string[],
+        sourceIds: string[],
+        category: DeliveryIssue['category'],
+      ) => {
+        result.push({
+          id: `p${pageIndex}_c${claimIndex}_sx_${code}`,
+          code,
+          claimId,
+          category,
+          research: {
+            ledgerId: record.id,
+            sequence: record.sequence,
+            draftDigest: record.draftDigest,
+            ...(original ? { researchClaimId: original.claimId } : {}),
+            relatedClaimIds: [...new Set(relatedClaimIds)].sort(),
+            sourceIds: [...new Set(sourceIds)].sort(),
+          },
+        })
+      }
+      const codes = {
+        unmapped_claim: ['research_unmapped_claim', 'unverifiable'],
+        omitted_conflict_partner: ['research_conflict_partner_omitted', 'needs_human'],
+        unselected_source_ref: ['research_source_reference_unselected', 'needs_human'],
+        source_unavailable: ['research_source_unavailable', 'unverifiable'],
+      } as const
+      for (const [findingCode, [code, category]] of Object.entries(codes)) {
+        const grouped = findings.filter(
+          (item) => item.claimId === claimId && item.code === findingCode,
+        )
+        if (grouped.length)
+          researchIssue(
+            code,
+            grouped.flatMap((item) =>
+              item.relatedResearchClaimId ? [item.relatedResearchClaimId] : [],
+            ),
+            grouped.flatMap((item) => (item.sourceId ? [item.sourceId] : [])),
+            category,
+          )
+      }
+      if (original) {
+        const partners = record.draft.facts.filter(
+          (item) =>
+            original.conflictsWith.includes(item.claimId) ||
+            item.conflictsWith.includes(original.claimId),
+        )
+        if (partners.length)
+          researchIssue(
+            'research_claim_conflict',
+            partners.map((item) => item.claimId),
+            [original, ...partners].flatMap((item) => item.sourceRefs),
+            'needs_human',
+          )
+      }
     }
   }
   return result
@@ -360,7 +428,7 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
       page.title !== slide.title ||
       !['pending', 'building', 'compiled', 'failed'].includes(page.productionState) ||
       !Array.isArray(page.issues) ||
-      page.issues.length > 608
+      page.issues.length > (plan.research ? 768 : 608)
     )
       invalid()
     const calculations = slide.claimIds
@@ -376,7 +444,16 @@ export function parsePresentationDeliveryReport(value: unknown): PresentationDel
     const expected = seeds(report, index, missing)
     if (expected.length !== page.issues.length) invalid()
     for (const [issueIndex, issue] of page.issues.entries()) {
-      exact(issue, ['id', 'code', 'claimId', 'sourceId', 'digest', 'category', 'disposition'])
+      exact(issue, [
+        'id',
+        'code',
+        'claimId',
+        'sourceId',
+        'research',
+        'digest',
+        'category',
+        'disposition',
+      ])
       const { digest, disposition: saved, ...seed } = issue
       if (
         !digestValid(digest) ||
@@ -480,6 +557,7 @@ export async function buildPresentationDeliveryReport(
           ? { sourceAudit: report.sourceAudit.find((item) => item.sourceId === seed.sourceId) }
           : {}),
         relevantReviews,
+        ...(seed.research ? { research: researchIssueContext(report, seed) } : {}),
         ...(calculation ? { calculation } : {}),
       })
       const bytes = await globalThis.crypto.subtle.digest(
@@ -500,6 +578,23 @@ export async function buildPresentationDeliveryReport(
     })
   }
   return parsePresentationDeliveryReport(report)
+}
+
+function researchIssueContext(report: PresentationDeliveryReport, seed: Seed) {
+  const record = report.research!.record
+  const ids = new Set([seed.research!.researchClaimId, ...seed.research!.relatedClaimIds])
+  const facts = record.draft.facts.filter((fact) => ids.has(fact.claimId))
+  const sources = new Set([
+    ...seed.research!.sourceIds,
+    ...facts.flatMap((fact) => fact.sourceRefs),
+  ])
+  return {
+    descriptor: seed.research,
+    planClaim: report.plan.claims.find((claim) => claim.id === seed.claimId),
+    facts,
+    sources: record.draft.sources.filter((source) => sources.has(source.id)),
+    evidence: record.sources!.filter((source) => sources.has(source.sourceId)),
+  }
 }
 
 /** Encode all supplied text (including URI punctuation) as inert HTML character references. */
@@ -549,6 +644,10 @@ export function presentationDeliveryMarkdown(value: PresentationDeliveryReport):
     for (const issue of page.issues)
       lines.push(
         `- ${issue.category === 'needs_human' ? '待人工判断' : '无法核验'} (${issue.category}): ${safe(issue.code)}; claim ${safe(issue.claimId)}${issue.sourceId ? `; source ${safe(issue.sourceId)}` : ''}; ${issue.disposition.state}; stale=${issue.disposition.stale}; issue ${safe(issue.id)}; digest ${issue.digest}`,
+      )
+    for (const issue of page.issues.filter((item) => item.research))
+      lines.push(
+        `- Frozen research issue context (not verified): ${safe(JSON.stringify(researchIssueContext(report, issue)))}`,
       )
   }
   lines.push('', '## Complete claim catalog')

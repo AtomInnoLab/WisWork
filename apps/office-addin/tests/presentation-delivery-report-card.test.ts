@@ -158,3 +158,164 @@ it('shows exact frozen research identities, both conflict statements and every b
     await act(async () => root.unmount())
   }
 })
+
+it('shows page research context and keeps explained, deferred and reopened actions isolated by issue and task', async () => {
+  const { researchRecord } = await import('./presentation-research-fixture.js')
+  const record = researchRecord()
+  record.draft.facts[0]!.asOf = '2025-12-31'
+  record.draft.facts[0]!.jurisdiction = '中国大陆'
+  record.draft.facts[1]!.jurisdiction = '欧洲市场'
+  const issues = ['page-a', 'page-b'].map((pageId) => ({
+    id: `${pageId}-conflict`,
+    code: 'research_claim_conflict',
+    claimId: 'claim',
+    digest: (pageId === 'page-a' ? 'a' : 'b').repeat(64),
+    category: 'needs_human',
+    disposition: { state: 'open', stale: false },
+    research: {
+      ledgerId: record.id,
+      sequence: record.sequence,
+      draftDigest: record.draftDigest,
+      researchClaimId: 'claim1',
+      relatedClaimIds: ['claim2'],
+      sourceIds: ['source1'],
+    },
+  }))
+  const report = {
+    requestId: 'request-a',
+    planRevision: 1,
+    plan: { sources: [], claims: [{ id: 'claim', statement: '计划销售趋势' }] },
+    sourceAudit: [],
+    issueLedger: { revision: 0, actions: [] },
+    research: { record, findings: [] },
+    pages: issues.map((issue, index) => ({
+      pageId: `page-${index}`,
+      title: `页面${index}`,
+      productionState: 'compiled',
+      calculations: [],
+      issues: [issue],
+    })),
+  } as unknown as PresentationDeliveryReport
+  const recordIssueAction = vi.fn()
+  const controller = { recordIssueAction } as unknown as PresentationProjectController
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+  const render = async (value = report, disabled = false) =>
+    act(async () =>
+      root.render(
+        React.createElement(PresentationDeliveryReportCard, {
+          report: value,
+          controller,
+          disabled,
+        }),
+      ),
+    )
+  const edit = async (id: string, state: string, note: string) =>
+    act(async () => {
+      const select = container.querySelector(`[aria-label="处置状态 ${id}"]`) as HTMLSelectElement
+      select.value = state
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      const textarea = container.querySelector(
+        `[aria-label="处置理由 ${id}"]`,
+      ) as HTMLTextAreaElement
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        textarea,
+        note,
+      )
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  const submit = async (id: string) =>
+    act(async () => {
+      const form = container.querySelector(`[aria-label="处置理由 ${id}"]`)!.closest('form')!
+      ;(form.querySelector('button') as HTMLButtonElement).click()
+    })
+  try {
+    await render()
+    const page = container.querySelector('[aria-label="证据页面 页面0"]')!
+    expect(page.textContent).toContain('研究结论存在冲突')
+    const context = page.querySelector(
+      'details[aria-label="逐页研究问题上下文"]',
+    ) as HTMLDetailsElement
+    expect(context.open).toBe(false)
+    expect(context.textContent).toContain('ledger1')
+    expect(context.textContent).toContain('销售增长')
+    expect(context.textContent).toContain('销售下降')
+    expect(context.textContent).toContain('中国大陆')
+    expect(context.textContent).toContain('欧洲市场')
+    expect(context.textContent).toContain('2025-12-31')
+    expect(context.querySelector('a')?.getAttribute('href')).toBe('https://example.com/report')
+    expect(context.textContent).toContain('原文尚不可用')
+    expect(context.textContent).toContain('已说明或暂缓仍保留研究缺口')
+    await edit('page-a-conflict', 'explained', '保留相反结论供审查')
+    await submit('page-a-conflict')
+    expect(recordIssueAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        issueId: 'page-a-conflict',
+        issueDigest: 'a'.repeat(64),
+        state: 'explained',
+        note: '保留相反结论供审查',
+      }),
+    )
+    await edit('page-b-conflict', 'deferred', '等待原始资料')
+    await submit('page-b-conflict')
+    expect(recordIssueAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ issueId: 'page-b-conflict', state: 'deferred' }),
+    )
+    await edit('page-a-conflict', 'open', '重新打开审查')
+    await submit('page-a-conflict')
+    expect(recordIssueAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ issueId: 'page-a-conflict', state: 'open' }),
+    )
+    await render({ ...report, requestId: 'request-b' })
+    expect(
+      (container.querySelector('[aria-label="处置理由 page-a-conflict"]') as HTMLTextAreaElement)
+        .value,
+    ).toBe('')
+    await render({ ...report, requestId: 'request-b' }, true)
+    expect(
+      (container.querySelector('[aria-label="处置状态 page-a-conflict"]') as HTMLSelectElement)
+        .disabled,
+    ).toBe(true)
+    for (const [code, reason] of [
+      ['research_unmapped_claim', '计划主张未映射研究'],
+      ['research_conflict_partner_omitted', '未选用冲突另一方'],
+      ['research_source_reference_unselected', '研究引用未选入计划'],
+      ['research_source_unavailable', '原文尚不可用'],
+    ]) {
+      const changed = {
+        ...report,
+        pages: [
+          {
+            ...report.pages[0]!,
+            issues: [
+              {
+                ...report.pages[0]!.issues[0]!,
+                code: code!,
+                research: {
+                  ...report.pages[0]!.issues[0]!.research!,
+                  sourceIds: [],
+                },
+              },
+            ],
+          },
+        ],
+      }
+      await render(changed)
+      expect(container.querySelector('[aria-label="证据页面 页面0"]')!.textContent).toContain(
+        reason,
+      )
+      expect(container.querySelector('[aria-label="逐页研究问题上下文"] a')).not.toBeNull()
+    }
+    await render({
+      ...report,
+      research: { ...report.research!, record: { ...record, id: 'other-ledger' } },
+    })
+    expect(container.querySelector('[aria-label="逐页研究问题上下文"]')).toBeNull()
+    await render({ ...report, research: undefined })
+    expect(container.querySelector('[aria-label="逐页研究问题上下文"]')).toBeNull()
+  } finally {
+    await act(async () => root.unmount())
+    container.remove()
+  }
+})
