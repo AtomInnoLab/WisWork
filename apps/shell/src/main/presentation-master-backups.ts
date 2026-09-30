@@ -8,6 +8,7 @@ import {
   lstatSync,
   renameSync,
   rmSync,
+  rmdirSync,
   type Stats,
 } from 'node:fs'
 import { mkdir, open, readdir } from 'node:fs/promises'
@@ -18,6 +19,7 @@ const CHUNK = 128 * 1024
 const MAX_BLOBS = 4096
 const MAX_DOCUMENT = 2 * 1024 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
+const sweepLocks = new Map<string, Promise<void>>()
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex')
 function invalid(): never {
   throw new Error('presentation_master_backup_invalid')
@@ -177,6 +179,53 @@ function metadata(path: string, parents: Parents): { value: Metadata; parents: P
   if (!validMetadata(value)) invalid()
   return { value, parents: scoped }
 }
+async function sweepReleased(root: string, rootParents: Parents, signal: AbortSignal) {
+  const previous = sweepLocks.get(root) ?? Promise.resolve()
+  let release!: () => void
+  const tail = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  sweepLocks.set(root, tail)
+  await previous
+  try {
+    const entries = await readdir(root)
+    guard(rootParents)
+    for (const entry of entries) {
+      if (
+        !/^\.released-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          entry,
+        )
+      )
+        continue
+      check(signal)
+      const path = join(root, entry),
+        stat = lstatSync(path)
+      if (!stat.isDirectory() || stat.isSymbolicLink()) invalid()
+      const parents = [...rootParents, { path, stat }],
+        members = await readdir(path)
+      guard(parents)
+      if (members.some((member) => !['blob', 'metadata.json'].includes(member))) invalid()
+      if (members.includes('metadata.json')) metadata(path, rootParents)
+      else if (members.length) invalid()
+      if (members.includes('blob')) {
+        const blob = join(path, 'blob')
+        if (leaf(blob, parents).size > MAX_BLOB) invalid()
+        rmSync(blob)
+      }
+      if (members.includes('metadata.json')) {
+        const file = join(path, 'metadata.json')
+        leaf(file, parents)
+        rmSync(file)
+      }
+      guard(rootParents)
+      rmdirSync(path)
+    }
+    await syncDirectory(rootParents)
+  } finally {
+    release()
+    if (sweepLocks.get(root) === tail) sweepLocks.delete(root)
+  }
+}
 export function createPresentationMasterBackupService(options: {
   userDataPath: string
   storageDirectory?: 'presentation-master-backups' | 'presentation-package-backups'
@@ -245,6 +294,7 @@ export function createPresentationMasterBackupService(options: {
       const userStat = lstatSync(userData)
       if (!userStat.isDirectory() || userStat.isSymbolicLink()) invalid()
       const rootParents = await directory(root, [{ path: userData, stat: userStat }])
+      await sweepReleased(root, rootParents, signal)
       const documentParents = await directory(document, rootParents)
       const entries = await readdir(document)
       guard(documentParents)
@@ -345,9 +395,7 @@ export function createPresentationMasterBackupService(options: {
         renameSync(dir, releasedPath)
         await syncDirectory(documentParents)
         try {
-          guard(rootParents)
-          rmSync(releasedPath, { recursive: true })
-          await syncDirectory(rootParents)
+          await sweepReleased(root, rootParents, signal)
         } catch {
           // The source reservation is already gone. A later storage sweep can remove
           // this isolated release directory without touching an active backup.

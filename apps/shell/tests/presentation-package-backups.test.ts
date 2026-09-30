@@ -7,6 +7,7 @@ import {
   writeFileSync,
   renameSync,
   readFileSync,
+  existsSync,
   constants,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -131,6 +132,40 @@ it('releases only the exact backup identity and returns capacity', async () => {
       new AbortController().signal,
     ),
   ).toMatchObject({ backups: [] })
+})
+it('sweeps interrupted releases after the directory left document quota', async () => {
+  const f = fixture()
+  await f.begin()
+  const root = join(f.root, 'presentation-package-backups'),
+    active = join(
+      root,
+      sha(f.scope.documentId),
+      sha(JSON.stringify([f.scope.changeId, f.scope.key])),
+    ),
+    released = join(root, '.released-00000000-0000-4000-8000-000000000001')
+  renameSync(active, released)
+  await f.begin()
+  expect(existsSync(released)).toBe(false)
+  const partial = join(root, '.released-00000000-0000-4000-8000-000000000002')
+  renameSync(active, partial)
+  rmSync(join(partial, 'blob'))
+  await f.begin()
+  expect(existsSync(partial)).toBe(false)
+  expect(await f.call('package_backup_status')).toMatchObject({ status: 'uploading' })
+})
+it('refuses a substituted released directory without touching its target', async () => {
+  const f = fixture()
+  await f.begin()
+  const outside = join(f.root, 'outside-release-target')
+  mkdirSync(outside)
+  writeFileSync(join(outside, 'sentinel'), 'keep')
+  symlinkSync(
+    outside,
+    join(f.root, 'presentation-package-backups', '.released-00000000-0000-4000-8000-000000000003'),
+    'dir',
+  )
+  await expect(f.begin()).rejects.toThrow('presentation_package_backup_invalid')
+  expect(readFileSync(join(outside, 'sentinel'), 'utf8')).toBe('keep')
 })
 it('rejects altered scopes, overlap, malformed requests, unready reads and corrupted bytes', async () => {
   const f = fixture()
