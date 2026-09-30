@@ -2,6 +2,8 @@
 
 状态：**工程回归输入及一份真实扫描件已冻结；等价纯文本的人工校对和 PowerPoint 执行仍未完成**。这不是完整的正式专业验收材料包，不计入已就绪候选材料数量或 20 项通过数。
 
+新增[30 页可视索引](naca-rm-l50b01-page-index.jpg)和[人工复核工作单](naca-rm-l50b01-human-review-worklist.md)，把拟定的 8 页摘要来源范围、关键数字与跨页结论的复核点固定下来。索引是原 PDF 的低分辨率导航图，不能替代打开原页；工作单全部保持“待复核”，不视为等价辅助文本或事实批准。
+
 ## 新增真实扫描件（2026-09-30）
 
 NASA NTRS 的[NACA 研究备忘录 L50B01](https://ntrs.nasa.gov/citations/19930086231)是 1950 年纸质报告的实际扫描，记录页标明 *Work of the US Gov. Public Use Permitted*。本包 `naca-rm-l50b01-1950-real-scan.pdf` 保存其 30 页扫描图像和原有 OCR 层；`naca-rm-l50b01-scan-audit.json` 记录原始[下载地址](https://ntrs.nasa.gov/api/citations/19930086231/downloads/19930086231.pdf)、原始字节摘要、436 字节下载封装头、去除封装后 PDF 的摘要，以及逐页可提取字符数。只移除 PDF 标头前的封装字节，没有重新绘制页面。第 2 页目视确认为扫描空白页且无提取文字；部分图表页虽有 OCR 字符，但数量少且明显存在误识别。
