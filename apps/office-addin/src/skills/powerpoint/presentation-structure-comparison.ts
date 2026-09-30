@@ -53,6 +53,12 @@ const parser = new XMLParser({
   parseTagValue: false,
   trimValues: false,
 })
+const orderedParser = new XMLParser({
+  preserveOrder: true,
+  ignoreAttributes: false,
+  parseTagValue: false,
+  trimValues: false,
+})
 const SOLID_HEX = /^[0-9A-Fa-f]{6}$/
 const RELATIONSHIP_BASE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
 
@@ -162,6 +168,45 @@ function textRuns(value: unknown): string[] {
           ? []
           : textRuns(child),
   )
+}
+
+function orderedTags(tree: Xml[], tag: string): Xml[] {
+  return tree.flatMap((node) =>
+    Object.entries(node).flatMap(([key, value]) =>
+      Array.isArray(value) ? [...(key === tag ? [node] : []), ...orderedTags(value, tag)] : [],
+    ),
+  )
+}
+
+function orderedShapeText(slideXml: string): Map<string, string[]> {
+  const shapes = orderedTags(orderedParser.parse(slideXml) as Xml[], 'p:sp')
+  const result = new Map<string, string[]>()
+  for (const shape of shapes) {
+    const id = orderedTags(shape['p:sp'], 'p:cNvPr')[0]?.[':@']?.['@_id']
+    if (typeof id !== 'string' || result.has(id))
+      throw new Error('presentation_qa_structure_unavailable')
+    const body = orderedTags(shape['p:sp'], 'p:txBody')
+    if (body.length > 1) throw new Error('presentation_qa_structure_unavailable')
+    const paragraphs = body.length ? orderedTags(body[0]!['p:txBody'], 'a:p') : []
+    result.set(
+      id,
+      paragraphs.map((paragraph) =>
+        (paragraph['a:p'] as Xml[])
+          .map((child) => {
+            const run = child['a:r'] ?? child['a:fld']
+            if (Array.isArray(run))
+              return orderedTags(run, 'a:t')
+                .flatMap((text) => (text['a:t'] as Xml[]).map((part) => part['#text'] ?? ''))
+                .join('')
+            if (Array.isArray(child['a:br'])) return '\n'
+            if (Array.isArray(child['a:tab'])) return '\t'
+            return ''
+          })
+          .join(''),
+      ),
+    )
+  }
+  return result
 }
 
 function textStyles(body: Xml | undefined): Array<[string, string, string, string]> {
@@ -430,6 +475,13 @@ async function readPage(
     const root = await readXml(zip, slidePath)
     if (!root) throw new Error('invalid slide XML')
     const objects = sourceObjects(root)
+    const ordered = orderedShapeText(await zip.file(slidePath)!.async('string'))
+    for (const object of objects)
+      if (object.type === 'shape') {
+        const text = ordered.get(object.shapeId)
+        if (!text) throw new Error('invalid shape text')
+        object.text = text
+      }
     if (!objects.length || objects.length > 100) throw new Error('invalid slide objects')
     const backgroundColor = await resolvedBackground(zip, slidePath, root)
     const notesText = await pageNotes(zip, slidePath)
