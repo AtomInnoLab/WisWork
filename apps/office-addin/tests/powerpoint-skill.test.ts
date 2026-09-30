@@ -1126,6 +1126,32 @@ describe('PowerPoint compatibility skill', () => {
     ).toBe(false)
     expect(savedBytes.length).toBeGreaterThan(0)
     expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(2)
+    savedBytes = new Uint8Array(0)
+    const driftProposals = createStructuredProposalController()
+    const driftRequest = vi.fn(async (body: unknown) => {
+      const response = await chartSavepoint.request(body)
+      if ((body as Record<string, unknown>).operation === 'existing_page_backup_finish')
+        activeSlideId = 'changed-after-backup'
+      return response
+    })
+    const driftSkill = createPowerPointSkill({
+      adapter: fake,
+      proposals: driftProposals,
+      chartSavepoint: { ...chartSavepoint, request: driftRequest },
+    })
+    await driftSkill.executeTool(
+      call('update_slide_chart_values', { slide_index: 0, shape_id: '8', values: [['7']] }),
+    )
+    await expect(driftProposals.confirm(driftProposals.pending()!.id)).rejects.toThrow(
+      'proposal_stale',
+    )
+    expect(
+      driftRequest.mock.calls.some(
+        ([body]) => (body as Record<string, unknown>).operation === 'existing_page_backup_release',
+      ),
+    ).toBe(true)
+    expect(savedBytes.length).toBe(0)
+    activeSlideId = 's1'
   })
 
   it.each(['unrelated', 'target'])(

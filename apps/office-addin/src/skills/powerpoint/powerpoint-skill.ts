@@ -21,7 +21,11 @@ import {
   type XmlReplacement,
 } from './powerpoint-package.js'
 import { updatePowerPointChartDataPackage } from './presentation-chart-source-package.js'
-import { saveChartPackageBackup, readChartPackageBackup } from './presentation-chart-backup.js'
+import {
+  saveChartPackageBackup,
+  readChartPackageBackup,
+  releaseChartPackageBackup,
+} from './presentation-chart-backup.js'
 import {
   validatePresentationExistingChartChange,
   type PresentationExistingChartChange,
@@ -1435,8 +1439,8 @@ export function createPowerPointSkill(options: {
           },
           confirmSignal,
         )
-        if (!(await unchanged(confirmSignal))) throw new Error('proposal_stale')
         try {
+          if (!(await unchanged(confirmSignal))) throw new Error('proposal_stale')
           await store({
             version: 1,
             changeId,
@@ -1459,18 +1463,13 @@ export function createPowerPointSkill(options: {
               (await durable.documentId()) === documentId &&
               !durable.readExistingChartChange(changeId)
             ) {
-              await durable.request(
-                {
-                  operation: 'existing_page_backup_release',
-                  documentId,
-                  backupId: backup.backupId,
-                  hostSlideId: before.slideId,
-                  slideIds: beforeSlideIds,
-                  sha256: backup.sha256,
-                  sizeBytes: backup.sizeBytes,
-                },
-                confirmSignal,
-              )
+              await releaseChartPackageBackup({
+                request: durable.request,
+                documentId,
+                hostSlideId: before.slideId,
+                slideIds: beforeSlideIds,
+                backup,
+              })
             }
           } catch {
             /* Keep the original failure; an uncertain backup must remain recoverable. */
