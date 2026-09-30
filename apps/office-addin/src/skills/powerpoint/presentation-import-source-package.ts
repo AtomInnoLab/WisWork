@@ -3,6 +3,29 @@ import { loadBoundedZip, MAX_PPTX_IMPORT_PAGE_BYTES } from './powerpoint-package
 import { inspectPowerPointChartSourcesBatch } from './presentation-chart-source-package.js'
 
 const parser = new XMLParser({ ignoreAttributes: false, parseAttributeValue: false })
+const HYPERLINK_REL =
+  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink'
+const validHttpLink = (target: unknown): boolean => {
+  if (
+    typeof target !== 'string' ||
+    !target ||
+    target.length > 2048 ||
+    target.includes('\\') ||
+    [...target].some((character) => {
+      const code = character.charCodeAt(0)
+      return code < 32 || code === 127
+    })
+  )
+    return false
+  try {
+    const url = new URL(target)
+    return (
+      ['http:', 'https:'].includes(url.protocol) && !!url.hostname && !url.username && !url.password
+    )
+  } catch {
+    return false
+  }
+}
 const validXml = (xml: string): boolean =>
   new TextEncoder().encode(xml).byteLength <= 512 * 1024 &&
   !/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) &&
@@ -113,6 +136,31 @@ export async function validatePresentationImportSourcePage(
   const referencedIds = [...slideXml.matchAll(/\br:(?:id|embed|link)="([^"]+)"/g)].map(
     (match) => match[1]!,
   )
+  const hyperlinkRefs = [...slideXml.matchAll(/<a:hlinkClick\b[^>]*\br:id="([^"]+)"/g)].map(
+    (match) => match[1]!,
+  )
+  const hyperlinkIds = new Set(hyperlinkRefs)
+  const counts = (ids: string[]) => {
+    const result = new Map<string, number>()
+    for (const id of ids) result.set(id, (result.get(id) ?? 0) + 1)
+    return result
+  }
+  const referenceCounts = counts(referencedIds),
+    hyperlinkCounts = counts(hyperlinkRefs)
+  const allowedExternal = (owner: string, rel: Record<string, unknown>) =>
+    owner === slidePaths[0] &&
+    rel['@_Type'] === HYPERLINK_REL &&
+    rel['@_TargetMode'] === 'External' &&
+    hyperlinkIds.has(rel['@_Id'] as string) &&
+    referenceCounts.get(rel['@_Id'] as string) === hyperlinkCounts.get(rel['@_Id'] as string) &&
+    validHttpLink(rel['@_Target'])
+  const validPartRelationship = (owner: string, rel: Record<string, unknown>) =>
+    typeof rel['@_Id'] === 'string' &&
+    typeof rel['@_Type'] === 'string' &&
+    typeof rel['@_Target'] === 'string' &&
+    (allowedExternal(owner, rel) ||
+      (rel['@_TargetMode'] === undefined &&
+        !!zip.file(typedTarget(owner, rel['@_Type'], rel['@_Target']) ?? '')))
   if (referencedIds.length && !slideRelsFile) invalid()
   if (slideRelsFile) {
     const slideRelsXml = await slideRelsFile.async('string')
@@ -121,16 +169,7 @@ export async function validatePresentationImportSourcePage(
     if (!slideRels) invalid()
     const references = items(slideRels.Relationship)
     if (
-      references.some(
-        (rel) =>
-          typeof rel['@_Id'] !== 'string' ||
-          typeof rel['@_Type'] !== 'string' ||
-          typeof rel['@_Target'] !== 'string' ||
-          rel['@_TargetMode'] !== undefined ||
-          !zip.file(
-            typedTarget(slidePaths[0]!, rel['@_Type'] as string, rel['@_Target'] as string) ?? '',
-          ),
-      ) ||
+      references.some((rel) => !validPartRelationship(slidePaths[0]!, rel)) ||
       new Set(references.map((rel) => rel['@_Id'])).size !== references.length
     )
       invalid()
@@ -154,16 +193,7 @@ export async function validatePresentationImportSourcePage(
     if (!root) invalid()
     const entries = items(root.Relationship)
     if (
-      entries.some(
-        (entry) =>
-          typeof entry['@_Id'] !== 'string' ||
-          typeof entry['@_Type'] !== 'string' ||
-          typeof entry['@_Target'] !== 'string' ||
-          entry['@_TargetMode'] !== undefined ||
-          !zip.file(
-            typedTarget(owner, entry['@_Type'] as string, entry['@_Target'] as string) ?? '',
-          ),
-      ) ||
+      entries.some((entry) => !validPartRelationship(owner, entry)) ||
       new Set(entries.map((entry) => entry['@_Id'])).size !== entries.length
     )
       invalid()

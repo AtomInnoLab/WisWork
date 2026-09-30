@@ -27,6 +27,49 @@ it('accepts a compiled native image page and rejects an external image relations
     'presentation_import_state_invalid',
   )
 })
+it('accepts a referenced HTTPS citation link but rejects executable or unused external links', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const slidePath = 'ppt/slides/slide1.xml',
+    relsPath = 'ppt/slides/_rels/slide1.xml.rels',
+    slideXml = await zip.file(slidePath)!.async('string'),
+    relsXml = await zip.file(relsPath)!.async('string')
+  const linkedSlide = slideXml.replace(
+    /<p:cNvPr([^>]*)\/>/,
+    '<p:cNvPr$1><a:hlinkClick r:id="rId999"/></p:cNvPr>',
+  )
+  expect(linkedSlide).not.toBe(slideXml)
+  const relationship = (url: string) =>
+    `<Relationship Id="rId999" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${url}" TargetMode="External"/>`
+  const source = async (url: string, slide = linkedSlide) => {
+    zip.file(slidePath, slide)
+    zip.file(relsPath, relsXml.replace('</Relationships>', `${relationship(url)}</Relationships>`))
+    return (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64')
+  }
+  await expect(
+    validatePresentationImportSourcePage(await source('https://example.test/source'), '256#'),
+  ).resolves.toBeUndefined()
+  await expect(
+    validatePresentationImportSourcePage(await source('javascript:alert(1)'), '256#'),
+  ).rejects.toThrow('presentation_import_state_invalid')
+  await expect(
+    validatePresentationImportSourcePage(
+      await source('https://example.test/source', slideXml),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+  await expect(
+    validatePresentationImportSourcePage(
+      await source(
+        'https://example.test/source',
+        linkedSlide.replace('</p:spTree>', '<a:blip r:embed="rId999"/></p:spTree>'),
+      ),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
 
 it('rejects an external chart workbook even when the slide relationship remains local', async () => {
   const deck = benchmarkDeck()
