@@ -101,6 +101,43 @@ it('checks each imported production page package before recording completion', a
   expect((await skill.executeTool(f.call)).output).toBe('presentation_import_uncertain')
 })
 
+it('records a cited page when host export renumbers its hyperlink relationship', async () => {
+  const f = fixture()
+  const zip = await JSZip.loadAsync(Buffer.from(fixturePage, 'base64'))
+  const slidePath = 'ppt/slides/slide1.xml'
+  const relsPath = 'ppt/slides/_rels/slide1.xml.rels'
+  const slide = await zip.file(slidePath)!.async('string')
+  const rels = await zip.file(relsPath)!.async('string')
+  const linked = slide.replace(
+    /<p:cNvPr([^>]*)\/>/,
+    '<p:cNvPr$1><a:hlinkClick r:id="rId999"/></p:cNvPr>',
+  )
+  expect(linked).not.toBe(slide)
+  const linkedRels = rels.replace(
+    '</Relationships>',
+    '<Relationship Id="rId999" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.test/source" TargetMode="External"/></Relationships>',
+  )
+  zip.file(slidePath, linked)
+  zip.file(relsPath, linkedRels)
+  const prepared = await zip.generateAsync({ type: 'base64' })
+  zip.file(slidePath, linked.replace('r:id="rId999"', 'r:id="rId998"'))
+  zip.file(relsPath, linkedRels.replace('Id="rId999"', 'Id="rId998"'))
+  const exported = await zip.generateAsync({ type: 'base64' })
+  f.artifact.pagePptxBase64 = [prepared]
+  f.artifact.pages = [f.artifact.pages![0]!]
+  f.artifact.slideCount = 1
+  const skill = createPresentationProductionDeliverySkill({
+    ...f.options,
+    adapter: { ...f.adapter, exportPage: vi.fn(async () => exported) },
+  })
+  expect((await skill.executeTool(f.call)).isError).not.toBe(true)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(f.receipts.get('production/project/request')).toMatchObject({
+    state: 'complete',
+    slideIds: ['host1'],
+  })
+})
+
 it('refuses production import before writing when the host lacks page export', async () => {
   const f = fixture()
   const skill = createPresentationProductionDeliverySkill({

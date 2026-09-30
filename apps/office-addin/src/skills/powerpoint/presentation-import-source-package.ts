@@ -5,7 +5,7 @@ import { inspectPowerPointChartSourcesBatch } from './presentation-chart-source-
 const parser = new XMLParser({ ignoreAttributes: false, parseAttributeValue: false })
 const HYPERLINK_REL =
   'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink'
-const validHttpLink = (target: unknown): boolean => {
+export const validHttpLink = (target: unknown): boolean => {
   if (
     typeof target !== 'string' ||
     !target ||

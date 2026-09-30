@@ -4,6 +4,7 @@ import {
   MAX_PPTX_IMPORT_PAGE_BYTES,
   presentationPackageDigest,
 } from './powerpoint-package.js'
+import { validHttpLink } from './presentation-import-source-package.js'
 
 const ordered = new XMLParser({
   preserveOrder: true,
@@ -82,6 +83,7 @@ async function simplePage(base64: string): Promise<string | undefined> {
   const items = relRoot?.Relationship
   const relationships = Array.isArray(items) ? items : items ? [items] : []
   const images = new Map<string, string>()
+  const links = new Map<string, string>()
   const relationIds = new Set<string>()
   for (const rel of relationships) {
     const id = rel?.['@_Id'],
@@ -91,8 +93,14 @@ async function simplePage(base64: string): Promise<string | undefined> {
       return undefined
     if (relationIds.has(id)) return undefined
     relationIds.add(id)
+    if (type === 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink') {
+      if (rel['@_TargetMode'] !== 'External' || !validHttpLink(target)) return undefined
+      links.set(id, target)
+      continue
+    }
+    if (rel['@_TargetMode'] !== undefined) return undefined
     if (!type.endsWith('/image')) continue
-    if (rel['@_TargetMode'] !== undefined || images.has(id)) return undefined
+    if (images.has(id)) return undefined
     const parts = slidePath.slice(0, slidePath.lastIndexOf('/')).split('/')
     for (const segment of target.split('/')) {
       if (segment === '..') parts.pop()
@@ -109,6 +117,7 @@ async function simplePage(base64: string): Promise<string | undefined> {
   const tree = ordered.parse(source) as Record<string, unknown>[]
   let pictures = 0,
     blips = 0
+  const usedLinks = new Set<string>()
   const shapeIds = new Set<string>()
   const visit = (nodes: unknown): boolean => {
     if (!Array.isArray(nodes)) return true
@@ -137,10 +146,19 @@ async function simplePage(base64: string): Promise<string | undefined> {
           if (!attrs || typeof id !== 'string' || !images.has(id) || attrs['@_r:link']) return false
           attrs['@_r:embed'] = images.get(id)
           blips++
+        } else if (key === 'a:hlinkClick') {
+          const attrs = node[':@'] as Record<string, unknown> | undefined
+          const id = attrs?.['@_r:id']
+          if (!attrs || typeof id !== 'string' || !links.has(id)) return false
+          attrs['@_r:id'] = links.get(id)
+          usedLinks.add(id)
         } else if (key === ':@') {
           if (
             Object.keys(child as object).some(
-              (attr) => attr.startsWith('@_r:') && !(attr === '@_r:embed' && 'a:blip' in node),
+              (attr) =>
+                attr.startsWith('@_r:') &&
+                !(attr === '@_r:embed' && 'a:blip' in node) &&
+                !(attr === '@_r:id' && 'a:hlinkClick' in node),
             )
           )
             return false
@@ -150,7 +168,13 @@ async function simplePage(base64: string): Promise<string | undefined> {
     }
     return true
   }
-  if (!visit(tree) || pictures !== blips || !/<p:bg(?:\s|>)/.test(source)) return undefined
+  if (
+    !visit(tree) ||
+    pictures !== blips ||
+    usedLinks.size !== links.size ||
+    !/<p:bg(?:\s|>)/.test(source)
+  )
+    return undefined
   const support: [string, string][] = []
   for (const path of Object.keys(zip.files).sort()) {
     if (
