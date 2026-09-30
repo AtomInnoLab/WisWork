@@ -425,6 +425,31 @@ it('does not start a native write without a complete semantic shape snapshot', a
   await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_read_failed')
   expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
 })
+it('does not start a native write when the shape list and semantic snapshot disagree', async () => {
+  const f = await fixture()
+  const proposed = await f.propose([textOp])
+  const original = f.adapter.snapshotSlide.getMockImplementation()!
+  f.adapter.snapshotSlide.mockImplementation(async (index: number) => {
+    const snapshot = await original(index)
+    snapshot.shapes.find((shape: { id: string }) => shape.id === 'sdk-0')!.left += 1
+    return snapshot
+  })
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_read_failed')
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+})
+it('does not acknowledge a write when its shape list and semantic snapshot disagree', async () => {
+  const f = await fixture()
+  const proposed = await f.propose([textOp])
+  const original = f.adapter.snapshotSlide.getMockImplementation()!
+  f.adapter.snapshotSlide.mockImplementation(async (index: number) => {
+    const snapshot = await original(index)
+    if (f.adapter.executeDeclarative.mock.calls.length)
+      snapshot.shapes.find((shape: { id: string }) => shape.id === 'sdk-0')!.left += 1
+    return snapshot
+  })
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
 it.each([
   geometryOp,
   { op: 'delete_shape', slide_index: 0, shape_id: 'sdk-id' } as NativeModifyOperation,

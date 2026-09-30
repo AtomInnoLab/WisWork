@@ -265,11 +265,21 @@ export function createPresentationNativeModifySkill(options: Options) {
       const beforeSemantic = await options.adapter.snapshotSlide(p.slideIndex, signal, true)
       await guard(r.documentId, signal, token, newWrite)
       if (beforeSemantic.slideId !== p.hostSlideId) throw Error('presentation_document_changed')
-      const shapeIds = (shapes: Array<{ id: string }>) =>
-        shapes.map((shape) => shape.id).sort((a, b) => a.localeCompare(b))
+      const shapeMetadata = (shapes: typeof beforeShapes.shapes) =>
+        shapes
+          .map(({ id, name, type, left, top, width, height }) => ({
+            id,
+            name,
+            type,
+            left,
+            top,
+            width,
+            height,
+          }))
+          .sort((a, b) => a.id.localeCompare(b.id))
       if (
         !beforeSemantic.shapes ||
-        !same(shapeIds(beforeSemantic.shapes), shapeIds(beforeShapes.shapes))
+        !same(shapeMetadata(beforeSemantic.shapes), shapeMetadata(beforeShapes.shapes))
       )
         throw Error('office_read_failed')
       await check(r, signal, token, newWrite)
@@ -310,7 +320,7 @@ export function createPresentationNativeModifySkill(options: Options) {
       if (afterSemantic.slideId !== p.hostSlideId) throw Error('office_verify_failed')
       const beforeContent = beforeSemantic.shapes,
         afterContent = afterSemantic.shapes
-      if (!afterContent || !same(shapeIds(afterContent), shapeIds(afterShapes.shapes)))
+      if (!afterContent || !same(shapeMetadata(afterContent), shapeMetadata(afterShapes.shapes)))
         throw Error('office_verify_failed')
       const otherContent = (shapes: typeof beforeContent) =>
         shapes.filter((shape) => shape.id !== op.shape_id).sort((a, b) => a.id.localeCompare(b.id))

@@ -1815,11 +1815,30 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const slideId = string(slide.id)
       const semanticShapes = items
         .map((shape) => {
+          if (
+            includeShapes &&
+            (typeof shape.id !== 'string' ||
+              !shape.id ||
+              shape.id.length > 256 ||
+              typeof shape.name !== 'string' ||
+              shape.name.length > 256 ||
+              typeof shape.type !== 'string' ||
+              shape.type.length > 64 ||
+              ![shape.left, shape.top, shape.width, shape.height].every(
+                (value) => typeof value === 'number' && Number.isFinite(value),
+              ))
+          )
+            throw new Error('office_read_failed')
           const textFrame = shape.textFrame as RuntimeRecord | undefined
           const textRange = textFrame?.textRange as RuntimeRecord | undefined
           return {
             ...shapeInfo(shape),
-            text: textFrame?.hasText === true ? string(textRange?.text, MAX_POWERPOINT_TEXT) : '',
+            text:
+              textFrame?.hasText === true
+                ? includeShapes
+                  ? boundedPageText(textRange?.text)
+                  : string(textRange?.text, MAX_POWERPOINT_TEXT)
+                : '',
           }
         })
         .sort((first, second) => first.id.localeCompare(second.id))

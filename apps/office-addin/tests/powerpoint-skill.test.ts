@@ -2181,6 +2181,13 @@ describe('browser PowerPoint adapter', () => {
       fingerprint: expect.stringMatching(/^s1:\d+:[0-9a-f]{8}$/),
       shapes: [expect.objectContaining({ id: '2', text: 'Old' })],
     })
+    textRange.text = 'X'.repeat(12_001)
+    await expect(subject.snapshotSlide(0, undefined, true)).rejects.toThrow('office_read_failed')
+    await expect(subject.snapshotSlide(0)).resolves.toHaveProperty('slideId', 's1')
+    textRange.text = 'Old'
+    shape.name = 'N'.repeat(257)
+    await expect(subject.snapshotSlide(0, undefined, true)).rejects.toThrow('office_read_failed')
+    shape.name = 'Title'
     await subject.editSlideText(0, '2', 'New')
     expect(textRange.text).toBe('New')
     await expect(subject.duplicateSlide(0)).resolves.toEqual({ slideId: 's2' })
