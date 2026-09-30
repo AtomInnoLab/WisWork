@@ -26,6 +26,7 @@ it('persists explicit before/after host observations across restarts, requires v
   let service = createPresentationService({ userDataPath: root })
   let documentId = 'source-doc'
   let loseResponseFor: string | undefined
+  let failBeforeFor: string | undefined
   let shape = {
     id: 'shape',
     name: 'Title',
@@ -53,6 +54,10 @@ it('persists explicit before/after host observations across restarts, requires v
     readPage: async () => ({ slideId: 'slide', shapes: [structuredClone(shape)] }),
   }
   const request = async (body: unknown, signal?: AbortSignal) => {
+    if ((body as { operation: string }).operation === failBeforeFor) {
+      failBeforeFor = undefined
+      throw new Error('request failed before PC commit')
+    }
     const result = Buffer.from(
       await service(body, signal ?? new AbortController().signal),
     ).toString('utf8')
@@ -117,7 +122,19 @@ it('persists explicit before/after host observations across restarts, requires v
     })
     expect(proposal.isError, proposal.output).not.toBe(true)
     expect(await listPreferences()).toEqual([])
-    expect((await confirm(proposals, JSON.parse(proposal.output).proposalId)).status).toBe(
+    failBeforeFor = 'preference_save_observation'
+    await expect(confirm(proposals, JSON.parse(proposal.output).proposalId)).rejects.toThrow(
+      'request failed before PC commit',
+    )
+    expect(await listPreferences()).toEqual([])
+    const retryProposal = await invoke('save_presentation_observed_preference', {
+      project_id: 'source-project',
+      observation_id: observationId,
+      preference: '标题简短，字号24',
+    })
+    expect(retryProposal.isError, retryProposal.output).not.toBe(true)
+    loseResponseFor = 'preference_save_observation'
+    expect((await confirm(proposals, JSON.parse(retryProposal.output).proposalId)).status).toBe(
       'confirmed',
     )
     const [saved] = await listPreferences()
@@ -132,6 +149,7 @@ it('persists explicit before/after host observations across restarts, requires v
       observation_id: observationId,
     })
     expect(deletion.isError, deletion.output).not.toBe(true)
+    loseResponseFor = 'manual_observation_delete'
     expect((await confirm(proposals, JSON.parse(deletion.output).proposalId)).status).toBe(
       'confirmed',
     )

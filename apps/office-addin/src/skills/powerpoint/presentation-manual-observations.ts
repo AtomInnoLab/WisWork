@@ -382,18 +382,55 @@ export function createPresentationManualObservationSkill(
             validate: fresh,
             execute: async (s) => {
               if (!(await fresh(s))) throw new Error('proposal_stale')
-              const result = await request(
-                {
-                  operation:
-                    index === 5 ? 'preference_save_observation' : 'manual_observation_delete',
-                  ...scope,
-                  observationId: before.observationId,
-                  expectedBeforeDigest: before.before.digest,
-                  expectedAfterDigest: before.after?.digest ?? null,
-                  ...(index === 5 ? { text: value.preference } : {}),
-                },
-                s,
-              )
+              let result: Record<string, unknown>
+              try {
+                result = await request(
+                  {
+                    operation:
+                      index === 5 ? 'preference_save_observation' : 'manual_observation_delete',
+                    ...scope,
+                    observationId: before.observationId,
+                    expectedBeforeDigest: before.before.digest,
+                    expectedAfterDigest: before.after?.digest ?? null,
+                    ...(index === 5 ? { text: value.preference } : {}),
+                  },
+                  s,
+                )
+              } catch (cause) {
+                await check(s)
+                try {
+                  if (index === 5) {
+                    result = await request(
+                      {
+                        operation: 'preference_get',
+                        ...scope,
+                        changeId: `manual_${before.observationId}`,
+                      },
+                      s,
+                    )
+                    if (result.preference == null) throw cause
+                  } else {
+                    const listed = await request(
+                      { operation: 'manual_observation_list', ...scope },
+                      s,
+                    )
+                    if (
+                      Object.keys(listed).join(',') !== 'observations' ||
+                      !Array.isArray(listed.observations) ||
+                      listed.observations.length > 32
+                    )
+                      throw new Error('presentation_response_invalid', { cause })
+                    const records = await Promise.all(
+                      listed.observations.map((item) => validateRecord(item, s)),
+                    )
+                    if (records.some((item) => item.observationId === before.observationId))
+                      throw cause
+                    result = { deleted: true }
+                  }
+                } catch {
+                  throw cause
+                }
+              }
               if (index === 4) {
                 if (Object.keys(result).join(',') !== 'deleted' || result.deleted !== true)
                   throw new Error('presentation_response_invalid')
