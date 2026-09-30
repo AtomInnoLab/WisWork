@@ -332,7 +332,11 @@ it('retains the original start when read-only reconciliation claims a lost host 
       pagePptxBase64: [source, source, source],
       pages: f.artifact.pages.map((page) => ({ ...page, sourceSlideId: '256#' })),
     }
-    const options = { ...f.options, artifact: () => artifact }
+    const options = {
+      ...f.options,
+      artifact: () => artifact,
+      adapter: { ...f.adapter, exportPage: async () => source },
+    }
     const skill = createPresentationProductionDeliverySkill(options)
     f.adapter.insertPage.mockImplementationOnce(async () => {
       f.host.push('lost-host')

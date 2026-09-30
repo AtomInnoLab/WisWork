@@ -100,6 +100,7 @@ async function fixture() {
         host.push(id)
         return { slideIds: [id] }
       },
+      exportPage: async (id) => pages[Number(id.slice(5)) - 1]!,
       verify: async () => true,
     },
   }

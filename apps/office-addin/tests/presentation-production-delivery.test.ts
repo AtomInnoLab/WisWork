@@ -19,6 +19,9 @@ import {
   presentationPageMapping,
   validPresentationImportRecord,
 } from '../src/skills/powerpoint/presentation-page-delivery'
+const fixturePage = await new JSZip()
+  .file('ppt/slides/slide1.xml', '<page>fixture</page>')
+  .generateAsync({ type: 'base64' })
 function fixture() {
   const artifact: CompiledPresentationArtifact = {
     documentId: 'doc',
@@ -26,23 +29,26 @@ function fixture() {
     requestId: 'request',
     pptxBase64: '',
     planRevision: 1,
-    pagePptxBase64: ['UEsDBAAAAAA=', 'UEsDBAEAAAA=', 'UEsDBAIAAAA='],
+    pagePptxBase64: [fixturePage, fixturePage, fixturePage],
     slideCount: 3,
     pages: [0, 1, 2].map((i) => ({ id: `page${i}`, title: `Page ${i}`, sourceSlideId: '256#' })),
   }
   const host = ['old'],
+    packages = new Map<string, string>(),
     receipts = new Map<string, PresentationImportRecord>(),
     proposals = createStructuredProposalController()
   const adapter = {
     available: () => true,
     snapshot: vi.fn(async () => ({ slideIds: [...host], fingerprint: JSON.stringify(host) })),
     insert: vi.fn(),
-    insertPage: vi.fn(async (_bytes: string, _source: string) => {
+    insertPage: vi.fn(async (bytes: string, _source: string) => {
       const id = `host${host.length}`
       host.push(id)
+      packages.set(id, bytes)
       return { slideIds: [id] }
     }),
     verify: vi.fn(async () => true),
+    exportPage: vi.fn(async (id: string) => packages.get(id)!),
   }
   const options = {
     adapter,
@@ -102,6 +108,32 @@ it('refuses production import before writing when the host lacks page export', a
     ...f.options,
     adapter: { ...f.adapter, supportsPageExport: () => false },
   })
+  expect(skill.tools.map((tool) => tool.name)).toEqual([
+    'read_presentation_production_import_status',
+  ])
+  expect(await skill.executeTool(f.call)).toMatchObject({
+    isError: true,
+    output: 'presentation_unavailable',
+  })
+  expect(f.adapter.insertPage).not.toHaveBeenCalled()
+  const status = await skill.executeTool({
+    id: 'status',
+    name: 'read_presentation_production_import_status',
+    input: {},
+  })
+  expect(status.isError).not.toBe(true)
+  expect(JSON.parse(status.output).status).toBe('not_started')
+})
+
+it('requires an export adapter before proposing production import', async () => {
+  const f = fixture()
+  const skill = createPresentationProductionDeliverySkill({
+    ...f.options,
+    adapter: { ...f.adapter, exportPage: undefined },
+  })
+  expect(skill.tools.map((tool) => tool.name)).toEqual([
+    'read_presentation_production_import_status',
+  ])
   expect(await skill.executeTool(f.call)).toMatchObject({
     isError: true,
     output: 'presentation_unavailable',

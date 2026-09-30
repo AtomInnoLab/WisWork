@@ -335,6 +335,11 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
       : 'office-presentation-page-delivery',
     get tools() {
       if (production && (!options.available() || !options.adapter.available())) return []
+      if (
+        production &&
+        (!options.adapter.exportPage || options.adapter.supportsPageExport?.() === false)
+      )
+        return [readTool]
       return production
         ? [
             {
@@ -372,7 +377,11 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
         if (signal?.aborted) throw new Error('cancelled')
         if (!options.available() || !options.adapter.available())
           throw new Error('presentation_unavailable')
-        if (production && options.adapter.supportsPageExport?.() === false)
+        if (
+          production &&
+          !read &&
+          (!options.adapter.exportPage || options.adapter.supportsPageExport?.() === false)
+        )
           throw new Error('presentation_unavailable')
         const artifact = options.artifact(call.input.project_id as string | undefined)
         if (!artifact) throw new Error('presentation_restore_required')
@@ -643,9 +652,9 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
                 throw new Error('office_state_uncertain')
               // A host ACK proves the appended ID, not that native media and objects survived.
               // Keep the in-flight checkpoint if the exported production page differs.
-              if (production && options.adapter.exportPage) {
+              if (production) {
                 try {
-                  const exported = await options.adapter.exportPage(receipt.slideIds[0]!)
+                  const exported = await options.adapter.exportPage!(receipt.slideIds[0]!)
                   if (
                     !(await equivalentNativePresentationPage(
                       pageBytes![checkpoint.completed.length]!,
