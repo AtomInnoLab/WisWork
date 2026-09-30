@@ -184,8 +184,10 @@ export async function validateSkillPackageImage(
       joined.set(value, joinedOffset)
       joinedOffset += value.length
     }
-    const scanlines = await inflatePng(joined, expected)
-    for (let row = 0; row < height; row++) if (scanlines[row * (rowBytes + 1)] > 4) invalid()
+    if (typeof DecompressionStream === 'function') {
+      const scanlines = await inflatePng(joined, expected)
+      for (let row = 0; row < height; row++) if (scanlines[row * (rowBytes + 1)] > 4) invalid()
+    } else if (typeof createImageBitmap !== 'function') invalid()
   } else if (extension === 'jpg' || extension === 'jpeg') {
     if (bytes.length < 10 || !starts(0xff, 0xd8) || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9)
       invalid()
@@ -310,7 +312,9 @@ export async function validateSkillPackageImage(
     extension === 'png' ? 'image/png' : extension === 'webp' ? 'image/webp' : 'image/jpeg'
   let decoded: DecodedSkillImage | undefined
   try {
-    decoded = await decode(bytes, mime)
+    decoded = await (extension === 'png' && typeof DecompressionStream !== 'function'
+      ? decodeBrowserImage(bytes, mime)
+      : decode(bytes, mime))
     if (
       typeof decoded.close !== 'function' ||
       decoded.width !== width ||

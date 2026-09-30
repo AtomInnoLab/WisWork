@@ -1,4 +1,5 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
+import { PNG } from 'pngjs'
 import JSZip from 'jszip'
 import { readFileSync } from 'node:fs'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
@@ -47,6 +48,23 @@ it('rejects a referenced PNG with damaged image data before host import', async 
       '256#',
     ),
   ).rejects.toThrow('presentation_import_state_invalid')
+})
+it('validates a compiled PNG through browser decoding when decompression streams are unavailable', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  vi.stubGlobal('DecompressionStream', undefined)
+  vi.stubGlobal('createImageBitmap', async (blob: Blob) => {
+    const image = PNG.sync.read(Buffer.from(await blob.arrayBuffer()))
+    return { width: image.width, height: image.height, close() {} }
+  })
+  try {
+    await expect(
+      validatePresentationImportSourcePage(Buffer.from(bytes).toString('base64'), '256#'),
+    ).resolves.toBeUndefined()
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })
 it('rejects a referenced image without its package content type', async () => {
   const deck = benchmarkDeck()
