@@ -1,5 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { PDFDocument } from 'pdf-lib'
+import JSZip from 'jszip'
 import pngjs from 'pngjs'
 import WebSocket from 'ws'
 
@@ -156,6 +158,44 @@ function checkImageAttachment(metadata, asset, id) {
     throw new Error('PC image attachment digest mismatch')
 }
 
+export async function checkCompiledDelivery(compiled, exported, projectId, expectedText) {
+  if (
+    compiled?.projectId !== projectId ||
+    compiled.status !== 'compiled' ||
+    compiled.report?.slideCount !== 1 ||
+    typeof compiled.pptxBase64 !== 'string' ||
+    exported?.projectId !== projectId ||
+    exported.status !== 'exported' ||
+    exported.source !== 'compiled' ||
+    exported.requestId !== compiled.requestId ||
+    exported.slideCount !== 1 ||
+    typeof exported.pdfBase64 !== 'string'
+  )
+    throw new Error('PC compiled delivery response invalid')
+  const pptx = Buffer.from(compiled.pptxBase64, 'base64')
+  const pdf = Buffer.from(exported.pdfBase64, 'base64')
+  if (
+    !pptx.length ||
+    pptx.length > 10 * 1024 * 1024 ||
+    pptx.toString('base64') !== compiled.pptxBase64 ||
+    !pdf.length ||
+    pdf.length > 10 * 1024 * 1024 ||
+    pdf.toString('base64') !== exported.pdfBase64 ||
+    !pdf.subarray(0, 5).equals(Buffer.from('%PDF-'))
+  )
+    throw new Error('PC compiled delivery bytes invalid')
+  const zip = await JSZip.loadAsync(pptx)
+  const slide = await zip.file('ppt/slides/slide1.xml')?.async('string')
+  if (
+    !slide ||
+    zip.file('ppt/slides/slide2.xml') ||
+    !slide.includes(`<a:t>${expectedText}</a:t>`) ||
+    (await PDFDocument.load(pdf)).getPageCount() !== 1
+  )
+    throw new Error('PC compiled delivery content invalid')
+  return { pptxSha256: createHash('sha256').update(pptx).digest('hex'), pdfBytes: pdf.length }
+}
+
 async function uploadFixture(request, documentId, name, bytes, kind) {
   const attachmentId = createHash('sha256').update(bytes).digest('hex')
   const begin = await request('presentation-assets.v1', {
@@ -221,6 +261,14 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     throw new Error('invalid smoke attachment fixture IDs')
   if (options.uploadFixtures && fixtureIds.some((id) => id !== undefined))
     throw new Error('upload smoke cannot use existing attachment IDs')
+  if (
+    options.compiledRequestId !== undefined &&
+    (typeof options.compiledRequestId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(options.compiledRequestId) ||
+      typeof options.expectedSlideText !== 'string' ||
+      !/^[A-Za-z0-9 _-]{1,128}$/.test(options.expectedSlideText))
+  )
+    throw new Error('invalid compiled delivery smoke fixture')
   const timeoutMs = options.timeoutMs ?? 120_000
   const socket = (options.connect ?? ((url, config) => new WebSocket(url, config)))(
     relayUrl(relayOrigin),
@@ -244,7 +292,11 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         version: 2,
         type: 'office.create',
         host: 'PowerPoint',
-        capabilities: ['presentation.v1', 'presentation-assets.v1'],
+        capabilities: [
+          'presentation.v1',
+          'presentation-assets.v1',
+          ...(options.compiledRequestId ? ['presentation-pdf.v1'] : []),
+        ],
       }),
     )
     const created = await expected(next, 'office.created', 10_000)
@@ -263,9 +315,10 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       approved.capability?.length < 1 ||
       !Array.isArray(approved.capabilities) ||
       !approved.capabilities.includes('presentation.v1') ||
-      !approved.capabilities.includes('presentation-assets.v1')
+      !approved.capabilities.includes('presentation-assets.v1') ||
+      (options.compiledRequestId && !approved.capabilities.includes('presentation-pdf.v1'))
     )
-      throw new Error('PC did not negotiate presentation.v1')
+      throw new Error('PC did not negotiate required presentation capabilities')
     async function request(capabilityName, body) {
       const requestId = randomUUID()
       socket.send(
@@ -316,6 +369,29 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       await request('presentation.v1', { operation: 'status', documentId, projectId }),
       projectId,
     )
+    let compiledDelivery
+    if (options.compiledRequestId) {
+      const compiled = await request('presentation.v1', {
+        operation: 'get',
+        documentId,
+        projectId,
+      })
+      if (compiled?.requestId !== options.compiledRequestId)
+        throw new Error('PC compiled request identity mismatch')
+      const exported = await request('presentation-pdf.v1', {
+        operation: 'export_pdf',
+        documentId,
+        projectId,
+        requestId: options.compiledRequestId,
+        source: 'compiled',
+      })
+      compiledDelivery = await checkCompiledDelivery(
+        compiled,
+        exported,
+        projectId,
+        options.expectedSlideText,
+      )
+    }
     const attachmentPageCount = checkAttachmentList(
       await request('presentation-assets.v1', { operation: 'attachment_list_assets', documentId }),
     )
@@ -425,6 +501,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       textChecked: Boolean(options.textAttachmentId || options.uploadFixtures),
       imageChecked: Boolean(options.imageAttachmentId || options.uploadFixtures),
       uploadChecked: Boolean(options.uploadFixtures),
+      ...(compiledDelivery ? { compiledDelivery } : {}),
     }
   } finally {
     socket.terminate()

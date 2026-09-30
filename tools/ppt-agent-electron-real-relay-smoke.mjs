@@ -132,13 +132,17 @@ app.whenReady().then(async () => {
     onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
     timeoutMs: 15_000,
     uploadFixtures: true,
+    compiledRequestId: 'run-1',
+    expectedSlideText: 'Electron real Relay',
   })
   if (
     result.projectId !== projectId ||
     result.slideCount !== 1 ||
     !result.uploadChecked ||
     !result.imageChecked ||
-    !result.textChecked
+    !result.textChecked ||
+    !result.compiledDelivery?.pptxSha256 ||
+    result.compiledDelivery.pdfBytes < 100
   )
     throw new Error('Electron PC business response incomplete')
   const attachments = join(
@@ -158,7 +162,7 @@ app.whenReady().then(async () => {
     })
   })
   console.log(
-    'Electron PC + Rust Relay business smoke passed: pairing, project, TXT/PNG upload, native image readback and cleanup',
+    'Electron PC + Rust Relay business smoke passed: pairing, compiled PPTX readback, PDF rendering, TXT/PNG upload, native image readback and cleanup',
   )
 } finally {
   for (const child of children.reverse()) {

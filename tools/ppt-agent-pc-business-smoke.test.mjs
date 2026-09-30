@@ -2,8 +2,52 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import { test } from 'node:test'
+import { PDFDocument } from 'pdf-lib'
+import JSZip from 'jszip'
 import { WebSocketServer } from 'ws'
-import { checkPcStatusResponse, inspectPcBusiness } from './ppt-agent-pc-business-smoke.mjs'
+import {
+  checkCompiledDelivery,
+  checkPcStatusResponse,
+  inspectPcBusiness,
+} from './ppt-agent-pc-business-smoke.mjs'
+
+test('compiled delivery check binds editable PPTX text and one rendered PDF page', async () => {
+  const zip = new JSZip()
+  zip.file('ppt/slides/slide1.xml', '<p:sld><a:t>Smoke title</a:t></p:sld>')
+  const pdf = await PDFDocument.create()
+  pdf.addPage()
+  const compiled = {
+    projectId: 'project-1',
+    requestId: 'run-1',
+    status: 'compiled',
+    report: { slideCount: 1 },
+    pptxBase64: (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+  }
+  const exported = {
+    projectId: 'project-1',
+    requestId: 'run-1',
+    status: 'exported',
+    source: 'compiled',
+    slideCount: 1,
+    pdfBase64: Buffer.from(await pdf.save()).toString('base64'),
+  }
+  const checked = await checkCompiledDelivery(compiled, exported, 'project-1', 'Smoke title')
+  assert.match(checked.pptxSha256, /^[a-f0-9]{64}$/)
+  assert.ok(checked.pdfBytes > 100)
+  await assert.rejects(
+    checkCompiledDelivery(
+      compiled,
+      { ...exported, requestId: 'other' },
+      'project-1',
+      'Smoke title',
+    ),
+    /response invalid/,
+  )
+  await assert.rejects(
+    checkCompiledDelivery(compiled, exported, 'project-1', 'Different title'),
+    /content invalid/,
+  )
+})
 
 async function fakeRelay(t, response, mutate = (frame) => frame, handle) {
   const server = createServer()
