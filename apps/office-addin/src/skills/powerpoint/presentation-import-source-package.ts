@@ -36,6 +36,30 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined
+const relationshipRefs = (
+  xml: Record<string, unknown>,
+): { ids: string[]; hyperlinkIds: string[] } => {
+  const ids: string[] = []
+  const hyperlinkIds: string[] = []
+  const visit = (value: unknown, tag?: string): void => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, tag))
+      return
+    }
+    const node = record(value)
+    if (!node) return
+    for (const [key, child] of Object.entries(node)) {
+      if (['@_r:id', '@_r:embed', '@_r:link'].includes(key)) {
+        if (typeof child !== 'string' || !child)
+          throw new Error('presentation_import_state_invalid')
+        ids.push(child)
+        if (tag === 'a:hlinkClick' && key === '@_r:id') hyperlinkIds.push(child)
+      } else if (!key.startsWith('@_')) visit(child, key)
+    }
+  }
+  visit(xml)
+  return { ids, hyperlinkIds }
+}
 const internalTarget = (slidePath: string, target: string): string | undefined => {
   if (!target || target.includes('\\') || /[?#]/.test(target)) return
   const parts = target.startsWith('/') ? [] : slidePath.split('/').slice(0, -1)
@@ -133,12 +157,7 @@ export async function validatePresentationImportSourcePage(
 
   const slideRelsPath = slidePaths[0]!.replace('/slides/', '/slides/_rels/') + '.rels'
   const slideRelsFile = zip.file(slideRelsPath)
-  const referencedIds = [...slideXml.matchAll(/\br:(?:id|embed|link)="([^"]+)"/g)].map(
-    (match) => match[1]!,
-  )
-  const hyperlinkRefs = [...slideXml.matchAll(/<a:hlinkClick\b[^>]*\br:id="([^"]+)"/g)].map(
-    (match) => match[1]!,
-  )
+  const { ids: referencedIds, hyperlinkIds: hyperlinkRefs } = relationshipRefs({ 'p:sld': slide })
   const hyperlinkIds = new Set(hyperlinkRefs)
   const counts = (ids: string[]) => {
     const result = new Map<string, number>()
@@ -307,7 +326,7 @@ export async function validatePresentationImportSourcePage(
     (name) => name.startsWith('ppt/') && name.endsWith('.xml'),
   )) {
     const ownerXml = await zip.file(path)!.async('string')
-    const ids = [...ownerXml.matchAll(/\br:(?:id|embed|link)="([^"]+)"/g)].map((match) => match[1]!)
+    const ids = relationshipRefs(parser.parse(ownerXml)).ids
     if (ids.length === 0) continue
     const slash = path.lastIndexOf('/')
     const relsPath = `${path.slice(0, slash + 1)}_rels/${path.slice(slash + 1)}.rels`

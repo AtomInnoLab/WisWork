@@ -27,6 +27,30 @@ it('accepts a compiled native image page and rejects an external image relations
     'presentation_import_state_invalid',
   )
 })
+it('resolves single-quoted image references and rejects a missing relationship', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = 'ppt/slides/slide1.xml'
+  const original = await zip.file(path)!.async('string')
+  const quoted = original.replace(/r:embed="([^"]+)"/, "r:embed='$1'")
+  expect(quoted).not.toBe(original)
+  zip.file(path, quoted)
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).resolves.toBeUndefined()
+  zip.file(path, quoted.replace(/r:embed='[^']+'/, "r:embed='rIdMissing'"))
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
 it('accepts a referenced HTTPS citation link but rejects executable or unused external links', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[0]!]
