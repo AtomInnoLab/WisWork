@@ -154,5 +154,10 @@ describe('parseFileToText: pdf', () => {
     expect(result.pagesWithFullPageImage).toEqual(
       Array.from({ length: 30 }, (_, index) => index + 1),
     )
+    // The source audit counts 784 raw OCR characters on this visually blank page;
+    // normalized text is shorter but must not be mistaken for verified content.
+    const page26 = result.sections![25]!
+    expect(page26.end - page26.start).toBeGreaterThan(0)
+    expect(result.pagesWithInvisibleTextLayer).toContain(26)
   }, 20_000)
 })

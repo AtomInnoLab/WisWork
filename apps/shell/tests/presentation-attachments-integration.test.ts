@@ -421,6 +421,7 @@ it('retains the unreadable page of the real P0-11 NACA scan through PC restart a
       sectionCount: 30,
       pagesWithoutExtractedText: [2],
       pagesWithSparseExtractedText: expect.arrayContaining([24, 30]),
+      // Page 26 has hundreds of OCR characters despite appearing blank; keep its OCR warning.
       pagesWithFullPageImage: Array.from({ length: 30 }, (_, index) => index + 1),
       pagesWithInvisibleTextLayer: Array.from({ length: 30 }, (_, index) => index + 1).filter(
         (page) => page !== 2,
