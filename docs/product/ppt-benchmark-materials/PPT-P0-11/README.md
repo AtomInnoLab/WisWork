@@ -6,9 +6,13 @@
 
 [PDF 1、3、5–12 页视觉核对草案](naca-rm-l50b01-visual-source-notes-draft.md)记录封面身份、摘要分数尺寸、分析与实测范围区别、实验上限的设备条件、跨页结论及参考文献位置，专供人工校对定位。5–12 页只摘要了任务相关段落，并未逐字校对全文、公式或图表；未经人工确认，不能作为正式辅助文本或改变本包状态。
 
+[任务主张复核草案](naca-rm-l50b01-claim-review-draft.md)把 PDF 1、3、7–12 页可见的报告身份、设计/实测范围、装置尺寸、设备限制及跨页结论整理成 13 条待审主张，列出原页位置、受限表达和人工核点。它仍是 AI 视觉定位，不能当作等价辅助文本、已核实来源或正式候选材料就绪证据。
+
+高分辨率复核纠正了一处旧草案错误：通道截面在原 PDF 3、8 页均为 **2¼ × 4½ 英寸**，旧视觉草案写成 2¼ × 1½。可用 `pdftoppm -f 3 -l 3 -r 300 -png` 与第 8 页同样渲染，放大尺寸行检查；原件不变，修订只涉及草案和复核导航，仍须人工签核。
+
 ## 新增真实扫描件（2026-09-30）
 
-NASA NTRS 的[NACA 研究备忘录 L50B01](https://ntrs.nasa.gov/citations/19930086231)是 1950 年纸质报告的实际扫描，记录页标明 *Work of the US Gov. Public Use Permitted*。本包 `naca-rm-l50b01-1950-real-scan.pdf` 保存其 30 页扫描图像和原有 OCR 层；`naca-rm-l50b01-scan-audit.json` 记录原始[下载地址](https://ntrs.nasa.gov/api/citations/19930086231/downloads/19930086231.pdf)、原始字节摘要、436 字节下载封装头、去除封装后 PDF 的摘要，以及逐页可提取字符数。只移除 PDF 标头前的封装字节，没有重新绘制页面。第 2 页目视确认为扫描空白页且无提取文字；部分图表页虽有 OCR 字符，但数量少且明显存在误识别。
+NASA NTRS 的[NACA 研究备忘录 L50B01](https://ntrs.nasa.gov/citations/19930086231)是 1950 年纸质报告的实际扫描，记录页标明 _Work of the US Gov. Public Use Permitted_。本包 `naca-rm-l50b01-1950-real-scan.pdf` 保存其 30 页扫描图像和原有 OCR 层；`naca-rm-l50b01-scan-audit.json` 记录原始[下载地址](https://ntrs.nasa.gov/api/citations/19930086231/downloads/19930086231.pdf)、原始字节摘要、436 字节下载封装头、去除封装后 PDF 的摘要，以及逐页可提取字符数。只移除 PDF 标头前的封装字节，没有重新绘制页面。第 2 页目视确认为扫描空白页且无提取文字；部分图表页虽有 OCR 字符，但数量少且明显存在误识别。
 
 `naca-rm-l50b01-ocr-draft.txt` 是从该扫描件提取的**未经人工校对 OCR 草稿**，不能当作等价辅助文本，也不能据此生成未经核对的结论。原来的 Deardorff 文本 PDF 与辅助文本属于另一篇论文，不能冒充这份 NACA 报告的对应文本。使用真实扫描件做正式 P0-11 前，仍须人工标注扫描/文本页、校对与任务范围相同的辅助文本及来源事实，并完成真实 PowerPoint 宿主验收。`sha256sum -c SHA256SUMS` 可验证六份输入/审计文件；`pdfinfo naca-rm-l50b01-1950-real-scan.pdf` 应报告 30 页。
 
@@ -30,13 +34,13 @@ PDF 解析器还检查近乎覆盖整页（图像绘制面积至少为页面面�
 
 ## 三份原工程输入与来源
 
-| 文件 | 用途 | 核验结果 |
-| --- | --- | --- |
-| `deardorff-2020-image-only.pdf` | 模拟扫描失败输入；将同一篇公开论文逐页渲染后写为仅含图片的 PDF | 11 页，2,390,574 字节；没有可提取的正文字符；**并非纸质文件的真实扫描件** |
-| `deardorff-2020-article.pdf` | 可解析的原始文本 PDF | 11 页，原文件未改，382,769 字节 |
-| `deardorff-2020-assistive-text.txt` | 用户补交的等价纯文本辅助材料 | 从原 PDF 用 `pdftotext -layout` 提取，63,819 字节；须以原 PDF 校对页码和事实 |
+| 文件                                | 用途                                                           | 核验结果                                                                     |
+| ----------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `deardorff-2020-image-only.pdf`     | 模拟扫描失败输入；将同一篇公开论文逐页渲染后写为仅含图片的 PDF | 11 页，2,390,574 字节；没有可提取的正文字符；**并非纸质文件的真实扫描件**    |
+| `deardorff-2020-article.pdf`        | 可解析的原始文本 PDF                                           | 11 页，原文件未改，382,769 字节                                              |
+| `deardorff-2020-assistive-text.txt` | 用户补交的等价纯文本辅助材料                                   | 从原 PDF 用 `pdftotext -layout` 提取，63,819 字节；须以原 PDF 校对页码和事实 |
 
-论文：Ariel Deardorff, “Assessing the impact of introductory programming workshops on the computational reproducibility of biomedical workflows,” *PLOS ONE* 15(7), e0230697 (2020)，DOI `10.1371/journal.pone.0230697`。[出版页](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0230697)、[原始 PDF](https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0230697&type=printable)、[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。图像化 PDF 和辅助文本是 WisWork 基于获许可论文制作的衍生文件，保留作者、来源及修改说明；固定于 2026-09-28。每份文件的 SHA256 在 `SHA256SUMS`。
+论文：Ariel Deardorff, “Assessing the impact of introductory programming workshops on the computational reproducibility of biomedical workflows,” _PLOS ONE_ 15(7), e0230697 (2020)，DOI `10.1371/journal.pone.0230697`。[出版页](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0230697)、[原始 PDF](https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0230697&type=printable)、[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。图像化 PDF 和辅助文本是 WisWork 基于获许可论文制作的衍生文件，保留作者、来源及修改说明；固定于 2026-09-28。每份文件的 SHA256 在 `SHA256SUMS`。
 
 `generate-materials.py` 可重建衍生文件，需要 Poppler `pdftoppm`/`pdftotext` 和 Pillow；重新构建若摘要改变，须提升本包版本。图像化 PDF 的第一页已渲染并检查可读性。共享解析器回归测试要求它返回 `pdf_no_extractable_text`，PC 附件服务将其标为解析失败；原 PDF 与辅助文本则正常提取。另用两页工程 fixture 检查“第一页有文字、第二页无文字”时，PC 持久记录 `pagesWithoutExtractedText: [2]`，插件清单和界面提示补料。该 fixture 不是本包三份任务输入。此项仅证明文本提取边界，不等于 OCR 或真实扫描件处理能力。
 
