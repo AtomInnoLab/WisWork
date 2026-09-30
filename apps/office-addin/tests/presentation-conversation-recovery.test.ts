@@ -95,6 +95,51 @@ const messages: AgentMessage[] = [
   },
 ]
 describe('presentation completed-read conversation checkpoints', () => {
+  it.each(['read_presentation_plan', 'check_presentation_baseline'])(
+    'explicitly restarts an interrupted pending %s after document validation',
+    async (toolName) => {
+      const f = await fixture()
+      const checkpoint = f.checkpoint()
+      await checkpoint.begin('run', 'Read the deck')
+      await checkpoint.tool('run', 'tool_pending', toolName, false, 'read-1')
+      const reopened = f.session()
+      expect(reopened.snapshot().recoveryAvailable).toBe(true)
+      expect(f.stream).not.toHaveBeenCalled()
+      await reopened.resumeInterrupted!()
+      await vi.waitFor(() => expect(f.stream).toHaveBeenCalledOnce())
+      expect(f.stream.mock.calls[0]![0].messages).toEqual([{ role: 'user', text: 'Read the deck' }])
+      expect(f.stream.mock.calls[0]![0].system).toContain('No result from that call was restored')
+      expect(f.executeTool).not.toHaveBeenCalled()
+      reopened.dispose()
+    },
+  )
+
+  it('does not restart a pending write after a completed read', async () => {
+    const f = await fixture()
+    const checkpoint = f.checkpoint()
+    await checkpoint.begin('run', 'Change the deck')
+    await checkpoint.tool('run', 'tool_pending', 'read_presentation_plan', false, 'read-1')
+    await checkpoint.tool('run', 'tool_completed', 'read_presentation_plan', false, 'read-1')
+    await checkpoint.tool('run', 'tool_pending', 'set_text', false, 'write-1')
+    const reopened = f.session()
+    expect(reopened.snapshot().recoveryAvailable).toBe(false)
+    await reopened.resumeInterrupted!()
+    expect(f.stream).not.toHaveBeenCalled()
+    reopened.dispose()
+  })
+
+  it('rechecks document identity before restarting a pending read', async () => {
+    const f = await fixture()
+    const checkpoint = f.checkpoint()
+    await checkpoint.begin('run', 'Read the deck')
+    await checkpoint.tool('run', 'tool_pending', 'check_presentation_baseline', false, 'read-1')
+    const reopened = f.session({ validateDocument: async () => false })
+    expect(reopened.snapshot().recoveryAvailable).toBe(true)
+    await reopened.resumeInterrupted!()
+    expect(f.stream).not.toHaveBeenCalled()
+    reopened.dispose()
+  })
+
   it('restores an audited baseline read without replaying its completed tool', async () => {
     const f = await fixture()
     const checkpoint = f.checkpoint()

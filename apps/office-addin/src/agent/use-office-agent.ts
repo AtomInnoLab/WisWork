@@ -308,6 +308,14 @@ export function createOfficeAgentSession(dependencies: {
   }
   const listeners = new Set<() => void>()
   let disposed = false
+  const pendingAuditedRead = (
+    recovery: NonNullable<typeof dependencies.runCheckpoint>['recovery'],
+  ) =>
+    recovery?.phase === 'tool_pending' &&
+    recovery.restartSafe === true &&
+    !recovery.messages &&
+    Boolean(recovery.toolName) &&
+    Boolean(recovery.toolCallId)
   const receiptFeedback = presentationRecoveryReceiptFeedback(dependencies.runCheckpoint?.recovery)
   let state: Omit<OfficeAgentSnapshot, 'proposal'> = {
     assistantText: '',
@@ -327,16 +335,17 @@ export function createOfficeAgentSession(dependencies: {
           parseAgentResumeMessages(dependencies.runCheckpoint.recovery.messages),
         )) &&
       (dependencies.runCheckpoint?.recovery?.phase === 'running' ||
+        pendingAuditedRead(dependencies.runCheckpoint?.recovery) ||
         (dependencies.runCheckpoint?.recovery?.phase === 'tool_completed' &&
           dependencies.runCheckpoint?.recovery?.restartSafe === true)) &&
-      Boolean(dependencies.runCheckpoint.recovery.instruction),
+      Boolean(dependencies.runCheckpoint?.recovery?.instruction),
     timeline: dependencies.runCheckpoint?.interrupted
       ? appendPresentationEvent(emptyPresentationTimeline(), {
           id: 'event-1',
           kind: 'system',
           text: dependencies.runCheckpoint.scrubFailed
             ? '上次运行已中断。旧版检查点中的请求原文仍保留在本 PPTX：清理保存失败。请先保存可写副本并重新打开，期间不能继续该运行。'
-            : `上次前台 Agent 运行在面板关闭时中断。${receiptFeedback}${dependencies.runCheckpoint.recovery?.messages ? '已保留完整只读结果，可在核对文档后继续；旧结果代表历史读取，当前状态仍需重新核对。' : dependencies.runCheckpoint.recovery?.phase === 'running' ? '尚未调用工具，可在核对文档后主动重新运行原请求。' : dependencies.runCheckpoint.recovery?.restartSafe ? '此前仅运行了可重读工具，可在核对文档后主动重新运行原请求。' : '请先核对项目、页面和写入记录；未自动重放写入。'}运行阶段保存在演示文稿设置中，请求与可恢复的读取结果仅保存在本机浏览器。`,
+            : `上次前台 Agent 运行在面板关闭时中断。${receiptFeedback}${dependencies.runCheckpoint.recovery?.messages ? '已保留完整只读结果，可在核对文档后继续；旧结果代表历史读取，当前状态仍需重新核对。' : dependencies.runCheckpoint.recovery?.phase === 'running' ? '尚未调用工具，可在核对文档后主动重新运行原请求。' : pendingAuditedRead(dependencies.runCheckpoint.recovery) ? '已审计的只读调用尚未完成；核对文档后可主动重新读取，旧结果不会复用。' : dependencies.runCheckpoint.recovery?.phase === 'tool_completed' && dependencies.runCheckpoint.recovery.restartSafe ? '此前仅运行了可重读工具，可在核对文档后主动重新运行原请求。' : '请先核对项目、页面和写入记录；未自动重放写入。'}运行阶段保存在演示文稿设置中，请求与可恢复的读取结果仅保存在本机浏览器。`,
         })
       : emptyPresentationTimeline(),
   }
@@ -402,6 +411,7 @@ export function createOfficeAgentSession(dependencies: {
     )
       return undefined
     return record.phase === 'running' ||
+      pendingAuditedRead(record) ||
       (record.phase === 'tool_completed' && record.restartSafe === true)
       ? record
       : undefined
@@ -636,7 +646,9 @@ export function createOfficeAgentSession(dependencies: {
     systemSuffix: () =>
       resumingReadConversation
         ? '\nThis run resumes a saved read-only conversation. Restored tool results are historical observations. Revalidate relevant live document/project state before making changes or claiming its current state; do not treat cached results as proof that the document is unchanged.'
-        : '',
+        : resumingPendingRead
+          ? '\nAn audited read-only tool was interrupted before its result was saved. No result from that call was restored. Re-read the live document/project state and reestablish any session-only baseline before making changes or claiming a result.'
+          : '',
     events: {
       onText: (assistantText) => {
         // Presentation is driven by ACP agent_message_chunk updates below.
@@ -847,10 +859,12 @@ export function createOfficeAgentSession(dependencies: {
   })
 
   let resumingReadConversation = false
+  let resumingPendingRead = false
   const startRun = (
     instruction: string,
     messages?: readonly AgentMessage[],
     resumedRunId?: string,
+    pendingRead = false,
   ) => {
     const value = instruction.trim()
     if (!value || harness.snapshot.busy || pendingStart || state.applying || disposed) return
@@ -860,6 +874,7 @@ export function createOfficeAgentSession(dependencies: {
     toolsStarted = false
     runStartedAt = Date.now()
     resumingReadConversation = Boolean(messages)
+    resumingPendingRead = pendingRead
     proposals.newTurn()
     lastInstruction = value
     activeAssistantId = undefined
@@ -975,6 +990,7 @@ export function createOfficeAgentSession(dependencies: {
           record.instruction,
           'messages' in record ? record.messages : undefined,
           'runId' in record ? record.runId : undefined,
+          pendingAuditedRead(record),
         )
     } catch {
       /* identity or recovery unavailable: do not replay */
