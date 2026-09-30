@@ -278,6 +278,7 @@ app.whenReady().then(async () => {
     uploadFixtures: true,
     compiledRequestId: 'run-1',
     expectedSlideTexts,
+    manualObservation: 'create',
     productionFixture: { requestId: 'production-run-1', deck, plan, expectedSlideTexts },
   }).catch((error) => {
     throw new Error(
@@ -293,7 +294,8 @@ app.whenReady().then(async () => {
     !result.compiledDelivery?.pptxSha256 ||
     result.compiledDelivery.pdfBytes < 100 ||
     result.productionDelivery?.pageDigests.length !== 8 ||
-    result.productionDelivery.pdfBytes < 100
+    result.productionDelivery.pdfBytes < 100 ||
+    result.manualObservation?.after?.shape?.text !== 'After edit'
   )
     throw new Error('Electron PC business response incomplete')
   const concurrentProgress = []
@@ -388,12 +390,16 @@ app.whenReady().then(async () => {
     timeoutMs: 15_000,
     compiledRequestId: 'run-1',
     expectedSlideTexts,
+    manualObservation: 'read',
     productionFixture: { requestId: 'production-run-1', deck, plan, expectedSlideTexts },
     readExistingProduction: true,
   })
   // Both PDF responses were independently parsed and checked for page count above.
   // LibreOffice renders on demand, so its output byte length is not a durable receipt.
   const changedAfterRestart = [
+    recovered.manualObservation?.after?.digest !== result.manualObservation.after.digest
+      ? 'manual_observation'
+      : undefined,
     recovered.compiledDelivery?.pptxSha256 !== result.compiledDelivery.pptxSha256
       ? 'compiled_pptx'
       : undefined,
@@ -428,7 +434,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    'Electron PC + Rust Relay business smoke passed: pairing, three concurrent documents, fresh eight-page release production, PPTX/PDF readback, TXT/PNG upload, durable delivery, pending production recovery and running job crash recovery',
+    'Electron PC + Rust Relay business smoke passed: pairing, three concurrent documents, fresh eight-page release production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery',
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {

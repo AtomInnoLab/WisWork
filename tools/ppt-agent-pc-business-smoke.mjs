@@ -541,6 +541,49 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       await request('presentation.v1', { operation: 'status', documentId, projectId }),
       projectId,
     )
+    let manualObservation
+    if (options.manualObservation) {
+      const observationId = 'electron_manual_observation'
+      const base = { documentId, projectId, observationId }
+      if (options.manualObservation === 'create') {
+        const shape = {
+          id: 'smoke-shape',
+          name: 'Smoke text',
+          type: 'TextBox',
+          left: 1,
+          top: 1,
+          width: 4,
+          height: 1,
+          text: 'Before edit',
+        }
+        const begun = await request('presentation.v1', {
+          operation: 'manual_observation_begin',
+          ...base,
+          slideId: 'smoke-slide',
+          shape,
+        })
+        const digest = begun?.observation?.before?.digest
+        if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error('PC manual observation begin failed')
+        const completed = await request('presentation.v1', {
+          operation: 'manual_observation_complete',
+          ...base,
+          expectedBeforeDigest: digest,
+          shape: { ...shape, text: 'After edit' },
+        })
+        manualObservation = completed?.observation
+        if (manualObservation?.after?.digest === digest || !manualObservation?.after?.digest)
+          throw new Error('PC manual observation complete failed')
+      } else if (options.manualObservation === 'read') {
+        manualObservation = (
+          await request('presentation.v1', {
+            operation: 'manual_observation_get',
+            ...base,
+          })
+        )?.observation
+        if (manualObservation?.after?.shape?.text !== 'After edit')
+          throw new Error('PC manual observation recovery failed')
+      } else throw new Error('invalid manual observation smoke mode')
+    }
     let compiledDelivery
     if (options.compiledRequestId) {
       const compiled = await request('presentation.v1', {
@@ -874,6 +917,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       uploadChecked: Boolean(options.uploadFixtures),
       ...(compiledDelivery ? { compiledDelivery } : {}),
       ...(productionDelivery ? { productionDelivery } : {}),
+      ...(manualObservation ? { manualObservation } : {}),
     }
   } finally {
     socket.terminate()
