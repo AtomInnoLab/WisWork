@@ -279,6 +279,19 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       ))
   )
     throw new Error('invalid compiled delivery smoke fixture')
+  if (
+    options.productionFixture &&
+    (typeof options.productionFixture.requestId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(options.productionFixture.requestId) ||
+      options.productionFixture.deck?.id !== projectId ||
+      options.productionFixture.plan?.projectId !== projectId ||
+      !Array.isArray(options.productionFixture.expectedSlideTexts) ||
+      options.productionFixture.expectedSlideTexts.length !==
+        options.productionFixture.deck?.slides?.length ||
+      options.productionFixture.expectedSlideTexts.length < 1 ||
+      options.productionFixture.expectedSlideTexts.length > 8)
+  )
+    throw new Error('invalid production smoke fixture')
   const timeoutMs = options.timeoutMs ?? 120_000
   const socket = (options.connect ?? ((url, config) => new WebSocket(url, config)))(
     relayUrl(relayOrigin),
@@ -306,6 +319,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
           'presentation.v1',
           'presentation-assets.v1',
           ...(options.compiledRequestId ? ['presentation-pdf.v1'] : []),
+          ...(options.productionFixture ? ['presentation-production-pdf.v1'] : []),
         ],
       }),
     )
@@ -326,7 +340,9 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       !Array.isArray(approved.capabilities) ||
       !approved.capabilities.includes('presentation.v1') ||
       !approved.capabilities.includes('presentation-assets.v1') ||
-      (options.compiledRequestId && !approved.capabilities.includes('presentation-pdf.v1'))
+      (options.compiledRequestId && !approved.capabilities.includes('presentation-pdf.v1')) ||
+      (options.productionFixture &&
+        !approved.capabilities.includes('presentation-production-pdf.v1'))
     )
       throw new Error('PC did not negotiate required presentation capabilities')
     async function request(capabilityName, body) {
@@ -401,6 +417,91 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         projectId,
         options.expectedSlideTexts,
       )
+    }
+    let productionDelivery
+    if (options.productionFixture) {
+      const fixture = options.productionFixture
+      const base = { documentId, projectId, requestId: fixture.requestId }
+      const saved = await request('presentation.v1', {
+        operation: 'save_plan',
+        documentId,
+        projectId,
+        expectedRevision: 0,
+        plan: fixture.plan,
+      })
+      if (saved?.revision !== 1) throw new Error('PC production plan was not saved')
+      const begun = await request('presentation.v1', {
+        operation: 'production_begin',
+        ...base,
+        planRevision: 1,
+        deck: fixture.deck,
+      })
+      if (begun?.status !== 'pending' || begun.total !== fixture.expectedSlideTexts.length)
+        throw new Error('PC page production did not begin')
+      const produced = await request('presentation.v1', { operation: 'production_run', ...base })
+      if (
+        produced?.status !== 'compiled' ||
+        produced.compiledCount !== fixture.expectedSlideTexts.length ||
+        produced.total !== fixture.expectedSlideTexts.length ||
+        !Array.isArray(produced.pages) ||
+        produced.pages.length !== fixture.expectedSlideTexts.length ||
+        produced.pages.some(
+          (page, index) => page.id !== fixture.deck.slides[index]?.id || page.state !== 'compiled',
+        )
+      )
+        throw new Error('PC page production incomplete')
+      const pageDigests = []
+      for (const [index, slide] of fixture.deck.slides.entries()) {
+        const page = await request('presentation.v1', {
+          operation: 'production_page',
+          ...base,
+          pageId: slide.id,
+        })
+        if (
+          page?.projectId !== projectId ||
+          page.requestId !== fixture.requestId ||
+          page.pageId !== slide.id ||
+          page.status !== 'compiled' ||
+          page.planRevision !== 1 ||
+          page.report?.slideCount !== 1 ||
+          typeof page.pptxBase64 !== 'string'
+        )
+          throw new Error('PC production page identity invalid')
+        const bytes = Buffer.from(page.pptxBase64, 'base64')
+        if (
+          !bytes.length ||
+          bytes.length > 10 * 1024 * 1024 ||
+          bytes.toString('base64') !== page.pptxBase64
+        )
+          throw new Error('PC production page bytes invalid')
+        const zip = await JSZip.loadAsync(bytes)
+        const xml = await zip.file('ppt/slides/slide1.xml')?.async('string')
+        if (
+          !xml?.includes(`<a:t>${fixture.expectedSlideTexts[index]}</a:t>`) ||
+          zip.file('ppt/slides/slide2.xml')
+        )
+          throw new Error('PC production page content invalid')
+        pageDigests.push(createHash('sha256').update(bytes).digest('hex'))
+      }
+      const exported = await request('presentation-production-pdf.v1', {
+        operation: 'export_pdf',
+        ...base,
+        source: 'production',
+      })
+      const pdf = Buffer.from(exported?.pdfBase64 ?? '', 'base64')
+      if (
+        exported?.projectId !== projectId ||
+        exported.requestId !== fixture.requestId ||
+        exported.source !== 'production' ||
+        exported.status !== 'exported' ||
+        exported.slideCount !== fixture.expectedSlideTexts.length ||
+        pdf.length < 100 ||
+        pdf.length > 10 * 1024 * 1024 ||
+        pdf.toString('base64') !== exported.pdfBase64 ||
+        (await PDFDocument.load(pdf)).getPageCount() !== fixture.expectedSlideTexts.length
+      )
+        throw new Error('PC production PDF invalid')
+      productionDelivery = { pageDigests, pdfBytes: pdf.length }
     }
     const attachmentPageCount = checkAttachmentList(
       await request('presentation-assets.v1', { operation: 'attachment_list_assets', documentId }),
@@ -512,6 +613,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       imageChecked: Boolean(options.imageAttachmentId || options.uploadFixtures),
       uploadChecked: Boolean(options.uploadFixtures),
       ...(compiledDelivery ? { compiledDelivery } : {}),
+      ...(productionDelivery ? { productionDelivery } : {}),
     }
   } finally {
     socket.terminate()

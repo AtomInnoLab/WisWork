@@ -14,6 +14,48 @@ const temp = await mkdtemp(join(tmpdir(), 'ppt-electron-real-relay-'))
 const children = []
 const documentId = 'electron-real-relay-document'
 const projectId = 'electron-real-relay-project'
+const expectedSlideTexts = Array.from(
+  { length: 8 },
+  (_, index) => `Electron real Relay page ${index + 1}`,
+)
+const deck = {
+  version: 1,
+  id: projectId,
+  title: 'Electron real Relay smoke',
+  style: { fontFace: 'Arial', background: 'FFFFFF', textColor: '111111', accentColor: '3366FF' },
+  assets: [],
+  claims: [],
+  slides: expectedSlideTexts.map((value, index) => ({
+    id: `slide-${index + 1}`,
+    title: `Page ${index + 1}`,
+    elements: [{ id: 'title', kind: 'text', text: value, x: 1, y: 1, w: 8, h: 1 }],
+  })),
+}
+const plan = {
+  version: 1,
+  projectId,
+  title: deck.title,
+  brief: {
+    objective: 'Verify an eight-page editable deck',
+    audience: 'Release test',
+    language: 'en-US',
+    minutes: 8,
+    requiredContent: [],
+    constraints: [],
+  },
+  sources: [],
+  claims: [],
+  style: deck.style,
+  slides: deck.slides.map((slide) => ({
+    id: slide.id,
+    title: slide.title,
+    purpose: 'Verify native text',
+    claimIds: [],
+    layout: 'content',
+    requiredAssets: [],
+    acceptanceCriteria: ['Native text remains editable'],
+  })),
+}
 
 function firstLine(child, label, timeoutMs, accept = () => true) {
   return new Promise((resolveLine, reject) => {
@@ -87,12 +129,7 @@ const documentId = ${JSON.stringify(documentId)}
 const projectId = ${JSON.stringify(projectId)}
 app.whenReady().then(async () => {
   const presentation = createPresentationService({ userDataPath: ${JSON.stringify(userDataPath)} })
-  const deck = {
-    version: 1, id: projectId, title: 'Electron real Relay smoke',
-    style: { fontFace: 'Arial', background: 'FFFFFF', textColor: '111111', accentColor: '3366FF' },
-    assets: [], claims: [],
-    slides: Array.from({ length: 8 }, (_, index) => ({ id: 'slide-' + (index + 1), title: 'Page ' + (index + 1), elements: [{ id: 'title', kind: 'text', text: 'Electron real Relay page ' + (index + 1), x: 1, y: 1, w: 8, h: 1 }] })),
-  }
+  const deck = ${JSON.stringify(deck)}
   const compiled = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId, requestId: 'run-1', deck }, new AbortController().signal)).toString('utf8'))
   if (compiled.status !== 'compiled') throw Error('Electron PC compile failed')
   let client
@@ -133,10 +170,8 @@ app.whenReady().then(async () => {
     timeoutMs: 15_000,
     uploadFixtures: true,
     compiledRequestId: 'run-1',
-    expectedSlideTexts: Array.from(
-      { length: 8 },
-      (_, index) => `Electron real Relay page ${index + 1}`,
-    ),
+    expectedSlideTexts,
+    productionFixture: { requestId: 'production-run-1', deck, plan, expectedSlideTexts },
   })
   if (
     result.projectId !== projectId ||
@@ -145,7 +180,9 @@ app.whenReady().then(async () => {
     !result.imageChecked ||
     !result.textChecked ||
     !result.compiledDelivery?.pptxSha256 ||
-    result.compiledDelivery.pdfBytes < 100
+    result.compiledDelivery.pdfBytes < 100 ||
+    result.productionDelivery?.pageDigests.length !== 8 ||
+    result.productionDelivery.pdfBytes < 100
   )
     throw new Error('Electron PC business response incomplete')
   const attachments = join(
@@ -165,7 +202,7 @@ app.whenReady().then(async () => {
     })
   })
   console.log(
-    'Electron PC + Rust Relay business smoke passed: pairing, eight-page PPTX readback and PDF rendering, TXT/PNG upload, native image readback and cleanup',
+    'Electron PC + Rust Relay business smoke passed: pairing, eight-page compile and planned page production, PPTX/PDF readback, TXT/PNG upload, native image readback and cleanup',
   )
 } finally {
   for (const child of children.reverse()) {
