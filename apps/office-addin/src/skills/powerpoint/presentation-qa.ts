@@ -341,9 +341,22 @@ function inspection(value: PowerPointPageInspection, hostSlideId: string) {
   const fingerprint = JSON.stringify(structural)
   if (new TextEncoder().encode(fingerprint).byteLength > 256 * 1024)
     throw new Error('presentation_qa_capture_invalid')
+  const names = new Map(value.shapes.map((shape) => [shape.id, shape.name.slice(0, 80)]))
+  const overlapCandidates = value.overlaps.slice(0, 32).map((issue) => ({
+    ...issue,
+    shapeAName: names.get(issue.shapeAId),
+    shapeBName: names.get(issue.shapeBId),
+  }))
   return {
     bytes: screenshot(value.screenshot.base64),
     fingerprint,
+    geometry: {
+      overlapCount: value.overlaps.length,
+      overflowCount: value.overflows.length,
+      overlapCandidates,
+      overflowCandidates: value.overflows.slice(0, 16),
+      candidatesTruncated: value.overlaps.length > 32 || value.overflows.length > 16,
+    },
     structure: {
       status:
         value.shapesTruncated || value.overlapsTruncated
@@ -375,7 +388,7 @@ const tools: AgentToolDef[] = [
   {
     name: 'capture_presentation_page_qa',
     description:
-      'Capture one imported page by its stable planned page ID. Returns the real Office screenshot to inspect plus bounded structural diagnostics, persists QA metadata and resets that page to needs_review. Overlaps are a layout heuristic, not a content verdict.',
+      'Capture one imported page by its stable planned page ID. Returns the real Office screenshot and bounded overlap/overflow candidates with object names, persists QA metadata and resets that page to needs_review. The candidate list may be truncated; overlaps are a layout heuristic, not a content verdict.',
     inputSchema: {
       type: 'object',
       properties: { project_id: projectSchema, page_id: projectSchema },
@@ -913,6 +926,7 @@ export function createPresentationQaSkill(options: PresentationQaOptions): Agent
           output: JSON.stringify({
             page: entry,
             path,
+            geometry: inspected.geometry,
             visualAvailableToModel: true,
             needs_review: true,
             checks: { content: 'not_verified', sources: 'not_verified', saveReopen: 'not_run' },

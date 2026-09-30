@@ -150,7 +150,21 @@ it('requires an explicit intentional-overlap decision before accepting overlap-o
     ],
     overlaps: [{ shapeAId: '1', shapeBId: '2', overlapX: 50, overlapY: 30 }],
   }))
-  await f.skill.executeTool(f.capture)
+  const captured = await f.skill.executeTool(f.capture)
+  expect(JSON.parse(captured.output).geometry).toMatchObject({
+    overlapCount: 1,
+    overlapCandidates: [
+      {
+        shapeAId: '1',
+        shapeAName: 'panel',
+        shapeBId: '2',
+        shapeBName: 'label',
+        overlapX: 50,
+        overlapY: 30,
+      },
+    ],
+    candidatesTruncated: false,
+  })
   const input = {
     page_id: 'first',
     screenshot_digest: f.readQa()!.pages[0]!.screenshotDigest,
@@ -196,6 +210,33 @@ it('does not accept an overlap disposition for an overflow or a page without ove
       },
     }),
   ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
+})
+it('bounds geometry candidates while preserving the full overlap count', async () => {
+  const f = setup()
+  const native = f.inspectPage.getMockImplementation()!
+  const shapes = Array.from({ length: 12 }, (_, index) => ({
+    id: String(index + 1),
+    name: `shape-${index + 1}`,
+    type: 'GeometricShape',
+    left: 10,
+    top: 10,
+    width: 100,
+    height: 100,
+  }))
+  const overlaps = shapes.flatMap((first, index) =>
+    shapes.slice(index + 1).map((second) => ({
+      shapeAId: first.id,
+      shapeBId: second.id,
+      overlapX: 100,
+      overlapY: 100,
+    })),
+  )
+  f.inspectPage.mockImplementation(async () => ({ ...(await native()), shapes, overlaps }))
+  const result = await f.skill.executeTool(f.capture)
+  const geometry = JSON.parse(result.output).geometry
+  expect(geometry.overlapCount).toBe(66)
+  expect(geometry.overlapCandidates).toHaveLength(32)
+  expect(geometry.candidatesTruncated).toBe(true)
 })
 it('rejects pages not yet imported and changed structure before review', async () => {
   const f = setup()
