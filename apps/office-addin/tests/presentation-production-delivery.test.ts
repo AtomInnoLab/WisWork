@@ -192,6 +192,31 @@ it('rejects ZIP content that is not a selectable PowerPoint page before proposin
   }
 })
 
+it('rejects a source page with missing image or chart parts before proposing', async () => {
+  const deck = benchmarkDeck()
+  for (const slide of [deck.slides[2]!, deck.slides[6]!]) {
+    const compiled = await compilePresentationDeck({ ...deck, slides: [slide] })
+    const zip = await JSZip.loadAsync(compiled.bytes)
+    const missing = Object.keys(zip.files).find((path) =>
+      slide === deck.slides[2]
+        ? path.startsWith('ppt/media/')
+        : /^ppt\/charts\/chart\d+\.xml$/.test(path),
+    )
+    expect(missing).toBeDefined()
+    zip.remove(missing!)
+    const f = fixture()
+    f.artifact.slideCount = 1
+    f.artifact.pages = [{ id: slide.id, title: slide.title, sourceSlideId: '256#' }]
+    f.artifact.pagePptxBase64 = [await zip.generateAsync({ type: 'base64' })]
+    expect(await f.skill.executeTool(f.call)).toMatchObject({
+      isError: true,
+      output: 'presentation_import_state_invalid',
+    })
+    expect(f.proposals.pending()).toBeUndefined()
+    expect(f.adapter.insertPage).not.toHaveBeenCalled()
+  }
+})
+
 it('records an imported production page after its exported package matches', async () => {
   const f = fixture()
   const source = fixturePage
