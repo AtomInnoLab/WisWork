@@ -42,6 +42,7 @@ export type OfficeRelayStatus =
   | 'offline'
   | 'connecting'
   | 'incompatible'
+  | 'pc_incompatible'
   | 'pending'
   | 'waiting_for_pc'
   | 'rejected'
@@ -298,6 +299,18 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       if (pairingTimer !== undefined) clearTimeout(pairingTimer)
       pairingTimer = setTimeout(() => revoke('expired'), frame.expires_in * 1000)
       publish({ status: 'pending', verificationCode: frame.verification_code })
+      return
+    }
+    if (frame.type === 'office.pc_incompatible') {
+      if (
+        protocolVersion !== 2 ||
+        (state.status !== 'pending' && state.status !== 'waiting_for_pc') ||
+        frameBytes > MAX_CONTROL_FRAME_BYTES ||
+        !exactKeys(frame, ['version', 'type', 'pairing_id']) ||
+        frame.pairing_id !== pairingId
+      )
+        return protocolFailure()
+      revoke('pc_incompatible')
       return
     }
     if (frame.type === 'office.approved') {

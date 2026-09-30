@@ -35,6 +35,31 @@ class FakeSocket implements RelayWebSocket {
 const frame = (socket: FakeSocket, index: number) => JSON.parse(socket.sent[index]!)
 
 describe('Office cloud relay session', () => {
+  it('reports an old PC attempting to claim the pending v2 pairing immediately', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1', 'presentation.v1'],
+    })
+    const connecting = session.connect('powerpoint')
+    socket.open()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_1',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    expect(session.snapshot().status).toBe('pending')
+    socket.receive(
+      JSON.stringify({ version: 2, type: 'office.pc_incompatible', pairing_id: 'pair_1' }),
+    )
+    await connecting
+    expect(session.snapshot()).toEqual({ status: 'pc_incompatible' })
+  })
+
   it('classifies only the exact legacy invalid_frame during a v2 handshake as incompatible', async () => {
     for (const legacyFrame of [
       { version: 1, type: 'relay.error', code: 'invalid_frame' },

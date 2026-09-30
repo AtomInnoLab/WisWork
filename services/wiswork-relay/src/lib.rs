@@ -977,6 +977,12 @@ async fn claim(
     let max = app.inner.config.max_claim_attempts;
     let p = s.pairings.get_mut(&id).ok_or("invalid_code")?;
     if p.version != protocol {
+        if p.version == PROTOCOL_V2 && protocol == 1 {
+            send(
+                &p.office_tx,
+                json!({"version":PROTOCOL_V2,"type":"office.pc_incompatible","pairing_id":p.id}),
+            );
+        }
         return Err("protocol_version_mismatch");
     }
     if p.pc.is_some() {

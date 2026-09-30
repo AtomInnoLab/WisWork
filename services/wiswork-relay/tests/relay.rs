@@ -1108,10 +1108,9 @@ async fn old_pc_claim_gets_explicit_version_error_without_touching_v2_pairing() 
         recv(&mut old_pc).await,
         json!({"version":1,"type":"relay.error","code":"protocol_version_mismatch"})
     );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), recv(&mut office))
-            .await
-            .is_err()
+    assert_eq!(
+        recv(&mut office).await,
+        json!({"version":2,"type":"office.pc_incompatible","pairing_id":created["pairing_id"]})
     );
 
     let mut new_pc = pc_socket(&url).await;
