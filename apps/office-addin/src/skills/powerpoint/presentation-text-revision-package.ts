@@ -64,6 +64,7 @@ export async function replacePowerPointTextRangePackage(
   before: string,
   after: string,
   signal?: AbortSignal,
+  runReplacements?: string[],
 ): Promise<{ base64: string; beforeDigest: string; afterDigest: string; changedRuns: number }> {
   if (
     !/^[1-9]\d{0,9}$/.test(shapeId) ||
@@ -77,7 +78,15 @@ export async function replacePowerPointTextRangePackage(
     after.length > 128 ||
     before === after ||
     invalidText(before) ||
-    invalidText(after)
+    invalidText(after) ||
+    (runReplacements !== undefined &&
+      (before.length === after.length ||
+        !Array.isArray(runReplacements) ||
+        !runReplacements.length ||
+        runReplacements.some(
+          (value) => typeof value !== 'string' || !value || invalidText(value),
+        ) ||
+        runReplacements.join('') !== after))
   )
     throw new Error('invalid_tool_input')
   if (signal?.aborted) throw new Error('cancelled')
@@ -110,17 +119,35 @@ export async function replacePowerPointTextRangePackage(
   let rewritten = original
   const patches: Array<{ from: number; to: number; value: string }> = []
   if (before.length !== after.length) {
-    for (const run of runs) {
-      if (start >= cursor && start + before.length <= cursor + run.text.length) {
-        const local = start - cursor
-        const replacement = run.text.slice(0, local) + after + run.text.slice(local + before.length)
-        if (invalidText(replacement)) fail()
-        patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
-        changedRuns++
-        break
+    if (runReplacements) {
+      for (const run of runs) {
+        const first = Math.max(start, cursor)
+        const last = Math.min(start + before.length, cursor + run.text.length)
+        if (first < last) {
+          const part = runReplacements[changedRuns]
+          if (!part) throw new Error('invalid_tool_input')
+          const replacement =
+            run.text.slice(0, first - cursor) + part + run.text.slice(last - cursor)
+          if (invalidText(replacement)) fail()
+          patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
+          changedRuns++
+        }
+        cursor += run.text.length
       }
-      cursor += run.text.length
-    }
+      if (changedRuns !== runReplacements.length) throw new Error('invalid_tool_input')
+    } else
+      for (const run of runs) {
+        if (start >= cursor && start + before.length <= cursor + run.text.length) {
+          const local = start - cursor
+          const replacement =
+            run.text.slice(0, local) + after + run.text.slice(local + before.length)
+          if (invalidText(replacement)) fail()
+          patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
+          changedRuns++
+          break
+        }
+        cursor += run.text.length
+      }
     if (!changedRuns) fail()
   } else {
     for (const run of runs) {

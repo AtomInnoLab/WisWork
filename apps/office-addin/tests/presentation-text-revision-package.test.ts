@@ -135,6 +135,42 @@ it('rejects a length-changing edit across differently formatted runs', async () 
   ).rejects.toThrow('presentation_existing_target_unsupported')
 })
 
+it('uses explicit replacement text per styled run for a length-changing revision', async () => {
+  const { zip, xml, shape, id } = await fixture()
+  const mixed = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:t>科研</a:t></a:r><a:r><a:rPr lang="zh-CN" b="1"/><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, mixed))
+  const source = await zip.generateAsync({ type: 'base64' })
+  const revised = await replacePowerPointTextRangePackage(
+    source,
+    id,
+    1,
+    '研汇',
+    '研究成果',
+    undefined,
+    ['研究', '成果'],
+  )
+  expect(revised.changedRuns).toBe(2)
+  const after = await (
+    await JSZip.loadAsync(revised.base64, { base64: true })
+  )
+    .file('ppt/slides/slide1.xml')!
+    .async('string')
+  expect(after).toContain('<a:t>科研究</a:t>')
+  expect(after).toContain('<a:rPr lang="zh-CN" b="1"/><a:t>成果报</a:t>')
+  await expect(
+    replacePowerPointTextRangePackage(source, id, 1, '研汇', '研究成果', undefined, ['研究成果']),
+  ).rejects.toThrow('invalid_tool_input')
+  await expect(
+    replacePowerPointTextRangePackage(source, id, 1, '研汇', '研究成果', undefined, [
+      '研究',
+      '成\uD83D',
+    ]),
+  ).rejects.toThrow('invalid_tool_input')
+})
+
 it('escapes replacement text and rejects field-backed text', async () => {
   const { zip, xml, shape, id } = await fixture()
   zip.file('ppt/slides/slide1.xml', xml.replace(shape, shape.replace('科研汇报', 'A&amp;B汇报')))
@@ -250,5 +286,35 @@ it('prepares a VFS revision from a fresh page baseline without writing PowerPoin
     .file('ppt/slides/slide1.xml')!
     .async('string')
   expect(unicodeXml).toContain('<a:t>A😀C</a:t>')
+  expect(writes).toBe(0)
+
+  const mixed = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:t>科研</a:t></a:r><a:r><a:rPr lang="zh-CN" b="1"/><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, mixed))
+  source = await zip.generateAsync({ type: 'base64' })
+  const segmented = await skill.executeTool({
+    id: 'prepare-segmented',
+    name: 'prepare_existing_presentation_text_revision',
+    input: {
+      baseline_id: 'baseline',
+      slide_id: 'host-slide',
+      shape_id: id,
+      start: 1,
+      before: '研汇',
+      after: '研究成果',
+      run_replacements: ['研究', '成果'],
+    },
+  })
+  expect(segmented.isError, segmented.output).not.toBe(true)
+  const segmentedPath = (JSON.parse(segmented.output) as { path: string }).path
+  const segmentedXml = await (
+    await JSZip.loadAsync(vfs.readBytes(segmentedPath, { maxBytes: 8 * 1024 * 1024 }))
+  )
+    .file('ppt/slides/slide1.xml')!
+    .async('string')
+  expect(segmentedXml).toContain('<a:t>科研究</a:t>')
+  expect(segmentedXml).toContain('<a:rPr lang="zh-CN" b="1"/><a:t>成果报</a:t>')
   expect(writes).toBe(0)
 })

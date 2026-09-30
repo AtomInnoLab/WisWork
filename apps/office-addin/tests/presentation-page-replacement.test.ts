@@ -4,7 +4,8 @@ import { createStructuredProposalController } from '../src/agent/proposal-contro
 import { createPresentationPageReplacementSkill } from '../src/skills/powerpoint/presentation-page-replacement.js'
 import { presentationArtifactContent } from '../src/skills/powerpoint/presentation-page-delivery.js'
 import type { PresentationPageReplacement } from '../src/skills/powerpoint/presentation-page-replacement-record.js'
-vi.mock('../src/skills/powerpoint/powerpoint-package.js', () => ({
+vi.mock('../src/skills/powerpoint/powerpoint-package.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/skills/powerpoint/powerpoint-package.js')>()),
   presentationPackageDigest: async (base64: string) =>
     createHash('sha256').update(base64).digest('hex'),
 }))

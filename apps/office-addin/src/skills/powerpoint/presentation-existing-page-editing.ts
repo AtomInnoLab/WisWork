@@ -258,7 +258,7 @@ tools.unshift({
 tools.unshift({
   name: 'prepare_existing_presentation_text_revision',
   description:
-    'Prepare an equal-length native text edit across formatting runs as a one-slide PPTX. This writes only to VFS; stage the returned PPTX with the existing page change flow.',
+    'Prepare a native text edit as a one-slide PPTX while preserving each formatting run. For a length-changing edit spanning runs, provide run_replacements in affected-run order; their concatenation must equal after. This writes only to VFS; stage the returned PPTX with the existing page change flow.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -268,6 +268,12 @@ tools.unshift({
       start: { type: 'integer', minimum: 0 },
       before: { type: 'string', minLength: 1, maxLength: 128 },
       after: { type: 'string', minLength: 1, maxLength: 128 },
+      run_replacements: {
+        type: 'array',
+        items: { type: 'string', minLength: 1, maxLength: 128 },
+        minItems: 2,
+        maxItems: 128,
+      },
     },
     required: ['baseline_id', 'slide_id', 'shape_id', 'start', 'before', 'after'],
     additionalProperties: false,
@@ -329,8 +335,8 @@ export function createPresentationExistingPageEditingSkill(
           )
     },
     systemPrompt:
-      'For an undone page with retained sourceBackup, reapply_existing_presentation_page_change creates a new independent staged change with fresh original and source backups. Inspect and separately confirm commit; reapply never commits automatically and never recreates missing historical backups. For one text, one geometry, and one ordinary embedded picture change on the same existing page, prepare_existing_presentation_composite_revision creates a single native page revision. Stage its returned path with picture_shape_id through the confirmed existing-page change flow so the three objects share one durable backup, commit, and undo record. A length-changing text replacement is supported only within one native text run. ' +
-      'Existing page rebuild uses a validated one-slide VFS PPTX. For an ordinary embedded native picture, prepare_existing_presentation_image_revision creates a one-slide revision in VFS; then stage the returned path with picture_shape_id through the existing page change flow so post-write media can be read back. For equal-length text spanning multiple formatting runs, prepare_existing_presentation_text_revision preserves each run and produces a one-slide VFS revision; stage that path through the same confirmed page change flow. To restore a whole page from a completed single or batch existing-edit savepoint, call prepare_existing_presentation_original_page_restore for its exact change and slide; read a fresh page baseline, then stage using the returned path and restore_source_kind/restore_source_change_id, inspect both pages, and separately confirm commit. The edited page is backed up before stage and remains until commit; the restored page receives a new host slide ID. Preparation does not modify PowerPoint. An unverified image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. A pending insertion with unknown host ID must use reconcile_pending_existing_presentation_page_change before any retry; it only accepts an exact page/order/package match and does not replay a write. Inspect and resume recorded interrupted insertions before further action. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
+      'For an undone page with retained sourceBackup, reapply_existing_presentation_page_change creates a new independent staged change with fresh original and source backups. Inspect and separately confirm commit; reapply never commits automatically and never recreates missing historical backups. For one text, one geometry, and one ordinary embedded picture change on the same existing page, prepare_existing_presentation_composite_revision creates a single native page revision. Stage its returned path with picture_shape_id through the confirmed existing-page change flow so the three objects share one durable backup, commit, and undo record. The composite revision supports a length-changing text replacement within one native run; the standalone text revision accepts explicit run_replacements across runs. ' +
+      'Existing page rebuild uses a validated one-slide VFS PPTX. For an ordinary embedded native picture, prepare_existing_presentation_image_revision creates a one-slide revision in VFS; then stage the returned path with picture_shape_id through the existing page change flow so post-write media can be read back. For text spanning multiple formatting runs, prepare_existing_presentation_text_revision preserves each run; length-changing edits require explicit run_replacements for every affected run. Stage that path through the same confirmed page change flow. To restore a whole page from a completed single or batch existing-edit savepoint, call prepare_existing_presentation_original_page_restore for its exact change and slide; read a fresh page baseline, then stage using the returned path and restore_source_kind/restore_source_change_id, inspect both pages, and separately confirm commit. The edited page is backed up before stage and remains until commit; the restored page receives a new host slide ID. Preparation does not modify PowerPoint. An unverified image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. A pending insertion with unknown host ID must use reconcile_pending_existing_presentation_page_change before any retry; it only accepts an exact page/order/package match and does not replay a write. Inspect and resume recorded interrupted insertions before further action. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
     clear() {
       epoch++
       reviewCapture = undefined
@@ -545,6 +551,7 @@ export function createPresentationExistingPageEditingSkill(
             input.before,
             input.after,
             signal,
+            input.run_replacements as string[] | undefined,
           )
           await current()
           const path = `/home/user/presentation-text-revision-${crypto.randomUUID()}.pptx`
