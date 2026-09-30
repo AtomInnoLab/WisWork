@@ -5,6 +5,7 @@ import {
 import type { PresentationProjectStatus } from '../skills/powerpoint/presentation-project.js'
 import type { PresentationImportProgress } from '../skills/powerpoint/presentation-page-delivery.js'
 import {
+  presentationQaStructureAccepted,
   validatePresentationQaRecord,
   type PresentationQaRecord,
 } from '../skills/powerpoint/presentation-qa.js'
@@ -252,6 +253,7 @@ export function presentationWorkflowSummary(
   const qaScopeMatches = Boolean(
     production &&
     qa?.source === 'production' &&
+    validatePresentationQaRecord(qa) &&
     qa.projectId === project.projectId &&
     qa.requestId === production.requestId &&
     importMatches &&
@@ -274,7 +276,7 @@ export function presentationWorkflowSummary(
           currentQaPageIds.has(page.pageId) &&
           !page.recheckRequired &&
           page.screenshotRenderer !== 'libreoffice' &&
-          page.structure.status === 'passed' &&
+          presentationQaStructureAccepted(page) &&
           page.visual.status === 'pass',
       ).length
     : 0
@@ -284,7 +286,7 @@ export function presentationWorkflowSummary(
           currentQaPageIds.has(page.pageId) &&
           !page.recheckRequired &&
           page.screenshotRenderer === 'libreoffice' &&
-          page.structure.status === 'passed' &&
+          presentationQaStructureAccepted(page) &&
           page.visual.status === 'pass',
       ).length
     : 0
@@ -432,10 +434,10 @@ export function presentationWorkflowSummary(
       ? reviewedPage.recheckRequired
         ? '历史检查已失效'
         : reviewedPage.visual.status === 'pass' &&
-            reviewedPage.structure.status === 'passed' &&
+            presentationQaStructureAccepted(reviewedPage) &&
             reviewedPage.screenshotRenderer === 'libreoffice'
           ? '备用预览已复核；宿主外观待核验'
-          : reviewedPage.visual.status === 'pass' && reviewedPage.structure.status === 'passed'
+          : reviewedPage.visual.status === 'pass' && presentationQaStructureAccepted(reviewedPage)
             ? styleChangedSinceProduction
               ? '旧样式版本历史通过'
               : '历史结构与视觉通过'
@@ -539,7 +541,9 @@ export function presentationWorkflowSummary(
         recheck ||
         (qaMatches &&
           qa!.pages.some(
-            (page) => page.visual.status === 'needs_changes' || page.structure.status !== 'passed',
+            (page) =>
+              page.visual.status === 'needs_changes' ||
+              (page.structure.status !== 'passed' && !presentationQaStructureAccepted(page)),
           ))
           ? 'attention'
           : qaMatches

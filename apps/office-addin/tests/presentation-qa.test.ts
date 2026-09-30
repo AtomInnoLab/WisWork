@@ -7,6 +7,7 @@ import {
   validatePresentationQaRecord,
 } from '../src/skills/powerpoint/presentation-qa.js'
 import type { PresentationImportRecord } from '../src/skills/powerpoint/presentation-delivery.js'
+import type { PowerPointPageInspection } from '../src/skills/powerpoint/browser-powerpoint-adapter.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
 const png =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6LPsAAAAASUVORK5CYII='
@@ -34,7 +35,7 @@ function setup() {
       completed: [{ sourceSlideId: '256#', slideId: 'host1' }],
     },
   }
-  const inspectPage = vi.fn(async () => ({
+  const inspectPage = vi.fn(async (): Promise<PowerPointPageInspection> => ({
     slideId: 'host1',
     slideWidth: 960,
     slideHeight: 540,
@@ -129,6 +130,72 @@ it('records an agent review only after a live capture and unchanged recapture', 
   expect(f.inspectPage).toHaveBeenCalledTimes(2)
   const read = await f.skill.executeTool({ id: 'read', name: 'read_presentation_qa', input: {} })
   expect(JSON.parse(read.output)).toHaveProperty('needs_recapture', true)
+})
+it('requires an explicit intentional-overlap decision before accepting overlap-only warnings', async () => {
+  const f = setup()
+  const native = f.inspectPage.getMockImplementation()!
+  f.inspectPage.mockImplementation(async () => ({
+    ...(await native()),
+    shapes: [
+      {
+        id: '1',
+        name: 'panel',
+        type: 'GeometricShape',
+        left: 10,
+        top: 10,
+        width: 100,
+        height: 100,
+      },
+      { id: '2', name: 'label', type: 'TextBox', left: 20, top: 20, width: 50, height: 30 },
+    ],
+    overlaps: [{ shapeAId: '1', shapeBId: '2', overlapX: 50, overlapY: 30 }],
+  }))
+  await f.skill.executeTool(f.capture)
+  const input = {
+    page_id: 'first',
+    screenshot_digest: f.readQa()!.pages[0]!.screenshotDigest,
+    outcome: 'pass',
+    notes: 'The label is intentionally layered over the panel and remains legible.',
+  }
+  expect(
+    await f.skill.executeTool({ id: 'review', name: 'record_presentation_page_review', input }),
+  ).toMatchObject({ isError: true, output: 'presentation_qa_overlap_review_required' })
+  expect(
+    await f.skill.executeTool({
+      id: 'review',
+      name: 'record_presentation_page_review',
+      input: { ...input, overlap_disposition: 'intentional' },
+    }),
+  ).not.toHaveProperty('isError', true)
+  expect(f.readQa()?.pages[0]?.visual).toMatchObject({
+    status: 'pass',
+    overlapDisposition: 'intentional',
+  })
+  expect(validatePresentationQaRecord(f.readQa())).toBe(true)
+  const forged = structuredClone(f.readQa()!)
+  forged.pages[0]!.structure.overflowCount = 1
+  expect(validatePresentationQaRecord(forged)).toBe(false)
+  const old = structuredClone(f.readQa()!)
+  delete old.pages[0]!.visual.overlapDisposition
+  expect(validatePresentationQaRecord(old)).toBe(true)
+})
+
+it('does not accept an overlap disposition for an overflow or a page without overlap', async () => {
+  const f = setup()
+  await f.skill.executeTool(f.capture)
+  expect(
+    await f.skill.executeTool({
+      id: 'review',
+      name: 'record_presentation_page_review',
+      input: {
+        page_id: 'first',
+        screenshot_digest: f.readQa()!.pages[0]!.screenshotDigest,
+        outcome: 'pass',
+        notes: 'No overlap exists.',
+        overlap_disposition: 'intentional',
+      },
+    }),
+  ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
 })
 it('rejects pages not yet imported and changed structure before review', async () => {
   const f = setup()

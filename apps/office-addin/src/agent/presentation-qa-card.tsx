@@ -203,6 +203,9 @@ export function PresentationQaCard({
                 }{' '}
                 · 越界 {page.structure.overflowCount} · 重叠 {page.structure.overlapCount}
               </p>
+              {page.visual.overlapDisposition === 'intentional' && (
+                <p>Agent 已将重叠判断为有意布局；几何告警记录仍保留。</p>
+              )}
               <p>
                 {page.recheckRequired ? '历史视觉记录：' : '视觉：'}
                 {

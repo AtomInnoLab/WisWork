@@ -208,6 +208,30 @@ const qa: PresentationQaRecord = {
   })),
 }
 
+it('counts a visually approved intentional overlap without accepting overflow as structural QA', () => {
+  const reviewedOverlap = structuredClone(qa)
+  reviewedOverlap.pages[0]!.structure = {
+    ...reviewedOverlap.pages[0]!.structure,
+    status: 'warning',
+    overlapCount: 1,
+  }
+  reviewedOverlap.pages[0]!.visual.overlapDisposition = 'intentional'
+  const summary = presentationWorkflowSummary(
+    { ...project, production },
+    imported,
+    reviewedOverlap,
+  )!
+  expect(summary.stages.find((stage) => stage.name === '页面审查')?.status).toBe('recorded')
+  expect(summary.pages[0]!.qa).toBe('历史结构与视觉通过')
+  reviewedOverlap.pages[0]!.structure.overflowCount = 1
+  const overflow = presentationWorkflowSummary(
+    { ...project, production },
+    imported,
+    reviewedOverlap,
+  )!
+  expect(overflow.stages.find((stage) => stage.name === '页面审查')?.status).toBe('attention')
+})
+
 it('does not count duplicate QA pages or a report missing a production page as current evidence', async () => {
   const selected = { ...project, production }
   const duplicateQa = structuredClone(qa)

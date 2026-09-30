@@ -62,6 +62,21 @@ it('labels a fallback preview separately from PowerPoint host appearance', () =>
   expect(html).toContain('LibreOffice 备用预览')
   expect(html).toContain('PowerPoint 宿主外观仍待核验')
 })
+it('shows an intentional overlap decision while retaining the geometry warning', () => {
+  const reviewed = structuredClone(record)
+  reviewed.pages[0]!.recheckRequired = undefined
+  reviewed.pages[0]!.structure.status = 'warning'
+  reviewed.pages[0]!.structure.overlapCount = 1
+  reviewed.pages[0]!.visual.overlapDisposition = 'intentional'
+  const html = renderToStaticMarkup(
+    React.createElement(PresentationQaCard, {
+      controller: { read: () => reviewed, revision: () => 0, subscribe: () => () => {} },
+    }),
+  )
+  expect(html).toContain('重叠 1')
+  expect(html).toContain('Agent 已将重叠判断为有意布局')
+  expect(html).toContain('有几何告警')
+})
 
 const controller = { read: () => record, revision: () => 0, subscribe: () => () => {} }
 it('prepares exact single-page and affected-page ranges without changing historical QA', async () => {
