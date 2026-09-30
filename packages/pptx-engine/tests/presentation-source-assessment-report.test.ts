@@ -143,6 +143,20 @@ describe('historical source assessment report', () => {
     )
     expect(() => parsePresentationDeliveryReport(forged)).toThrow()
   })
+  it('reports an unassessed opinion alongside an assessed opinion', async () => {
+    const input = fixture()
+    const first = assessed(input)
+    const { sourceAssessment: _omitted, ...second } = assessed(input, 'unassessed')
+    input.reviews = [first, second]
+    const report = await buildPresentationDeliveryReport(input)
+    expect(report.pages[0]!.issues.map((issue) => issue.code)).toEqual(
+      expect.arrayContaining([
+        'source_authority_review_missing',
+        'source_timeliness_review_missing',
+        'source_jurisdiction_review_missing',
+      ]),
+    )
+  })
   it('preserves literal basis controls and rejects mismatched frozen labels', async () => {
     const input = fixture(),
       review = assessed(input)

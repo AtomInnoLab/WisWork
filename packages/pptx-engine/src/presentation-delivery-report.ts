@@ -317,11 +317,12 @@ function seeds(
         const authority = new Set(
           assessments.map((item) => canonical([item.authority.outcome, item.authority.sourceTier])),
         )
-        if (!assessments.length) add('source_authority_review_missing', sourceId)
-        else if (authority.size > 1) add('source_authority_review_mixed', sourceId)
-        else if (assessments[0]!.authority.outcome === 'uncertain')
+        if (!assessments.length || assessments.length !== relevant.length)
+          add('source_authority_review_missing', sourceId)
+        if (authority.size > 1) add('source_authority_review_mixed', sourceId)
+        else if (assessments[0]?.authority.outcome === 'uncertain')
           add('source_authority_review_uncertain', sourceId)
-        else if (assessments[0]!.authority.outcome === 'insufficient_authority')
+        else if (assessments[0]?.authority.outcome === 'insufficient_authority')
           add('source_authority_review_insufficient', sourceId)
         const timeliness = new Set(
           assessments.map((item) =>
@@ -333,10 +334,11 @@ function seeds(
             ]),
           ),
         )
-        if (!assessments.length) add('source_timeliness_review_missing', sourceId)
-        else if (timeliness.size > 1) add('source_timeliness_review_mixed', sourceId)
-        else if (assessments[0]!.timeliness.outcome !== 'current_for_claim')
-          add(`source_timeliness_review_${assessments[0]!.timeliness.outcome}`, sourceId)
+        if (!assessments.length || assessments.length !== relevant.length)
+          add('source_timeliness_review_missing', sourceId)
+        if (timeliness.size > 1) add('source_timeliness_review_mixed', sourceId)
+        else if (assessments[0] && assessments[0].timeliness.outcome !== 'current_for_claim')
+          add(`source_timeliness_review_${assessments[0].timeliness.outcome}`, sourceId)
         if (claim.jurisdiction !== undefined) {
           const jurisdictions = assessments.flatMap((item) =>
             item.jurisdiction ? [item.jurisdiction] : [],
@@ -350,10 +352,11 @@ function seeds(
               ),
             ),
           )
-          if (!jurisdictions.length) add('source_jurisdiction_review_missing', sourceId)
-          else if (frames.size > 1) add('source_jurisdiction_review_mixed', sourceId)
-          else if (jurisdictions[0]!.outcome !== 'applicable')
-            add(`source_jurisdiction_review_${jurisdictions[0]!.outcome}`, sourceId)
+          if (!jurisdictions.length || jurisdictions.length !== relevant.length)
+            add('source_jurisdiction_review_missing', sourceId)
+          if (frames.size > 1) add('source_jurisdiction_review_mixed', sourceId)
+          else if (jurisdictions[0] && jurisdictions[0].outcome !== 'applicable')
+            add(`source_jurisdiction_review_${jurisdictions[0].outcome}`, sourceId)
         }
       }
     }
