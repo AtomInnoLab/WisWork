@@ -15,6 +15,10 @@ import {
 
 const VERSION =
   '{"buildId":"release_123","presentationRolloutPercent":25,"diagnosticSamplePercent":10}'
+const TEAM_START =
+  '<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script><script src="/assets/teamAuthStart-AbC_123.js"></script><link rel="modulepreload" href="/assets/team-auth-config-AbC_123.js">'
+const TEAM_CALLBACK =
+  '<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script><script src="/assets/teamAuthCallback-AbC_123.js"></script><link rel="modulepreload" href="/assets/team-auth-config-AbC_123.js">'
 
 const PRESENTATION_CAPABILITIES = [
   'presentation.v1',
@@ -37,6 +41,11 @@ async function artifact(t) {
   await writeFile(resolve(dist, 'assets/taskpane-AbC_123.js'), 'const version="release_123"')
   await writeFile(resolve(dist, 'assets/taskpane-AbC_123.css'), 'body{color:#123456}')
   await writeFile(resolve(dist, 'assets/worker-AbC_123.js'), 'self.onmessage=()=>{}')
+  await writeFile(resolve(dist, 'team-auth-start.html'), TEAM_START)
+  await writeFile(resolve(dist, 'team-auth-callback.html'), TEAM_CALLBACK)
+  await writeFile(resolve(dist, 'assets/teamAuthStart-AbC_123.js'), 'start()')
+  await writeFile(resolve(dist, 'assets/teamAuthCallback-AbC_123.js'), 'callback()')
+  await writeFile(resolve(dist, 'assets/team-auth-config-AbC_123.js'), 'config()')
   await writeFile(resolve(dist, 'assets/icon.png'), Buffer.from([137, 80, 78, 71]))
   await writeFile(
     resolve(dist, 'manifest.xml'),
@@ -60,6 +69,9 @@ test('validates complete release artifact', async (t) => {
       ['assets/icon.png', Buffer.from([137, 80, 78, 71])],
       ['assets/taskpane-AbC_123.css', Buffer.from('body{color:#123456}')],
       ['assets/taskpane-AbC_123.js', Buffer.from('const version="release_123"')],
+      ['assets/team-auth-config-AbC_123.js', Buffer.from('config()')],
+      ['assets/teamAuthCallback-AbC_123.js', Buffer.from('callback()')],
+      ['assets/teamAuthStart-AbC_123.js', Buffer.from('start()')],
       ['assets/worker-AbC_123.js', Buffer.from('self.onmessage=()=>{}')],
       [
         'manifest.xml',
@@ -68,6 +80,8 @@ test('validates complete release artifact', async (t) => {
         ),
       ],
       ['taskpane.html', Buffer.from('<script src="/assets/taskpane-AbC_123.js"></script>')],
+      ['team-auth-callback.html', Buffer.from(TEAM_CALLBACK)],
+      ['team-auth-start.html', Buffer.from(TEAM_START)],
       ['version.json', Buffer.from(VERSION)],
     ].map(([path, bytes]) => ({
       path,
@@ -405,6 +419,27 @@ test('requires hashed runtime assets and rejects extra remote HTML scripts', asy
   )
 })
 
+test('checks both team authentication pages and their hashed dependencies', async (t) => {
+  const dist = await artifact(t)
+  await inspectOfficeBuild(dist, 'https://office.example')
+  await writeFile(
+    resolve(dist, 'team-auth-start.html'),
+    TEAM_START.replace('/assets/teamAuthStart-AbC_123.js', 'https://evil.example/start.js'),
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /invalid Office team-auth-start.html script reference/,
+  )
+  await writeFile(resolve(dist, 'team-auth-start.html'), TEAM_START)
+  await rm(resolve(dist, 'assets/team-auth-config-AbC_123.js'))
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /missing referenced asset/,
+  )
+  await rm(resolve(dist, 'team-auth-callback.html'))
+  await assert.rejects(inspectOfficeBuild(dist, 'https://office.example'), /ENOENT/)
+})
+
 test('rejects unlisted and symlinked release files', async (t) => {
   const dist = await artifact(t)
   await writeFile(resolve(dist, 'assets/unexpected.map'), '{}')
@@ -484,7 +519,12 @@ test('checks deployed version, HTML and immutable script as one build', async ()
   const assets = new Map([
     ['/version.json', VERSION],
     ['/taskpane.html', '<script src="/assets/taskpane-AbC_123.js"></script>'],
+    ['/team-auth-start.html', TEAM_START],
+    ['/team-auth-callback.html', TEAM_CALLBACK],
     ['/assets/taskpane-AbC_123.js', 'const version="release_123"'],
+    ['/assets/teamAuthStart-AbC_123.js', 'start()'],
+    ['/assets/teamAuthCallback-AbC_123.js', 'callback()'],
+    ['/assets/team-auth-config-AbC_123.js', 'config()'],
     ['/assets/taskpane-AbC_123.css', 'body{color:#123456}'],
     ['/assets/worker-AbC_123.js', 'self.onmessage=()=>{}'],
     ['/assets/icon.png', Buffer.from([137, 80, 78, 71])],
@@ -518,6 +558,12 @@ test('checks deployed version, HTML and immutable script as one build', async ()
       headers: url.pathname === omitCacheFor ? {} : cacheHeaders(url.pathname),
     })
   await inspectDeployedOffice('https://office.example', build, fetcher)
+  assets.set(
+    '/team-auth-callback.html',
+    TEAM_CALLBACK.replace('teamAuthCallback-AbC_123.js', 'teamAuthCallback-XbC_123.js'),
+  )
+  await assert.rejects(inspectDeployedOffice('https://office.example', build, fetcher), /differ/)
+  assets.set('/team-auth-callback.html', TEAM_CALLBACK)
   omitCacheFor = '/version.json'
   await assert.rejects(
     inspectDeployedOffice('https://office.example', build, fetcher),

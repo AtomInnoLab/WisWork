@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 
 const defaultDist = resolve(dirname(fileURLToPath(import.meta.url)), '../apps/office-addin/dist')
+const releaseHtml = ['taskpane.html', 'team-auth-start.html', 'team-auth-callback.html']
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex')
@@ -76,6 +77,36 @@ function taskpaneScript(html) {
   return entries[0].slice(1)
 }
 
+function teamAuthReferences(html, page) {
+  const entry = page === 'team-auth-start.html' ? 'teamAuthStart' : 'teamAuthCallback'
+  const scripts = [...html.matchAll(/<script\b[^>]*>/g)].map(
+    ([element]) => element.match(/\bsrc=["']([^"']+)["']/)?.[1],
+  )
+  const local = scripts.filter((src) =>
+    new RegExp(`^/assets/${entry}-[A-Za-z0-9_-]{7,}\\.js$`).test(src || ''),
+  )
+  if (
+    scripts.length !== 2 ||
+    local.length !== 1 ||
+    scripts.filter((src) => src === 'https://appsforoffice.microsoft.com/lib/1/hosted/office.js')
+      .length !== 1
+  )
+    throw new Error(`invalid Office ${page} script reference`)
+  const preloads = [...html.matchAll(/<link\b[^>]*>/g)]
+    .map(([element]) => ({
+      rel: element.match(/\brel=["']([^"']+)["']/)?.[1],
+      href: element.match(/\bhref=["']([^"']+)["']/)?.[1],
+    }))
+    .filter(({ rel }) => rel?.split(/\s+/).includes('modulepreload'))
+  if (
+    preloads.some(
+      ({ href }) => !/^\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{7,}\.js$/.test(href || ''),
+    )
+  )
+    throw new Error(`invalid Office ${page} preload reference`)
+  return [local[0].slice(1), ...preloads.map(({ href }) => href.slice(1))]
+}
+
 function releaseAsset(path) {
   return (
     path === 'assets/icon.png' ||
@@ -105,6 +136,13 @@ export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
   const referenced = [...checkManifest(manifest, expectedOrigin), ...referencedStylesheets(html)]
   if (html.includes('__WISWORK_CONNECT_ORIGINS__')) throw new Error('unresolved connect policy')
   const entry = taskpaneScript(html)
+  referenced.push(entry)
+  for (const page of releaseHtml.slice(1)) {
+    const content = await readFile(resolve(dist, page), 'utf8')
+    if (content.includes('__WISWORK_CONNECT_ORIGINS__'))
+      throw new Error('unresolved connect policy')
+    referenced.push(...teamAuthReferences(content, page), ...referencedStylesheets(content))
+  }
   const script = await readFile(resolve(dist, entry))
   if (!script.toString('utf8').includes(metadata.buildId))
     throw new Error('buildId differs from compiled taskpane')
@@ -118,7 +156,7 @@ export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
       throw new Error(`unhashed Office runtime asset: ${path}`)
     if (
       !stat.isFile() ||
-      (!['version.json', 'taskpane.html', 'manifest.xml'].includes(path) &&
+      (!['version.json', ...releaseHtml, 'manifest.xml'].includes(path) &&
         !/^assets\/[A-Za-z0-9_.-]+$/.test(path)) ||
       stat.size < 1 ||
       stat.size > 16 * 1024 * 1024
@@ -167,7 +205,7 @@ export async function inspectDeployedOffice(origin, build, fetcher = fetch) {
     if (
       !file ||
       typeof file.path !== 'string' ||
-      (!['version.json', 'taskpane.html', 'manifest.xml'].includes(file.path) &&
+      (!['version.json', ...releaseHtml, 'manifest.xml'].includes(file.path) &&
         !/^assets\/[A-Za-z0-9_.-]+$/.test(file.path)) ||
       !Number.isSafeInteger(file.size) ||
       file.size < 1 ||
