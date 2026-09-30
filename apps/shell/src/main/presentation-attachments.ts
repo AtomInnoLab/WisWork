@@ -1413,7 +1413,20 @@ export function createPresentationAttachmentService(options: {
         text: text.slice(body.offset, body.offset + body.maxChars),
         sourceUri: `attachment:${id}`,
         ...(sections
-          ? { pageSpans: sections.filter((section) => section.end > offset && section.start < end) }
+          ? {
+              pageSpans: sections.flatMap((section, index) =>
+                section.end > offset && section.start < end
+                  ? [
+                      {
+                        ...section,
+                        ...(m.pagesWithFullPageImage?.includes(index + 1)
+                          ? { imageBacked: true }
+                          : {}),
+                      },
+                    ]
+                  : [],
+              ),
+            }
           : {}),
       }
     } catch (e) {

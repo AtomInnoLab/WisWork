@@ -48,7 +48,7 @@ export interface PresentationClaimEvidence {
     totalChars: number
     text: string
     offsetUnit: 'utf16_code_unit'
-    locatorSpans?: { locator: string; start: number; end: number }[]
+    locatorSpans?: { locator: string; start: number; end: number; imageBacked?: true }[]
     provenance?:
       { binding: 'fetched_url_matched'; retrievedAt: number } | { binding: 'user_supplied' }
   }
@@ -122,11 +122,15 @@ const schema = object({
       text: text(8000),
       offsetUnit: choice('utf16_code_unit'),
       locatorSpans: array(
-        object({
-          locator: text(32, 1),
-          start: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
-          end: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
-        }),
+        object(
+          {
+            locator: text(32, 1),
+            start: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
+            end: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
+            imageBacked: { type: 'boolean', enum: [true] },
+          },
+          ['locator', 'start', 'end'],
+        ),
         4096,
       ),
       provenance: {
@@ -363,7 +367,8 @@ export function parsePresentationClaimEvidence(value: unknown): PresentationClai
         !new RegExp(`^第 [1-9]\\d{0,5} ${locatorUnit}$`).test(span.locator) ||
         !Number.isSafeInteger(span.start) ||
         !Number.isSafeInteger(span.end) ||
-        span.start >= span.end ||
+        span.start > span.end ||
+        (span.imageBacked === true && locatorUnit !== '页') ||
         span.end > attachment.totalChars ||
         span.end <= attachment.offset ||
         span.start >= attachment.offset + attachment.text.length ||

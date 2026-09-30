@@ -463,7 +463,7 @@ export async function handlePresentationProduction(
       totalChars: number
       text: string
       sourceUri: string
-      pageSpans?: { locator: string; start: number; end: number }[]
+      pageSpans?: { locator: string; start: number; end: number; imageBacked?: true }[]
     }
     check(signal)
     if (

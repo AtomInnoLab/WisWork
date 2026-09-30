@@ -433,8 +433,8 @@ it('retains the unreadable page of the real P0-11 NACA scan through PC restart a
   const page = JSON.parse(read.output)
   expect(page.pageSpans).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ locator: '第 2 页', start: expect.any(Number) }),
-      expect.objectContaining({ locator: '第 3 页', start: expect.any(Number) }),
+      expect.objectContaining({ locator: '第 2 页', start: expect.any(Number), imageBacked: true }),
+      expect.objectContaining({ locator: '第 3 页', start: expect.any(Number), imageBacked: true }),
     ]),
   )
   const blank = page.pageSpans.find((span: { locator: string }) => span.locator === '第 2 页')

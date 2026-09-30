@@ -483,6 +483,24 @@ it('preserves bounded PDF page spans while reading source text', async () => {
     new Response(
       JSON.stringify({
         ...value,
+        pageSpans: [value.pageSpans[0], { ...value.pageSpans[1], imageBacked: true }],
+      }),
+    ),
+  )
+  expect(JSON.parse((await call()).output).pageSpans[1].imageBacked).toBe(true)
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        ...value,
+        pageSpans: [value.pageSpans[0], { ...value.pageSpans[1], imageBacked: false }],
+      }),
+    ),
+  )
+  expect(await call()).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        ...value,
         name: 'study.html',
         text: 'First\nSecond',
         totalChars: 12,

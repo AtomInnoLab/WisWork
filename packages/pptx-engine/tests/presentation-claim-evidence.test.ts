@@ -97,6 +97,37 @@ it('binds a repeated excerpt to the preferred indexed page and rejects forged lo
     }),
   ).toThrow()
 })
+it('preserves image-backed PDF spans and a scanned blank page without claiming OCR verification', () => {
+  const value = {
+    ...report(),
+    source: { ...report().source, excerpt: 'BCDE', locator: '第 3 页' },
+    attachment: {
+      ...report().attachment,
+      name: 'scan.pdf',
+      offset: 0,
+      totalChars: 9,
+      text: 'A\n\n\n\nBCDE',
+      locatorSpans: [
+        { locator: '第 1 页', start: 0, end: 1, imageBacked: true },
+        { locator: '第 2 页', start: 3, end: 3, imageBacked: true },
+        { locator: '第 3 页', start: 5, end: 9, imageBacked: true },
+      ],
+    },
+    excerptMatch: { status: 'found', offset: 5, locator: '第 3 页' },
+  }
+  expect(parsePresentationClaimEvidence(value).attachment.locatorSpans).toEqual(
+    value.attachment.locatorSpans,
+  )
+  expect(() =>
+    parsePresentationClaimEvidence({
+      ...value,
+      attachment: {
+        ...value.attachment,
+        name: 'scan.html',
+      },
+    }),
+  ).toThrow()
+})
 it('prefers a contained excerpt when an earlier match crosses page boundaries', () => {
   expect(
     matchPresentationClaimExcerpt('X\n\nY', 'X\n\nY\n\nX\n\nY', 0, [
