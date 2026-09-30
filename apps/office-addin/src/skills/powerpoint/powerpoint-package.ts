@@ -6,6 +6,7 @@ export const MAX_PPTX_ENTRY_BYTES = 2 * 1024 * 1024
 export const MAX_PPTX_IMPORT_PAGE_BYTES = 10 * 1024 * 1024
 export const MAX_PPTX_ENTRIES = 256
 export const MAX_PPTX_XML_BYTES = 512 * 1024
+export const MAX_PPTX_PAGE_SHAPES = 1_000
 
 export type PackageEditKind = 'slide' | 'chart' | 'master'
 export interface XmlReplacement {
@@ -640,7 +641,7 @@ async function inspectPictureFromZip(
     )
     const rawIds = shapes.map((node) => (findNv(node)?.[':@'] as Node | undefined)?.['@_id'])
     if (
-      rawIds.length > 100 ||
+      rawIds.length > MAX_PPTX_PAGE_SHAPES ||
       rawIds.some((id) => typeof id !== 'string' || !id.length || id.length > 256) ||
       new Set(rawIds).size !== rawIds.length
     )
@@ -784,7 +785,7 @@ export async function inspectPowerPointPictureMediaBatch(
 }> {
   if (
     !Array.isArray(shapeIds) ||
-    shapeIds.length > 100 ||
+    shapeIds.length > MAX_PPTX_PAGE_SHAPES ||
     shapeIds.some((id) => typeof id !== 'string' || !/^\d{1,10}$/.test(id)) ||
     new Set(shapeIds).size !== shapeIds.length
   )

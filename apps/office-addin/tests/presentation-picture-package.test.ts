@@ -18,6 +18,31 @@ const sofficeAvailable = spawnSync('soffice', ['--version'], { timeout: 5_000 })
 if (process.env.WISWORK_REQUIRE_LIBREOFFICE === '1' && !sofficeAvailable)
   throw new Error('LibreOffice is required for the picture round-trip gate')
 
+it('fingerprints 101 pictures reusing one bounded media resource', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const zip = await JSZip.loadAsync((await compilePresentationDeck(deck)).bytes)
+  const slide = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const picture = [...slide.matchAll(/<p:pic\b[^]*?<\/p:pic>/g)].find(([xml]) =>
+    xml.includes('name="image"'),
+  )?.[0]
+  expect(picture).toBeDefined()
+  const ids = Array.from({ length: 101 }, (_, index) => String(5000 + index))
+  zip.file(
+    'ppt/slides/slide1.xml',
+    slide.replace(
+      '</p:spTree>',
+      `${ids.map((id) => picture!.replace(/<p:cNvPr id="\d+"/, `<p:cNvPr id="${id}"`)).join('')}</p:spTree>`,
+    ),
+  )
+  const inspected = await inspectPowerPointPictureMediaBatch(
+    await zip.generateAsync({ type: 'base64' }),
+    ids,
+  )
+  expect(inspected.unsupported).toEqual([])
+  expect(Object.keys(inspected.pictureFingerprints)).toHaveLength(101)
+})
+
 it('replaces only the selected native picture media in an exported one-page package', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[2]!]

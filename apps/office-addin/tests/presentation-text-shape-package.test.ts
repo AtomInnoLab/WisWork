@@ -2,7 +2,10 @@ import { expect, it } from 'vitest'
 import JSZip from 'jszip'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
-import { inspectPowerPointTextShapeFingerprints } from '../src/skills/powerpoint/presentation-rich-text-package'
+import {
+  inspectPowerPointRichText,
+  inspectPowerPointTextShapeFingerprints,
+} from '../src/skills/powerpoint/presentation-rich-text-package'
 
 it('distinguishes intended text replacement from hidden run formatting drift in a real PPTX', async () => {
   const deck = benchmarkDeck()
@@ -301,4 +304,24 @@ it('detects a shared theme change even when the shape XML is unchanged', async (
   const after = await inspect()
   expect(after.exact).not.toBe(before.exact)
   expect(after.formatting).not.toBe(before.formatting)
+})
+
+it('inspects more than one hundred ordinary and text shapes on a bounded native page', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const zip = await JSZip.loadAsync((await compilePresentationDeck(deck)).bytes)
+  const slide = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const sample = slide.match(/<p:sp\b[^]*?<p:txBody\b[^]*?<\/p:sp>/)?.[0]
+  expect(sample).toBeDefined()
+  const ids = Array.from({ length: 101 }, (_, index) => String(5000 + index))
+  const additions = ids
+    .map((id) => sample!.replace(/<p:cNvPr id="\d+"/, `<p:cNvPr id="${id}"`))
+    .join('')
+  zip.file('ppt/slides/slide1.xml', slide.replace('</p:spTree>', `${additions}</p:spTree>`))
+  const base64 = await zip.generateAsync({ type: 'base64' })
+  expect(
+    Object.keys(await inspectPowerPointTextShapeFingerprints(base64, ids, undefined, true)),
+  ).toHaveLength(101)
+  const richText = await inspectPowerPointRichText(base64)
+  expect(richText.shapes.filter((shape) => ids.includes(shape.packageShapeId))).toHaveLength(101)
 })

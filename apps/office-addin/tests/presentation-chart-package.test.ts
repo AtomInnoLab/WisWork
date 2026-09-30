@@ -28,6 +28,28 @@ it('detects bundled chart XML drift in a real compiled single-page PPTX', async 
   )
 })
 
+it('fingerprints 101 chart frames sharing a bounded chart resource', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const zip = await JSZip.loadAsync((await compilePresentationDeck(deck)).bytes)
+  const slide = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const frame = slide.match(/<p:graphicFrame\b[^]*?<c:chart\b[^]*?<\/p:graphicFrame>/)?.[0]
+  expect(frame).toBeDefined()
+  const ids = Array.from({ length: 101 }, (_, index) => String(5000 + index))
+  zip.file(
+    'ppt/slides/slide1.xml',
+    slide.replace(
+      '</p:spTree>',
+      `${ids.map((id) => frame!.replace(/<p:cNvPr id="\d+"/, `<p:cNvPr id="${id}"`)).join('')}</p:spTree>`,
+    ),
+  )
+  expect(
+    Object.keys(
+      await inspectPowerPointChartFingerprints(await zip.generateAsync({ type: 'base64' }), ids),
+    ),
+  ).toHaveLength(101)
+})
+
 it('keeps the second chart fingerprint stable when only the first chart changes', async () => {
   const deck = benchmarkDeck()
   const page = structuredClone(deck.slides[6]!)

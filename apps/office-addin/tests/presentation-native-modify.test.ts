@@ -19,7 +19,7 @@ const roots: string[] = []
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
-async function fixture(pageCount = 2) {
+async function fixture(pageCount = 2, extraShapeCount = 32) {
   const dir = mkdtempSync(join(tmpdir(), 'native-modify-'))
   roots.push(dir)
   const service = createPresentationService({ userDataPath: dir })
@@ -55,7 +55,7 @@ async function fixture(pageCount = 2) {
     { ...shape, id: 'freeform-sdk', type: 'Freeform' },
     { ...shape, id: 'smartart-sdk', type: 'SmartArt' },
     { ...shape, id: 'ole-sdk', type: 'Ole' },
-    ...Array.from({ length: 32 }, (_, i) => ({ ...shape, id: `sdk-${i}` })),
+    ...Array.from({ length: extraShapeCount }, (_, i) => ({ ...shape, id: `sdk-${i}` })),
   ]
   const texts = new Map<string, string>()
   let tableCell = '10'
@@ -399,6 +399,14 @@ it('uses one coherent package proof on each side of a native write and acknowled
   expect(f.adapter.inspectSlideRichText).not.toHaveBeenCalled()
   expect(f.adapter.inspectSlideTableFingerprints).not.toHaveBeenCalled()
   expect(f.adapter.inspectSlideChartFingerprints).not.toHaveBeenCalled()
+})
+it('keeps a native modify transaction available on pages with more than 100 shapes', async () => {
+  const f = await fixture(2, 120)
+  const combined = f.enableCombinedProof()
+  const proposed = await f.propose([textOp])
+  await f.proposals.confirm(proposed.proposalId)
+  expect(combined.mock.calls[0]![1].ordinary.length).toBeGreaterThan(100)
+  expect(f.saved(proposed.changeId).state).toBe('applied')
 })
 it('refuses a native write when a combined package proof omits a required shape', async () => {
   const f = await fixture()

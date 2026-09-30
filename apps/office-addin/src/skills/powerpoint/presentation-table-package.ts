@@ -1,5 +1,5 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
-import { loadBoundedZip, MAX_PPTX_XML_BYTES } from './powerpoint-package.js'
+import { loadBoundedZip, MAX_PPTX_PAGE_SHAPES, MAX_PPTX_XML_BYTES } from './powerpoint-package.js'
 
 type Node = Record<string, unknown>
 const parser = new XMLParser({
@@ -63,7 +63,7 @@ export async function inspectPowerPointTableFingerprints(
 ): Promise<Record<string, string>> {
   if (signal?.aborted) throw Error('cancelled')
   if (
-    shapeIds.length > 100 ||
+    shapeIds.length > MAX_PPTX_PAGE_SHAPES ||
     new Set(shapeIds).size !== shapeIds.length ||
     shapeIds.some((id) => !/^\d{1,10}$/.test(id))
   )

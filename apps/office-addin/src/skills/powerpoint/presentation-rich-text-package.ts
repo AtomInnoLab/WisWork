@@ -1,5 +1,5 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
-import { loadBoundedZip, MAX_PPTX_XML_BYTES } from './powerpoint-package.js'
+import { loadBoundedZip, MAX_PPTX_PAGE_SHAPES, MAX_PPTX_XML_BYTES } from './powerpoint-package.js'
 
 type Node = Record<string, unknown>
 const parser = new XMLParser({
@@ -148,7 +148,7 @@ export async function inspectPowerPointTextShapeFingerprints(
 ): Promise<Record<string, { exact: string; content: string; formatting: string }>> {
   if (signal?.aborted) throw Error('cancelled')
   if (
-    shapeIds.length > 100 ||
+    shapeIds.length > MAX_PPTX_PAGE_SHAPES ||
     new Set(shapeIds).size !== shapeIds.length ||
     shapeIds.some((id) => !/^\d{1,10}$/.test(id))
   )
@@ -475,7 +475,7 @@ export async function inspectPowerPointRichText(
       }
     })
     shapes.push({ packageShapeId, name: (attr(identity, 'name') ?? '').slice(0, 256), paragraphs })
-    if (shapes.length > 100 || runCount > 2000 || textLength > 120_000)
+    if (shapes.length > MAX_PPTX_PAGE_SHAPES || runCount > 2000 || textLength > 120_000)
       throw new Error('office_api_unsupported')
   }
   if (signal?.aborted) throw new Error('cancelled')
