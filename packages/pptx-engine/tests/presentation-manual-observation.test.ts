@@ -13,12 +13,14 @@ const shape = {
   top: 2,
   width: 300,
   height: 40,
+  rotation: 15,
   text: 'hello',
   font: { name: null, size: 20, color: null, bold: null },
 }
 it('preserves bounded aggregate literal state and canonical digest without attributing authorship', async () => {
   const digest = await presentationManualObservationDigest(shape)
   expect(await presentationManualObservationDigest({ ...shape, text: 'other' })).not.toBe(digest)
+  expect(await presentationManualObservationDigest({ ...shape, rotation: 45 })).not.toBe(digest)
   const input = {
     version: 1,
     source: 'host_difference_unattributed',
@@ -45,12 +47,24 @@ it('preserves bounded aggregate literal state and canonical digest without attri
   const output = parsePresentationManualObservation(input)
   output.before.shape.text = 'changed'
   expect(input.before.shape.text).toBe('hello')
+  const { rotation: _rotation, ...legacyShape } = shape
+  const legacy = {
+    ...input,
+    before: {
+      ...input.before,
+      shape: legacyShape,
+      digest: await presentationManualObservationDigest(legacyShape),
+    },
+  }
+  expect(parsePresentationManualObservation(legacy)).toEqual(legacy)
 })
 it('rejects unsupported shapes, extra fields, invalid aggregate fonts and oversized literal records', () => {
   for (const change of [
     { type: 'Chart' },
     { width: 0 },
     { height: NaN },
+    { rotation: '45' },
+    { rotation: 361 },
     { author: 'user' },
     { font: { name: 'Arial', size: 12, color: null, extra: true } },
     { font: { name: null, size: null, color: null, bold: undefined } },

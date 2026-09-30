@@ -11,6 +11,7 @@ export interface PresentationManualObservationShape {
   top: number
   width: number
   height: number
+  rotation?: number
   text?: string
   font?: {
     name: string | null
@@ -62,7 +63,11 @@ export function parsePresentationManualObservationShape(
 ): PresentationManualObservationShape {
   const v = object(value)
   if (
-    !keys(v, ['id', 'name', 'type', 'left', 'top', 'width', 'height'], ['text', 'font']) ||
+    !keys(
+      v,
+      ['id', 'name', 'type', 'left', 'top', 'width', 'height'],
+      ['rotation', 'text', 'font'],
+    ) ||
     !text(v.id, 256) ||
     !text(v.name, 256, true) ||
     !['TextBox', 'GeometricShape'].includes(v.type as string) ||
@@ -71,6 +76,10 @@ export function parsePresentationManualObservationShape(
     ) ||
     (v.width as number) <= 0 ||
     (v.height as number) <= 0 ||
+    (Object.hasOwn(v, 'rotation') &&
+      (typeof v.rotation !== 'number' ||
+        !Number.isFinite(v.rotation) ||
+        Math.abs(v.rotation) > 360)) ||
     (Object.hasOwn(v, 'text') && (typeof v.text !== 'string' || v.text.length > 32000))
   )
     return fail()

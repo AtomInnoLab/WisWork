@@ -197,7 +197,7 @@ export function createPresentationManualObservationSkill(
               throw new Error('presentation_observation_unavailable')
             const target = page.shapes.find((x) => x.id === shapeId)
             if (!target) throw new Error('presentation_observation_unavailable')
-            const { id, name, type, left, top, width, height, text, font } = target
+            const { id, name, type, left, top, width, height, rotation, text, font } = target
             return {
               order: context.slideIds,
               shape: parsePresentationManualObservationShape({
@@ -208,6 +208,7 @@ export function createPresentationManualObservationSkill(
                 top,
                 width,
                 height,
+                ...(rotation !== undefined ? { rotation } : {}),
                 ...(text !== undefined ? { text } : {}),
                 ...(font !== undefined ? { font } : {}),
               }),

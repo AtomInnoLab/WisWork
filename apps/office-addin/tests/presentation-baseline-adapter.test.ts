@@ -11,6 +11,7 @@ function host() {
     top: 2,
     width: 30,
     height: 40,
+    rotation: 15,
     load,
     textFrame: {
       textRange: {
@@ -81,6 +82,7 @@ describe('existing presentation baseline adapter', () => {
           top: 2,
           width: 30,
           height: 40,
+          rotation: 15,
           text: 'Existing document',
           font: { name: null, size: 18, color: null, bold: null, italic: false, underline: 'None' },
         },

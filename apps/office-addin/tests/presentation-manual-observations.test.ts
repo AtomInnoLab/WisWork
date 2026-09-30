@@ -11,6 +11,7 @@ const shape: PresentationManualObservationShape = {
   top: 0,
   width: 100,
   height: 50,
+  rotation: 0,
   text: 'Before',
   font: { name: 'Arial', size: 20, color: '000000' },
 }
@@ -166,9 +167,21 @@ function durableFixture() {
     edit: (text: string) => {
       current = { ...current, text }
     },
+    rotate: (rotation: number) => {
+      current = { ...current, rotation }
+    },
     get: () => record!,
   }
 }
+it('captures a rotation-only host edit in the durable observation', async () => {
+  const f = durableFixture()
+  const id = await f.begin()
+  f.rotate(45)
+  await f.complete(id)
+  expect(f.get().before.shape.rotation).toBe(0)
+  expect(f.get().after?.shape.rotation).toBe(45)
+  expect(f.get().after?.digest).not.toBe(f.get().before.digest)
+})
 it('persists before, completes after clear, then only saves a preference after confirmation', async () => {
   const f = durableFixture(),
     id = await f.begin()
@@ -241,6 +254,26 @@ it('continued host edits after proposing block approval and clear cancels its pe
   })
   f.skill.clear()
   expect(f.proposals.pending()).toBeUndefined()
+})
+it('blocks preference approval when the host shape was rotated after the observed snapshot', async () => {
+  const f = durableFixture()
+  const id = await f.begin()
+  f.edit('After')
+  await f.complete(id)
+  const proposed = await f.call('save_presentation_observed_preference', {
+    project_id: 'p',
+    observation_id: id,
+    preference: 'Keep',
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  const proposal = f.proposals.pending()!
+  f.rotate(45)
+  await expect(f.proposals.confirm(proposal.id)).rejects.toThrow('proposal_stale')
+  expect(
+    f.request.mock.calls.some(
+      ([body]) => (body as Record<string, unknown>).operation === 'preference_save_observation',
+    ),
+  ).toBe(false)
 })
 it('delete requires confirmation and binds the captured snapshots', async () => {
   const f = durableFixture(),

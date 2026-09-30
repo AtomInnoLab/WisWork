@@ -35,6 +35,7 @@ it('persists explicit before/after host observations across restarts, requires v
     top: 20,
     width: 100,
     height: 30,
+    rotation: 0,
     text: '一个比较长的标题',
     font: {
       name: 'Arial',
@@ -91,7 +92,7 @@ it('persists explicit before/after host observations across restarts, requires v
     skill.clear()
     service = createPresentationService({ userDataPath: root })
     skill = make()
-    shape = { ...shape, text: '短标题', left: 30, font: { ...shape.font, size: 24 } }
+    shape = { ...shape, text: '短标题', left: 30, rotation: 45, font: { ...shape.font, size: 24 } }
     loseResponseFor = 'manual_observation_complete'
     const completed = await invoke('complete_presentation_edit_observation', {
       project_id: 'source-project',
@@ -102,6 +103,7 @@ it('persists explicit before/after host observations across restarts, requires v
     expect(observation.before.shape.text).toBe('一个比较长的标题')
     expect(observation.after.shape.text).toBe('短标题')
     expect(observation.after.shape.left).toBe(30)
+    expect(observation.after.shape.rotation).toBe(45)
     expect(observation.source).toBe('host_difference_unattributed')
     expect(observation.atomicSnapshot).toBe(false)
     const listPreferences = async () =>
@@ -165,8 +167,35 @@ it('persists explicit before/after host observations across restarts, requires v
       ).observations,
     ).toEqual([])
     expect(await listPreferences()).toEqual([saved])
+    const rotationBefore = await invoke('begin_presentation_edit_observation', {
+      project_id: 'source-project',
+      slide_id: 'slide',
+      shape_id: 'shape',
+    })
+    expect(rotationBefore.isError, rotationBefore.output).not.toBe(true)
+    const rotationId = JSON.parse(rotationBefore.output).observation.observationId
+    shape = { ...shape, rotation: 90 }
+    const rotationComplete = await invoke('complete_presentation_edit_observation', {
+      project_id: 'source-project',
+      observation_id: rotationId,
+    })
+    expect(rotationComplete.isError, rotationComplete.output).not.toBe(true)
+    const rotated = JSON.parse(rotationComplete.output).observation
+    expect(rotated.before.shape.rotation).toBe(45)
+    expect(rotated.after.shape.rotation).toBe(90)
+    expect(rotated.after.shape.text).toBe(rotated.before.shape.text)
+    expect(rotated.after.digest).not.toBe(rotated.before.digest)
     skill.clear()
     service = createPresentationService({ userDataPath: root })
+    const persistedRotation = await (
+      await request({
+        operation: 'manual_observation_get',
+        documentId: 'source-doc',
+        projectId: 'source-project',
+        observationId: rotationId,
+      })
+    ).json()
+    expect(persistedRotation.observation.after.shape.rotation).toBe(90)
     documentId = 'target-doc'
     const targetProposals = createStructuredProposalController()
     const target = createPresentationPlanningSkill({

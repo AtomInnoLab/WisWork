@@ -11,6 +11,7 @@ export interface PresentationBaselinePage {
   slideId: string
   shapes: Array<
     PowerPointShape & {
+      rotation?: number
       text?: string
       font?: {
         name: string | null
@@ -156,6 +157,7 @@ export class BrowserPresentationBaselineAdapter implements PresentationBaselineA
         top: true,
         width: true,
         height: true,
+        rotation: true,
       })
       slide.slideMaster.load('id')
       slide.layout.load('id')
@@ -175,6 +177,7 @@ export class BrowserPresentationBaselineAdapter implements PresentationBaselineA
           top: number(shape.top),
           width: number(shape.width, 0),
           height: number(shape.height, 0),
+          ...(shape.rotation === undefined ? {} : { rotation: number(shape.rotation) }),
         })),
       }
       // Placeholder can contain text or a picture. Never assume its textFrame exists.
