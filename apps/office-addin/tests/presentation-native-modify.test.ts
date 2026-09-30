@@ -372,6 +372,39 @@ it('lost ACK retains uncertain flight across reopening and refuses replay', asyn
   expect(resumed.isError).toBe(true)
   expect(f.adapter.executeDeclarative).toHaveBeenCalledTimes(1)
 })
+it('does not acknowledge a native text edit that also moves an unrelated shape', async () => {
+  const f = await fixture()
+  const before = f.adapter.listSlideShapes.getMockImplementation()!
+  f.adapter.listSlideShapes.mockImplementation(async (index: number) => {
+    const listed = await before(index)
+    if (f.adapter.executeDeclarative.mock.calls.length)
+      listed.shapes.find((shape: { id: string }) => shape.id === 'graphic-sdk')!.left += 1
+    return listed
+  })
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({
+    state: 'applying',
+    nextIndex: 0,
+    inFlightIndex: 0,
+  })
+})
+it.each([
+  geometryOp,
+  { op: 'delete_shape', slide_index: 0, shape_id: 'sdk-id' } as NativeModifyOperation,
+])('does not acknowledge %s when another shape changes', async (operation) => {
+  const f = await fixture()
+  const before = f.adapter.listSlideShapes.getMockImplementation()!
+  f.adapter.listSlideShapes.mockImplementation(async (index: number) => {
+    const listed = await before(index)
+    if (f.adapter.executeDeclarative.mock.calls.length)
+      listed.shapes.find((shape: { id: string }) => shape.id === 'sdk-0')!.top += 1
+    return listed
+  })
+  const proposed = await f.propose([operation])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId).inFlightIndex).toBe(0)
+})
 it('disconnect after a native write retains uncertain receipt and does not continue', async () => {
   const f = await fixture()
   const p = await f.propose([textOp, geometryOp])

@@ -253,6 +253,16 @@ export function createPresentationNativeModifySkill(options: Options) {
       await check(r, signal, token, newWrite)
       const op = r.operations[r.nextIndex],
         p = r.pages.find((p) => p.slideIndex === op.slide_index)!
+      const beforeShapes = await options.adapter.listSlideShapes(p.slideIndex, signal)
+      await guard(r.documentId, signal, token, newWrite)
+      if (beforeShapes.slideId !== p.hostSlideId || beforeShapes.slideIndex !== p.slideIndex)
+        throw Error('presentation_document_changed')
+      if (
+        beforeShapes.shapes.length > 1000 ||
+        new Set(beforeShapes.shapes.map((shape) => shape.id)).size !== beforeShapes.shapes.length
+      )
+        throw Error('office_read_failed')
+      await check(r, signal, token, newWrite)
       const next = { ...r, inFlightIndex: r.nextIndex }
       await options.writeExistingBatch(next, r)
       r = next
@@ -261,6 +271,30 @@ export function createPresentationNativeModifySkill(options: Options) {
       await options.adapter.executeDeclarative([structuredClone(op)], signal)
       await guard(r.documentId, signal, token, newWrite)
       await verifyTarget(r, op, p.hostSlideId, signal, token, newWrite)
+      const afterShapes = await options.adapter.listSlideShapes(p.slideIndex, signal)
+      await guard(r.documentId, signal, token, newWrite)
+      const otherShapes = (shapes: typeof beforeShapes.shapes) =>
+        shapes.filter((shape) => shape.id !== op.shape_id).sort((a, b) => a.id.localeCompare(b.id))
+      const beforeTarget = beforeShapes.shapes.find((shape) => shape.id === op.shape_id)
+      const afterTarget = afterShapes.shapes.find((shape) => shape.id === op.shape_id)
+      if (
+        afterShapes.slideId !== p.hostSlideId ||
+        afterShapes.slideIndex !== p.slideIndex ||
+        afterShapes.shapes.length > 1000 ||
+        new Set(afterShapes.shapes.map((shape) => shape.id)).size !== afterShapes.shapes.length ||
+        !same(otherShapes(beforeShapes.shapes), otherShapes(afterShapes.shapes)) ||
+        (op.op === 'delete_shape'
+          ? Boolean(afterTarget)
+          : !beforeTarget ||
+            !afterTarget ||
+            (op.op === 'set_shape_text'
+              ? !same(beforeTarget, afterTarget)
+              : !same(
+                  [beforeTarget.id, beforeTarget.name, beforeTarget.type],
+                  [afterTarget.id, afterTarget.name, afterTarget.type],
+                )))
+      )
+        throw Error('office_verify_failed')
       const exported = await options.adapter.exportPresentationPagePackage!(p.hostSlideId, signal)
       await guard(r.documentId, signal, token, newWrite)
       if (exported.slideId !== p.hostSlideId || !same(exported.slideIds, r.beforeSlideIds))
