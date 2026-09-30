@@ -74,6 +74,40 @@ it('prepares one editable page revision containing text, geometry, and picture c
   expect(xml).toContain(`y="${Math.round((f.before.top + 5.76) * 12700)}"`)
 })
 
+it('preserves styled runs during an explicit length-changing composite text edit', async () => {
+  const f = await fixture()
+  const zip = await JSZip.loadAsync(f.source, { base64: true })
+  const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  zip.file(
+    'ppt/slides/slide1.xml',
+    xml.replace('<a:t>研究图文</a:t>', '<a:t>研究</a:t></a:r><a:r><a:rPr b="1"/><a:t>图文</a:t>'),
+  )
+  const source = await zip.generateAsync({ type: 'base64' })
+  const revision = await preparePowerPointCompositePagePackage(source, {
+    text: {
+      shapeId: f.titleId,
+      start: 1,
+      before: '究图',
+      after: '技术路线',
+      runReplacements: ['技术', '路线'],
+    },
+    geometry: {
+      shapeId: f.captionId,
+      before: f.before,
+      after: { ...f.before, top: f.before.top + 5.76 },
+    },
+    picture: { shapeId: f.pictureId, image: { mime: 'image/png', base64: f.image } },
+  })
+  expect(revision.changedRuns).toBe(2)
+  const revisedXml = await (
+    await JSZip.loadAsync(revision.base64, { base64: true })
+  )
+    .file('ppt/slides/slide1.xml')!
+    .async('string')
+  expect(revisedXml).toContain('<a:t>研技术</a:t></a:r><a:r><a:rPr b="1"/><a:t>路线文</a:t>')
+  expect(revisedXml).toContain(`y="${Math.round((f.before.top + 5.76) * 12700)}"`)
+})
+
 it('rejects overlapping target identities before changing a package', async () => {
   const f = await fixture()
   await expect(

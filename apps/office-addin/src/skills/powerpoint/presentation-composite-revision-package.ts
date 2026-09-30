@@ -6,7 +6,13 @@ import { replacePowerPointPictureMediaPackage } from './presentation-picture-pac
 import { replacePowerPointTextRangePackage } from './presentation-text-revision-package.js'
 
 interface CompositeRevision {
-  text: { shapeId: string; start: number; before: string; after: string }
+  text: {
+    shapeId: string
+    start: number
+    before: string
+    after: string
+    runReplacements?: string[]
+  }
   geometry: { shapeId: string; before: NativePageGeometry; after: NativePageGeometry }
   picture: { shapeId: string; image: { mime: 'image/png' | 'image/jpeg'; base64: string } }
 }
@@ -32,6 +38,7 @@ export async function preparePowerPointCompositePagePackage(
     revision.text.before,
     revision.text.after,
     signal,
+    revision.text.runReplacements,
   )
   const geometry = await replacePowerPointShapeGeometryPackage(
     text.base64,

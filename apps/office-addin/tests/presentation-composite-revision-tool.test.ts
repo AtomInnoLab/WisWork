@@ -21,6 +21,12 @@ it('prepares a three-object revision for one confirmed page change without writi
   )
     .file('ppt/slides/slide1.xml')!
     .async('string')
+  const sourceZip = await JSZip.loadAsync(original, { base64: true })
+  sourceZip.file(
+    'ppt/slides/slide1.xml',
+    xml.replace('<a:t>研究图文</a:t>', '<a:t>研究</a:t></a:r><a:r><a:rPr b="1"/><a:t>图文</a:t>'),
+  )
+  const source = await sourceZip.generateAsync({ type: 'base64' })
   const shape = (tag: 'sp' | 'pic', name: string) =>
     [...xml.matchAll(new RegExp(`<p:${tag}\\b[^>]*>[\\s\\S]*?<\\/p:${tag}>`, 'g'))].find(([part]) =>
       part.includes(`name="${name}"`),
@@ -36,7 +42,7 @@ it('prepares a three-object revision for one confirmed page change without writi
     height: Number(ext[2]) / 12700,
   }
   const pictureId = shapeId(shape('pic', 'image'))
-  const pictureBefore = await inspectPowerPointPicturePackage(original, pictureId)
+  const pictureBefore = await inspectPowerPointPicturePackage(source, pictureId)
   const png = new PNG({ width: 2, height: 1 })
   png.data[0] = 255
   const files = new Map<string, Uint8Array>([['/home/user/replacement.png', PNG.sync.write(png)]])
@@ -60,7 +66,7 @@ it('prepares a three-object revision for one confirmed page change without writi
       exportPresentationPagePackage: async () => ({
         slideId: 'slide-1',
         slideIds: ['slide-1'],
-        base64: original,
+        base64: source,
       }),
     },
     vfs: {
@@ -85,9 +91,10 @@ it('prepares a three-object revision for one confirmed page change without writi
       slide_id: 'slide-1',
       text: {
         shape_id: shapeId(shape('sp', 'title')),
-        start: 0,
-        before: '研究图文',
-        after: '研究图表页',
+        start: 1,
+        before: '究图',
+        after: '技术路线',
+        run_replacements: ['技术', '路线'],
       },
       geometry: {
         shape_id: shapeId(caption),
@@ -113,7 +120,7 @@ it('prepares a three-object revision for one confirmed page change without writi
   )
     .file('ppt/slides/slide1.xml')!
     .async('string')
-  expect(revisedXml).toContain('<a:t>研究图表页</a:t>')
+  expect(revisedXml).toContain('<a:t>研技术</a:t></a:r><a:r><a:rPr b="1"/><a:t>路线文</a:t>')
   expect(revisedXml).toContain(`y="${Math.round((before.top + 5.76) * 12700)}"`)
   expect((await inspectPowerPointPicturePackage(revised, pictureId)).mediaDigest).not.toBe(
     pictureBefore.mediaDigest,

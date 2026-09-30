@@ -217,7 +217,7 @@ const tools: AgentToolDef[] = names.map((action) => ({
 tools.unshift({
   name: 'prepare_existing_presentation_composite_revision',
   description:
-    'Prepare one editable, single-page PPTX revision with native text, geometry, and ordinary picture media changes on three distinct shapes. No host write. Stage the returned path once through the confirmed existing-page change flow for one durable backup and undo record.',
+    'Prepare one editable, single-page PPTX revision with native text, geometry, and ordinary picture media changes on three distinct shapes. For a length-changing text edit across formatting runs, supply text.run_replacements in affected-run order. No host write. Stage the returned path once through the confirmed existing-page change flow for one durable backup and undo record.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -230,6 +230,12 @@ tools.unshift({
           start: { type: 'integer', minimum: 0 },
           before: { type: 'string' },
           after: { type: 'string' },
+          run_replacements: {
+            type: 'array',
+            items: { type: 'string', minLength: 1, maxLength: 128 },
+            minItems: 2,
+            maxItems: 128,
+          },
         },
         required: ['shape_id', 'start', 'before', 'after'],
         additionalProperties: false,
@@ -335,7 +341,7 @@ export function createPresentationExistingPageEditingSkill(
           )
     },
     systemPrompt:
-      'For an undone page with retained sourceBackup, reapply_existing_presentation_page_change creates a new independent staged change with fresh original and source backups. Inspect and separately confirm commit; reapply never commits automatically and never recreates missing historical backups. For one text, one geometry, and one ordinary embedded picture change on the same existing page, prepare_existing_presentation_composite_revision creates a single native page revision. Stage its returned path with picture_shape_id through the confirmed existing-page change flow so the three objects share one durable backup, commit, and undo record. The composite revision supports a length-changing text replacement within one native run; the standalone text revision accepts explicit run_replacements across runs. ' +
+      'For an undone page with retained sourceBackup, reapply_existing_presentation_page_change creates a new independent staged change with fresh original and source backups. Inspect and separately confirm commit; reapply never commits automatically and never recreates missing historical backups. For one text, one geometry, and one ordinary embedded picture change on the same existing page, prepare_existing_presentation_composite_revision creates a single native page revision. Stage its returned path with picture_shape_id through the confirmed existing-page change flow so the three objects share one durable backup, commit, and undo record. Composite and standalone text revisions accept explicit run_replacements for length-changing edits across formatting runs. ' +
       'Existing page rebuild uses a validated one-slide VFS PPTX. For an ordinary embedded native picture, prepare_existing_presentation_image_revision creates a one-slide revision in VFS; then stage the returned path with picture_shape_id through the existing page change flow so post-write media can be read back. For text spanning multiple formatting runs, prepare_existing_presentation_text_revision preserves each run; length-changing edits require explicit run_replacements for every affected run. Stage that path through the same confirmed page change flow. To restore a whole page from a completed single or batch existing-edit savepoint, call prepare_existing_presentation_original_page_restore for its exact change and slide; read a fresh page baseline, then stage using the returned path and restore_source_kind/restore_source_change_id, inspect both pages, and separately confirm commit. The edited page is backed up before stage and remains until commit; the restored page receives a new host slide ID. Preparation does not modify PowerPoint. An unverified image-only source is rejected when the original page has native content; keep editable text and complex objects native where possible. Stage retains the original. A pending insertion with unknown host ID must use reconcile_pending_existing_presentation_page_change before any retry; it only accepts an exact page/order/package match and does not replay a write. Inspect and resume recorded interrupted insertions before further action. Commit and undo require separate confirmation. After a confirmed write, capture_existing_presentation_page_change for each affected slide_id, visually inspect the image, then record_existing_presentation_page_change with the same slide_id and screenshot_digest plus pass/fail notes. Inspect compares current screenshots to historical captures per page when possible; a match is not current or whole-deck QA.',
     clear() {
       epoch++
@@ -576,7 +582,8 @@ export function createPresentationExistingPageEditingSkill(
           if (
             !id(input.baseline_id) ||
             !host(input.slide_id) ||
-            !exact(input.text, ['shape_id', 'start', 'before', 'after']) ||
+            (!exact(input.text, ['shape_id', 'start', 'before', 'after']) &&
+              !exact(input.text, ['shape_id', 'start', 'before', 'after', 'run_replacements'])) ||
             !exact(input.geometry, ['shape_id', 'before', 'after']) ||
             !exact(input.picture, ['shape_id', 'path'])
           )
@@ -597,6 +604,13 @@ export function createPresentationExistingPageEditingSkill(
             (textEdit.start as number) < 0 ||
             typeof textEdit.before !== 'string' ||
             typeof textEdit.after !== 'string' ||
+            ('run_replacements' in textEdit &&
+              (!Array.isArray(textEdit.run_replacements) ||
+                textEdit.run_replacements.length < 2 ||
+                textEdit.run_replacements.length > 128 ||
+                textEdit.run_replacements.some(
+                  (value) => typeof value !== 'string' || !value || value.length > 128,
+                ))) ||
             !shapeId(geometryEdit.shape_id) ||
             !coordinates(geometryEdit.before) ||
             !coordinates(geometryEdit.after) ||
@@ -643,6 +657,9 @@ export function createPresentationExistingPageEditingSkill(
                 start: textEdit.start as number,
                 before: textEdit.before,
                 after: textEdit.after,
+                ...('run_replacements' in textEdit
+                  ? { runReplacements: textEdit.run_replacements as string[] }
+                  : {}),
               },
               geometry: {
                 shapeId: geometryEdit.shape_id,
