@@ -9,6 +9,7 @@ const EDIT_TOOLS =
 const DELETE_TOOLS = /^(delete|remove)_/
 
 export function acpToolKind(name: string): ToolKind {
+  if (name === 'audit_presentation_sources') return 'edit'
   if (READ_TOOLS.test(name)) return 'read'
   if (SEARCH_TOOLS.test(name)) return 'search'
   if (FETCH_TOOLS.test(name)) return 'fetch'

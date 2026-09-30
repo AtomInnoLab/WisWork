@@ -17,6 +17,7 @@ import {
 it.each([
   ['save_presentation_plan', 'edit'],
   ['record_presentation_claim_review', 'edit'],
+  ['audit_presentation_sources', 'edit'],
   ['run_presentation_production', 'edit'],
   ['import_generated_presentation', 'edit'],
   ['commit_existing_presentation_page_change', 'edit'],
