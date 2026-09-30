@@ -323,7 +323,11 @@ export function createPresentationHostBundleSkill(
             await current()
             return structure(value)
           }
-          const initialStructure = await hostStructure()
+          const initialHost = options.verifySlides
+            ? await options.verifySlides(controller.signal)
+            : undefined
+          await current()
+          const initialStructure = initialHost ? structure(initialHost) : undefined
           const assertStructure = async () => {
             if (initialStructure !== undefined && (await hostStructure()) !== initialStructure)
               throw Error('office_document_changed')
@@ -344,6 +348,13 @@ export function createPresentationHostBundleSkill(
             input.include_pdf || input.include_page_screenshots
               ? await packageContentSnapshot(pptx)
               : undefined
+          if (
+            originalPackageContent &&
+            initialHost &&
+            !initialHost.truncated &&
+            originalPackageContent.slideCount !== initialHost.slides.length
+          )
+            throw Error('office_document_changed')
           let pdf: Uint8Array | undefined
           let pdfState: PresentationDeliveryBundleManifest['checks']['pdf'] = 'not_requested'
           if (input.include_pdf) {
@@ -520,7 +531,7 @@ export function createPresentationHostBundleSkill(
             ],
           }
           const readme =
-            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。若含 page-1.png 至 page-8.png，它们是当前宿主逐页采集、未经人工复核的截图；采集与 PPTX 导出并非原子快照。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取。请求 PDF 时解析其页数并与 PPTX 页面数核对，损坏或页数不同则标为不可用，不把该 PDF 放入包内。请求 PDF 或逐页截图时会再次导出 PPTX，比较包内内容（忽略 ZIP 时间戳及 docProps）；发现文字、媒体等内容变化则不发布。可读宿主结构另核对页序和对象几何。两次读取仍非原子快照，页数相同也不能证明 PDF 与 PPTX 内容完全一致。不可用时不会用编译预览 PDF 代替。研究若存在，research.json/.md 保留冲突双方和缺口。' +
+            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。若含 page-1.png 至 page-8.png，它们是当前宿主逐页采集、未经人工复核的截图；采集与 PPTX 导出并非原子快照。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取。请求 PDF 时解析其页数并与 PPTX 页面数核对，损坏或页数不同则标为不可用，不把该 PDF 放入包内。请求 PDF 或逐页截图时会再次导出 PPTX，比较包内内容（忽略 ZIP 时间戳及 docProps）；发现文字、媒体等内容变化则不发布。可读宿主结构还会核对页序、对象几何及未截断时的 PPTX 页数。两次读取仍非原子快照，页数相同也不能证明 PDF 与 PPTX 内容完全一致。不可用时不会用编译预览 PDF 代替。研究若存在，research.json/.md 保留冲突双方和缺口。' +
             (report.plan.research
               ? '本包研究记录来自冻结计划绑定的指定版本，与 evidence.json 中的研究记录一致；仍不代表来源权威性、时效性或当前宿主事实已核验。'
               : '本包研究记录为读取时本项目的历史研究，未绑定当前生产任务，不等于冻结主张或宿主事实核验。') +

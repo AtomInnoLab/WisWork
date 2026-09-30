@@ -10,6 +10,15 @@ const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('h
 const onePagePdf = new TextEncoder().encode(
   '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\nxref\n0 4\n0000000000 65535 f \ntrailer<</Root 1 0 R/Size 4>>\nstartxref\n0\n%%EOF',
 )
+async function pptxWithPages(count: number): Promise<Uint8Array> {
+  const zip = new JSZip().file(
+    'ppt/presentation.xml',
+    `<p:presentation xmlns:p="p"><p:sldIdLst>${Array.from({ length: count }, (_, index) => `<p:sldId id="${index + 1}"/>`).join('')}</p:sldIdLst></p:presentation>`,
+  )
+  for (let index = 1; index <= count; index++)
+    zip.file(`ppt/slides/slide${index}.xml`, `<slide>Page ${index}</slide>`)
+  return zip.generateAsync({ type: 'uint8array' })
+}
 it('parses the PDF fixture', async () => {
   const { readPdfPageCount } = await import('../src/skills/shared/browser-pdf.js')
   expect(await readPdfPageCount(onePagePdf)).toBe(1)
@@ -100,6 +109,8 @@ async function setup(vfs = new InMemoryVfs()) {
 describe('current native host delivery package', () => {
   it('includes eight current-host screenshots as unreviewed evidence when explicitly requested', async () => {
     const f = await setup()
+    const eightPagePptx = await pptxWithPages(8)
+    f.exportDocument.mockImplementation(async () => eightPagePptx)
     const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
     const ids = Array.from({ length: 8 }, (_, index) => `host-${index + 1}`)
     const verifySlides = vi.fn(async () => ({
@@ -319,6 +330,33 @@ describe('current native host delivery package', () => {
     )
     expect(f.vfs.list('/home/user')).toEqual([])
   })
+  it('rejects a PDF bundle when the live host has more pages than its PPTX export', async () => {
+    const f = await setup()
+    const verifySlides = vi.fn(async () => ({
+      slideWidth: 960,
+      slideHeight: 540,
+      slides: ['host-1', 'host-2'].map((slideId, slideIndex) => ({
+        slideId,
+        slideIndex,
+        shapes: [],
+        shapesTruncated: false,
+        overflows: [],
+        overlaps: [],
+        overlapsTruncated: false,
+      })),
+      truncated: false,
+    }))
+    const skill = createPresentationHostBundleSkill({ ...f.options, verifySlides })
+    const result = await skill.executeTool({
+      id: 'mismatch',
+      name: 'export_current_presentation_bundle',
+      input: { project_id: f.report.projectId, request_id: f.report.requestId, include_pdf: true },
+    })
+    expect(result.output).toBe('office_document_changed')
+    expect(f.request.mock.calls.some(([body]) => body.operation === 'delivery_bundle_begin')).toBe(
+      false,
+    )
+  })
   it('does not publish PDF when slide text changes without geometry drift', async () => {
     const f = await setup()
     const changedPptx = await new JSZip()
@@ -388,6 +426,8 @@ describe('current native host delivery package', () => {
   })
   it('rejects screenshots captured while a shape moves without changing slide IDs', async () => {
     const f = await setup()
+    const eightPagePptx = await pptxWithPages(8)
+    f.exportDocument.mockImplementation(async () => eightPagePptx)
     const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
     let left = 1
     const ids = Array.from({ length: 8 }, (_, index) => `host-${index + 1}`)
