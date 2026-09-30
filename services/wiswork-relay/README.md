@@ -12,6 +12,9 @@ cargo deny --manifest-path services/wiswork-relay/Cargo.toml check licenses
 
 The process binds only `127.0.0.1`. `WISWORK_RELAY_PORT` defaults to `43190` and must be a decimal port from 1 through 65535 when set.
 
+For the cross-runtime presentation business smoke, run
+`WISWORK_REAL_RELAY_SMOKE=1 pnpm exec vitest run apps/shell/tests/presentation-pc-business-smoke-integration.test.ts` from the repository root. The opt-in test starts `examples/local_business_smoke.rs` on loopback with a test-only local account endpoint, then exercises the real Relay, PC client, presentation service and attachment service. It uploads and deletes only generated fixtures under a temporary PC data directory. This is a local protocol check; deployed Relay and PowerPoint host acceptance still require separate runs.
+
 ## Production
 
 1. Build with `cargo build --release --locked --manifest-path services/wiswork-relay/Cargo.toml`.
