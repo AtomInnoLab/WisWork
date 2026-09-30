@@ -89,10 +89,12 @@ try {
   await mkdir(userDataPath)
   const serviceBundle = join(temp, 'presentation-service.cjs')
   const relayBundle = join(temp, 'office-relay-client.cjs')
+  const compilerBundle = join(temp, 'presentation-compiler.cjs')
   await build({
     entryPoints: {
       'presentation-service': join(root, 'apps/shell/src/main/presentation-service.ts'),
       'office-relay-client': join(root, 'apps/shell/src/main/office-relay-client.ts'),
+      'presentation-compiler': join(root, 'packages/pptx-engine/src/presentation-compiler.ts'),
     },
     outdir: temp,
     outExtension: { '.js': '.cjs' },
@@ -125,10 +127,21 @@ try {
 const { app } = require('electron')
 const { createPresentationService } = require(${JSON.stringify(serviceBundle)})
 const { createOfficeRelayClient } = require(${JSON.stringify(relayBundle)})
+const { compilePresentationDeck } = require(${JSON.stringify(compilerBundle)})
 const documentId = ${JSON.stringify(documentId)}
 const projectId = ${JSON.stringify(projectId)}
 app.whenReady().then(async () => {
-  const presentation = createPresentationService({ userDataPath: ${JSON.stringify(userDataPath)} })
+  const crashProjectId = projectId + '-crash'
+  const presentation = createPresentationService({
+    userDataPath: ${JSON.stringify(userDataPath)},
+    compile: async (input, options) => {
+      if (process.env.PPT_AGENT_SMOKE_STALL === '1' && input.id === crashProjectId && input.slides[0]?.id === 'slide-2') {
+        console.log('PRODUCTION_BLOCKED')
+        await new Promise(() => {})
+      }
+      return compilePresentationDeck(input, options)
+    },
+  })
   const deck = ${JSON.stringify(deck)}
   if (process.env.PPT_AGENT_SMOKE_RESTARTED !== '1') {
     const compiled = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId, requestId: 'run-1', deck }, new AbortController().signal)).toString('utf8'))
@@ -146,6 +159,43 @@ app.whenReady().then(async () => {
     presentationProxy: (body, signal) => presentation(body, signal),
     onPending: (pending) => { void client.approve(pending.pairingId).catch(error => { console.error(error); app.exit(1) }) },
   })
+  const crashRequestId = 'production-crash-run'
+  const crashCall = async (operation, extra = {}) => JSON.parse(Buffer.from(await presentation({
+    operation, documentId, projectId: crashProjectId,
+    ...(operation === 'save_plan' ? {} : { requestId: crashRequestId }), ...extra,
+  }, new AbortController().signal)).toString('utf8'))
+  const crashFailure = error => { console.error(error); app.exit(1) }
+  async function startCrashJob() {
+    const crashDeck = { ...deck, id: crashProjectId }
+    const crashPlan = { ...${JSON.stringify(plan)}, projectId: crashProjectId }
+    const saved = await crashCall('save_plan', { expectedRevision: 0, plan: crashPlan })
+    if (saved.revision !== 1) throw Error('crash fixture plan save failed')
+    const begun = await crashCall('production_begin', { planRevision: 1, deck: crashDeck })
+    if (begun.status !== 'pending' || begun.total !== 8) throw Error('crash fixture begin failed')
+    const started = await crashCall('production_job_start')
+    if (started.job?.state !== 'running') throw Error('crash fixture job start failed')
+  }
+  async function resumeCrashJob() {
+    const interrupted = await crashCall('production_job_status')
+    if (interrupted.job?.state !== 'interrupted' || interrupted.production?.compiledCount !== 1 ||
+        interrupted.production?.pages?.[0]?.attempt !== 1 || interrupted.production?.pages?.[1]?.attempt !== 1)
+      throw Error('crash fixture did not recover one completed page and one interrupted page')
+    const resumed = await crashCall('production_job_resume')
+    if (resumed.job?.state !== 'running') throw Error('crash fixture job resume failed')
+    for (let attempt = 0; attempt < 200; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      const state = await crashCall('production_job_status')
+      if (state.job?.state === 'completed') {
+        if (state.production.compiledCount !== 8 || state.production.pages[0].attempt !== 1 ||
+            state.production.pages[1].attempt !== 2 || state.production.pages.some(page => page.state !== 'compiled'))
+          throw Error('crash fixture did not preserve completed page receipts')
+        console.log('PRODUCTION_RECOVERED')
+        return
+      }
+      if (state.job?.state === 'failed') throw Error('crash fixture resumed job failed')
+    }
+    throw Error('crash fixture job resume timed out')
+  }
   let buffer = ''
   process.stdin.setEncoding('utf8')
   process.stdin.on('data', chunk => {
@@ -157,6 +207,8 @@ app.whenReady().then(async () => {
       const command = JSON.parse(line)
       if (command.type === 'claim') void client.claim(command.code).catch(error => { console.error(error); app.exit(1) })
       if (command.type === 'stop') { client.revoke(); app.quit() }
+      if (command.type === 'start_crash_job') void startCrashJob().catch(crashFailure)
+      if (command.type === 'resume_crash_job') void resumeCrashJob().catch(crashFailure)
     }
   })
   console.log('ELECTRON_READY')
@@ -165,11 +217,16 @@ app.whenReady().then(async () => {
   )
   const command = process.platform === 'linux' ? 'xvfb-run' : electron
   const args = process.platform === 'linux' ? ['-a', electron, '--no-sandbox', driver] : [driver]
-  async function startPc(restarted) {
+  async function startPc(restarted, stall = false) {
     const pc = spawn(command, args, {
       cwd: root,
       stdio: ['pipe', 'pipe', 'inherit'],
-      env: { ...process.env, PPT_AGENT_SMOKE_RESTARTED: restarted ? '1' : '0' },
+      detached: process.platform === 'linux',
+      env: {
+        ...process.env,
+        PPT_AGENT_SMOKE_RESTARTED: restarted ? '1' : '0',
+        PPT_AGENT_SMOKE_STALL: stall ? '1' : '0',
+      },
     })
     children.push(pc)
     await firstLine(pc, 'Electron PC', 30_000, (line) => line === 'ELECTRON_READY')
@@ -231,7 +288,7 @@ app.whenReady().then(async () => {
   if (pending.productionDelivery?.status !== 'pending' || pending.productionDelivery.total !== 8)
     throw new Error('Electron PC interrupted production did not persist its pending state')
   await stopPc(pc)
-  const restartedPc = await startPc(true)
+  const restartedPc = await startPc(true, true)
   const resumed = await inspectPcBusiness(origin, documentId, pendingProjectId, {
     onCode: (code) => restartedPc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
     timeoutMs: 15_000,
@@ -259,13 +316,40 @@ app.whenReady().then(async () => {
     recovered.productionDelivery?.pdfBytes !== result.productionDelivery.pdfBytes
   )
     throw new Error('Electron PC delivery changed after restart')
-  await stopPc(restartedPc)
+  const blocked = firstLine(
+    restartedPc,
+    'Electron PC blocked production',
+    30_000,
+    (line) => line === 'PRODUCTION_BLOCKED',
+  )
+  restartedPc.stdin.write(JSON.stringify({ type: 'start_crash_job' }) + '\n')
+  await blocked
+  if (process.platform === 'linux') process.kill(-restartedPc.pid, 'SIGKILL')
+  else restartedPc.kill('SIGKILL')
+  await new Promise((resolveExit) => restartedPc.once('exit', resolveExit))
+  const recoveredPc = await startPc(true)
+  const recoveredJob = firstLine(
+    recoveredPc,
+    'Electron PC production recovery',
+    30_000,
+    (line) => line === 'PRODUCTION_RECOVERED',
+  )
+  recoveredPc.stdin.write(JSON.stringify({ type: 'resume_crash_job' }) + '\n')
+  await recoveredJob
+  await stopPc(recoveredPc)
   console.log(
-    'Electron PC + Rust Relay business smoke passed: pairing, eight-page compile and planned page production, import-source digests, PPTX/PDF readback, TXT/PNG upload, native image readback, cleanup, durable delivery and pending production recovery after PC restart',
+    'Electron PC + Rust Relay business smoke passed: pairing, eight-page production, PPTX/PDF readback, TXT/PNG upload, durable delivery, pending production recovery and running job crash recovery',
   )
 } finally {
   for (const child of children.reverse()) {
-    if (child.exitCode === null) child.kill('SIGTERM')
+    if (child.exitCode !== null) continue
+    if (process.platform === 'linux' && child.spawnfile === 'xvfb-run' && child.pid) {
+      try {
+        process.kill(-child.pid, 'SIGTERM')
+      } catch {
+        // The process group may have exited between inspection and cleanup.
+      }
+    } else child.kill('SIGTERM')
   }
   await rm(temp, { recursive: true, force: true })
 }
