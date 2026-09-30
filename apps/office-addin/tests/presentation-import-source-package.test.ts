@@ -3,6 +3,7 @@ import JSZip from 'jszip'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { validatePresentationImportSourcePage } from '../src/skills/powerpoint/presentation-import-source-package'
+import { inspectPowerPointChartSourcePackage } from '../src/skills/powerpoint/presentation-chart-source-package'
 
 it('accepts a compiled native image page and rejects an external image relationship', async () => {
   const deck = benchmarkDeck()
@@ -86,6 +87,47 @@ it('rejects a referenced XLSX package without a workbook definition', async () =
       '256#',
     ),
   ).rejects.toThrow('presentation_import_state_invalid')
+})
+
+it('rejects a chart whose embedded workbook data disagrees with its visible cache', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const slideXml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const shapeId = /<p:graphicFrame>[\s\S]*?<p:cNvPr id="(\d+)"/.exec(slideXml)?.[1]
+  expect(shapeId).toBeDefined()
+  const baseline = await inspectPowerPointChartSourcePackage(
+    Buffer.from(bytes).toString('base64'),
+    shapeId!,
+    undefined,
+    { allowAbsoluteChartTarget: true },
+  )
+  expect(baseline).toMatchObject({
+    verification: 'matches',
+    series: [{ categories: ['甲', '乙'] }],
+  })
+  const path = Object.keys(zip.files).find((name) => /^ppt\/embeddings\/[^/]+\.xlsx$/.test(name))!
+  const workbook = await JSZip.loadAsync(await zip.file(path)!.async('uint8array'))
+  const sheetXml = await workbook.file('xl/worksheets/sheet1.xml')!.async('string')
+  const changedSheet = sheetXml.replace(
+    /(<c r="B2"[^>]*><v>)[^<]+(<\/v>)/,
+    (_match, open: string, close: string) => `${open}999999${close}`,
+  )
+  expect(changedSheet).not.toBe(sheetXml)
+  workbook.file('xl/worksheets/sheet1.xml', changedSheet)
+  zip.file(path, await workbook.generateAsync({ type: 'uint8array' }))
+  const changed = (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64')
+  expect(
+    (
+      await inspectPowerPointChartSourcePackage(changed, shapeId!, undefined, {
+        allowAbsoluteChartTarget: true,
+      })
+    ).verification,
+  ).toBe('mismatch')
+  await expect(validatePresentationImportSourcePage(changed, '256#')).rejects.toThrow(
+    'presentation_import_state_invalid',
+  )
 })
 
 it('rejects a local image relationship redirected to an unrelated XML part', async () => {

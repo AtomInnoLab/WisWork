@@ -1,5 +1,6 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { loadBoundedZip, MAX_PPTX_IMPORT_PAGE_BYTES } from './powerpoint-package.js'
+import { inspectPowerPointChartSourcesBatch } from './presentation-chart-source-package.js'
 
 const parser = new XMLParser({ ignoreAttributes: false, parseAttributeValue: false })
 const validXml = (xml: string): boolean =>
@@ -8,6 +9,10 @@ const validXml = (xml: string): boolean =>
   XMLValidator.validate(xml) === true
 const items = (value: unknown): Record<string, unknown>[] =>
   value === undefined ? [] : Array.isArray(value) ? value : [value as Record<string, unknown>]
+const record = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
 const internalTarget = (slidePath: string, target: string): string | undefined => {
   if (!target || target.includes('\\') || /[?#]/.test(target)) return
   const parts = target.startsWith('/') ? [] : slidePath.split('/').slice(0, -1)
@@ -238,6 +243,22 @@ export async function validatePresentationImportSourcePage(
       bytes.at(-2) !== 0xff ||
       bytes.at(-1) !== 0xd9
     )
+      invalid()
+  }
+
+  const tree = record(record(slide['p:cSld'])?.['p:spTree'])
+  const chartShapeIds = items(tree?.['p:graphicFrame'])
+    .filter((frame) => record(record(frame['a:graphic'])?.['a:graphicData'])?.['c:chart'])
+    .map((frame) => record(record(frame['p:nvGraphicFramePr'])?.['p:cNvPr'])?.['@_id'])
+  if (chartShapeIds.some((id) => typeof id !== 'string' && typeof id !== 'number')) invalid()
+  if (chartShapeIds.length) {
+    const checked = await inspectPowerPointChartSourcesBatch(
+      base64,
+      chartShapeIds.map(String),
+      undefined,
+      { maxBytes: MAX_PPTX_IMPORT_PAGE_BYTES, allowAbsoluteChartTarget: true },
+    ).catch(() => invalid())
+    if (Object.values(checked.reports).some((report) => report.verification === 'mismatch'))
       invalid()
   }
 

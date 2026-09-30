@@ -70,9 +70,13 @@ function relation(nodes: Node[], id: string, type: string): Node {
 function points(nodes: Node[], container: string): string[] | undefined {
   const group = children(nodes, container)[0]
   if (!group) return undefined
-  const cache = children(group, 'c:strCache')[0] ?? children(group, 'c:numCache')[0]
-  if (!cache || children(group, 'c:multiLvlStrCache').length) return undefined
-  const all = tags(cache, 'c:pt')
+  const multi = children(group, 'c:multiLvlStrCache')
+  if (multi.length > 1) return undefined
+  const cache = multi[0] ?? children(group, 'c:strCache')[0] ?? children(group, 'c:numCache')[0]
+  if (!cache) return undefined
+  const levels = multi.length ? children(cache, 'c:lvl') : []
+  if (multi.length && levels.length !== 1) return undefined
+  const all = tags(levels[0] ?? cache, 'c:pt')
   const counts = tags(cache, 'c:ptCount')
   if (counts.length > 1 || (counts.length === 1 && attr(counts[0]!, 'val') !== String(all.length)))
     return undefined
