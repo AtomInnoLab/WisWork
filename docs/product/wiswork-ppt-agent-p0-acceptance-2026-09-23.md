@@ -51,6 +51,8 @@
 
 验收统计可使用 `node tools/ppt-agent-acceptance.mjs <records-directory>`。目录中每个 `.json` 文件必须是尝试记录数组；同一任务的 `attempt_no` 必须从 1 连续递增，先前失败记录保留，缺号会被拒绝。程序固定 20 项分母，只按每项最新尝试汇总；不足 20 项时完成率输出 `not_measured`，绝不将未执行等同失败。`passed` 记录需包含真实材料状态与清单、版本、身份、审阅人、PPTX SHA256、PowerPoint 保存重开及可编辑证据标记，且不能重启任务或留有 P0 缺陷。目录模式还要求每次 `passed` 尝试提供目录内的材料清单文件 `material_manifest`、`pptx_file` 与独立的 `reopen_evidence_file`，以及各自的 SHA256；程序逐文件核对摘要，拒绝缺失、越界路径和文件被修改。`rateThresholdMet` 只表示 16/20 数量门槛，不表示 P0 所有质量与功能条件均通过。文件摘要只能把记录绑定到实际字节，不能证明 PowerPoint 确实重开、内容可编辑或专业结论正确；这些仍须审阅原始录屏、文件和材料。测试中的合成记录也不计入真实任务结果。
 
+Office 插件导出的当前文稿 ZIP 可先运行 `node tools/ppt-agent-stage-host-bundle.mjs <bundle.zip> <新暂存目录> PPT-P0-01`。暂存命令核对 Manifest 中每个文件的摘要和任务身份，提取当前宿主 PPTX、冻结主张及历史 QA，并在 `acceptance-draft.json` 标出八页结构门禁与待补的真实 PowerPoint 保存重开、逐页截图、当前五层 QA、专业审阅和现场测量。暂存目录须是尚不存在的新目录；草稿没有 `outcome: passed`，不能直接放进验收记录根目录计数。历史 `quality.json` 不等于当前页面 QA，包内 `presentation.pptx` 也不证明已保存关闭重开。操作员完成原件核验和缺失证据后，才另行创建正式尝试记录。
+
 统计同时输出 `firstAttemptPassed` 和 `firstAttemptDeliveryRate`：按每项 `attempt_no: 1` 的结果计数，必须全部 20 项至少尝试一次后才给出比例；补跑成功不会改写首次结果。最终 `passed` 和 `completionRate` 仍按最新尝试计算，两组数值应并列报告。
 
 目录模式还会读取通过记录的 PPTX，校验其 OOXML 包含演示文稿、8 个幻灯片引用及对应幻灯片 XML，拒绝把任意字节改名为 `.pptx` 或用非 8 页文件计入通过。每页至少须含一个原生形状、图片、图表框架、连接线或组合对象；重复引用同一页或无外部关系页面的完全相同对象树也会被拒绝。图片与图表对象还须有包内关系和非空目标部件；图表部件须是可解析的图表 XML，避免把资源丢失的页计入通过。图片等通过页面关系引用的资产可能让相同对象树呈现不同内容，因此这类页面不凭对象树判重；视觉空白、媒体真实解码/显示、关系资产内容和近似重复仍由真实 PowerPoint 截图人工核验。结构检查不替代 PowerPoint 中保存、关闭、重开和编辑的人工证据核验。
