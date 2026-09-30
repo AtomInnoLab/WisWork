@@ -98,6 +98,23 @@ it('rejects source attribution that would be silently truncated in the Office fo
   )
 })
 
+it('rejects a decorative shape that would obscure the source footer', () => {
+  const deck = benchmarkDeck()
+  deck.slides[3]!.elements.push({
+    kind: 'shape',
+    id: 'bottom-decoration',
+    role: 'decoration',
+    shape: 'rect',
+    x: 1,
+    y: 7.1,
+    w: 2,
+    h: 0.2,
+  })
+  expect(() => officeOperationsForSlideIR(deck.slides[3]!, deck.style, 0, deck.claims)).toThrow(
+    'invalid_tool_input',
+  )
+})
+
 it('maps a shared SlideIR table to a native Office table operation', () => {
   const deck = benchmarkDeck()
   expect(officeOperationsForSlideIR(deck.slides[5]!, deck.style, 0, deck.claims)[1]).toMatchObject({

@@ -581,6 +581,26 @@ describe('presentation contract and compiler', () => {
     deck.slides[0]!.elements[0]!.x = 13
     await expect(compilePresentationDeck(deck)).rejects.toThrow(/presentation_geometry/)
   })
+
+  it('reserves the source footer above decorative objects too', async () => {
+    const deck = benchmarkDeck()
+    deck.slides[0]!.elements.push({
+      kind: 'shape',
+      id: 'bottom-decoration',
+      role: 'decoration',
+      shape: 'rect',
+      x: 1,
+      y: 7.1,
+      w: 2,
+      h: 0.2,
+    })
+    expect(inspectPresentationGeometry(parsePresentationDeck(deck))).toContainEqual(
+      expect.objectContaining({ kind: 'out_of_bounds', elementIds: ['bottom-decoration'] }),
+    )
+    await expect(compilePresentationDeck(deck)).rejects.toThrow(
+      'presentation_geometry:out_of_bounds',
+    )
+  })
 })
 it('accepts compact attachment references but never compiles unresolved asset bytes', async () => {
   const deck: import('../src/presentation').PresentationDeck = benchmarkDeck()

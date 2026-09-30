@@ -341,10 +341,7 @@ export function inspectPresentationGeometry(deck: PresentationDeck): GeometryIss
   const issues: GeometryIssue[] = []
   for (const slide of deck.slides) {
     for (const el of slide.elements) {
-      const bottom =
-        slide.claimIds?.length && el.role !== 'background' && el.role !== 'decoration'
-          ? 6.95
-          : PRESENTATION_HEIGHT
+      const bottom = slide.claimIds?.length && el.role !== 'background' ? 6.95 : PRESENTATION_HEIGHT
       if (
         el.x < 0 ||
         el.y < 0 ||

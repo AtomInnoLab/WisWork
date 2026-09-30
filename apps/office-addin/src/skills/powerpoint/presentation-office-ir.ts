@@ -1,4 +1,6 @@
 import {
+  PRESENTATION_HEIGHT,
+  PRESENTATION_WIDTH,
   presentationSlideSourceLabels,
   type PresentationClaim,
   type PresentationStyle,
@@ -53,7 +55,12 @@ export function officeOperationsForSlideIR(
     if (
       [element.x, element.y, element.w, element.h].some((value) => !Number.isFinite(value)) ||
       element.w <= 0 ||
-      element.h <= 0
+      element.h <= 0 ||
+      element.x < 0 ||
+      element.y < 0 ||
+      element.x + element.w > PRESENTATION_WIDTH + 1e-6 ||
+      element.y + element.h >
+        (labels.length && element.role !== 'background' ? 6.95 : PRESENTATION_HEIGHT) + 1e-6
     )
       throw new Error('invalid_tool_input')
     const box = {
