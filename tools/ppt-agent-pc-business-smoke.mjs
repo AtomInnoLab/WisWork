@@ -196,7 +196,9 @@ async function uploadFixture(request, documentId, name, bytes, kind) {
     finished.kind !== kind ||
     finished.sha256 !== attachmentId
   )
-    throw new Error('PC smoke attachment parse failed')
+    throw new Error(
+      `PC smoke ${kind} attachment parse failed: ${finished?.error ?? finished?.status ?? 'invalid_response'}`,
+    )
   return { attachmentId, metadata: finished }
 }
 
