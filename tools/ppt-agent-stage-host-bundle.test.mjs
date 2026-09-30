@@ -36,6 +36,10 @@ async function fixture() {
     documentId: 'doc-1',
     projectId: 'project-1',
     requestId: 'request-1',
+    createdAt: '2026-09-30T00:00:00.000Z',
+    planRevision: 1,
+    inputDigest: sha256('input'),
+    planDigest: sha256('plan'),
     files: Object.entries(files).map(([name, bytes]) => ({
       name,
       sizeBytes: bytes.length,

@@ -20,6 +20,11 @@ const OPTIONAL = ['presentation.pdf', 'research.json', 'research.md', ...SCREENS
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const validId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 const validHash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+const validTime = (value) =>
+  typeof value === 'string' &&
+  /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) &&
+  !Number.isNaN(Date.parse(value)) &&
+  new Date(value).toISOString() === value
 
 /** Stage verified host bytes for a human PowerPoint acceptance run; never records a pass. */
 export async function stagePresentationHostBundle(bundlePath, outputDirectory, caseId) {
@@ -53,6 +58,11 @@ export async function stagePresentationHostBundle(bundlePath, outputDirectory, c
     manifest.scope !== 'current_office_document' ||
     !validId(manifest.projectId) ||
     !validId(manifest.requestId) ||
+    !validTime(manifest.createdAt) ||
+    !Number.isSafeInteger(manifest.planRevision) ||
+    manifest.planRevision < 1 ||
+    !validHash(manifest.inputDigest) ||
+    !validHash(manifest.planDigest) ||
     typeof manifest.documentId !== 'string' ||
     !manifest.documentId.trim() ||
     !Array.isArray(manifest.files) ||
@@ -136,8 +146,12 @@ export async function stagePresentationHostBundle(bundlePath, outputDirectory, c
     caseId,
     sourceBundle: basename(bundlePath),
     sourceBundleSha256: sha256(bundle),
+    bundleCreatedAt: manifest.createdAt,
     projectId: manifest.projectId,
     requestId: manifest.requestId,
+    planRevision: manifest.planRevision,
+    inputDigest: manifest.inputDigest,
+    planDigest: manifest.planDigest,
     documentId: manifest.documentId,
     pptxFile: 'presentation.pptx',
     pptxSha256: declared.get('presentation.pptx').sha256,
