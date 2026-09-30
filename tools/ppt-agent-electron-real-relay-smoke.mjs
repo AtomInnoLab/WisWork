@@ -133,6 +133,9 @@ app.whenReady().then(async () => {
   if (process.env.PPT_AGENT_SMOKE_RESTARTED !== '1') {
     const compiled = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId, requestId: 'run-1', deck }, new AbortController().signal)).toString('utf8'))
     if (compiled.status !== 'compiled') throw Error('Electron PC compile failed')
+    const recoveryDeck = { ...deck, id: projectId + '-recovery' }
+    const recoverySeed = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId, requestId: 'run-recovery-seed', deck: recoveryDeck }, new AbortController().signal)).toString('utf8'))
+    if (recoverySeed.status !== 'compiled') throw Error('Electron PC recovery project compile failed')
   }
   let client
   client = createOfficeRelayClient({
@@ -212,8 +215,34 @@ app.whenReady().then(async () => {
   )
   if ((await readdir(attachments)).length !== 0)
     throw new Error('Electron PC test attachments were not cleaned up')
+  const pendingProjectId = `${projectId}-recovery`
+  const pendingFixture = {
+    requestId: 'production-restart-run',
+    deck: { ...deck, id: pendingProjectId },
+    plan: { ...plan, projectId: pendingProjectId },
+    expectedSlideTexts,
+  }
+  const pending = await inspectPcBusiness(origin, documentId, pendingProjectId, {
+    onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+    timeoutMs: 15_000,
+    productionFixture: pendingFixture,
+    beginProductionOnly: true,
+  })
+  if (pending.productionDelivery?.status !== 'pending' || pending.productionDelivery.total !== 8)
+    throw new Error('Electron PC interrupted production did not persist its pending state')
   await stopPc(pc)
   const restartedPc = await startPc(true)
+  const resumed = await inspectPcBusiness(origin, documentId, pendingProjectId, {
+    onCode: (code) => restartedPc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+    timeoutMs: 15_000,
+    productionFixture: pendingFixture,
+    runExistingProduction: true,
+  })
+  if (
+    resumed.productionDelivery?.pageDigests.length !== 8 ||
+    resumed.productionDelivery.pdfBytes < 100
+  )
+    throw new Error('Electron PC pending production did not resume after restart')
   const recovered = await inspectPcBusiness(origin, documentId, projectId, {
     onCode: (code) => restartedPc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
     timeoutMs: 15_000,
@@ -232,7 +261,7 @@ app.whenReady().then(async () => {
     throw new Error('Electron PC delivery changed after restart')
   await stopPc(restartedPc)
   console.log(
-    'Electron PC + Rust Relay business smoke passed: pairing, eight-page compile and planned page production, import-source digests, PPTX/PDF readback, TXT/PNG upload, native image readback, cleanup and durable delivery after PC restart',
+    'Electron PC + Rust Relay business smoke passed: pairing, eight-page compile and planned page production, import-source digests, PPTX/PDF readback, TXT/PNG upload, native image readback, cleanup, durable delivery and pending production recovery after PC restart',
   )
 } finally {
   for (const child of children.reverse()) {

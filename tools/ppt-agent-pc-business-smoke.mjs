@@ -269,7 +269,17 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     throw new Error('invalid smoke attachment fixture IDs')
   if (options.uploadFixtures && fixtureIds.some((id) => id !== undefined))
     throw new Error('upload smoke cannot use existing attachment IDs')
-  if (options.readExistingProduction && !options.productionFixture)
+  if (
+    [
+      options.readExistingProduction,
+      options.beginProductionOnly,
+      options.runExistingProduction,
+    ].filter(Boolean).length > 1 ||
+    ((options.readExistingProduction ||
+      options.beginProductionOnly ||
+      options.runExistingProduction) &&
+      !options.productionFixture)
+  )
     throw new Error('existing production smoke requires a production fixture')
   if (
     options.compiledRequestId !== undefined &&
@@ -453,6 +463,8 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       let produced
       if (options.readExistingProduction) {
         produced = await request('presentation.v1', { operation: 'production_status', ...base })
+      } else if (options.runExistingProduction) {
+        produced = await request('presentation.v1', { operation: 'production_run', ...base })
       } else {
         const saved = await request('presentation.v1', {
           operation: 'save_plan',
@@ -470,6 +482,8 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         })
         if (begun?.status !== 'pending' || begun.total !== fixture.expectedSlideTexts.length)
           throw new Error('PC page production did not begin')
+        if (options.beginProductionOnly)
+          return { ...status, productionDelivery: { status: 'pending', total: begun.total } }
         produced = await request('presentation.v1', { operation: 'production_run', ...base })
       }
       if (
