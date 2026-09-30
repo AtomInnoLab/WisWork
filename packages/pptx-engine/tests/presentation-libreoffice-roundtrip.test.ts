@@ -225,3 +225,91 @@ it.skipIf(!sofficeAvailable)(
   },
   75_000,
 )
+
+it.skipIf(!sofficeAvailable)(
+  'reopens each production-style single-page package with native objects intact',
+  async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'wiswork-ppt-pages-roundtrip-'))
+    const inputDirectory = join(directory, 'input')
+    const outputDirectory = join(directory, 'output')
+    mkdirSync(inputDirectory)
+    mkdirSync(outputDirectory)
+    try {
+      const deck = benchmarkDeck()
+      const inputs = []
+      for (const [index, slide] of deck.slides.entries()) {
+        const compiled = await compilePresentationDeck({ ...deck, slides: [slide] })
+        expect(compiled.sourceSlideIds).toEqual(['256#'])
+        if (slide.elements[1]?.kind === 'chart') {
+          const source = await JSZip.loadAsync(compiled.bytes)
+          expect(
+            Object.keys(source.files).some((name) => /^ppt\/embeddings\/[^/]+\.xlsx$/.test(name)),
+          ).toBe(true)
+        }
+        const input = join(inputDirectory, `page-${index + 1}.pptx`)
+        writeFileSync(input, compiled.bytes)
+        inputs.push(input)
+      }
+      execFileSync(
+        'soffice',
+        [
+          `-env:UserInstallation=file://${join(directory, 'profile')}`,
+          '--headless',
+          '--convert-to',
+          'pptx:Impress MS PowerPoint 2007 XML',
+          '--outdir',
+          outputDirectory,
+          ...inputs,
+        ],
+        { timeout: 120_000, stdio: 'pipe' },
+      )
+      for (const [index, slide] of deck.slides.entries()) {
+        const bytes = readFileSync(join(outputDirectory, `page-${index + 1}.pptx`))
+        const packageZip = await JSZip.loadAsync(bytes)
+        expect(
+          Object.keys(packageZip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)),
+        ).toHaveLength(1)
+        const native = (await openPptx(bytes)).deck.slides[0]!
+        expect(
+          native.elements.some(
+            (element) =>
+              element.type === 'shape' &&
+              element.text?.paragraphs.some((paragraph) =>
+                paragraph.runs.some((run) => run.text === slide.title),
+              ),
+          ),
+        ).toBe(true)
+        const expected = slide.elements[1]
+        if (expected?.kind === 'image') {
+          const picture = native.elements.find((element) => element.type === 'picture')
+          expect(picture?.type).toBe('picture')
+          if (picture?.type === 'picture') expect(packageZip.file(picture.mediaRef)).not.toBeNull()
+        } else if (expected?.kind === 'shape') {
+          expect(
+            native.elements.some(
+              (element) => element.type === 'shape' && element.presetGeometry === expected.shape,
+            ),
+          ).toBe(true)
+        } else if (expected?.kind === 'table') {
+          const table = native.elements.find((element) => element.type === 'table')
+          expect(table?.type).toBe('table')
+          if (table?.type === 'table') expect(table.rows).toHaveLength(expected.rows.length)
+        } else if (expected?.kind === 'chart') {
+          const chart = native.elements.find((element) => element.type === 'chart')
+          expect(chart?.type).toBe('chart')
+          if (chart?.type === 'chart') {
+            expect(chart.chart.categories).toEqual(expected.categories)
+            expect(chart.chart.series.map((series) => series.values)).toEqual(
+              expected.series.map((series) => series.values),
+            )
+          }
+          // LibreOffice may rewrite a chart as cache-backed native XML and drop its XLSX.
+          // PowerPoint workbook editability still needs the real host acceptance matrix.
+        }
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  },
+  150_000,
+)
