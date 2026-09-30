@@ -11,6 +11,7 @@ import {
   describePagePackageBackup,
   saveChartPackageBackup,
   readChartPackageBackup,
+  releaseChartPackageBackup,
 } from './presentation-chart-backup.js'
 import { observePowerPointNativeAdd } from './presentation-native-add-observation.js'
 import { presentationPackageDigest } from './powerpoint-package.js'
@@ -191,19 +192,30 @@ export function createPresentationNativeAddProposal(options: Options) {
             hostSlideId,
             slideIds: beforeSlideIds,
           }
-          const saved = await saveChartPackageBackup(
-            { ...scope, backupId: backup.backupId, base64: page.base64 },
-            writeSignal,
-          )
-          await current(writeSignal)
-          if (saved.sha256 !== backup.sha256 || saved.sizeBytes !== backup.sizeBytes)
-            throw Error('presentation_chart_backup_invalid')
-          await readChartPackageBackup(
-            { ...scope, backup, expectedPackageDigest: metadata.packageDigest },
-            writeSignal,
-          )
-          await fresh(writeSignal)
-          await options.writeExistingBatch(record, undefined)
+          try {
+            const saved = await saveChartPackageBackup(
+              { ...scope, backupId: backup.backupId, base64: page.base64 },
+              writeSignal,
+            )
+            await current(writeSignal)
+            if (saved.sha256 !== backup.sha256 || saved.sizeBytes !== backup.sizeBytes)
+              throw Error('presentation_chart_backup_invalid')
+            await readChartPackageBackup(
+              { ...scope, backup, expectedPackageDigest: metadata.packageDigest },
+              writeSignal,
+            )
+            await fresh(writeSignal)
+            await options.writeExistingBatch(record, undefined)
+          } catch (error) {
+            let absent = false
+            try {
+              absent = options.readExistingBatch(record.changeId) === undefined
+            } catch {
+              // An unreadable intent may still own the backup.
+            }
+            if (absent) await Promise.allSettled([releaseChartPackageBackup({ ...scope, backup })])
+            throw error
+          }
           abort(writeSignal)
           if (
             (await options.documentId()) !== documentId ||

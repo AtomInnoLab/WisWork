@@ -15,6 +15,7 @@ import {
   describePagePackageBackup,
   saveChartPackageBackup,
   readChartPackageBackup,
+  releaseChartPackageBackup,
 } from './presentation-chart-backup.js'
 import { presentationPackageDigest } from './powerpoint-package.js'
 import { readUntilConverged } from '../shared/office-write-transaction.js'
@@ -447,25 +448,47 @@ export function createPresentationNativeModifySkill(options: Options) {
         execute: async (s) => {
           await preflight(r, s, token, true)
           await fresh(s)
-          for (const backup of backups) {
-            const saved = await saveChartPackageBackup(
-              {
-                request: options.request,
-                documentId,
-                hostSlideId: backup.hostSlideId,
-                slideIds: r.beforeSlideIds,
-                backupId: backup.backupId,
-                base64: packages.get(backup.hostSlideId)!,
-              },
-              s,
-            )
-            await guard(documentId, s, token, true)
-            if (saved.sha256 !== backup.sha256 || saved.sizeBytes !== backup.sizeBytes)
-              throw Error('presentation_chart_backup_invalid')
+          try {
+            for (const backup of backups) {
+              const saved = await saveChartPackageBackup(
+                {
+                  request: options.request,
+                  documentId,
+                  hostSlideId: backup.hostSlideId,
+                  slideIds: r.beforeSlideIds,
+                  backupId: backup.backupId,
+                  base64: packages.get(backup.hostSlideId)!,
+                },
+                s,
+              )
+              await guard(documentId, s, token, true)
+              if (saved.sha256 !== backup.sha256 || saved.sizeBytes !== backup.sizeBytes)
+                throw Error('presentation_chart_backup_invalid')
+            }
+            await backupCheck(r, s, token, true)
+            await fresh(s)
+            await options.writeExistingBatch(r, undefined)
+          } catch (error) {
+            let absent = false
+            try {
+              absent = options.readExistingBatch(r.changeId) === undefined
+            } catch {
+              // An unreadable intent may still own the backups.
+            }
+            if (absent)
+              await Promise.allSettled(
+                backups.map((backup) =>
+                  releaseChartPackageBackup({
+                    request: options.request,
+                    documentId,
+                    hostSlideId: backup.hostSlideId,
+                    slideIds: r.beforeSlideIds,
+                    backup,
+                  }),
+                ),
+              )
+            throw error
           }
-          await backupCheck(r, s, token, true)
-          await fresh(s)
-          await options.writeExistingBatch(r, undefined)
           await run(r, s, token, true)
         },
         verify: async (s) => {

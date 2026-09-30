@@ -264,18 +264,64 @@ it('does no host write when the PC backup cannot be saved', async () => {
   expect(f.binding().readExistingBatch(p.preview.changeId as string)).toBeUndefined()
 })
 it('does no host write when initial durable intent fails', async () => {
-  const f = await proposalFixture(),
-    p = await f
-      .factory({
-        writeExistingBatch: async () => {
-          throw Error('lost settings receipt')
-        },
-      })
-      .propose(f.operations)
+  const f = await proposalFixture()
+  const operations: string[] = []
+  let releasedId = ''
+  const p = await f
+    .factory({
+      request: async (body: any, signal?: AbortSignal) => {
+        operations.push(body.operation)
+        if (body.operation === 'existing_page_backup_release') releasedId = body.backupId
+        return f.request(body, signal)
+      },
+      writeExistingBatch: async () => {
+        throw Error('lost settings receipt')
+      },
+    })
+    .propose(f.operations)
   f.setId(p.preview.changeId as string)
   const decision = f.proposals.waitForDecision(p.id)
   await expect(f.proposals.confirm(p.id)).rejects.toThrow()
   expect((await decision).status).toBe('failed')
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+  expect(operations).toContain('existing_page_backup_release')
+  expect(releasedId).toBeTruthy()
+  expect(
+    await (
+      await f.request({
+        operation: 'existing_page_backup_status',
+        documentId: await f.binding().documentId(),
+        backupId: releasedId,
+      })
+    ).json(),
+  ).toHaveProperty('error')
+})
+it('keeps the original page backup when the initial intent commits but its ACK is lost', async () => {
+  const f = await proposalFixture()
+  const p = await f
+    .factory({
+      writeExistingBatch: async (
+        next: PresentationExistingBatch,
+        expected?: PresentationExistingBatch,
+      ) => {
+        await f.binding().writeExistingBatch(next, expected)
+        throw Error('settings_ack_lost')
+      },
+    })
+    .propose(f.operations)
+  const decision = f.proposals.waitForDecision(p.id)
+  await expect(f.proposals.confirm(p.id)).rejects.toThrow('settings_ack_lost')
+  expect((await decision).status).toBe('failed')
+  const saved = f
+    .binding()
+    .readExistingBatch(p.preview.changeId as string) as PresentationNativeAddBatch
+  expect(saved.state).toBe('applying')
+  const response = await f.request({
+    operation: 'existing_page_backup_status',
+    documentId: saved.documentId,
+    backupId: saved.backups[0]!.backupId,
+  })
+  expect((await response.json()).status).toBe('ready')
   expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
 })
 it('refuses changed package baseline on confirmation', async () => {

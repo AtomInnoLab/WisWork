@@ -265,6 +265,60 @@ it('backup failure prevents durable intent and any host write', async () => {
   expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
   expect(f.saved(p.changeId)).toBeUndefined()
 })
+it('releases both original page backups when the first intent write fails', async () => {
+  const f = await fixture()
+  const p = await f.propose([textOp, geometryOp])
+  f.write.mockRejectedValueOnce(Error('settings_failed'))
+  await expect(f.proposals.confirm(p.proposalId)).rejects.toThrow('settings_failed')
+  expect(f.saved(p.changeId)).toBeUndefined()
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+  const releases = f.request.mock.calls.filter(
+    ([body]) => body.operation === 'existing_page_backup_release',
+  )
+  expect(releases).toHaveLength(2)
+  for (const [body] of releases)
+    expect(
+      await (
+        await f.request({
+          operation: 'existing_page_backup_status',
+          documentId: body.documentId,
+          backupId: body.backupId,
+        })
+      ).json(),
+    ).toHaveProperty('error')
+})
+it('releases the first page backup when the second upload fails', async () => {
+  const f = await fixture()
+  const p = await f.propose([textOp, geometryOp])
+  const request = f.request.getMockImplementation()!
+  let begins = 0
+  f.request.mockImplementation(async (body, signal) => {
+    if (body.operation === 'existing_page_backup_begin' && ++begins === 2)
+      throw Error('second_upload_failed')
+    return request(body, signal)
+  })
+  await expect(f.proposals.confirm(p.proposalId)).rejects.toThrow('second_upload_failed')
+  expect(f.saved(p.changeId)).toBeUndefined()
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+  expect(
+    f.request.mock.calls.filter(([body]) => body.operation === 'existing_page_backup_release'),
+  ).toHaveLength(2)
+})
+it('keeps both backups when the first intent write commits but loses its ACK', async () => {
+  const f = await fixture()
+  const p = await f.propose([textOp, geometryOp])
+  const write = f.write.getMockImplementation()!
+  f.write.mockImplementationOnce(async (next, expected) => {
+    await write(next, expected)
+    throw Error('settings_ack_lost')
+  })
+  await expect(f.proposals.confirm(p.proposalId)).rejects.toThrow('settings_ack_lost')
+  expect(f.saved(p.changeId).state).toBe('applying')
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+  expect(
+    f.request.mock.calls.filter(([body]) => body.operation === 'existing_page_backup_release'),
+  ).toHaveLength(0)
+})
 it.each(['disconnect', 'switch'])(
   'rechecks %s after final backup read before first write',
   async (kind) => {

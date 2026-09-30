@@ -5,6 +5,7 @@ type Scope = { request: Request; documentId: string; hostSlideId: string; slideI
 export type ChartPackageBackup = { backupId: string; sha256: string; sizeBytes: number }
 type Save = Scope & { base64: string; backupId: string }
 type Read = Scope & { backup: ChartPackageBackup; expectedPackageDigest?: string }
+type Release = Scope & { backup: ChartPackageBackup }
 const CHUNK = 128 * 1024
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const encode = (value: Uint8Array) =>
@@ -179,4 +180,23 @@ export async function readChartPackageBackup(input: Read, signal?: AbortSignal):
   )
     fail()
   return base64
+}
+
+/** Release only a backup whose durable change intent is known to be absent. */
+export async function releaseChartPackageBackup(input: Release): Promise<void> {
+  validScope(input, input.backup.backupId)
+  const receipt = await call(input, 'existing_page_backup_release', {
+    backupId: input.backup.backupId,
+    hostSlideId: input.hostSlideId,
+    slideIds: input.slideIds,
+    sha256: input.backup.sha256,
+    sizeBytes: input.backup.sizeBytes,
+  })
+  if (
+    Object.keys(receipt).sort().join(',') !==
+      'backupId,documentId,hostSlideId,sha256,sizeBytes,slideIds,status' ||
+    receipt.status !== 'released' ||
+    !match(input, input.backup, receipt)
+  )
+    fail()
 }
