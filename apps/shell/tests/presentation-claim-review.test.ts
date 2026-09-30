@@ -372,6 +372,45 @@ it('does not mark unverified image-backed scan text as supported', async () => {
     ),
   ).toEqual({ error: 'evidence_image_backed_unverified' })
 })
+it('blocks an unsampled scan page in a long PDF after attachment upload', async () => {
+  const pages = Array.from({ length: 65 }, (_, index) => `Page ${index + 1} text`)
+  pages[1] = 'OCR evidence on page two'
+  const f = await setup(undefined, {
+    raw: Buffer.from(buildPdfFixture(pages, { imagePage: 2, invisibleText: true })),
+    name: 'mixed-long.pdf',
+    excerpt: pages[1],
+    locator: '第 2 页',
+  })
+  const request = { ...f.request, offset: 0, maxChars: 8000 }
+  const evidence = decode(await f.service(request, new AbortController().signal))
+  expect(evidence.excerptMatch).toMatchObject({ status: 'found', locator: '第 2 页' })
+  expect(evidence.attachment.locatorSpans).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        locator: '第 2 页',
+        imageBacked: true,
+        invisibleTextLayer: true,
+      }),
+    ]),
+  )
+  expect(
+    decode(
+      await f.service(
+        {
+          ...request,
+          operation: 'production_record_claim_review',
+          reviewId: 'long-pdf-scan-review',
+          evidenceDigest: createHash('sha256')
+            .update(presentationClaimEvidenceContent(evidence))
+            .digest('hex'),
+          outcome: 'supported',
+          notes: 'Unverified OCR cannot support this claim',
+        },
+        new AbortController().signal,
+      ),
+    ),
+  ).toEqual({ error: 'evidence_image_backed_unverified' })
+}, 20_000)
 it('rejects changed evidence, invalid requests and cancellation without writing', async () => {
   const f = await setup()
   const evidence = decode(await f.service(f.request, new AbortController().signal))
