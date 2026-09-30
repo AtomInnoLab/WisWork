@@ -180,6 +180,52 @@ test('directory acceptance checks the actual PPTX and reopen evidence hashes', a
     }
     await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     assert.equal((await readPresentationAcceptance(directory)).passed, 1)
+    const roundTrip = {
+      version: 1,
+      caseId: CASE_IDS[0],
+      documentId: 'doc-1',
+      projectId: 'project-1',
+      requestId: 'request-1',
+      packageComparison: 'exact_part_bytes',
+      changedParts: [],
+      hostReopenVerified: false,
+      requiredHumanEvidence: 'PowerPoint re-open video and editable object review',
+      before: {
+        bundleSha256: sha256('before'),
+        bundleCreatedAt: '2026-09-25T00:00:00.000Z',
+        pptxSha256: sha256(deck),
+      },
+      after: {
+        bundleSha256: sha256('after'),
+        bundleCreatedAt: '2026-09-25T00:10:00.000Z',
+        pptxSha256: sha256(deck),
+      },
+    }
+    await writeFile(join(directory, 'files', 'roundtrip.json'), JSON.stringify(roundTrip))
+    record.artifacts.roundtrip_report_file = 'files/roundtrip.json'
+    record.artifacts.roundtrip_report_sha256 = sha256(JSON.stringify(roundTrip))
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    assert.equal((await readPresentationAcceptance(directory)).passed, 1)
+    roundTrip.after.pptxSha256 = sha256('another deck')
+    await writeFile(join(directory, 'files', 'roundtrip.json'), JSON.stringify(roundTrip))
+    record.artifacts.roundtrip_report_sha256 = sha256(JSON.stringify(roundTrip))
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(
+      readPresentationAcceptance(directory),
+      /acceptance_roundtrip_report_invalid/,
+    )
+    roundTrip.after.pptxSha256 = sha256(deck)
+    roundTrip.hostReopenVerified = true
+    await writeFile(join(directory, 'files', 'roundtrip.json'), JSON.stringify(roundTrip))
+    record.artifacts.roundtrip_report_sha256 = sha256(JSON.stringify(roundTrip))
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(
+      readPresentationAcceptance(directory),
+      /acceptance_roundtrip_report_invalid/,
+    )
+    delete record.artifacts.roundtrip_report_file
+    delete record.artifacts.roundtrip_report_sha256
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     record.artifacts.page_screenshots.pop()
     await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     await assert.rejects(readPresentationAcceptance(directory), /page_screenshots/)

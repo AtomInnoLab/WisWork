@@ -252,6 +252,54 @@ export async function readPresentationAcceptance(directory) {
     if (pptxPath === reopenPath) throw new Error('acceptance_artifact_invalid:reopen_evidence_file')
     const bundlePaths = new Set([materialPath, pptxPath, reopenPath])
     if (bundlePaths.size !== 3) throw new Error('acceptance_artifact_invalid:duplicate_file')
+    if (
+      record.artifacts.roundtrip_report_file !== undefined ||
+      record.artifacts.roundtrip_report_sha256 !== undefined
+    ) {
+      if (
+        typeof record.artifacts.roundtrip_report_file !== 'string' ||
+        !record.artifacts.roundtrip_report_file.endsWith('.json')
+      )
+        throw new Error('acceptance_roundtrip_report_invalid')
+      const path = await verifyArtifact(
+        root,
+        record.artifacts.roundtrip_report_file,
+        record.artifacts.roundtrip_report_sha256,
+        1024 * 1024,
+      )
+      if (bundlePaths.has(path)) throw new Error('acceptance_roundtrip_report_invalid')
+      let comparison
+      try {
+        comparison = JSON.parse(await readFile(path, 'utf8'))
+      } catch {
+        throw new Error('acceptance_roundtrip_report_invalid')
+      }
+      if (
+        comparison?.version !== 1 ||
+        comparison.caseId !== record.case_id ||
+        !nonempty(comparison.documentId) ||
+        !nonempty(comparison.projectId) ||
+        !nonempty(comparison.requestId) ||
+        comparison.hostReopenVerified !== false ||
+        !nonempty(comparison.requiredHumanEvidence) ||
+        !['exact_part_bytes', 'changed_requires_review'].includes(comparison.packageComparison) ||
+        !Array.isArray(comparison.changedParts) ||
+        comparison.changedParts.length > 2000 ||
+        comparison.changedParts.some((part) => typeof part !== 'string' || !part) ||
+        (comparison.packageComparison === 'exact_part_bytes') !==
+          (comparison.changedParts.length === 0) ||
+        !digest(comparison.before?.bundleSha256) ||
+        !digest(comparison.after?.bundleSha256) ||
+        comparison.before.bundleSha256 === comparison.after.bundleSha256 ||
+        !timestamp(comparison.before?.bundleCreatedAt) ||
+        !timestamp(comparison.after?.bundleCreatedAt) ||
+        comparison.after.bundleCreatedAt <= comparison.before.bundleCreatedAt ||
+        !digest(comparison.before?.pptxSha256) ||
+        comparison.after?.pptxSha256 !== record.artifacts.pptx_sha256
+      )
+        throw new Error('acceptance_roundtrip_report_invalid')
+      bundlePaths.add(path)
+    }
     for (const kind of ['claim_ledger', 'qa_report']) {
       const path = await verifyArtifact(
         root,
