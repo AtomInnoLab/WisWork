@@ -46,9 +46,11 @@ async function fixture(pageCount = 2) {
   const shapes = [
     structuredClone(shape),
     { ...shape, id: 'graphic-sdk', type: 'Picture' },
+    { ...shape, id: 'table-sdk', type: 'Table' },
     ...Array.from({ length: 32 }, (_, i) => ({ ...shape, id: `sdk-${i}` })),
   ]
   const texts = new Map<string, string>()
+  let tableCell = '10'
   let counter = 0
   const textFor = (id: string) => texts.get(id) ?? 'old'
   const packages = new Map<string, string>()
@@ -103,6 +105,7 @@ async function fixture(pageCount = 2) {
       shapes: shapes.map((item) => ({
         ...structuredClone(item),
         text: item.type === 'Picture' ? '' : textFor(item.id),
+        ...(item.type === 'Table' ? { tableValues: [['Revenue', tableCell]] } : {}),
       })),
     })),
     exportPresentationPagePackage: vi.fn(async (slideId: string) => ({
@@ -197,6 +200,7 @@ async function fixture(pageCount = 2) {
     setAfterWrite: (fn: () => void) => (afterWrite = fn),
     setTargetText: (value: string) => texts.set('sdk-id', value),
     setOtherText: (value: string) => texts.set('sdk-0', value),
+    setTableCell: (value: string) => (tableCell = value),
   }
 }
 const textOp: NativeModifyOperation = {
@@ -406,6 +410,13 @@ it('does not acknowledge a native text edit that also changes unrelated text', a
     nextIndex: 0,
     inFlightIndex: 0,
   })
+})
+it('does not acknowledge a native text edit that also changes an unrelated table cell', async () => {
+  const f = await fixture()
+  f.setAfterWrite(() => f.setTableCell('11'))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
 })
 it('does not acknowledge a native geometry edit that also changes target text', async () => {
   const f = await fixture()

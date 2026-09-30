@@ -268,7 +268,7 @@ export interface PowerPointAdapter {
   ): Promise<{
     slideId: string
     fingerprint: string
-    shapes?: Array<PowerPointShape & { text: string }>
+    shapes?: Array<PowerPointShape & { text: string; tableValues?: string[][] }>
   }>
   editSlideText(
     slideIndex: number,
@@ -1786,7 +1786,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
   ): Promise<{
     slideId: string
     fingerprint: string
-    shapes?: Array<PowerPointShape & { text: string }>
+    shapes?: Array<PowerPointShape & { text: string; tableValues?: string[][] }>
   }> {
     cancelled(signal)
     return this.run('1.4', async (context) => {
@@ -1805,11 +1805,19 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           (textFrame.load as (properties: string) => void)('hasText')
       }
       await sync(context, signal)
+      const tables = new Map<RuntimeRecord, RuntimeRecord>()
       for (const shape of items) {
         const textFrame = shape.textFrame as RuntimeRecord | undefined
         const textRange = textFrame?.textRange as RuntimeRecord | undefined
         if (textFrame?.hasText === true && textRange && typeof textRange.load === 'function')
           (textRange.load as (properties: string) => void)('text')
+        if (includeShapes && shape.type === 'Table') {
+          if (typeof shape.getTable !== 'function') throw new Error('office_api_unsupported')
+          const table = (shape.getTable as () => RuntimeRecord)()
+          if (!table || typeof table.load !== 'function') throw new Error('office_api_unsupported')
+          ;(table.load as (properties: string) => void)('values,rowCount,columnCount')
+          tables.set(shape, table)
+        }
       }
       await sync(context, signal)
       const slideId = string(slide.id)
@@ -1831,6 +1839,28 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             throw new Error('office_read_failed')
           const textFrame = shape.textFrame as RuntimeRecord | undefined
           const textRange = textFrame?.textRange as RuntimeRecord | undefined
+          const table = tables.get(shape)
+          let tableValues: string[][] | undefined
+          if (table) {
+            const values = table.values
+            if (
+              !Array.isArray(values) ||
+              values.length < 1 ||
+              values.length > 20 ||
+              values.length !== table.rowCount ||
+              !Number.isSafeInteger(table.columnCount) ||
+              (table.columnCount as number) < 1 ||
+              (table.columnCount as number) > 12 ||
+              values.some(
+                (row: unknown) =>
+                  !Array.isArray(row) ||
+                  row.length !== table.columnCount ||
+                  row.some((cell: unknown) => typeof cell !== 'string' || cell.length > 256),
+              )
+            )
+              throw new Error('office_read_failed')
+            tableValues = (values as string[][]).map((row) => [...row])
+          }
           return {
             ...shapeInfo(shape),
             text:
@@ -1839,6 +1869,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
                   ? boundedPageText(textRange?.text)
                   : string(textRange?.text, MAX_POWERPOINT_TEXT)
                 : '',
+            ...(tableValues ? { tableValues } : {}),
           }
         })
         .sort((first, second) => first.id.localeCompare(second.id))

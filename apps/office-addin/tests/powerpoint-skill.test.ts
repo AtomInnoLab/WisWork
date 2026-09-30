@@ -2181,6 +2181,28 @@ describe('browser PowerPoint adapter', () => {
       fingerprint: expect.stringMatching(/^s1:\d+:[0-9a-f]{8}$/),
       shapes: [expect.objectContaining({ id: '2', text: 'Old' })],
     })
+    const tableValues = [['Revenue', '10']]
+    slide.shapes.items.push({
+      id: '3',
+      name: 'Metrics',
+      type: 'Table',
+      left: 10,
+      top: 80,
+      width: 200,
+      height: 40,
+      textFrame: { hasText: false, load: vi.fn() },
+      getTable: () => ({ values: tableValues, rowCount: 1, columnCount: 2, load: vi.fn() }),
+    } as unknown as typeof shape)
+    const beforeTable = await subject.snapshotSlide(0, undefined, true)
+    expect(beforeTable.shapes?.find((item) => item.id === '3')).toMatchObject({
+      tableValues: [['Revenue', '10']],
+    })
+    tableValues[0]![1] = '11'
+    const afterTable = await subject.snapshotSlide(0, undefined, true)
+    expect(afterTable.fingerprint).not.toBe(beforeTable.fingerprint)
+    tableValues[0]![1] = 'X'.repeat(257)
+    await expect(subject.snapshotSlide(0, undefined, true)).rejects.toThrow('office_read_failed')
+    tableValues[0]![1] = '11'
     textRange.text = 'X'.repeat(12_001)
     await expect(subject.snapshotSlide(0, undefined, true)).rejects.toThrow('office_read_failed')
     await expect(subject.snapshotSlide(0)).resolves.toHaveProperty('slideId', 's1')
