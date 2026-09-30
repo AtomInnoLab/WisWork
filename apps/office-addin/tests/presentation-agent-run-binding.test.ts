@@ -594,6 +594,13 @@ describe('presentation AgentRun checkpoint', () => {
     'read_presentation_production',
     'audit_presentation_sources',
     'list_presentation_review_comments',
+    'check_presentation_baseline',
+    'check_presentation_baseline_windows',
+    'list_slide_shapes',
+    'read_slide_text',
+    'verify_slides',
+    'read_presentation_image_replacement',
+    'read_presentation_preference_candidates',
   ])('keeps %s restart-safe only after an unmutated completion', async (toolName) => {
     const values = new Map<string, string>()
     const binding = createPresentationDocumentBinding(

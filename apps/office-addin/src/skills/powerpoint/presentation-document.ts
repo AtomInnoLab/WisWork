@@ -140,6 +140,13 @@ const restartSafeTools = new Set([
   'read_presentation_production',
   'audit_presentation_sources',
   'list_presentation_review_comments',
+  'check_presentation_baseline',
+  'check_presentation_baseline_windows',
+  'list_slide_shapes',
+  'read_slide_text',
+  'verify_slides',
+  'read_presentation_image_replacement',
+  'read_presentation_preference_candidates',
 ])
 const AGENT_RUN_LOCAL_PREFIX = 'wiswork.presentation.agent-run.prompt.v1.'
 const AGENT_RUN_LOCAL_TTL_MS = 7 * 24 * 60 * 60 * 1000
