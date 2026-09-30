@@ -224,6 +224,21 @@ it('does not count duplicate QA pages or a report missing a production page as c
   const movedSummary = presentationWorkflowSummary(selected, movedImport, qa)!
   expect(movedSummary.stages.find((stage) => stage.name === '页面审查')?.status).toBe('attention')
   expect(movedSummary.pages[0]!.qa).toBe('无当前任务 QA 记录')
+  expect(movedSummary.pages[1]!.qa).toBe('历史结构与视觉通过')
+  expect(movedSummary.stages.find((stage) => stage.name === '页面审查')?.detail).toContain(
+    '7/8 页通过',
+  )
+
+  const uncertainImport = structuredClone(imported)
+  uncertainImport.status = 'uncertain'
+  uncertainImport.completed--
+  uncertainImport.pages[0]!.state = 'uncertain'
+  const uncertainSummary = presentationWorkflowSummary(selected, uncertainImport, qa)!
+  expect(uncertainSummary.stages.find((stage) => stage.name === '页面审查')?.status).toBe(
+    'attention',
+  )
+  expect(uncertainSummary.pages[0]!.qa).toBe('无当前任务 QA 记录')
+  expect(uncertainSummary.pages[1]!.qa).toBe('历史结构与视觉通过')
 
   const report = await deliveryReportFixture()
   const reportSelected = { ...project, production: { ...production, requestId: report.requestId } }

@@ -249,30 +249,39 @@ export function presentationWorkflowSummary(
     imported.total === production.total &&
     JSON.stringify(imported.pages.map((page) => page.id)) === JSON.stringify(pageIds),
   )
-  const qaMatches = Boolean(
+  const qaScopeMatches = Boolean(
     production &&
     qa?.source === 'production' &&
     qa.projectId === project.projectId &&
     qa.requestId === production.requestId &&
     importMatches &&
-    coversProductionPages(qa.pages.map((page) => page.pageId)) &&
-    qa.pages.every(
-      (page) =>
-        imported!.pages.find((item) => item.id === page.pageId)?.slideId === page.hostSlideId,
-    ),
+    coversProductionPages(qa.pages.map((page) => page.pageId)),
   )
-  const reviewed = qaMatches
+  const currentQaPageIds = new Set(
+    qaScopeMatches
+      ? qa!.pages
+          .filter((page) => {
+            const host = imported!.pages.find((item) => item.id === page.pageId)
+            return host?.state === 'complete' && host.slideId === page.hostSlideId
+          })
+          .map((page) => page.pageId)
+      : [],
+  )
+  const qaMatches = qaScopeMatches && currentQaPageIds.size === qa!.pages.length
+  const reviewed = qaScopeMatches
     ? qa!.pages.filter(
         (page) =>
+          currentQaPageIds.has(page.pageId) &&
           !page.recheckRequired &&
           page.screenshotRenderer !== 'libreoffice' &&
           page.structure.status === 'passed' &&
           page.visual.status === 'pass',
       ).length
     : 0
-  const fallbackReviewed = qaMatches
+  const fallbackReviewed = qaScopeMatches
     ? qa!.pages.filter(
         (page) =>
+          currentQaPageIds.has(page.pageId) &&
           !page.recheckRequired &&
           page.screenshotRenderer === 'libreoffice' &&
           page.structure.status === 'passed' &&
@@ -315,7 +324,7 @@ export function presentationWorkflowSummary(
   const uncertain = importMatches
     ? imported!.pages.filter((page) => page.state === 'uncertain').length
     : 0
-  const recheck = qaMatches ? qa!.pages.filter((page) => page.recheckRequired).length : 0
+  const recheck = qaScopeMatches ? qa!.pages.filter((page) => page.recheckRequired).length : 0
   const attention: PresentationWorkflowSummary['attention'] = []
   if (planChangedSinceProduction)
     attention.push({
@@ -387,7 +396,9 @@ export function presentationWorkflowSummary(
     const page = production?.pages.find((item) => item.id === slide.id)
     const index = production?.pages.findIndex((item) => item.id === slide.id) ?? -1
     const importedPage = importMatches && index >= 0 ? imported!.pages[index] : undefined
-    const reviewedPage = qaMatches ? qa!.pages.find((item) => item.pageId === slide.id) : undefined
+    const reviewedPage = currentQaPageIds.has(slide.id)
+      ? qa!.pages.find((item) => item.pageId === slide.id)
+      : undefined
     const reportPage = reportMatches
       ? report!.pages.find((item) => item.pageId === slide.id)
       : undefined
@@ -536,8 +547,8 @@ export function presentationWorkflowSummary(
               ? 'recorded'
               : 'working'
             : 'pending',
-      detail: qaMatches
-        ? `PowerPoint 宿主结构与视觉复核 ${reviewed}/${qa!.pages.length} 页通过；${fallbackReviewed} 页使用备用预览且宿主外观待核验；${qa!.pages.filter((page) => page.recheckRequired).length} 页需重审`
+      detail: qaScopeMatches
+        ? `PowerPoint 宿主结构与视觉复核 ${reviewed}/${qa!.pages.length} 页通过；${qa!.pages.length - currentQaPageIds.size} 页审查与当前宿主页不匹配或导入待核查；${fallbackReviewed} 页使用备用预览且宿主外观待核验；${recheck} 页需重审`
         : qa
           ? '现有 QA 记录无法与当前页任务匹配，需核对'
           : '尚无当前页任务的 QA 记录',
@@ -901,7 +912,7 @@ export function presentationWorkflowSummary(
       })
     }
   }
-  if (qaMatches) {
+  if (qaScopeMatches) {
     timeline.push({
       id: 'qa',
       text: `历史页面审查：${reviewed}/${qa!.pages.length} 页结构与视觉通过`,
