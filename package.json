@@ -32,6 +32,7 @@
     "build:all": "npm run build -w @wiswork/docs && npm run build -w @wiswork/sheets && npm run build -w @wiswork/slides && npm run build -w @wiswork/pdf && npm run build -w @wiswork/markdown && npm run build -w @wiswork/latex && npm run build -w @wiswork/office-addin && npm run build -w @wiswork/shell",
     "shell": "npm run build:all && electron apps/shell",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
+    "test:e2e:office": "playwright test --config e2e/office-playwright.config.ts",
     "test:branding": "node --test tools/branding.test.mjs",
     "test:runtime-removal": "node --test tools/removed-optional-runtime.test.mjs",
     "notices": "node tools/gen-third-party-notices.mjs",

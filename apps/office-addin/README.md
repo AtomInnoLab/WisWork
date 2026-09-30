@@ -248,10 +248,15 @@ CSP, bundle-size, forged-archive, and vulnerability review.
 ```bash
 npm run test -w @wiswork/office-bridge
 npm run test -w @wiswork/office-addin
+npm run test:e2e:office
 npm run typecheck -w @wiswork/office-bridge
 npm run typecheck -w @wiswork/office-addin
 VITE_WISWORK_ADDIN_ORIGIN=https://office.example npm run build -w @wiswork/office-addin
 ```
+
+`test:e2e:office` starts the local HTTPS Taskpane, substitutes a minimal Office.js PowerPoint host,
+and checks the narrow pre-pairing pane with Chrome keyboard input. It needs local Chrome and does
+not exercise WisWork PC pairing, the project workbench after pairing, or real PowerPoint rendering.
 
 ## PowerPoint 团队登录
 

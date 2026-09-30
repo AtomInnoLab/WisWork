@@ -76,6 +76,8 @@ export default defineConfig(async ({ command, mode }) => {
     envDir: here,
     publicDir: false as const,
     plugins: [react(), officeIconPlugin, securityConfigPlugin],
+    resolve: { dedupe: ['react', 'react-dom'] },
+    optimizeDeps: { include: ['react', 'react-dom/client', 'react/jsx-dev-runtime'] },
     define: {
       __WISWORK_OFFICE_BUILD_ID__: JSON.stringify(buildId),
     },
