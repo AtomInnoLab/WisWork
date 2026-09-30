@@ -2,9 +2,10 @@ import type { SessionNotification, SessionUpdate, ToolKind } from '@agentclientp
 import type { AgentToolCall, ToolExecution } from '@wiswork/agent-core'
 
 const READ_TOOLS = /^(get|list|read|inspect|screenshot|verify|review)_/
-const SEARCH_TOOLS = /^(search|find)_/
-const FETCH_TOOLS = /^(fetch|download|insert_web_image)/
-const EDIT_TOOLS = /^(add|apply|build|create|duplicate|edit|insert|replace|set|update|write)_/
+const SEARCH_TOOLS = /^(search|find|web_search|image_search)(?:_|$)/
+const FETCH_TOOLS = /^(fetch|download|insert_web_image|web_fetch)(?:_|$)/
+const EDIT_TOOLS =
+  /^(add|apply|build|create|duplicate|edit|insert|replace|set|update|write|save|record|run|commit|undo|export|discard|restore|reapply|publish|resolve|import)(?:_|$)/
 const DELETE_TOOLS = /^(delete|remove)_/
 
 export function acpToolKind(name: string): ToolKind {

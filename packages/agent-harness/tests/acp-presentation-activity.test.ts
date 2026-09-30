@@ -11,7 +11,26 @@ import {
   acpPresentationStage,
   acpPresentationStageLabel,
   acpToolActivity,
+  acpToolKind,
 } from '../src/acp-events.js'
+
+it.each([
+  ['save_presentation_plan', 'edit'],
+  ['record_presentation_claim_review', 'edit'],
+  ['run_presentation_production', 'edit'],
+  ['import_generated_presentation', 'edit'],
+  ['commit_existing_presentation_page_change', 'edit'],
+  ['undo_existing_presentation_page_change', 'edit'],
+  ['export_presentation_pdf', 'edit'],
+  ['delete_presentation_preference', 'delete'],
+  ['discard_existing_presentation_page_change', 'edit'],
+  ['read_presentation_plan', 'read'],
+  ['web_search', 'search'],
+  ['web_fetch', 'fetch'],
+  ['unknown_presentation_action', 'other'],
+] as const)('reports ACP tool kind for %s as %s', (tool, kind) => {
+  expect(acpToolKind(tool)).toBe(kind)
+})
 
 it('covers finite dynamically registered lifecycle actions', () => {
   for (const action of [
