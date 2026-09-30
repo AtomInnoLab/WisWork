@@ -33,7 +33,7 @@ function plainRuns(shapeXml: string): { runs: Run[]; text: string } {
   const bodies = [...shapeXml.matchAll(/<p:txBody\b[^>]*>[\s\S]*?<\/p:txBody>/g)]
   if (bodies.length !== 1) fail()
   const body = bodies[0]![0]
-  if (/<a:(?:fld|br|tab|hlinkClick|hlinkMouseOver)\b/.test(body)) fail()
+  if (/<a:(?:fld|hlinkClick|hlinkMouseOver)\b/.test(body)) fail()
   const paragraphs = [...body.matchAll(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g)]
   if (
     !paragraphs.length ||
@@ -45,10 +45,30 @@ function plainRuns(shapeXml: string): { runs: Run[]; text: string } {
   let fullText = ''
   for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
     if (paragraphIndex) fullText += '\n'
-    const paragraphRuns = [...paragraph[0].matchAll(/<a:r\b[^>]*>[\s\S]*?<\/a:r>/g)]
-    if ([...paragraph[0].matchAll(/<a:r\b/g)].length !== paragraphRuns.length) fail()
-    for (const match of paragraphRuns) {
+    const tokens = [
+      ...paragraph[0].matchAll(
+        /<a:r\b[^>]*>[\s\S]*?<\/a:r>|<a:br\b[^>]*\/>|<a:br\b[^>]*>[\s\S]*?<\/a:br>|<a:tab\b[^>]*\/>|<a:tab\b[^>]*>[\s\S]*?<\/a:tab>/g,
+      ),
+    ]
+    if (tokens.length > 4000) fail()
+    const paragraphRuns = tokens.filter(([xml]) => xml.startsWith('<a:r'))
+    if (
+      [...paragraph[0].matchAll(/<a:r\b/g)].length !== paragraphRuns.length ||
+      [...paragraph[0].matchAll(/<a:br\b/g)].length +
+        [...paragraph[0].matchAll(/<a:tab\b/g)].length !==
+        tokens.length - paragraphRuns.length
+    )
+      fail()
+    for (const match of tokens) {
       const xml = match[0]
+      if (xml.startsWith('<a:br')) {
+        fullText += '\n'
+        continue
+      }
+      if (xml.startsWith('<a:tab')) {
+        fullText += '\t'
+        continue
+      }
       const texts = [...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)]
       if (texts.length !== 1 || /<!\[CDATA\[/.test(texts[0]![1]!)) fail()
       const parsed = parser.parse(texts[0]![0]) as Record<string, unknown>

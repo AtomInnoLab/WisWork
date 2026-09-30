@@ -105,6 +105,73 @@ it('counts a blank native paragraph when locating a later paragraph', async () =
   ).toContain('<a:endParaRPr lang="zh-CN"/></a:p><a:p><a:r><a:t>成果报</a:t>')
 })
 
+it('counts and preserves native soft breaks when revising a later line', async () => {
+  const { zip, xml, shape, id } = await fixture()
+  const broken = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:t>科研</a:t></a:r><a:br><a:rPr lang="zh-CN"/></a:br><a:r><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, broken))
+  const source = await zip.generateAsync({ type: 'base64' })
+  await expect(replacePowerPointTextRangePackage(source, id, 2, '汇', '成果')).rejects.toThrow(
+    'presentation_baseline_changed',
+  )
+  const revised = await replacePowerPointTextRangePackage(source, id, 3, '汇', '成果')
+  const output = await (
+    await JSZip.loadAsync(revised.base64, { base64: true })
+  )
+    .file('ppt/slides/slide1.xml')!
+    .async('string')
+  expect(output).toContain(
+    '<a:t>科研</a:t></a:r><a:br><a:rPr lang="zh-CN"/></a:br><a:r><a:t>成果报</a:t>',
+  )
+  expect(output.replace('<a:t>成果报</a:t>', '<a:t>汇报</a:t>')).toBe(xml.replace(shape, broken))
+})
+
+it('counts successive self-closing soft breaks as blank visual lines', async () => {
+  const { zip, xml, shape, id } = await fixture()
+  const broken = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:t>科研</a:t></a:r><a:br/><a:br/><a:r><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, broken))
+  const revised = await replacePowerPointTextRangePackage(
+    await zip.generateAsync({ type: 'base64' }),
+    id,
+    4,
+    '汇',
+    '成果',
+  )
+  expect(
+    await (
+      await JSZip.loadAsync(revised.base64, { base64: true })
+    )
+      .file('ppt/slides/slide1.xml')!
+      .async('string'),
+  ).toContain('<a:br/><a:br/><a:r><a:t>成果报</a:t>')
+})
+
+it('counts and preserves a native tab between runs', async () => {
+  const { zip, xml, shape, id } = await fixture()
+  const tabbed = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:t>科研</a:t></a:r><a:tab/><a:r><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, tabbed))
+  const source = await zip.generateAsync({ type: 'base64' })
+  await expect(replacePowerPointTextRangePackage(source, id, 2, '汇', '成果')).rejects.toThrow(
+    'presentation_baseline_changed',
+  )
+  const revised = await replacePowerPointTextRangePackage(source, id, 3, '汇', '成果')
+  const output = await (
+    await JSZip.loadAsync(revised.base64, { base64: true })
+  )
+    .file('ppt/slides/slide1.xml')!
+    .async('string')
+  expect(output).toContain('<a:t>科研</a:t></a:r><a:tab/><a:r><a:t>成果报</a:t>')
+  expect(output.replace('<a:t>成果报</a:t>', '<a:t>汇报</a:t>')).toBe(xml.replace(shape, tabbed))
+})
+
 it('preserves complete supplementary Unicode characters beside and inside native edits', async () => {
   const { zip, xml, shape, id } = await fixture()
   zip.file('ppt/slides/slide1.xml', xml.replace(shape, shape.replace('科研汇报', 'A😀B')))
