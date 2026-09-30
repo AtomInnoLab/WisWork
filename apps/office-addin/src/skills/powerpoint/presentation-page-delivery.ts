@@ -3,6 +3,7 @@ import { presentationImportContent } from '@wiswork/project-store/presentation-i
 import { selectionFingerprint } from '../../agent/proposal-controller.js'
 import { MAX_PPTX_IMPORT_PAGE_BYTES, presentationPackageDigest } from './powerpoint-package.js'
 import { equivalentNativePresentationPage } from './presentation-page-equivalence.js'
+import { validatePresentationImportSourcePage } from './presentation-import-source-package.js'
 import type {
   CompiledPresentationArtifact,
   PresentationDeliveryOptions,
@@ -529,9 +530,17 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
           throw new Error('presentation_import_uncertain')
         if (!options.adapter.insertPage) throw new Error('presentation_unavailable')
         if (production) {
-          for (const source of pageBytes!.slice(previous?.checkpoint?.completed.length ?? 0)) {
+          for (
+            let index = previous?.checkpoint?.completed.length ?? 0;
+            index < pageBytes!.length;
+            index++
+          ) {
             try {
-              await presentationPackageDigest(source, signal, 'import_page')
+              await presentationPackageDigest(pageBytes![index]!, signal, 'import_page')
+              await validatePresentationImportSourcePage(
+                pageBytes![index]!,
+                artifact.pages![index]!.sourceSlideId,
+              )
             } catch (error) {
               if (error instanceof Error && error.message === 'cancelled') throw error
               throw new Error('presentation_import_state_invalid', { cause: error })

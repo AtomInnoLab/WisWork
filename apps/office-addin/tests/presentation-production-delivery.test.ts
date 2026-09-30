@@ -19,9 +19,11 @@ import {
   presentationPageMapping,
   validPresentationImportRecord,
 } from '../src/skills/powerpoint/presentation-page-delivery'
-const fixturePage = await new JSZip()
-  .file('ppt/slides/slide1.xml', '<page>fixture</page>')
-  .generateAsync({ type: 'base64' })
+const fixtureDeck = benchmarkDeck()
+fixtureDeck.slides = [fixtureDeck.slides[0]!]
+const fixturePage = Buffer.from((await compilePresentationDeck(fixtureDeck)).bytes).toString(
+  'base64',
+)
 function fixture() {
   const artifact: CompiledPresentationArtifact = {
     documentId: 'doc',
@@ -77,13 +79,10 @@ function fixture() {
 }
 it('checks each imported production page package before recording completion', async () => {
   const f = fixture()
-  const sourceZip = new JSZip()
-  sourceZip.file('ppt/slides/slide1.xml', '<page><picture/></page>')
-  sourceZip.file('ppt/media/image1.png', new Uint8Array([1, 2, 3]))
-  const source = await sourceZip.generateAsync({ type: 'base64' })
-  const otherZip = new JSZip()
-  otherZip.file('ppt/slides/slide1.xml', '<page><picture/></page>')
-  otherZip.file('ppt/media/image1.png', new Uint8Array([1, 2, 4]))
+  const source = fixturePage
+  const otherZip = await JSZip.loadAsync(Buffer.from(source, 'base64'))
+  const xml = await otherZip.file('ppt/slides/slide1.xml')!.async('string')
+  otherZip.file('ppt/slides/slide1.xml', xml.replace('科研汇报', '内容不同'))
   const other = await otherZip.generateAsync({ type: 'base64' })
   f.artifact.pagePptxBase64 = [source, source, source]
   const skill = createPresentationProductionDeliverySkill({
@@ -157,11 +156,45 @@ it('rejects an oversized inflated page package before any host write', async () 
   expect(f.proposals.pending()).toBeUndefined()
 })
 
+it('rejects a source selector absent from an otherwise valid single-page PPTX', async () => {
+  const f = fixture()
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const compiled = await compilePresentationDeck(deck)
+  f.artifact.pagePptxBase64 = [Buffer.from(compiled.bytes).toString('base64')]
+  f.artifact.pages = [{ id: 'page0', title: 'Page 0', sourceSlideId: '999#' }]
+  f.artifact.slideCount = 1
+  expect(await f.skill.executeTool(f.call)).toMatchObject({
+    isError: true,
+    output: 'presentation_import_state_invalid',
+  })
+  expect(f.adapter.insertPage).not.toHaveBeenCalled()
+})
+
+it('rejects ZIP content that is not a selectable PowerPoint page before proposing', async () => {
+  for (const mutate of [
+    async () =>
+      new JSZip().file('ppt/slides/slide1.xml', '<page/>').generateAsync({ type: 'base64' }),
+    async () => {
+      const zip = await JSZip.loadAsync(Buffer.from(fixturePage, 'base64'))
+      zip.remove('ppt/_rels/presentation.xml.rels')
+      return zip.generateAsync({ type: 'base64' })
+    },
+  ]) {
+    const f = fixture()
+    f.artifact.pagePptxBase64![0] = await mutate()
+    expect(await f.skill.executeTool(f.call)).toMatchObject({
+      isError: true,
+      output: 'presentation_import_state_invalid',
+    })
+    expect(f.proposals.pending()).toBeUndefined()
+    expect(f.adapter.insertPage).not.toHaveBeenCalled()
+  }
+})
+
 it('records an imported production page after its exported package matches', async () => {
   const f = fixture()
-  const zip = new JSZip()
-  zip.file('ppt/slides/slide1.xml', '<page>source</page>')
-  const source = await zip.generateAsync({ type: 'base64' })
+  const source = fixturePage
   f.artifact.pagePptxBase64 = [source, source, source]
   const exportPage = vi.fn(async () => source)
   const skill = createPresentationProductionDeliverySkill({
@@ -176,9 +209,7 @@ it('records an imported production page after its exported package matches', asy
 
 it('keeps the page uncertain if host slide order changes during package readback', async () => {
   const f = fixture()
-  const zip = new JSZip()
-  zip.file('ppt/slides/slide1.xml', '<page>source</page>')
-  const source = await zip.generateAsync({ type: 'base64' })
+  const source = fixturePage
   f.artifact.pagePptxBase64 = [source, source, source]
   const skill = createPresentationProductionDeliverySkill({
     ...f.options,
@@ -247,9 +278,7 @@ it('records a compiled image page when PowerPoint renumbers an internal shape ID
 })
 it('reconciles an interrupted append only after exact package and host-order proof', async () => {
   const f = fixture()
-  const zip = new JSZip()
-  zip.file('ppt/slides/slide1.xml', '<page>expected</page>')
-  const source = await zip.generateAsync({ type: 'base64' })
+  const source = fixturePage
   f.artifact.pagePptxBase64![0] = source
   f.adapter.insertPage.mockImplementationOnce(async () => {
     f.host.push('host1')
@@ -277,11 +306,10 @@ it('reconciles an interrupted append only after exact package and host-order pro
 })
 it('keeps an interrupted append uncertain when package content differs', async () => {
   const f = fixture()
-  const sourceZip = new JSZip()
-  sourceZip.file('ppt/slides/slide1.xml', '<page>expected</page>')
-  f.artifact.pagePptxBase64![0] = await sourceZip.generateAsync({ type: 'base64' })
-  const otherZip = new JSZip()
-  otherZip.file('ppt/slides/slide1.xml', '<page>different</page>')
+  f.artifact.pagePptxBase64![0] = fixturePage
+  const otherZip = await JSZip.loadAsync(Buffer.from(fixturePage, 'base64'))
+  const xml = await otherZip.file('ppt/slides/slide1.xml')!.async('string')
+  otherZip.file('ppt/slides/slide1.xml', xml.replace('科研汇报', '内容不同'))
   const other = await otherZip.generateAsync({ type: 'base64' })
   f.adapter.insertPage.mockImplementationOnce(async () => {
     f.host.push('host1')

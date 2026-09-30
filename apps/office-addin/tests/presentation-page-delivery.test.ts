@@ -1,4 +1,5 @@
-import JSZip from 'jszip'
+import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import {
   createPresentationProductionDeliverySkill,
   validPresentationImportRecord,
@@ -322,9 +323,9 @@ it('preserves each actual reserved start on normal completion and after reopen, 
 it('retains the original start when read-only reconciliation claims a lost host ACK; legacy starts remain absent', async () => {
   for (const legacy of [false, true]) {
     const f = fixture(),
-      zip = new JSZip()
-    zip.file('ppt/slides/slide1.xml', '<page>synthetic</page>')
-    const source = await zip.generateAsync({ type: 'base64' })
+      deck = benchmarkDeck()
+    deck.slides = [deck.slides[0]!]
+    const source = Buffer.from((await compilePresentationDeck(deck)).bytes).toString('base64')
     const artifact = {
       ...f.artifact,
       pptxBase64: '',
