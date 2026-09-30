@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 
@@ -89,6 +89,70 @@ export function checkPcStatusResponse(response, projectId) {
   return { projectId: response.projectId, status: response.status, slideCount: response.slideCount }
 }
 
+function checkAttachmentList(response) {
+  if (
+    !response ||
+    !Array.isArray(response.attachments) ||
+    response.attachments.length > 32 ||
+    (response.nextAfter !== undefined &&
+      (response.attachments.length !== 32 ||
+        response.nextAfter !== response.attachments.at(-1)?.attachmentId)) ||
+    response.attachments.some(
+      (item, index) =>
+        !/^[a-f0-9]{64}$/.test(item?.attachmentId) ||
+        (index > 0 && item.attachmentId <= response.attachments[index - 1].attachmentId),
+    )
+  )
+    throw new Error('PC attachment listing invalid')
+  return response.attachments.length
+}
+
+function checkTextAttachment(metadata, read, id) {
+  if (
+    metadata?.attachmentId !== id ||
+    metadata.status !== 'ready' ||
+    metadata.kind !== 'text' ||
+    read?.attachmentId !== id ||
+    read.offset !== 0 ||
+    read.sourceUri !== `attachment:${id}` ||
+    !Number.isSafeInteger(read.totalChars) ||
+    read.totalChars < 1 ||
+    read.totalChars !== metadata.totalChars ||
+    typeof read.text !== 'string' ||
+    !read.text.trim() ||
+    read.text.length > 8000 ||
+    read.text.length !== Math.min(read.totalChars, 8000)
+  )
+    throw new Error('PC text attachment read invalid')
+}
+
+function checkImageAttachment(metadata, asset, id) {
+  if (
+    metadata?.attachmentId !== id ||
+    metadata.status !== 'ready' ||
+    metadata.kind !== 'image' ||
+    asset?.id !== id ||
+    asset.mime !== 'image/png' ||
+    !Number.isSafeInteger(asset.width) ||
+    asset.width < 1 ||
+    asset.width !== metadata.width ||
+    !Number.isSafeInteger(asset.height) ||
+    asset.height < 1 ||
+    asset.height !== metadata.height ||
+    typeof asset.base64 !== 'string' ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(asset.base64)
+  )
+    throw new Error('PC image attachment read invalid')
+  const bytes = Buffer.from(asset.base64, 'base64')
+  if (
+    !bytes.length ||
+    bytes.length > 10 * 1024 * 1024 ||
+    bytes.toString('base64') !== asset.base64 ||
+    createHash('sha256').update(bytes).digest('hex') !== metadata.assetSha256
+  )
+    throw new Error('PC image attachment digest mismatch')
+}
+
 export async function inspectPcBusiness(relayOrigin, documentId, projectId, options = {}) {
   if (
     typeof documentId !== 'string' ||
@@ -98,6 +162,14 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)
   )
     throw new Error('smoke requires a real document and project ID')
+  const fixtureIds = [options.textAttachmentId, options.imageAttachmentId]
+  if (
+    fixtureIds.some(
+      (id) => id !== undefined && (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)),
+    ) ||
+    (fixtureIds[0] !== undefined && fixtureIds[0] === fixtureIds[1])
+  )
+    throw new Error('invalid smoke attachment fixture IDs')
   const timeoutMs = options.timeoutMs ?? 120_000
   const socket = (options.connect ?? ((url, config) => new WebSocket(url, config)))(
     relayUrl(relayOrigin),
@@ -121,7 +193,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         version: 2,
         type: 'office.create',
         host: 'PowerPoint',
-        capabilities: ['presentation.v1'],
+        capabilities: ['presentation.v1', 'presentation-assets.v1'],
       }),
     )
     const created = await expected(next, 'office.created', 10_000)
@@ -139,55 +211,99 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       approved.session_id?.length < 1 ||
       approved.capability?.length < 1 ||
       !Array.isArray(approved.capabilities) ||
-      !approved.capabilities.includes('presentation.v1')
+      !approved.capabilities.includes('presentation.v1') ||
+      !approved.capabilities.includes('presentation-assets.v1')
     )
       throw new Error('PC did not negotiate presentation.v1')
-    const requestId = randomUUID()
-    socket.send(
-      JSON.stringify({
-        version: 2,
-        type: 'office.request',
-        session_id: approved.session_id,
-        capability: approved.capability,
-        request_id: requestId,
-        capability_name: 'presentation.v1',
-        body: { operation: 'status', documentId, projectId },
-      }),
-    )
-    const start = await expected(next, 'relay.start', 30_000)
-    if (
-      start.request_id !== requestId ||
-      start.session_id !== approved.session_id ||
-      start.status !== 200 ||
-      start.content_type !== 'application/json'
-    )
-      throw new Error('PC status request failed')
-    const chunks = []
-    let bytes = 0
-    for (;;) {
-      const frame = await next(30_000)
-      if (frame.request_id !== requestId || frame.session_id !== approved.session_id)
-        throw new Error('PC response identity mismatch')
-      if (frame.type === 'relay.done') break
-      if (
-        frame.type !== 'relay.chunk' ||
-        frame.sequence !== chunks.length ||
-        typeof frame.data !== 'string' ||
-        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(frame.data)
+    async function request(capabilityName, body) {
+      const requestId = randomUUID()
+      socket.send(
+        JSON.stringify({
+          version: 2,
+          type: 'office.request',
+          session_id: approved.session_id,
+          capability: approved.capability,
+          request_id: requestId,
+          capability_name: capabilityName,
+          body,
+        }),
       )
-        throw new Error('invalid PC response chunk')
-      const chunk = Buffer.from(frame.data, 'base64')
-      bytes += chunk.length
-      if (bytes > MAX_RESPONSE_BYTES) throw new Error('PC response too large')
-      chunks.push(chunk)
+      const start = await expected(next, 'relay.start', 30_000)
+      if (
+        start.request_id !== requestId ||
+        start.session_id !== approved.session_id ||
+        start.status !== 200 ||
+        start.content_type !== 'application/json'
+      )
+        throw new Error('PC business request failed')
+      const chunks = []
+      let bytes = 0
+      for (;;) {
+        const frame = await next(30_000)
+        if (frame.request_id !== requestId || frame.session_id !== approved.session_id)
+          throw new Error('PC response identity mismatch')
+        if (frame.type === 'relay.done') break
+        if (
+          frame.type !== 'relay.chunk' ||
+          frame.sequence !== chunks.length ||
+          typeof frame.data !== 'string' ||
+          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(frame.data)
+        )
+          throw new Error('invalid PC response chunk')
+        const chunk = Buffer.from(frame.data, 'base64')
+        bytes += chunk.length
+        if (bytes > MAX_RESPONSE_BYTES) throw new Error('PC response too large')
+        chunks.push(chunk)
+      }
+      try {
+        return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      } catch {
+        throw new Error('invalid PC business JSON')
+      }
     }
-    let response
-    try {
-      response = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-    } catch {
-      throw new Error('invalid PC status JSON')
+    const status = checkPcStatusResponse(
+      await request('presentation.v1', { operation: 'status', documentId, projectId }),
+      projectId,
+    )
+    const attachmentPageCount = checkAttachmentList(
+      await request('presentation-assets.v1', { operation: 'attachment_list_assets', documentId }),
+    )
+    if (options.textAttachmentId) {
+      const attachmentId = options.textAttachmentId
+      const metadata = await request('presentation-assets.v1', {
+        operation: 'attachment_metadata',
+        documentId,
+        attachmentId,
+      })
+      const read = await request('presentation-assets.v1', {
+        operation: 'attachment_read',
+        documentId,
+        attachmentId,
+        offset: 0,
+        maxChars: 8000,
+      })
+      checkTextAttachment(metadata, read, attachmentId)
     }
-    return checkPcStatusResponse(response, projectId)
+    if (options.imageAttachmentId) {
+      const attachmentId = options.imageAttachmentId
+      const metadata = await request('presentation-assets.v1', {
+        operation: 'attachment_metadata',
+        documentId,
+        attachmentId,
+      })
+      const asset = await request('presentation-assets.v1', {
+        operation: 'attachment_asset',
+        documentId,
+        attachmentId,
+      })
+      checkImageAttachment(metadata, asset, attachmentId)
+    }
+    return {
+      ...status,
+      attachmentPageCount,
+      textChecked: Boolean(options.textAttachmentId),
+      imageChecked: Boolean(options.imageAttachmentId),
+    }
   } finally {
     socket.terminate()
   }
@@ -198,10 +314,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     process.env.PPT_AGENT_SMOKE_RELAY_ORIGIN,
     process.env.PPT_AGENT_SMOKE_DOCUMENT_ID,
     process.env.PPT_AGENT_SMOKE_PROJECT_ID,
+    {
+      textAttachmentId: process.env.PPT_AGENT_SMOKE_TEXT_ATTACHMENT_ID,
+      imageAttachmentId: process.env.PPT_AGENT_SMOKE_IMAGE_ATTACHMENT_ID,
+    },
   )
     .then((result) =>
       process.stdout.write(
-        `Real PC presentation status passed: ${result.status}, ${result.slideCount} slides.\n`,
+        `Real PC business smoke passed: ${result.status}, ${result.slideCount} slides; ${result.attachmentPageCount} attachments on first page; text ${result.textChecked ? 'checked' : 'not configured'}, image ${result.imageChecked ? 'checked' : 'not configured'}.\n`,
       ),
     )
     .catch((error) => {

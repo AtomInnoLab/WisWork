@@ -26,13 +26,15 @@ PPT_AGENT_RELEASE_PC_TOKEN='<release-test-PC-token>' node tools/ppt-agent-releas
 
 `--pairing 1` 仅在部署后的显式检查中使用。它从 `PPT_AGENT_RELEASE_PC_TOKEN` 读取专用测试 PC 身份令牌，使用固定 Office Origin 建立两条临时 WebSocket 连接，完成 v2 创建、协商、领取、批准，确认两端协商 `presentation.v1`、`presentation-attachments.v1`、`presentation-assets.v1`、`presentation-remote-images.v1`、`presentation-asset-rights.v1`。它对每种能力分别用随机短数据核对请求转发、分片响应及完成回执，随后关闭连接。不要在命令行传令牌，也不要使用日常用户令牌。检查失败时不会打印令牌、配对码或会话凭证。此测试仅覆盖 Relay 协议、能力路由和该测试身份的认证路径；不调用真实 PC 客户端的附件或图片操作，也不代表 PowerPoint 宿主已经通过验收。
 
-实际 PC 业务冒烟使用独立命令。先在发布测试 PC 上登录 WisWork，并准备已存在的测试演示文稿文档 ID 和项目 ID；将两者作为环境变量传入，避免放进命令行参数。命令显示一次性配对码，操作员在该 PC 输入并批准；随后它向真实 PC 的 `presentation.v1` 服务发送只读 `status` 请求，核对项目 ID、状态、页数、会话身份与分片顺序。失败以非零退出码结束，不打印 PC 返回的项目内容。
+实际 PC 业务冒烟使用独立命令。先在发布测试 PC 上登录 WisWork，并准备已存在的测试演示文稿文档 ID 和项目 ID，以及该文档中一份已解析文本和一张已规范化图片的附件 ID；将它们作为环境变量传入，避免放进命令行参数。命令显示一次性配对码，操作员在该 PC 输入并批准；随后它向真实 PC 的 `presentation.v1` 与 `presentation-assets.v1` 服务发送只读状态、附件清单、文本读取与图片读取请求，核对项目 ID、页数、附件身份、图片字节摘要、会话身份与分片顺序。文本和图片 ID 未设置时只检查状态与清单，并明确报告未检查对应内容。失败以非零退出码结束，不打印 PC 返回的项目或附件内容。
 
 ```bash
 PPT_AGENT_SMOKE_RELAY_ORIGIN='https://relay.example' \
 PPT_AGENT_SMOKE_DOCUMENT_ID='<test-document-id>' \
 PPT_AGENT_SMOKE_PROJECT_ID='<test-project-id>' \
+PPT_AGENT_SMOKE_TEXT_ATTACHMENT_ID='<text-attachment-sha256>' \
+PPT_AGENT_SMOKE_IMAGE_ATTACHMENT_ID='<image-attachment-sha256>' \
 node tools/ppt-agent-pc-business-smoke.mjs
 ```
 
-这项检查需要真实 PC 在线与人工完成一次配对；仓库中的模拟 Relay 测试只验证命令自身的协议和错误门禁。通过后仅证明部署后的配对及 PC 项目状态读取。附件、图片、页面写入、截图、恢复和 PowerPoint Desktop/Web 仍须按 O6 矩阵逐项执行，不能由此命令宣称整体冒烟或专业任务通过。
+这项检查需要真实 PC 在线与人工完成一次配对；仓库中的模拟 Relay 测试只验证命令自身的协议和错误门禁。完整配置两个附件 ID 且通过后，可证明部署后的配对、PC 项目状态及既有文本/图片资产读取。附件上传、页面写入、截图、恢复和 PowerPoint Desktop/Web 仍须按 O6 矩阵逐项执行，不能由此命令宣称整体冒烟或专业任务通过。
