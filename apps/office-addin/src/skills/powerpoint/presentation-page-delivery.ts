@@ -1,7 +1,7 @@
 import type { AgentSkill } from '@wiswork/agent-core'
 import { presentationImportContent } from '@wiswork/project-store/presentation-import-source'
 import { selectionFingerprint } from '../../agent/proposal-controller.js'
-import { presentationPackageDigest } from './powerpoint-package.js'
+import { equivalentNativePresentationPage } from './presentation-page-equivalence.js'
 import type {
   CompiledPresentationArtifact,
   PresentationDeliveryOptions,
@@ -348,13 +348,13 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
               ...readTool,
               name: reconcileName,
               description:
-                'Read the host page and complete an interrupted production-page checkpoint only when its entire PPTX package matches the prepared page.',
+                'Read the host page and complete an interrupted production-page checkpoint only after exact-package or conservative native text/shape/picture equivalence is proven.',
             },
           ]
         : [readTool]
     },
     systemPrompt:
-      'Read saved page import progress after interruption. For an uncertain production page, try reconcile_presentation_production_import to read the appended host page and compare its complete PPTX package with the prepared source; if it cannot prove equality, leave the page uncertain for human inspection. Resume only the remaining pages after the confirmed completed prefix, and only when there is no uncertain page. Never repeat completed pages. Never delete or replay an uncertain page automatically.',
+      'Read saved page import progress after interruption. For an uncertain production page, try reconcile_presentation_production_import to read the appended host page and compare it with the prepared source. Exact package equality or conservative native text/shape/picture equivalence may prove the page; unsupported structures remain uncertain for human inspection. Resume only the remaining pages after the confirmed completed prefix, and only when there is no uncertain page. Never repeat completed pages. Never delete or replay an uncertain page automatically.',
     async executeTool(call, signal) {
       try {
         const read = call.name === readTool.name
@@ -462,10 +462,7 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
           if (!source) throw new Error('presentation_import_state_invalid')
           const exported = await options.adapter.exportPage(candidate, signal)
           await current(signal)
-          if (
-            (await presentationPackageDigest(source, signal)) !==
-            (await presentationPackageDigest(exported, signal))
-          )
+          if (!(await equivalentNativePresentationPage(source, exported)))
             throw new Error('presentation_import_uncertain')
           const after = await options.adapter.snapshot(signal)
           await current(signal)
@@ -650,8 +647,10 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
                 try {
                   const exported = await options.adapter.exportPage(receipt.slideIds[0]!)
                   if (
-                    (await presentationPackageDigest(pageBytes![checkpoint.completed.length]!)) !==
-                    (await presentationPackageDigest(exported))
+                    !(await equivalentNativePresentationPage(
+                      pageBytes![checkpoint.completed.length]!,
+                      exported,
+                    ))
                   )
                     throw new Error('office_state_uncertain')
                 } catch (error) {

@@ -175,6 +175,28 @@ it('detects changed native image bytes in a compiled SlideIR page after import',
   )
   expect(f.receipts.get('production/project/request')?.checkpoint?.completed).toEqual([])
 })
+
+it('records a compiled image page when PowerPoint renumbers an internal shape ID', async () => {
+  const f = fixture()
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const compiled = await compilePresentationDeck(deck)
+  const source = Buffer.from(compiled.bytes).toString('base64')
+  const renumbered = await JSZip.loadAsync(compiled.bytes)
+  const path = 'ppt/slides/slide1.xml'
+  const original = await renumbered.file(path)!.async('string')
+  const changed = original.replace(/(<p:cNvPr\s+id=")\d+/, (_, prefix: string) => `${prefix}99`)
+  expect(changed).not.toBe(original)
+  renumbered.file(path, changed)
+  f.artifact.pagePptxBase64 = [source, source, source]
+  const skill = createPresentationProductionDeliverySkill({
+    ...f.options,
+    adapter: { ...f.adapter, exportPage: async () => renumbered.generateAsync({ type: 'base64' }) },
+  })
+  expect((await skill.executeTool(f.call)).isError).not.toBe(true)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(f.receipts.get('production/project/request')?.state).toBe('complete')
+})
 it('reconciles an interrupted append only after exact package and host-order proof', async () => {
   const f = fixture()
   const zip = new JSZip()
