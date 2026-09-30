@@ -2,6 +2,8 @@
 
 **状态：待复核。** 本工作单和缩略图索引只帮助定位，不能作为等价纯文本、事实核验或 P0-11 验收通过的证明。
 
+PDF 1、3、10、11 页已有[AI 辅助视觉草案](naca-rm-l50b01-visual-source-notes-draft.md)，其中标出了 OCR 丢失的通道分数和跨页结论；下表状态仍为待人工复核。
+
 ## 固定来源与页码
 
 - 原始记录：[NASA NTRS 19930086231](https://ntrs.nasa.gov/citations/19930086231)。本地原扫描：`naca-rm-l50b01-1950-real-scan.pdf`，30 个 PDF 页，SHA256 `f85151353196d18b0c22b49717823a871ce63970e50f694f9e3dc211ca40c2ba`。

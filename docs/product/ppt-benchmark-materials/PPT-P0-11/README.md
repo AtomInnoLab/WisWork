@@ -4,6 +4,8 @@
 
 新增[30 页可视索引](naca-rm-l50b01-page-index.jpg)和[人工复核工作单](naca-rm-l50b01-human-review-worklist.md)，把拟定的 8 页摘要来源范围、关键数字与跨页结论的复核点固定下来。索引是原 PDF 的低分辨率导航图，不能替代打开原页；工作单全部保持“待复核”，不视为等价辅助文本或事实批准。
 
+[PDF 1、3、10、11 页视觉核对草案](naca-rm-l50b01-visual-source-notes-draft.md)记录封面身份、摘要分数尺寸和跨页结论的 AI 辅助目视观察，专供人工校对定位。它只覆盖四页，未经人工确认；不能作为正式辅助文本或改变本包状态。
+
 ## 新增真实扫描件（2026-09-30）
 
 NASA NTRS 的[NACA 研究备忘录 L50B01](https://ntrs.nasa.gov/citations/19930086231)是 1950 年纸质报告的实际扫描，记录页标明 *Work of the US Gov. Public Use Permitted*。本包 `naca-rm-l50b01-1950-real-scan.pdf` 保存其 30 页扫描图像和原有 OCR 层；`naca-rm-l50b01-scan-audit.json` 记录原始[下载地址](https://ntrs.nasa.gov/api/citations/19930086231/downloads/19930086231.pdf)、原始字节摘要、436 字节下载封装头、去除封装后 PDF 的摘要，以及逐页可提取字符数。只移除 PDF 标头前的封装字节，没有重新绘制页面。第 2 页目视确认为扫描空白页且无提取文字；部分图表页虽有 OCR 字符，但数量少且明显存在误识别。
