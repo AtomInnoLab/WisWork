@@ -128,6 +128,25 @@ describe('presentation completed-read conversation checkpoints', () => {
     reopened.dispose()
   })
 
+  it('does not restart a persisted source audit after interruption', async () => {
+    const f = await fixture()
+    const checkpoint = f.checkpoint()
+    await checkpoint.begin('run', 'Audit the sources')
+    await checkpoint.tool('run', 'tool_pending', 'audit_presentation_sources', false, 'audit-1')
+    const pending = f.session()
+    expect(pending.snapshot().recoveryAvailable).toBe(false)
+    await pending.resumeInterrupted!()
+    expect(f.stream).not.toHaveBeenCalled()
+    pending.dispose()
+
+    await checkpoint.tool('run', 'tool_completed', 'audit_presentation_sources', true, 'audit-1')
+    const completed = f.session()
+    expect(completed.snapshot().recoveryAvailable).toBe(false)
+    await completed.resumeInterrupted!()
+    expect(f.stream).not.toHaveBeenCalled()
+    completed.dispose()
+  })
+
   it('rechecks document identity before restarting a pending read', async () => {
     const f = await fixture()
     const checkpoint = f.checkpoint()

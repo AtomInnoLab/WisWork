@@ -138,7 +138,6 @@ const restartSafeTools = new Set([
   'read_presentation_claim_evidence',
   'check_presentation_page_content',
   'read_presentation_production',
-  'audit_presentation_sources',
   'list_presentation_review_comments',
   'check_presentation_baseline',
   'check_presentation_baseline_windows',

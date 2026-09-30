@@ -90,7 +90,9 @@ describe('saved presentation planning tools', () => {
       name: 'audit_presentation_sources',
       input: { project_id: plan.projectId },
     }
-    expect(JSON.parse((await f.skill.executeTool(call)).output)).toEqual(result)
+    const execution = await f.skill.executeTool(call)
+    expect(JSON.parse(execution.output)).toEqual(result)
+    expect(execution.mutated).toBe(true)
     expect(f.request).toHaveBeenCalledWith(
       { operation: 'audit_sources', documentId: 'doc-1', projectId: plan.projectId },
       undefined,

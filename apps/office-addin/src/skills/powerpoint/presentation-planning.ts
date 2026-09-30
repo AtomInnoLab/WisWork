@@ -519,7 +519,7 @@ export function createPresentationPlanningSkill(
             throw new Error('presentation_response_invalid')
           return {
             output: JSON.stringify(result),
-            mutated: false,
+            mutated: true,
             summary: `已核对 ${result.sources.length} 份计划引用资料的原文字面匹配；未核验事实真实性`,
           }
         }
