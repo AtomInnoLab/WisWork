@@ -73,7 +73,7 @@ try {
     { cwd: root, env: { ...process.env, CARGO_TARGET_DIR: '/tmp/wiswork-relay-target' } },
   )
   children.push(relay)
-  const origin = await firstLine(relay, 'Rust Relay', 120_000)
+  const origin = await firstLine(relay, 'Rust Relay', 300_000)
   if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) throw new Error('invalid loopback Relay origin')
 
   const driver = join(temp, 'driver.cjs')

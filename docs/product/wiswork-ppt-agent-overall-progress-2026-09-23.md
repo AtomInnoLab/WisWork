@@ -2,7 +2,11 @@
 
 建立：2026-09-23；更新：2026-09-30。依据原方案 v1.3，以及实现分支 `codex/ppt-agent-implementation` 的代码、测试与阶段记录。本台账按用户要求新增；不回改原方案，不将此前历史核对结论改写为当时已有百分比。
 
-## 当前检查点：O6 真实 Electron PC 与 Rust Relay 本地端到端业务冒烟（2026-09-30）
+## 当前检查点：O6 Electron+Relay 冒烟纳入 CI 与运行中 Relay v2 邀请探针（2026-09-30）
+
+严格整体仍 **64%（575/9）**，完整候选专业任务 **19/20**，真实 PowerPoint 专业任务 **0/20**。将上一轮真实 Electron PC + Rust Relay 业务冒烟加入既有 Electron E2E CI 作业，保证配对、项目读取、TXT/PNG 原生解码与附件清理持续回归；本地再次运行命令通过。另对本机已运行的 Relay 进程做只读健康与 v2 Office PowerPoint 配对邀请探针：健康接口返回 `ok`，`office.create` 返回格式正确的 `office.created`，随后立即关闭未配对会话。此探针仅证明本机运行服务接受邀请，不证明服务与当前源码同版本、PC 登录/批准、发布网站或 PowerPoint 宿主通过。下一步仍需实际配对的发布 PC 和真实宿主写入/截图/恢复矩阵，评分不变。
+
+## 上轮检查点：O6 真实 Electron PC 与 Rust Relay 本地端到端业务冒烟（2026-09-30）
 
 严格整体仍 **64%（575/9）**，完整候选专业任务 **19/20**，真实 PowerPoint 专业任务 **0/20**。新增独立冒烟命令：启动仅监听本机的真实 Rust Relay 与测试认证端点，再启动真实 Electron 进程中的 PC Relay 客户端和演示文稿服务；Office v2 冒烟客户端经配对/批准读取已编译项目，上传随机 TXT/PNG，核对附件解析和 Electron 原生图片解码后的摘要、尺寸与字节回读，删除专用测试附件并检查目录清空。命令首次因 esbuild 输出扩展名与 Electron `require` 路径不一致失败，修正后全程通过。此证据覆盖本机真实 Electron/Relay/PC 业务链，不包括发布账号、已部署 Relay、Office.js 页面写入、截图、保存重开或 Win/Mac/Web 宿主矩阵，因此 O6 与整体评分不升档。下一步用发布构建和专用测试文档执行真实配对及 PowerPoint 宿主流程。
 

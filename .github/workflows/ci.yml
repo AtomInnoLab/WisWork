@@ -203,6 +203,9 @@ jobs:
       - name: PPT image conversion (real Electron)
         run: node tools/ppt-agent-image-electron-smoke.mjs
 
+      - name: PPT PC business flow (real Electron and Rust Relay)
+        run: node tools/ppt-agent-electron-real-relay-smoke.mjs
+
       - name: PPT page fallback rendering (real Electron and LibreOffice)
         run: node tools/ppt-agent-page-render-electron-smoke.mjs
 
