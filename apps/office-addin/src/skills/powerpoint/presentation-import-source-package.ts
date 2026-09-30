@@ -26,6 +26,7 @@ const typedTarget = (owner: string, type: string, target: string): string | unde
   if (!path) return
   if (type.endsWith('/image') && !/^ppt\/media\/[^/]+\.(?:png|jpe?g)$/i.test(path)) return
   if (type.endsWith('/chart') && !/^ppt\/charts\/chart[0-9]+\.xml$/.test(path)) return
+  if (type.endsWith('/package') && !/^ppt\/embeddings\/[A-Za-z0-9_.-]+\.xlsx$/.test(path)) return
   return path
 }
 
@@ -92,13 +93,14 @@ export async function validatePresentationImportSourcePage(
   )
     invalid()
 
-  const referencedParts = new Map<string, 'png' | 'jpeg' | 'chart'>()
+  const referencedParts = new Map<string, 'png' | 'jpeg' | 'chart' | 'workbook'>()
   const rememberTypedPart = (owner: string, rel: Record<string, unknown>): void => {
     const type = rel['@_Type'] as string
     const path = typedTarget(owner, type, rel['@_Target'] as string)!
     if (type.endsWith('/image'))
       referencedParts.set(path, path.toLowerCase().endsWith('.png') ? 'png' : 'jpeg')
     else if (type.endsWith('/chart')) referencedParts.set(path, 'chart')
+    else if (type.endsWith('/package')) referencedParts.set(path, 'workbook')
   }
 
   const slideRelsPath = slidePaths[0]!.replace('/slides/', '/slides/_rels/') + '.rels'
@@ -165,6 +167,57 @@ export async function validatePresentationImportSourcePage(
 
   for (const [path, kind] of referencedParts) {
     const file = zip.file(path) ?? invalid()
+    if (kind === 'workbook') {
+      const book = await loadBoundedZip(
+        await file.async('base64'),
+        undefined,
+        true,
+        MAX_PPTX_IMPORT_PAGE_BYTES,
+        MAX_PPTX_IMPORT_PAGE_BYTES,
+      ).catch(() => invalid())
+      const contentTypes = await book.file('[Content_Types].xml')?.async('string')
+      const workbookXml = await book.file('xl/workbook.xml')?.async('string')
+      const workbookRelsXml = await book.file('xl/_rels/workbook.xml.rels')?.async('string')
+      if (
+        !contentTypes ||
+        !workbookXml ||
+        !workbookRelsXml ||
+        !validXml(contentTypes) ||
+        !validXml(workbookXml) ||
+        !validXml(workbookRelsXml)
+      )
+        invalid()
+      const sheets = items(parser.parse(workbookXml!)['workbook']?.['sheets']?.['sheet'])
+      const rels = items(parser.parse(workbookRelsXml!).Relationships?.Relationship)
+      if (
+        sheets.length === 0 ||
+        sheets.some((sheet) => {
+          const id = sheet['@_r:id']
+          const rel = rels.find((entry) => entry['@_Id'] === id)
+          if (
+            !rel ||
+            typeof rel['@_Type'] !== 'string' ||
+            !rel['@_Type'].endsWith('/worksheet') ||
+            rel['@_TargetMode'] !== undefined ||
+            typeof rel['@_Target'] !== 'string'
+          )
+            return true
+          const sheetPath = internalTarget('xl/workbook.xml', rel['@_Target'])
+          return (
+            !sheetPath || !/^xl\/worksheets\/[^/]+\.xml$/.test(sheetPath) || !book.file(sheetPath)
+          )
+        })
+      )
+        invalid()
+      for (const sheet of sheets) {
+        const rel = rels.find((entry) => entry['@_Id'] === sheet['@_r:id'])!
+        const sheetXml = await book
+          .file(internalTarget('xl/workbook.xml', rel['@_Target'] as string)!)!
+          .async('string')
+        if (!validXml(sheetXml) || !parser.parse(sheetXml)['worksheet']) invalid()
+      }
+      continue
+    }
     if (kind === 'chart') {
       const xml = await file.async('string')
       if (!validXml(xml) || !parser.parse(xml)['c:chartSpace']?.['c:chart']) invalid()

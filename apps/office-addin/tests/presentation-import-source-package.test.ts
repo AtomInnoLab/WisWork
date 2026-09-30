@@ -53,6 +53,41 @@ it('rejects an external chart workbook even when the slide relationship remains 
   )
 })
 
+it('rejects a referenced chart workbook whose bytes are not an XLSX package', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = Object.keys(zip.files).find((name) => /^ppt\/embeddings\/[^/]+\.xlsx$/.test(name))
+  expect(path).toBeDefined()
+  zip.file(path!, 'not a workbook')
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
+
+it('rejects a referenced XLSX package without a workbook definition', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = Object.keys(zip.files).find((name) => /^ppt\/embeddings\/[^/]+\.xlsx$/.test(name))
+  expect(path).toBeDefined()
+  const workbook = await JSZip.loadAsync(await zip.file(path!)!.async('uint8array'))
+  expect(workbook.file('xl/workbook.xml')).not.toBeNull()
+  workbook.remove('xl/workbook.xml')
+  zip.file(path!, await workbook.generateAsync({ type: 'uint8array' }))
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
+
 it('rejects a local image relationship redirected to an unrelated XML part', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[2]!]
