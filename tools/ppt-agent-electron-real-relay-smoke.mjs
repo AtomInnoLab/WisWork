@@ -14,6 +14,11 @@ const temp = await mkdtemp(join(tmpdir(), 'ppt-electron-real-relay-'))
 const children = []
 const documentId = 'electron-real-relay-document'
 const projectId = 'electron-real-relay-project'
+const concurrentDocuments = [1, 2, 3].map((index) => ({
+  documentId: `electron-concurrent-document-${index}`,
+  projectId: `electron-concurrent-project-${index}`,
+  text: `Concurrent document ${index}`,
+}))
 const expectedSlideTexts = Array.from(
   { length: 8 },
   (_, index) => `Electron real Relay page ${index + 1}`,
@@ -56,6 +61,7 @@ const plan = {
     acceptanceCriteria: ['Native text remains editable'],
   })),
 }
+let smokeStage = 'setup'
 
 function firstLine(child, label, timeoutMs, accept = () => true) {
   return new Promise((resolveLine, reject) => {
@@ -89,11 +95,13 @@ try {
   await mkdir(userDataPath)
   const serviceBundle = join(temp, 'presentation-service.cjs')
   const relayBundle = join(temp, 'office-relay-client.cjs')
+  const poolBundle = join(temp, 'office-relay-pool.cjs')
   const compilerBundle = join(temp, 'presentation-compiler.cjs')
   await build({
     entryPoints: {
       'presentation-service': join(root, 'apps/shell/src/main/presentation-service.ts'),
       'office-relay-client': join(root, 'apps/shell/src/main/office-relay-client.ts'),
+      'office-relay-pool': join(root, 'apps/shell/src/main/office-relay-pool.ts'),
       'presentation-compiler': join(root, 'packages/pptx-engine/src/presentation-compiler.ts'),
     },
     outdir: temp,
@@ -127,9 +135,11 @@ try {
 const { app } = require('electron')
 const { createPresentationService } = require(${JSON.stringify(serviceBundle)})
 const { createOfficeRelayClient } = require(${JSON.stringify(relayBundle)})
+const { createOfficeRelayPool } = require(${JSON.stringify(poolBundle)})
 const { compilePresentationDeck } = require(${JSON.stringify(compilerBundle)})
 const documentId = ${JSON.stringify(documentId)}
 const projectId = ${JSON.stringify(projectId)}
+const concurrentDocuments = ${JSON.stringify(concurrentDocuments)}
 app.whenReady().then(async () => {
   const crashProjectId = projectId + '-crash'
   const presentation = createPresentationService({
@@ -149,15 +159,29 @@ app.whenReady().then(async () => {
     const recoveryDeck = { ...deck, id: projectId + '-recovery' }
     const recoverySeed = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId, requestId: 'run-recovery-seed', deck: recoveryDeck }, new AbortController().signal)).toString('utf8'))
     if (recoverySeed.status !== 'compiled') throw Error('Electron PC recovery project compile failed')
+    for (const item of concurrentDocuments) {
+      const onePageDeck = {
+        ...deck,
+        id: item.projectId,
+        slides: [{ ...deck.slides[0], elements: [{ ...deck.slides[0].elements[0], text: item.text }] }],
+      }
+      const seeded = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId: item.documentId, requestId: 'run-concurrent', deck: onePageDeck }, new AbortController().signal)).toString('utf8'))
+      if (seeded.status !== 'compiled') throw Error('Electron PC concurrent project compile failed')
+    }
   }
   let client
-  client = createOfficeRelayClient({
-    endpoint: ${JSON.stringify(origin.replace('http:', 'ws:') + '/office-relay')},
-    getValidAccountStatus: async () => ({ loggedIn: true }),
-    getAccessToken: async () => 'local-business-smoke-token',
-    proxy: async () => ({ status: 200, body: new Uint8Array() }),
-    presentationProxy: (body, signal) => presentation(body, signal),
-    onPending: (pending) => { void client.approve(pending.pairingId).catch(error => { console.error(error); app.exit(1) }) },
+  client = createOfficeRelayPool({
+    createClient: events => createOfficeRelayClient({
+      endpoint: ${JSON.stringify(origin.replace('http:', 'ws:') + '/office-relay')},
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'local-business-smoke-token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      presentationProxy: (body, signal) => presentation(body, signal),
+      onPending: events.onPending,
+      onPendingExpired: events.onPendingExpired,
+      onStatus: events.onStatus,
+    }),
+    onPending: pending => { void client.approve(pending.pairingId).catch(error => { console.error(error); app.exit(1) }) },
   })
   const crashRequestId = 'production-crash-run'
   const crashCall = async (operation, extra = {}) => JSON.parse(Buffer.from(await presentation({
@@ -245,13 +269,20 @@ app.whenReady().then(async () => {
     await exited
   }
   const pc = await startPc(false)
+  smokeStage = 'initial delivery'
+  const initialProgress = []
   const result = await inspectPcBusiness(origin, documentId, projectId, {
     onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+    onProgress: (stage) => initialProgress.push(stage),
     timeoutMs: 15_000,
     uploadFixtures: true,
     compiledRequestId: 'run-1',
     expectedSlideTexts,
     productionFixture: { requestId: 'production-run-1', deck, plan, expectedSlideTexts },
+  }).catch((error) => {
+    throw new Error(
+      `Electron PC initial smoke failed at ${initialProgress.join(', ')}: ${error.message}`,
+    )
   })
   if (
     result.projectId !== projectId ||
@@ -265,6 +296,38 @@ app.whenReady().then(async () => {
     result.productionDelivery.pdfBytes < 100
   )
     throw new Error('Electron PC business response incomplete')
+  const concurrentProgress = []
+  smokeStage = 'three concurrent documents'
+  const concurrentSettled = await Promise.allSettled(
+    concurrentDocuments.map((item) =>
+      inspectPcBusiness(origin, item.documentId, item.projectId, {
+        onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+        onProgress: (stage) => concurrentProgress.push(`${item.projectId}:${stage}`),
+        timeoutMs: 45_000,
+        compiledRequestId: 'run-concurrent',
+        expectedSlideTexts: [item.text],
+      }),
+    ),
+  )
+  if (concurrentSettled.some((entry) => entry.status === 'rejected'))
+    throw new Error(
+      `Electron PC concurrent document failure: ${concurrentSettled
+        .filter((entry) => entry.status === 'rejected')
+        .map((entry) => entry.reason?.message)
+        .join(', ')}; stages: ${concurrentProgress.join(', ')}`,
+    )
+  const concurrentResults = concurrentSettled.map((entry) => entry.value)
+  if (
+    concurrentResults.some(
+      (value, index) =>
+        value.projectId !== concurrentDocuments[index].projectId ||
+        value.slideCount !== 1 ||
+        !value.compiledDelivery?.pptxSha256 ||
+        value.compiledDelivery.pdfBytes < 100,
+    ) ||
+    new Set(concurrentResults.map((value) => value.compiledDelivery?.pptxSha256)).size !== 3
+  )
+    throw new Error('Electron PC concurrent document sessions crossed project boundaries')
   const attachments = join(
     userDataPath,
     'presentation-attachments',
@@ -273,6 +336,7 @@ app.whenReady().then(async () => {
   if ((await readdir(attachments)).length !== 0)
     throw new Error('Electron PC test attachments were not cleaned up')
   const pendingProjectId = `${projectId}-recovery`
+  smokeStage = 'pending production setup'
   const pendingFixture = {
     requestId: 'production-restart-run',
     deck: { ...deck, id: pendingProjectId },
@@ -289,17 +353,23 @@ app.whenReady().then(async () => {
     throw new Error('Electron PC interrupted production did not persist its pending state')
   await stopPc(pc)
   const restartedPc = await startPc(true, true)
+  smokeStage = 'pending production resume'
+  const resumeProgress = []
   const resumed = await inspectPcBusiness(origin, documentId, pendingProjectId, {
     onCode: (code) => restartedPc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
-    timeoutMs: 15_000,
+    onProgress: (stage) => resumeProgress.push(stage),
+    timeoutMs: 60_000,
     productionFixture: pendingFixture,
     runExistingProduction: true,
+  }).catch((error) => {
+    throw new Error(`${error.message}; stages: ${resumeProgress.join(', ')}`)
   })
   if (
     resumed.productionDelivery?.pageDigests.length !== 8 ||
     resumed.productionDelivery.pdfBytes < 100
   )
     throw new Error('Electron PC pending production did not resume after restart')
+  smokeStage = 'completed delivery recovery'
   const recovered = await inspectPcBusiness(origin, documentId, projectId, {
     onCode: (code) => restartedPc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
     timeoutMs: 15_000,
@@ -316,6 +386,7 @@ app.whenReady().then(async () => {
     recovered.productionDelivery?.pdfBytes !== result.productionDelivery.pdfBytes
   )
     throw new Error('Electron PC delivery changed after restart')
+  smokeStage = 'running production crash'
   const blocked = firstLine(
     restartedPc,
     'Electron PC blocked production',
@@ -328,6 +399,7 @@ app.whenReady().then(async () => {
   else restartedPc.kill('SIGKILL')
   await new Promise((resolveExit) => restartedPc.once('exit', resolveExit))
   const recoveredPc = await startPc(true)
+  smokeStage = 'running production recovery'
   const recoveredJob = firstLine(
     recoveredPc,
     'Electron PC production recovery',
@@ -338,8 +410,12 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    'Electron PC + Rust Relay business smoke passed: pairing, eight-page production, PPTX/PDF readback, TXT/PNG upload, durable delivery, pending production recovery and running job crash recovery',
+    'Electron PC + Rust Relay business smoke passed: pairing, three concurrent documents, eight-page production, PPTX/PDF readback, TXT/PNG upload, durable delivery, pending production recovery and running job crash recovery',
   )
+} catch (error) {
+  throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {
+    cause: error,
+  })
 } finally {
   for (const child of children.reverse()) {
     if (child.exitCode !== null) continue

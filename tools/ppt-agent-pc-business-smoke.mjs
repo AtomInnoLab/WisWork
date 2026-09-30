@@ -340,6 +340,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     const created = await expected(next, 'office.created', 10_000)
     if (!/^[0-9]{6}$/.test(created.verification_code))
       throw new Error('invalid relay pairing invitation')
+    options.onProgress?.('invited')
     ;(
       options.onCode ??
       ((code) =>
@@ -359,8 +360,10 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         !approved.capabilities.includes('presentation-production-pdf.v1'))
     )
       throw new Error('PC did not negotiate required presentation capabilities')
+    options.onProgress?.('paired')
     async function request(capabilityName, body) {
       const requestId = randomUUID()
+      options.onProgress?.(`request:${body.operation}`)
       socket.send(
         JSON.stringify({
           version: 2,

@@ -31,6 +31,8 @@ async fn main() {
     let address: SocketAddr = listener.local_addr().unwrap();
     let config = Config {
         auth_url: format!("http://{auth_address}/oidc/me"),
+        // This fixture exercises several valid sessions from one test account.
+        max_claim_attempts: 12,
         ..Config::default()
     };
     println!("http://{address}");
