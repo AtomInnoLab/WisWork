@@ -153,7 +153,7 @@ it('hides foreign task pages and malformed history without changing QA progress 
   }
 })
 
-it('requires the production project and exact current import host mapping for history', () => {
+it('requires the production project and exact current import host mapping for history and progress', () => {
   const foreign = structuredClone(project)
   foreign.production!.projectId = 'foreign'
   expect(events(qa(), foreign)).toEqual([])
@@ -171,9 +171,9 @@ it('requires the production project and exact current import host mapping for hi
   imported.pages[0]!.slideId = 'different-host'
   const mismatched = presentationWorkflowSummary(project, imported, qa())!
   expect(mismatched.timeline.filter((event) => event.scope === 'saved_page_qa')).toEqual([])
-  expect(mismatched.pages).toEqual(matching.pages)
-  expect(mismatched.stages).toEqual(matching.stages)
-  expect(mismatched.nextTool).toEqual(matching.nextTool)
+  expect(mismatched.pages[0]!.qa).toBe('无当前任务 QA 记录')
+  expect(mismatched.stages.find((stage) => stage.name === '页面审查')?.status).toBe('attention')
+  expect(mismatched.pages[0]!.nextAction).toContain('复核')
 })
 
 it('starts collapsed and expands on an actual click to show distinct real event times', async () => {

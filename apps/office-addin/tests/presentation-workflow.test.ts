@@ -208,6 +208,40 @@ const qa: PresentationQaRecord = {
   })),
 }
 
+it('does not count duplicate QA pages or a report missing a production page as current evidence', async () => {
+  const selected = { ...project, production }
+  const duplicateQa = structuredClone(qa)
+  duplicateQa.pages[1]!.pageId = duplicateQa.pages[0]!.pageId
+  const qaSummary = presentationWorkflowSummary(selected, imported, duplicateQa)!
+  expect(qaSummary.stages.find((stage) => stage.name === '页面审查')).toMatchObject({
+    status: 'attention',
+    detail: expect.stringContaining('无法与当前页任务匹配'),
+  })
+  expect(qaSummary.pages[1]!.qa).toBe('无当前任务 QA 记录')
+
+  const movedImport = structuredClone(imported)
+  movedImport.pages[0]!.slideId = 'host-replaced-page'
+  const movedSummary = presentationWorkflowSummary(selected, movedImport, qa)!
+  expect(movedSummary.stages.find((stage) => stage.name === '页面审查')?.status).toBe('attention')
+  expect(movedSummary.pages[0]!.qa).toBe('无当前任务 QA 记录')
+
+  const report = await deliveryReportFixture()
+  const reportSelected = { ...project, production: { ...production, requestId: report.requestId } }
+  const incompleteReport = structuredClone(report)
+  incompleteReport.pages[1]!.pageId = incompleteReport.pages[0]!.pageId
+  const reportSummary = presentationWorkflowSummary(
+    reportSelected,
+    { ...imported, requestId: report.requestId },
+    { ...qa, requestId: report.requestId },
+    incompleteReport,
+  )!
+  expect(reportSummary.stages.find((stage) => stage.name === '交付核验')).toMatchObject({
+    status: 'attention',
+    detail: expect.stringContaining('报告页与当前页任务不匹配'),
+  })
+  expect(reportSummary.pages[1]!.evidence).toBe('无当前任务内容报告')
+})
+
 it('shows document-bound source preparation without claiming source truth', () => {
   const withSource = structuredClone(project)
   const attachmentId = 'a'.repeat(64)

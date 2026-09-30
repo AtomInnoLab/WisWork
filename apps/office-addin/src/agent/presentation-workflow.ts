@@ -232,6 +232,15 @@ export function presentationWorkflowSummary(
   )
   const production = project.production
   const pageIds = production?.pages.map((page) => page.id)
+  const pageIdSet = new Set(pageIds)
+  const coversProductionPages = (ids: string[]) =>
+    Boolean(
+      pageIds &&
+      ids.length === pageIds.length &&
+      pageIdSet.size === pageIds.length &&
+      new Set(ids).size === pageIdSet.size &&
+      ids.every((id) => pageIdSet.has(id)),
+    )
   const importMatches = Boolean(
     production &&
     imported?.source === 'production' &&
@@ -245,8 +254,12 @@ export function presentationWorkflowSummary(
     qa?.source === 'production' &&
     qa.projectId === project.projectId &&
     qa.requestId === production.requestId &&
-    qa.pages.length === production.total &&
-    qa.pages.every((page) => pageIds?.includes(page.pageId)),
+    importMatches &&
+    coversProductionPages(qa.pages.map((page) => page.pageId)) &&
+    qa.pages.every(
+      (page) =>
+        imported!.pages.find((item) => item.id === page.pageId)?.slideId === page.hostSlideId,
+    ),
   )
   const reviewed = qaMatches
     ? qa!.pages.filter(
@@ -266,13 +279,17 @@ export function presentationWorkflowSummary(
           page.visual.status === 'pass',
       ).length
     : 0
-  const reportMatches = Boolean(
+  const reportIdentityMatches = Boolean(
     production &&
     report &&
     report.projectId === project.projectId &&
     report.requestId === production.requestId &&
     report.planRevision === production.planRevision,
   )
+  const reportMatches = Boolean(
+    reportIdentityMatches && coversProductionPages(report!.pages.map((page) => page.pageId)),
+  )
+  const reportPageMismatch = reportIdentityMatches && !reportMatches
   const openIssues = reportMatches
     ? report!.pages.reduce(
         (sum, page) =>
@@ -329,6 +346,11 @@ export function presentationWorkflowSummary(
     attention.push({
       id: 'content-issues',
       text: `${openIssues} 项内容证据问题待处理；请查看交付报告。`,
+    })
+  if (reportPageMismatch)
+    attention.push({
+      id: 'report-page-mismatch',
+      text: '当前任务内容报告的页面清单与生产页不一致；请重新生成报告后再核验交付。',
     })
   if (sourceProblems.length) {
     const labels = sourceProblems
@@ -522,8 +544,9 @@ export function presentationWorkflowSummary(
     },
     {
       name: '交付核验',
-      status: openIssues ? 'attention' : reportMatches ? 'working' : 'pending',
-      detail: `${reportMatches ? `内容证据报告有 ${openIssues} 项待处理；` : '尚无当前任务的内容证据报告；'}来源真实性、保存重开及真实 PowerPoint 验收尚不能由上述记录证明`,
+      status:
+        openIssues || reportPageMismatch ? 'attention' : reportMatches ? 'working' : 'pending',
+      detail: `${reportPageMismatch ? '当前任务报告页与当前页任务不匹配；' : reportMatches ? `内容证据报告有 ${openIssues} 项待处理；` : '尚无当前任务的内容证据报告；'}来源真实性、保存重开及真实 PowerPoint 验收尚不能由上述记录证明`,
     },
   ]
   // Rebuild from durable records. Undated entries are current checkpoints, not events.
