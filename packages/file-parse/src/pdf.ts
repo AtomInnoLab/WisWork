@@ -170,13 +170,19 @@ export async function pdfToPagesWithImageCoverage(
       const pageArea = (right - left) * (top - bottom)
       let matrix = [1, 0, 0, 1, 0, 0]
       const stack: number[][] = []
+      let textRenderingMode = 0
+      const textModeStack: number[] = []
       let fullPageImage = false
       let invisibleTextLayer = false
       for (let j = 0; j < operations.fnArray.length; j++) {
         const op = operations.fnArray[j]
-        if (op === OPS.save) stack.push(matrix.slice())
-        else if (op === OPS.restore) matrix = stack.pop() ?? matrix
-        else if (op === OPS.transform) {
+        if (op === OPS.save) {
+          stack.push(matrix.slice())
+          textModeStack.push(textRenderingMode)
+        } else if (op === OPS.restore) {
+          matrix = stack.pop() ?? matrix
+          textRenderingMode = textModeStack.pop() ?? textRenderingMode
+        } else if (op === OPS.transform) {
           const [a, b, c, d, e, f] = matrix
           const [u, v, w, x, y, z] = operations.argsArray[j] as number[]
           matrix = [
@@ -190,7 +196,15 @@ export async function pdfToPagesWithImageCoverage(
         } else if (op === OPS.paintImageXObject || op === OPS.paintInlineImageXObject) {
           const [a, b, c, d] = matrix
           if (pageArea > 0 && Math.abs(a * d - b * c) / pageArea >= 0.8) fullPageImage = true
-        } else if (op === OPS.setTextRenderingMode && operations.argsArray[j]?.[0] === 3)
+        } else if (op === OPS.setTextRenderingMode)
+          textRenderingMode = operations.argsArray[j]?.[0] as number
+        else if (
+          textRenderingMode === 3 &&
+          (op === OPS.showText ||
+            op === OPS.showSpacedText ||
+            op === OPS.nextLineShowText ||
+            op === OPS.nextLineSetSpacingShowText)
+        )
           invisibleTextLayer = true
       }
       return { fullPageImage, invisibleTextLayer }

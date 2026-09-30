@@ -48,6 +48,17 @@ describe('parseFileToText: pdf', () => {
     expect(result.pagesWithInvisibleTextLayer).toEqual([2])
   }, 20_000)
 
+  it('does not label visible text as invisible when the mode is set after drawing', async () => {
+    const result = await parseFileToText(
+      writeFixture(
+        'unused-invisible-mode.pdf',
+        buildPdfFixture('Visible evidence', { imagePage: 1, unusedInvisibleMode: true }),
+      ),
+    )
+    expect(result.pagesWithFullPageImage).toEqual([1])
+    expect(result.pagesWithInvisibleTextLayer).toBeUndefined()
+  })
+
   it('fails gracefully on a corrupt pdf', async () => {
     const path = writeFixture('broken.pdf', Buffer.from('%PDF-1.4 garbage'))
     const result = await parseFileToText(path)
