@@ -46,6 +46,76 @@ const validXml = (xml: string): boolean =>
   new TextEncoder().encode(xml).byteLength <= 512 * 1024 &&
   !/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) &&
   XMLValidator.validate(xml) === true
+const validPngStructure = (bytes: Uint8Array): boolean => {
+  if (
+    bytes.length < 57 ||
+    [137, 80, 78, 71, 13, 10, 26, 10].some((value, index) => bytes[index] !== value)
+  )
+    return false
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  let offset = 8
+  let chunks = 0
+  let hasImageData = false
+  while (offset + 12 <= bytes.length) {
+    const length = view.getUint32(offset)
+    if (length > bytes.length - offset - 12) return false
+    const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
+    if (chunks++ === 0) {
+      if (
+        type !== 'IHDR' ||
+        length !== 13 ||
+        view.getUint32(offset + 8) === 0 ||
+        view.getUint32(offset + 12) === 0
+      )
+        return false
+    } else if (type === 'IDAT') {
+      if (length > 0) hasImageData = true
+    } else if (type === 'IEND') {
+      return length === 0 && hasImageData && offset + 12 === bytes.length
+    }
+    offset += length + 12
+  }
+  return false
+}
+const validJpegStructure = (bytes: Uint8Array): boolean => {
+  if (
+    bytes.length < 20 ||
+    bytes[0] !== 0xff ||
+    bytes[1] !== 0xd8 ||
+    bytes.at(-2) !== 0xff ||
+    bytes.at(-1) !== 0xd9
+  )
+    return false
+  let offset = 2
+  let hasFrame = false
+  while (offset + 4 < bytes.length) {
+    if (bytes[offset++] !== 0xff) return false
+    while (bytes[offset] === 0xff) offset++
+    const marker = bytes[offset++]
+    if (marker === undefined || marker === 0xd8 || marker === 0xd9) return false
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue
+    if (offset + 2 > bytes.length) return false
+    const length = (bytes[offset]! << 8) | bytes[offset + 1]!
+    if (length < 2 || offset + length > bytes.length - 2) return false
+    if (
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf)
+    ) {
+      if (
+        length < 8 ||
+        !((bytes[offset + 3]! << 8) | bytes[offset + 4]!) ||
+        !((bytes[offset + 5]! << 8) | bytes[offset + 6]!)
+      )
+        return false
+      hasFrame = true
+    }
+    if (marker === 0xda) return hasFrame && offset + length < bytes.length - 2
+    offset += length
+  }
+  return false
+}
 const items = (value: unknown): Record<string, unknown>[] =>
   value === undefined ? [] : Array.isArray(value) ? value : [value as Record<string, unknown>]
 const record = (value: unknown): Record<string, unknown> | undefined =>
@@ -296,20 +366,8 @@ export async function validatePresentationImportSourcePage(
     }
     const bytes = await file.async('uint8array')
     if (kind === 'png') {
-      if (
-        bytes.length < 24 ||
-        [137, 80, 78, 71, 13, 10, 26, 10].some((value, index) => bytes[index] !== value) ||
-        String.fromCharCode(...bytes.slice(12, 16)) !== 'IHDR'
-      )
-        invalid()
-    } else if (
-      bytes.length < 4 ||
-      bytes[0] !== 0xff ||
-      bytes[1] !== 0xd8 ||
-      bytes.at(-2) !== 0xff ||
-      bytes.at(-1) !== 0xd9
-    )
-      invalid()
+      if (!validPngStructure(bytes)) invalid()
+    } else if (!validJpegStructure(bytes)) invalid()
   }
 
   const tree = record(record(slide['p:cSld'])?.['p:spTree'])

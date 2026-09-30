@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest'
 import JSZip from 'jszip'
+import { readFileSync } from 'node:fs'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { validatePresentationImportSourcePage } from '../src/skills/powerpoint/presentation-import-source-package'
@@ -334,6 +335,60 @@ it('rejects non-image bytes stored under a referenced PNG filename', async () =>
   await expect(validatePresentationImportSourcePage(changed, '256#')).rejects.toThrow(
     'presentation_import_state_invalid',
   )
+})
+it('rejects a referenced PNG truncated after its IHDR prefix', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = Object.keys(zip.files).find((name) => /^ppt\/media\/[^/]+\.png$/.test(name))!
+  zip.file(path, (await zip.file(path)!.async('uint8array')).slice(0, 24))
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
+it('rejects a JPEG containing only start and end markers', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = 'ppt/slides/_rels/slide1.xml.rels'
+  const xml = await zip.file(path)!.async('string')
+  const target = /Target="\.\.\/media\/([^"/]+)\.png"/.exec(xml)
+  expect(target).not.toBeNull()
+  const changed = xml.replace(/Target="\.\.\/media\/([^"/]+)\.png"/, 'Target="../media/$1.jpg"')
+  expect(changed).not.toBe(xml)
+  zip.file(path, changed)
+  zip.file(`ppt/media/${target![1]}.jpg`, new Uint8Array([0xff, 0xd8, 0xff, 0xd9]))
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
+it('accepts a real JPEG image in a compiled native page', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  deck.assets[0] = {
+    ...deck.assets[0]!,
+    mime: 'image/jpeg',
+    width: 1200,
+    height: 2520,
+    base64: readFileSync(
+      new URL(
+        '../../../docs/product/ppt-benchmark-materials/PPT-P0-11/naca-rm-l50b01-page-index.jpg',
+        import.meta.url,
+      ),
+    ).toString('base64'),
+  }
+  const { bytes } = await compilePresentationDeck(deck)
+  await expect(
+    validatePresentationImportSourcePage(Buffer.from(bytes).toString('base64'), '256#'),
+  ).resolves.toBeUndefined()
 })
 
 it('rejects a chart part whose XML no longer contains a chart', async () => {
