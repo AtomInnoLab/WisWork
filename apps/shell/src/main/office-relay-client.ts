@@ -87,6 +87,7 @@ const MASTER_BACKUP_OPERATIONS = new Set([
   'master_backup_status',
   'master_backup_read',
   'master_backup_list',
+  'master_backup_release',
 ])
 const PACKAGE_BACKUP_OPERATIONS = new Set(
   Array.from(MASTER_BACKUP_OPERATIONS, (op) => op.replace('master_backup_', 'package_backup_')),

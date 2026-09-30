@@ -1,9 +1,12 @@
 import {
   saveMasterBackup,
   readMasterBackup,
+  releaseMasterBackup,
+  masterBackupRefForBytes,
   type MasterBackupRef,
 } from './presentation-master-backup.js'
 export type PackageBackupRef = MasterBackupRef
+export const packageBackupRefForBytes = masterBackupRefForBytes
 async function packageError<T>(run: () => Promise<T>): Promise<T> {
   try {
     return await run()
@@ -25,4 +28,9 @@ export function readPackageBackup(
   input: Omit<Parameters<typeof readMasterBackup>[0], 'protocol'>,
 ): Promise<Uint8Array> {
   return packageError(() => readMasterBackup({ ...input, protocol: 'package' }))
+}
+export function releasePackageBackup(
+  input: Omit<Parameters<typeof releaseMasterBackup>[0], 'protocol'>,
+): Promise<void> {
+  return packageError(() => releaseMasterBackup({ ...input, protocol: 'package' }))
 }

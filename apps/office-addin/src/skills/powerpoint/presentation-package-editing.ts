@@ -6,6 +6,8 @@ import {
 import {
   savePackageBackup,
   readPackageBackup,
+  releasePackageBackup,
+  packageBackupRefForBytes,
   type PackageBackupRef,
 } from './presentation-package-backup.js'
 import {
@@ -718,33 +720,64 @@ export function createPresentationPackageEditingSkill(options: Options) {
         execute: async (signal) => {
           const ctx = { ...c, signal }
           if (!same(proof(await inspect(ctx)), proof(all))) throw Error('proposal_stale')
-          const originalRef = await save(ctx, 'page-0', decode(originalBase64)),
-            preparedRef = await save(ctx, 'page-1', decode(preparedBase64)),
-            snapshotRef = await save(ctx, 'snapshot', json(snapshot)),
-            currentProofRef = await save(ctx, 'receipt-0', json(proof(all)))
-          const r: PresentationPackageChange = {
-            version: 1,
-            kind: 'package_xml',
-            documentId,
-            changeId: c.changeId,
-            intent,
-            sourceKind: kind,
-            sourceSlideId,
-            packageSourceSlideId,
-            snapshotRef,
-            originalRef,
-            preparedRef,
-            currentProofRef,
-            state: 'prepared',
-            receipts: [],
-            reviews: [],
+          const blobs = [
+            { key: 'page-0', bytes: decode(originalBase64) },
+            { key: 'page-1', bytes: decode(preparedBase64) },
+            { key: 'snapshot', bytes: json(snapshot) },
+            { key: 'receipt-0', bytes: json(proof(all)) },
+          ]
+          const refs = await Promise.all(
+            blobs.map(({ key, bytes }) => packageBackupRefForBytes(key, bytes)),
+          )
+          let persistenceAttempted = false
+          try {
+            for (let i = 0; i < blobs.length; i++)
+              if (!same(await save(ctx, blobs[i]!.key, blobs[i]!.bytes), refs[i]))
+                throw Error('presentation_package_backup_invalid')
+            const [originalRef, preparedRef, snapshotRef, currentProofRef] = refs as [
+              PackageBackupRef,
+              PackageBackupRef,
+              PackageBackupRef,
+              PackageBackupRef,
+            ]
+            const r: PresentationPackageChange = {
+              version: 1,
+              kind: 'package_xml',
+              documentId,
+              changeId: c.changeId,
+              intent,
+              sourceKind: kind,
+              sourceSlideId,
+              packageSourceSlideId,
+              snapshotRef,
+              originalRef,
+              preparedRef,
+              currentProofRef,
+              state: 'prepared',
+              receipts: [],
+              reviews: [],
+            }
+            if (!validatePresentationPackageChange(r))
+              throw Error('presentation_package_state_invalid')
+            await backups(ctx, r, snapshot)
+            if (!same(proof(await inspect(ctx)), proof(all))) throw Error('proposal_stale')
+            persistenceAttempted = true
+            await store(ctx, r)
+            await drive(ctx, r, snapshot, 'resume')
+          } catch (error) {
+            if (!persistenceAttempted)
+              await Promise.allSettled(
+                refs.map((backup) =>
+                  releasePackageBackup({
+                    request: options.request,
+                    documentId,
+                    changeId: c.changeId,
+                    backup,
+                  }),
+                ),
+              )
+            throw error
           }
-          if (!validatePresentationPackageChange(r))
-            throw Error('presentation_package_state_invalid')
-          await backups(ctx, r, snapshot)
-          if (!same(proof(await inspect(ctx)), proof(all))) throw Error('proposal_stale')
-          await store(ctx, r)
-          await drive(ctx, r, snapshot, 'resume')
         },
         verify: async (signal) => {
           const current = record(c.changeId)

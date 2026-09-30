@@ -201,6 +201,7 @@ export function createPresentationMasterBackupService(options: {
       master_backup_status: ['key'],
       master_backup_read: ['key', 'offset', 'length'],
       master_backup_list: [],
+      master_backup_release: ['key', 'sha256', 'sizeBytes'],
     }
     const operation = body.operation
     if (typeof operation !== 'string' || !Object.hasOwn(fields, operation)) invalid()
@@ -218,6 +219,11 @@ export function createPresentationMasterBackupService(options: {
       invalid()
     if (
       operation === 'master_backup_begin' &&
+      (!digest(body.sha256) || !integer(body.sizeBytes, 1, MAX_BLOB))
+    )
+      invalid()
+    if (
+      operation === 'master_backup_release' &&
       (!digest(body.sha256) || !integer(body.sizeBytes, 1, MAX_BLOB))
     )
       invalid()
@@ -324,6 +330,30 @@ export function createPresentationMasterBackupService(options: {
       )
         invalid()
       check(signal)
+      if (operation === 'master_backup_release') {
+        if (body.sha256 !== m.sha256 || body.sizeBytes !== m.sizeBytes) invalid()
+        const members = await readdir(dir)
+        guard(blobParents)
+        if (members.length !== 2 || !members.includes('blob') || !members.includes('metadata.json'))
+          invalid()
+        leaf(path, blobParents)
+        leaf(join(dir, 'metadata.json'), blobParents)
+        check(signal)
+        const releasedPath = join(root, `.released-${randomUUID()}`)
+        guard(blobParents)
+        guard(rootParents)
+        renameSync(dir, releasedPath)
+        await syncDirectory(documentParents)
+        try {
+          guard(rootParents)
+          rmSync(releasedPath, { recursive: true })
+          await syncDirectory(rootParents)
+        } catch {
+          // The source reservation is already gone. A later storage sweep can remove
+          // this isolated release directory without touching an active backup.
+        }
+        return { documentId, changeId, key: blobKey, released: true }
+      }
       if (operation === 'master_backup_begin') {
         if (body.sha256 !== m.sha256 || body.sizeBytes !== m.sizeBytes) invalid()
         return { ...m, receivedBytes: received }

@@ -6,6 +6,8 @@ import {
 import {
   savePackageBackup,
   readPackageBackup,
+  releasePackageBackup,
+  packageBackupRefForBytes,
   type PackageBackupRef,
 } from './presentation-package-backup.js'
 import {
@@ -2370,9 +2372,17 @@ export function createPresentationMasterXmlSkill(options: PresentationMasterXmlO
           p.slideId === sourceSlideId || affectedDigests.includes(nativeGraph.get(p.masterId)!),
       )
       .map((p) => p.slideId)
+    const attemptedRefs: PackageBackupRef[] = []
+    const trackedSave = async (ctx: Context, key: string, bytes: Uint8Array) => {
+      const expectedRef = await packageBackupRefForBytes(key, bytes)
+      attemptedRefs.push(expectedRef)
+      const saved = await save(ctx, key, bytes)
+      if (!same(saved, expectedRef)) fail('backup_invalid')
+      return saved
+    }
     const prepareConfirmed = async (ctx: Context) => {
       if (!same(host(await inspect(ctx)), originalHost)) fail('drift')
-      const preparedRef = await save(ctx, 'page-0', decode(preparedBase64)),
+      const preparedRef = await trackedSave(ctx, 'page-0', decode(preparedBase64)),
         pages: OriginalPage[] = [],
         representatives: Progress['originalRepresentatives'] = []
       for (let i = 0; i < pageIdentity.length; i++) {
@@ -2387,7 +2397,7 @@ export function createPresentationMasterXmlSkill(options: PresentationMasterXmlO
           actual.layoutId !== identity.layoutId
         )
           fail('drift')
-        const packageRef = await save(ctx, `page-${i + 1}`, decode(actual.base64))
+        const packageRef = await trackedSave(ctx, `page-${i + 1}`, decode(actual.base64))
         pages.push({ ...identity, packageRef })
         if (
           !representatives.some(
@@ -2417,7 +2427,7 @@ export function createPresentationMasterXmlSkill(options: PresentationMasterXmlO
         replacements: owned,
         expected,
       }
-      const snapshotRef = await save(ctx, 'snapshot', json(s)),
+      const snapshotRef = await trackedSave(ctx, 'snapshot', json(s)),
         progress: Progress = {
           originalRepresentatives: representatives,
           originalMappings: [],
@@ -2445,7 +2455,7 @@ export function createPresentationMasterXmlSkill(options: PresentationMasterXmlO
           host: originalHost,
           progress,
         },
-        currentProofRef = await save(ctx, 'receipt-0', json(initial))
+        currentProofRef = await trackedSave(ctx, 'receipt-0', json(initial))
       const r: PresentationMasterXmlChange = {
         version: 1,
         kind: 'master_xml',
@@ -2503,9 +2513,26 @@ export function createPresentationMasterXmlSkill(options: PresentationMasterXmlO
       },
       execute: async (nextSignal) => {
         const ctx = { ...c, signal: nextSignal }
-        const r = await prepareConfirmed(ctx)
-        await store(ctx, r)
-        await drive(ctx, r)
+        let persistenceAttempted = false
+        try {
+          const r = await prepareConfirmed(ctx)
+          persistenceAttempted = true
+          await store(ctx, r)
+          await drive(ctx, r)
+        } catch (error) {
+          if (!persistenceAttempted)
+            await Promise.allSettled(
+              attemptedRefs.map((backup) =>
+                releasePackageBackup({
+                  request: options.request,
+                  documentId,
+                  changeId: c.changeId,
+                  backup,
+                }),
+              ),
+            )
+          throw error
+        }
       },
       verify: async (nextSignal) => {
         const current = record(c.changeId)

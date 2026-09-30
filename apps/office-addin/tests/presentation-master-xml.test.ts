@@ -13,6 +13,28 @@ it('backs up all originals after confirmation and preserves proposed capability 
   expect(f.request).not.toHaveBeenCalled()
   expect(f.data.size).toBe(0)
 })
+it('releases confirmed uploads if a later original page backup fails before persistence', async () => {
+  const f = await masterXmlFixture(2)
+  const p = await f.propose()
+  const originalRequest = f.request.getMockImplementation()!
+  f.request.mockImplementation(async (body, signal) => {
+    if (
+      (body as { operation?: string; key?: string }).operation === 'package_backup_begin' &&
+      (body as { key?: string }).key === 'page-2'
+    )
+      throw Error('transport_failed')
+    return originalRequest(body, signal)
+  })
+  await expect(f.confirm()).rejects.toThrow('transport_failed')
+  const response = await f.request({
+    operation: 'package_backup_list',
+    documentId: 'doc',
+    changeId: String(p.preview.changeId),
+  })
+  expect((await response.json()).backups).toEqual([])
+  expect(f.data.size).toBe(0)
+  expect(f.adapter.stage).not.toHaveBeenCalled()
+})
 it('durably probes unused layouts and updates every dependent before deleting source', async () => {
   const f = await masterXmlFixture(25),
     p = await f.propose()

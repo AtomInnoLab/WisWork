@@ -1,6 +1,8 @@
 import { createPresentationMasterBackupService } from './presentation-master-backups'
 const operations = new Set(
-  ['begin', 'chunk', 'finish', 'status', 'read', 'list'].map((x) => `package_backup_${x}`),
+  ['begin', 'chunk', 'finish', 'status', 'read', 'list', 'release'].map(
+    (x) => `package_backup_${x}`,
+  ),
 )
 export function createPresentationPackageBackupService(options: { userDataPath: string }) {
   const service = createPresentationMasterBackupService({

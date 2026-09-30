@@ -99,6 +99,39 @@ it('persists exact blobs and recovers chunk/finish ACK replay after restart', as
   )) as { base64: string }
   expect(Buffer.from(read.base64, 'base64')).toEqual(f.raw)
 })
+it('releases only the exact backup identity and returns capacity', async () => {
+  const f = fixture()
+  await f.begin()
+  await f.call('package_backup_chunk', { offset: 0, base64: f.raw.toString('base64') })
+  await f.call('package_backup_finish')
+  await expect(
+    f.call('package_backup_release', { sha256: sha('wrong'), sizeBytes: f.raw.length }),
+  ).rejects.toThrow('presentation_package_backup_invalid')
+  expect(await f.call('package_backup_status')).toMatchObject({ status: 'ready' })
+  const released = await createPresentationService({ userDataPath: f.root })(
+    {
+      operation: 'package_backup_release',
+      ...f.scope,
+      sha256: sha(f.raw),
+      sizeBytes: f.raw.length,
+    },
+    new AbortController().signal,
+  )
+  expect(JSON.parse(Buffer.from(released).toString())).toMatchObject({ released: true })
+  await expect(f.call('package_backup_status')).rejects.toThrow(
+    'presentation_package_backup_invalid',
+  )
+  expect(
+    await createPresentationPackageBackupService({ userDataPath: f.root })(
+      {
+        operation: 'package_backup_list',
+        documentId: f.scope.documentId,
+        changeId: f.scope.changeId,
+      },
+      new AbortController().signal,
+    ),
+  ).toMatchObject({ backups: [] })
+})
 it('rejects altered scopes, overlap, malformed requests, unready reads and corrupted bytes', async () => {
   const f = fixture()
   await f.begin()

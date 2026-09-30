@@ -25,6 +25,13 @@ const sha = async (bytes: Uint8Array) =>
     new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(bytes).buffer)),
     (x) => x.toString(16).padStart(2, '0'),
   ).join('')
+export async function masterBackupRefForBytes(
+  key: string,
+  bytes: Uint8Array,
+): Promise<MasterBackupRef> {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > MAX_BYTES) invalid()
+  return { key, sha256: await sha(bytes), sizeBytes: bytes.length }
+}
 function scopeValid(scope: Scope, key: string) {
   if (
     typeof scope.documentId !== 'string' ||
@@ -227,4 +234,28 @@ export async function readMasterBackup(input: Read): Promise<Uint8Array> {
   if ((await sha(bytes)) !== backup.sha256) invalid()
   cancelled(scope.signal)
   return bytes
+}
+export async function releaseMasterBackup(input: Read): Promise<void> {
+  const scope: Scope = {
+    request: input.request,
+    documentId: input.documentId,
+    changeId: input.changeId,
+    signal: input.signal,
+    protocol: input.protocol,
+  }
+  const backup = { ...input.backup }
+  scopeValid(scope, backup.key)
+  refValid(backup)
+  const result = await call(scope, backup.key, 'master_backup_release', {
+    sha256: backup.sha256,
+    sizeBytes: backup.sizeBytes,
+  })
+  exact(result, ['documentId', 'changeId', 'key', 'released'])
+  if (
+    result.documentId !== scope.documentId ||
+    result.changeId !== scope.changeId ||
+    result.key !== backup.key ||
+    result.released !== true
+  )
+    invalid()
 }

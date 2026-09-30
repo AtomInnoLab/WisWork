@@ -1061,6 +1061,7 @@ export function createPresentationService(options: {
           'package_backup_status',
           'package_backup_read',
           'package_backup_list',
+          'package_backup_release',
         ].includes(request.operation as string)
       )
         return boundedResponse(await packageBackups(request, signal))
@@ -1072,6 +1073,7 @@ export function createPresentationService(options: {
           'master_backup_status',
           'master_backup_read',
           'master_backup_list',
+          'master_backup_release',
         ].includes(request.operation as string)
       )
         return boundedResponse(await masterBackups(request, signal))
