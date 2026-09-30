@@ -30,15 +30,14 @@ describe('durable master XML complete proposal preimage', () => {
     expect(f.adapter.applyLayout).not.toHaveBeenCalled()
     expect(f.data.size).toBe(0)
   }
-  it('captures and persists all 600 pages including the final native page without a narrowed preimage', async () => {
+  it('checks all 600 pages before confirmation without uploading savepoints', async () => {
     expect(await request.validate()).toBe(true)
     expect(f.order).toEqual(Array.from({ length: 600 }, (_, i) => `s${i}`))
     expect(f.adapter.readPage.mock.calls.map(([id]) => id)).toEqual(originalOrder)
     const completed = f.request.mock.calls
       .map(([body]) => body as Record<string, unknown>)
       .filter((body) => body.operation === 'package_backup_finish')
-    expect(completed.filter((body) => /^page-\d+$/.test(String(body.key)))).toHaveLength(601)
-    expect(completed.some((body) => body.key === 'snapshot')).toBe(true)
+    expect(completed).toHaveLength(0)
     expect(request.impact).toMatchObject({ count: 600, targets: originalOrder })
     noWrites()
   })
