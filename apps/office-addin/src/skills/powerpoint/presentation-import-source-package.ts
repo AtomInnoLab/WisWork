@@ -87,6 +87,10 @@ export async function validatePresentationImportSourcePage(
 
   const slideRelsPath = slidePaths[0]!.replace('/slides/', '/slides/_rels/') + '.rels'
   const slideRelsFile = zip.file(slideRelsPath)
+  const referencedIds = [...slideXml.matchAll(/\br:(?:id|embed|link)="([^"]+)"/g)].map(
+    (match) => match[1]!,
+  )
+  if (referencedIds.length && !slideRelsFile) invalid()
   if (slideRelsFile) {
     const slideRelsXml = await slideRelsFile.async('string')
     if (!validXml(slideRelsXml)) invalid()
@@ -106,5 +110,7 @@ export async function validatePresentationImportSourcePage(
       new Set(references.map((rel) => rel['@_Id'])).size !== references.length
     )
       invalid()
+    const ids = new Set(references.map((rel) => rel['@_Id']))
+    if (referencedIds.some((id) => !ids.has(id))) invalid()
   }
 }

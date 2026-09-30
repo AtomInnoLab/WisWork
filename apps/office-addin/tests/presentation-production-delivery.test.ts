@@ -217,6 +217,22 @@ it('rejects a source page with missing image or chart parts before proposing', a
   }
 })
 
+it('rejects a picture page whose relationship definition is missing', async () => {
+  const deck = benchmarkDeck()
+  const compiled = await compilePresentationDeck({ ...deck, slides: [deck.slides[2]!] })
+  const zip = await JSZip.loadAsync(compiled.bytes)
+  zip.remove('ppt/slides/_rels/slide1.xml.rels')
+  const f = fixture()
+  f.artifact.slideCount = 1
+  f.artifact.pages = [{ id: 'slide-3', title: '研究图文', sourceSlideId: '256#' }]
+  f.artifact.pagePptxBase64 = [await zip.generateAsync({ type: 'base64' })]
+  expect(await f.skill.executeTool(f.call)).toMatchObject({
+    isError: true,
+    output: 'presentation_import_state_invalid',
+  })
+  expect(f.adapter.insertPage).not.toHaveBeenCalled()
+})
+
 it('records an imported production page after its exported package matches', async () => {
   const f = fixture()
   const source = fixturePage
