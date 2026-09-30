@@ -75,6 +75,9 @@ test('reopens the paired project workbench with its saved project identity', asy
   }
   await page.addInitScript((project) => {
     const NativeWebSocket = window.WebSocket
+    let dropCurrentRelay: (() => void) | undefined
+    let grantedCapabilities: string[] = []
+    let resumeCount = 0
     class RelaySocket {
       readyState = 0
       onopen: (() => void) | null = null
@@ -82,6 +85,7 @@ test('reopens the paired project workbench with its saved project identity', asy
       onclose: (() => void) | null = null
       onerror: (() => void) | null = null
       constructor() {
+        dropCurrentRelay = () => this.close()
         setTimeout(() => {
           this.readyState = 1
           this.onopen?.()
@@ -93,6 +97,7 @@ test('reopens the paired project workbench with its saved project identity', asy
       send(raw: string) {
         const frame = JSON.parse(raw) as Record<string, unknown>
         if (frame.type === 'office.create') {
+          grantedCapabilities = frame.capabilities as string[]
           this.receive({
             version: 2,
             type: 'office.created',
@@ -107,6 +112,16 @@ test('reopens the paired project workbench with its saved project identity', asy
             capability: 'token1',
             expires_in: 1800,
             capabilities: frame.capabilities,
+          })
+        }
+        if (frame.type === 'office.resume') {
+          resumeCount++
+          this.receive({
+            version: 2,
+            type: 'office.resumed',
+            session_id: 'session1',
+            expires_in: 1800,
+            capabilities: grantedCapabilities,
           })
         }
         if (frame.type !== 'office.request') return
@@ -134,6 +149,9 @@ test('reopens the paired project workbench with its saved project identity', asy
       return url.includes('/office-relay') ? new RelaySocket() : new NativeWebSocket(url, protocols)
     }
     Object.defineProperty(window, 'WebSocket', { value: MockWebSocket })
+    Object.defineProperty(window, '__wisworkRelayTest', {
+      value: { drop: () => dropCurrentRelay?.(), resumes: () => resumeCount },
+    })
   }, project)
   await page.goto('https://localhost:3000/taskpane.html')
   await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
@@ -151,6 +169,19 @@ test('reopens the paired project workbench with its saved project identity', asy
   await refresh.focus()
   await page.keyboard.press('Enter')
   await expect(workbench.getByText('浏览器项目验收', { exact: true })).toBeVisible()
+  await page.evaluate(() =>
+    (window as unknown as { __wisworkRelayTest: { drop(): void } }).__wisworkRelayTest.drop(),
+  )
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as unknown as { __wisworkRelayTest: { resumes(): number } }
+        ).__wisworkRelayTest.resumes(),
+      ),
+    )
+    .toBe(1)
+  await expect(workbench).toContainText('浏览器项目验收')
   await page.reload()
   await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
   await expect(page.getByRole('region', { name: '演示文稿项目' })).toContainText('浏览器项目验收')
