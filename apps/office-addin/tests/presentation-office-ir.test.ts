@@ -153,11 +153,84 @@ it('uses only a declared resolved font for all direct Office text and table obje
     expect(table.rows[0]?.[0]?.text?.paragraphs[0]?.runs[0]?.fontFamily).toBe(used)
 })
 
-it('keeps supported Office operation structure aligned with the PptxGenJS benchmark output', async () => {
+it('keeps ten shared SlideTasks aligned across Office operations and PptxGenJS output', async () => {
   const deck = benchmarkDeck()
+  const variants = [
+    {
+      ...structuredClone(deck.slides[0]!),
+      id: 'centered-title',
+      elements: [
+        {
+          ...structuredClone(deck.slides[0]!.elements[0]!),
+          text: '居中标题',
+          align: 'center' as const,
+          bold: true,
+          color: '884422',
+        },
+      ],
+    },
+    {
+      ...structuredClone(deck.slides[3]!),
+      id: 'ellipse-shape',
+      elements: [
+        structuredClone(deck.slides[3]!.elements[0]!),
+        {
+          kind: 'shape' as const,
+          id: 'ellipse',
+          x: 2,
+          y: 2.5,
+          w: 2.5,
+          h: 1.5,
+          shape: 'ellipse' as const,
+          fill: 'CC8844',
+          lineColor: '2255AA',
+        },
+      ],
+    },
+    {
+      ...structuredClone(deck.slides[5]!),
+      id: 'small-table',
+      elements: [
+        structuredClone(deck.slides[5]!.elements[0]!),
+        {
+          kind: 'table' as const,
+          id: 'comparison-table',
+          x: 1.5,
+          y: 3,
+          w: 7,
+          h: 1.5,
+          fontSize: 12,
+          rows: [
+            ['甲', '1'],
+            ['乙', '2'],
+          ],
+        },
+      ],
+    },
+    {
+      ...structuredClone(deck.slides[1]!),
+      id: 'right-aligned-body',
+      elements: [
+        structuredClone(deck.slides[1]!.elements[0]!),
+        {
+          kind: 'text' as const,
+          id: 'right-body',
+          x: 2,
+          y: 2,
+          w: 8,
+          h: 2,
+          text: '右对齐正文',
+          align: 'right' as const,
+          fontSize: 24,
+          color: '116688',
+        },
+      ],
+    },
+  ]
+  deck.slides.push(...variants)
   const { bytes } = await compilePresentationDeck(deck)
   const actual = (await openPptx(bytes)).deck
-  for (const pageIndex of [0, 1, 3, 4, 5, 7]) {
+  for (const pageIndex of [0, 1, 3, 4, 5, 7, 8, 9, 10, 11]) {
     const operations = officeOperationsForSlideIR(
       deck.slides[pageIndex]!,
       deck.style,

@@ -562,6 +562,47 @@ it('detects native table cell fill, border and font drift when cell text is unch
   }
 })
 
+it('detects a soft break moved within one native table cell', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[5]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const page = (await openPptx(bytes)).deck.slides[0]!
+  const shapes = page.elements.map((element, index) => ({
+    id: String(index),
+    name: element.name!,
+    type: element.name === 'table' ? 'Table' : 'TextBox',
+    left: (element.transform.offset.x * 72) / 914400,
+    top: (element.transform.offset.y * 72) / 914400,
+    width: (element.transform.offset.cx * 72) / 914400,
+    height: (element.transform.offset.cy * 72) / 914400,
+  }))
+  const zip = await JSZip.loadAsync(bytes)
+  const path = 'ppt/slides/slide1.xml'
+  const xml = await zip.file(path)!.async('string')
+  const original = '<a:t>120</a:t></a:r>'
+  expect(xml).toContain(original)
+  zip.file(path, xml.replace(original, '<a:t>1</a:t></a:r><a:br/><a:r><a:t>20</a:t></a:r>'))
+  const source = await zip.generateAsync({ type: 'base64' })
+  zip.file(path, xml.replace(original, '<a:t>1</a:t></a:r><a:r><a:t>20</a:t></a:r><a:br/>'))
+  const result = await comparePresentationPageStructure(
+    source,
+    0,
+    {
+      slideId: 'host',
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlapsTruncated: false,
+      overlaps: [],
+      screenshot: { mime: 'image/png', base64: '' },
+    },
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(result.content).toMatchObject({ status: 'warning', changed: ['table'] })
+})
+
 it('compares a selected chart cache from a multi-page source deck', async () => {
   const { bytes } = await compilePresentationDeck(benchmarkDeck())
   const source = (await openPptx(bytes)).deck.slides[6]!

@@ -178,8 +178,26 @@ function orderedTags(tree: Xml[], tag: string): Xml[] {
   )
 }
 
-function orderedShapeText(slideXml: string): Map<string, string[]> {
-  const shapes = orderedTags(orderedParser.parse(slideXml) as Xml[], 'p:sp')
+function orderedBodyText(body: Xml[]): string[] {
+  return orderedTags(body, 'a:p').map((paragraph) =>
+    (paragraph['a:p'] as Xml[])
+      .map((child) => {
+        const run = child['a:r'] ?? child['a:fld']
+        if (Array.isArray(run))
+          return orderedTags(run, 'a:t')
+            .flatMap((text) => (text['a:t'] as Xml[]).map((part) => part['#text'] ?? ''))
+            .join('')
+        if (Array.isArray(child['a:br'])) return '\n'
+        if (Array.isArray(child['a:tab'])) return '\t'
+        return ''
+      })
+      .join(''),
+  )
+}
+
+function orderedNativeText(slideXml: string): Map<string, string[]> {
+  const tree = orderedParser.parse(slideXml) as Xml[]
+  const shapes = orderedTags(tree, 'p:sp')
   const result = new Map<string, string[]>()
   for (const shape of shapes) {
     const id = orderedTags(shape['p:sp'], 'p:cNvPr')[0]?.[':@']?.['@_id']
@@ -187,22 +205,22 @@ function orderedShapeText(slideXml: string): Map<string, string[]> {
       throw new Error('presentation_qa_structure_unavailable')
     const body = orderedTags(shape['p:sp'], 'p:txBody')
     if (body.length > 1) throw new Error('presentation_qa_structure_unavailable')
-    const paragraphs = body.length ? orderedTags(body[0]!['p:txBody'], 'a:p') : []
+    result.set(id, body.length ? orderedBodyText(body[0]!['p:txBody'] as Xml[]) : [])
+  }
+  for (const frame of orderedTags(tree, 'p:graphicFrame')) {
+    const id = orderedTags(frame['p:graphicFrame'], 'p:cNvPr')[0]?.[':@']?.['@_id']
+    const table = orderedTags(frame['p:graphicFrame'], 'a:tbl')
+    if (!table.length) continue
+    if (typeof id !== 'string' || result.has(id) || table.length !== 1)
+      throw new Error('presentation_qa_structure_unavailable')
     result.set(
       id,
-      paragraphs.map((paragraph) =>
-        (paragraph['a:p'] as Xml[])
-          .map((child) => {
-            const run = child['a:r'] ?? child['a:fld']
-            if (Array.isArray(run))
-              return orderedTags(run, 'a:t')
-                .flatMap((text) => (text['a:t'] as Xml[]).map((part) => part['#text'] ?? ''))
-                .join('')
-            if (Array.isArray(child['a:br'])) return '\n'
-            if (Array.isArray(child['a:tab'])) return '\t'
-            return ''
-          })
-          .join(''),
+      orderedTags(table[0]!['a:tbl'], 'a:tr').flatMap((row) =>
+        orderedTags(row['a:tr'], 'a:tc').map((cell) => {
+          const body = orderedTags(cell['a:tc'], 'a:txBody')
+          if (body.length !== 1) throw new Error('presentation_qa_structure_unavailable')
+          return orderedBodyText(body[0]!['a:txBody'] as Xml[]).join('\n')
+        }),
       ),
     )
   }
@@ -475,9 +493,9 @@ async function readPage(
     const root = await readXml(zip, slidePath)
     if (!root) throw new Error('invalid slide XML')
     const objects = sourceObjects(root)
-    const ordered = orderedShapeText(await zip.file(slidePath)!.async('string'))
+    const ordered = orderedNativeText(await zip.file(slidePath)!.async('string'))
     for (const object of objects)
-      if (object.type === 'shape') {
+      if (object.type === 'shape' || object.type === 'table') {
         const text = ordered.get(object.shapeId)
         if (!text) throw new Error('invalid shape text')
         object.text = text
