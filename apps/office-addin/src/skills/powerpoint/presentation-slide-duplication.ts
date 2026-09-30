@@ -21,6 +21,7 @@ import {
   describePagePackageBackup,
   readChartPackageBackup,
   saveChartPackageBackup,
+  releaseChartPackageBackup,
 } from './presentation-chart-backup.js'
 import {
   loadBoundedZip,
@@ -380,23 +381,36 @@ export function createPresentationSlideDuplicationSkill(options: Options) {
             slideIds: r.beforeSlideIds,
           }
           const b = r.backups[0]
-          const stored = await saveChartPackageBackup(
-            { ...scope, backupId: b.backupId, base64: page.base64 },
-            s,
-          )
-          await guard(documentId, s, token, true)
-          if (stored.sha256 !== b.sha256 || stored.sizeBytes !== b.sizeBytes)
-            throw Error('presentation_chart_backup_invalid')
-          const retained = await readChartPackageBackup(
-            { ...scope, backup: b, expectedPackageDigest: r.baselineDigest },
-            s,
-          )
-          await guard(documentId, s, token, true)
-          const identity = await sourceIdentity(retained, s)
-          await guard(documentId, s, token, true)
-          if (identity !== r.sourceSlideId) throw Error('presentation_page_source_invalid')
-          await fresh(s)
-          await store(r, undefined, s)
+          let retained: string
+          try {
+            const stored = await saveChartPackageBackup(
+              { ...scope, backupId: b.backupId, base64: page.base64 },
+              s,
+            )
+            await guard(documentId, s, token, true)
+            if (stored.sha256 !== b.sha256 || stored.sizeBytes !== b.sizeBytes)
+              throw Error('presentation_chart_backup_invalid')
+            retained = await readChartPackageBackup(
+              { ...scope, backup: b, expectedPackageDigest: r.baselineDigest },
+              s,
+            )
+            await guard(documentId, s, token, true)
+            const identity = await sourceIdentity(retained, s)
+            await guard(documentId, s, token, true)
+            if (identity !== r.sourceSlideId) throw Error('presentation_page_source_invalid')
+            await fresh(s)
+            await store(r, undefined, s)
+          } catch (error) {
+            let absent = false
+            try {
+              absent = options.readExistingBatch(r.changeId) === undefined
+            } catch {
+              // An unreadable intent may still own the savepoint.
+            }
+            if (absent)
+              await Promise.allSettled([releaseChartPackageBackup({ ...scope, backup: b })])
+            throw error
+          }
           await current(r, s, token, true)
           await store({ ...r, inFlightIndex: 0 }, r, s)
           await current(r, s, token, true)

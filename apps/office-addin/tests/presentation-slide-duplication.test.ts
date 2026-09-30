@@ -264,6 +264,44 @@ it('refuses backup failure before saving an intent or inserting', async () => {
   expect(f.inserted()).toBe(0)
   expect(f.saved(p.changeId)).toBeUndefined()
 })
+it('releases the savepoint when the first duplication intent write fails', async () => {
+  const f = await fixture()
+  const p = await f.propose()
+  f.write.mockRejectedValueOnce(Error('settings_failed'))
+  await expect(f.proposals.confirm(p.proposalId)).rejects.toThrow('settings_failed')
+  expect(f.saved(p.changeId)).toBeUndefined()
+  expect(f.inserted()).toBe(0)
+  const releases = f.request.mock.calls.filter(
+    ([body]) => body.operation === 'existing_page_backup_release',
+  )
+  expect(releases).toHaveLength(1)
+  const [body] = releases[0]!
+  expect(
+    await (
+      await f.request({
+        operation: 'existing_page_backup_status',
+        documentId: body.documentId,
+        backupId: body.backupId,
+      })
+    ).json(),
+  ).toHaveProperty('error')
+})
+it('keeps the duplication savepoint when its intent commits but the ACK is lost', async () => {
+  const f = await fixture()
+  const p = await f.propose()
+  const write = f.write.getMockImplementation()!
+  f.write.mockImplementationOnce(async (next, expected) => {
+    await write(next, expected)
+    throw Error('settings_ack_lost')
+  })
+  await expect(f.proposals.confirm(p.proposalId)).rejects.toThrow('settings_ack_lost')
+  const saved = f.saved(p.changeId)
+  expect(saved.state).toBe('applying')
+  expect(f.inserted()).toBe(0)
+  expect(
+    f.request.mock.calls.filter(([body]) => body.operation === 'existing_page_backup_release'),
+  ).toHaveLength(0)
+})
 it.each(['disconnect', 'switch'])(
   'rechecks %s after the last backup read before insertion',
   async (kind) => {
