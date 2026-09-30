@@ -1,11 +1,13 @@
 import { expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { openPptx } from '@wiswork/pptx-engine'
 import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { createStructuredProposalController } from '../src/agent/proposal-controller'
 import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
 import { createPresentationProductionDeliverySkill } from '../src/skills/powerpoint/presentation-page-delivery'
 import type { CompiledPresentationArtifact } from '../src/skills/powerpoint/presentation-delivery'
+import { comparePresentationPageStructure } from '../src/skills/powerpoint/presentation-structure-comparison'
 
 it('imports eight mixed native pages and resumes after a known pre-write interruption', async () => {
   const deck = benchmarkDeck()
@@ -107,6 +109,70 @@ it('imports eight mixed native pages and resumes after a known pre-write interru
   expect(host).toHaveLength(9)
   expect(adapter.insertPage).toHaveBeenCalledTimes(9)
   expect([...written.values()]).toEqual(pagePackages)
+  for (const [index, slideId] of host.slice(1).entries()) {
+    const exported = written.get(slideId)!
+    const native = (await openPptx(Buffer.from(exported, 'base64'))).deck.slides[0]!
+    const shapes = native.elements.map((element, shapeIndex) => {
+      const type = (
+        {
+          shape: 'GeometricShape',
+          picture: 'Image',
+          table: 'Table',
+          chart: 'Chart',
+        } as Record<string, string>
+      )[element.type]
+      if (!type || !element.name) throw new Error('unexpected_native_object')
+      return {
+        id: `host-shape-${shapeIndex}`,
+        name: element.name,
+        type,
+        left: (element.transform.offset.x * 72) / 914400,
+        top: (element.transform.offset.y * 72) / 914400,
+        width: (element.transform.offset.cx * 72) / 914400,
+        height: (element.transform.offset.cy * 72) / 914400,
+      }
+    })
+    const inspection = {
+      slideId,
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes,
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png' as const, base64: '' },
+    }
+    const comparison = await comparePresentationPageStructure(
+      pagePackages[index]!,
+      0,
+      inspection,
+      exported,
+    )
+    expect(comparison.structureStatus, `page ${index + 1} native structure`).toBe('passed')
+    expect(comparison.readbackConsistent).toBe(true)
+    expect(comparison.content.changed).toEqual([])
+    expect(comparison.content.tableStructureChanged).toEqual([])
+    expect(comparison.content.chartSourceChanged).toEqual([])
+    expect(comparison.content.mediaChanged).toEqual([])
+    if (index === 6) {
+      const altered = await JSZip.loadAsync(Buffer.from(exported, 'base64'))
+      const chartPath = Object.keys(altered.files).find((path) =>
+        /^ppt\/charts\/chart\d+\.xml$/.test(path),
+      )!
+      const chartXml = await altered.file(chartPath)!.async('string')
+      expect(chartXml).toContain('<c:v>120</c:v>')
+      altered.file(chartPath, chartXml.replace('<c:v>120</c:v>', '<c:v>121</c:v>'))
+      const changed = await comparePresentationPageStructure(
+        pagePackages[index]!,
+        0,
+        inspection,
+        await altered.generateAsync({ type: 'base64' }),
+      )
+      expect(changed.content.cacheChanged).toContain('chart')
+      expect(changed.content.status).toBe('warning')
+    }
+  }
   expect(binding.readReceipt('production/eight-page-project/eight-page-run')).toMatchObject({
     state: 'complete',
     checkpoint: { pageIds: deck.slides.map((slide) => slide.id) },
