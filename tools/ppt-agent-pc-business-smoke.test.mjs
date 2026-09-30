@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import { WebSocketServer } from 'ws'
 import { checkPcStatusResponse, inspectPcBusiness } from './ppt-agent-pc-business-smoke.mjs'
 
-async function fakeRelay(t, response, mutate = (frame) => frame) {
+async function fakeRelay(t, response, mutate = (frame) => frame, handle) {
   const server = createServer()
   const sockets = new WebSocketServer({ server })
   t.after(async () => {
@@ -41,13 +41,14 @@ async function fakeRelay(t, response, mutate = (frame) => frame) {
         assert.equal(frame.body.documentId, 'document-1')
         if (frame.body.operation === 'status') assert.equal(frame.body.projectId, 'project-1')
         const value =
-          frame.body.operation === 'status'
+          handle?.(frame.body) ??
+          (frame.body.operation === 'status'
             ? response
             : frame.body.operation === 'attachment_list_assets'
               ? { attachments: [] }
               : frame.body.operation === 'attachment_metadata'
                 ? response.attachment_metadata?.[frame.body.attachmentId]
-                : response[frame.body.operation]
+                : response[frame.body.operation])
         assert.notEqual(value, undefined)
         const common = { version: 2, session_id: frame.session_id, request_id: frame.request_id }
         const frames = [
@@ -89,6 +90,7 @@ test('real PC smoke pairs and verifies a buffered, chunked status response', asy
       attachmentPageCount: 0,
       textChecked: false,
       imageChecked: false,
+      uploadChecked: false,
     },
   )
   assert.deepEqual(codes, ['123456'])
@@ -191,6 +193,7 @@ test('real PC smoke reads text and validates normalized image bytes', async (t) 
       attachmentPageCount: 0,
       textChecked: true,
       imageChecked: true,
+      uploadChecked: false,
     },
   )
 })
@@ -229,4 +232,147 @@ test('real PC smoke rejects an image whose bytes differ from PC metadata', async
     }),
     /image attachment digest mismatch/,
   )
+})
+
+test('real PC smoke uploads, reads, and deletes unique text and PNG fixtures', async (t) => {
+  const fixtures = new Map()
+  const deleted = []
+  const response = {
+    projectId: 'project-1',
+    status: 'compiled',
+    slideCount: 0,
+    slides: [],
+    history: [],
+  }
+  const origin = await fakeRelay(
+    t,
+    response,
+    (frame) => frame,
+    (body) => {
+      const id = body.attachmentId
+      if (body.operation === 'status') return response
+      if (body.operation === 'attachment_list_assets') return { attachments: [] }
+      if (body.operation === 'attachment_metadata')
+        return fixtures.get(id)?.metadata ?? { error: 'not_found' }
+      if (body.operation === 'attachment_begin') {
+        assert.equal(fixtures.has(id), false)
+        assert.equal(body.sha256, id)
+        fixtures.set(id, {
+          name: body.name,
+          bytes: Buffer.alloc(0),
+          metadata: {
+            attachmentId: id,
+            sha256: id,
+            status: 'uploading',
+            receivedBytes: 0,
+          },
+        })
+        return fixtures.get(id).metadata
+      }
+      if (body.operation === 'attachment_chunk') {
+        const fixture = fixtures.get(id)
+        assert.equal(body.offset, 0)
+        fixture.bytes = Buffer.from(body.base64, 'base64')
+        return { attachmentId: id, status: 'uploading', receivedBytes: fixture.bytes.length }
+      }
+      if (body.operation === 'attachment_finish') {
+        const fixture = fixtures.get(id)
+        fixture.metadata = {
+          attachmentId: id,
+          sha256: id,
+          status: 'ready',
+          kind: fixture.name.endsWith('.txt') ? 'text' : 'image',
+          ...(fixture.name.endsWith('.txt')
+            ? { totalChars: fixture.bytes.toString('utf8').length }
+            : {
+                width: 1,
+                height: 1,
+                assetSha256: createHash('sha256').update(fixture.bytes).digest('hex'),
+              }),
+        }
+        return fixture.metadata
+      }
+      if (body.operation === 'attachment_read') {
+        const text = fixtures.get(id).bytes.toString('utf8')
+        return {
+          attachmentId: id,
+          offset: 0,
+          sourceUri: `attachment:${id}`,
+          totalChars: text.length,
+          text,
+        }
+      }
+      if (body.operation === 'attachment_asset')
+        return {
+          id,
+          mime: 'image/png',
+          width: 1,
+          height: 1,
+          base64: fixtures.get(id).bytes.toString('base64'),
+        }
+      if (body.operation === 'attachment_delete') {
+        assert.equal(fixtures.delete(id), true)
+        deleted.push(id)
+        return { attachmentId: id, deleted: true }
+      }
+    },
+  )
+  assert.deepEqual(
+    await inspectPcBusiness(origin, 'document-1', 'project-1', {
+      onCode: () => {},
+      timeoutMs: 1000,
+      uploadFixtures: true,
+    }),
+    {
+      projectId: 'project-1',
+      status: 'compiled',
+      slideCount: 0,
+      attachmentPageCount: 0,
+      textChecked: true,
+      imageChecked: true,
+      uploadChecked: true,
+    },
+  )
+  assert.equal(fixtures.size, 0)
+  assert.equal(deleted.length, 2)
+})
+
+test('real PC smoke cleans an attachment after a failed upload chunk', async (t) => {
+  const response = {
+    projectId: 'project-1',
+    status: 'compiled',
+    slideCount: 0,
+    slides: [],
+    history: [],
+  }
+  let created
+  let deleted
+  const origin = await fakeRelay(
+    t,
+    response,
+    (frame) => frame,
+    (body) => {
+      if (body.operation === 'status') return response
+      if (body.operation === 'attachment_list_assets') return { attachments: [] }
+      if (body.operation === 'attachment_metadata') return { error: 'not_found' }
+      if (body.operation === 'attachment_begin') {
+        created = body.attachmentId
+        return { attachmentId: created, status: 'uploading', receivedBytes: 0 }
+      }
+      if (body.operation === 'attachment_chunk') return { error: 'disk_full' }
+      if (body.operation === 'attachment_delete') {
+        deleted = body.attachmentId
+        return { attachmentId: deleted, deleted: true }
+      }
+    },
+  )
+  await assert.rejects(
+    inspectPcBusiness(origin, 'document-1', 'project-1', {
+      onCode: () => {},
+      timeoutMs: 1000,
+      uploadFixtures: true,
+    }),
+    /upload chunk failed/,
+  )
+  assert.equal(deleted, created)
 })

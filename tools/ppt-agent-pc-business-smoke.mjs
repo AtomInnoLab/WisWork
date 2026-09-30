@@ -1,6 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import pngjs from 'pngjs'
 import WebSocket from 'ws'
+
+const { PNG } = pngjs
 
 const OFFICE_ORIGIN = 'https://office.8-216-134-194.sslip.io'
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -153,6 +156,50 @@ function checkImageAttachment(metadata, asset, id) {
     throw new Error('PC image attachment digest mismatch')
 }
 
+async function uploadFixture(request, documentId, name, bytes, kind) {
+  const attachmentId = createHash('sha256').update(bytes).digest('hex')
+  const begin = await request('presentation-assets.v1', {
+    operation: 'attachment_begin',
+    documentId,
+    attachmentId,
+    name,
+    sizeBytes: bytes.length,
+    sha256: attachmentId,
+  })
+  if (
+    begin?.attachmentId !== attachmentId ||
+    begin.status !== 'uploading' ||
+    begin.receivedBytes !== 0
+  )
+    throw new Error('PC smoke fixture already exists or upload failed')
+  const chunk = await request('presentation-assets.v1', {
+    operation: 'attachment_chunk',
+    documentId,
+    attachmentId,
+    offset: 0,
+    base64: bytes.toString('base64'),
+  })
+  if (
+    chunk?.attachmentId !== attachmentId ||
+    chunk.status !== 'uploading' ||
+    chunk.receivedBytes !== bytes.length
+  )
+    throw new Error('PC smoke upload chunk failed')
+  const finished = await request('presentation-assets.v1', {
+    operation: 'attachment_finish',
+    documentId,
+    attachmentId,
+  })
+  if (
+    finished?.attachmentId !== attachmentId ||
+    finished.status !== 'ready' ||
+    finished.kind !== kind ||
+    finished.sha256 !== attachmentId
+  )
+    throw new Error('PC smoke attachment parse failed')
+  return { attachmentId, metadata: finished }
+}
+
 export async function inspectPcBusiness(relayOrigin, documentId, projectId, options = {}) {
   if (
     typeof documentId !== 'string' ||
@@ -170,6 +217,8 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     (fixtureIds[0] !== undefined && fixtureIds[0] === fixtureIds[1])
   )
     throw new Error('invalid smoke attachment fixture IDs')
+  if (options.uploadFixtures && fixtureIds.some((id) => id !== undefined))
+    throw new Error('upload smoke cannot use existing attachment IDs')
   const timeoutMs = options.timeoutMs ?? 120_000
   const socket = (options.connect ?? ((url, config) => new WebSocket(url, config)))(
     relayUrl(relayOrigin),
@@ -298,11 +347,82 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       })
       checkImageAttachment(metadata, asset, attachmentId)
     }
+    if (options.uploadFixtures) {
+      const uploaded = []
+      let failure
+      try {
+        const text = Buffer.from(`WisWork release smoke ${randomUUID()}\n`, 'utf8')
+        const png = new PNG({ width: 1, height: 1 })
+        png.data.set(Buffer.concat([randomBytes(3), Buffer.from([255])]))
+        const image = PNG.sync.write(png)
+        const textId = createHash('sha256').update(text).digest('hex')
+        const imageId = createHash('sha256').update(image).digest('hex')
+        for (const attachmentId of [textId, imageId]) {
+          const existing = await request('presentation-assets.v1', {
+            operation: 'attachment_metadata',
+            documentId,
+            attachmentId,
+          })
+          if (existing?.error !== 'not_found')
+            throw new Error('PC smoke fixture already exists or metadata check failed')
+        }
+        // Once creation starts, cleanup is attempted even if a later upload step fails.
+        uploaded.push(textId)
+        const textResult = await uploadFixture(
+          request,
+          documentId,
+          'wiswork-smoke.txt',
+          text,
+          'text',
+        )
+        const textRead = await request('presentation-assets.v1', {
+          operation: 'attachment_read',
+          documentId,
+          attachmentId: textId,
+          offset: 0,
+          maxChars: 8000,
+        })
+        checkTextAttachment(textResult.metadata, textRead, textId)
+        uploaded.push(imageId)
+        const imageResult = await uploadFixture(
+          request,
+          documentId,
+          'wiswork-smoke.png',
+          image,
+          'image',
+        )
+        const imageAsset = await request('presentation-assets.v1', {
+          operation: 'attachment_asset',
+          documentId,
+          attachmentId: imageId,
+        })
+        checkImageAttachment(imageResult.metadata, imageAsset, imageId)
+      } catch (error) {
+        failure = error
+      }
+      for (const attachmentId of uploaded.reverse()) {
+        try {
+          const deleted = await request('presentation-assets.v1', {
+            operation: 'attachment_delete',
+            documentId,
+            attachmentId,
+          })
+          if (deleted?.attachmentId !== attachmentId || deleted.deleted !== true)
+            throw new Error('PC smoke fixture cleanup failed')
+        } catch {
+          failure = new Error(
+            `PC smoke fixture cleanup failed for ${attachmentId}; inspect the test document`,
+          )
+        }
+      }
+      if (failure) throw failure
+    }
     return {
       ...status,
       attachmentPageCount,
-      textChecked: Boolean(options.textAttachmentId),
-      imageChecked: Boolean(options.imageAttachmentId),
+      textChecked: Boolean(options.textAttachmentId || options.uploadFixtures),
+      imageChecked: Boolean(options.imageAttachmentId || options.uploadFixtures),
+      uploadChecked: Boolean(options.uploadFixtures),
     }
   } finally {
     socket.terminate()
@@ -317,11 +437,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     {
       textAttachmentId: process.env.PPT_AGENT_SMOKE_TEXT_ATTACHMENT_ID,
       imageAttachmentId: process.env.PPT_AGENT_SMOKE_IMAGE_ATTACHMENT_ID,
+      uploadFixtures: process.env.PPT_AGENT_SMOKE_UPLOAD === '1',
     },
   )
     .then((result) =>
       process.stdout.write(
-        `Real PC business smoke passed: ${result.status}, ${result.slideCount} slides; ${result.attachmentPageCount} attachments on first page; text ${result.textChecked ? 'checked' : 'not configured'}, image ${result.imageChecked ? 'checked' : 'not configured'}.\n`,
+        `Real PC business smoke passed: ${result.status}, ${result.slideCount} slides; ${result.attachmentPageCount} attachments on first page; text ${result.textChecked ? 'checked' : 'not configured'}, image ${result.imageChecked ? 'checked' : 'not configured'}, upload ${result.uploadChecked ? 'checked and cleaned' : 'not configured'}.\n`,
       ),
     )
     .catch((error) => {

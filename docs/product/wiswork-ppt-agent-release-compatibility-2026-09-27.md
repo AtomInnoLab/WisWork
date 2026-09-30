@@ -37,4 +37,14 @@ PPT_AGENT_SMOKE_IMAGE_ATTACHMENT_ID='<image-attachment-sha256>' \
 node tools/ppt-agent-pc-business-smoke.mjs
 ```
 
-这项检查需要真实 PC 在线与人工完成一次配对；仓库中的模拟 Relay 测试只验证命令自身的协议和错误门禁。完整配置两个附件 ID 且通过后，可证明部署后的配对、PC 项目状态及既有文本/图片资产读取。附件上传、页面写入、截图、恢复和 PowerPoint Desktop/Web 仍须按 O6 矩阵逐项执行，不能由此命令宣称整体冒烟或专业任务通过。
+这项检查需要真实 PC 在线与人工完成一次配对；仓库中的模拟 Relay 测试只验证命令自身的协议和错误门禁。完整配置两个附件 ID 且通过后，可证明部署后的配对、PC 项目状态及既有文本/图片资产读取。页面写入、截图、恢复和 PowerPoint Desktop/Web 仍须按 O6 矩阵逐项执行，不能由此命令宣称整体冒烟或专业任务通过。
+
+专用测试文档可设置 `PPT_AGENT_SMOKE_UPLOAD=1`（不同时设置两个既有附件 ID），在同一配对会话中上传带随机内容的小型 TXT 和 1×1 PNG、读取解析文本及规范化图片、核对图片摘要，然后按精确 SHA-256 附件 ID 删除两个测试附件。命令先检查随机 ID 不存在，只清理本次创建的 ID；任一步失败也尝试清理。若清理失败，命令输出需人工检查的附件 ID 并返回非零。该选项会短暂修改 PC 的测试文档附件目录，**只对专用发布测试文档使用**。它验证 PC 附件上传和图片资产链路；PowerPoint 宿主写入、截图和恢复仍需单独验收。
+
+```bash
+PPT_AGENT_SMOKE_RELAY_ORIGIN='https://relay.example' \
+PPT_AGENT_SMOKE_DOCUMENT_ID='<dedicated-test-document-id>' \
+PPT_AGENT_SMOKE_PROJECT_ID='<test-project-id>' \
+PPT_AGENT_SMOKE_UPLOAD=1 \
+node tools/ppt-agent-pc-business-smoke.mjs
+```
