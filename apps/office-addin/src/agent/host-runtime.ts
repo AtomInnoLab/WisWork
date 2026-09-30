@@ -1133,7 +1133,9 @@ export function createOfficeHostRuntime(
           vfs,
           nativeAvailable: supportsPowerPointDocumentExport,
           exportDocument: exportPowerPointDocument,
-          verifySlides: (signal) => powerPointAdapter!.verifySlides(signal),
+          verifySlides: supportsNativePowerPointMasterEditing()
+            ? (signal) => powerPointAdapter!.verifySlides(signal)
+            : undefined,
           inspectPage: (slideId, signal) =>
             powerPointAdapter!.inspectPresentationPage(slideId, signal),
           readQuality: (projectId, requestId) => {

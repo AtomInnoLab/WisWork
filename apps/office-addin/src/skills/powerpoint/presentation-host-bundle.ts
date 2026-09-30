@@ -268,6 +268,29 @@ export function createPresentationHostBundleSkill(
             report.requestId !== requestId
           )
             throw Error('presentation_response_invalid')
+          const structure = (value: Awaited<ReturnType<NonNullable<Options['verifySlides']>>>) =>
+            canonical({
+              slideWidth: value.slideWidth,
+              slideHeight: value.slideHeight,
+              truncated: value.truncated ?? false,
+              slides: value.slides.map((slide) => ({
+                slideId: slide.slideId,
+                slideIndex: slide.slideIndex,
+                shapes: slide.shapes,
+                shapesTruncated: slide.shapesTruncated,
+              })),
+            })
+          const hostStructure = async () => {
+            if (!options.verifySlides) return undefined
+            const value = await options.verifySlides(controller.signal)
+            await current()
+            return structure(value)
+          }
+          const initialStructure = await hostStructure()
+          const assertStructure = async () => {
+            if (initialStructure !== undefined && (await hostStructure()) !== initialStructure)
+              throw Error('office_document_changed')
+          }
           const pptx = await options.exportDocument('pptx', controller.signal)
           await current()
           if (
@@ -354,6 +377,8 @@ export function createPresentationHostBundleSkill(
               throw Error('office_screenshot_unavailable')
             const before = await options.verifySlides(controller.signal)
             await current()
+            if (initialStructure !== undefined && structure(before) !== initialStructure)
+              throw Error('office_document_changed')
             const slideIds = before.slides.map((slide) => slide.slideId)
             if (slideIds.length !== 8 || new Set(slideIds).size !== 8)
               throw Error('office_screenshot_unavailable')
@@ -394,12 +419,15 @@ export function createPresentationHostBundleSkill(
             }
             const after = await options.verifySlides(controller.signal)
             await current()
+            if (initialStructure !== undefined && structure(after) !== initialStructure)
+              throw Error('office_document_changed')
             if (
               JSON.stringify(after.slides.map((slide) => slide.slideId)) !==
               JSON.stringify(slideIds)
             )
               throw Error('office_screenshot_unavailable')
           }
+          if (!input.include_page_screenshots) await assertStructure()
           const qa = rawQa == null ? null : JSON.parse(JSON.stringify(rawQa))
           const checkpoints = JSON.parse(JSON.stringify(rawHistory))
           const checks: PresentationDeliveryBundleManifest['checks'] = {
@@ -434,7 +462,7 @@ export function createPresentationHostBundleSkill(
             ],
           }
           const readme =
-            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。若含 page-1.png 至 page-8.png，它们是当前宿主逐页采集、未经人工复核的截图；采集与 PPTX 导出并非原子快照。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取，导出期间的修改可能导致两份快照不同，尚未核对二者一致性。不可用时不会用编译预览 PDF 代替。研究若存在，research.json/.md 保留冲突双方和缺口。' +
+            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。若含 page-1.png 至 page-8.png，它们是当前宿主逐页采集、未经人工复核的截图；采集与 PPTX 导出并非原子快照。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取。可读宿主结构会在导出前后核对页序和对象几何，发现变化则不发布；此核对不覆盖文字内容、格式或图片像素，仍不能证明两份文件内容完全一致。不可用时不会用编译预览 PDF 代替。研究若存在，research.json/.md 保留冲突双方和缺口。' +
             (report.plan.research
               ? '本包研究记录来自冻结计划绑定的指定版本，与 evidence.json 中的研究记录一致；仍不代表来源权威性、时效性或当前宿主事实已核验。'
               : '本包研究记录为读取时本项目的历史研究，未绑定当前生产任务，不等于冻结主张或宿主事实核验。') +

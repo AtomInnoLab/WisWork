@@ -126,7 +126,7 @@ describe('current native host delivery package', () => {
       },
     })
     expect(result.isError).not.toBe(true)
-    expect(verifySlides).toHaveBeenCalledTimes(2)
+    expect(verifySlides).toHaveBeenCalledTimes(3)
     expect(inspectPage.mock.calls.map((call) => call[0])).toEqual(ids)
     const zip = await JSZip.loadAsync(f.bytes())
     const manifest = JSON.parse(await zip.file('manifest.json')!.async('string'))
@@ -216,6 +216,93 @@ describe('current native host delivery package', () => {
     expect(zip.file('presentation.pdf')).toBeNull()
     expect(JSON.parse(await zip.file('manifest.json')!.async('string')).checks.pdf).toBe(
       'unavailable',
+    )
+  })
+  it('does not publish a bundle when the host structure changes during export', async () => {
+    const f = await setup()
+    let left = 1
+    const verifySlides = vi.fn(async () => ({
+      slideWidth: 960,
+      slideHeight: 540,
+      slides: [
+        {
+          slideId: 'host-1',
+          slideIndex: 0,
+          shapes: [
+            { id: 'shape-1', name: 'Title', type: 'TextBox', left, top: 1, width: 4, height: 1 },
+          ],
+          shapesTruncated: false,
+          overflows: [],
+          overlaps: [],
+          overlapsTruncated: false,
+        },
+      ],
+      truncated: false,
+    }))
+    f.exportDocument.mockImplementation(async (format) => {
+      if (format === 'pdf') left = 2
+      return format === 'pptx' ? f.pptx : new TextEncoder().encode('%PDF-1.7\ncurrent host pdf')
+    })
+    const skill = createPresentationHostBundleSkill({ ...f.options, verifySlides })
+    const result = await skill.executeTool({
+      id: 'changed',
+      name: 'export_current_presentation_bundle',
+      input: { project_id: f.report.projectId, request_id: f.report.requestId, include_pdf: true },
+    })
+    expect(result.output).toBe('office_document_changed')
+    expect(f.request.mock.calls.some(([body]) => body.operation === 'delivery_bundle_begin')).toBe(
+      false,
+    )
+    expect(f.vfs.list('/home/user')).toEqual([])
+  })
+  it('rejects screenshots captured while a shape moves without changing slide IDs', async () => {
+    const f = await setup()
+    const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+    let left = 1
+    const ids = Array.from({ length: 8 }, (_, index) => `host-${index + 1}`)
+    const verifySlides = vi.fn(async () => ({
+      slideWidth: 960,
+      slideHeight: 540,
+      slides: ids.map((slideId, slideIndex) => ({
+        slideId,
+        slideIndex,
+        shapes: [
+          { id: 'shape-1', name: 'Title', type: 'TextBox', left, top: 1, width: 4, height: 1 },
+        ],
+        shapesTruncated: false,
+        overflows: [],
+        overlaps: [],
+        overlapsTruncated: false,
+      })),
+      truncated: false,
+    }))
+    const inspectPage = vi.fn(async (slideId: string) => {
+      left = 2
+      return {
+        slideId,
+        slideWidth: 960,
+        slideHeight: 540,
+        shapes: [],
+        shapesTruncated: false,
+        overflows: [],
+        overlaps: [],
+        overlapsTruncated: false,
+        screenshot: { mime: 'image/png' as const, base64: png.toString('base64') },
+      }
+    })
+    const skill = createPresentationHostBundleSkill({ ...f.options, verifySlides, inspectPage })
+    const result = await skill.executeTool({
+      id: 'changed-screenshot',
+      name: 'export_current_presentation_bundle',
+      input: {
+        project_id: f.report.projectId,
+        request_id: f.report.requestId,
+        include_page_screenshots: true,
+      },
+    })
+    expect(result.output).toBe('office_document_changed')
+    expect(f.request.mock.calls.some(([body]) => body.operation === 'delivery_bundle_begin')).toBe(
+      false,
     )
   })
   it('rejects changed documents and clear during host export before publishing or upload', async () => {
