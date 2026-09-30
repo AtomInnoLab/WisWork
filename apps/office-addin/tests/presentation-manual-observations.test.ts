@@ -60,6 +60,32 @@ it('reads a stable exact target twice before requesting durable before capture',
     undefined,
   )
 })
+it('captures text placeholders but refuses picture placeholders with unreadable content', async () => {
+  const f = fixture()
+  const placeholder = { ...shape, type: 'Placeholder' as const }
+  f.adapter.readPage.mockResolvedValue({ slideId: 'slide', shapes: [placeholder] })
+  await f.call('begin_presentation_edit_observation', {
+    project_id: 'p',
+    slide_id: 'slide',
+    shape_id: 'shape',
+  })
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({ shape: expect.objectContaining({ type: 'Placeholder' }) }),
+    undefined,
+  )
+  f.request.mockClear()
+  f.adapter.readPage.mockResolvedValue({
+    slideId: 'slide',
+    shapes: [{ ...placeholder, text: undefined }],
+  })
+  const picture = await f.call('begin_presentation_edit_observation', {
+    project_id: 'p',
+    slide_id: 'slide',
+    shape_id: 'shape',
+  })
+  expect(picture.isError).toBe(true)
+  expect(f.request).not.toHaveBeenCalled()
+})
 it('rejects unstable target without persisting an observation', async () => {
   const f = fixture()
   f.adapter.readPage

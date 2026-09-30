@@ -75,6 +75,12 @@ it('rejects unsupported shapes, extra fields, invalid aggregate fonts and oversi
     parsePresentationManualObservationShape({ ...shape, type: 'GeometricShape', text: 'a\nb' })
       .text,
   ).toBe('a\nb')
+  expect(parsePresentationManualObservationShape({ ...shape, type: 'Placeholder' }).type).toBe(
+    'Placeholder',
+  )
+  expect(() =>
+    parsePresentationManualObservationShape({ ...shape, type: 'Placeholder', text: undefined }),
+  ).toThrow()
 })
 it('keeps legacy preference shape and strictly preserves optional manual provenance', () => {
   const old = { projectId: 'p', changeId: 'edit', text: 'short titles' }

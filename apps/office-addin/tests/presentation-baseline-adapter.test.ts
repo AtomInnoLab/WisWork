@@ -110,6 +110,15 @@ describe('existing presentation baseline adapter', () => {
     expect(await new BrowserPresentationBaselineAdapter().readContext()).not.toHaveProperty(
       'slideWidth',
     )
+    expect(
+      (await new BrowserPresentationBaselineAdapter().readPage('native-slide')).shapes[0],
+    ).not.toHaveProperty('rotation')
+    expect(h.shapes.load).toHaveBeenCalledWith(expect.not.objectContaining({ rotation: true }))
+    h.supports.mockImplementation(() => true)
+    Reflect.deleteProperty(h.shape, 'rotation')
+    await expect(new BrowserPresentationBaselineAdapter().readPage('native-slide')).rejects.toThrow(
+      'office_read_failed',
+    )
     h.supports.mockReturnValue(false)
     await expect(new BrowserPresentationBaselineAdapter().readContext()).rejects.toThrow(
       'office_api_unsupported',

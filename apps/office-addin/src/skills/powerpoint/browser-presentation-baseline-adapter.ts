@@ -146,6 +146,7 @@ export class BrowserPresentationBaselineAdapter implements PresentationBaselineA
     id(slideId)
     runtime()
     return PowerPoint.run(async (context) => {
+      const canReadRotation = supported('1.10')
       const slide = context.presentation.slides.getItem(slideId)
       slide.load('id')
       slide.shapes.load({
@@ -157,7 +158,7 @@ export class BrowserPresentationBaselineAdapter implements PresentationBaselineA
         top: true,
         width: true,
         height: true,
-        rotation: true,
+        ...(canReadRotation ? { rotation: true } : {}),
       })
       slide.slideMaster.load('id')
       slide.layout.load('id')
@@ -177,7 +178,7 @@ export class BrowserPresentationBaselineAdapter implements PresentationBaselineA
           top: number(shape.top),
           width: number(shape.width, 0),
           height: number(shape.height, 0),
-          ...(shape.rotation === undefined ? {} : { rotation: number(shape.rotation) }),
+          ...(canReadRotation ? { rotation: number(shape.rotation) } : {}),
         })),
       }
       // Placeholder can contain text or a picture. Never assume its textFrame exists.

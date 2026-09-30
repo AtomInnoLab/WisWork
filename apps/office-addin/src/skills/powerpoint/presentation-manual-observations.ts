@@ -28,7 +28,7 @@ const names = [
 const tools: AgentToolDef[] = names.map((name, index) => ({
   name,
   description:
-    'Explicit local observation of text, geometry and aggregate font. Differences do not prove authorship. Delete and save require visible confirmation; no host writes.',
+    'Explicit local observation of text boxes, geometric shapes and readable text placeholders: text, geometry and aggregate font. Picture placeholders are excluded. Differences do not prove authorship. Delete and save require visible confirmation; no host writes.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -69,7 +69,7 @@ export function createPresentationManualObservationSkill(
       return options.available() ? tools : []
     },
     systemPrompt:
-      'Explicitly begin an exact object observation before editing and complete after editing or reopening. Differences are unattributed, not proof of human authorship. User-confirmed preferences are suggestions; brand rules prevail. Never monitor in background or write the host.',
+      'Explicitly begin an exact text box, geometric shape or readable text placeholder observation before editing and complete after editing or reopening. Picture placeholders are not covered. Differences are unattributed, not proof of human authorship. User-confirmed preferences are suggestions; brand rules prevail. Never monitor in background or write the host.',
     async executeTool(call, signal) {
       let ownedProposalId: string | undefined
       try {

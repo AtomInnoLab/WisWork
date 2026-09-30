@@ -167,6 +167,7 @@ it('persists explicit before/after host observations across restarts, requires v
       ).observations,
     ).toEqual([])
     expect(await listPreferences()).toEqual([saved])
+    shape = { ...shape, type: 'Placeholder' }
     const rotationBefore = await invoke('begin_presentation_edit_observation', {
       project_id: 'source-project',
       slide_id: 'slide',
@@ -182,6 +183,7 @@ it('persists explicit before/after host observations across restarts, requires v
     expect(rotationComplete.isError, rotationComplete.output).not.toBe(true)
     const rotated = JSON.parse(rotationComplete.output).observation
     expect(rotated.before.shape.rotation).toBe(45)
+    expect(rotated.before.shape.type).toBe('Placeholder')
     expect(rotated.after.shape.rotation).toBe(90)
     expect(rotated.after.shape.text).toBe(rotated.before.shape.text)
     expect(rotated.after.digest).not.toBe(rotated.before.digest)

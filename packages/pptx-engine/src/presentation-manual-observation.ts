@@ -6,7 +6,7 @@ export const MAX_PRESENTATION_MANUAL_OBSERVATIONS = 32
 export interface PresentationManualObservationShape {
   id: string
   name: string
-  type: 'TextBox' | 'GeometricShape'
+  type: 'TextBox' | 'GeometricShape' | 'Placeholder'
   left: number
   top: number
   width: number
@@ -70,7 +70,8 @@ export function parsePresentationManualObservationShape(
     ) ||
     !text(v.id, 256) ||
     !text(v.name, 256, true) ||
-    !['TextBox', 'GeometricShape'].includes(v.type as string) ||
+    !['TextBox', 'GeometricShape', 'Placeholder'].includes(v.type as string) ||
+    (v.type === 'Placeholder' && !Object.hasOwn(v, 'text')) ||
     ['left', 'top', 'width', 'height'].some(
       (k) => typeof v[k] !== 'number' || !Number.isFinite(v[k]) || Math.abs(v[k] as number) > 1e6,
     ) ||
