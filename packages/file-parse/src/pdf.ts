@@ -195,21 +195,6 @@ export async function pdfToPagesWithImageCoverage(
       }
       return { fullPageImage, invisibleTextLayer }
     }
-    // Inspect every page in smaller PDFs. For long PDFs, sample first; a scan-like
-    // sample triggers complete inspection. A negative sample is not an OCR guarantee.
-    const sampled = new Map<number, Awaited<ReturnType<typeof inspectPage>>>()
-    if (inspectImages && doc.numPages > 64) {
-      const sampleNumbers = new Set([doc.numPages])
-      for (let i = 1; i <= doc.numPages; i += 16) sampleNumbers.add(i)
-      for (const i of sampleNumbers) {
-        const page = await doc.getPage(i)
-        sampled.set(i, await inspectPage(page))
-        page.cleanup()
-      }
-    }
-    const inspectAll =
-      inspectImages &&
-      (doc.numPages <= 64 || [...sampled.values()].some((value) => value.fullPageImage))
     const pages: string[] = []
     const pagesWithFullPageImage: number[] = []
     const pagesWithInvisibleTextLayer: number[] = []
@@ -224,7 +209,7 @@ export async function pdfToPagesWithImageCoverage(
         }
       }
       pages.push(text.trim())
-      const inspected = sampled.get(i) ?? (inspectAll ? await inspectPage(page) : undefined)
+      const inspected = inspectImages ? await inspectPage(page) : undefined
       if (inspected?.fullPageImage) {
         pagesWithFullPageImage.push(i)
         if (inspected.invisibleTextLayer) pagesWithInvisibleTextLayer.push(i)

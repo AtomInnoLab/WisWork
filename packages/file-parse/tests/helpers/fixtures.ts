@@ -153,21 +153,31 @@ export async function buildXlsxFixture(): Promise<Uint8Array> {
 }
 
 /** Minimal PDF with uncompressed page streams and a correct xref table. */
-export function buildPdfFixture(text: string | string[]): Uint8Array {
+export function buildPdfFixture(
+  text: string | string[],
+  options: { imagePage: number; invisibleText?: boolean } | undefined = undefined,
+): Uint8Array {
   const pages = Array.isArray(text) ? text : [text]
   const fontId = 3 + pages.length * 2
+  const imageId = fontId + 1
   const bodies = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     `<< /Type /Pages /Kids [${pages.map((_, index) => `${3 + index} 0 R`).join(' ')}] /Count ${pages.length} >>`,
     ...pages.map(
       (_, index) =>
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${3 + pages.length + index} 0 R >>`,
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> ${options?.imagePage === index + 1 ? `/XObject << /Im1 ${imageId} 0 R >>` : ''} >> /Contents ${3 + pages.length + index} 0 R >>`,
     ),
-    ...pages.map((page) => {
-      const stream = `BT /F1 24 Tf 72 720 Td (${page}) Tj ET`
+    ...pages.map((page, index) => {
+      const image = options?.imagePage === index + 1
+      const stream = `${image ? 'q 612 0 0 792 0 0 cm /Im1 Do Q\n' : ''}BT /F1 24 Tf ${image && options?.invisibleText ? '3 Tr ' : ''}72 720 Td (${page}) Tj ET`
       return `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`
     }),
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    ...(options
+      ? [
+          '<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 7 >>\nstream\nFF0000>\nendstream',
+        ]
+      : []),
   ]
   let out = '%PDF-1.4\n'
   const offsets: number[] = [0]

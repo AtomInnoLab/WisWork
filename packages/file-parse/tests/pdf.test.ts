@@ -37,6 +37,17 @@ describe('parseFileToText: pdf', () => {
     expect(invisible.pagesWithInvisibleTextLayer).toEqual([1])
   })
 
+  it('finds an unsampled scanned page in a long text PDF', async () => {
+    const pages = Array.from({ length: 65 }, (_, index) => `Page ${index + 1} evidence`)
+    const result = await parseFileToText(
+      writeFixture('mixed-long.pdf', buildPdfFixture(pages, { imagePage: 2, invisibleText: true })),
+    )
+    expect(result.ok).toBe(true)
+    expect(result.sections).toHaveLength(65)
+    expect(result.pagesWithFullPageImage).toEqual([2])
+    expect(result.pagesWithInvisibleTextLayer).toEqual([2])
+  }, 20_000)
+
   it('fails gracefully on a corrupt pdf', async () => {
     const path = writeFixture('broken.pdf', Buffer.from('%PDF-1.4 garbage'))
     const result = await parseFileToText(path)
