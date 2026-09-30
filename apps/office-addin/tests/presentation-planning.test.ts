@@ -94,7 +94,12 @@ describe('saved presentation planning tools', () => {
     expect(JSON.parse(execution.output)).toEqual(result)
     expect(execution.mutated).toBe(true)
     expect(f.request).toHaveBeenCalledWith(
-      { operation: 'audit_sources', documentId: 'doc-1', projectId: plan.projectId },
+      {
+        operation: 'audit_sources',
+        documentId: 'doc-1',
+        projectId: plan.projectId,
+        auditId: expect.any(String),
+      },
       undefined,
     )
     expect(f.request).toHaveBeenCalledWith(
@@ -121,6 +126,62 @@ describe('saved presentation planning tools', () => {
       isError: true,
       output: 'presentation_response_invalid',
     })
+  })
+  it('reads the exact persisted source audit when its write response is lost', async () => {
+    const f = setup()
+    const auditPlan = structuredClone(plan)
+    auditPlan.sources[0]!.uri = `attachment:${'a'.repeat(64)}`
+    const result = {
+      projectId: plan.projectId,
+      planRevision: 1,
+      sources: [{ sourceId: 'source', attachmentId: 'a'.repeat(64), status: 'found', offset: 0 }],
+      checks: {
+        support: 'not_verified',
+        sourceAuthority: 'not_verified',
+        timeliness: 'not_verified',
+      },
+    }
+    let auditId = ''
+    f.request.mockImplementation(async (body) => {
+      const request = body as { operation: string; auditId?: string }
+      if (request.operation === 'audit_sources') {
+        auditId = request.auditId ?? ''
+        throw new Error('response lost after commit')
+      }
+      if (request.operation === 'read_source_audit') {
+        expect(request.auditId).toBe(auditId)
+        return new Response(
+          JSON.stringify({
+            projectId: plan.projectId,
+            documentId: 'doc-1',
+            audit: {
+              id: auditId,
+              sequence: 1,
+              scope: 'source_excerpt_audit',
+              state: 'completed',
+              planRevision: 1,
+              planDigest: 'b'.repeat(64),
+              sourceRefs: [{ sourceId: 'source', attachmentId: 'a'.repeat(64) }],
+              startedAt: '2026-10-01T00:00:00.000Z',
+              finishedAt: '2026-10-01T00:00:01.000Z',
+              sources: result.sources,
+            },
+          }),
+        )
+      }
+      return new Response(
+        JSON.stringify({ projectId: plan.projectId, revision: 1, plan: auditPlan }),
+      )
+    })
+    const execution = await f.skill.executeTool({
+      id: 'audit-lost-response',
+      name: 'audit_presentation_sources',
+      input: { project_id: plan.projectId },
+    })
+    expect(auditId).toMatch(/^[a-f0-9-]{36}$/)
+    expect(execution.mutated).toBe(true)
+    expect(JSON.parse(execution.output)).toEqual(result)
+    expect(f.request).toHaveBeenCalledTimes(3)
   })
   it('exposes applied edit candidates without changing the plan or brand kit', async () => {
     const record = {

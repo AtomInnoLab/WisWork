@@ -1,4 +1,5 @@
 import { canonicalPresentationValue } from '@wiswork/project-store/presentation-canonical'
+import { parsePresentationSourceAuditRun } from '@wiswork/project-store/presentation-source-audit'
 import { MAX_PRESENTATION_SOURCE_TEXT_CHARS } from '@wiswork/pptx-engine/presentation-source-limits'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import {
@@ -415,15 +416,62 @@ export function createPresentationPlanningSkill(
             throw new Error('invalid_tool_input')
           const documentId = await options.documentId()
           check()
-          const response = await options.request(
-            { operation: 'audit_sources', documentId, projectId: call.input.project_id },
-            signal,
-          )
+          const auditId = crypto.randomUUID()
+          let rawResult: unknown
+          try {
+            const response = await options.request(
+              { operation: 'audit_sources', documentId, projectId: call.input.project_id, auditId },
+              signal,
+            )
+            check()
+            if (!response.ok) throw new Error('presentation_service_unavailable')
+            rawResult = await response.json()
+          } catch (cause) {
+            check()
+            const response = await options.request(
+              {
+                operation: 'read_source_audit',
+                documentId,
+                projectId: call.input.project_id,
+                auditId,
+              },
+              signal,
+            )
+            check()
+            if (!response.ok) throw cause
+            const receipt = (await response.json()) as {
+              projectId?: unknown
+              documentId?: unknown
+              audit?: unknown
+            }
+            if (
+              !receipt ||
+              receipt.projectId !== call.input.project_id ||
+              receipt.documentId !== documentId
+            )
+              throw new Error('presentation_response_invalid', { cause })
+            let run: ReturnType<typeof parsePresentationSourceAuditRun>
+            try {
+              run = parsePresentationSourceAuditRun(receipt.audit)
+            } catch (parseCause) {
+              throw new Error('presentation_response_invalid', { cause: parseCause })
+            }
+            if (run.id !== auditId || run.state !== 'completed') throw cause
+            rawResult = {
+              projectId: call.input.project_id,
+              planRevision: run.planRevision,
+              sources: run.sources,
+              checks: {
+                support: 'not_verified',
+                sourceAuthority: 'not_verified',
+                timeliness: 'not_verified',
+              },
+            }
+          }
           check()
           if ((await options.documentId()) !== documentId)
             throw new Error('presentation_document_changed')
-          if (!response.ok) throw new Error('presentation_service_unavailable')
-          const result = (await response.json()) as {
+          const result = rawResult as {
             projectId?: unknown
             planRevision?: unknown
             sources?: {
