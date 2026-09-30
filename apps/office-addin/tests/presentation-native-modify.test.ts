@@ -49,6 +49,8 @@ async function fixture(pageCount = 2) {
     { ...shape, id: 'graphic-sdk', type: 'Picture' },
     { ...shape, id: 'table-sdk', type: 'Table' },
     { ...shape, id: 'image-sdk', type: 'Image' },
+    { ...shape, id: 'line-sdk', type: 'Line' },
+    { ...shape, id: 'group-sdk', type: 'Group' },
     ...Array.from({ length: 32 }, (_, i) => ({ ...shape, id: `sdk-${i}` })),
   ]
   const texts = new Map<string, string>()
@@ -373,6 +375,9 @@ it('uses one coherent package proof on each side of a native write and acknowled
   const proposed = await f.propose([textOp])
   await f.proposals.confirm(proposed.proposalId)
   expect(combined).toHaveBeenCalledTimes(2)
+  expect(combined.mock.calls[0]![1].ordinary).toEqual(
+    expect.arrayContaining(['line-sdk', 'group-sdk']),
+  )
   const after = await combined.mock.results[1]!.value
   expect(f.saved(proposed.changeId).pages[0]!.expectedPackageDigest).toBe(
     await presentationPackageDigest(after.base64),

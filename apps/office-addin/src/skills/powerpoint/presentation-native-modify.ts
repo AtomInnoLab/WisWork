@@ -388,7 +388,7 @@ export function createPresentationNativeModifySkill(options: Options) {
         tables: tableIds,
         charts: chartIds,
         ordinary: beforeSemantic.shapes
-          .filter((shape) => ['TextBox', 'GeometricShape'].includes(shape.type))
+          .filter((shape) => ['TextBox', 'GeometricShape', 'Line', 'Group'].includes(shape.type))
           .map((shape) => shape.id),
       }
       const packageProof = async (ids: typeof proofIds) => {

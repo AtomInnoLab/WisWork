@@ -139,7 +139,7 @@ async function shapeHash(shape: Node, relationships: unknown): Promise<string> {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-/** Exact XML guard for ordinary text shapes; formatting digest permits only run text changes. */
+/** Exact XML guard for ordinary shapes, connectors, and groups. */
 export async function inspectPowerPointTextShapeFingerprints(
   base64: string,
   shapeIds: string[],
@@ -183,12 +183,17 @@ export async function inspectPowerPointTextShapeFingerprints(
   }
   const found: Record<string, { exact: string; content: string; formatting: string }> =
     Object.create(null)
-  for (const original of tags(slide, 'p:sp')) {
-    const id = attr(tags(original['p:sp'] as Node[], 'p:cNvPr')[0], 'id')
+  const shapeTree = tags(slide, 'p:spTree')[0]?.['p:spTree'] as Node[] | undefined
+  if (!shapeTree) throw Error('office_api_unsupported')
+  for (const original of shapeTree) {
+    const kind = ['p:sp', 'p:cxnSp', 'p:grpSp'].find((key) => Array.isArray(original[key]))
+    if (!kind) continue
+    const children = original[kind] as Node[]
+    const id = attr(tags(children, 'p:cNvPr')[0], 'id')
     if (!id || !shapeIds.includes(id)) continue
     if (
       Object.hasOwn(found, id) ||
-      (!allowNoTextBody && !tags(original['p:sp'] as Node[], 'p:txBody').length)
+      (!allowNoTextBody && (kind !== 'p:sp' || !tags(children, 'p:txBody').length))
     )
       throw Error('office_api_unsupported')
     const linked = referenced(original).map((relationId) => {
@@ -200,13 +205,16 @@ export async function inspectPowerPointTextShapeFingerprints(
     })
     const exact = await shapeHash(original, linked)
     const shape = structuredClone(original)
-    for (const properties of tags(shape['p:sp'] as Node[], 'p:spPr'))
-      for (const transform of tags(properties['p:spPr'] as Node[], 'a:xfrm'))
+    const propertyTag = kind === 'p:grpSp' ? 'p:grpSpPr' : 'p:spPr'
+    for (const properties of (shape[kind] as Node[]).filter((node) =>
+      Object.hasOwn(node, propertyTag),
+    ))
+      for (const transform of tags(properties[propertyTag] as Node[], 'a:xfrm'))
         transform['a:xfrm'] = (transform['a:xfrm'] as Node[]).filter(
           (part) => !Object.hasOwn(part, 'a:off') && !Object.hasOwn(part, 'a:ext'),
         )
     const content = await shapeHash(shape, linked)
-    for (const text of tags(shape['p:sp'] as Node[], 'a:t')) {
+    for (const text of tags(shape[kind] as Node[], 'a:t')) {
       text['a:t'] = [{ '#text': '' }]
       const attributes = text[':@'] as Node | undefined
       if (attributes) delete attributes['@_xml:space']

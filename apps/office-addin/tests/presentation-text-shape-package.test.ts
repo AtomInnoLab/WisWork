@@ -136,3 +136,51 @@ it('protects a native geometric shape style while permitting only its geometry c
   )[id!]!
   expect(style.content).not.toBe(before.content)
 })
+
+it('fingerprints a connector and a group with their children in a real PPTX package', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const zip = await JSZip.loadAsync((await compilePresentationDeck(deck)).bytes)
+  const original = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const connector =
+    '<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="9001" name="connector"/><p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr><a:xfrm><a:off x="100" y="200"/><a:ext cx="300" cy="400"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></p:spPr></p:cxnSp>'
+  const group =
+    '<p:grpSp><p:nvGrpSpPr><p:cNvPr id="9002" name="group"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="100" y="200"/><a:ext cx="300" cy="400"/><a:chOff x="0" y="0"/><a:chExt cx="300" cy="400"/></a:xfrm></p:grpSpPr><p:sp><p:nvSpPr><p:cNvPr id="9003" name="child"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="10" y="20"/><a:ext cx="30" cy="40"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:sp></p:grpSp>'
+  const slide = original.replace('</p:spTree>', `${connector}${group}</p:spTree>`)
+  const inspect = async (xml: string) => {
+    zip.file('ppt/slides/slide1.xml', xml)
+    return inspectPowerPointTextShapeFingerprints(
+      await zip.generateAsync({ type: 'base64' }),
+      ['9001', '9002'],
+      undefined,
+      true,
+    )
+  }
+  const before = await inspect(slide)
+  const moved = await inspect(
+    slide.replace(connector, connector.replace('x="100" y="200"', 'x="101" y="201"')),
+  )
+  expect(moved['9001']!.exact).not.toBe(before['9001']!.exact)
+  expect(moved['9001']!.content).toBe(before['9001']!.content)
+  expect(moved['9002']!.exact).toBe(before['9002']!.exact)
+  const movedGroup = await inspect(
+    slide.replace(group, group.replace('x="100" y="200"', 'x="101" y="201"')),
+  )
+  expect(movedGroup['9002']!.content).toBe(before['9002']!.content)
+  const changedChild = await inspect(
+    slide.replace(group, group.replace('prst="rect"', 'prst="ellipse"')),
+  )
+  expect(changedChild['9002']!.content).not.toBe(before['9002']!.content)
+  const changedConnector = await inspect(
+    slide.replace(connector, connector.replace('val="000000"', 'val="FF0000"')),
+  )
+  expect(changedConnector['9001']!.content).not.toBe(before['9001']!.content)
+  await expect(
+    inspectPowerPointTextShapeFingerprints(
+      await zip.generateAsync({ type: 'base64' }),
+      ['9003'],
+      undefined,
+      true,
+    ),
+  ).rejects.toThrow('office_api_unsupported')
+})
