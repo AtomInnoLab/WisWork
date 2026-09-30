@@ -13,6 +13,7 @@ export interface PresentationImportReceipt {
 
 export interface PresentationImportAdapter {
   available(): boolean
+  supportsPageExport?(): boolean
   snapshot(signal?: AbortSignal): Promise<PresentationImportSnapshot>
   /** Read-only export used to prove an interrupted single-page append. */
   exportPage?(slideId: string, signal?: AbortSignal): Promise<string>
@@ -62,6 +63,17 @@ async function read(context: PowerPoint.RequestContext): Promise<PresentationImp
 }
 
 export function createBrowserPresentationImportAdapter(): PresentationImportAdapter {
+  const supportsPageExport = () => {
+    try {
+      return (
+        typeof Office !== 'undefined' &&
+        String(Office.context.host) === 'PowerPoint' &&
+        Office.context.requirements.isSetSupported('PowerPointApi', '1.8')
+      )
+    } catch {
+      return false
+    }
+  }
   const available = () => {
     try {
       return (
@@ -150,10 +162,12 @@ export function createBrowserPresentationImportAdapter(): PresentationImportAdap
   }
   return {
     available,
+    supportsPageExport,
     snapshot,
     async exportPage(slideId, signal) {
       cancelled(signal)
       requireApi()
+      if (!supportsPageExport()) throw new Error('office_api_unsupported')
       if (!slideId || slideId.length > 256) throw new Error('invalid_tool_input')
       const base64 = await PowerPoint.run(async (context) => {
         const slide = context.presentation.slides.getItem(slideId)

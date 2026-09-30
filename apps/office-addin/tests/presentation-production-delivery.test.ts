@@ -67,6 +67,88 @@ function fixture() {
   }
   return { artifact, host, receipts, proposals, adapter, options, skill, call, confirm }
 }
+it('checks each imported production page package before recording completion', async () => {
+  const f = fixture()
+  const sourceZip = new JSZip()
+  sourceZip.file('ppt/slides/slide1.xml', '<page><picture/></page>')
+  sourceZip.file('ppt/media/image1.png', new Uint8Array([1, 2, 3]))
+  const source = await sourceZip.generateAsync({ type: 'base64' })
+  const otherZip = new JSZip()
+  otherZip.file('ppt/slides/slide1.xml', '<page><picture/></page>')
+  otherZip.file('ppt/media/image1.png', new Uint8Array([1, 2, 4]))
+  const other = await otherZip.generateAsync({ type: 'base64' })
+  f.artifact.pagePptxBase64 = [source, source, source]
+  const skill = createPresentationProductionDeliverySkill({
+    ...f.options,
+    adapter: { ...f.adapter, exportPage: vi.fn(async () => other) },
+  })
+  expect((await skill.executeTool(f.call)).isError).not.toBe(true)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow(
+    'office_state_uncertain',
+  )
+  expect(f.receipts.get('production/project/request')?.checkpoint).toMatchObject({
+    completed: [],
+    inFlight: { sourceSlideId: '256#' },
+  })
+  expect(f.adapter.insertPage).toHaveBeenCalledOnce()
+  expect((await skill.executeTool(f.call)).output).toBe('presentation_import_uncertain')
+})
+
+it('refuses production import before writing when the host lacks page export', async () => {
+  const f = fixture()
+  const skill = createPresentationProductionDeliverySkill({
+    ...f.options,
+    adapter: { ...f.adapter, supportsPageExport: () => false },
+  })
+  expect(await skill.executeTool(f.call)).toMatchObject({
+    isError: true,
+    output: 'presentation_unavailable',
+  })
+  expect(f.adapter.insertPage).not.toHaveBeenCalled()
+})
+
+it('records an imported production page after its exported package matches', async () => {
+  const f = fixture()
+  const zip = new JSZip()
+  zip.file('ppt/slides/slide1.xml', '<page>source</page>')
+  const source = await zip.generateAsync({ type: 'base64' })
+  f.artifact.pagePptxBase64 = [source, source, source]
+  const exportPage = vi.fn(async () => source)
+  const skill = createPresentationProductionDeliverySkill({
+    ...f.options,
+    adapter: { ...f.adapter, exportPage },
+  })
+  expect((await skill.executeTool(f.call)).isError).not.toBe(true)
+  await f.proposals.confirm(f.proposals.pending()!.id)
+  expect(exportPage).toHaveBeenCalledTimes(3)
+  expect(f.receipts.get('production/project/request')?.state).toBe('complete')
+})
+
+it('keeps the page uncertain if host slide order changes during package readback', async () => {
+  const f = fixture()
+  const zip = new JSZip()
+  zip.file('ppt/slides/slide1.xml', '<page>source</page>')
+  const source = await zip.generateAsync({ type: 'base64' })
+  f.artifact.pagePptxBase64 = [source, source, source]
+  const skill = createPresentationProductionDeliverySkill({
+    ...f.options,
+    adapter: {
+      ...f.adapter,
+      exportPage: async () => {
+        f.host.push('concurrent-edit')
+        return source
+      },
+    },
+  })
+  expect((await skill.executeTool(f.call)).isError).not.toBe(true)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow(
+    'office_state_uncertain',
+  )
+  expect(f.receipts.get('production/project/request')?.checkpoint).toMatchObject({
+    completed: [],
+    inFlight: { sourceSlideId: '256#' },
+  })
+})
 it('reconciles an interrupted append only after exact package and host-order proof', async () => {
   const f = fixture()
   const zip = new JSZip()

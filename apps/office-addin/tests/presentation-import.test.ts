@@ -55,6 +55,15 @@ describe('PowerPoint generated-deck import', () => {
     const slide = { exportAsBase64: vi.fn(() => exported) }
     Object.assign(runtime.context.presentation.slides, { getItem: vi.fn(() => slide) })
     const adapter = createBrowserPresentationImportAdapter()
+    expect(adapter.supportsPageExport?.()).toBe(false)
+    await expect(adapter.exportPage?.('original-1')).rejects.toThrow('office_api_unsupported')
+    vi.stubGlobal('Office', {
+      context: {
+        host: 'PowerPoint',
+        requirements: { isSetSupported: () => true },
+      },
+    })
+    expect(adapter.supportsPageExport?.()).toBe(true)
     expect(await adapter.exportPage?.('original-1')).toBe('UEs=')
     expect(slide.exportAsBase64).toHaveBeenCalledOnce()
     expect(runtime.ids()).toEqual(['original-1', 'original-2'])

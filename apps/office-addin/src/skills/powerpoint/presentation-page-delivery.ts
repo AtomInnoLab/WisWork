@@ -372,6 +372,8 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
         if (signal?.aborted) throw new Error('cancelled')
         if (!options.available() || !options.adapter.available())
           throw new Error('presentation_unavailable')
+        if (production && options.adapter.supportsPageExport?.() === false)
+          throw new Error('presentation_unavailable')
         const artifact = options.artifact(call.input.project_id as string | undefined)
         if (!artifact) throw new Error('presentation_restore_required')
         if (!validPages(artifact) || production !== (artifact.pagePptxBase64 !== undefined))
@@ -642,6 +644,23 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
                 !(await options.adapter.verify(receipt, baseline))
               )
                 throw new Error('office_state_uncertain')
+              // A host ACK proves the appended ID, not that native media and objects survived.
+              // Keep the in-flight checkpoint if the exported production page differs.
+              if (production && options.adapter.exportPage) {
+                try {
+                  const exported = await options.adapter.exportPage(receipt.slideIds[0]!)
+                  if (
+                    (await presentationPackageDigest(pageBytes![checkpoint.completed.length]!)) !==
+                    (await presentationPackageDigest(exported))
+                  )
+                    throw new Error('office_state_uncertain')
+                } catch (error) {
+                  throw new Error('office_state_uncertain', { cause: error })
+                }
+                const afterExport = await options.adapter.snapshot()
+                if (!same(afterExport.slideIds, [...slideIds, receipt.slideIds[0]!]))
+                  throw new Error('office_state_uncertain')
+              }
               await current()
               checkpoint = {
                 ...checkpoint,
