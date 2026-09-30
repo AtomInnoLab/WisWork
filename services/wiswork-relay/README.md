@@ -15,6 +15,8 @@ The process binds only `127.0.0.1`. `WISWORK_RELAY_PORT` defaults to `43190` and
 For the cross-runtime presentation business smoke, run
 `WISWORK_REAL_RELAY_SMOKE=1 pnpm exec vitest run apps/shell/tests/presentation-pc-business-smoke-integration.test.ts` from the repository root. The opt-in test starts `examples/local_business_smoke.rs` on loopback with a test-only local account endpoint, then exercises the real Relay, PC client, presentation service and attachment service. It uploads and deletes only generated fixtures under a temporary PC data directory. This is a local protocol check; deployed Relay and PowerPoint host acceptance still require separate runs.
 
+`node tools/ppt-agent-electron-real-relay-smoke.mjs` runs the same business path with the PC client and services inside a real Electron process, including Electron's native PNG decoding. On Linux it requires `xvfb-run`; it creates temporary project and attachment data and removes the uploaded fixtures. This still uses the local test Relay/account and does not exercise the PowerPoint host.
+
 ## Production
 
 1. Build with `cargo build --release --locked --manifest-path services/wiswork-relay/Cargo.toml`.
