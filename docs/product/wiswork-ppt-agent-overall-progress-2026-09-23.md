@@ -2,7 +2,11 @@
 
 建立：2026-09-23；更新：2026-09-30。依据原方案 v1.3，以及实现分支 `codex/ppt-agent-implementation` 的代码、测试与阶段记录。本台账按用户要求新增；不回改原方案，不将此前历史核对结论改写为当时已有百分比。
 
-## 当前检查点：O6 发布冒烟穿过真实 PC Relay 客户端（2026-09-30）
+## 当前检查点：O6 Electron 图片资产真实回读（2026-09-30）
+
+严格整体仍 **64%（575/9）**，完整候选专业任务 **19/20**，真实 PowerPoint 专业任务 **0/20**。扩展 CI 已运行的 Electron 图片冒烟：用与发布上传探针相同的 PNG 生成方式创建 1×1 图片，在真实 Electron `nativeImage` 解码器下核对像素，并通过真实 PC 附件服务完成 `begin/chunk/finish/asset/delete`、规范化图片摘要回读及清单清理。首次联测因测试 `userDataPath` 目录未初始化而触发目录门禁，修正测试环境后全路径通过；原有静态 GIF/WebP、动画拒绝/首帧与应用生命周期检查仍通过。它补强本地 Electron 图片路径证据，不等于已部署 PC/Relay 或真实 PowerPoint。下一步执行部署环境真实配对及附件/页面/截图/恢复矩阵。
+
+## 上轮检查点：O6 发布冒烟穿过真实 PC Relay 客户端（2026-09-30）
 
 严格整体仍 **64%（575/9）**，完整候选专业任务 **19/20**，真实 PowerPoint 专业任务 **0/20**。将上一轮联测的手写 PC 回应替换为真实 `createOfficeRelayClient`：本地模拟 Relay 只负责配对和逐帧转发，冒烟脚本创建 Office v2 邀请，PC 客户端协商、领取、批准后，实际通过 `createPresentationService` 处理项目状态、附件清单、随机 TXT/PNG 上传解析、回读和删除，并由客户端发送 `pc.start/chunk/done`。调试时发现绕过生产服务直接调用附件服务会把 `not_found` 异常变为 `pc.error`，随后改为生产同一路由；集成测试和 Shell 类型检查通过。Electron 原生图片解码仍使用测试注入的 PNG 解码器，Relay 仍为本地模拟，未连接发布 PC/真实 PowerPoint；因此 O6 和严格整体不升档。下一步执行运行中的 Electron PC 与宿主页面写入/截图/恢复链。
 
