@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { extname } from 'node:path'
 import { docxToText } from './docx'
-import { pdfToPages } from './pdf'
+import { pdfToPagesWithImageCoverage } from './pdf'
 import { pptxToText } from './pptx'
 import { xlsxToText } from './xlsx'
 import { decodeHtmlBytes, htmlToText } from './html'
@@ -15,6 +15,7 @@ export interface ParsedFile {
   mime?: string
   error?: string
   sections?: { locator: string; start: number; end: number }[]
+  pagesWithFullPageImage?: number[]
 }
 
 export function paragraphSections(text: string): NonNullable<ParsedFile['sections']> {
@@ -61,7 +62,9 @@ export async function parseFileToText(filePath: string): Promise<ParsedFile> {
       case 'xlsx':
         return { ok: true, kind: 'text', text: await xlsxToText(await readFile(filePath)) }
       case 'pdf': {
-        const pages = await pdfToPages(await readFile(filePath))
+        const { pages, pagesWithFullPageImage } = await pdfToPagesWithImageCoverage(
+          await readFile(filePath),
+        )
         if (pages.every((page) => !page.trim()))
           return { ok: false, kind: 'text', error: 'pdf_no_extractable_text' }
         const sections: NonNullable<ParsedFile['sections']> = []
@@ -70,7 +73,13 @@ export async function parseFileToText(filePath: string): Promise<ParsedFile> {
           sections.push({ locator: `第 ${index + 1} 页`, start: offset, end: offset + page.length })
           offset += page.length + (index < pages.length - 1 ? 2 : 0)
         }
-        return { ok: true, kind: 'text', text: pages.join('\n\n'), sections }
+        return {
+          ok: true,
+          kind: 'text',
+          text: pages.join('\n\n'),
+          sections,
+          ...(pagesWithFullPageImage.length ? { pagesWithFullPageImage } : {}),
+        }
       }
     }
   } catch (e) {

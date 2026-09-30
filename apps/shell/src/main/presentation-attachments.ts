@@ -122,6 +122,7 @@ interface Metadata {
   sectionCount?: number
   pagesWithoutExtractedText?: number[]
   pagesWithSparseExtractedText?: number[]
+  pagesWithFullPageImage?: number[]
 }
 async function directory(path: string, create = true) {
   if (create) {
@@ -333,6 +334,22 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
       ))
   )
     fail('invalid_state')
+  if (
+    m.pagesWithFullPageImage !== undefined &&
+    (m.status !== 'ready' ||
+      m.kind !== 'text' ||
+      extname(m.name).toLowerCase() !== '.pdf' ||
+      !m.sectionCount ||
+      !Array.isArray(m.pagesWithFullPageImage) ||
+      m.pagesWithFullPageImage.length < 1 ||
+      m.pagesWithFullPageImage.length > m.sectionCount ||
+      m.pagesWithFullPageImage.some(
+        (page, index) =>
+          !integer(page, 1, m.sectionCount!) ||
+          (index > 0 && page <= m.pagesWithFullPageImage![index - 1]!),
+      ))
+  )
+    fail('invalid_state')
   if (m.status !== 'ready' && m.licenseDeclaration !== undefined) fail('invalid_state')
   if (m.status !== 'ready' && m.animationHandling !== undefined) fail('invalid_state')
   if (
@@ -359,6 +376,7 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
   ...(m.pagesWithSparseExtractedText
     ? { pagesWithSparseExtractedText: m.pagesWithSparseExtractedText }
     : {}),
+  ...(m.pagesWithFullPageImage ? { pagesWithFullPageImage: m.pagesWithFullPageImage } : {}),
   ...(m.source ? { source: m.source } : {}),
   ...(m.sourceUrlHash ? { sourceUrlHash: m.sourceUrlHash } : {}),
   ...(m.retrievedAt ? { retrievedAt: m.retrievedAt } : {}),
@@ -1294,6 +1312,9 @@ export function createPresentationAttachmentService(options: {
                   : {}),
                 ...(pagesWithoutExtractedText.length ? { pagesWithoutExtractedText } : {}),
                 ...(pagesWithSparseExtractedText.length ? { pagesWithSparseExtractedText } : {}),
+                ...(parsed.pagesWithFullPageImage?.length
+                  ? { pagesWithFullPageImage: parsed.pagesWithFullPageImage }
+                  : {}),
               }
             }
           } catch (error) {

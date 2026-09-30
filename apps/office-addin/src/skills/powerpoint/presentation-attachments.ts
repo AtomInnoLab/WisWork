@@ -72,6 +72,7 @@ export interface PresentationAttachmentMetadata {
   sectionCount?: number
   pagesWithoutExtractedText?: number[]
   pagesWithSparseExtractedText?: number[]
+  pagesWithFullPageImage?: number[]
 }
 function metadata(value: unknown): PresentationAttachmentMetadata {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid()
@@ -92,6 +93,7 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
           'sectionCount',
           'pagesWithoutExtractedText',
           'pagesWithSparseExtractedText',
+          'pagesWithFullPageImage',
           'mime',
           'width',
           'height',
@@ -171,6 +173,19 @@ function metadata(value: unknown): PresentationAttachmentMetadata {
             (index > 0 && page <= v.pagesWithSparseExtractedText![index - 1]!) ||
             v.pagesWithoutExtractedText?.includes(page),
         ))) ||
+    (v.pagesWithFullPageImage !== undefined &&
+      (v.status !== 'ready' ||
+        v.kind !== 'text' ||
+        !/\.pdf$/i.test(v.name) ||
+        !v.sectionCount ||
+        !Array.isArray(v.pagesWithFullPageImage) ||
+        v.pagesWithFullPageImage.length < 1 ||
+        v.pagesWithFullPageImage.length > v.sectionCount ||
+        v.pagesWithFullPageImage.some(
+          (page, index) =>
+            !integer(page, 1, v.sectionCount!) ||
+            (index > 0 && page <= v.pagesWithFullPageImage![index - 1]!),
+        ))) ||
     (v.status === 'ready' && (v.receivedBytes !== v.sizeBytes || !v.kind))
   )
     return invalid()
@@ -208,7 +223,7 @@ const tools: AgentToolDef[] = [
   {
     name: 'list_presentation_attachments',
     description:
-      'List up to 32 durable source attachments bound to this PowerPoint document, including uploads, parse status, PDF pagesWithoutExtractedText and pagesWithSparseExtractedText, and any user-asserted image license evidence reference. Pass nextAfter as after to read the next page. Empty or sparse PDF page text may omit important content: request readable source text when it matters, and do not infer its contents. Available after reconnect. Extracted text or user license assertion is not independently verified evidence.',
+      'List up to 32 durable source attachments bound to this PowerPoint document, including uploads, parse status, PDF empty/sparse text pages and pagesWithFullPageImage, and any user-asserted image license evidence reference. Pass nextAfter as after to read the next page. Text on a full-page raster image may be OCR and must be checked against the original before citing; empty or sparse text may omit content. Available after reconnect. Extracted text or user license assertion is not independently verified evidence.',
     inputSchema: {
       type: 'object',
       properties: { after: { type: 'string', pattern: '^[a-f0-9]{64}$' } },

@@ -73,6 +73,7 @@ describe('parseFileToText: pdf', () => {
     const appleRevenuePage = apple.sections![31]!
     expect(appleRevenuePage.locator).toBe('第 32 页')
     expect(apple.text!.slice(appleRevenuePage.start, appleRevenuePage.end)).toContain('391,035')
+    expect(apple.pagesWithFullPageImage).toBeUndefined()
 
     const report = await parseFileToText(resolve(root, 'toyota-fy2024-form20f.pdf'))
     expect(report.ok).toBe(true)
@@ -91,5 +92,17 @@ describe('parseFileToText: pdf', () => {
     const fxText = summary.text!.slice(fxPage.start, fxPage.end)
     expect(fxText).toContain('FY2024')
     expect(fxText).toContain('Yen to US Dollar Rate')
+  }, 20_000)
+
+  it('identifies full-page raster images in the real NACA scan without certifying OCR text', async () => {
+    const path = resolve(
+      import.meta.dirname,
+      '../../../docs/product/ppt-benchmark-materials/PPT-P0-11/naca-rm-l50b01-1950-real-scan.pdf',
+    )
+    const result = await parseFileToText(path)
+    expect(result.ok).toBe(true)
+    expect(result.pagesWithFullPageImage).toEqual(
+      Array.from({ length: 30 }, (_, index) => index + 1),
+    )
   }, 20_000)
 })

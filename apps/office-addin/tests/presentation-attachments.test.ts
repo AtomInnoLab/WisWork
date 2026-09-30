@@ -156,6 +156,7 @@ it('accepts sparse PDF page hints and rejects overlap with empty pages', async (
     sectionCount: 3,
     pagesWithoutExtractedText: [2],
     pagesWithSparseExtractedText: [3],
+    pagesWithFullPageImage: [1, 2, 3],
   }
   f.request.mockResolvedValue(new Response(JSON.stringify({ attachments: [item] })))
   expect(await f.skill.list()).toMatchObject([item])

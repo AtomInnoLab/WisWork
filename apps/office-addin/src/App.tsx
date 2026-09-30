@@ -1287,6 +1287,15 @@ export function AgentWorkspace(props: {
                           或补充可读取文本。此提示不判断 OCR 准确性。
                         </p>
                       ) : null}
+                      {file.pagesWithFullPageImage?.length ? (
+                        <p role="status">
+                          第 {file.pagesWithFullPageImage.slice(0, 20).join('、')}
+                          {file.pagesWithFullPageImage.length > 20
+                            ? ` 等 ${file.pagesWithFullPageImage.length} `
+                            : ' '}
+                          页含覆盖整页的图像；提取文字可能来自 OCR，引用前请与原 PDF 核对。
+                        </p>
+                      ) : null}
                       {file.status === 'failed' && file.error === 'parse_failed' && (
                         <p role="alert">
                           资料解析失败。
