@@ -212,6 +212,22 @@ export interface PowerPointAdapter {
     shapeIds: string[],
     signal?: AbortSignal,
   ): Promise<{ slideId: string; slideIds: string[]; fingerprints: Record<string, string> }>
+  inspectSlideNativePackage?(
+    slideId: string,
+    ids: { pictures: string[]; text: string[]; tables: string[]; charts: string[] },
+    signal?: AbortSignal,
+  ): Promise<{
+    slideId: string
+    slideIds: string[]
+    base64: string
+    pictures: { fingerprints: Record<string, string>; mediaDigests: Record<string, string> }
+    richText: {
+      shapes: Record<string, unknown>
+      fingerprints: Record<string, { content: string; formatting: string }>
+    }
+    tables: Record<string, string>
+    charts: Record<string, string>
+  }>
   readPresentationPageGeometry?(
     slideId: string,
     shapeId: string,
@@ -2089,6 +2105,48 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     const fingerprints = await inspectPowerPointChartFingerprints(exported.base64, shapeIds, signal)
     cancelled(signal)
     return { slideId: exported.slideId, slideIds: exported.slideIds, fingerprints }
+  }
+
+  async inspectSlideNativePackage(
+    slideId: string,
+    ids: { pictures: string[]; text: string[]; tables: string[]; charts: string[] },
+    signal?: AbortSignal,
+  ) {
+    cancelled(signal)
+    const exported = await this.exportPresentationPagePackage(slideId, signal)
+    const pictures = ids.pictures.length
+      ? await inspectPowerPointPictureMediaBatch(exported.base64, ids.pictures, signal)
+      : { pictureFingerprints: {}, mediaDigests: {}, unsupported: [] }
+    if (pictures.unsupported.length) throw new Error('office_api_unsupported')
+    const parsedText = ids.text.length
+      ? await inspectPowerPointRichText(exported.base64, signal)
+      : { shapes: [] }
+    const textShapes = Object.fromEntries(
+      parsedText.shapes
+        .filter((shape) => ids.text.includes(shape.packageShapeId))
+        .map((shape) => [shape.packageShapeId, shape]),
+    )
+    if (Object.keys(textShapes).length !== ids.text.length)
+      throw new Error('office_api_unsupported')
+    const textFingerprints = ids.text.length
+      ? await inspectPowerPointTextShapeFingerprints(exported.base64, ids.text, signal)
+      : {}
+    const tables = ids.tables.length
+      ? await inspectPowerPointTableFingerprints(exported.base64, ids.tables, signal)
+      : {}
+    const charts = ids.charts.length
+      ? await inspectPowerPointChartFingerprints(exported.base64, ids.charts, signal)
+      : {}
+    cancelled(signal)
+    return {
+      slideId: exported.slideId,
+      slideIds: exported.slideIds,
+      base64: exported.base64,
+      pictures: { fingerprints: pictures.pictureFingerprints, mediaDigests: pictures.mediaDigests },
+      richText: { shapes: textShapes, fingerprints: textFingerprints },
+      tables,
+      charts,
+    }
   }
 
   async exportSlidePackage(

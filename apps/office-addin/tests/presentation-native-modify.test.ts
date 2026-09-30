@@ -9,6 +9,7 @@ import { createPresentationService } from '../../shell/src/main/presentation-ser
 import { createPresentationNativeModifySkill } from '../src/skills/powerpoint/presentation-native-modify'
 import { createStructuredProposalController } from '../src/agent/proposal-controller'
 import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
+import { presentationPackageDigest } from '../src/skills/powerpoint/powerpoint-package'
 import {
   validatePresentationExistingBatch,
   type NativeModifyOperation,
@@ -239,6 +240,44 @@ async function fixture(pageCount = 2) {
     },
     corruptRestored: () => packages.set('restored-s1', packages.get('s1')!),
     adapter,
+    enableCombinedProof: () => {
+      const picture = adapter.inspectSlidePictureFingerprints.getMockImplementation()!
+      const richText = adapter.inspectSlideRichText.getMockImplementation()!
+      const table = adapter.inspectSlideTableFingerprints.getMockImplementation()!
+      const chart = adapter.inspectSlideChartFingerprints.getMockImplementation()!
+      const combined = vi.fn(
+        async (
+          slideId: string,
+          ids: {
+            pictures: string[]
+            text: string[]
+            tables: string[]
+            charts: string[]
+          },
+        ) => {
+          const exported = await adapter.exportPresentationPagePackage(slideId)
+          const pictures = ids.pictures.length
+            ? await picture(slideId, ids.pictures)
+            : { fingerprints: {}, mediaDigests: {} }
+          const text = ids.text.length
+            ? await richText(slideId, ids.text)
+            : { shapes: {}, fingerprints: {} }
+          return {
+            ...exported,
+            pictures: { fingerprints: pictures.fingerprints, mediaDigests: pictures.mediaDigests },
+            richText: { shapes: text.shapes, fingerprints: text.fingerprints },
+            tables: ids.tables.length ? (await table(slideId, ids.tables)).fingerprints : {},
+            charts: ids.charts.length ? (await chart(slideId, ids.charts)).fingerprints : {},
+          }
+        },
+      )
+      Object.assign(adapter, { inspectSlideNativePackage: combined })
+      adapter.inspectSlidePictureFingerprints.mockRejectedValue(Error('separate_read'))
+      adapter.inspectSlideRichText.mockRejectedValue(Error('separate_read'))
+      adapter.inspectSlideTableFingerprints.mockRejectedValue(Error('separate_read'))
+      adapter.inspectSlideChartFingerprints.mockRejectedValue(Error('separate_read'))
+      return combined
+    },
     proposals,
     request,
     write,
@@ -297,6 +336,49 @@ it('refuses a disconnected durable binding before reads and writes', async () =>
   await expect(f.propose([textOp])).rejects.toThrow('presentation_existing_persistence_unavailable')
   expect(f.adapter.snapshotSlide).not.toHaveBeenCalled()
   expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+})
+it('uses one coherent package proof on each side of a native write and acknowledges that exact package', async () => {
+  const f = await fixture()
+  f.addChart()
+  const combined = f.enableCombinedProof()
+  const proposed = await f.propose([textOp])
+  await f.proposals.confirm(proposed.proposalId)
+  expect(combined).toHaveBeenCalledTimes(2)
+  const after = await combined.mock.results[1]!.value
+  expect(f.saved(proposed.changeId).pages[0]!.expectedPackageDigest).toBe(
+    await presentationPackageDigest(after.base64),
+  )
+  expect(f.adapter.inspectSlidePictureFingerprints).not.toHaveBeenCalled()
+  expect(f.adapter.inspectSlideRichText).not.toHaveBeenCalled()
+  expect(f.adapter.inspectSlideTableFingerprints).not.toHaveBeenCalled()
+  expect(f.adapter.inspectSlideChartFingerprints).not.toHaveBeenCalled()
+})
+it('refuses a native write when a combined package proof omits a required shape', async () => {
+  const f = await fixture()
+  const combined = f.enableCombinedProof()
+  const inspect = combined.getMockImplementation()!
+  combined.mockImplementation(async (slideId, ids) => {
+    const proof = await inspect(slideId, ids)
+    return { ...proof, richText: { ...proof.richText, fingerprints: {} } }
+  })
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_read_failed')
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+  expect(f.saved(proposed.changeId).inFlightIndex).toBeUndefined()
+})
+it('keeps a native write uncertain when the combined package readback is incomplete', async () => {
+  const f = await fixture()
+  const combined = f.enableCombinedProof()
+  const inspect = combined.getMockImplementation()!
+  combined.mockImplementation(async (slideId, ids) => {
+    const proof = await inspect(slideId, ids)
+    return f.adapter.executeDeclarative.mock.calls.length
+      ? { ...proof, richText: { ...proof.richText, fingerprints: {} } }
+      : proof
+  })
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_read_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
 })
 it('backs up single native text before journaling and writing; persisted result survives reopening', async () => {
   const f = await fixture()

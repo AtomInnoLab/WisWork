@@ -313,7 +313,6 @@ export function createPresentationNativeModifySkill(options: Options) {
           throw Error('office_read_failed')
         return inspected
       }
-      const beforePictures = pictureIds.length ? await pictureProof() : undefined
       const textIds = beforeSemantic.shapes
         .filter(
           (shape) =>
@@ -343,7 +342,6 @@ export function createPresentationNativeModifySkill(options: Options) {
           throw Error('office_read_failed')
         return inspected
       }
-      const beforeRichText = textIds.length ? await richTextProof(textIds) : undefined
       const tableIds = beforeSemantic.shapes
         .filter((shape) => shape.type === 'Table')
         .map((shape) => shape.id)
@@ -364,7 +362,6 @@ export function createPresentationNativeModifySkill(options: Options) {
           throw Error('office_read_failed')
         return inspected.fingerprints
       }
-      const beforeTables = tableIds.length ? await tableProof(tableIds) : undefined
       const chartIds = beforeSemantic.shapes
         .filter((shape) => shape.type === 'Chart')
         .map((shape) => shape.id)
@@ -385,7 +382,55 @@ export function createPresentationNativeModifySkill(options: Options) {
           throw Error('office_read_failed')
         return inspected.fingerprints
       }
-      const beforeCharts = chartIds.length ? await chartProof(chartIds) : undefined
+      const proofIds = {
+        pictures: pictureIds,
+        text: textIds,
+        tables: tableIds,
+        charts: chartIds,
+      }
+      const packageProof = async (ids: typeof proofIds) => {
+        if (!options.adapter.inspectSlideNativePackage) return undefined
+        const inspected = await options.adapter.inspectSlideNativePackage(
+          p.hostSlideId,
+          ids,
+          signal,
+        )
+        await guard(r.documentId, signal, token, newWrite)
+        const valid = (actual: Record<string, string>, expected: string[]) =>
+          Object.keys(actual).length === expected.length &&
+          expected.every((id) => /^[a-f0-9]{64}$/.test(actual[id] ?? ''))
+        if (
+          inspected.slideId !== p.hostSlideId ||
+          !same(inspected.slideIds, r.beforeSlideIds) ||
+          !valid(inspected.pictures.fingerprints, ids.pictures) ||
+          !valid(inspected.pictures.mediaDigests, ids.pictures) ||
+          Object.keys(inspected.richText.shapes).length !== ids.text.length ||
+          Object.keys(inspected.richText.fingerprints).length !== ids.text.length ||
+          ids.text.some(
+            (id) =>
+              !Object.hasOwn(inspected.richText.shapes, id) ||
+              !/^[a-f0-9]{64}$/.test(inspected.richText.fingerprints[id]?.content ?? '') ||
+              !/^[a-f0-9]{64}$/.test(inspected.richText.fingerprints[id]?.formatting ?? ''),
+          ) ||
+          !valid(inspected.tables, ids.tables) ||
+          !valid(inspected.charts, ids.charts)
+        )
+          throw Error('office_read_failed')
+        return inspected
+      }
+      const beforePackage = await packageProof(proofIds)
+      const beforePictures = pictureIds.length
+        ? (beforePackage?.pictures ?? (await pictureProof()))
+        : undefined
+      const beforeRichText = textIds.length
+        ? (beforePackage?.richText ?? (await richTextProof(textIds)))
+        : undefined
+      const beforeTables = tableIds.length
+        ? (beforePackage?.tables ?? (await tableProof(tableIds)))
+        : undefined
+      const beforeCharts = chartIds.length
+        ? (beforePackage?.charts ?? (await chartProof(chartIds)))
+        : undefined
       await check(r, signal, token, newWrite)
       const next = { ...r, inFlightIndex: r.nextIndex }
       await options.writeExistingBatch(next, r)
@@ -447,8 +492,15 @@ export function createPresentationNativeModifySkill(options: Options) {
               : !same(nonGeometry(original), nonGeometry(current))))
       )
         throw Error('office_verify_failed')
+      const afterIds = {
+        ...proofIds,
+        text: textIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape'),
+        tables: tableIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape'),
+        charts: chartIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape'),
+      }
+      const afterPackage = await packageProof(afterIds)
       if (beforePictures) {
-        const afterPictures = await pictureProof()
+        const afterPictures = afterPackage?.pictures ?? (await pictureProof())
         if (
           pictureIds.some(
             (id) =>
@@ -460,8 +512,10 @@ export function createPresentationNativeModifySkill(options: Options) {
           throw Error('office_verify_failed')
       }
       if (beforeRichText) {
-        const comparedIds = textIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape')
-        const afterRichText = comparedIds.length ? await richTextProof(comparedIds) : undefined
+        const comparedIds = afterIds.text
+        const afterRichText = comparedIds.length
+          ? (afterPackage?.richText ?? (await richTextProof(comparedIds)))
+          : undefined
         const withoutRunText = (value: unknown) => {
           const copy = structuredClone(value) as {
             paragraphs: Array<{ runs: Array<{ text: string }> }>
@@ -490,18 +544,24 @@ export function createPresentationNativeModifySkill(options: Options) {
           throw Error('office_verify_failed')
       }
       if (beforeTables) {
-        const comparedIds = tableIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape')
-        const afterTables = comparedIds.length ? await tableProof(comparedIds) : {}
+        const comparedIds = afterIds.tables
+        const afterTables = comparedIds.length
+          ? (afterPackage?.tables ?? (await tableProof(comparedIds)))
+          : {}
         if (comparedIds.some((id) => beforeTables[id] !== afterTables[id]))
           throw Error('office_verify_failed')
       }
       if (beforeCharts) {
-        const comparedIds = chartIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape')
-        const afterCharts = comparedIds.length ? await chartProof(comparedIds) : {}
+        const comparedIds = afterIds.charts
+        const afterCharts = comparedIds.length
+          ? (afterPackage?.charts ?? (await chartProof(comparedIds)))
+          : {}
         if (comparedIds.some((id) => beforeCharts[id] !== afterCharts[id]))
           throw Error('office_verify_failed')
       }
-      const exported = await options.adapter.exportPresentationPagePackage!(p.hostSlideId, signal)
+      const exported =
+        afterPackage ??
+        (await options.adapter.exportPresentationPagePackage!(p.hostSlideId, signal))
       await guard(r.documentId, signal, token, newWrite)
       if (exported.slideId !== p.hostSlideId || !same(exported.slideIds, r.beforeSlideIds))
         throw Error('presentation_document_changed')

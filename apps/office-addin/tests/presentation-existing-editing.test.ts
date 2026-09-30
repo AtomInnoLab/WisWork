@@ -2680,6 +2680,22 @@ it('persists a generic native text and geometry program before writes and retain
       }
     },
   )
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'inspectSlideNativePackage').mockImplementation(
+    async (slideId, ids) => {
+      const adapter = new BrowserPowerPointAdapter()
+      const exported = await adapter.exportPresentationPagePackage(slideId)
+      const richText = ids.text.length
+        ? await adapter.inspectSlideRichText(slideId, ids.text)
+        : { shapes: {}, fingerprints: {} }
+      return {
+        ...exported,
+        pictures: { fingerprints: {}, mediaDigests: {} },
+        richText: { shapes: richText.shapes, fingerprints: richText.fingerprints },
+        tables: {},
+        charts: {},
+      }
+    },
+  )
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'listSlideShapes').mockImplementation(async () => ({
     slideId: 'slide',
     slideIndex: 0,
