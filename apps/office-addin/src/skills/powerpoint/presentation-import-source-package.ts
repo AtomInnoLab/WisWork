@@ -113,4 +113,33 @@ export async function validatePresentationImportSourcePage(
     const ids = new Set(references.map((rel) => rel['@_Id']))
     if (referencedIds.some((id) => !ids.has(id))) invalid()
   }
+
+  // Charts and notes may have their own relationships (for example an editable chart workbook).
+  // A valid slide relationship alone does not prove those second-level parts are present.
+  for (const path of Object.keys(zip.files).filter((name) =>
+    /(?:^|\/)_rels\/[^/]+\.rels$/.test(name),
+  )) {
+    const match = /^(.*?)_rels\/([^/]+)\.rels$/.exec(path)
+    if (!match) throw new Error('presentation_import_state_invalid')
+    const owner = `${match[1]}${match[2]}`
+    if (!zip.file(owner)) invalid()
+    const xml = await zip.file(path)!.async('string')
+    if (!validXml(xml)) invalid()
+    const root = parser.parse(xml).Relationships
+    if (!root) invalid()
+    const entries = items(root.Relationship)
+    if (
+      entries.some(
+        (entry) =>
+          typeof entry['@_Id'] !== 'string' ||
+          typeof entry['@_Type'] !== 'string' ||
+          typeof entry['@_Target'] !== 'string' ||
+          (entry['@_TargetMode'] !== undefined && entry['@_TargetMode'] !== 'External') ||
+          (entry['@_TargetMode'] !== 'External' &&
+            !zip.file(internalTarget(owner, entry['@_Target'] as string) ?? '')),
+      ) ||
+      new Set(entries.map((entry) => entry['@_Id'])).size !== entries.length
+    )
+      invalid()
+  }
 }
