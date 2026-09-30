@@ -960,7 +960,7 @@ export function createPresentationProductionSkill(
                       : code === 'presentation_evidence_locator_mismatch'
                         ? '当前证据的页码或段落与计划不一致；请核对来源定位后再记录“支持”'
                         : code === 'presentation_evidence_image_backed_unverified'
-                          ? '当前原文来自整页图像上的未校对文字层；请补充经核对的可读取来源，或记录证据不足。'
+                          ? '当前原文来自整页图像上的未校对文字层；请补充经核对的可读取来源，修订计划来源后使用新冻结版继续，或记录证据不足。'
                           : code === 'presentation_evidence_source_unsupported'
                             ? '当前证据读取仅支持已上传附件来源；此来源不能通过本工具读取'
                             : code === 'presentation_evidence_source_mismatch'

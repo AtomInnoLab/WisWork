@@ -254,6 +254,83 @@ it('does not mark unverified image-backed scan text as supported', async () => {
       await f.service({ ...body, outcome: 'insufficient_evidence' }, new AbortController().signal),
     ),
   ).toMatchObject({ outcome: 'insufficient_evidence' })
+
+  const auxiliary = Buffer.from('NATIONAL ADVISORY COMMITTEE FOR AERONAUTICS')
+  const auxiliaryId = createHash('sha256').update(auxiliary).digest('hex')
+  expect(
+    await f.call('attachment_begin', {
+      attachmentId: auxiliaryId,
+      sha256: auxiliaryId,
+      name: 'user-supplied-text.txt',
+      sizeBytes: auxiliary.length,
+    }),
+  ).not.toHaveProperty('error')
+  expect(
+    await f.call('attachment_chunk', {
+      attachmentId: auxiliaryId,
+      offset: 0,
+      base64: auxiliary.toString('base64'),
+    }),
+  ).not.toHaveProperty('error')
+  expect(await f.call('attachment_finish', { attachmentId: auxiliaryId })).toMatchObject({
+    status: 'ready',
+  })
+  f.plan.sources[0]!.uri = `attachment:${auxiliaryId}`
+  delete f.plan.sources[0]!.locator
+  expect(
+    await f.call('save_plan', {
+      projectId: f.deck.id,
+      expectedRevision: 1,
+      plan: f.plan,
+    }),
+  ).toMatchObject({ revision: 2 })
+  f.deck.claims = presentationPlanClaims(f.plan)
+  expect(
+    await f.call('production_begin', {
+      projectId: f.deck.id,
+      requestId: 'run-with-auxiliary',
+      planRevision: 2,
+      deck: f.deck,
+    }),
+  ).not.toHaveProperty('error')
+  const retry = { ...request, requestId: 'run-with-auxiliary' }
+  const supplemented = decode(await f.service(retry, new AbortController().signal))
+  expect(supplemented.attachment).toMatchObject({ id: auxiliaryId, text: auxiliary.toString() })
+  expect(supplemented.attachment.locatorSpans).toBeUndefined()
+  expect(supplemented.excerptMatch).toMatchObject({ status: 'found' })
+  expect(
+    decode(
+      await f.service(
+        {
+          ...retry,
+          operation: 'production_record_claim_review',
+          reviewId: 'supplemented-review',
+          evidenceDigest: createHash('sha256')
+            .update(presentationClaimEvidenceContent(supplemented))
+            .digest('hex'),
+          outcome: 'supported',
+          notes:
+            'Test-supplied text contains the literal excerpt; content is not independently verified.',
+        },
+        new AbortController().signal,
+      ),
+    ),
+  ).toMatchObject({ outcome: 'supported', requestId: 'run-with-auxiliary' })
+  expect(
+    await f.call('production_read_claim_review', {
+      projectId: f.deck.id,
+      requestId: 'run',
+      reviewId: 'scan-review',
+    }),
+  ).toMatchObject({ outcome: 'insufficient_evidence', requestId: 'run' })
+  expect(
+    decode(
+      await f.service(
+        { ...body, reviewId: 'old-run-after-auxiliary' },
+        new AbortController().signal,
+      ),
+    ),
+  ).toEqual({ error: 'evidence_image_backed_unverified' })
 })
 it('rejects changed evidence, invalid requests and cancellation without writing', async () => {
   const f = await setup()
