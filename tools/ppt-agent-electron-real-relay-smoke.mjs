@@ -1,3 +1,4 @@
+/* global window, document */
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
@@ -7,6 +8,8 @@ import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import electron from 'electron'
+import { chromium } from '@playwright/test'
+import WebSocket from 'ws'
 import { inspectPcBusiness, releaseProductionFixture } from './ppt-agent-pc-business-smoke.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -14,6 +17,9 @@ const temp = await mkdtemp(join(tmpdir(), 'ppt-electron-real-relay-'))
 const children = []
 const documentId = 'electron-real-relay-document'
 const projectId = 'electron-real-relay-project'
+const browserProjectId = 'electron-browser-relay-project'
+const browserDocumentUrl = 'https://example.test/browser-relay-deck.pptx'
+const browserDocumentId = JSON.stringify(['electron-browser-relay-document', browserDocumentUrl])
 const concurrentDocuments = [1, 2, 3].map((index) => ({
   documentId: `electron-concurrent-document-${index}`,
   projectId: `electron-concurrent-project-${index}`,
@@ -62,6 +68,118 @@ const plan = {
   })),
 }
 let smokeStage = 'setup'
+
+async function inspectBrowserWorkbench(origin, pc) {
+  const dev = spawn(
+    'npm',
+    ['run', 'dev', '-w', '@wiswork/office-addin', '--', '--host', '127.0.0.1'],
+    {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'inherit'],
+      detached: process.platform === 'linux',
+    },
+  )
+  children.push(dev)
+  await firstLine(dev, 'Office Taskpane', 60_000, (line) =>
+    line.includes('https://localhost:3000/'),
+  )
+  const browser = await chromium.launch({ channel: 'chrome', headless: true })
+  const sockets = new Map()
+  try {
+    const page = await browser.newPage({
+      ignoreHTTPSErrors: true,
+      viewport: { width: 320, height: 900 },
+    })
+    const dispatch = async (id, type, data) => {
+      if (page.isClosed()) return
+      await page
+        .evaluate(
+          ([socketId, eventType, eventData]) => {
+            window.__relayDispatch(socketId, eventType, eventData)
+          },
+          [id, type, data],
+        )
+        .catch(() => {})
+    }
+    await page.exposeFunction('__relayOpen', (id) => {
+      const socket = new WebSocket(origin.replace('http:', 'ws:') + '/office-relay', {
+        headers: { Origin: 'https://office.8-216-134-194.sslip.io' },
+      })
+      sockets.set(id, socket)
+      socket.on('open', () => void dispatch(id, 'open'))
+      socket.on('message', (data) => void dispatch(id, 'message', data.toString()))
+      socket.on('close', () => void dispatch(id, 'close'))
+      socket.on('error', () => void dispatch(id, 'error'))
+    })
+    await page.exposeFunction('__relaySend', (id, data) => sockets.get(id)?.send(data))
+    await page.exposeFunction('__relayClose', (id) => sockets.get(id)?.close())
+    await page.route('https://appsforoffice.microsoft.com/lib/1/hosted/office.js', (route) =>
+      route.fulfill({
+        contentType: 'application/javascript',
+        body: `const settings = new Map([
+          ['wiswork.presentation.document.v1', 'electron-browser-relay-document'],
+          ['wiswork.presentation.project.v1', '${browserProjectId}']
+        ]);
+        window.Office = { onReady: async () => ({ host: 'PowerPoint' }),
+          AsyncResultStatus: { Succeeded: 'succeeded' }, CoercionType: { Text: 'text' },
+          context: { host: 'PowerPoint', platform: 'PC', requirements: { isSetSupported: () => true },
+            document: { url: '${browserDocumentUrl}',
+              settings: { get: key => settings.get(key), set: (key, value) => settings.set(key, value),
+                saveAsync: callback => callback({ status: 'succeeded' }) },
+              getSelectedDataAsync: (_type, callback) => callback({ status: 'succeeded', value: '' }),
+              setSelectedDataAsync: (_value, _options, callback) => callback({ status: 'succeeded' })
+            } } };`,
+      }),
+    )
+    await page.addInitScript(() => {
+      let nextId = 0
+      const sockets = new Map()
+      window.__relayDispatch = (id, type, data) => {
+        const socket = sockets.get(id)
+        if (!socket) return
+        if (type === 'open') socket.readyState = 1
+        if (type === 'close') socket.readyState = 3
+        socket[`on${type}`]?.(type === 'message' ? { data } : {})
+      }
+      window.WebSocket = class {
+        constructor(url) {
+          if (!url.includes('/office-relay')) throw Error('unexpected WebSocket endpoint')
+          this.id = ++nextId
+          this.readyState = 0
+          sockets.set(this.id, this)
+          void window.__relayOpen(this.id)
+        }
+        send(data) {
+          void window.__relaySend(this.id, data)
+        }
+        close() {
+          void window.__relayClose(this.id)
+        }
+      }
+    })
+    await page.goto('https://localhost:3000/taskpane.html')
+    await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
+    const codeText = await page
+      .getByText(/Enter code [0-9]{6} in WisWork PC/)
+      .textContent({ timeout: 15_000 })
+    const code = codeText?.match(/Enter code ([0-9]{6})/)?.[1]
+    if (!code) throw Error('browser pairing code missing')
+    pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n')
+    const workbench = page.getByRole('region', { name: '演示文稿项目' })
+    await workbench
+      .getByText('Browser to real PC project', { exact: true })
+      .waitFor({ timeout: 20_000 })
+    if (!(await workbench.textContent()).includes('尚未完成视觉验证'))
+      throw Error('browser project verification state missing')
+    if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth))
+      throw Error('browser project workbench overflows at 320px')
+  } finally {
+    for (const socket of sockets.values()) socket.close()
+    await browser.close()
+    if (process.platform === 'linux' && dev.pid) process.kill(-dev.pid, 'SIGTERM')
+    else dev.kill('SIGTERM')
+  }
+}
 
 function firstLine(child, label, timeoutMs, accept = () => true) {
   return new Promise((resolveLine, reject) => {
@@ -156,6 +274,9 @@ app.whenReady().then(async () => {
   if (process.env.PPT_AGENT_SMOKE_RESTARTED !== '1') {
     const compiled = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId, requestId: 'run-1', deck }, new AbortController().signal)).toString('utf8'))
     if (compiled.status !== 'compiled') throw Error('Electron PC compile failed')
+    const browserDeck = { ...deck, id: ${JSON.stringify(browserProjectId)}, title: 'Browser to real PC project', slides: [deck.slides[0]] }
+    const browserCompiled = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId: ${JSON.stringify(browserDocumentId)}, requestId: 'browser-run-1', deck: browserDeck }, new AbortController().signal)).toString('utf8'))
+    if (browserCompiled.status !== 'compiled') throw Error('Electron PC browser project seed failed')
     const recoveryDeck = { ...deck, id: projectId + '-recovery' }
     const recoverySeed = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId, requestId: 'run-recovery-seed', deck: recoveryDeck }, new AbortController().signal)).toString('utf8'))
     if (recoverySeed.status !== 'compiled') throw Error('Electron PC recovery project compile failed')
@@ -298,6 +419,8 @@ app.whenReady().then(async () => {
     result.manualObservation?.after?.shape?.text !== 'After edit'
   )
     throw new Error('Electron PC business response incomplete')
+  smokeStage = 'browser Taskpane to real Relay and PC'
+  await inspectBrowserWorkbench(origin, pc)
   const concurrentProgress = []
   smokeStage = 'three concurrent documents'
   const concurrentSettled = await Promise.allSettled(
@@ -434,7 +557,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    'Electron PC + Rust Relay business smoke passed: pairing, three concurrent documents, fresh eight-page release production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery',
+    'Electron PC + Rust Relay business smoke passed: browser Taskpane pairing and project readback, three concurrent documents, fresh eight-page release production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery',
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {
@@ -443,7 +566,11 @@ app.whenReady().then(async () => {
 } finally {
   for (const child of children.reverse()) {
     if (child.exitCode !== null) continue
-    if (process.platform === 'linux' && child.spawnfile === 'xvfb-run' && child.pid) {
+    if (
+      process.platform === 'linux' &&
+      (child.spawnfile === 'xvfb-run' || child.spawnfile === 'npm') &&
+      child.pid
+    ) {
       try {
         process.kill(-child.pid, 'SIGTERM')
       } catch {
