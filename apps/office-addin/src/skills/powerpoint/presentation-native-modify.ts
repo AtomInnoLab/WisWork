@@ -15,7 +15,7 @@ import {
   describePagePackageBackup,
   saveChartPackageBackup,
   readChartPackageBackup,
-  releaseChartPackageBackup,
+  cleanupUncommittedChartPackageBackup,
 } from './presentation-chart-backup.js'
 import { presentationPackageDigest } from './powerpoint-package.js'
 import { readUntilConverged } from '../shared/office-write-transaction.js'
@@ -478,7 +478,7 @@ export function createPresentationNativeModifySkill(options: Options) {
             if (absent)
               await Promise.allSettled(
                 backups.map((backup) =>
-                  releaseChartPackageBackup({
+                  cleanupUncommittedChartPackageBackup({
                     request: options.request,
                     documentId,
                     hostSlideId: backup.hostSlideId,

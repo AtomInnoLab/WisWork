@@ -11,7 +11,7 @@ import {
   describePagePackageBackup,
   saveChartPackageBackup,
   readChartPackageBackup,
-  releaseChartPackageBackup,
+  cleanupUncommittedChartPackageBackup,
 } from './presentation-chart-backup.js'
 import { observePowerPointNativeAdd } from './presentation-native-add-observation.js'
 import { presentationPackageDigest } from './powerpoint-package.js'
@@ -213,7 +213,8 @@ export function createPresentationNativeAddProposal(options: Options) {
             } catch {
               // An unreadable intent may still own the backup.
             }
-            if (absent) await Promise.allSettled([releaseChartPackageBackup({ ...scope, backup })])
+            if (absent)
+              await Promise.allSettled([cleanupUncommittedChartPackageBackup({ ...scope, backup })])
             throw error
           }
           abort(writeSignal)

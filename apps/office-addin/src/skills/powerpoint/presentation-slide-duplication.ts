@@ -21,7 +21,7 @@ import {
   describePagePackageBackup,
   readChartPackageBackup,
   saveChartPackageBackup,
-  releaseChartPackageBackup,
+  cleanupUncommittedChartPackageBackup,
 } from './presentation-chart-backup.js'
 import {
   loadBoundedZip,
@@ -408,7 +408,9 @@ export function createPresentationSlideDuplicationSkill(options: Options) {
               // An unreadable intent may still own the savepoint.
             }
             if (absent)
-              await Promise.allSettled([releaseChartPackageBackup({ ...scope, backup: b })])
+              await Promise.allSettled([
+                cleanupUncommittedChartPackageBackup({ ...scope, backup: b }),
+              ])
             throw error
           }
           await current(r, s, token, true)

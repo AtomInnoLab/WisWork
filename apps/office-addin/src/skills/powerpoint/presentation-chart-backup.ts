@@ -200,3 +200,34 @@ export async function releaseChartPackageBackup(input: Release): Promise<void> {
   )
     fail()
 }
+
+/** Call only after proving no durable change intent owns this backup. */
+export async function cleanupUncommittedChartPackageBackup(input: Release): Promise<void> {
+  validScope(input, input.backup.backupId)
+  const response = await input.request({
+    operation: 'existing_page_backup_status',
+    documentId: input.documentId,
+    backupId: input.backup.backupId,
+  })
+  const status: unknown = await response.json()
+  if (!response.ok || !status || typeof status !== 'object' || Array.isArray(status)) fail()
+  const current = status as Record<string, unknown>
+  if (Object.keys(current).sort().join(',') === 'error' && current.error === 'not_found') return
+  if (!match(input, input.backup, current)) fail()
+  if (current.status === 'ready') return releaseChartPackageBackup(input)
+  if (current.status !== 'uploading') fail()
+  const abandoned = await call(input, 'existing_page_backup_abandon', {
+    backupId: input.backup.backupId,
+    hostSlideId: input.hostSlideId,
+    slideIds: input.slideIds,
+    sha256: input.backup.sha256,
+    sizeBytes: input.backup.sizeBytes,
+  })
+  if (
+    Object.keys(abandoned).sort().join(',') !== 'backupId,documentId,status' ||
+    abandoned.status !== 'abandoned' ||
+    abandoned.backupId !== input.backup.backupId ||
+    abandoned.documentId !== input.documentId
+  )
+    fail()
+}

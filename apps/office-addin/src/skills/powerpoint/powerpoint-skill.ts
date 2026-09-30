@@ -24,7 +24,8 @@ import { updatePowerPointChartDataPackage } from './presentation-chart-source-pa
 import {
   saveChartPackageBackup,
   readChartPackageBackup,
-  releaseChartPackageBackup,
+  describePagePackageBackup,
+  cleanupUncommittedChartPackageBackup,
 } from './presentation-chart-backup.js'
 import {
   validatePresentationExistingChartChange,
@@ -1428,18 +1429,22 @@ export function createPowerPointSkill(options: {
         applied = await captureChartValuePackageEdit(current.base64, updated.base64, confirmSignal)
         if ((await presentationPackageDigest(applied.base64, confirmSignal)) !== afterDigest)
           throw new Error('proposal_stale')
-        const backup = await saveChartPackageBackup(
-          {
-            request: durable.request,
-            documentId,
-            hostSlideId: before.slideId,
-            slideIds: beforeSlideIds,
-            base64: current.base64,
-            backupId,
-          },
-          confirmSignal,
-        )
+        const { sha256, sizeBytes } = await describePagePackageBackup(current.base64, confirmSignal)
+        const backup = { backupId, sha256, sizeBytes }
         try {
+          const saved = await saveChartPackageBackup(
+            {
+              request: durable.request,
+              documentId,
+              hostSlideId: before.slideId,
+              slideIds: beforeSlideIds,
+              base64: current.base64,
+              backupId,
+            },
+            confirmSignal,
+          )
+          if (saved.sha256 !== backup.sha256 || saved.sizeBytes !== backup.sizeBytes)
+            throw new Error('presentation_chart_backup_invalid')
           if (!(await unchanged(confirmSignal))) throw new Error('proposal_stale')
           await store({
             version: 1,
@@ -1463,7 +1468,7 @@ export function createPowerPointSkill(options: {
               (await durable.documentId()) === documentId &&
               !durable.readExistingChartChange(changeId)
             ) {
-              await releaseChartPackageBackup({
+              await cleanupUncommittedChartPackageBackup({
                 request: durable.request,
                 documentId,
                 hostSlideId: before.slideId,

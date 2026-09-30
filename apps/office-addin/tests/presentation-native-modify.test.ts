@@ -302,7 +302,32 @@ it('releases the first page backup when the second upload fails', async () => {
   expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
   expect(
     f.request.mock.calls.filter(([body]) => body.operation === 'existing_page_backup_release'),
-  ).toHaveLength(2)
+  ).toHaveLength(1)
+})
+it('abandons an incomplete original page upload after a chunk failure', async () => {
+  const f = await fixture()
+  const p = await f.propose([textOp])
+  const request = f.request.getMockImplementation()!
+  f.request.mockImplementation(async (body, signal) => {
+    if (body.operation === 'existing_page_backup_chunk') throw Error('chunk_failed')
+    return request(body, signal)
+  })
+  await expect(f.proposals.confirm(p.proposalId)).rejects.toThrow('chunk_failed')
+  expect(f.saved(p.changeId)).toBeUndefined()
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+  const abandon = f.request.mock.calls.find(
+    ([body]) => body.operation === 'existing_page_backup_abandon',
+  )?.[0]
+  expect(abandon).toBeDefined()
+  expect(
+    await (
+      await f.request({
+        operation: 'existing_page_backup_status',
+        documentId: abandon.documentId,
+        backupId: abandon.backupId,
+      })
+    ).json(),
+  ).toHaveProperty('error', 'not_found')
 })
 it('keeps both backups when the first intent write commits but loses its ACK', async () => {
   const f = await fixture()
