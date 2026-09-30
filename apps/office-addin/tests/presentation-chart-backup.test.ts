@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  cleanupUncommittedChartPackageBackup,
   readChartPackageBackup,
   saveChartPackageBackup,
 } from '../src/skills/powerpoint/presentation-chart-backup'
@@ -125,4 +126,13 @@ it('does not classify quota errors in later backup operations as capacity', asyn
   await expect(
     saveChartPackageBackup({ ...scope, request, base64, backupId: 'chart_backup' }),
   ).rejects.toThrow('presentation_chart_backup_invalid')
+})
+it('treats an explicit missing backup as already cleaned up even with HTTP 404', async () => {
+  await expect(
+    cleanupUncommittedChartPackageBackup({
+      ...scope,
+      backup: { backupId: 'missing', sha256: 'a'.repeat(64), sizeBytes: 1 },
+      request: async () => new Response('{"error":"not_found"}', { status: 404 }),
+    }),
+  ).resolves.toBeUndefined()
 })

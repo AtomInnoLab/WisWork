@@ -210,9 +210,10 @@ export async function cleanupUncommittedChartPackageBackup(input: Release): Prom
     backupId: input.backup.backupId,
   })
   const status: unknown = await response.json()
-  if (!response.ok || !status || typeof status !== 'object' || Array.isArray(status)) fail()
+  if (!status || typeof status !== 'object' || Array.isArray(status)) fail()
   const current = status as Record<string, unknown>
   if (Object.keys(current).sort().join(',') === 'error' && current.error === 'not_found') return
+  if (!response.ok) fail()
   if (!match(input, input.backup, current)) fail()
   if (current.status === 'ready') return releaseChartPackageBackup(input)
   if (current.status !== 'uploading') fail()
