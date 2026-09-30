@@ -309,7 +309,7 @@ async function verifyPptx(path) {
       if (!part || part._data?.uncompressedSize > 10 * 1024 * 1024) throw new Error('part_missing')
       const content = await part.async('string')
       if (XMLValidator.validate(content) !== true) throw new Error('xml_invalid')
-      return new XMLParser({ ignoreAttributes: false }).parse(content)
+      return new XMLParser({ ignoreAttributes: false, parseTagValue: false }).parse(content)
     }
     const types = await xml('[Content_Types].xml')
     const overrides = [].concat(types.Types?.Override ?? [])
@@ -325,16 +325,34 @@ async function verifyPptx(path) {
         .filter((entry) => entry['@_Type']?.endsWith('/slide'))
         .map((entry) => [entry['@_Id'], entry['@_Target']]),
     )
+    const seenTargets = new Set()
+    const seenContent = new Set()
+    const seenSlideIds = new Set()
     for (const slide of slideIds) {
       const target = slideRels.get(slide['@_r:id'])
       if (!target || !/^slides\/slide\d+\.xml$/.test(target))
         throw new Error('slide_relationship_invalid')
+      if (seenTargets.has(target) || seenSlideIds.has(slide['@_id']))
+        throw new Error('acceptance_pptx_duplicate_slide')
+      seenTargets.add(target)
+      seenSlideIds.add(slide['@_id'])
       const slideXml = await xml(`ppt/${target}`)
       if (!slideXml['p:sld']) throw new Error('slide_xml_invalid')
+      const tree = slideXml['p:sld']['p:cSld']?.['p:spTree']
+      if (
+        !tree ||
+        !['p:sp', 'p:pic', 'p:graphicFrame', 'p:grpSp', 'p:cxnSp'].some((key) => tree[key])
+      )
+        throw new Error('acceptance_pptx_blank_slide')
+      const content = JSON.stringify(tree)
+      if (!/"@_r:(?:embed|link|id)"/.test(content)) {
+        if (seenContent.has(content)) throw new Error('acceptance_pptx_duplicate_slide')
+        seenContent.add(content)
+      }
     }
   } catch (error) {
-    if (error?.message === 'acceptance_pptx_page_count') throw error
-    throw new Error('acceptance_pptx_invalid')
+    if (error?.message?.startsWith('acceptance_pptx_')) throw error
+    throw new Error('acceptance_pptx_invalid', { cause: error })
   }
 }
 

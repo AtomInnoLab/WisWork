@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import PptxGenJS from 'pptxgenjs'
+import JSZip from 'jszip'
 import { PNG } from 'pngjs'
 import {
   CASE_IDS,
@@ -142,7 +143,8 @@ test('directory acceptance checks the actual PPTX and reopen evidence hashes', a
   const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
   try {
     const presentation = new PptxGenJS()
-    for (let index = 0; index < 8; index++) presentation.addSlide().addText(`Slide ${index + 1}`)
+    for (let index = 0; index < 8; index++)
+      presentation.addSlide().addText(index === 0 ? '01' : index === 1 ? '1' : `Slide ${index + 1}`)
     const deck = Buffer.from(await presentation.write({ outputType: 'nodebuffer' }))
     const reopen = Buffer.from('synthetic reopen capture')
     const material = Buffer.from('source,license,sha256 and reviewer signature')
@@ -214,6 +216,77 @@ test('directory acceptance checks the actual PPTX and reopen evidence hashes', a
     record.artifacts.pptx_sha256 = sha256(shortDeck)
     await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     await assert.rejects(readPresentationAcceptance(directory), /acceptance_pptx_page_count/)
+    await writeFile(join(directory, 'final.pptx'), deck)
+    record.artifacts.pptx_sha256 = sha256(deck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    const blankPresentation = new PptxGenJS()
+    for (let index = 0; index < 7; index++)
+      blankPresentation.addSlide().addText(`Slide ${index + 1}`)
+    blankPresentation.addSlide()
+    const blankDeck = Buffer.from(await blankPresentation.write({ outputType: 'nodebuffer' }))
+    await writeFile(join(directory, 'final.pptx'), blankDeck)
+    record.artifacts.pptx_sha256 = sha256(blankDeck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_pptx_blank_slide/)
+    const picturePresentation = new PptxGenJS()
+    for (let index = 0; index < 7; index++)
+      picturePresentation.addSlide().addText(`Slide ${index + 1}`)
+    picturePresentation.addSlide().addImage({
+      data: `data:image/png;base64,${screenshot.toString('base64')}`,
+      x: 1,
+      y: 1,
+      w: 2,
+      h: 2,
+    })
+    const pictureDeck = Buffer.from(await picturePresentation.write({ outputType: 'nodebuffer' }))
+    await writeFile(join(directory, 'final.pptx'), pictureDeck)
+    record.artifacts.pptx_sha256 = sha256(pictureDeck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    assert.equal((await readPresentationAcceptance(directory)).passed, 1)
+    const distinctPictures = new PptxGenJS()
+    for (let index = 0; index < 6; index++)
+      distinctPictures.addSlide().addText(`Slide ${index + 1}`)
+    for (const red of [true, false]) {
+      const png = new PNG({ width: 2, height: 2 })
+      png.data[red ? 0 : 2] = 255
+      distinctPictures.addSlide().addImage({
+        data: `data:image/png;base64,${PNG.sync.write(png).toString('base64')}`,
+        x: 1,
+        y: 1,
+        w: 2,
+        h: 2,
+      })
+    }
+    const distinctPictureDeck = Buffer.from(
+      await distinctPictures.write({ outputType: 'nodebuffer' }),
+    )
+    await writeFile(join(directory, 'final.pptx'), distinctPictureDeck)
+    record.artifacts.pptx_sha256 = sha256(distinctPictureDeck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    assert.equal((await readPresentationAcceptance(directory)).passed, 1)
+    const duplicateZip = await JSZip.loadAsync(deck)
+    const relPath = 'ppt/_rels/presentation.xml.rels'
+    const rels = await duplicateZip.file(relPath).async('string')
+    assert.match(rels, /Target="slides\/slide8\.xml"/)
+    duplicateZip.file(
+      relPath,
+      rels.replace('Target="slides/slide8.xml"', 'Target="slides/slide7.xml"'),
+    )
+    const duplicateDeck = await duplicateZip.generateAsync({ type: 'nodebuffer' })
+    await writeFile(join(directory, 'final.pptx'), duplicateDeck)
+    record.artifacts.pptx_sha256 = sha256(duplicateDeck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_pptx_duplicate_slide/)
+    duplicateZip.file(relPath, rels)
+    duplicateZip.file(
+      'ppt/slides/slide8.xml',
+      await duplicateZip.file('ppt/slides/slide7.xml').async('string'),
+    )
+    const duplicateContentDeck = await duplicateZip.generateAsync({ type: 'nodebuffer' })
+    await writeFile(join(directory, 'final.pptx'), duplicateContentDeck)
+    record.artifacts.pptx_sha256 = sha256(duplicateContentDeck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_pptx_duplicate_slide/)
     await writeFile(join(directory, 'final.pptx'), deck)
     record.artifacts.pptx_sha256 = sha256(deck)
     await writeFile(join(directory, '01.json'), JSON.stringify([record]))

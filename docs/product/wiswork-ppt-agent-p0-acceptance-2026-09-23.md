@@ -53,7 +53,7 @@
 
 统计同时输出 `firstAttemptPassed` 和 `firstAttemptDeliveryRate`：按每项 `attempt_no: 1` 的结果计数，必须全部 20 项至少尝试一次后才给出比例；补跑成功不会改写首次结果。最终 `passed` 和 `completionRate` 仍按最新尝试计算，两组数值应并列报告。
 
-目录模式还会读取通过记录的 PPTX，校验其 OOXML 包含演示文稿、8 个幻灯片引用及对应幻灯片 XML，拒绝把任意字节改名为 `.pptx` 或用非 8 页文件计入通过。此结构检查不替代 PowerPoint 中保存、关闭、重开和编辑的人工证据核验。
+目录模式还会读取通过记录的 PPTX，校验其 OOXML 包含演示文稿、8 个幻灯片引用及对应幻灯片 XML，拒绝把任意字节改名为 `.pptx` 或用非 8 页文件计入通过。每页至少须含一个原生形状、图片、图表框架、连接线或组合对象；重复引用同一页或无外部关系页面的完全相同对象树也会被拒绝。图片等通过页面关系引用的资产可能让相同对象树呈现不同内容，因此这类页面不凭对象树判重；视觉空白、关系资产内容和近似重复仍由真实 PowerPoint 截图人工核验。结构检查不替代 PowerPoint 中保存、关闭、重开和编辑的人工证据核验。
 
 每次 `passed` 还须绑定独立的 Claim Ledger、五层 QA 报告，以及按 `page_no: 1..8` 排列的 8 张逐页 PNG 截图。字段分别为 `claim_ledger_file`/`claim_ledger_sha256`、`qa_report_file`/`qa_report_sha256`、`page_screenshots: [{page_no,file,sha256}]`。统计器核对文件路径、摘要、截图可解码性和文件不重复；Ledger、QA 和截图的专业内容及截图是否来自真实宿主仍由审阅人核验。证据 JSON 应放入子目录，目录根层的 `.json` 文件只用于尝试记录。
 
