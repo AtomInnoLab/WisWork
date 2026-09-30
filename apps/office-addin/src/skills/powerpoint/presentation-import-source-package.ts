@@ -21,6 +21,13 @@ const internalTarget = (slidePath: string, target: string): string | undefined =
   }
   return parts.join('/')
 }
+const typedTarget = (owner: string, type: string, target: string): string | undefined => {
+  const path = internalTarget(owner, target)
+  if (!path) return
+  if (type.endsWith('/image') && !/^ppt\/media\/[^/]+\.(?:png|jpe?g)$/i.test(path)) return
+  if (type.endsWith('/chart') && !/^ppt\/charts\/chart[0-9]+\.xml$/.test(path)) return
+  return path
+}
 
 /** Prove that a bounded production package contains the one slide selected for host import. */
 export async function validatePresentationImportSourcePage(
@@ -104,7 +111,9 @@ export async function validatePresentationImportSourcePage(
           typeof rel['@_Type'] !== 'string' ||
           typeof rel['@_Target'] !== 'string' ||
           rel['@_TargetMode'] !== undefined ||
-          !zip.file(internalTarget(slidePaths[0]!, rel['@_Target'] as string) ?? ''),
+          !zip.file(
+            typedTarget(slidePaths[0]!, rel['@_Type'] as string, rel['@_Target'] as string) ?? '',
+          ),
       ) ||
       new Set(references.map((rel) => rel['@_Id'])).size !== references.length
     )
@@ -134,7 +143,9 @@ export async function validatePresentationImportSourcePage(
           typeof entry['@_Type'] !== 'string' ||
           typeof entry['@_Target'] !== 'string' ||
           entry['@_TargetMode'] !== undefined ||
-          !zip.file(internalTarget(owner, entry['@_Target'] as string) ?? ''),
+          !zip.file(
+            typedTarget(owner, entry['@_Type'] as string, entry['@_Target'] as string) ?? '',
+          ),
       ) ||
       new Set(entries.map((entry) => entry['@_Id'])).size !== entries.length
     )
