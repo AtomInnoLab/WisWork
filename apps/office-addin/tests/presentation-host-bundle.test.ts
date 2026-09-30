@@ -194,7 +194,7 @@ describe('current native host delivery package', () => {
       },
     })
     expect(restored.isError).toBeFalsy()
-    expect(f.exportDocument).toHaveBeenCalledTimes(2)
+    expect(f.exportDocument).toHaveBeenCalledTimes(3)
     expect(reopenedVfs.readBytes(JSON.parse(restored.output).paths[0])).toEqual(f.bytes())
   })
   it('hides old PC and rejects invalid input before native export', async () => {
@@ -254,6 +254,57 @@ describe('current native host delivery package', () => {
       false,
     )
     expect(f.vfs.list('/home/user')).toEqual([])
+  })
+  it('does not publish PDF when slide text changes without geometry drift', async () => {
+    const f = await setup()
+    const changedPptx = await new JSZip()
+      .file('ppt/slides/slide1.xml', '<title>导出期间修改的文字</title>')
+      .generateAsync({ type: 'uint8array' })
+    let pptxReads = 0
+    f.exportDocument.mockImplementation(async (format) => {
+      if (format === 'pdf') return new TextEncoder().encode('%PDF-1.7\ncurrent host pdf')
+      return ++pptxReads === 1 ? f.pptx : changedPptx
+    })
+    const result = await f.call(undefined, { include_pdf: true })
+    expect(result.output).toBe('office_document_changed')
+    expect(pptxReads).toBe(2)
+    expect(f.request.mock.calls.some(([body]) => body.operation === 'delivery_bundle_begin')).toBe(
+      false,
+    )
+  })
+  it('accepts a changed ZIP timestamp and document property when slide content is unchanged', async () => {
+    const f = await setup()
+    const laterPptx = await new JSZip()
+      .file('ppt/slides/slide1.xml', '<title>用户修改后的当前文稿</title>')
+      .file('docProps/core.xml', '<modified>later</modified>')
+      .generateAsync({ type: 'uint8array' })
+    let pptxReads = 0
+    f.exportDocument.mockImplementation(async (format) => {
+      if (format === 'pdf') return new TextEncoder().encode('%PDF-1.7\ncurrent host pdf')
+      return ++pptxReads === 1 ? f.pptx : laterPptx
+    })
+    expect((await f.call(undefined, { include_pdf: true })).isError).toBeFalsy()
+    expect(pptxReads).toBe(2)
+  })
+  it('rejects changed picture bytes even when slide geometry is unchanged', async () => {
+    const f = await setup()
+    const first = await new JSZip()
+      .file('ppt/slides/slide1.xml', '<slide/>')
+      .file('ppt/media/image1.png', Uint8Array.of(1, 2, 3))
+      .generateAsync({ type: 'uint8array' })
+    const changed = await new JSZip()
+      .file('ppt/slides/slide1.xml', '<slide/>')
+      .file('ppt/media/image1.png', Uint8Array.of(4, 5, 6))
+      .generateAsync({ type: 'uint8array' })
+    let pptxReads = 0
+    f.exportDocument.mockImplementation(async (format) => {
+      if (format === 'pdf') return new TextEncoder().encode('%PDF-1.7\ncurrent host pdf')
+      return ++pptxReads === 1 ? first : changed
+    })
+    expect((await f.call(undefined, { include_pdf: true })).output).toBe('office_document_changed')
+    expect(f.request.mock.calls.some(([body]) => body.operation === 'delivery_bundle_begin')).toBe(
+      false,
+    )
   })
   it('rejects screenshots captured while a shape moves without changing slide IDs', async () => {
     const f = await setup()

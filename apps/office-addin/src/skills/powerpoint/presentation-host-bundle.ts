@@ -50,6 +50,28 @@ const digest = async (bytes: Uint8Array) =>
     new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(bytes).buffer)),
     (b) => b.toString(16).padStart(2, '0'),
   ).join('')
+async function packageContentFingerprint(bytes: Uint8Array): Promise<string> {
+  let zip: JSZip
+  try {
+    zip = await JSZip.loadAsync(bytes)
+  } catch {
+    throw Error('office_document_export_invalid')
+  }
+  const names = Object.keys(zip.files)
+    .filter((name) => !zip.files[name]!.dir && !name.startsWith('docProps/'))
+    .sort()
+  if (names.length === 0 || names.length > 4096) throw Error('office_document_export_invalid')
+  let total = 0
+  const parts: Array<[string, string]> = []
+  for (const name of names) {
+    const part = await zip.files[name]!.async('uint8array')
+    total += part.length
+    if (part.length > 32 * 1024 * 1024 || total > 128 * 1024 * 1024)
+      throw Error('office_document_export_invalid')
+    parts.push([name, await digest(part)])
+  }
+  return canonical(parts)
+}
 const canonical = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
   if (value && typeof value === 'object')
@@ -303,6 +325,10 @@ export function createPresentationHostBundleSkill(
             pptx[3] !== 4
           )
             throw Error('office_document_export_invalid')
+          const originalPackageContent =
+            input.include_pdf || input.include_page_screenshots
+              ? await packageContentFingerprint(pptx)
+              : undefined
           let pdf: Uint8Array | undefined
           let pdfState: PresentationDeliveryBundleManifest['checks']['pdf'] = 'not_requested'
           if (input.include_pdf) {
@@ -428,6 +454,14 @@ export function createPresentationHostBundleSkill(
               throw Error('office_screenshot_unavailable')
           }
           if (!input.include_page_screenshots) await assertStructure()
+          if (originalPackageContent !== undefined) {
+            const latest = await options.exportDocument('pptx', controller.signal)
+            await current()
+            if (!(latest instanceof Uint8Array) || latest.length > MAX_BYTES)
+              throw Error('office_document_export_invalid')
+            if ((await packageContentFingerprint(latest)) !== originalPackageContent)
+              throw Error('office_document_changed')
+          }
           const qa = rawQa == null ? null : JSON.parse(JSON.stringify(rawQa))
           const checkpoints = JSON.parse(JSON.stringify(rawHistory))
           const checks: PresentationDeliveryBundleManifest['checks'] = {
@@ -462,7 +496,7 @@ export function createPresentationHostBundleSkill(
             ],
           }
           const readme =
-            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。若含 page-1.png 至 page-8.png，它们是当前宿主逐页采集、未经人工复核的截图；采集与 PPTX 导出并非原子快照。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取。可读宿主结构会在导出前后核对页序和对象几何，发现变化则不发布；此核对不覆盖文字内容、格式或图片像素，仍不能证明两份文件内容完全一致。不可用时不会用编译预览 PDF 代替。研究若存在，research.json/.md 保留冲突双方和缺口。' +
+            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。若含 page-1.png 至 page-8.png，它们是当前宿主逐页采集、未经人工复核的截图；采集与 PPTX 导出并非原子快照。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取。请求 PDF 或逐页截图时会再次导出 PPTX，比较包内内容（忽略 ZIP 时间戳及 docProps）；发现文字、媒体等内容变化则不发布。可读宿主结构另核对页序和对象几何。两次读取仍非原子快照，不能证明 PDF 与 PPTX 内容完全一致。不可用时不会用编译预览 PDF 代替。研究若存在，research.json/.md 保留冲突双方和缺口。' +
             (report.plan.research
               ? '本包研究记录来自冻结计划绑定的指定版本，与 evidence.json 中的研究记录一致；仍不代表来源权威性、时效性或当前宿主事实已核验。'
               : '本包研究记录为读取时本项目的历史研究，未绑定当前生产任务，不等于冻结主张或宿主事实核验。') +
