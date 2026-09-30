@@ -165,6 +165,60 @@ describe('current native host delivery package', () => {
     expect(await zip.file('page-8.png')!.async('nodebuffer')).toEqual(png)
     expect(quality.checks.roundTrip).toBe('not_run')
   })
+  it('rejects a damaged current-host screenshot before uploading the delivery package', async () => {
+    const f = await setup()
+    f.exportDocument.mockImplementation(async () => pptxWithPages(8))
+    const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+    const damaged = Buffer.from(png)
+    damaged[damaged.length - 5] ^= 1
+    const ids = Array.from({ length: 8 }, (_, index) => `host-${index + 1}`)
+    const skill = createPresentationHostBundleSkill({
+      ...f.options,
+      verifySlides: async () => ({
+        slideWidth: 960,
+        slideHeight: 540,
+        slides: ids.map((slideId, slideIndex) => ({
+          slideId,
+          slideIndex,
+          shapes: [],
+          shapesTruncated: false,
+          overflows: [],
+          overlaps: [],
+          overlapsTruncated: false,
+        })),
+        truncated: false,
+      }),
+      inspectPage: async (slideId: string) => ({
+        slideId,
+        slideWidth: 960,
+        slideHeight: 540,
+        shapes: [],
+        shapesTruncated: false,
+        overflows: [],
+        overlaps: [],
+        overlapsTruncated: false,
+        screenshot: {
+          mime: 'image/png' as const,
+          base64: (slideId === ids[3] ? damaged : png).toString('base64'),
+        },
+      }),
+    })
+    const result = await skill.executeTool({
+      id: 'damaged-screenshot',
+      name: 'export_current_presentation_bundle',
+      input: {
+        project_id: f.report.projectId,
+        request_id: f.report.requestId,
+        include_page_screenshots: true,
+      },
+    })
+    expect(result.isError).toBe(true)
+    expect(f.request).not.toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'delivery_bundle_begin' }),
+      expect.anything(),
+      expect.anything(),
+    )
+  })
   it('persists actual edited host bytes and every evidence file, then restores without exporting again', async () => {
     const f = await setup()
     const result = await f.call(undefined, { include_pdf: true })

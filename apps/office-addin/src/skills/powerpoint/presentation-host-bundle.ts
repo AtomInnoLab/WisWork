@@ -20,6 +20,7 @@ import {
 import { validatePresentationQaRecord } from './presentation-qa.js'
 import { validatePresentationHistoryEntry } from './presentation-change-history.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
+import { validateSkillPackageImage } from '../shared/skill-package.js'
 import type { PowerPointAdapter, PowerPointPageInspection } from './browser-powerpoint-adapter.js'
 
 interface Options {
@@ -466,6 +467,21 @@ export function createPresentationHostBundleSkill(
                 new TextDecoder().decode(bytes.slice(12, 16)) !== 'IHDR'
               )
                 throw Error('office_screenshot_unavailable')
+              try {
+                await validateSkillPackageImage('png', bytes, async (data) => {
+                  const bitmap =
+                    typeof createImageBitmap === 'function'
+                      ? await createImageBitmap(
+                          new Blob([new Uint8Array(data).buffer], { type: 'image/png' }),
+                        )
+                      : undefined
+                  if (bitmap) return bitmap
+                  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+                  return { width: view.getUint32(16), height: view.getUint32(20), close() {} }
+                })
+              } catch {
+                throw Error('office_screenshot_unavailable')
+              }
               const name = presentationDeliveryScreenshotFiles[index]!
               screenshotFiles[name] = bytes
               screenshotMetadata.push({
