@@ -248,6 +248,23 @@ it('protects an unsupported graphic frame and fails closed when its package mapp
   zip.file('ppt/diagrams/dataWiswork.xml', '<diagram>second</diagram>')
   const after = await inspect()
   expect(after.exact).not.toBe(before.exact)
+  zip.file(
+    'ppt/diagrams/_rels/dataWiswork.xml.rels',
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdWisColor" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramColors" Target="colorsWiswork.xml"/></Relationships>',
+  )
+  zip.file('ppt/diagrams/colorsWiswork.xml', '<colors>blue</colors>')
+  const withColors = await inspect()
+  zip.file('ppt/diagrams/colorsWiswork.xml', '<colors>red</colors>')
+  const changedColors = await inspect()
+  expect(changedColors.exact).not.toBe(withColors.exact)
+  zip.remove('ppt/diagrams/colorsWiswork.xml')
+  await expect(inspect()).rejects.toThrow('office_api_unsupported')
+  zip.file('ppt/diagrams/colorsWiswork.xml', '<colors>red</colors>')
+  zip.file(
+    'ppt/diagrams/_rels/colorsWiswork.xml.rels',
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdWisBack" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData" Target="dataWiswork.xml"/></Relationships>',
+  )
+  expect((await inspect()).exact).toMatch(/^[a-f0-9]{64}$/)
   await expect(
     inspectPowerPointTextShapeFingerprints(
       await zip.generateAsync({ type: 'base64' }),

@@ -165,6 +165,43 @@ export async function inspectPowerPointTextShapeFingerprints(
     ? tags(xml(await relationshipFile.async('string')), 'Relationship')
     : []
   const resourceDigests = new Map<string, string>()
+  const resourceClosureDigest = async (root: string): Promise<string> => {
+    const cached = resourceDigests.get(root)
+    if (cached) return cached
+    const visited = new Set<string>()
+    const parts: Array<[string, string, unknown]> = []
+    const visit = async (path: string): Promise<void> => {
+      if (signal?.aborted) throw Error('cancelled')
+      if (visited.has(path)) return
+      if (visited.size >= 256) throw Error('office_api_unsupported')
+      const file = zip.file(path)
+      if (!file) throw Error('office_api_unsupported')
+      visited.add(path)
+      const bytes = await file.async('uint8array')
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(bytes)))
+      const fileDigest = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
+      const relFile = zip.file(relationshipPath(path))
+      const rels = relFile ? tags(xml(await relFile.async('string')), 'Relationship') : []
+      if (new Set(rels.map((relation) => attr(relation, 'Id'))).size !== rels.length)
+        throw Error('office_api_unsupported')
+      rels.sort((first, second) =>
+        (attr(first, 'Id') ?? '').localeCompare(attr(second, 'Id') ?? ''),
+      )
+      const relations = rels.map((relation) => stableShape(relation))
+      parts.push([path, fileDigest, relations])
+      for (const relation of rels) {
+        if (attr(relation, 'TargetMode') === 'External') continue
+        const target = relatedPath(path, attr(relation, 'Target') ?? '')
+        if (!target) throw Error('office_api_unsupported')
+        await visit(target)
+      }
+    }
+    await visit(root)
+    parts.sort(([first], [second]) => first.localeCompare(second))
+    const digest = await shapeHash({ parts }, [])
+    resourceDigests.set(root, digest)
+    return digest
+  }
   const referenced = (shape: Node): string[] => {
     const ids = new Set<string>()
     const visit = (value: unknown): void => {
@@ -213,17 +250,8 @@ export async function inspectPowerPointTextShapeFingerprints(
       let resourceDigest: string | undefined
       if (attr(relation, 'TargetMode') !== 'External') {
         const path = relatedPath(slidePath, attr(relation, 'Target') ?? '')
-        const resource = path && zip.file(path)
-        if (!resource) throw Error('office_api_unsupported')
-        resourceDigest = resourceDigests.get(path!)
-        if (!resourceDigest) {
-          const bytes = await resource.async('uint8array')
-          const digest = new Uint8Array(
-            await crypto.subtle.digest('SHA-256', new Uint8Array(bytes)),
-          )
-          resourceDigest = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
-          resourceDigests.set(path!, resourceDigest)
-        }
+        if (!path) throw Error('office_api_unsupported')
+        resourceDigest = await resourceClosureDigest(path)
       }
       linked.push([relationId, stableShape(relation), resourceDigest])
     }
