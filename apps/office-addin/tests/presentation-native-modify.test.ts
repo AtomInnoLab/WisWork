@@ -55,6 +55,7 @@ async function fixture(pageCount = 2) {
   let imageAlt = 'Original source'
   let imageMedia = 'a'.repeat(64)
   let textFont = 'Arial'
+  let tableStyle = 'a'.repeat(64)
   let counter = 0
   const textFor = (id: string) => texts.get(id) ?? 'old'
   const packages = new Map<string, string>()
@@ -153,6 +154,11 @@ async function fixture(pageCount = 2) {
         ]),
       ),
     })),
+    inspectSlideTableFingerprints: vi.fn(async (slideId: string, shapeIds: string[]) => ({
+      slideId,
+      slideIds,
+      fingerprints: Object.fromEntries(shapeIds.map((id) => [id, tableStyle])),
+    })),
     listSlideShapes: vi.fn(async (index: number) => ({
       slideId: `s${index + 1}`,
       slideIndex: index,
@@ -244,6 +250,7 @@ async function fixture(pageCount = 2) {
     setImageAlt: (value: string) => (imageAlt = value),
     setImageMedia: (value: string) => (imageMedia = value),
     setTextFont: (value: string) => (textFont = value),
+    setTableStyle: (value: string) => (tableStyle = value),
   }
 }
 const textOp: NativeModifyOperation = {
@@ -463,6 +470,32 @@ it('does not acknowledge a native text edit that also changes an unrelated table
   f.setAfterWrite(() => f.setTableCell('11'))
   const proposed = await f.propose([textOp])
   await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('does not acknowledge a native text edit that also changes unrelated table formatting', async () => {
+  const f = await fixture()
+  f.setAfterWrite(() => f.setTableStyle('b'.repeat(64)))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('refuses a native write when an existing table cannot be mapped to its package', async () => {
+  const f = await fixture()
+  f.adapter.inspectSlideTableFingerprints.mockRejectedValue(Error('office_api_unsupported'))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_api_unsupported')
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+  expect(f.saved(proposed.changeId).inFlightIndex).toBeUndefined()
+})
+it('keeps a native write uncertain when table formatting cannot be read back', async () => {
+  const f = await fixture()
+  const inspect = f.adapter.inspectSlideTableFingerprints.getMockImplementation()!
+  f.adapter.inspectSlideTableFingerprints.mockImplementation(async (slideId, shapeIds) => {
+    if (f.adapter.executeDeclarative.mock.calls.length) throw Error('office_api_unsupported')
+    return inspect(slideId, shapeIds)
+  })
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_api_unsupported')
   expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
 })
 it('does not acknowledge a native text edit that also changes unrelated image attribution', async () => {

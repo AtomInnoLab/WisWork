@@ -9,6 +9,7 @@ import type { StructuredProposalController } from '../src/agent/proposal-control
 import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
 import { BrowserPresentationBaselineAdapter } from '../src/skills/powerpoint/browser-presentation-baseline-adapter'
 import { BrowserPowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter'
+import { inspectPowerPointRichText } from '../src/skills/powerpoint/presentation-rich-text-package'
 const targetBatch = (
   value:
     | import('../src/skills/powerpoint/presentation-existing-batch').PresentationExistingBatch
@@ -2655,12 +2656,25 @@ it('persists a generic native text and geometry program before writes and retain
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'snapshotSlide').mockImplementation(async () => ({
     slideId: 'slide',
     fingerprint: JSON.stringify(shape()),
-    semanticShapes: [shape()],
+    shapes: [shape()],
   }))
+  vi.spyOn(BrowserPowerPointAdapter.prototype, 'inspectSlideRichText').mockImplementation(
+    async (slideId, shapeIds) => {
+      const exported = await new BrowserPowerPointAdapter().exportPresentationPagePackage(slideId)
+      const parsed = await inspectPowerPointRichText(exported.base64)
+      const found = parsed.shapes.find((item) => item.name === 'shape')
+      if (!found) throw Error('office_api_unsupported')
+      return {
+        slideId,
+        slideIds: exported.slideIds,
+        shapes: Object.fromEntries(shapeIds.map((id) => [id, found])),
+      }
+    },
+  )
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'listSlideShapes').mockImplementation(async () => ({
     slideId: 'slide',
     slideIndex: 0,
-    shapes: [shape()],
+    shapes: [{ ...shape(), text: undefined }],
   }))
   vi.spyOn(BrowserPowerPointAdapter.prototype, 'readSlideText').mockImplementation(async () => ({
     slideId: 'slide',

@@ -337,6 +337,27 @@ export function createPresentationNativeModifySkill(options: Options) {
         return inspected.shapes
       }
       const beforeRichText = textIds.length ? await richTextProof(textIds) : undefined
+      const tableIds = beforeSemantic.shapes
+        .filter((shape) => shape.type === 'Table')
+        .map((shape) => shape.id)
+      const tableProof = async (ids: string[]) => {
+        if (!options.adapter.inspectSlideTableFingerprints) throw Error('office_api_unsupported')
+        const inspected = await options.adapter.inspectSlideTableFingerprints(
+          p.hostSlideId,
+          ids,
+          signal,
+        )
+        await guard(r.documentId, signal, token, newWrite)
+        if (
+          inspected.slideId !== p.hostSlideId ||
+          !same(inspected.slideIds, r.beforeSlideIds) ||
+          Object.keys(inspected.fingerprints).length !== ids.length ||
+          ids.some((id) => !/^[a-f0-9]{64}$/.test(inspected.fingerprints[id] ?? ''))
+        )
+          throw Error('office_read_failed')
+        return inspected.fingerprints
+      }
+      const beforeTables = tableIds.length ? await tableProof(tableIds) : undefined
       await check(r, signal, token, newWrite)
       const next = { ...r, inFlightIndex: r.nextIndex }
       await options.writeExistingBatch(next, r)
@@ -433,6 +454,12 @@ export function createPresentationNativeModifySkill(options: Options) {
               ),
           )
         )
+          throw Error('office_verify_failed')
+      }
+      if (beforeTables) {
+        const comparedIds = tableIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape')
+        const afterTables = comparedIds.length ? await tableProof(comparedIds) : {}
+        if (comparedIds.some((id) => beforeTables[id] !== afterTables[id]))
           throw Error('office_verify_failed')
       }
       const exported = await options.adapter.exportPresentationPagePackage!(p.hostSlideId, signal)

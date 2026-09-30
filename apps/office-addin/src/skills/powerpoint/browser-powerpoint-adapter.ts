@@ -13,6 +13,7 @@ import {
 } from './powerpoint-package.js'
 import { readUntilConverged } from '../shared/office-write-transaction.js'
 import { inspectPowerPointRichText } from './presentation-rich-text-package.js'
+import { inspectPowerPointTableFingerprints } from './presentation-table-package.js'
 
 export const MAX_POWERPOINT_SHAPES = 1_000
 export const MAX_POWERPOINT_TEXT = 12_000
@@ -192,6 +193,11 @@ export interface PowerPointAdapter {
     shapeIds: string[],
     signal?: AbortSignal,
   ): Promise<{ slideId: string; slideIds: string[]; shapes: Record<string, unknown> }>
+  inspectSlideTableFingerprints?(
+    slideId: string,
+    shapeIds: string[],
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; slideIds: string[]; fingerprints: Record<string, string> }>
   readPresentationPageGeometry?(
     slideId: string,
     shapeId: string,
@@ -2048,6 +2054,14 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       throw new Error('office_api_unsupported')
     cancelled(signal)
     return { slideId: exported.slideId, slideIds: exported.slideIds, shapes }
+  }
+
+  async inspectSlideTableFingerprints(slideId: string, shapeIds: string[], signal?: AbortSignal) {
+    cancelled(signal)
+    const exported = await this.exportPresentationPagePackage(slideId, signal)
+    const fingerprints = await inspectPowerPointTableFingerprints(exported.base64, shapeIds, signal)
+    cancelled(signal)
+    return { slideId: exported.slideId, slideIds: exported.slideIds, fingerprints }
   }
 
   async exportSlidePackage(
