@@ -54,6 +54,7 @@ async function fixture(pageCount = 2) {
   let tableCell = '10'
   let imageAlt = 'Original source'
   let imageMedia = 'a'.repeat(64)
+  let textFont = 'Arial'
   let counter = 0
   const textFor = (id: string) => texts.get(id) ?? 'old'
   const packages = new Map<string, string>()
@@ -127,6 +128,29 @@ async function fixture(pageCount = 2) {
       ),
       mediaDigests: Object.fromEntries(
         shapeIds.map((id) => [id, id === 'image-sdk' ? imageMedia : 'c'.repeat(64)]),
+      ),
+    })),
+    inspectSlideRichText: vi.fn(async (slideId: string, shapeIds: string[]) => ({
+      slideId,
+      slideIds,
+      shapes: Object.fromEntries(
+        shapeIds.map((id) => [
+          id,
+          {
+            packageShapeId: id,
+            name: id,
+            paragraphs: [
+              {
+                runs: [
+                  {
+                    text: textFor(id),
+                    directFont: { typeface: id === 'sdk-0' ? textFont : 'Arial' },
+                  },
+                ],
+              },
+            ],
+          },
+        ]),
       ),
     })),
     listSlideShapes: vi.fn(async (index: number) => ({
@@ -219,6 +243,7 @@ async function fixture(pageCount = 2) {
     setTableCell: (value: string) => (tableCell = value),
     setImageAlt: (value: string) => (imageAlt = value),
     setImageMedia: (value: string) => (imageMedia = value),
+    setTextFont: (value: string) => (textFont = value),
   }
 }
 const textOp: NativeModifyOperation = {
@@ -467,6 +492,21 @@ it('does not acknowledge a native text edit that also changes unrelated image me
   const proposed = await f.propose([textOp])
   await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
   expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('does not acknowledge an unrelated rich-text formatting change hidden from Office.js text snapshots', async () => {
+  const f = await fixture()
+  f.setAfterWrite(() => f.setTextFont('Georgia'))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('refuses a native write when rich text cannot be mapped to its package', async () => {
+  const f = await fixture()
+  f.adapter.inspectSlideRichText.mockRejectedValue(Error('office_api_unsupported'))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_api_unsupported')
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+  expect(f.saved(proposed.changeId).inFlightIndex).toBeUndefined()
 })
 it('refuses a native write when an existing picture cannot be mapped to its package', async () => {
   const f = await fixture()

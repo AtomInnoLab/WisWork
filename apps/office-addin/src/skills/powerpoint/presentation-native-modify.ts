@@ -314,6 +314,29 @@ export function createPresentationNativeModifySkill(options: Options) {
         return inspected
       }
       const beforePictures = pictureIds.length ? await pictureProof() : undefined
+      const textIds = beforeSemantic.shapes
+        .filter(
+          (shape) =>
+            shape.type !== 'Table' &&
+            shape.type !== 'Image' &&
+            shape.type !== 'Picture' &&
+            shape.text,
+        )
+        .map((shape) => shape.id)
+      const richTextProof = async (ids: string[]) => {
+        if (!options.adapter.inspectSlideRichText) throw Error('office_api_unsupported')
+        const inspected = await options.adapter.inspectSlideRichText(p.hostSlideId, ids, signal)
+        await guard(r.documentId, signal, token, newWrite)
+        if (
+          inspected.slideId !== p.hostSlideId ||
+          !same(inspected.slideIds, r.beforeSlideIds) ||
+          Object.keys(inspected.shapes).length !== ids.length ||
+          ids.some((id) => !Object.hasOwn(inspected.shapes, id))
+        )
+          throw Error('office_read_failed')
+        return inspected.shapes
+      }
+      const beforeRichText = textIds.length ? await richTextProof(textIds) : undefined
       await check(r, signal, token, newWrite)
       const next = { ...r, inFlightIndex: r.nextIndex }
       await options.writeExistingBatch(next, r)
@@ -383,6 +406,31 @@ export function createPresentationNativeModifySkill(options: Options) {
               (id !== op.shape_id &&
                 beforePictures.fingerprints[id] !== afterPictures.fingerprints[id]) ||
               beforePictures.mediaDigests[id] !== afterPictures.mediaDigests[id],
+          )
+        )
+          throw Error('office_verify_failed')
+      }
+      if (beforeRichText) {
+        const comparedIds = textIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape')
+        const afterRichText = comparedIds.length ? await richTextProof(comparedIds) : {}
+        const withoutRunText = (value: unknown) => {
+          const copy = structuredClone(value) as {
+            paragraphs: Array<{ runs: Array<{ text: string }> }>
+          }
+          for (const paragraph of copy.paragraphs) for (const run of paragraph.runs) run.text = ''
+          return copy
+        }
+        if (
+          comparedIds.some(
+            (id) =>
+              !same(
+                id === op.shape_id && op.op === 'set_shape_text'
+                  ? withoutRunText(beforeRichText[id])
+                  : beforeRichText[id],
+                id === op.shape_id && op.op === 'set_shape_text'
+                  ? withoutRunText(afterRichText[id])
+                  : afterRichText[id],
+              ),
           )
         )
           throw Error('office_verify_failed')

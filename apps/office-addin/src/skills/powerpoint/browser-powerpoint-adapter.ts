@@ -12,6 +12,7 @@ import {
   type PackageEditResult,
 } from './powerpoint-package.js'
 import { readUntilConverged } from '../shared/office-write-transaction.js'
+import { inspectPowerPointRichText } from './presentation-rich-text-package.js'
 
 export const MAX_POWERPOINT_SHAPES = 1_000
 export const MAX_POWERPOINT_TEXT = 12_000
@@ -186,6 +187,11 @@ export interface PowerPointAdapter {
     fingerprints: Record<string, string>
     mediaDigests: Record<string, string>
   }>
+  inspectSlideRichText?(
+    slideId: string,
+    shapeIds: string[],
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; slideIds: string[]; shapes: Record<string, unknown> }>
   readPresentationPageGeometry?(
     slideId: string,
     shapeId: string,
@@ -2024,6 +2030,24 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       fingerprints: inspected.pictureFingerprints,
       mediaDigests: inspected.mediaDigests,
     }
+  }
+
+  async inspectSlideRichText(slideId: string, shapeIds: string[], signal?: AbortSignal) {
+    cancelled(signal)
+    const exported = await this.exportPresentationPagePackage(slideId, signal)
+    const inspected = await inspectPowerPointRichText(exported.base64, signal)
+    const shapes = Object.fromEntries(
+      inspected.shapes
+        .filter((shape) => shapeIds.includes(shape.packageShapeId))
+        .map((shape) => [shape.packageShapeId, shape]),
+    )
+    if (
+      Object.keys(shapes).length !== shapeIds.length ||
+      shapeIds.some((id) => !Object.hasOwn(shapes, id))
+    )
+      throw new Error('office_api_unsupported')
+    cancelled(signal)
+    return { slideId: exported.slideId, slideIds: exported.slideIds, shapes }
   }
 
   async exportSlidePackage(

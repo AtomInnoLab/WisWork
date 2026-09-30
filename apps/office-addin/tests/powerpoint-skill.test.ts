@@ -12,6 +12,7 @@ import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compi
 import { createPresentationService } from '../../shell/src/main/presentation-service'
 import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
 import { createPresentationNativeModifySkill } from '../src/skills/powerpoint/presentation-native-modify'
+import { inspectPowerPointRichText } from '../src/skills/powerpoint/presentation-rich-text-package'
 
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import {
@@ -164,6 +165,22 @@ async function durableCompatibility(
     slideIds: [initial.slideId],
     base64,
   }))
+  fake.inspectSlideRichText = vi.fn(async (slideId: string, shapeIds: string[]) => {
+    const parsed = await inspectPowerPointRichText(base64)
+    return {
+      slideId,
+      slideIds: [initial.slideId],
+      shapes: Object.fromEntries(
+        shapeIds.map((id) => {
+          const shape = initial.shapes.find((item) => item.id === id)!
+          const name = shape.name.replace(/[^A-Za-z0-9_-]/g, '_')
+          const found = parsed.shapes.find((item) => item.name === name)
+          if (!found) throw Error('office_api_unsupported')
+          return [id, found]
+        }),
+      ),
+    }
+  })
   const values = new Map<string, string>()
   const binding = createPresentationDocumentBinding(
     {
