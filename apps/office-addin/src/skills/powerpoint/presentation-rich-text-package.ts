@@ -164,6 +164,7 @@ export async function inspectPowerPointTextShapeFingerprints(
   const relationships = relationshipFile
     ? tags(xml(await relationshipFile.async('string')), 'Relationship')
     : []
+  const resourceDigests = new Map<string, string>()
   const referenced = (shape: Node): string[] => {
     const ids = new Set<string>()
     const visit = (value: unknown): void => {
@@ -196,13 +197,30 @@ export async function inspectPowerPointTextShapeFingerprints(
       (!allowNoTextBody && (kind !== 'p:sp' || !tags(children, 'p:txBody').length))
     )
       throw Error('office_api_unsupported')
-    const linked = referenced(original).map((relationId) => {
+    const linked = []
+    for (const relationId of referenced(original)) {
       const matched = relationships.filter(
         (entry) => (entry[':@'] as Node | undefined)?.['@_Id'] === relationId,
       )
       if (matched.length !== 1) throw Error('office_api_unsupported')
-      return [relationId, stableShape(matched[0]!)]
-    })
+      const relation = matched[0]!
+      let resourceDigest: string | undefined
+      if (attr(relation, 'TargetMode') !== 'External') {
+        const path = relatedPath(slidePath, attr(relation, 'Target') ?? '')
+        const resource = path && zip.file(path)
+        if (!resource) throw Error('office_api_unsupported')
+        resourceDigest = resourceDigests.get(path!)
+        if (!resourceDigest) {
+          const bytes = await resource.async('uint8array')
+          const digest = new Uint8Array(
+            await crypto.subtle.digest('SHA-256', new Uint8Array(bytes)),
+          )
+          resourceDigest = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
+          resourceDigests.set(path!, resourceDigest)
+        }
+      }
+      linked.push([relationId, stableShape(relation), resourceDigest])
+    }
     const exact = await shapeHash(original, linked)
     const shape = structuredClone(original)
     const propertyTag = kind === 'p:grpSp' ? 'p:grpSpPr' : 'p:spPr'
@@ -214,12 +232,13 @@ export async function inspectPowerPointTextShapeFingerprints(
           (part) => !Object.hasOwn(part, 'a:off') && !Object.hasOwn(part, 'a:ext'),
         )
     const content = await shapeHash(shape, linked)
-    for (const text of tags(shape[kind] as Node[], 'a:t')) {
+    const formattingShape = structuredClone(original)
+    for (const text of kind === 'p:sp' ? tags(formattingShape[kind] as Node[], 'a:t') : []) {
       text['a:t'] = [{ '#text': '' }]
       const attributes = text[':@'] as Node | undefined
       if (attributes) delete attributes['@_xml:space']
     }
-    found[id] = { exact, content, formatting: await shapeHash(shape, linked) }
+    found[id] = { exact, content, formatting: await shapeHash(formattingShape, linked) }
   }
   if (Object.keys(found).length !== shapeIds.length) throw Error('office_api_unsupported')
   if (signal?.aborted) throw Error('cancelled')

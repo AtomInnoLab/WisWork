@@ -22,6 +22,20 @@ it('distinguishes intended text replacement from hidden run formatting drift in 
   )[id!]!
   expect(textChanged.content).not.toBe(before.content)
   expect(textChanged.formatting).toBe(before.formatting)
+  zip.file(
+    'ppt/slides/slide1.xml',
+    slide.replace(
+      shape!,
+      shape!
+        .replace(/<a:t>[^<]*<\/a:t>/, '<a:t>Different</a:t>')
+        .replace(/<a:off x="\d+" y="\d+"\/>/, '<a:off x="12345" y="67890"/>'),
+    ),
+  )
+  const textAndGeometryChanged = (
+    await inspectPowerPointTextShapeFingerprints(await zip.generateAsync({ type: 'base64' }), [id!])
+  )[id!]!
+  expect(textAndGeometryChanged.exact).not.toBe(before.exact)
+  expect(textAndGeometryChanged.formatting).not.toBe(before.formatting)
   zip.file('ppt/slides/slide1.xml', slide.replace(/<a:t>[^<]*<\/a:t>/, '<a:t> </a:t>'))
   const blanked = (
     await inspectPowerPointTextShapeFingerprints(await zip.generateAsync({ type: 'base64' }), [id!])
@@ -175,6 +189,24 @@ it('fingerprints a connector and a group with their children in a real PPTX pack
     slide.replace(connector, connector.replace('val="000000"', 'val="FF0000"')),
   )
   expect(changedConnector['9001']!.content).not.toBe(before['9001']!.content)
+  const childPicture =
+    '<p:pic><p:nvPicPr><p:cNvPr id="9004" name="group-picture"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rIdWisGroupImage"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
+  const withPicture = slide.replace(group, group.replace('</p:grpSp>', `${childPicture}</p:grpSp>`))
+  const relsPath = 'ppt/slides/_rels/slide1.xml.rels'
+  const rels = await zip.file(relsPath)!.async('string')
+  zip.file(
+    relsPath,
+    rels.replace(
+      '</Relationships>',
+      '<Relationship Id="rIdWisGroupImage" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/wiswork-group.png"/></Relationships>',
+    ),
+  )
+  zip.file('ppt/media/wiswork-group.png', new Uint8Array([1, 2, 3]))
+  const pictureBefore = (await inspect(withPicture))['9002']!
+  zip.file('ppt/media/wiswork-group.png', new Uint8Array([1, 2, 4]))
+  const pictureAfter = (await inspect(withPicture))['9002']!
+  expect(pictureAfter.exact).not.toBe(pictureBefore.exact)
+  expect(pictureAfter.content).not.toBe(pictureBefore.content)
   await expect(
     inspectPowerPointTextShapeFingerprints(
       await zip.generateAsync({ type: 'base64' }),
