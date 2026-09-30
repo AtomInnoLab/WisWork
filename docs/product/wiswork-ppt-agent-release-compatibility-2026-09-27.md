@@ -41,6 +41,16 @@ node tools/ppt-agent-pc-business-smoke.mjs
 
 这项检查需要真实 PC 在线与人工完成一次配对；仓库中的模拟 Relay 测试只验证命令自身的协议和错误门禁。完整配置两个附件 ID 且通过后，可证明部署后的配对、PC 项目状态及既有文本/图片资产读取。页面写入、截图、恢复和 PowerPoint Desktop/Web 仍须按 O6 矩阵逐项执行，不能由此命令宣称整体冒烟或专业任务通过。
 
+专用发布测试文档还可显式设置 `PPT_AGENT_SMOKE_PRODUCTION=1`。命令在给定项目名前缀后追加随机后缀，创建新的八页测试项目，保存计划、逐页制作并核对每页原生 PPTX、导入来源和八页 PDF；结果打印实际项目 ID 以便追查。该项目会保留在测试 PC 的本机项目库中，因此只在专用测试文档使用；不设置该变量时不会创建项目。本机真实 Electron PC + Rust Relay 冒烟已覆盖从空项目开始的这条链路，发布环境仍需单独运行。该路径不写入当前 PowerPoint 宿主页面，也不能替代真实宿主截图、编辑、保存重开和恢复验收。
+
+```bash
+PPT_AGENT_SMOKE_RELAY_ORIGIN='https://relay.example' \
+PPT_AGENT_SMOKE_DOCUMENT_ID='<dedicated-test-document-id>' \
+PPT_AGENT_SMOKE_PROJECT_ID='release-test' \
+PPT_AGENT_SMOKE_PRODUCTION=1 \
+node tools/ppt-agent-pc-business-smoke.mjs
+```
+
 专用测试文档可设置 `PPT_AGENT_SMOKE_UPLOAD=1`（不同时设置两个既有附件 ID），在同一配对会话中上传带随机内容的小型 TXT 和 1×1 PNG、读取解析文本及规范化图片、核对图片摘要，然后按精确 SHA-256 附件 ID 删除两个测试附件。命令先检查随机 ID 不存在，只清理本次创建的 ID；任一步失败也尝试清理。若清理失败，命令输出需人工检查的附件 ID 并返回非零。该选项会短暂修改 PC 的测试文档附件目录，**只对专用发布测试文档使用**。仓库 CI 的 Electron 图片冒烟已使用相同 PNG 生成方式经过真实本机解码器和 PC 附件服务的上传/回读/删除；发布环境仍须运行上面的配对命令。PowerPoint 宿主写入、截图和恢复仍需单独验收。
 
 ```bash

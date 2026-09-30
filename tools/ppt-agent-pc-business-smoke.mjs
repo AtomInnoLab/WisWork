@@ -204,6 +204,66 @@ export async function checkCompiledDelivery(compiled, exported, projectId, expec
   return { pptxSha256: createHash('sha256').update(pptx).digest('hex'), pdfBytes: pdf.length }
 }
 
+export function releaseProductionFixture(projectId) {
+  if (typeof projectId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId))
+    throw new Error('invalid release smoke project ID')
+  const expectedSlideTexts = Array.from(
+    { length: 8 },
+    (_, index) => `Release smoke page ${index + 1}`,
+  )
+  const style = {
+    fontFace: 'Arial',
+    background: 'FFFFFF',
+    textColor: '111111',
+    accentColor: '3366FF',
+  }
+  const slides = expectedSlideTexts.map((text, index) => ({
+    id: `slide-${index + 1}`,
+    title: `Page ${index + 1}`,
+    elements: [{ id: 'title', kind: 'text', text, x: 1, y: 1, w: 8, h: 1 }],
+  }))
+  const deck = {
+    version: 1,
+    id: projectId,
+    title: 'Release smoke',
+    style,
+    assets: [],
+    claims: [],
+    slides,
+  }
+  const plan = {
+    version: 1,
+    projectId,
+    title: deck.title,
+    brief: {
+      objective: 'Verify an eight-page editable release delivery',
+      audience: 'Release test',
+      language: 'en-US',
+      minutes: 8,
+      requiredContent: [],
+      constraints: [],
+    },
+    sources: [],
+    claims: [],
+    style,
+    slides: slides.map((slide) => ({
+      id: slide.id,
+      title: slide.title,
+      purpose: 'Verify native text',
+      claimIds: [],
+      layout: 'content',
+      requiredAssets: [],
+      acceptanceCriteria: ['Native text remains editable'],
+    })),
+  }
+  return {
+    requestId: `release-production-${randomBytes(8).toString('hex')}`,
+    deck,
+    plan,
+    expectedSlideTexts,
+  }
+}
+
 async function uploadFixture(request, documentId, name, bytes, kind) {
   const attachmentId = createHash('sha256').update(bytes).digest('hex')
   const begin = await request('presentation-assets.v1', {
@@ -275,6 +335,11 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       options.beginProductionOnly,
       options.runExistingProduction,
     ].filter(Boolean).length > 1 ||
+    (options.createProduction && !options.productionFixture) ||
+    (options.createProduction &&
+      (options.readExistingProduction ||
+        options.beginProductionOnly ||
+        options.runExistingProduction)) ||
     ((options.readExistingProduction ||
       options.beginProductionOnly ||
       options.runExistingProduction) &&
@@ -408,6 +473,17 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         throw new Error('invalid PC business JSON')
       }
     }
+    if (options.createProduction) {
+      const fixture = options.productionFixture
+      const saved = await request('presentation.v1', {
+        operation: 'save_plan',
+        documentId,
+        projectId,
+        expectedRevision: 0,
+        plan: fixture.plan,
+      })
+      if (saved?.revision !== 1) throw new Error('PC production plan was not saved')
+    }
     const status = checkPcStatusResponse(
       await request('presentation.v1', { operation: 'status', documentId, projectId }),
       projectId,
@@ -469,14 +545,16 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       } else if (options.runExistingProduction) {
         produced = await request('presentation.v1', { operation: 'production_run', ...base })
       } else {
-        const saved = await request('presentation.v1', {
-          operation: 'save_plan',
-          documentId,
-          projectId,
-          expectedRevision: 0,
-          plan: fixture.plan,
-        })
-        if (saved?.revision !== 1) throw new Error('PC production plan was not saved')
+        if (!options.createProduction) {
+          const saved = await request('presentation.v1', {
+            operation: 'save_plan',
+            documentId,
+            projectId,
+            expectedRevision: 0,
+            plan: fixture.plan,
+          })
+          if (saved?.revision !== 1) throw new Error('PC production plan was not saved')
+        }
         const begun = await request('presentation.v1', {
           operation: 'production_begin',
           ...base,
@@ -707,23 +785,35 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  inspectPcBusiness(
-    process.env.PPT_AGENT_SMOKE_RELAY_ORIGIN,
-    process.env.PPT_AGENT_SMOKE_DOCUMENT_ID,
-    process.env.PPT_AGENT_SMOKE_PROJECT_ID,
-    {
-      textAttachmentId: process.env.PPT_AGENT_SMOKE_TEXT_ATTACHMENT_ID,
-      imageAttachmentId: process.env.PPT_AGENT_SMOKE_IMAGE_ATTACHMENT_ID,
-      uploadFixtures: process.env.PPT_AGENT_SMOKE_UPLOAD === '1',
-    },
-  )
-    .then((result) =>
-      process.stdout.write(
-        `Real PC business smoke passed: ${result.status}, ${result.slideCount} slides; ${result.attachmentPageCount} attachments on first page; text ${result.textChecked ? 'checked' : 'not configured'}, image ${result.imageChecked ? 'checked' : 'not configured'}, upload ${result.uploadChecked ? 'checked and cleaned' : 'not configured'}.\n`,
-      ),
+  const production = process.env.PPT_AGENT_SMOKE_PRODUCTION === '1'
+  const projectPrefix = process.env.PPT_AGENT_SMOKE_PROJECT_ID
+  const projectId = production
+    ? `${(projectPrefix ?? '').slice(0, 100)}-${randomBytes(6).toString('hex')}`
+    : projectPrefix
+  if (production && !/^[A-Za-z0-9_-]{1,128}$/.test(projectPrefix ?? '')) {
+    process.stderr.write('Production smoke requires a valid dedicated test project prefix.\n')
+    process.exitCode = 1
+  } else
+    inspectPcBusiness(
+      process.env.PPT_AGENT_SMOKE_RELAY_ORIGIN,
+      process.env.PPT_AGENT_SMOKE_DOCUMENT_ID,
+      projectId,
+      {
+        textAttachmentId: process.env.PPT_AGENT_SMOKE_TEXT_ATTACHMENT_ID,
+        imageAttachmentId: process.env.PPT_AGENT_SMOKE_IMAGE_ATTACHMENT_ID,
+        uploadFixtures: process.env.PPT_AGENT_SMOKE_UPLOAD === '1',
+        ...(production
+          ? { productionFixture: releaseProductionFixture(projectId), createProduction: true }
+          : {}),
+      },
     )
-    .catch((error) => {
-      process.stderr.write(`${error.message}\n`)
-      process.exitCode = 1
-    })
+      .then((result) =>
+        process.stdout.write(
+          `Real PC business smoke passed: project ${result.projectId}, ${result.status}, ${result.slideCount} slides; production ${result.productionDelivery?.pageDigests.length ?? 'not configured'} pages; ${result.attachmentPageCount} attachments on first page; text ${result.textChecked ? 'checked' : 'not configured'}, image ${result.imageChecked ? 'checked' : 'not configured'}, upload ${result.uploadChecked ? 'checked and cleaned' : 'not configured'}.\n`,
+        ),
+      )
+      .catch((error) => {
+        process.stderr.write(`${error.message}\n`)
+        process.exitCode = 1
+      })
 }

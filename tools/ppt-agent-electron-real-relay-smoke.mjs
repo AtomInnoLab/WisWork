@@ -7,7 +7,7 @@ import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import electron from 'electron'
-import { inspectPcBusiness } from './ppt-agent-pc-business-smoke.mjs'
+import { inspectPcBusiness, releaseProductionFixture } from './ppt-agent-pc-business-smoke.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const temp = await mkdtemp(join(tmpdir(), 'ppt-electron-real-relay-'))
@@ -335,6 +335,19 @@ app.whenReady().then(async () => {
   )
   if ((await readdir(attachments)).length !== 0)
     throw new Error('Electron PC test attachments were not cleaned up')
+  smokeStage = 'fresh release production'
+  const releaseProjectId = `${projectId}-release`
+  const releaseResult = await inspectPcBusiness(origin, documentId, releaseProjectId, {
+    onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+    productionFixture: releaseProductionFixture(releaseProjectId),
+    createProduction: true,
+    timeoutMs: 45_000,
+  })
+  if (
+    releaseResult.productionDelivery?.pageDigests.length !== 8 ||
+    releaseResult.productionDelivery.pdfBytes < 100
+  )
+    throw new Error('Electron PC fresh release production incomplete')
   const pendingProjectId = `${projectId}-recovery`
   smokeStage = 'pending production setup'
   const pendingFixture = {
@@ -410,7 +423,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    'Electron PC + Rust Relay business smoke passed: pairing, three concurrent documents, eight-page production, PPTX/PDF readback, TXT/PNG upload, durable delivery, pending production recovery and running job crash recovery',
+    'Electron PC + Rust Relay business smoke passed: pairing, three concurrent documents, fresh eight-page release production, PPTX/PDF readback, TXT/PNG upload, durable delivery, pending production recovery and running job crash recovery',
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {
