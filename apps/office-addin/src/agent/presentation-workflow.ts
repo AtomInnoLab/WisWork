@@ -252,6 +252,7 @@ export function presentationWorkflowSummary(
     ? qa!.pages.filter(
         (page) =>
           !page.recheckRequired &&
+          page.screenshotRenderer !== 'libreoffice' &&
           page.structure.status === 'passed' &&
           page.visual.status === 'pass',
       ).length
@@ -261,6 +262,7 @@ export function presentationWorkflowSummary(
         (page) =>
           !page.recheckRequired &&
           page.screenshotRenderer === 'libreoffice' &&
+          page.structure.status === 'passed' &&
           page.visual.status === 'pass',
       ).length
     : 0
@@ -513,7 +515,7 @@ export function presentationWorkflowSummary(
               : 'working'
             : 'pending',
       detail: qaMatches
-        ? `历史结构与视觉复核 ${reviewed}/${qa!.pages.length} 页通过；${fallbackReviewed} 页使用备用预览且宿主外观待核验；${qa!.pages.filter((page) => page.recheckRequired).length} 页需重审`
+        ? `PowerPoint 宿主结构与视觉复核 ${reviewed}/${qa!.pages.length} 页通过；${fallbackReviewed} 页使用备用预览且宿主外观待核验；${qa!.pages.filter((page) => page.recheckRequired).length} 页需重审`
         : qa
           ? '现有 QA 记录无法与当前页任务匹配，需核对'
           : '尚无当前页任务的 QA 记录',
@@ -1142,13 +1144,15 @@ export function presentationWorkflowSummary(
                           ? '采集页面截图并记录审查'
                           : qa!.pages.some((page) => page.recheckRequired)
                             ? '重审受影响页面'
-                            : reviewed < qa!.pages.length
-                              ? '处理未通过或待审页面'
-                              : !reportMatches
-                                ? '读取当前任务的内容证据交付报告'
-                                : openIssues
-                                  ? '处理内容证据报告中的待处理问题'
-                                  : '继续来源核验与保存重开验收'
+                            : fallbackReviewed && reviewed + fallbackReviewed === qa!.pages.length
+                              ? '在 PowerPoint 中重新截图并核验备用预览页面的宿主外观'
+                              : reviewed < qa!.pages.length
+                                ? '处理未通过或待审页面'
+                                : !reportMatches
+                                  ? '读取当前任务的内容证据交付报告'
+                                  : openIssues
+                                    ? '处理内容证据报告中的待处理问题'
+                                    : '继续来源核验与保存重开验收'
   let nextTool: PresentationWorkflowSummary['nextTool']
   if (plan && production && !production.revision && !planChangedSinceProduction) {
     if (

@@ -359,12 +359,20 @@ it('identifies a fallback visual review as pending PowerPoint host appearance', 
   const summary = presentationWorkflowSummary({ ...project, production }, imported, fallback)!
   expect(summary.pages[0]!.qa).toContain('备用预览')
   expect(summary.pages[0]!.nextAction).toContain('宿主外观')
+  expect(summary.stages.find((stage) => stage.name === '页面审查')?.status).toBe('working')
+  expect(summary.nextAction).toContain('PowerPoint')
+  expect(summary.nextTool).toBeUndefined()
   expect(summary.stages.find((stage) => stage.name === '页面审查')?.detail).toContain(
     '1 页使用备用预览',
   )
   expect(summary.timeline.find((event) => event.scope === 'saved_page_qa')?.text).toContain(
     'LibreOffice 备用预览',
   )
+  const mixed = structuredClone(fallback)
+  mixed.pages[1]!.visual.status = 'needs_changes'
+  const withFailure = presentationWorkflowSummary({ ...project, production }, imported, mixed)!
+  expect(withFailure.stages.find((stage) => stage.name === '页面审查')?.status).toBe('attention')
+  expect(withFailure.nextAction).toContain('处理未通过')
 })
 
 it('marks durable phase problems for attention without claiming delivery completion', async () => {
