@@ -57,6 +57,7 @@ async function fixture(pageCount = 2) {
   let textFont = 'Arial'
   let tableStyle = 'a'.repeat(64)
   let chartFingerprint = 'd'.repeat(64)
+  let textStructure = 'a'.repeat(64)
   let counter = 0
   const textFor = (id: string) => texts.get(id) ?? 'old'
   const packages = new Map<string, string>()
@@ -135,6 +136,15 @@ async function fixture(pageCount = 2) {
     inspectSlideRichText: vi.fn(async (slideId: string, shapeIds: string[]) => ({
       slideId,
       slideIds,
+      fingerprints: Object.fromEntries(
+        shapeIds.map((id) => [
+          id,
+          {
+            content: id === 'sdk-0' ? textStructure : 'b'.repeat(64),
+            formatting: id === 'sdk-0' ? textStructure : 'b'.repeat(64),
+          },
+        ]),
+      ),
       shapes: Object.fromEntries(
         shapeIds.map((id) => [
           id,
@@ -256,6 +266,7 @@ async function fixture(pageCount = 2) {
     setImageAlt: (value: string) => (imageAlt = value),
     setImageMedia: (value: string) => (imageMedia = value),
     setTextFont: (value: string) => (textFont = value),
+    setTextStructure: (value: string) => (textStructure = value),
     setTableStyle: (value: string) => (tableStyle = value),
     addChart: () => shapes.push({ ...shape, id: 'chart-sdk', type: 'Chart' }),
     setChartFingerprint: (value: string) => (chartFingerprint = value),
@@ -566,6 +577,13 @@ it('does not acknowledge a native text edit that also changes unrelated image me
 it('does not acknowledge an unrelated rich-text formatting change hidden from Office.js text snapshots', async () => {
   const f = await fixture()
   f.setAfterWrite(() => f.setTextFont('Georgia'))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('does not acknowledge an unrelated text-shape XML change omitted by the parsed font view', async () => {
+  const f = await fixture()
+  f.setAfterWrite(() => f.setTextStructure('c'.repeat(64)))
   const proposed = await f.propose([textOp])
   await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
   expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })

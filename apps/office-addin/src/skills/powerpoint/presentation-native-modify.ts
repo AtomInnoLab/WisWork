@@ -332,10 +332,16 @@ export function createPresentationNativeModifySkill(options: Options) {
           inspected.slideId !== p.hostSlideId ||
           !same(inspected.slideIds, r.beforeSlideIds) ||
           Object.keys(inspected.shapes).length !== ids.length ||
-          ids.some((id) => !Object.hasOwn(inspected.shapes, id))
+          Object.keys(inspected.fingerprints).length !== ids.length ||
+          ids.some(
+            (id) =>
+              !Object.hasOwn(inspected.shapes, id) ||
+              !/^[a-f0-9]{64}$/.test(inspected.fingerprints[id]?.content ?? '') ||
+              !/^[a-f0-9]{64}$/.test(inspected.fingerprints[id]?.formatting ?? ''),
+          )
         )
           throw Error('office_read_failed')
-        return inspected.shapes
+        return inspected
       }
       const beforeRichText = textIds.length ? await richTextProof(textIds) : undefined
       const tableIds = beforeSemantic.shapes
@@ -455,7 +461,7 @@ export function createPresentationNativeModifySkill(options: Options) {
       }
       if (beforeRichText) {
         const comparedIds = textIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape')
-        const afterRichText = comparedIds.length ? await richTextProof(comparedIds) : {}
+        const afterRichText = comparedIds.length ? await richTextProof(comparedIds) : undefined
         const withoutRunText = (value: unknown) => {
           const copy = structuredClone(value) as {
             paragraphs: Array<{ runs: Array<{ text: string }> }>
@@ -468,12 +474,17 @@ export function createPresentationNativeModifySkill(options: Options) {
             (id) =>
               !same(
                 id === op.shape_id && op.op === 'set_shape_text'
-                  ? withoutRunText(beforeRichText[id])
-                  : beforeRichText[id],
+                  ? withoutRunText(beforeRichText.shapes[id])
+                  : beforeRichText.shapes[id],
                 id === op.shape_id && op.op === 'set_shape_text'
-                  ? withoutRunText(afterRichText[id])
-                  : afterRichText[id],
-              ),
+                  ? withoutRunText(afterRichText!.shapes[id])
+                  : afterRichText!.shapes[id],
+              ) ||
+              (id === op.shape_id && op.op === 'set_shape_text'
+                ? beforeRichText.fingerprints[id]!.formatting !==
+                  afterRichText!.fingerprints[id]!.formatting
+                : beforeRichText.fingerprints[id]!.content !==
+                  afterRichText!.fingerprints[id]!.content),
           )
         )
           throw Error('office_verify_failed')

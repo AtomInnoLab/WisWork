@@ -110,6 +110,108 @@ export interface RichTextShape {
   }>
 }
 
+function stableShape(value: unknown, preserveText = false): unknown {
+  if (Array.isArray(value))
+    return value
+      .filter(
+        (part) =>
+          preserveText ||
+          !(
+            part &&
+            typeof part === 'object' &&
+            Object.keys(part).length === 1 &&
+            typeof (part as Node)['#text'] === 'string' &&
+            /^\s*$/.test((part as Node)['#text'] as string)
+          ),
+      )
+      .map((part) => stableShape(part, preserveText))
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value as Node)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => [key, stableShape(child, preserveText || key === 'a:t')]),
+  )
+}
+
+async function shapeHash(shape: Node, relationships: unknown): Promise<string> {
+  const data = new TextEncoder().encode(JSON.stringify([stableShape(shape), relationships]))
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', data))
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+/** Exact XML guard for ordinary text shapes; formatting digest permits only run text changes. */
+export async function inspectPowerPointTextShapeFingerprints(
+  base64: string,
+  shapeIds: string[],
+  signal?: AbortSignal,
+): Promise<Record<string, { content: string; formatting: string }>> {
+  if (signal?.aborted) throw Error('cancelled')
+  if (
+    shapeIds.length > 100 ||
+    new Set(shapeIds).size !== shapeIds.length ||
+    shapeIds.some((id) => !/^\d{1,10}$/.test(id))
+  )
+    throw Error('invalid_tool_input')
+  const zip = await loadBoundedZip(base64, signal, true, 8 * 1024 * 1024)
+  const slides = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
+  if (slides.length !== 1) throw Error('office_api_unsupported')
+  const slide = xml(await zip.file(slides[0]!)!.async('string'))
+  const slidePath = slides[0]!
+  const slash = slidePath.lastIndexOf('/')
+  const relationshipPart = `${slidePath.slice(0, slash)}/_rels/${slidePath.slice(slash + 1)}.rels`
+  const relationshipFile = zip.file(relationshipPart)
+  const relationships = relationshipFile
+    ? tags(xml(await relationshipFile.async('string')), 'Relationship')
+    : []
+  const referenced = (shape: Node): string[] => {
+    const ids = new Set<string>()
+    const visit = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        value.forEach(visit)
+        return
+      }
+      if (!value || typeof value !== 'object') return
+      for (const [key, child] of Object.entries(value as Node)) {
+        if (['@_r:id', '@_r:embed', '@_r:link'].includes(key) && typeof child === 'string')
+          ids.add(child)
+        else visit(child)
+      }
+    }
+    visit(shape)
+    return [...ids].sort()
+  }
+  const found: Record<string, { content: string; formatting: string }> = Object.create(null)
+  for (const original of tags(slide, 'p:sp')) {
+    const id = attr(tags(original['p:sp'] as Node[], 'p:cNvPr')[0], 'id')
+    if (!id || !shapeIds.includes(id)) continue
+    if (Object.hasOwn(found, id) || !tags(original['p:sp'] as Node[], 'p:txBody').length)
+      throw Error('office_api_unsupported')
+    const linked = referenced(original).map((relationId) => {
+      const matched = relationships.filter(
+        (entry) => (entry[':@'] as Node | undefined)?.['@_Id'] === relationId,
+      )
+      if (matched.length !== 1) throw Error('office_api_unsupported')
+      return [relationId, stableShape(matched[0]!)]
+    })
+    const shape = structuredClone(original)
+    for (const properties of tags(shape['p:sp'] as Node[], 'p:spPr'))
+      for (const transform of tags(properties['p:spPr'] as Node[], 'a:xfrm'))
+        transform['a:xfrm'] = (transform['a:xfrm'] as Node[]).filter(
+          (part) => !Object.hasOwn(part, 'a:off') && !Object.hasOwn(part, 'a:ext'),
+        )
+    const content = await shapeHash(shape, linked)
+    for (const text of tags(shape['p:sp'] as Node[], 'a:t')) {
+      text['a:t'] = [{ '#text': '' }]
+      const attributes = text[':@'] as Node | undefined
+      if (attributes) delete attributes['@_xml:space']
+    }
+    found[id] = { content, formatting: await shapeHash(shape, linked) }
+  }
+  if (Object.keys(found).length !== shapeIds.length) throw Error('office_api_unsupported')
+  if (signal?.aborted) throw Error('cancelled')
+  return found
+}
+
 type Zip = Awaited<ReturnType<typeof loadBoundedZip>>
 function relationshipPath(part: string): string {
   const index = part.lastIndexOf('/')

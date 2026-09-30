@@ -12,7 +12,10 @@ import {
   type PackageEditResult,
 } from './powerpoint-package.js'
 import { readUntilConverged } from '../shared/office-write-transaction.js'
-import { inspectPowerPointRichText } from './presentation-rich-text-package.js'
+import {
+  inspectPowerPointRichText,
+  inspectPowerPointTextShapeFingerprints,
+} from './presentation-rich-text-package.js'
 import { inspectPowerPointTableFingerprints } from './presentation-table-package.js'
 import { inspectPowerPointChartFingerprints } from './presentation-chart-package.js'
 
@@ -193,7 +196,12 @@ export interface PowerPointAdapter {
     slideId: string,
     shapeIds: string[],
     signal?: AbortSignal,
-  ): Promise<{ slideId: string; slideIds: string[]; shapes: Record<string, unknown> }>
+  ): Promise<{
+    slideId: string
+    slideIds: string[]
+    shapes: Record<string, unknown>
+    fingerprints: Record<string, { content: string; formatting: string }>
+  }>
   inspectSlideTableFingerprints?(
     slideId: string,
     shapeIds: string[],
@@ -2048,6 +2056,11 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     cancelled(signal)
     const exported = await this.exportPresentationPagePackage(slideId, signal)
     const inspected = await inspectPowerPointRichText(exported.base64, signal)
+    const fingerprints = await inspectPowerPointTextShapeFingerprints(
+      exported.base64,
+      shapeIds,
+      signal,
+    )
     const shapes = Object.fromEntries(
       inspected.shapes
         .filter((shape) => shapeIds.includes(shape.packageShapeId))
@@ -2059,7 +2072,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     )
       throw new Error('office_api_unsupported')
     cancelled(signal)
-    return { slideId: exported.slideId, slideIds: exported.slideIds, shapes }
+    return { slideId: exported.slideId, slideIds: exported.slideIds, shapes, fingerprints }
   }
 
   async inspectSlideTableFingerprints(slideId: string, shapeIds: string[], signal?: AbortSignal) {

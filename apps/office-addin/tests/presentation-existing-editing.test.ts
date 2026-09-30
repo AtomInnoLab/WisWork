@@ -9,7 +9,10 @@ import type { StructuredProposalController } from '../src/agent/proposal-control
 import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
 import { BrowserPresentationBaselineAdapter } from '../src/skills/powerpoint/browser-presentation-baseline-adapter'
 import { BrowserPowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter'
-import { inspectPowerPointRichText } from '../src/skills/powerpoint/presentation-rich-text-package'
+import {
+  inspectPowerPointRichText,
+  inspectPowerPointTextShapeFingerprints,
+} from '../src/skills/powerpoint/presentation-rich-text-package'
 const targetBatch = (
   value:
     | import('../src/skills/powerpoint/presentation-existing-batch').PresentationExistingBatch
@@ -2664,10 +2667,16 @@ it('persists a generic native text and geometry program before writes and retain
       const parsed = await inspectPowerPointRichText(exported.base64)
       const found = parsed.shapes.find((item) => item.name === 'shape')
       if (!found) throw Error('office_api_unsupported')
+      const packageFingerprints = await inspectPowerPointTextShapeFingerprints(exported.base64, [
+        found.packageShapeId,
+      ])
       return {
         slideId,
         slideIds: exported.slideIds,
         shapes: Object.fromEntries(shapeIds.map((id) => [id, found])),
+        fingerprints: Object.fromEntries(
+          shapeIds.map((id) => [id, packageFingerprints[found.packageShapeId]]),
+        ),
       }
     },
   )
