@@ -171,6 +171,78 @@ it('uses explicit replacement text per styled run for a length-changing revision
   ).rejects.toThrow('invalid_tool_input')
 })
 
+it('marks leading and trailing spaces as significant in affected native runs', async () => {
+  const { zip, xml, shape, id } = await fixture()
+  const mixed = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:t>科研</a:t></a:r><a:r><a:rPr lang="zh-CN" b="1"/><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, mixed))
+  const source = await zip.generateAsync({ type: 'base64' })
+  const revised = await replacePowerPointTextRangePackage(
+    source,
+    id,
+    1,
+    '研汇',
+    '研究  成果',
+    undefined,
+    ['研究 ', ' 成果'],
+  )
+  const output = await (
+    await JSZip.loadAsync(revised.base64, { base64: true })
+  )
+    .file('ppt/slides/slide1.xml')!
+    .async('string')
+  expect(output).toContain('<a:t xml:space="preserve">科研究 </a:t>')
+  expect(output).toContain('<a:rPr lang="zh-CN" b="1"/><a:t xml:space="preserve"> 成果报</a:t>')
+})
+
+it('retains existing whitespace semantics and upgrades an explicit default when needed', async () => {
+  const { zip, xml, shape, id } = await fixture()
+  zip.file(
+    'ppt/slides/slide1.xml',
+    xml.replace(
+      shape,
+      shape.replace('<a:t>科研汇报</a:t>', '<a:t xml:space="preserve"> 科研汇报 </a:t>'),
+    ),
+  )
+  const retained = await replacePowerPointTextRangePackage(
+    await zip.generateAsync({ type: 'base64' }),
+    id,
+    1,
+    '科',
+    '项',
+  )
+  expect(
+    await (
+      await JSZip.loadAsync(retained.base64, { base64: true })
+    )
+      .file('ppt/slides/slide1.xml')!
+      .async('string'),
+  ).toContain('<a:t xml:space="preserve"> 项研汇报 </a:t>')
+  zip.file(
+    'ppt/slides/slide1.xml',
+    xml.replace(
+      shape,
+      shape.replace('<a:t>科研汇报</a:t>', '<a:t xml:space="default">科研汇报</a:t>'),
+    ),
+  )
+  const upgraded = await replacePowerPointTextRangePackage(
+    await zip.generateAsync({ type: 'base64' }),
+    id,
+    0,
+    '科',
+    ' 项',
+  )
+  expect(
+    await (
+      await JSZip.loadAsync(upgraded.base64, { base64: true })
+    )
+      .file('ppt/slides/slide1.xml')!
+      .async('string'),
+  ).toContain('<a:t xml:space="preserve"> 项研汇报</a:t>')
+})
+
 it('escapes replacement text and rejects field-backed text', async () => {
   const { zip, xml, shape, id } = await fixture()
   zip.file('ppt/slides/slide1.xml', xml.replace(shape, shape.replace('科研汇报', 'A&amp;B汇报')))

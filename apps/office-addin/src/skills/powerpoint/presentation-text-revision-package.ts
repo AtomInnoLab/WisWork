@@ -18,7 +18,15 @@ const escape = (value: string) =>
   value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const invalidText = (value: string) => /[\r\n]/.test(value) || /[\uD800-\uDFFF]/u.test(value)
 
-type Run = { xml: string; text: string; textStart: number; textEnd: number }
+type Run = {
+  xml: string
+  text: string
+  openTag: string
+  openStart: number
+  openEnd: number
+  textStart: number
+  textEnd: number
+}
 
 function plainRuns(shapeXml: string): Run[] {
   const bodies = [...shapeXml.matchAll(/<p:txBody\b[^>]*>[\s\S]*?<\/p:txBody>/g)]
@@ -35,13 +43,21 @@ function plainRuns(shapeXml: string): Run[] {
     const texts = [...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)]
     if (texts.length !== 1 || /<!\[CDATA\[/.test(texts[0]![1]!)) fail()
     const parsed = parser.parse(texts[0]![0]) as Record<string, unknown>
-    const value = parsed['a:t']
+    const parsedText = parsed['a:t']
+    const value =
+      typeof parsedText === 'string'
+        ? parsedText
+        : (parsedText as Record<string, unknown> | undefined)?.['#text']
     if (typeof value !== 'string' || invalidText(value)) fail()
+    const openTag = texts[0]![0].slice(0, texts[0]![0].indexOf('>') + 1)
+    const openStart = bodies[0]!.index! + match.index! + texts[0]!.index!
     result.push({
       xml,
       text: value as string,
-      textStart:
-        bodies[0]!.index! + match.index! + texts[0]!.index! + texts[0]![0].indexOf('>') + 1,
+      openTag,
+      openStart,
+      openEnd: openStart + openTag.length,
+      textStart: openStart + openTag.length,
       textEnd:
         bodies[0]!.index! + match.index! + texts[0]!.index! + texts[0]![0].lastIndexOf('</a:t>'),
     })
@@ -118,6 +134,22 @@ export async function replacePowerPointTextRangePackage(
   let changedRuns = 0
   let rewritten = original
   const patches: Array<{ from: number; to: number; value: string }> = []
+  const patchRun = (run: Run, replacement: string) => {
+    if (invalidText(replacement)) fail()
+    if (/^[ \t]|[ \t]$/.test(replacement)) {
+      const space = /\bxml:space\s*=\s*(['"])([^'"]*)\1/.exec(run.openTag)
+      if (space?.[2] !== 'preserve')
+        patches.push({
+          from: run.openStart,
+          to: run.openEnd,
+          value: space
+            ? run.openTag.replace(space[0], 'xml:space="preserve"')
+            : `${run.openTag.slice(0, -1)} xml:space="preserve">`,
+        })
+    }
+    patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
+    changedRuns++
+  }
   if (before.length !== after.length) {
     if (runReplacements) {
       for (const run of runs) {
@@ -128,9 +160,7 @@ export async function replacePowerPointTextRangePackage(
           if (!part) throw new Error('invalid_tool_input')
           const replacement =
             run.text.slice(0, first - cursor) + part + run.text.slice(last - cursor)
-          if (invalidText(replacement)) fail()
-          patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
-          changedRuns++
+          patchRun(run, replacement)
         }
         cursor += run.text.length
       }
@@ -141,9 +171,7 @@ export async function replacePowerPointTextRangePackage(
           const local = start - cursor
           const replacement =
             run.text.slice(0, local) + after + run.text.slice(local + before.length)
-          if (invalidText(replacement)) fail()
-          patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
-          changedRuns++
+          patchRun(run, replacement)
           break
         }
         cursor += run.text.length
@@ -159,9 +187,7 @@ export async function replacePowerPointTextRangePackage(
           run.text.slice(0, local) +
           after.slice(first - start, last - start) +
           run.text.slice(last - cursor)
-        if (invalidText(replacement)) fail()
-        patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
-        changedRuns++
+        patchRun(run, replacement)
       }
       cursor += run.text.length
     }
