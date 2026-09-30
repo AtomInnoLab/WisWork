@@ -320,6 +320,7 @@ export function createPresentationNativeModifySkill(options: Options) {
             shape.type !== 'Table' &&
             shape.type !== 'Image' &&
             shape.type !== 'Picture' &&
+            shape.type !== 'Chart' &&
             shape.text,
         )
         .map((shape) => shape.id)
@@ -358,6 +359,27 @@ export function createPresentationNativeModifySkill(options: Options) {
         return inspected.fingerprints
       }
       const beforeTables = tableIds.length ? await tableProof(tableIds) : undefined
+      const chartIds = beforeSemantic.shapes
+        .filter((shape) => shape.type === 'Chart')
+        .map((shape) => shape.id)
+      const chartProof = async (ids: string[]) => {
+        if (!options.adapter.inspectSlideChartFingerprints) throw Error('office_api_unsupported')
+        const inspected = await options.adapter.inspectSlideChartFingerprints(
+          p.hostSlideId,
+          ids,
+          signal,
+        )
+        await guard(r.documentId, signal, token, newWrite)
+        if (
+          inspected.slideId !== p.hostSlideId ||
+          !same(inspected.slideIds, r.beforeSlideIds) ||
+          Object.keys(inspected.fingerprints).length !== ids.length ||
+          ids.some((id) => !/^[a-f0-9]{64}$/.test(inspected.fingerprints[id] ?? ''))
+        )
+          throw Error('office_read_failed')
+        return inspected.fingerprints
+      }
+      const beforeCharts = chartIds.length ? await chartProof(chartIds) : undefined
       await check(r, signal, token, newWrite)
       const next = { ...r, inFlightIndex: r.nextIndex }
       await options.writeExistingBatch(next, r)
@@ -460,6 +482,12 @@ export function createPresentationNativeModifySkill(options: Options) {
         const comparedIds = tableIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape')
         const afterTables = comparedIds.length ? await tableProof(comparedIds) : {}
         if (comparedIds.some((id) => beforeTables[id] !== afterTables[id]))
+          throw Error('office_verify_failed')
+      }
+      if (beforeCharts) {
+        const comparedIds = chartIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape')
+        const afterCharts = comparedIds.length ? await chartProof(comparedIds) : {}
+        if (comparedIds.some((id) => beforeCharts[id] !== afterCharts[id]))
           throw Error('office_verify_failed')
       }
       const exported = await options.adapter.exportPresentationPagePackage!(p.hostSlideId, signal)

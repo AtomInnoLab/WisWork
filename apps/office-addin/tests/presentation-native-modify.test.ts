@@ -56,6 +56,7 @@ async function fixture(pageCount = 2) {
   let imageMedia = 'a'.repeat(64)
   let textFont = 'Arial'
   let tableStyle = 'a'.repeat(64)
+  let chartFingerprint = 'd'.repeat(64)
   let counter = 0
   const textFor = (id: string) => texts.get(id) ?? 'old'
   const packages = new Map<string, string>()
@@ -109,7 +110,7 @@ async function fixture(pageCount = 2) {
       fingerprint: 'old',
       shapes: shapes.map((item) => ({
         ...structuredClone(item),
-        text: ['Picture', 'Image'].includes(item.type) ? '' : textFor(item.id),
+        text: ['Picture', 'Image', 'Chart'].includes(item.type) ? '' : textFor(item.id),
         ...(item.type === 'Table' ? { tableValues: [['Revenue', tableCell]] } : {}),
         ...(item.type === 'Image'
           ? { rotation: 0, altTextTitle: 'Figure', altTextDescription: imageAlt }
@@ -158,6 +159,11 @@ async function fixture(pageCount = 2) {
       slideId,
       slideIds,
       fingerprints: Object.fromEntries(shapeIds.map((id) => [id, tableStyle])),
+    })),
+    inspectSlideChartFingerprints: vi.fn(async (slideId: string, shapeIds: string[]) => ({
+      slideId,
+      slideIds,
+      fingerprints: Object.fromEntries(shapeIds.map((id) => [id, chartFingerprint])),
     })),
     listSlideShapes: vi.fn(async (index: number) => ({
       slideId: `s${index + 1}`,
@@ -251,6 +257,8 @@ async function fixture(pageCount = 2) {
     setImageMedia: (value: string) => (imageMedia = value),
     setTextFont: (value: string) => (textFont = value),
     setTableStyle: (value: string) => (tableStyle = value),
+    addChart: () => shapes.push({ ...shape, id: 'chart-sdk', type: 'Chart' }),
+    setChartFingerprint: (value: string) => (chartFingerprint = value),
   }
 }
 const textOp: NativeModifyOperation = {
@@ -491,6 +499,35 @@ it('keeps a native write uncertain when table formatting cannot be read back', a
   const f = await fixture()
   const inspect = f.adapter.inspectSlideTableFingerprints.getMockImplementation()!
   f.adapter.inspectSlideTableFingerprints.mockImplementation(async (slideId, shapeIds) => {
+    if (f.adapter.executeDeclarative.mock.calls.length) throw Error('office_api_unsupported')
+    return inspect(slideId, shapeIds)
+  })
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_api_unsupported')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('does not acknowledge an unrelated chart package change during a native text edit', async () => {
+  const f = await fixture()
+  f.addChart()
+  f.setAfterWrite(() => f.setChartFingerprint('e'.repeat(64)))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('refuses a native write when an existing chart cannot be mapped to its package', async () => {
+  const f = await fixture()
+  f.addChart()
+  f.adapter.inspectSlideChartFingerprints.mockRejectedValue(Error('office_api_unsupported'))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_api_unsupported')
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+  expect(f.saved(proposed.changeId).inFlightIndex).toBeUndefined()
+})
+it('keeps a native write uncertain when chart package readback fails', async () => {
+  const f = await fixture()
+  f.addChart()
+  const inspect = f.adapter.inspectSlideChartFingerprints.getMockImplementation()!
+  f.adapter.inspectSlideChartFingerprints.mockImplementation(async (slideId, shapeIds) => {
     if (f.adapter.executeDeclarative.mock.calls.length) throw Error('office_api_unsupported')
     return inspect(slideId, shapeIds)
   })
