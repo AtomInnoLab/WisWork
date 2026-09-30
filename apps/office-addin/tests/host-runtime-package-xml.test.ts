@@ -170,7 +170,7 @@ const input = {
     ],
   },
 }
-it('routes the real XML tool through PC-backed preparation without any host write before confirmation', async () => {
+it('prepares the real XML proposal without PC or host writes before confirmation', async () => {
   const f = await fixture()
   const result = await f.runtime.skill.executeTool({ id: 'xml', name: 'edit_slide_xml', input })
   expect(result.isError, result.output).not.toBe(true)
@@ -179,18 +179,12 @@ it('routes the real XML tool through PC-backed preparation without any host writ
   expect(pending && 'preview' in pending ? pending.preview : undefined).toMatchObject({
     qaScope: { basis: 'package_xml_savepoint', hostSlideIds: ['host-source'] },
   })
-  expect(
-    f.request.mock.calls.some(([body]) => (body as any).operation === 'package_backup_begin'),
-  ).toBe(true)
-  expect(
-    f.request.mock.calls.every(([body]) =>
-      String((body as any).operation).startsWith('package_backup_'),
-    ),
-  ).toBe(true)
+  expect(f.request).not.toHaveBeenCalled()
   expect(f.insert).not.toHaveBeenCalled()
   expect(f.remove).not.toHaveBeenCalled()
   f.runtime.clearSession()
   expect(f.runtime.proposals.pending()).toBeUndefined()
+  expect(f.request).not.toHaveBeenCalled()
 })
 it.each(['capability', 'paired', 'api'])(
   'refuses missing %s before PC preparation or host writes',
@@ -255,6 +249,35 @@ it('confirms the actual durable XML engine through Runtime mutation hooks and re
     input: { change_id: entry.record.changeId },
   })
   expect(inspected.isError, inspected.output).not.toBe(true)
+})
+it('audits package backups through the PC inventory against current Office history', async () => {
+  const f = await fixture()
+  await f.runtime.skill.executeTool({ id: 'xml', name: 'edit_slide_xml', input })
+  const pending = f.runtime.proposals.pending()!
+  await vi.waitFor(() => {
+    const current = f.runtime.proposals.pending()
+    expect(current && 'lockReview' in current ? current.lockReview?.state : undefined).not.toBe(
+      'checking',
+    )
+  })
+  await f.runtime.proposals.confirm(pending.id)
+  await f.runtime.changes!.refresh()
+  expect(f.runtime.changes!.snapshot().packageBackupAudit).toMatchObject({ unmatched: 0 })
+  const active = f.runtime.changes!.snapshot().packageBackupAudit!.active
+  expect(active).toBeGreaterThan(0)
+  await f.request({
+    operation: 'package_backup_begin',
+    documentId: await f.binding.documentId(),
+    changeId: 'orphan-upload',
+    key: 'page-0',
+    sha256: 'a'.repeat(64),
+    sizeBytes: 1,
+  })
+  await f.runtime.changes!.refresh()
+  expect(f.runtime.changes!.snapshot().packageBackupAudit).toEqual({
+    active: active + 1,
+    unmatched: 1,
+  })
 })
 
 it.each(['discard', 'reconcile'] as const)(

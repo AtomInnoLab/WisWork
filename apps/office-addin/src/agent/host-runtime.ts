@@ -1571,6 +1571,47 @@ export function createOfficeHostRuntime(
             }[]
           }
         : undefined,
+      listPackageBackups: options.presentation?.request
+        ? async (documentId) => {
+            const backups: {
+              changeId: string
+              key: string
+              sha256: string
+              sizeBytes: number
+              status: string
+            }[] = []
+            let after = ''
+            for (let page = 0; page < 65; page++) {
+              const response = await options.presentation!.request!({
+                operation: 'package_backup_inventory',
+                documentId,
+                after,
+              })
+              if (!response.ok) throw new Error('backup_inventory_unavailable')
+              const value = (await response.json()) as {
+                documentId?: unknown
+                backups?: unknown
+                nextCursor?: unknown
+              }
+              if (
+                value.documentId !== documentId ||
+                !Array.isArray(value.backups) ||
+                value.backups.length > 64 ||
+                (value.nextCursor !== undefined &&
+                  (typeof value.nextCursor !== 'string' ||
+                    !/^[a-f0-9]{64}$/.test(value.nextCursor) ||
+                    value.nextCursor <= after ||
+                    value.backups.length !== 64))
+              )
+                throw new Error('backup_inventory_invalid')
+              backups.push(...(value.backups as typeof backups))
+              if (backups.length > 4096) throw new Error('backup_inventory_invalid')
+              if (value.nextCursor === undefined) return backups
+              after = value.nextCursor as string
+            }
+            throw new Error('backup_inventory_invalid')
+          }
+        : undefined,
       readTextChange: options.presentation?.readTextChange,
       readGeometryChange: options.presentation?.readGeometryChange,
       readPageReplacement: options.presentation?.readPageReplacement,

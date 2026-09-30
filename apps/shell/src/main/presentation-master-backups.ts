@@ -251,19 +251,27 @@ export function createPresentationMasterBackupService(options: {
       master_backup_read: ['key', 'offset', 'length'],
       master_backup_list: [],
       master_backup_release: ['key', 'sha256', 'sizeBytes'],
+      master_backup_inventory: ['after'],
     }
     const operation = body.operation
     if (typeof operation !== 'string' || !Object.hasOwn(fields, operation)) invalid()
-    const expected = ['operation', 'documentId', 'changeId', ...fields[operation]!]
+    const inventory = operation === 'master_backup_inventory'
+    const expected = [
+      'operation',
+      'documentId',
+      ...(inventory ? [] : ['changeId']),
+      ...fields[operation]!,
+    ]
     if (
       Object.keys(body).length !== expected.length ||
       expected.some((k) => !Object.hasOwn(body, k)) ||
       typeof body.documentId !== 'string' ||
       !body.documentId ||
       body.documentId.length > 2048 ||
-      !id(body.changeId) ||
+      (!inventory && !id(body.changeId)) ||
       Buffer.byteLength(JSON.stringify(body)) > 256 * 1024 ||
-      (operation !== 'master_backup_list' && !key(body.key))
+      (!inventory && operation !== 'master_backup_list' && !key(body.key)) ||
+      (inventory && body.after !== '' && !digest(body.after))
     )
       invalid()
     if (
@@ -277,7 +285,7 @@ export function createPresentationMasterBackupService(options: {
     )
       invalid()
     const documentId = body.documentId,
-      changeId = body.changeId,
+      changeId = body.changeId as string,
       blobKey = body.key as string
     const document = join(root, hash(documentId)),
       blobHash = hash(JSON.stringify([changeId, blobKey])),
@@ -304,7 +312,17 @@ export function createPresentationMasterBackupService(options: {
       const scopes = new Map<string, Parents>()
       let reserved = 0
       const quotaScan = operation === 'master_backup_begin' || operation === 'master_backup_list'
-      const inspectedEntries = quotaScan ? entries : entries.filter((entry) => entry === blobHash)
+      const inventoryEntries = inventory
+        ? entries
+            .filter((entry) => entry > (body.after as string))
+            .sort()
+            .slice(0, 65)
+        : []
+      const inspectedEntries = inventory
+        ? inventoryEntries.slice(0, 64)
+        : quotaScan
+          ? entries
+          : entries.filter((entry) => entry === blobHash)
       for (const entry of inspectedEntries) {
         check(signal)
         const result = metadata(join(document, entry), documentParents)
@@ -316,6 +334,25 @@ export function createPresentationMasterBackupService(options: {
         all.push(m)
       }
       if (reserved > MAX_DOCUMENT) invalid()
+      if (inventory) {
+        const backups = all.map((m) => {
+          const entry = hash(JSON.stringify([m.changeId, m.key]))
+          const size = leaf(join(document, entry, 'blob'), scopes.get(entry)!).size
+          if (size > m.sizeBytes) invalid()
+          return {
+            changeId: m.changeId,
+            key: m.key,
+            sha256: m.sha256,
+            sizeBytes: m.sizeBytes,
+            status: m.status,
+          }
+        })
+        return {
+          documentId,
+          backups,
+          ...(inventoryEntries.length > 64 ? { nextCursor: inventoryEntries[63] } : {}),
+        }
+      }
       if (operation === 'master_backup_list') {
         const backups = []
         for (const m of all.filter((m) => m.changeId === changeId)) {

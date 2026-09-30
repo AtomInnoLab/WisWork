@@ -218,6 +218,39 @@ it('supports over sixteen blobs and lists without truncation through PC service'
   )
   expect(JSON.parse(Buffer.from(response).toString()).backups).toHaveLength(20)
 })
+it('pages a document backup inventory without requiring a remembered change ID', async () => {
+  const f = fixture(),
+    service = createPresentationService({ userDataPath: f.root })
+  for (let i = 0; i < 66; i++)
+    await f.call('package_backup_begin', {
+      changeId: `change-${i}`,
+      sha256: sha(f.raw),
+      sizeBytes: f.raw.length,
+    })
+  const inventory = async (after: string) =>
+    JSON.parse(
+      Buffer.from(
+        await service(
+          { operation: 'package_backup_inventory', documentId: f.scope.documentId, after },
+          new AbortController().signal,
+        ),
+      ).toString(),
+    ) as { backups: { changeId: string; key: string }[]; nextCursor?: string }
+  const first = await inventory('')
+  expect(first.backups).toHaveLength(64)
+  expect(first.nextCursor).toMatch(/^[a-f0-9]{64}$/)
+  const second = await inventory(first.nextCursor!)
+  expect(second.backups).toHaveLength(2)
+  expect(second.nextCursor).toBeUndefined()
+  expect(new Set([...first.backups, ...second.backups].map((b) => b.changeId)).size).toBe(66)
+  const invalid = await service(
+    { operation: 'package_backup_inventory', documentId: f.scope.documentId, after: '../' },
+    new AbortController().signal,
+  )
+  expect(JSON.parse(Buffer.from(invalid).toString())).toEqual({
+    error: 'presentation_package_backup_invalid',
+  })
+})
 it('serializes conflicts and snapshots caller fields before awaiting', async () => {
   const f = fixture(),
     service = createPresentationPackageBackupService({ userDataPath: f.root })

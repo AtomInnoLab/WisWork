@@ -108,6 +108,7 @@ export interface PresentationChangesSnapshot {
   requestId?: string
   entries: PresentationChangeEntry[]
   backupAudit?: { active: number; unmatched: number }
+  packageBackupAudit?: { active: number; unmatched: number }
   notice?: string
   error?: string
 }
@@ -129,6 +130,15 @@ export interface PresentationChangesOptions {
       slideIds: string[]
       sha256: string
       sizeBytes: number
+    }[]
+  >
+  listPackageBackups?: (documentId: string) => Promise<
+    {
+      changeId: string
+      key: string
+      sha256: string
+      sizeBytes: number
+      status: string
     }[]
   >
   packageAvailable?: () => boolean
@@ -1106,6 +1116,7 @@ export function createPresentationChangesController(
       const rows = await read(copy(artifact), scope!, ticket)
       if (ticket !== generation) return
       let backupAudit: PresentationChangesSnapshot['backupAudit']
+      let packageBackupAudit: PresentationChangesSnapshot['packageBackupAudit']
       if (options.listExistingPageBackups && boundDocument) {
         try {
           const backups = await options.listExistingPageBackups(boundDocument)
@@ -1197,6 +1208,45 @@ export function createPresentationChangesController(
           /* Backup inventory is advisory; history remains available. */
         }
       }
+      if (options.listPackageBackups && boundDocument) {
+        try {
+          const backups = await options.listPackageBackups(boundDocument)
+          if (
+            !Array.isArray(backups) ||
+            backups.length > 4096 ||
+            backups.some(
+              (b) =>
+                !b ||
+                typeof b.changeId !== 'string' ||
+                !/^[A-Za-z0-9_-]{1,128}$/.test(b.changeId) ||
+                typeof b.key !== 'string' ||
+                !/^(snapshot|(?:page|image|receipt)-[0-9]+)$/.test(b.key) ||
+                typeof b.sha256 !== 'string' ||
+                !/^[a-f0-9]{64}$/.test(b.sha256) ||
+                !Number.isSafeInteger(b.sizeBytes) ||
+                b.sizeBytes < 1 ||
+                b.sizeBytes > 8 * 1024 * 1024 ||
+                !['ready', 'uploading'].includes(b.status),
+            ) ||
+            new Set(backups.map((b) => JSON.stringify([b.changeId, b.key]))).size !== backups.length
+          )
+            throw new Error('invalid')
+          const known = new Set(
+            rows
+              .filter((row) => ['package_xml', 'master_xml'].includes(row.entry.source ?? ''))
+              .map(
+                (row) =>
+                  (row.record as PresentationPackageChange | PresentationMasterXmlChange).changeId,
+              ),
+          )
+          packageBackupAudit = {
+            active: backups.length,
+            unmatched: backups.filter((backup) => !known.has(backup.changeId)).length,
+          }
+        } catch {
+          /* The inventory is advisory and must not block change history. */
+        }
+      }
       if (ticket !== generation || !current(scope, await options.documentId())) return
       saved = rows
       bound = scope
@@ -1206,6 +1256,7 @@ export function createPresentationChangesController(
         requestId: artifact?.requestId,
         entries: rows.map((r) => copy(r.entry)),
         backupAudit,
+        packageBackupAudit,
       }
     } catch {
       if (ticket !== generation) return

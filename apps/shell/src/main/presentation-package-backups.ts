@@ -1,6 +1,6 @@
 import { createPresentationMasterBackupService } from './presentation-master-backups'
 const operations = new Set(
-  ['begin', 'chunk', 'finish', 'status', 'read', 'list', 'release'].map(
+  ['begin', 'chunk', 'finish', 'status', 'read', 'list', 'release', 'inventory'].map(
     (x) => `package_backup_${x}`,
   ),
 )

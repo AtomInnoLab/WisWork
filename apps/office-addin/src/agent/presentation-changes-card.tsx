@@ -81,6 +81,13 @@ export function PresentationChangesCard({
           整页修改会保留原页和替换源页两份包。容量不足时，可检查并释放已撤销或已丢弃记录的备份；释放后无法重新应用。
         </p>
       )}
+      {snapshot.packageBackupAudit && (
+        <p role="status">
+          当前文档 PC 包结构与母版备份：{snapshot.packageBackupAudit.active} 份；其中{' '}
+          {snapshot.packageBackupAudit.unmatched} 份的变更 ID
+          未在当前保存点历史中找到。此项仅作清理线索，需核对后处理。
+        </p>
+      )}
       {snapshot.phase === 'idle' && !snapshot.entries.length && (
         <p>当前文档或任务暂无可用保存点。</p>
       )}

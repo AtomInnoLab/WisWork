@@ -1,5 +1,7 @@
-import { expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { createPresentationChangesController } from '../src/agent/presentation-changes.js'
+import { cleanupPackageFixtures, packageEditingFixture } from './helpers/package-editing-fixture.js'
+afterEach(cleanupPackageFixtures)
 import type { CompiledPresentationArtifact } from '../src/skills/powerpoint/presentation-delivery.js'
 import type { PresentationGeometryChange } from '../src/skills/powerpoint/presentation-geometry-change.js'
 import type { PresentationExistingPageChange } from '../src/skills/powerpoint/presentation-existing-page.js'
@@ -74,6 +76,41 @@ it('reads only current records and clones snapshots; routes undo through the too
     expect.any(AbortSignal),
   )
   expect(JSON.stringify(controller.snapshot())).not.toContain('unsafe')
+})
+it('reports PC package backups whose change ID has no current document history', async () => {
+  const f = await packageEditingFixture()
+  const proposal = await f.propose()
+  await f.confirm()
+  const record = f.data.get(String(proposal.preview.changeId))!
+  const controller = createPresentationChangesController({
+    available: () => false,
+    packageAvailable: () => true,
+    artifact: () => undefined,
+    documentId: async () => 'doc',
+    listChangeHistory: () => [
+      {
+        id: `package_xml:${record.changeId}`,
+        kind: 'package_xml',
+        record,
+        sequence: 1,
+        legacy: false,
+      },
+    ],
+    listPackageBackups: async () => [
+      { changeId: record.changeId, ...record.originalRef, status: 'ready' },
+      {
+        changeId: 'orphan-upload',
+        key: 'page-0',
+        sha256: 'a'.repeat(64),
+        sizeBytes: 10,
+        status: 'uploading',
+      },
+    ],
+    executeTool: vi.fn(async () => ({ output: '{}', mutated: false, summary: 'unused' })),
+  })
+  await controller.refresh()
+  expect(controller.snapshot().entries).toHaveLength(1)
+  expect(controller.snapshot().packageBackupAudit).toEqual({ active: 2, unmatched: 1 })
 })
 it('does not expose an unknown tool error in the changes workbench', async () => {
   const { controller, executeTool } = await setup()

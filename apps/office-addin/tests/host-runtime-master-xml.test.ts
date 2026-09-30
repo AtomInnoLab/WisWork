@@ -223,7 +223,7 @@ async function confirm(f: Awaited<ReturnType<typeof fixture>>) {
   })
   return f.runtime.proposals.confirm(proposal.id)
 }
-it('prepares through actual PC and settings, requires confirmation, and cancels without host writes', async () => {
+it('prepares without PC uploads, requires confirmation, and cancels without host writes', async () => {
   const f = await fixture()
   const result = await propose(f)
   expect(result.isError, JSON.stringify(result)).not.toBe(true)
@@ -231,15 +231,14 @@ it('prepares through actual PC and settings, requires confirmation, and cancels 
     operation: 'edit_slide_master_xml',
     preview: { qaScope: { basis: 'master_xml_savepoint', hostSlideIds: ['s0', 's1'] } },
   })
-  expect(f.request.mock.calls.some(([v]: any) => v.operation === 'package_backup_finish')).toBe(
-    true,
-  )
+  expect(f.request).not.toHaveBeenCalled()
   expect(f.insert).not.toHaveBeenCalled()
   expect(f.apply).not.toHaveBeenCalled()
   expect(f.remove).not.toHaveBeenCalled()
   f.runtime.clearSession()
   expect(f.runtime.proposals.pending()).toBeUndefined()
   expect(f.binding.listChangeHistory()).toHaveLength(0)
+  expect(f.request).not.toHaveBeenCalled()
 })
 it.each(['capability', 'paired', 'api', 'Mac', 'binding'])(
   'refuses %s without backup or host writes',

@@ -6,7 +6,12 @@ import { PresentationChangesCard } from '../src/agent/presentation-changes-card.
 import type { PresentationChangesController } from '../src/agent/presentation-changes.js'
 it('counts active backup packages without assuming a PC capacity limit', async () => {
   const controller: PresentationChangesController = {
-    snapshot: () => ({ phase: 'idle', entries: [], backupAudit: { active: 16, unmatched: 1 } }),
+    snapshot: () => ({
+      phase: 'idle',
+      entries: [],
+      backupAudit: { active: 16, unmatched: 1 },
+      packageBackupAudit: { active: 3, unmatched: 1 },
+    }),
     subscribe: () => () => {},
     run: vi.fn(),
     refresh: vi.fn(),
@@ -21,6 +26,8 @@ it('counts active backup packages without assuming a PC capacity limit', async (
     expect(container.textContent).not.toContain('/16')
     expect(container.textContent).toContain('原页和替换源页两份')
     expect(container.textContent).toContain('释放')
+    expect(container.textContent).toContain('包结构与母版备份：3 份')
+    expect(container.textContent).toContain('变更 ID 未在当前保存点历史中找到')
   } finally {
     await act(async () => root.unmount())
   }
