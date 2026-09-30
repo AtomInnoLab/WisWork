@@ -29,8 +29,10 @@ function mailbox(socket) {
   let failure
   function deliver(error, frame) {
     const waiter = waiters.shift()
-    if (waiter) error ? waiter.reject(error) : waiter.resolve(frame)
-    else if (error) failure = error
+    if (waiter) {
+      if (error) waiter.reject(error)
+      else waiter.resolve(frame)
+    } else if (error) failure = error
     else frames.push(frame)
   }
   socket.on('message', (data) => {
@@ -267,6 +269,8 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     throw new Error('invalid smoke attachment fixture IDs')
   if (options.uploadFixtures && fixtureIds.some((id) => id !== undefined))
     throw new Error('upload smoke cannot use existing attachment IDs')
+  if (options.readExistingProduction && !options.productionFixture)
+    throw new Error('existing production smoke requires a production fixture')
   if (
     options.compiledRequestId !== undefined &&
     (typeof options.compiledRequestId !== 'string' ||
@@ -446,23 +450,28 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     if (options.productionFixture) {
       const fixture = options.productionFixture
       const base = { documentId, projectId, requestId: fixture.requestId }
-      const saved = await request('presentation.v1', {
-        operation: 'save_plan',
-        documentId,
-        projectId,
-        expectedRevision: 0,
-        plan: fixture.plan,
-      })
-      if (saved?.revision !== 1) throw new Error('PC production plan was not saved')
-      const begun = await request('presentation.v1', {
-        operation: 'production_begin',
-        ...base,
-        planRevision: 1,
-        deck: fixture.deck,
-      })
-      if (begun?.status !== 'pending' || begun.total !== fixture.expectedSlideTexts.length)
-        throw new Error('PC page production did not begin')
-      const produced = await request('presentation.v1', { operation: 'production_run', ...base })
+      let produced
+      if (options.readExistingProduction) {
+        produced = await request('presentation.v1', { operation: 'production_status', ...base })
+      } else {
+        const saved = await request('presentation.v1', {
+          operation: 'save_plan',
+          documentId,
+          projectId,
+          expectedRevision: 0,
+          plan: fixture.plan,
+        })
+        if (saved?.revision !== 1) throw new Error('PC production plan was not saved')
+        const begun = await request('presentation.v1', {
+          operation: 'production_begin',
+          ...base,
+          planRevision: 1,
+          deck: fixture.deck,
+        })
+        if (begun?.status !== 'pending' || begun.total !== fixture.expectedSlideTexts.length)
+          throw new Error('PC page production did not begin')
+        produced = await request('presentation.v1', { operation: 'production_run', ...base })
+      }
       if (
         produced?.status !== 'compiled' ||
         produced.compiledCount !== fixture.expectedSlideTexts.length ||

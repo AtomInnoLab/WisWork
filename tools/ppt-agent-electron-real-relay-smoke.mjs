@@ -130,8 +130,10 @@ const projectId = ${JSON.stringify(projectId)}
 app.whenReady().then(async () => {
   const presentation = createPresentationService({ userDataPath: ${JSON.stringify(userDataPath)} })
   const deck = ${JSON.stringify(deck)}
-  const compiled = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId, requestId: 'run-1', deck }, new AbortController().signal)).toString('utf8'))
-  if (compiled.status !== 'compiled') throw Error('Electron PC compile failed')
+  if (process.env.PPT_AGENT_SMOKE_RESTARTED !== '1') {
+    const compiled = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId, requestId: 'run-1', deck }, new AbortController().signal)).toString('utf8'))
+    if (compiled.status !== 'compiled') throw Error('Electron PC compile failed')
+  }
   let client
   client = createOfficeRelayClient({
     endpoint: ${JSON.stringify(origin.replace('http:', 'ws:') + '/office-relay')},
@@ -160,11 +162,29 @@ app.whenReady().then(async () => {
   )
   const command = process.platform === 'linux' ? 'xvfb-run' : electron
   const args = process.platform === 'linux' ? ['-a', electron, '--no-sandbox', driver] : [driver]
-  const pc = spawn(command, args, { cwd: root, stdio: ['pipe', 'pipe', 'inherit'] })
-  children.push(pc)
-  const readyLine = await firstLine(pc, 'Electron PC', 30_000, (line) => line === 'ELECTRON_READY')
-  if (readyLine !== 'ELECTRON_READY')
-    throw new Error(`Electron PC did not initialize: ${readyLine}`)
+  async function startPc(restarted) {
+    const pc = spawn(command, args, {
+      cwd: root,
+      stdio: ['pipe', 'pipe', 'inherit'],
+      env: { ...process.env, PPT_AGENT_SMOKE_RESTARTED: restarted ? '1' : '0' },
+    })
+    children.push(pc)
+    await firstLine(pc, 'Electron PC', 30_000, (line) => line === 'ELECTRON_READY')
+    return pc
+  }
+  async function stopPc(pc) {
+    const exited = new Promise((resolveExit, reject) => {
+      const timer = setTimeout(() => reject(new Error('Electron PC did not exit')), 10_000)
+      pc.once('exit', (code) => {
+        clearTimeout(timer)
+        if (code === 0) resolveExit()
+        else reject(new Error(`Electron PC exited ${code}`))
+      })
+    })
+    pc.stdin.write(JSON.stringify({ type: 'stop' }) + '\n')
+    await exited
+  }
+  const pc = await startPc(false)
   const result = await inspectPcBusiness(origin, documentId, projectId, {
     onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
     timeoutMs: 15_000,
@@ -192,17 +212,27 @@ app.whenReady().then(async () => {
   )
   if ((await readdir(attachments)).length !== 0)
     throw new Error('Electron PC test attachments were not cleaned up')
-  pc.stdin.write(JSON.stringify({ type: 'stop' }) + '\n')
-  await new Promise((resolveExit, reject) => {
-    const timer = setTimeout(() => reject(new Error('Electron PC did not exit')), 10_000)
-    pc.once('exit', (code) => {
-      clearTimeout(timer)
-      if (code === 0) resolveExit()
-      else reject(new Error(`Electron PC exited ${code}`))
-    })
+  await stopPc(pc)
+  const restartedPc = await startPc(true)
+  const recovered = await inspectPcBusiness(origin, documentId, projectId, {
+    onCode: (code) => restartedPc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+    timeoutMs: 15_000,
+    compiledRequestId: 'run-1',
+    expectedSlideTexts,
+    productionFixture: { requestId: 'production-run-1', deck, plan, expectedSlideTexts },
+    readExistingProduction: true,
   })
+  if (
+    recovered.compiledDelivery?.pptxSha256 !== result.compiledDelivery.pptxSha256 ||
+    recovered.compiledDelivery?.pdfBytes !== result.compiledDelivery.pdfBytes ||
+    JSON.stringify(recovered.productionDelivery?.pageDigests) !==
+      JSON.stringify(result.productionDelivery.pageDigests) ||
+    recovered.productionDelivery?.pdfBytes !== result.productionDelivery.pdfBytes
+  )
+    throw new Error('Electron PC delivery changed after restart')
+  await stopPc(restartedPc)
   console.log(
-    'Electron PC + Rust Relay business smoke passed: pairing, eight-page compile and planned page production, import-source digests, PPTX/PDF readback, TXT/PNG upload, native image readback and cleanup',
+    'Electron PC + Rust Relay business smoke passed: pairing, eight-page compile and planned page production, import-source digests, PPTX/PDF readback, TXT/PNG upload, native image readback, cleanup and durable delivery after PC restart',
   )
 } finally {
   for (const child of children.reverse()) {
