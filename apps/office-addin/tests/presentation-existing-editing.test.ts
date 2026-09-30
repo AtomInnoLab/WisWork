@@ -2693,6 +2693,16 @@ it('persists a generic native text and geometry program before writes and retain
         richText: { shapes: richText.shapes, fingerprints: richText.fingerprints },
         tables: {},
         charts: {},
+        ordinary: Object.fromEntries(
+          ids.ordinary.map((id) => [
+            id,
+            {
+              exact: 'a'.repeat(64),
+              content: 'b'.repeat(64),
+              formatting: 'c'.repeat(64),
+            },
+          ]),
+        ),
       }
     },
   )

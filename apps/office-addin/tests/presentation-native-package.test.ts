@@ -7,7 +7,7 @@ import { BrowserPowerPointAdapter } from '../src/skills/powerpoint/browser-power
 it('derives native text, picture, table and chart proofs from one exported page package', async () => {
   const deck = benchmarkDeck()
   const page = structuredClone(deck.slides[0]!)
-  for (const index of [2, 5, 6])
+  for (const index of [2, 3, 5, 6])
     page.elements.push(structuredClone(deck.slides[index]!.elements[1]!))
   deck.slides = [page]
   const base64 = Buffer.from((await compilePresentationDeck(deck)).bytes).toString('base64')
@@ -23,8 +23,9 @@ it('derives native text, picture, table and chart proofs from one exported page 
     text: shapeIds('p:sp', '<p:txBody').slice(0, 1),
     tables: shapeIds('p:graphicFrame', '<a:tbl>'),
     charts: shapeIds('p:graphicFrame', '<c:chart'),
+    ordinary: [...shapeIds('p:sp', '<p:txBody').slice(0, 1), ...shapeIds('p:sp', 'name="step"')],
   }
-  expect(Object.values(ids).map((values) => values.length)).toEqual([1, 1, 1, 1])
+  expect(Object.values(ids).map((values) => values.length)).toEqual([1, 1, 1, 1, 2])
   const adapter = new BrowserPowerPointAdapter()
   const exported = vi.spyOn(adapter, 'exportPresentationPagePackage').mockResolvedValue({
     slideId: 'slide',
@@ -37,5 +38,6 @@ it('derives native text, picture, table and chart proofs from one exported page 
   expect(Object.keys(proof.richText.fingerprints)).toEqual(ids.text)
   expect(Object.keys(proof.tables)).toEqual(ids.tables)
   expect(Object.keys(proof.charts)).toEqual(ids.charts)
+  expect(Object.keys(proof.ordinary)).toEqual(ids.ordinary)
   expect(proof.base64).toBe(base64)
 })

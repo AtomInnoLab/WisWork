@@ -144,7 +144,8 @@ export async function inspectPowerPointTextShapeFingerprints(
   base64: string,
   shapeIds: string[],
   signal?: AbortSignal,
-): Promise<Record<string, { content: string; formatting: string }>> {
+  allowNoTextBody = false,
+): Promise<Record<string, { exact: string; content: string; formatting: string }>> {
   if (signal?.aborted) throw Error('cancelled')
   if (
     shapeIds.length > 100 ||
@@ -180,11 +181,15 @@ export async function inspectPowerPointTextShapeFingerprints(
     visit(shape)
     return [...ids].sort()
   }
-  const found: Record<string, { content: string; formatting: string }> = Object.create(null)
+  const found: Record<string, { exact: string; content: string; formatting: string }> =
+    Object.create(null)
   for (const original of tags(slide, 'p:sp')) {
     const id = attr(tags(original['p:sp'] as Node[], 'p:cNvPr')[0], 'id')
     if (!id || !shapeIds.includes(id)) continue
-    if (Object.hasOwn(found, id) || !tags(original['p:sp'] as Node[], 'p:txBody').length)
+    if (
+      Object.hasOwn(found, id) ||
+      (!allowNoTextBody && !tags(original['p:sp'] as Node[], 'p:txBody').length)
+    )
       throw Error('office_api_unsupported')
     const linked = referenced(original).map((relationId) => {
       const matched = relationships.filter(
@@ -193,6 +198,7 @@ export async function inspectPowerPointTextShapeFingerprints(
       if (matched.length !== 1) throw Error('office_api_unsupported')
       return [relationId, stableShape(matched[0]!)]
     })
+    const exact = await shapeHash(original, linked)
     const shape = structuredClone(original)
     for (const properties of tags(shape['p:sp'] as Node[], 'p:spPr'))
       for (const transform of tags(properties['p:spPr'] as Node[], 'a:xfrm'))
@@ -205,7 +211,7 @@ export async function inspectPowerPointTextShapeFingerprints(
       const attributes = text[':@'] as Node | undefined
       if (attributes) delete attributes['@_xml:space']
     }
-    found[id] = { content, formatting: await shapeHash(shape, linked) }
+    found[id] = { exact, content, formatting: await shapeHash(shape, linked) }
   }
   if (Object.keys(found).length !== shapeIds.length) throw Error('office_api_unsupported')
   if (signal?.aborted) throw Error('cancelled')

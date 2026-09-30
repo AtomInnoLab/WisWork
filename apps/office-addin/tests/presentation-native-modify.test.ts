@@ -59,6 +59,8 @@ async function fixture(pageCount = 2) {
   let tableStyle = 'a'.repeat(64)
   let chartFingerprint = 'd'.repeat(64)
   let textStructure = 'a'.repeat(64)
+  let emptyTextStructure = 'e'.repeat(64)
+  let ordinaryStructure = '7'.repeat(64)
   let counter = 0
   const textFor = (id: string) => texts.get(id) ?? 'old'
   const packages = new Map<string, string>()
@@ -141,8 +143,18 @@ async function fixture(pageCount = 2) {
         shapeIds.map((id) => [
           id,
           {
-            content: id === 'sdk-0' ? textStructure : 'b'.repeat(64),
-            formatting: id === 'sdk-0' ? textStructure : 'b'.repeat(64),
+            content:
+              id === 'sdk-0'
+                ? textStructure
+                : id === 'empty-sdk'
+                  ? emptyTextStructure
+                  : 'b'.repeat(64),
+            formatting:
+              id === 'sdk-0'
+                ? textStructure
+                : id === 'empty-sdk'
+                  ? emptyTextStructure
+                  : 'b'.repeat(64),
           },
         ]),
       ),
@@ -253,6 +265,7 @@ async function fixture(pageCount = 2) {
             text: string[]
             tables: string[]
             charts: string[]
+            ordinary: string[]
           },
         ) => {
           const exported = await adapter.exportPresentationPagePackage(slideId)
@@ -268,6 +281,16 @@ async function fixture(pageCount = 2) {
             richText: { shapes: text.shapes, fingerprints: text.fingerprints },
             tables: ids.tables.length ? (await table(slideId, ids.tables)).fingerprints : {},
             charts: ids.charts.length ? (await chart(slideId, ids.charts)).fingerprints : {},
+            ordinary: Object.fromEntries(
+              ids.ordinary.map((id) => [
+                id,
+                {
+                  exact: id === 'sdk-1' ? ordinaryStructure : '8'.repeat(64),
+                  content: id === 'sdk-1' ? ordinaryStructure : '8'.repeat(64),
+                  formatting: id === 'sdk-1' ? ordinaryStructure : '8'.repeat(64),
+                },
+              ]),
+            ),
           }
         },
       )
@@ -306,6 +329,12 @@ async function fixture(pageCount = 2) {
     setImageMedia: (value: string) => (imageMedia = value),
     setTextFont: (value: string) => (textFont = value),
     setTextStructure: (value: string) => (textStructure = value),
+    addEmptyTextBox: () => {
+      shapes.push({ ...shape, id: 'empty-sdk', type: 'TextBox' })
+      texts.set('empty-sdk', '')
+    },
+    setEmptyTextStructure: (value: string) => (emptyTextStructure = value),
+    setOrdinaryStructure: (value: string) => (ordinaryStructure = value),
     setTableStyle: (value: string) => (tableStyle = value),
     addChart: () => shapes.push({ ...shape, id: 'chart-sdk', type: 'Chart' }),
     setChartFingerprint: (value: string) => (chartFingerprint = value),
@@ -378,6 +407,14 @@ it('keeps a native write uncertain when the combined package readback is incompl
   })
   const proposed = await f.propose([textOp])
   await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_read_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('does not acknowledge a hidden geometric shape style change in the combined package', async () => {
+  const f = await fixture()
+  f.enableCombinedProof()
+  f.setAfterWrite(() => f.setOrdinaryStructure('9'.repeat(64)))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
   expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
 })
 it('backs up single native text before journaling and writing; persisted result survives reopening', async () => {
@@ -668,6 +705,19 @@ it('does not acknowledge an unrelated text-shape XML change omitted by the parse
   f.setAfterWrite(() => f.setTextStructure('c'.repeat(64)))
   const proposed = await f.propose([textOp])
   await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('protects an empty text box from formatting drift during another native edit', async () => {
+  const f = await fixture()
+  f.addEmptyTextBox()
+  f.setAfterWrite(() => f.setEmptyTextStructure('f'.repeat(64)))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.adapter.inspectSlideRichText).toHaveBeenCalledWith(
+    's1',
+    expect.arrayContaining(['empty-sdk']),
+    expect.any(AbortSignal),
+  )
   expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
 })
 it('refuses a native write when rich text cannot be mapped to its package', async () => {

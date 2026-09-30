@@ -320,7 +320,7 @@ export function createPresentationNativeModifySkill(options: Options) {
             shape.type !== 'Image' &&
             shape.type !== 'Picture' &&
             shape.type !== 'Chart' &&
-            shape.text,
+            (shape.type === 'TextBox' || shape.text),
         )
         .map((shape) => shape.id)
       const richTextProof = async (ids: string[]) => {
@@ -387,6 +387,9 @@ export function createPresentationNativeModifySkill(options: Options) {
         text: textIds,
         tables: tableIds,
         charts: chartIds,
+        ordinary: beforeSemantic.shapes
+          .filter((shape) => ['TextBox', 'GeometricShape'].includes(shape.type))
+          .map((shape) => shape.id),
       }
       const packageProof = async (ids: typeof proofIds) => {
         if (!options.adapter.inspectSlideNativePackage) return undefined
@@ -413,7 +416,14 @@ export function createPresentationNativeModifySkill(options: Options) {
               !/^[a-f0-9]{64}$/.test(inspected.richText.fingerprints[id]?.formatting ?? ''),
           ) ||
           !valid(inspected.tables, ids.tables) ||
-          !valid(inspected.charts, ids.charts)
+          !valid(inspected.charts, ids.charts) ||
+          Object.keys(inspected.ordinary).length !== ids.ordinary.length ||
+          ids.ordinary.some(
+            (id) =>
+              !/^[a-f0-9]{64}$/.test(inspected.ordinary[id]?.exact ?? '') ||
+              !/^[a-f0-9]{64}$/.test(inspected.ordinary[id]?.content ?? '') ||
+              !/^[a-f0-9]{64}$/.test(inspected.ordinary[id]?.formatting ?? ''),
+          )
         )
           throw Error('office_read_failed')
         return inspected
@@ -497,6 +507,7 @@ export function createPresentationNativeModifySkill(options: Options) {
         text: textIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape'),
         tables: tableIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape'),
         charts: chartIds.filter((id) => id !== op.shape_id || op.op !== 'delete_shape'),
+        ordinary: proofIds.ordinary.filter((id) => id !== op.shape_id || op.op !== 'delete_shape'),
       }
       const afterPackage = await packageProof(afterIds)
       if (beforePictures) {
@@ -557,6 +568,16 @@ export function createPresentationNativeModifySkill(options: Options) {
           ? (afterPackage?.charts ?? (await chartProof(comparedIds)))
           : {}
         if (comparedIds.some((id) => beforeCharts[id] !== afterCharts[id]))
+          throw Error('office_verify_failed')
+      }
+      if (beforePackage?.ordinary && afterPackage?.ordinary) {
+        if (
+          afterIds.ordinary.some((id) => {
+            const field =
+              id !== op.shape_id ? 'exact' : op.op === 'set_shape_text' ? 'formatting' : 'content'
+            return beforePackage.ordinary[id]?.[field] !== afterPackage.ordinary[id]?.[field]
+          })
+        )
           throw Error('office_verify_failed')
       }
       const exported =

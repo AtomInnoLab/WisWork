@@ -63,3 +63,76 @@ it('distinguishes intended text replacement from hidden run formatting drift in 
   )[id!]!
   expect(linkedAfter.formatting).not.toBe(linkedBefore.formatting)
 })
+
+it('maps an empty editable text box to an exact package fingerprint', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const zip = await JSZip.loadAsync((await compilePresentationDeck(deck)).bytes)
+  const original = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const body = [...original.matchAll(/<p:sp\b[^]*?<\/p:sp>/g)].find((match) =>
+    match[0].includes('name="body"'),
+  )?.[0]
+  expect(body).toBeDefined()
+  const slide = original.replace(body!, body!.replace(/<a:t>[^<]*<\/a:t>/, '<a:t></a:t>'))
+  zip.file('ppt/slides/slide1.xml', slide)
+  const shape = [...slide.matchAll(/<p:sp\b[^]*?<\/p:sp>/g)].find((match) =>
+    match[0].includes('name="body"'),
+  )?.[0]
+  expect(shape).toContain('<p:txBody>')
+  const id = shape?.match(/<p:cNvPr id="(\d+)"/)?.[1]
+  expect(id).toBeDefined()
+  const inspected = await inspectPowerPointTextShapeFingerprints(
+    await zip.generateAsync({ type: 'base64' }),
+    [id!],
+  )
+  expect(inspected[id!]?.content).toMatch(/^[a-f0-9]{64}$/)
+})
+
+it('protects a native geometric shape style while permitting only its geometry change', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[3]!]
+  const zip = await JSZip.loadAsync((await compilePresentationDeck(deck)).bytes)
+  const slide = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const shape = [...slide.matchAll(/<p:sp\b[^]*?<\/p:sp>/g)].find((match) =>
+    match[0].includes('name="step"'),
+  )?.[0]
+  expect(shape).toBeDefined()
+  const id = shape?.match(/<p:cNvPr id="(\d+)"/)?.[1]
+  expect(id).toBeDefined()
+  const before = (
+    await inspectPowerPointTextShapeFingerprints(
+      await zip.generateAsync({ type: 'base64' }),
+      [id!],
+      undefined,
+      true,
+    )
+  )[id!]!
+  const moved = shape!.replace(/<a:off x="\d+" y="\d+"\/>/, '<a:off x="999999" y="999999"/>')
+  expect(moved).not.toBe(shape)
+  zip.file('ppt/slides/slide1.xml', slide.replace(shape!, moved))
+  const geometry = (
+    await inspectPowerPointTextShapeFingerprints(
+      await zip.generateAsync({ type: 'base64' }),
+      [id!],
+      undefined,
+      true,
+    )
+  )[id!]!
+  expect(geometry.exact).not.toBe(before.exact)
+  expect(geometry.content).toBe(before.content)
+  const recolored = shape!.replace(
+    /<a:srgbClr val="[0-9A-Fa-f]{6}"\/>/,
+    '<a:srgbClr val="ABCDEF"/>',
+  )
+  expect(recolored).not.toBe(shape)
+  zip.file('ppt/slides/slide1.xml', slide.replace(shape!, recolored))
+  const style = (
+    await inspectPowerPointTextShapeFingerprints(
+      await zip.generateAsync({ type: 'base64' }),
+      [id!],
+      undefined,
+      true,
+    )
+  )[id!]!
+  expect(style.content).not.toBe(before.content)
+})

@@ -214,7 +214,13 @@ export interface PowerPointAdapter {
   ): Promise<{ slideId: string; slideIds: string[]; fingerprints: Record<string, string> }>
   inspectSlideNativePackage?(
     slideId: string,
-    ids: { pictures: string[]; text: string[]; tables: string[]; charts: string[] },
+    ids: {
+      pictures: string[]
+      text: string[]
+      tables: string[]
+      charts: string[]
+      ordinary: string[]
+    },
     signal?: AbortSignal,
   ): Promise<{
     slideId: string
@@ -227,6 +233,7 @@ export interface PowerPointAdapter {
     }
     tables: Record<string, string>
     charts: Record<string, string>
+    ordinary: Record<string, { exact: string; content: string; formatting: string }>
   }>
   readPresentationPageGeometry?(
     slideId: string,
@@ -2109,7 +2116,13 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
 
   async inspectSlideNativePackage(
     slideId: string,
-    ids: { pictures: string[]; text: string[]; tables: string[]; charts: string[] },
+    ids: {
+      pictures: string[]
+      text: string[]
+      tables: string[]
+      charts: string[]
+      ordinary: string[]
+    },
     signal?: AbortSignal,
   ) {
     cancelled(signal)
@@ -2137,6 +2150,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     const charts = ids.charts.length
       ? await inspectPowerPointChartFingerprints(exported.base64, ids.charts, signal)
       : {}
+    const ordinary = ids.ordinary.length
+      ? await inspectPowerPointTextShapeFingerprints(exported.base64, ids.ordinary, signal, true)
+      : {}
     cancelled(signal)
     return {
       slideId: exported.slideId,
@@ -2146,6 +2162,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       richText: { shapes: textShapes, fingerprints: textFingerprints },
       tables,
       charts,
+      ordinary,
     }
   }
 
