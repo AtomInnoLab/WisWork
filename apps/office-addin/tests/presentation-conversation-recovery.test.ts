@@ -95,7 +95,12 @@ const messages: AgentMessage[] = [
   },
 ]
 describe('presentation completed-read conversation checkpoints', () => {
-  it.each(['read_presentation_plan', 'check_presentation_baseline'])(
+  it.each([
+    'read_presentation_plan',
+    'check_presentation_baseline',
+    'read_presentation_production_import_status',
+    'read_presentation_edit_observation',
+  ])(
     'explicitly restarts an interrupted pending %s after document validation',
     async (toolName) => {
       const f = await fixture()

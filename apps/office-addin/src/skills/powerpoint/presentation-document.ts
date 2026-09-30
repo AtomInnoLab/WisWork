@@ -115,6 +115,12 @@ export interface PresentationAgentRunRecovery {
 const restartSafeTools = new Set([
   'read_presentation_plan',
   'read_presentation_import_status',
+  'read_presentation_production_import_status',
+  'read_presentation_edit_observation',
+  'list_presentation_edit_observations',
+  'read_presentation_text_change',
+  'read_presentation_geometry_change',
+  'list_existing_presentation_changes',
   'read_presentation_page',
   'read_presentation_page_geometry',
   'read_presentation_baseline',
