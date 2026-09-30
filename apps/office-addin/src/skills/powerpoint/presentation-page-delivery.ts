@@ -658,8 +658,20 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
                     'invalid_tool_input',
                   ].includes(error.message)
                 ) {
-                  await current()
-                  await save(checkpoint)
+                  let unchangedHost = false
+                  try {
+                    const after = await options.adapter.snapshot()
+                    unchangedHost =
+                      same(after.slideIds, slideIds) &&
+                      after.fingerprint === baseline.fingerprint &&
+                      same(options.readReceipt(key), last)
+                  } catch {
+                    // A failed read cannot prove that Office did not append the page.
+                  }
+                  if (unchangedHost) {
+                    await current()
+                    await save(checkpoint)
+                  }
                 }
                 throw error
               }

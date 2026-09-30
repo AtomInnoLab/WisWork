@@ -123,6 +123,24 @@ it('resumes after a safe failure with a fresh confirmation and preserves earlier
   await f.proposals.confirm(f.proposals.pending()!.id)
   expect(f.host).toEqual(['original', 'host-256#', 'host-257#', 'host-258#'])
 })
+it('keeps an in-flight page when an adapter reports cancellation after appending it', async () => {
+  const f = fixture(),
+    original = f.adapter.insertPage.getMockImplementation()!
+  f.adapter.insertPage.mockImplementationOnce(async (...args) => {
+    await original(...args)
+    throw new Error('cancelled')
+  })
+  await expect(f.confirm()).rejects.toThrow('cancelled')
+  expect(f.host).toEqual(['original', 'host-256#'])
+  expect(f.receipts.get('project/request')?.checkpoint?.inFlight).toMatchObject({
+    sourceSlideId: '256#',
+  })
+  expect(await createPresentationDeliverySkill(f.options).executeTool(f.call)).toMatchObject({
+    isError: true,
+    output: 'presentation_import_uncertain',
+  })
+  expect(f.adapter.insertPage).toHaveBeenCalledOnce()
+})
 it('preserves uncertainty across restart and refuses changed bytes or source IDs', async () => {
   const f = fixture()
   f.adapter.verify.mockResolvedValue(false)
