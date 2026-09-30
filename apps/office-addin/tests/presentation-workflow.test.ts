@@ -11,6 +11,26 @@ import type { PresentationQaRecord } from '../src/skills/powerpoint/presentation
 import { deliveryReportFixture } from './presentation-delivery-fixture.js'
 
 const plan = benchmarkPlan()
+it('replays project creation from a durable timestamp without claiming delivery', () => {
+  const createdAt = '2026-09-28T00:00:00.000Z'
+  const current = { ...project, createdAt }
+  const first = presentationWorkflowSummary(current, undefined, undefined)!
+  const created = first.timeline.find((event) => event.type === 'project.created')
+  expect(created).toMatchObject({
+    id: `project-created:${project.projectId}`,
+    at: createdAt,
+    scope: 'project_lifecycle',
+    text: expect.stringContaining('交付仍需分别核验'),
+  })
+  expect(presentationWorkflowSummary(current, undefined, undefined)!.timeline).toContainEqual(
+    created,
+  )
+  expect(
+    presentationWorkflowSummary(project, undefined, undefined)!.timeline.some(
+      (event) => event.type === 'project.created',
+    ),
+  ).toBe(false)
+})
 it('replays only explicit plan and style acceptance decisions with their saved identity and historical scope', () => {
   const acceptance = {
     decisionId: 'decision',

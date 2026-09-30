@@ -133,6 +133,7 @@ export interface PresentationWorkflowSummary {
     text: string
     at?: string
     type?:
+      | 'project.created'
       | 'asset.fetching'
       | 'asset.ready'
       | 'asset.rejected'
@@ -162,6 +163,7 @@ export interface PresentationWorkflowSummary {
       | 'qa.attempt.cancelled'
       | 'qa.attempt.closed'
     scope?:
+      | 'project_lifecycle'
       | 'production_asset_resolution'
       | 'source_excerpt_audit'
       | 'research_ledger'
@@ -566,6 +568,14 @@ export function presentationWorkflowSummary(
   ]
   // Rebuild from durable records. Undated entries are current checkpoints, not events.
   const timeline: PresentationWorkflowSummary['timeline'] = []
+  if (project.createdAt)
+    timeline.push({
+      id: `project-created:${project.projectId}`,
+      type: 'project.created',
+      scope: 'project_lifecycle',
+      at: project.createdAt,
+      text: `项目生命周期已登记：${project.title}；页面制作与交付仍需分别核验`,
+    })
   if (project.planAcceptanceUnavailable)
     attention.push({
       id: 'plan-acceptance-unavailable',

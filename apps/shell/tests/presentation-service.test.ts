@@ -149,6 +149,8 @@ describe('durable project recovery', () => {
     const compile = vi.fn(async (_deck: unknown) => result())
     const service = createPresentationService({ userDataPath, compile })
     const first = decode(await service(input, signal()))
+    const createdAt = decode(await service(query, signal())).createdAt
+    expect(createdAt).toEqual(expect.stringMatching(/^\d{4}-\d\d-\d\dT/))
     const controller = new AbortController()
     compile.mockImplementationOnce(async () => {
       controller.abort()
@@ -167,6 +169,7 @@ describe('durable project recovery', () => {
     const reload = createPresentationService({ userDataPath, compile })
     expect(decode(await reload(query, signal()))).toEqual({
       projectId: 'deck',
+      createdAt,
       title: 'Second',
       deliveryBundlesAvailable: true,
       researchAvailable: true,

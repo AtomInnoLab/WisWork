@@ -83,6 +83,7 @@ export interface PresentationProductionTask {
   }
 }
 export interface PresentationProjectStatus {
+  createdAt?: string
   researchSummary?: PresentationResearchSummary
   researchHistoryUnavailable?: boolean
   deliveryBundlesAvailable?: true
@@ -568,6 +569,11 @@ async function parseStatus(value: unknown, projectId: string): Promise<Presentat
   if (
     !p ||
     p.projectId !== projectId ||
+    (p.createdAt !== undefined &&
+      (typeof p.createdAt !== 'string' ||
+        !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(p.createdAt) ||
+        !Number.isFinite(Date.parse(p.createdAt)) ||
+        new Date(p.createdAt).toISOString() !== p.createdAt)) ||
     typeof p.title !== 'string' ||
     p.title.length > 500 ||
     !['planned', 'pending', 'compiled'].includes(p.status) ||
@@ -656,6 +662,7 @@ async function parseStatus(value: unknown, projectId: string): Promise<Presentat
     ...(production ? { production } : {}),
     ...(productionTasks ? { productionTasks } : {}),
     projectId: p.projectId,
+    ...(p.createdAt ? { createdAt: p.createdAt } : {}),
     title: p.title,
     status: p.status,
     ...(p.latestRequestId ? { latestRequestId: p.latestRequestId } : {}),

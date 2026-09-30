@@ -1977,6 +1977,7 @@ export function createPresentationService(options: {
             if (!plan) throw new Error('not_found')
             return guardedResponse({
               projectId,
+              ...(control ? { createdAt: control.createdAt } : {}),
               title: plan.value.title,
               status: 'planned',
               deliveryBundlesAvailable: true,
@@ -2002,6 +2003,7 @@ export function createPresentationService(options: {
               : undefined
           return guardedResponse({
             projectId,
+            ...(control ? { createdAt: control.createdAt } : {}),
             title: latestDeck.title,
             status: latest.status,
             deliveryBundlesAvailable: true,

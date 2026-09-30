@@ -74,6 +74,20 @@ function fixture() {
   }
 }
 describe('presentation project controls', () => {
+  it('retains only a valid durable project creation time from PC status', async () => {
+    const f = fixture()
+    f.request.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...project, createdAt: '2026-09-28T00:00:00.000Z' })),
+    )
+    await f.controller.refresh()
+    expect(f.controller.snapshot().project?.createdAt).toBe('2026-09-28T00:00:00.000Z')
+    f.request.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...project, createdAt: 'not-a-timestamp' })),
+    )
+    await f.controller.refresh()
+    expect(f.controller.snapshot().error).toContain('校验未通过')
+    expect(f.controller.snapshot().project).toBeUndefined()
+  })
   it('exports only a completed selected production task as a PDF preview', async () => {
     const f = fixture()
     const production = {
