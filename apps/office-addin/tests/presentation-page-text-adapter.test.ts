@@ -91,7 +91,7 @@ describe('stable host-ID text access', () => {
     expect(f.writes()).toBe(1)
     expect(f.range.getSubstring).toHaveBeenCalledWith(0, 4)
   })
-  it('rejects stale range font, length changes and ambiguous Unicode offsets before writing', async () => {
+  it('rejects stale range font, length changes and split Unicode characters before writing', async () => {
     const f = setup()
     const before = await f.adapter.readPresentationPageTextRange('host-27', 'shape-id', 0, 4)
     await expect(f.adapter.editPresentationPageTextRange(before, 'longer')).rejects.toThrow(
@@ -103,9 +103,19 @@ describe('stable host-ID text access', () => {
     )
     f.setText('😀text')
     await expect(
-      f.adapter.readPresentationPageTextRange('host-27', 'shape-id', 0, 2),
+      f.adapter.readPresentationPageTextRange('host-27', 'shape-id', 0, 1),
     ).rejects.toThrow('office_api_unsupported')
     expect(f.writes()).toBe(0)
+  })
+  it('edits a complete supplementary character and verifies the host substring', async () => {
+    const f = setup()
+    f.setText('A😀B')
+    const before = await f.adapter.readPresentationPageTextRange('host-27', 'shape-id', 1, 2)
+    expect(before.text).toBe('😀')
+    await f.adapter.editPresentationPageTextRange(before, '🙂')
+    expect(f.range.text).toBe('A🙂B')
+    expect(f.writes()).toBe(1)
+    expect(f.range.getSubstring).toHaveBeenCalledWith(1, 2)
   })
   it('reads and edits the same host page directly without consulting slide order', async () => {
     const { adapter, slides, shapes, range, supports } = setup()

@@ -278,7 +278,8 @@ export function createPresentationExistingEditingSkill(options: Options): AgentS
                   (input.range_length as number) < 1 ||
                   (input.range_length as number) > 128 ||
                   (input.text as string).length !== input.range_length ||
-                  /[\r\n\uD800-\uDFFF]/.test(input.text as string))) ||
+                  /[\r\n]/.test(input.text as string) ||
+                  /[\uD800-\uDFFF]/u.test(input.text as string))) ||
               (tableCell &&
                 (!Number.isSafeInteger(input.row_index) ||
                   !Number.isSafeInteger(input.column_index) ||

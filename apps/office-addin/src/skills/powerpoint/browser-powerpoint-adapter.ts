@@ -614,7 +614,8 @@ function validTextSpan(fullText: string, start: number, length: number): void {
     length < 1 ||
     length > 128 ||
     start + length > fullText.length ||
-    /[\uD800-\uDFFF]/.test(fullText) ||
+    /[\uD800-\uDFFF]/u.test(fullText) ||
+    /[\uD800-\uDFFF]/u.test(fullText.slice(start, start + length)) ||
     /[\r\n]/.test(fullText.slice(start, start + length))
   )
     throw new Error('office_api_unsupported')
@@ -1301,7 +1302,8 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       typeof after !== 'string' ||
       after.length !== expected.length ||
       after === expected.text ||
-      /[\r\n\uD800-\uDFFF]/.test(after) ||
+      /[\r\n]/.test(after) ||
+      /[\uD800-\uDFFF]/u.test(after) ||
       typeof expected.fullText !== 'string' ||
       expected.fullText.length > MAX_POWERPOINT_TEXT ||
       Object.values(expected.font).some((value) => value === null)

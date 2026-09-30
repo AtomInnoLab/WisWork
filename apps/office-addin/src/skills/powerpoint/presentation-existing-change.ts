@@ -201,8 +201,10 @@ export function validatePresentationExistingChange(
       r.length > 128 ||
       r.before.length !== r.after.length ||
       r.start + r.length > r.before.length ||
-      /[\uD800-\uDFFF]/.test(r.before) ||
-      /[\uD800-\uDFFF]/.test(r.after) ||
+      /[\uD800-\uDFFF]/u.test(r.before) ||
+      /[\uD800-\uDFFF]/u.test(r.after) ||
+      /[\uD800-\uDFFF]/u.test(r.before.slice(r.start, r.start + r.length)) ||
+      /[\uD800-\uDFFF]/u.test(r.after.slice(r.start, r.start + r.length)) ||
       /[\r\n]/.test(r.before.slice(r.start, r.start + r.length)) ||
       /[\r\n]/.test(r.after.slice(r.start, r.start + r.length)) ||
       r.before.slice(0, r.start) !== r.after.slice(0, r.start) ||

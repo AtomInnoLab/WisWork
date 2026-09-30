@@ -83,7 +83,9 @@ export async function inspectPowerPointTextRunPackage(
     length < 1 ||
     length > 128 ||
     start + length > fullText.length ||
-    /[\r\n\uD800-\uDFFF]/.test(fullText)
+    /[\r\n]/.test(fullText) ||
+    /[\uD800-\uDFFF]/u.test(fullText) ||
+    /[\uD800-\uDFFF]/u.test(fullText.slice(start, start + length))
   )
     throw new Error('invalid_tool_input')
   const zip = await loadBoundedZip(base64, signal, true, 8 * 1024 * 1024)

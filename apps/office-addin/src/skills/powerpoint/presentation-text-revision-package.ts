@@ -16,6 +16,7 @@ const fail = (): never => {
 }
 const escape = (value: string) =>
   value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+const invalidText = (value: string) => /[\r\n]/.test(value) || /[\uD800-\uDFFF]/u.test(value)
 
 type Run = { xml: string; text: string; textStart: number; textEnd: number }
 
@@ -35,7 +36,7 @@ function plainRuns(shapeXml: string): Run[] {
     if (texts.length !== 1 || /<!\[CDATA\[/.test(texts[0]![1]!)) fail()
     const parsed = parser.parse(texts[0]![0]) as Record<string, unknown>
     const value = parsed['a:t']
-    if (typeof value !== 'string' || /[\r\n\uD800-\uDFFF]/.test(value)) fail()
+    if (typeof value !== 'string' || invalidText(value)) fail()
     result.push({
       xml,
       text: value as string,
@@ -75,7 +76,8 @@ export async function replacePowerPointTextRangePackage(
     !after.length ||
     after.length > 128 ||
     before === after ||
-    /[\r\n\uD800-\uDFFF]/.test(before + after)
+    invalidText(before) ||
+    invalidText(after)
   )
     throw new Error('invalid_tool_input')
   if (signal?.aborted) throw new Error('cancelled')
@@ -112,6 +114,7 @@ export async function replacePowerPointTextRangePackage(
       if (start >= cursor && start + before.length <= cursor + run.text.length) {
         const local = start - cursor
         const replacement = run.text.slice(0, local) + after + run.text.slice(local + before.length)
+        if (invalidText(replacement)) fail()
         patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
         changedRuns++
         break
@@ -129,6 +132,7 @@ export async function replacePowerPointTextRangePackage(
           run.text.slice(0, local) +
           after.slice(first - start, last - start) +
           run.text.slice(last - cursor)
+        if (invalidText(replacement)) fail()
         patches.push({ from: run.textStart, to: run.textEnd, value: escape(replacement) })
         changedRuns++
       }

@@ -47,6 +47,27 @@ it('binds one text run while allowing only its text payload to change', async ()
   expect(neighbor.structureDigest).not.toBe(original.structureDigest)
 })
 
+it('keeps complete supplementary characters in a directly edited native run', async () => {
+  const original = await inspectPowerPointTextRunPackage(
+    await packageWith(slide(run('A😀B', 'b="1"'))),
+    '7',
+    'A😀B',
+    1,
+    2,
+  )
+  const changed = await inspectPowerPointTextRunPackage(
+    await packageWith(slide(run('A🙂B', 'b="1"'))),
+    '7',
+    'A🙂B',
+    1,
+    2,
+  )
+  expect(changed.structureDigest).toBe(original.structureDigest)
+  await expect(
+    inspectPowerPointTextRunPackage(await packageWith(slide(run('A😀B'))), '7', 'A😀B', 2, 1),
+  ).rejects.toThrow('invalid_tool_input')
+})
+
 it('rejects spans across runs, links, fields, and mismatched host text', async () => {
   const mixed = await packageWith(slide(run('Before', 'b="1"') + run(' tail', 'i="1"')))
   await expect(inspectPowerPointTextRunPackage(mixed, '7', 'Before tail', 4, 4)).rejects.toThrow(

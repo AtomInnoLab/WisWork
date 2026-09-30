@@ -1195,6 +1195,29 @@ it('confirms and undoes a bounded text range in a mixed-font shape', async () =>
   expect(f.records()[0]!.record.state).toBe('undone')
   expect(f.editTextRange).toHaveBeenCalledTimes(2)
 })
+it('confirms and undoes a complete supplementary character in one native run', async () => {
+  const f = await fixture()
+  f.setText('A😀B')
+  const baseline_id = await f.baseline()
+  const proposed = await f.call('edit_existing_presentation_text_range', {
+    baseline_id,
+    slide_id: 'slide',
+    shape_id: 'shape',
+    range_start: 1,
+    range_length: 2,
+    text: '🙂',
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  await f.confirm()
+  expect(f.text()).toBe('A🙂B')
+  expect(f.readyBackups()).toBe(1)
+  const change_id = f.records()[0]!.record.changeId
+  f.reopen()
+  const undo = await f.call('undo_existing_presentation_change', { change_id })
+  expect(undo.isError, undo.output).not.toBe(true)
+  await f.confirm()
+  expect(f.text()).toBe('A😀B')
+})
 it('rejects an invalid range and blocks a stale range font before writing', async () => {
   const f = await fixture()
   const baseline_id = await f.baseline()
