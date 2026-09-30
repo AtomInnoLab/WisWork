@@ -53,6 +53,7 @@ async function fixture(pageCount = 2) {
   const texts = new Map<string, string>()
   let tableCell = '10'
   let imageAlt = 'Original source'
+  let imageMedia = 'a'.repeat(64)
   let counter = 0
   const textFor = (id: string) => texts.get(id) ?? 'old'
   const packages = new Map<string, string>()
@@ -117,6 +118,16 @@ async function fixture(pageCount = 2) {
       slideId,
       slideIds,
       base64: packages.get(slideId)!,
+    })),
+    inspectSlidePictureFingerprints: vi.fn(async (slideId: string, shapeIds: string[]) => ({
+      slideId,
+      slideIds,
+      fingerprints: Object.fromEntries(
+        shapeIds.map((id) => [id, id === 'image-sdk' ? imageMedia : 'c'.repeat(64)]),
+      ),
+      mediaDigests: Object.fromEntries(
+        shapeIds.map((id) => [id, id === 'image-sdk' ? imageMedia : 'c'.repeat(64)]),
+      ),
     })),
     listSlideShapes: vi.fn(async (index: number) => ({
       slideId: `s${index + 1}`,
@@ -207,6 +218,7 @@ async function fixture(pageCount = 2) {
     setOtherText: (value: string) => texts.set('sdk-0', value),
     setTableCell: (value: string) => (tableCell = value),
     setImageAlt: (value: string) => (imageAlt = value),
+    setImageMedia: (value: string) => (imageMedia = value),
   }
 }
 const textOp: NativeModifyOperation = {
@@ -223,6 +235,10 @@ const geometryOp: NativeModifyOperation = {
   top: 5,
   width: 60,
   height: 70,
+}
+const imageGeometryOp: NativeModifyOperation = {
+  ...geometryOp,
+  shape_id: 'image-sdk',
 }
 it('refuses a disconnected durable binding before reads and writes', async () => {
   const f = await fixture()
@@ -429,6 +445,50 @@ it('does not acknowledge a native text edit that also changes unrelated image at
   f.setAfterWrite(() => f.setImageAlt('Changed source'))
   const proposed = await f.propose([textOp])
   await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('does not acknowledge an image geometry edit that also changes its attribution', async () => {
+  const f = await fixture()
+  f.setAfterWrite(() => f.setImageAlt('Changed source'))
+  const proposed = await f.propose([imageGeometryOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('does not acknowledge an image geometry edit that also changes its media', async () => {
+  const f = await fixture()
+  f.setAfterWrite(() => f.setImageMedia('b'.repeat(64)))
+  const proposed = await f.propose([imageGeometryOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('does not acknowledge a native text edit that also changes unrelated image media', async () => {
+  const f = await fixture()
+  f.setAfterWrite(() => f.setImageMedia('b'.repeat(64)))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('refuses a native write when an existing picture cannot be mapped to its package', async () => {
+  const f = await fixture()
+  f.adapter.inspectSlidePictureFingerprints.mockRejectedValue(Error('office_api_unsupported'))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_api_unsupported')
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
+  expect(f.saved(proposed.changeId)).toMatchObject({ nextIndex: 0, state: 'applying' })
+  expect(f.saved(proposed.changeId).inFlightIndex).toBeUndefined()
+})
+it('keeps the write uncertain when a picture cannot be read back after the host write', async () => {
+  const f = await fixture()
+  const inspect = f.adapter.inspectSlidePictureFingerprints.getMockImplementation()!
+  f.adapter.inspectSlidePictureFingerprints.mockImplementation(
+    async (slideId: string, shapeIds: string[]) => {
+      if (f.adapter.executeDeclarative.mock.calls.length) throw Error('office_api_unsupported')
+      return inspect(slideId, shapeIds)
+    },
+  )
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_api_unsupported')
+  expect(f.adapter.executeDeclarative).toHaveBeenCalledTimes(1)
   expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
 })
 it('does not acknowledge a native geometry edit that also changes target text', async () => {

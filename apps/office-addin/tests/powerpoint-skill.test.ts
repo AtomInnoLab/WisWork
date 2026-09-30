@@ -2250,6 +2250,32 @@ describe('browser PowerPoint adapter', () => {
     expect(textRange.text).toBe('New')
   })
 
+  it('reads ordinary picture fingerprints from a real one-page package', async () => {
+    const deck = benchmarkDeck()
+    deck.slides = [deck.slides[2]!]
+    const zip = await JSZip.loadAsync((await compilePresentationDeck(deck)).bytes)
+    const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+    const shapeId = xml.match(/<p:pic\b[^]*?<p:cNvPr\b[^>]*\bid="(\d+)"/)?.[1]
+    expect(shapeId).toBeDefined()
+    const base64 = await zip.generateAsync({ type: 'base64' })
+    const subject = new BrowserPowerPointAdapter()
+    subject.exportPresentationPagePackage = vi.fn(async () => ({
+      slideId: 's1',
+      slideIds: ['s1'],
+      base64,
+    }))
+    const proof = await subject.inspectSlidePictureFingerprints('s1', [shapeId!])
+    expect(proof).toMatchObject({
+      slideId: 's1',
+      slideIds: ['s1'],
+      fingerprints: { [shapeId!]: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      mediaDigests: { [shapeId!]: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    })
+    await expect(subject.inspectSlidePictureFingerprints('s1', ['999999'])).rejects.toThrow(
+      'office_api_unsupported',
+    )
+  })
+
   it('reconciles a text sync rejection that committed and never overwrites a third state', async () => {
     const textRange = { text: 'Old', load: vi.fn() }
     const shape = { textFrame: { textRange } }

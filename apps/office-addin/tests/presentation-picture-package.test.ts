@@ -117,7 +117,18 @@ it('keeps unsupported pictures separate in a shared package media read', async (
   const source = await zip.generateAsync({ type: 'base64' })
   const complete = await inspectPowerPointPictureMediaBatch(source, ids)
   expect(Object.keys(complete.mediaDigests)).toEqual(ids)
+  expect(Object.keys(complete.pictureFingerprints)).toEqual(ids)
   expect(complete.unsupported).toEqual([])
+  zip.file(
+    'ppt/slides/slide1.xml',
+    xml.replace(pictures[0]![0], pictures[0]![0].replace(/name="[^"]+"/, 'name="Changed picture"')),
+  )
+  const renamed = await inspectPowerPointPictureMediaBatch(
+    await zip.generateAsync({ type: 'base64' }),
+    ids,
+  )
+  expect(renamed.mediaDigests[ids[0]!]).toBe(complete.mediaDigests[ids[0]!])
+  expect(renamed.pictureFingerprints[ids[0]!]).not.toBe(complete.pictureFingerprints[ids[0]!])
   zip.file(
     'ppt/slides/slide1.xml',
     xml.replace(pictures[1]![0], pictures[1]![0].replace('<p:blipFill', '<p:blipFill dpi="96"')),

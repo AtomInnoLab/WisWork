@@ -777,7 +777,11 @@ export async function inspectPowerPointPictureMediaBatch(
   shapeIds: string[],
   signal?: AbortSignal,
   options: { slideIndex?: number; maxBytes?: number } = {},
-): Promise<{ mediaDigests: Record<string, string>; unsupported: string[] }> {
+): Promise<{
+  mediaDigests: Record<string, string>
+  pictureFingerprints: Record<string, string>
+  unsupported: string[]
+}> {
   if (
     !Array.isArray(shapeIds) ||
     shapeIds.length > 100 ||
@@ -787,20 +791,21 @@ export async function inspectPowerPointPictureMediaBatch(
     throw new Error('invalid_tool_input')
   const zip = await loadBoundedZip(base64, signal, true, options.maxBytes)
   const mediaDigests: Record<string, string> = Object.create(null)
+  const pictureFingerprints: Record<string, string> = Object.create(null)
   const unsupported: string[] = []
   const cache: PictureBatchCache = { mediaDigests: new Map() }
   for (const shapeId of shapeIds) {
     if (signal?.aborted) throw new Error('cancelled')
     try {
-      mediaDigests[shapeId] = (
-        await inspectPictureFromZip(zip, shapeId, signal, undefined, options, cache)
-      ).mediaDigest
+      const inspected = await inspectPictureFromZip(zip, shapeId, signal, undefined, options, cache)
+      mediaDigests[shapeId] = inspected.mediaDigest
+      pictureFingerprints[shapeId] = inspected.pictureFingerprint
     } catch (error) {
       if (!(error instanceof Error) || error.message !== 'office_api_unsupported') throw error
       unsupported.push(shapeId)
     }
   }
-  return { mediaDigests, unsupported }
+  return { mediaDigests, pictureFingerprints, unsupported }
 }
 
 /** Read only bounded chunks: ZIP headers are untrusted and may understate inflated size. */

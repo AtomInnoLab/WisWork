@@ -282,6 +282,38 @@ export function createPresentationNativeModifySkill(options: Options) {
         !same(shapeMetadata(beforeSemantic.shapes), shapeMetadata(beforeShapes.shapes))
       )
         throw Error('office_read_failed')
+      const pictureIds = beforeSemantic.shapes
+        .filter(
+          (shape) =>
+            (shape.id !== op.shape_id || op.op !== 'delete_shape') &&
+            ['Image', 'Picture'].includes(shape.type),
+        )
+        .map((shape) => shape.id)
+      const pictureProof = async () => {
+        if (!options.adapter.inspectSlidePictureFingerprints) throw Error('office_api_unsupported')
+        const inspected = await options.adapter.inspectSlidePictureFingerprints(
+          p.hostSlideId,
+          pictureIds,
+          signal,
+        )
+        await guard(r.documentId, signal, token, newWrite)
+        if (
+          inspected.slideId !== p.hostSlideId ||
+          !same(inspected.slideIds, r.beforeSlideIds) ||
+          Object.keys(inspected.fingerprints).length !== pictureIds.length ||
+          Object.keys(inspected.mediaDigests).length !== pictureIds.length ||
+          pictureIds.some(
+            (id) =>
+              !Object.hasOwn(inspected.fingerprints, id) ||
+              !/^[a-f0-9]{64}$/.test(inspected.fingerprints[id]!) ||
+              !Object.hasOwn(inspected.mediaDigests, id) ||
+              !/^[a-f0-9]{64}$/.test(inspected.mediaDigests[id]!),
+          )
+        )
+          throw Error('office_read_failed')
+        return inspected
+      }
+      const beforePictures = pictureIds.length ? await pictureProof() : undefined
       await check(r, signal, token, newWrite)
       const next = { ...r, inFlightIndex: r.nextIndex }
       await options.writeExistingBatch(next, r)
@@ -326,6 +358,12 @@ export function createPresentationNativeModifySkill(options: Options) {
         shapes.filter((shape) => shape.id !== op.shape_id).sort((a, b) => a.id.localeCompare(b.id))
       const original = beforeContent.find((shape) => shape.id === op.shape_id),
         current = afterContent.find((shape) => shape.id === op.shape_id)
+      const nonGeometry = (shape: NonNullable<typeof original>) =>
+        Object.fromEntries(
+          Object.entries(shape).filter(
+            ([key]) => !['left', 'top', 'width', 'height'].includes(key),
+          ),
+        )
       if (
         !same(otherContent(beforeContent), otherContent(afterContent)) ||
         (op.op === 'delete_shape'
@@ -334,12 +372,21 @@ export function createPresentationNativeModifySkill(options: Options) {
             !current ||
             (op.op === 'set_shape_text'
               ? !same({ ...original, text: '' }, { ...current, text: '' })
-              : !same(
-                  [original.id, original.name, original.type, original.text],
-                  [current.id, current.name, current.type, current.text],
-                )))
+              : !same(nonGeometry(original), nonGeometry(current))))
       )
         throw Error('office_verify_failed')
+      if (beforePictures) {
+        const afterPictures = await pictureProof()
+        if (
+          pictureIds.some(
+            (id) =>
+              (id !== op.shape_id &&
+                beforePictures.fingerprints[id] !== afterPictures.fingerprints[id]) ||
+              beforePictures.mediaDigests[id] !== afterPictures.mediaDigests[id],
+          )
+        )
+          throw Error('office_verify_failed')
+      }
       const exported = await options.adapter.exportPresentationPagePackage!(p.hostSlideId, signal)
       await guard(r.documentId, signal, token, newWrite)
       if (exported.slideId !== p.hostSlideId || !same(exported.slideIds, r.beforeSlideIds))

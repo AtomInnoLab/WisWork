@@ -5,6 +5,7 @@ import {
 } from './presentation-style-dependencies.js'
 import {
   capturePowerPointPackage,
+  inspectPowerPointPictureMediaBatch,
   presentationPackageDigest,
   verifyImportedPowerPointPackage,
   verifyPowerPointPackage,
@@ -175,6 +176,16 @@ export interface PowerPointAdapter {
     slideId: string,
     signal?: AbortSignal,
   ): Promise<{ slideId: string; slideIds: string[]; base64: string }>
+  inspectSlidePictureFingerprints?(
+    slideId: string,
+    shapeIds: string[],
+    signal?: AbortSignal,
+  ): Promise<{
+    slideId: string
+    slideIds: string[]
+    fingerprints: Record<string, string>
+    mediaDigests: Record<string, string>
+  }>
   readPresentationPageGeometry?(
     slideId: string,
     shapeId: string,
@@ -1980,6 +1991,39 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         throw new Error('office_concurrent_change')
       return { slideId, slideIds, base64: exported.value }
     })
+  }
+
+  async inspectSlidePictureFingerprints(
+    slideId: string,
+    shapeIds: string[],
+    signal?: AbortSignal,
+  ): Promise<{
+    slideId: string
+    slideIds: string[]
+    fingerprints: Record<string, string>
+    mediaDigests: Record<string, string>
+  }> {
+    cancelled(signal)
+    const exported = await this.exportPresentationPagePackage(slideId, signal)
+    const inspected = await inspectPowerPointPictureMediaBatch(exported.base64, shapeIds, signal)
+    cancelled(signal)
+    if (
+      inspected.unsupported.length ||
+      Object.keys(inspected.pictureFingerprints).length !== shapeIds.length ||
+      Object.keys(inspected.mediaDigests).length !== shapeIds.length ||
+      shapeIds.some(
+        (id) =>
+          !Object.hasOwn(inspected.pictureFingerprints, id) ||
+          !Object.hasOwn(inspected.mediaDigests, id),
+      )
+    )
+      throw new Error('office_api_unsupported')
+    return {
+      slideId: exported.slideId,
+      slideIds: exported.slideIds,
+      fingerprints: inspected.pictureFingerprints,
+      mediaDigests: inspected.mediaDigests,
+    }
   }
 
   async exportSlidePackage(
