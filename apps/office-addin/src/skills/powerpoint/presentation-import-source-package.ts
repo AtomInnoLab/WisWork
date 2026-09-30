@@ -251,6 +251,11 @@ export async function validatePresentationImportSourcePage(
     .filter((frame) => record(record(frame['a:graphic'])?.['a:graphicData'])?.['c:chart'])
     .map((frame) => record(record(frame['p:nvGraphicFramePr'])?.['p:cNvPr'])?.['@_id'])
   if (chartShapeIds.some((id) => typeof id !== 'string' && typeof id !== 'number')) invalid()
+  if (
+    new Set(chartShapeIds.map(String)).size !== chartShapeIds.length ||
+    ([...referencedParts.values()].includes('chart') && chartShapeIds.length === 0)
+  )
+    invalid()
   if (chartShapeIds.length) {
     const checked = await inspectPowerPointChartSourcesBatch(
       base64,
@@ -258,7 +263,13 @@ export async function validatePresentationImportSourcePage(
       undefined,
       { maxBytes: MAX_PPTX_IMPORT_PAGE_BYTES, allowAbsoluteChartTarget: true },
     ).catch(() => invalid())
-    if (Object.values(checked.reports).some((report) => report.verification === 'mismatch'))
+    if (
+      checked.unsupported.length ||
+      Object.keys(checked.reports).length !== chartShapeIds.length ||
+      Object.values(checked.reports).some(
+        (report) => report.sourceKind !== 'embedded_xlsx' || report.verification !== 'matches',
+      )
+    )
       invalid()
   }
 

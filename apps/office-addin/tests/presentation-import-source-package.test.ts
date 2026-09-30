@@ -129,6 +129,56 @@ it('rejects a chart whose embedded workbook data disagrees with its visible cach
     'presentation_import_state_invalid',
   )
 })
+it('rejects a native chart when its visible cache has no verified workbook source', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = Object.keys(zip.files).find((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name))!
+  const xml = await zip.file(path)!.async('string')
+  const cacheOnly = xml.replace(/<c:externalData\b[\s\S]*?<\/c:externalData>/, '')
+  expect(cacheOnly).not.toBe(xml)
+  zip.file(path, cacheOnly)
+  const changed = (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64')
+  await expect(validatePresentationImportSourcePage(changed, '256#')).rejects.toThrow(
+    'presentation_import_state_invalid',
+  )
+})
+it('rejects a chart shape the bounded source reader cannot verify', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = Object.keys(zip.files).find((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name))!
+  const xml = await zip.file(path)!.async('string')
+  const series = /<c:ser>[\s\S]*?<\/c:ser>/.exec(xml)?.[0]
+  expect(series).toBeDefined()
+  zip.file(path, xml.replace(series!, series!.repeat(9)))
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
+
+it('rejects a chart relationship after the native chart frame disappears', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = 'ppt/slides/slide1.xml'
+  const xml = await zip.file(path)!.async('string')
+  const removed = xml.replace(/<p:graphicFrame>[\s\S]*?<\/p:graphicFrame>/, '')
+  expect(removed).not.toBe(xml)
+  zip.file(path, removed)
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
 
 it('rejects a local image relationship redirected to an unrelated XML part', async () => {
   const deck = benchmarkDeck()
