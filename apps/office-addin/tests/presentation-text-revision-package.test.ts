@@ -58,6 +58,53 @@ it('supports a length-changing edit inside one native run and rejects stale text
   )
 })
 
+it('revises a later paragraph using newline offsets without changing earlier native runs', async () => {
+  const { zip, xml, shape, id } = await fixture()
+  const multi = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:t>科研</a:t></a:r></a:p><a:p><a:r><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, multi))
+  const source = await zip.generateAsync({ type: 'base64' })
+  await expect(replacePowerPointTextRangePackage(source, id, 2, '汇', '成果')).rejects.toThrow(
+    'presentation_baseline_changed',
+  )
+  const revised = await replacePowerPointTextRangePackage(source, id, 3, '汇', '成果')
+  const output = await (
+    await JSZip.loadAsync(revised.base64, { base64: true })
+  )
+    .file('ppt/slides/slide1.xml')!
+    .async('string')
+  expect(output).toContain('<a:t>科研</a:t></a:r></a:p><a:p><a:r><a:t>成果报</a:t>')
+  expect(output.replace('<a:t>成果报</a:t>', '<a:t>汇报</a:t>')).toBe(xml.replace(shape, multi))
+  await expect(replacePowerPointTextRangePackage(source, id, 1, '研\n汇', '成果')).rejects.toThrow(
+    'invalid_tool_input',
+  )
+})
+
+it('counts a blank native paragraph when locating a later paragraph', async () => {
+  const { zip, xml, shape, id } = await fixture()
+  const multi = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:t>科研</a:t></a:r></a:p><a:p><a:endParaRPr lang="zh-CN"/></a:p><a:p><a:r><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, multi))
+  const revised = await replacePowerPointTextRangePackage(
+    await zip.generateAsync({ type: 'base64' }),
+    id,
+    4,
+    '汇',
+    '成果',
+  )
+  expect(
+    await (
+      await JSZip.loadAsync(revised.base64, { base64: true })
+    )
+      .file('ppt/slides/slide1.xml')!
+      .async('string'),
+  ).toContain('<a:endParaRPr lang="zh-CN"/></a:p><a:p><a:r><a:t>成果报</a:t>')
+})
+
 it('preserves complete supplementary Unicode characters beside and inside native edits', async () => {
   const { zip, xml, shape, id } = await fixture()
   zip.file('ppt/slides/slide1.xml', xml.replace(shape, shape.replace('科研汇报', 'A😀B')))
@@ -358,6 +405,34 @@ it('prepares a VFS revision from a fresh page baseline without writing PowerPoin
     .file('ppt/slides/slide1.xml')!
     .async('string')
   expect(unicodeXml).toContain('<a:t>A😀C</a:t>')
+  expect(writes).toBe(0)
+
+  const multiParagraph = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:t>科研</a:t></a:r></a:p><a:p><a:r><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, multiParagraph))
+  source = await zip.generateAsync({ type: 'base64' })
+  const paragraphResult = await skill.executeTool({
+    id: 'prepare-paragraph',
+    name: 'prepare_existing_presentation_text_revision',
+    input: {
+      baseline_id: 'baseline',
+      slide_id: 'host-slide',
+      shape_id: id,
+      start: 3,
+      before: '汇',
+      after: '成果',
+    },
+  })
+  expect(paragraphResult.isError, paragraphResult.output).not.toBe(true)
+  const paragraphPath = (JSON.parse(paragraphResult.output) as { path: string }).path
+  const paragraphZip = await JSZip.loadAsync(
+    vfs.readBytes(paragraphPath, { maxBytes: 8 * 1024 * 1024 }),
+  )
+  expect(await paragraphZip.file('ppt/slides/slide1.xml')!.async('string')).toContain(
+    '<a:t>科研</a:t></a:r></a:p><a:p><a:r><a:t>成果报</a:t>',
+  )
   expect(writes).toBe(0)
 
   const mixed = shape.replace(

@@ -21,6 +21,7 @@ const invalidText = (value: string) => /[\r\n]/.test(value) || /[\uD800-\uDFFF]/
 type Run = {
   xml: string
   text: string
+  globalStart: number
   openTag: string
   openStart: number
   openEnd: number
@@ -28,51 +29,70 @@ type Run = {
   textEnd: number
 }
 
-function plainRuns(shapeXml: string): Run[] {
+function plainRuns(shapeXml: string): { runs: Run[]; text: string } {
   const bodies = [...shapeXml.matchAll(/<p:txBody\b[^>]*>[\s\S]*?<\/p:txBody>/g)]
   if (bodies.length !== 1) fail()
   const body = bodies[0]![0]
+  if (/<a:(?:fld|br|tab|hlinkClick|hlinkMouseOver)\b/.test(body)) fail()
+  const paragraphs = [...body.matchAll(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g)]
   if (
-    [...body.matchAll(/<a:p\b[^>]*>/g)].length !== 1 ||
-    /<a:(?:fld|br|tab|hlinkClick|hlinkMouseOver)\b/.test(body)
+    !paragraphs.length ||
+    paragraphs.length > 2000 ||
+    paragraphs.length !== [...body.matchAll(/<a:p\b/g)].length
   )
     fail()
   const result: Run[] = []
-  for (const match of body.matchAll(/<a:r\b[^>]*>[\s\S]*?<\/a:r>/g)) {
-    const xml = match[0]
-    const texts = [...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)]
-    if (texts.length !== 1 || /<!\[CDATA\[/.test(texts[0]![1]!)) fail()
-    const parsed = parser.parse(texts[0]![0]) as Record<string, unknown>
-    const parsedText = parsed['a:t']
-    const value =
-      typeof parsedText === 'string'
-        ? parsedText
-        : (parsedText as Record<string, unknown> | undefined)?.['#text']
-    if (typeof value !== 'string' || invalidText(value)) fail()
-    const openTag = texts[0]![0].slice(0, texts[0]![0].indexOf('>') + 1)
-    const openStart = bodies[0]!.index! + match.index! + texts[0]!.index!
-    result.push({
-      xml,
-      text: value as string,
-      openTag,
-      openStart,
-      openEnd: openStart + openTag.length,
-      textStart: openStart + openTag.length,
-      textEnd:
-        bodies[0]!.index! + match.index! + texts[0]!.index! + texts[0]![0].lastIndexOf('</a:t>'),
-    })
+  let fullText = ''
+  for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
+    if (paragraphIndex) fullText += '\n'
+    const paragraphRuns = [...paragraph[0].matchAll(/<a:r\b[^>]*>[\s\S]*?<\/a:r>/g)]
+    if ([...paragraph[0].matchAll(/<a:r\b/g)].length !== paragraphRuns.length) fail()
+    for (const match of paragraphRuns) {
+      const xml = match[0]
+      const texts = [...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)]
+      if (texts.length !== 1 || /<!\[CDATA\[/.test(texts[0]![1]!)) fail()
+      const parsed = parser.parse(texts[0]![0]) as Record<string, unknown>
+      const parsedText = parsed['a:t']
+      const value =
+        typeof parsedText === 'string'
+          ? parsedText
+          : (parsedText as Record<string, unknown> | undefined)?.['#text']
+      if (typeof value !== 'string' || invalidText(value)) fail()
+      const openTag = texts[0]![0].slice(0, texts[0]![0].indexOf('>') + 1)
+      const openStart = bodies[0]!.index! + paragraph.index! + match.index! + texts[0]!.index!
+      result.push({
+        xml,
+        text: value as string,
+        globalStart: fullText.length,
+        openTag,
+        openStart,
+        openEnd: openStart + openTag.length,
+        textStart: openStart + openTag.length,
+        textEnd:
+          bodies[0]!.index! +
+          paragraph.index! +
+          match.index! +
+          texts[0]!.index! +
+          texts[0]![0].lastIndexOf('</a:t>'),
+      })
+      fullText += value
+    }
+    if (fullText.length > 12_000) fail()
+    const parsedParagraph = parser.parse(paragraph[0]) as Record<string, unknown>
+    const parsedRuns = (parsedParagraph['a:p'] as Record<string, unknown> | undefined)?.['a:r']
+    if (
+      Array.isArray(parsedRuns)
+        ? parsedRuns.length !== paragraphRuns.length
+        : paragraphRuns.length !== (parsedRuns === undefined ? 0 : 1)
+    )
+      fail()
   }
   if (!result.length || result.length > 2000) fail()
   if ([...body.matchAll(/<a:t(?:\s[^>]*)?>/g)].length !== result.length) fail()
-  const parsedBody = parser.parse(body) as Record<string, unknown>
-  const paragraphs = (parsedBody['p:txBody'] as Record<string, unknown> | undefined)?.['a:p'] as
-    Record<string, unknown> | undefined
-  const parsedRuns = paragraphs?.['a:r']
-  if (Array.isArray(parsedRuns) ? parsedRuns.length !== result.length : result.length !== 1) fail()
-  return result
+  return { runs: result, text: fullText }
 }
 
-/** Prepare an equal-length native text revision while retaining each run's formatting. */
+/** Revise native text in one paragraph, counting paragraph boundaries as newlines in start. */
 export async function replacePowerPointTextRangePackage(
   source: string,
   shapeId: string,
@@ -121,8 +141,7 @@ export async function replacePowerPointTextRangePackage(
   )
   if (shapes.length !== 1) fail()
   const original = shapes[0]![0]
-  const runs = plainRuns(original)
-  const fullText = runs.map((run) => run.text).join('')
+  const { runs, text: fullText } = plainRuns(original)
   if (fullText.length > 12_000) fail()
   if (
     start + before.length > fullText.length ||
@@ -130,7 +149,6 @@ export async function replacePowerPointTextRangePackage(
   )
     throw new Error('presentation_baseline_changed')
   if (fullText.length - before.length + after.length > 12_000) fail()
-  let cursor = 0
   let changedRuns = 0
   let rewritten = original
   const patches: Array<{ from: number; to: number; value: string }> = []
@@ -153,43 +171,45 @@ export async function replacePowerPointTextRangePackage(
   if (before.length !== after.length) {
     if (runReplacements) {
       for (const run of runs) {
-        const first = Math.max(start, cursor)
-        const last = Math.min(start + before.length, cursor + run.text.length)
+        const first = Math.max(start, run.globalStart)
+        const last = Math.min(start + before.length, run.globalStart + run.text.length)
         if (first < last) {
           const part = runReplacements[changedRuns]
           if (!part) throw new Error('invalid_tool_input')
           const replacement =
-            run.text.slice(0, first - cursor) + part + run.text.slice(last - cursor)
+            run.text.slice(0, first - run.globalStart) +
+            part +
+            run.text.slice(last - run.globalStart)
           patchRun(run, replacement)
         }
-        cursor += run.text.length
       }
       if (changedRuns !== runReplacements.length) throw new Error('invalid_tool_input')
     } else
       for (const run of runs) {
-        if (start >= cursor && start + before.length <= cursor + run.text.length) {
-          const local = start - cursor
+        if (
+          start >= run.globalStart &&
+          start + before.length <= run.globalStart + run.text.length
+        ) {
+          const local = start - run.globalStart
           const replacement =
             run.text.slice(0, local) + after + run.text.slice(local + before.length)
           patchRun(run, replacement)
           break
         }
-        cursor += run.text.length
       }
     if (!changedRuns) fail()
   } else {
     for (const run of runs) {
-      const first = Math.max(start, cursor)
-      const last = Math.min(start + before.length, cursor + run.text.length)
+      const first = Math.max(start, run.globalStart)
+      const last = Math.min(start + before.length, run.globalStart + run.text.length)
       if (first < last) {
-        const local = first - cursor
+        const local = first - run.globalStart
         const replacement =
           run.text.slice(0, local) +
           after.slice(first - start, last - start) +
-          run.text.slice(last - cursor)
+          run.text.slice(last - run.globalStart)
         patchRun(run, replacement)
       }
-      cursor += run.text.length
     }
   }
   if (!changedRuns) fail()
@@ -205,9 +225,7 @@ export async function replacePowerPointTextRangePackage(
   )
   if (
     nextShape.length !== 1 ||
-    plainRuns(nextShape[0]![0])
-      .map((run) => run.text)
-      .join('') !==
+    plainRuns(nextShape[0]![0]).text !==
       fullText.slice(0, start) + after + fullText.slice(start + before.length)
   )
     fail()
