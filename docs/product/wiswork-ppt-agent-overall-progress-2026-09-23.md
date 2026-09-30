@@ -1,5 +1,9 @@
 # PPT Agent：整体进度估算台账
 
+## 当前检查点：浏览器经真实 Relay 断线续会并重读项目（2026-10-01）
+
+严格整体 **64% → 64%（575/9）**，完整候选任务路径 **20/20**，真实 PowerPoint 专业任务 **0/20**。延续上一轮本机 Chrome Taskpane→Rust Relay→Electron PC 联测：配对并读回真实 PC 项目后，测试主动切断浏览器的传输连接，要求 Taskpane 发送 `office.resume`、收到真实 Relay 的 `office.resumed`，随后通过工作台刷新再次发出项目请求并收到完整响应。再重开 Taskpane，重新发起真实 Relay 配对，工作台恢复同一 PC 项目。原有三个并发文档、八页生产、交付回读和任务恢复均继续通过，测试脚本正常退出。这覆盖真实 Relay 会话续接、页面重开和 PC 项目重读；Office.js 仍是测试宿主，不能据此宣称 PowerPoint 保存重开、视觉或专业任务验收完成。继续本机开发，不做跨平台 CI。
+
 ## 当前检查点：浏览器 Taskpane 经真实 Relay 读取 PC 项目（2026-10-01）
 
 严格整体 **64% → 64%（575/9）**，完整候选任务路径 **20/20**，真实 PowerPoint 专业任务 **0/20**。扩展本机 Electron PC + Rust Relay 冒烟：真实 PC 先持久编译一个专用项目，本机 Chrome 打开实际 Taskpane，由页面发起配对、读取六位码，经测试脚本的 WebSocket 传输桥连接真实 Rust Relay，PC 认领并批准后，工作台读回该 PC 项目及“尚未完成视觉验证”状态；320px 面板无横向溢出。随后原有三文档、八页生产、交付回读及崩溃恢复也通过，整条脚本正常退出。Office.js 仍由测试桩提供，WebSocket 桥只转发协议帧且以固定 Office Origin 连接本机 Relay；因此这证明浏览器业务逻辑到真实 Relay/PC 的本机路径，不证明发布域名的网络配置、真实 PowerPoint 渲染或专业任务验收。继续完成本机开发，不做跨平台 CI。

@@ -85,6 +85,8 @@ async function inspectBrowserWorkbench(origin, pc) {
   )
   const browser = await chromium.launch({ channel: 'chrome', headless: true })
   const sockets = new Map()
+  const outbound = []
+  const inbound = []
   try {
     const page = await browser.newPage({
       ignoreHTTPSErrors: true,
@@ -107,11 +109,17 @@ async function inspectBrowserWorkbench(origin, pc) {
       })
       sockets.set(id, socket)
       socket.on('open', () => void dispatch(id, 'open'))
-      socket.on('message', (data) => void dispatch(id, 'message', data.toString()))
+      socket.on('message', (data) => {
+        inbound.push(JSON.parse(data.toString()).type)
+        void dispatch(id, 'message', data.toString())
+      })
       socket.on('close', () => void dispatch(id, 'close'))
       socket.on('error', () => void dispatch(id, 'error'))
     })
-    await page.exposeFunction('__relaySend', (id, data) => sockets.get(id)?.send(data))
+    await page.exposeFunction('__relaySend', (id, data) => {
+      outbound.push(JSON.parse(data).type)
+      sockets.get(id)?.send(data)
+    })
     await page.exposeFunction('__relayClose', (id) => sockets.get(id)?.close())
     await page.route('https://appsforoffice.microsoft.com/lib/1/hosted/office.js', (route) =>
       route.fulfill({
@@ -132,7 +140,6 @@ async function inspectBrowserWorkbench(origin, pc) {
       }),
     )
     await page.addInitScript(() => {
-      let nextId = 0
       const sockets = new Map()
       window.__relayDispatch = (id, type, data) => {
         const socket = sockets.get(id)
@@ -144,7 +151,7 @@ async function inspectBrowserWorkbench(origin, pc) {
       window.WebSocket = class {
         constructor(url) {
           if (!url.includes('/office-relay')) throw Error('unexpected WebSocket endpoint')
-          this.id = ++nextId
+          this.id = crypto.randomUUID()
           this.readyState = 0
           sockets.set(this.id, this)
           void window.__relayOpen(this.id)
@@ -173,6 +180,46 @@ async function inspectBrowserWorkbench(origin, pc) {
       throw Error('browser project verification state missing')
     if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth))
       throw Error('browser project workbench overflows at 320px')
+    const firstSocket = sockets.values().next().value
+    if (!firstSocket || !inbound.includes('office.approved'))
+      throw Error('browser relay approval not observed')
+    firstSocket.terminate()
+    const waitFor = async (check, label) => {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (check()) return
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100))
+      }
+      throw Error(`browser relay ${label} timed out`)
+    }
+    await waitFor(() => outbound.includes('office.resume'), 'resume request')
+    await waitFor(() => inbound.includes('office.resumed'), 'resume approval')
+    const previousRequests = outbound.filter((type) => type === 'office.request').length
+    const previousResponses = inbound.filter((type) => type === 'relay.done').length
+    await workbench.getByRole('button', { name: '刷新', exact: true }).click()
+    await waitFor(
+      () => outbound.filter((type) => type === 'office.request').length > previousRequests,
+      'project refresh',
+    )
+    await waitFor(
+      () => inbound.filter((type) => type === 'relay.done').length > previousResponses,
+      'project refresh response',
+    )
+    await workbench.getByText('Browser to real PC project', { exact: true }).waitFor()
+    const createdBeforeReload = outbound.filter((type) => type === 'office.create').length
+    await page.reload()
+    await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
+    const reopenedCodeText = await page
+      .getByText(/Enter code [0-9]{6} in WisWork PC/)
+      .textContent({ timeout: 15_000 })
+    const reopenedCode = reopenedCodeText?.match(/Enter code ([0-9]{6})/)?.[1]
+    if (!reopenedCode) throw Error('reopened browser pairing code missing')
+    pc.stdin.write(JSON.stringify({ type: 'claim', code: reopenedCode }) + '\n')
+    await page
+      .getByRole('region', { name: '演示文稿项目' })
+      .getByText('Browser to real PC project', { exact: true })
+      .waitFor({ timeout: 20_000 })
+    if (outbound.filter((type) => type === 'office.create').length <= createdBeforeReload)
+      throw Error('reopened browser did not create a new Relay pairing')
   } finally {
     for (const socket of sockets.values()) socket.close()
     await browser.close()
@@ -557,7 +604,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    'Electron PC + Rust Relay business smoke passed: browser Taskpane pairing and project readback, three concurrent documents, fresh eight-page release production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery',
+    'Electron PC + Rust Relay business smoke passed: browser Taskpane pairing, project readback, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery',
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {
