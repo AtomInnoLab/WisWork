@@ -59,6 +59,8 @@ pdfinfo /tmp/wiswork-p0-10-srocc-full-report.pdf
 
 2026-09-29 新鲜生产定向测试：**1 passed / 8 skipped**，总 30.83s（不是产品解析延迟承诺）。实际 PC 服务与 AttachmentSkill 上传/解析真实近 50 MiB PDF，读取第 4,000,000 字符之后，并核对摘录来源定位；日志外部 `/tmp/p0-10-production.log`。此前实际提取 4,338,831 UTF-16 字符，末页空白仍占一页；本次测试也确认大于四百万字符。未运行全套回归。
 
+2026-09-30 逐页扫描图检测启用后的本机复验：同一 SHA256 原件再次经 Office AttachmentSkill 分块上传、真实 PC 服务解析、400 万字符之后的窗口读取和来源页定位，定向测试 **1 passed / 9 skipped**，总 50.04s，其中测试主体 46.43s。此结果证明该原件在当前逐页检测路径可完成，不是 50 MiB PDF 的统一性能保证，也不代替 Relay 网络及真实 PowerPoint 宿主验收。
+
 原 PDF16、30 已用 Poppler 渲染并检查值、情景、基线、置信度位置；八页候选另由 LibreOffice 作临时 PDF 版面检查。LibreOffice 检查不等于真实 PowerPoint 重开、编辑、另存、导入验收。
 
 ## 版权与分发边界
