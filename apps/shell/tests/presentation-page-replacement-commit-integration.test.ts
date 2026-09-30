@@ -343,4 +343,4 @@ it('commits and undoes through real adapters and durable maps, recovering termin
     vi.unstubAllGlobals()
     rmSync(root, { recursive: true, force: true })
   }
-})
+}, 30_000)

@@ -840,7 +840,13 @@ it('prepares real page files and resumes confirmed Office import without mixing 
   await f.call('production_run', { requestId: 'run' })
   await f.call('compile', { requestId: 'whole', planRevision: 1, deck: f.deck })
   const hostIds = ['original']
-  const slides = { items: [] as { id: string }[], load: () => {} }
+  const slides = {
+    items: [] as { id: string }[],
+    load: () => {},
+    getItem: (id: string) => ({
+      exportAsBase64: () => ({ value: bytes[hostIds.indexOf(id) - 1] }),
+    }),
+  }
   const bytes: string[] = []
   let queued = false,
     stopAfterThree = true
@@ -865,7 +871,8 @@ it('prepares real page files and resumes confirmed Office import without mixing 
     context: {
       host: 'PowerPoint',
       requirements: {
-        isSetSupported: (_name: string, version: string) => ['1.2', '1.10'].includes(version),
+        isSetSupported: (_name: string, version: string) =>
+          ['1.2', '1.8', '1.10'].includes(version),
       },
     },
   })
@@ -906,7 +913,8 @@ it('prepares real page files and resumes confirmed Office import without mixing 
     const prepared = await runtime.skill.executeTool(prepare)
     expect(prepared.isError, prepared.output).not.toBe(true)
     expect(runtime.importProgress!.read()).toMatchObject({ total: 8, completed: 0 })
-    expect((await runtime.skill.executeTool(importCall)).isError).not.toBe(true)
+    const importProposal = await runtime.skill.executeTool(importCall)
+    expect(importProposal.isError, importProposal.output).not.toBe(true)
     await expect(
       confirmReviewed(runtime.proposals, runtime.proposals.pending()!.id),
     ).rejects.toThrow('cancelled')

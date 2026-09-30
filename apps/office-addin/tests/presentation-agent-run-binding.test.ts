@@ -592,7 +592,6 @@ describe('presentation AgentRun checkpoint', () => {
     'read_presentation_claim_evidence',
     'check_presentation_page_content',
     'read_presentation_production',
-    'audit_presentation_sources',
     'list_presentation_review_comments',
     'check_presentation_baseline',
     'check_presentation_baseline_windows',
@@ -624,6 +623,27 @@ describe('presentation AgentRun checkpoint', () => {
     await binding.rememberAgentRun(id, 'mutated-run')
     await binding.updateAgentRun(id, 'mutated-run', 'tool_pending', toolName)
     await binding.updateAgentRun(id, 'mutated-run', 'tool_completed', toolName, true)
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(false)
+  })
+
+  it('never marks a persisted source audit safe to replay after restart', async () => {
+    const values = new Map<string, string>()
+    const binding = createPresentationDocumentBinding(
+      {
+        get: (key) => values.get(key),
+        set: (key, value) => {
+          values.set(key, value)
+        },
+        save: async () => undefined,
+        location: () => 'file:///deck.pptx',
+      },
+      () => 'doc-id',
+    )
+    const id = await binding.documentId()
+    await binding.rememberAgentRun(id, 'audit-run')
+    await binding.updateAgentRun(id, 'audit-run', 'tool_pending', 'audit_presentation_sources')
+    expect(binding.agentRunRecovery(id)?.restartSafe).toBe(false)
+    await binding.updateAgentRun(id, 'audit-run', 'tool_completed', 'audit_presentation_sources')
     expect(binding.agentRunRecovery(id)?.restartSafe).toBe(false)
   })
 
