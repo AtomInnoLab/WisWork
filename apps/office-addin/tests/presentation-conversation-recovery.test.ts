@@ -100,6 +100,7 @@ describe('presentation completed-read conversation checkpoints', () => {
     'check_presentation_baseline',
     'read_presentation_production_import_status',
     'read_presentation_edit_observation',
+    'inspect_slide_masters',
   ])(
     'explicitly restarts an interrupted pending %s after document validation',
     async (toolName) => {

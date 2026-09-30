@@ -150,6 +150,7 @@ const restartSafeTools = new Set([
   'list_slide_shapes',
   'read_slide_text',
   'verify_slides',
+  'inspect_slide_masters',
   'read_presentation_image_replacement',
   'read_presentation_preference_candidates',
 ])
