@@ -3,6 +3,7 @@ import JSZip from 'jszip'
 
 export const MAX_PPTX_PACKAGE_BYTES = 8 * 1024 * 1024
 export const MAX_PPTX_ENTRY_BYTES = 2 * 1024 * 1024
+export const MAX_PPTX_IMPORT_PAGE_BYTES = 10 * 1024 * 1024
 export const MAX_PPTX_ENTRIES = 256
 export const MAX_PPTX_XML_BYTES = 512 * 1024
 
@@ -177,6 +178,7 @@ export async function loadBoundedZip(
   signal?: AbortSignal,
   checkCRC32 = true,
   maxBytes = MAX_PPTX_PACKAGE_BYTES,
+  maxEntryBytes = MAX_PPTX_ENTRY_BYTES,
 ): Promise<JSZip> {
   if (signal?.aborted) throw new Error('cancelled')
   if (!base64 || base64.length > Math.ceil(maxBytes / 3) * 4) throw new Error('invalid_tool_input')
@@ -202,7 +204,7 @@ export async function loadBoundedZip(
     if (
       metadata.uncompressed === undefined ||
       metadata.compressed === undefined ||
-      metadata.uncompressed > MAX_PPTX_ENTRY_BYTES
+      metadata.uncompressed > maxEntryBytes
     )
       throw new Error('invalid_tool_input')
     total += metadata.uncompressed
@@ -806,6 +808,7 @@ async function boundedEntryBytes(
   file: JSZip.JSZipObject,
   remaining: number,
   signal?: AbortSignal,
+  maxEntryBytes = MAX_PPTX_ENTRY_BYTES,
 ): Promise<Uint8Array> {
   if (signal?.aborted) throw new Error('cancelled')
   // JSZip 3.10 exposes this browser stream API, but omits it from JSZipObject's types.
@@ -835,7 +838,7 @@ async function boundedEntryBytes(
           return
         }
         size += chunk.byteLength
-        if (size > MAX_PPTX_ENTRY_BYTES || size > remaining) {
+        if (size > maxEntryBytes || size > remaining) {
           fail('invalid_tool_input')
           return
         }
@@ -862,9 +865,12 @@ async function boundedEntryBytes(
 export async function presentationPackageDigest(
   base64: string,
   signal?: AbortSignal,
+  purpose: 'editing' | 'import_page' = 'editing',
 ): Promise<string> {
+  const maxBytes = purpose === 'import_page' ? MAX_PPTX_IMPORT_PAGE_BYTES : MAX_PPTX_PACKAGE_BYTES
+  const maxEntryBytes = purpose === 'import_page' ? maxBytes : MAX_PPTX_ENTRY_BYTES
   // Parse the index without CRC inflation; validate declared limits before reading any entry.
-  const zip = await loadBoundedZip(base64, signal, false)
+  const zip = await loadBoundedZip(base64, signal, false, maxBytes, maxEntryBytes)
   const sha = async (bytes: Uint8Array): Promise<string> => {
     if (signal?.aborted) throw new Error('cancelled')
     const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes))
@@ -876,7 +882,7 @@ export async function presentationPackageDigest(
   for (const path of Object.keys(zip.files).sort()) {
     const file = zip.files[path]!
     if (file.dir) continue
-    const bytes = await boundedEntryBytes(file, MAX_PPTX_PACKAGE_BYTES - total, signal)
+    const bytes = await boundedEntryBytes(file, maxBytes - total, signal, maxEntryBytes)
     total += bytes.byteLength
     entries.push([path, await sha(bytes)])
   }

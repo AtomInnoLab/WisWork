@@ -1,12 +1,14 @@
 import JSZip from 'jszip'
 import { expect, it } from 'vitest'
 import { equivalentNativePresentationPage } from '../src/skills/powerpoint/presentation-page-equivalence.js'
+import { presentationPackageDigest } from '../src/skills/powerpoint/powerpoint-package.js'
 
 async function page(options: {
   shapeId?: number
   imageId?: string
   mediaName?: string
   media?: number[]
+  mediaSize?: number
   x?: number
   chart?: boolean
   title?: string
@@ -29,7 +31,12 @@ async function page(options: {
     'ppt/slides/_rels/slide1.xml.rels',
     `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="${imageId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${mediaName}"/></Relationships>`,
   )
-  zip.file(`ppt/media/${mediaName}`, new Uint8Array(options.media ?? [1, 2, 3]))
+  zip.file(
+    `ppt/media/${mediaName}`,
+    options.mediaSize
+      ? new Uint8Array(options.mediaSize)
+      : new Uint8Array(options.media ?? [1, 2, 3]),
+  )
   return zip.generateAsync({ type: 'base64' })
 }
 
@@ -59,4 +66,15 @@ it('accepts only harmless shape IDs, relationship IDs and media filenames changi
       await page({ chart: true, shapeId: 20 }),
     ),
   ).toBe(false)
+})
+
+it('compares a prepared picture larger than the edit-package per-entry limit', async () => {
+  const source = await page({ mediaSize: 3 * 1024 * 1024 })
+  await expect(presentationPackageDigest(source)).rejects.toThrow('invalid_tool_input')
+  expect(
+    await equivalentNativePresentationPage(
+      source,
+      await page({ mediaSize: 3 * 1024 * 1024, shapeId: 20 }),
+    ),
+  ).toBe(true)
 })

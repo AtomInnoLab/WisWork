@@ -141,6 +141,22 @@ it('requires an export adapter before proposing production import', async () => 
   expect(f.adapter.insertPage).not.toHaveBeenCalled()
 })
 
+it('rejects an oversized inflated page package before any host write', async () => {
+  const f = fixture()
+  const zip = new JSZip()
+  zip.file('ppt/media/image1.png', new Uint8Array(11 * 1024 * 1024))
+  f.artifact.pagePptxBase64![1] = await zip.generateAsync({
+    type: 'base64',
+    compression: 'DEFLATE',
+  })
+  expect(await f.skill.executeTool(f.call)).toMatchObject({
+    isError: true,
+    output: 'presentation_import_state_invalid',
+  })
+  expect(f.adapter.insertPage).not.toHaveBeenCalled()
+  expect(f.proposals.pending()).toBeUndefined()
+})
+
 it('records an imported production page after its exported package matches', async () => {
   const f = fixture()
   const zip = new JSZip()

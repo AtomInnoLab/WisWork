@@ -1,5 +1,9 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
-import { loadBoundedZip, presentationPackageDigest } from './powerpoint-package.js'
+import {
+  loadBoundedZip,
+  MAX_PPTX_IMPORT_PAGE_BYTES,
+  presentationPackageDigest,
+} from './powerpoint-package.js'
 
 const ordered = new XMLParser({
   preserveOrder: true,
@@ -51,7 +55,13 @@ const xml = (value: string): boolean =>
 
 /** A conservative fallback for native text/shape/picture pages reserialized by PowerPoint. */
 async function simplePage(base64: string): Promise<string | undefined> {
-  const zip = await loadBoundedZip(base64)
+  const zip = await loadBoundedZip(
+    base64,
+    undefined,
+    true,
+    MAX_PPTX_IMPORT_PAGE_BYTES,
+    MAX_PPTX_IMPORT_PAGE_BYTES,
+  )
   if (!zip.file('[Content_Types].xml') || !zip.file('ppt/presentation.xml')) return undefined
   const presentationXml = await zip.file('ppt/presentation.xml')!.async('string')
   if (!xml(presentationXml)) return undefined
@@ -160,7 +170,10 @@ export async function equivalentNativePresentationPage(
   source: string,
   exported: string,
 ): Promise<boolean> {
-  if ((await presentationPackageDigest(source)) === (await presentationPackageDigest(exported)))
+  if (
+    (await presentationPackageDigest(source, undefined, 'import_page')) ===
+    (await presentationPackageDigest(exported, undefined, 'import_page'))
+  )
     return true
   const expected = await simplePage(source)
   return expected !== undefined && expected === (await simplePage(exported))

@@ -1,6 +1,7 @@
 import type { AgentSkill } from '@wiswork/agent-core'
 import { presentationImportContent } from '@wiswork/project-store/presentation-import-source'
 import { selectionFingerprint } from '../../agent/proposal-controller.js'
+import { MAX_PPTX_IMPORT_PAGE_BYTES, presentationPackageDigest } from './powerpoint-package.js'
 import { equivalentNativePresentationPage } from './presentation-page-equivalence.js'
 import type {
   CompiledPresentationArtifact,
@@ -172,7 +173,7 @@ function validPages(artifact: CompiledPresentationArtifact): boolean {
       if (
         typeof base64 !== 'string' ||
         !base64.length ||
-        base64.length > Math.ceil((10 * 1024 * 1024) / 3) * 4
+        base64.length > Math.ceil(MAX_PPTX_IMPORT_PAGE_BYTES / 3) * 4
       )
         return false
       try {
@@ -182,7 +183,7 @@ function validPages(artifact: CompiledPresentationArtifact): boolean {
       } catch {
         return false
       }
-      if (bytes > 10 * 1024 * 1024) return false
+      if (bytes > MAX_PPTX_IMPORT_PAGE_BYTES) return false
     }
   }
   return Boolean(
@@ -527,6 +528,17 @@ function createPageDelivery(options: PresentationDeliveryOptions, production: bo
         if (previous && (!previous.checkpoint || previous.checkpoint.inFlight))
           throw new Error('presentation_import_uncertain')
         if (!options.adapter.insertPage) throw new Error('presentation_unavailable')
+        if (production) {
+          for (const source of pageBytes!.slice(previous?.checkpoint?.completed.length ?? 0)) {
+            try {
+              await presentationPackageDigest(source, signal, 'import_page')
+            } catch (error) {
+              if (error instanceof Error && error.message === 'cancelled') throw error
+              throw new Error('presentation_import_state_invalid', { cause: error })
+            }
+          }
+          await current(signal)
+        }
         const before = await options.adapter.snapshot(signal)
         await current(signal)
         if (
