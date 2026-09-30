@@ -25,6 +25,7 @@ it('persists explicit before/after host observations across restarts, requires v
   const root = mkdtempSync(join(tmpdir(), 'manual-observation-integration-'))
   let service = createPresentationService({ userDataPath: root })
   let documentId = 'source-doc'
+  let loseResponseFor: string | undefined
   let shape = {
     id: 'shape',
     name: 'Title',
@@ -55,6 +56,10 @@ it('persists explicit before/after host observations across restarts, requires v
     const result = Buffer.from(
       await service(body, signal ?? new AbortController().signal),
     ).toString('utf8')
+    if ((body as { operation: string }).operation === loseResponseFor) {
+      loseResponseFor = undefined
+      throw new Error('response lost after PC commit')
+    }
     return new Response(result, { status: JSON.parse(result).error ? 400 : 200 })
   }
   const proposals = createStructuredProposalController()
@@ -70,6 +75,7 @@ it('persists explicit before/after host observations across restarts, requires v
   const invoke = (name: string, input: Record<string, unknown>) =>
     skill.executeTool({ id: name, name, input })
   try {
+    loseResponseFor = 'manual_observation_begin'
     const before = await invoke('begin_presentation_edit_observation', {
       project_id: 'source-project',
       slide_id: 'slide',
@@ -81,6 +87,7 @@ it('persists explicit before/after host observations across restarts, requires v
     service = createPresentationService({ userDataPath: root })
     skill = make()
     shape = { ...shape, text: '短标题', left: 30, font: { ...shape.font, size: 24 } }
+    loseResponseFor = 'manual_observation_complete'
     const completed = await invoke('complete_presentation_edit_observation', {
       project_id: 'source-project',
       observation_id: observationId,

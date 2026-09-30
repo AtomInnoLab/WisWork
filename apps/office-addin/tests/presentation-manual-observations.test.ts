@@ -198,6 +198,23 @@ it('persists before, completes after clear, then only saves a preference after c
     expect.any(AbortSignal),
   )
 })
+it('does not accept an old before snapshot when completion never reached PC', async () => {
+  const f = durableFixture()
+  const id = await f.begin()
+  f.edit('After')
+  const original = f.request.getMockImplementation()!
+  f.request.mockImplementation(async (body, signal) => {
+    if ((body as { operation: string }).operation === 'manual_observation_complete')
+      throw new Error('request failed before commit')
+    return original(body, signal)
+  })
+  const result = await f.call('complete_presentation_edit_observation', {
+    project_id: 'p',
+    observation_id: id,
+  })
+  expect(result.isError).toBe(true)
+  expect(f.get().after).toBeUndefined()
+})
 it('continued host edits after proposing block approval and clear cancels its pending decision', async () => {
   const f = durableFixture(),
     id = await f.begin()

@@ -223,11 +223,37 @@ export function createPresentationManualObservationSkill(
             { operation: 'manual_observation_get', ...scope, observationId: value.observation_id },
             signal,
           )
+        const writeObservation = async (
+          body: unknown,
+          observationId: string,
+          committed: (record: PresentationManualObservation) => boolean,
+        ) => {
+          try {
+            return await observation(body, signal)
+          } catch (cause) {
+            await check(signal)
+            try {
+              const recovered = await observation(
+                { operation: 'manual_observation_get', ...scope, observationId },
+                signal,
+              )
+              if (committed(recovered)) return recovered
+            } catch {
+              await check(signal)
+            }
+            throw cause
+          }
+        }
         let output: unknown
         if (index === 0) {
           const shape = await stable(value.slide_id, value.shape_id, signal)
           const observationId = crypto.randomUUID()
-          const record = await observation(
+          const committed = (record: PresentationManualObservation) =>
+            record.observationId === observationId &&
+            record.slideId === value.slide_id &&
+            !record.after &&
+            same(record.before.shape, shape)
+          const record = await writeObservation(
             {
               operation: 'manual_observation_begin',
               ...scope,
@@ -235,20 +261,20 @@ export function createPresentationManualObservationSkill(
               slideId: value.slide_id,
               shape,
             },
-            signal,
+            observationId,
+            committed,
           )
-          if (
-            record.observationId !== observationId ||
-            record.slideId !== value.slide_id ||
-            record.after ||
-            !same(record.before.shape, shape)
-          )
-            throw new Error('presentation_response_invalid')
+          if (!committed(record)) throw new Error('presentation_response_invalid')
           output = { observation: record }
         } else if (index === 1) {
           const before = await get()
           const shape = await stable(before.slideId, before.shapeId, signal)
-          const record = await observation(
+          const committed = (record: PresentationManualObservation) =>
+            same(record.before, before.before) &&
+            record.slideId === before.slideId &&
+            Boolean(record.after) &&
+            same(record.after!.shape, shape)
+          const record = await writeObservation(
             {
               operation: 'manual_observation_complete',
               ...scope,
@@ -256,15 +282,10 @@ export function createPresentationManualObservationSkill(
               expectedBeforeDigest: before.before.digest,
               shape,
             },
-            signal,
+            before.observationId,
+            committed,
           )
-          if (
-            !same(record.before, before.before) ||
-            record.slideId !== before.slideId ||
-            !record.after ||
-            !same(record.after.shape, shape)
-          )
-            throw new Error('presentation_response_invalid')
+          if (!committed(record)) throw new Error('presentation_response_invalid')
           output = { observation: record }
         } else if (index === 2) output = { observation: await get() }
         else if (index === 3) {
