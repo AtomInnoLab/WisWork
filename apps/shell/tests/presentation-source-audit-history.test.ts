@@ -7,6 +7,8 @@ import { PresentationStore } from '@wiswork/project-store'
 import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan.js'
 import { createPresentationService } from '../src/main/presentation-service.js'
 import { createPresentationProjectController } from '../../office-addin/src/skills/powerpoint/presentation-project.js'
+import { createPresentationPlanningSkill } from '../../office-addin/src/skills/powerpoint/presentation-planning.js'
+import { InMemoryVfs } from '../../office-addin/src/skills/shared/vfs.js'
 
 it('records real attachment excerpt research, replays exact audit IDs and exposes bounded historical summaries after PC restart', async () => {
   const userDataPath = mkdtempSync(join(tmpdir(), 'source-audit-history-'))
@@ -108,6 +110,39 @@ it('records real attachment excerpt research, replays exact audit IDs and expose
     // Existing callers need no additional field and produce a new current-plan check.
     expect((await call('audit_sources')).planRevision).toBe(2)
     expect((await call('status')).sourceAuditHistory.runs).toHaveLength(2)
+
+    const operations: string[] = []
+    const auditIds: string[] = []
+    const skill = createPresentationPlanningSkill({
+      vfs: new InMemoryVfs(),
+      request: async (body, signal) => {
+        operations.push(body.operation)
+        if ('auditId' in body && typeof body.auditId === 'string') auditIds.push(body.auditId)
+        const response = Buffer.from(await service(body, signal ?? new AbortController().signal))
+        if (body.operation === 'audit_sources') throw new Error('response lost after PC commit')
+        return new Response(response)
+      },
+      available: () => true,
+      lastProject: () => plan.projectId,
+      documentId: async () => 'doc',
+      rememberProject: async () => {},
+    })
+    const recovered = await skill.executeTool({
+      id: 'lost-audit-response',
+      name: 'audit_presentation_sources',
+      input: { project_id: plan.projectId },
+    })
+    expect(recovered.isError).not.toBe(true)
+    expect(recovered.mutated).toBe(true)
+    expect(JSON.parse(recovered.output)).toMatchObject({
+      projectId: plan.projectId,
+      planRevision: 2,
+      sources: result.sources,
+    })
+    expect(operations).toEqual(['audit_sources', 'read_source_audit', 'get_plan'])
+    expect(auditIds).toHaveLength(2)
+    expect(auditIds[0]).toBe(auditIds[1])
+    expect((await call('status')).sourceAuditHistory.runs).toHaveLength(3)
   } finally {
     rmSync(userDataPath, { recursive: true, force: true })
   }
