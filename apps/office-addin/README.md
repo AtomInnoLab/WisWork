@@ -254,9 +254,11 @@ npm run typecheck -w @wiswork/office-addin
 VITE_WISWORK_ADDIN_ORIGIN=https://office.example npm run build -w @wiswork/office-addin
 ```
 
-`test:e2e:office` starts the local HTTPS Taskpane, substitutes a minimal Office.js PowerPoint host,
-and checks the narrow pre-pairing pane with Chrome keyboard input. It needs local Chrome and does
-not exercise WisWork PC pairing, the project workbench after pairing, or real PowerPoint rendering.
+`test:e2e:office` starts the local HTTPS Taskpane and substitutes a minimal Office.js PowerPoint
+host. It checks the narrow pre-pairing pane with Chrome keyboard input, then simulates the Relay
+protocol to read a saved project, exercise the project workbench, and reconnect after a Taskpane
+reload. It needs local Chrome. The Relay and PC are simulated; this does not verify real pairing,
+PowerPoint rendering, or host save/reopen behavior.
 
 ## PowerPoint 团队登录
 
