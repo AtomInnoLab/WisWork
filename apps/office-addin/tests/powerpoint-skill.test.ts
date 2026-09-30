@@ -2203,6 +2203,33 @@ describe('browser PowerPoint adapter', () => {
     tableValues[0]![1] = 'X'.repeat(257)
     await expect(subject.snapshotSlide(0, undefined, true)).rejects.toThrow('office_read_failed')
     tableValues[0]![1] = '11'
+    const image = {
+      id: '4',
+      name: 'Figure',
+      type: 'Image',
+      left: 10,
+      top: 130,
+      width: 200,
+      height: 100,
+      rotation: 0,
+      altTextTitle: 'Figure title',
+      altTextDescription: 'Figure source',
+      textFrame: { hasText: false, load: vi.fn() },
+    }
+    slide.shapes.items.push(image as unknown as typeof shape)
+    const beforeImage = await subject.snapshotSlide(0, undefined, true)
+    expect(beforeImage.shapes?.find((item) => item.id === '4')).toMatchObject({
+      rotation: 0,
+      altTextTitle: 'Figure title',
+      altTextDescription: 'Figure source',
+    })
+    image.altTextDescription = 'Changed source'
+    expect((await subject.snapshotSlide(0, undefined, true)).fingerprint).not.toBe(
+      beforeImage.fingerprint,
+    )
+    image.rotation = Number.NaN
+    await expect(subject.snapshotSlide(0, undefined, true)).rejects.toThrow('office_read_failed')
+    slide.shapes.items.pop()
     textRange.text = 'X'.repeat(12_001)
     await expect(subject.snapshotSlide(0, undefined, true)).rejects.toThrow('office_read_failed')
     await expect(subject.snapshotSlide(0)).resolves.toHaveProperty('slideId', 's1')

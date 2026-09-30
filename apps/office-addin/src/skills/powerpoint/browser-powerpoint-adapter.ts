@@ -268,7 +268,15 @@ export interface PowerPointAdapter {
   ): Promise<{
     slideId: string
     fingerprint: string
-    shapes?: Array<PowerPointShape & { text: string; tableValues?: string[][] }>
+    shapes?: Array<
+      PowerPointShape & {
+        text: string
+        tableValues?: string[][]
+        rotation?: number
+        altTextTitle?: string
+        altTextDescription?: string
+      }
+    >
   }>
   editSlideText(
     slideIndex: number,
@@ -432,7 +440,11 @@ function loadSlides(slides: RuntimeRecord): void {
   })
 }
 
-function loadShapes(shapes: RuntimeRecord, limit = MAX_POWERPOINT_VERIFY_SHAPES): void {
+function loadShapes(
+  shapes: RuntimeRecord,
+  limit = MAX_POWERPOINT_VERIFY_SHAPES,
+  strong = false,
+): void {
   ;(shapes.load as (properties: unknown) => void)({
     $top: limit + 1,
     id: true,
@@ -442,6 +454,7 @@ function loadShapes(shapes: RuntimeRecord, limit = MAX_POWERPOINT_VERIFY_SHAPES)
     top: true,
     width: true,
     height: true,
+    ...(strong ? { rotation: true, altTextTitle: true, altTextDescription: true } : {}),
   })
 }
 
@@ -1786,7 +1799,15 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
   ): Promise<{
     slideId: string
     fingerprint: string
-    shapes?: Array<PowerPointShape & { text: string; tableValues?: string[][] }>
+    shapes?: Array<
+      PowerPointShape & {
+        text: string
+        tableValues?: string[][]
+        rotation?: number
+        altTextTitle?: string
+        altTextDescription?: string
+      }
+    >
   }> {
     cancelled(signal)
     return this.run('1.4', async (context) => {
@@ -1794,7 +1815,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const slide = await getSlide(context, slides, slideIndex, signal)
       const shapes = slide.shapes as RuntimeRecord
       if (!shapes || typeof shapes.load !== 'function') throw new Error('office_api_unsupported')
-      loadShapes(shapes, MAX_POWERPOINT_SHAPES)
+      loadShapes(shapes, MAX_POWERPOINT_SHAPES, includeShapes)
       await sync(context, signal)
       const items = shapes.items as RuntimeRecord[]
       if (!Array.isArray(items) || items.length > MAX_POWERPOINT_SHAPES)
@@ -1861,6 +1882,18 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               throw new Error('office_read_failed')
             tableValues = (values as string[][]).map((row) => [...row])
           }
+          const picture = includeShapes && ['Image', 'Picture'].includes(String(shape.type))
+          if (
+            picture &&
+            (typeof shape.rotation !== 'number' ||
+              !Number.isFinite(shape.rotation) ||
+              Math.abs(shape.rotation) > 360 ||
+              typeof shape.altTextTitle !== 'string' ||
+              shape.altTextTitle.length > 12000 ||
+              typeof shape.altTextDescription !== 'string' ||
+              shape.altTextDescription.length > 12000)
+          )
+            throw new Error('office_read_failed')
           return {
             ...shapeInfo(shape),
             text:
@@ -1870,6 +1903,13 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
                   : string(textRange?.text, MAX_POWERPOINT_TEXT)
                 : '',
             ...(tableValues ? { tableValues } : {}),
+            ...(picture
+              ? {
+                  rotation: shape.rotation as number,
+                  altTextTitle: shape.altTextTitle as string,
+                  altTextDescription: shape.altTextDescription as string,
+                }
+              : {}),
           }
         })
         .sort((first, second) => first.id.localeCompare(second.id))

@@ -47,10 +47,12 @@ async function fixture(pageCount = 2) {
     structuredClone(shape),
     { ...shape, id: 'graphic-sdk', type: 'Picture' },
     { ...shape, id: 'table-sdk', type: 'Table' },
+    { ...shape, id: 'image-sdk', type: 'Image' },
     ...Array.from({ length: 32 }, (_, i) => ({ ...shape, id: `sdk-${i}` })),
   ]
   const texts = new Map<string, string>()
   let tableCell = '10'
+  let imageAlt = 'Original source'
   let counter = 0
   const textFor = (id: string) => texts.get(id) ?? 'old'
   const packages = new Map<string, string>()
@@ -104,8 +106,11 @@ async function fixture(pageCount = 2) {
       fingerprint: 'old',
       shapes: shapes.map((item) => ({
         ...structuredClone(item),
-        text: item.type === 'Picture' ? '' : textFor(item.id),
+        text: ['Picture', 'Image'].includes(item.type) ? '' : textFor(item.id),
         ...(item.type === 'Table' ? { tableValues: [['Revenue', tableCell]] } : {}),
+        ...(item.type === 'Image'
+          ? { rotation: 0, altTextTitle: 'Figure', altTextDescription: imageAlt }
+          : {}),
       })),
     })),
     exportPresentationPagePackage: vi.fn(async (slideId: string) => ({
@@ -201,6 +206,7 @@ async function fixture(pageCount = 2) {
     setTargetText: (value: string) => texts.set('sdk-id', value),
     setOtherText: (value: string) => texts.set('sdk-0', value),
     setTableCell: (value: string) => (tableCell = value),
+    setImageAlt: (value: string) => (imageAlt = value),
   }
 }
 const textOp: NativeModifyOperation = {
@@ -414,6 +420,13 @@ it('does not acknowledge a native text edit that also changes unrelated text', a
 it('does not acknowledge a native text edit that also changes an unrelated table cell', async () => {
   const f = await fixture()
   f.setAfterWrite(() => f.setTableCell('11'))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('does not acknowledge a native text edit that also changes unrelated image attribution', async () => {
+  const f = await fixture()
+  f.setAfterWrite(() => f.setImageAlt('Changed source'))
   const proposed = await f.propose([textOp])
   await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
   expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
