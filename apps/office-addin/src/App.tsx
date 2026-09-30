@@ -2226,7 +2226,8 @@ function ConfiguredApp() {
         ? `Enter code ${bridgeState.verificationCode} in WisWork PC to continue.`
         : 'Waiting for a signed-in WisWork PC.',
       rejected: 'The connection was rejected in WisWork PC.',
-      expired: 'The connection request expired. Try again.',
+      expired:
+        'The connection request expired. Check that WisWork PC is signed in and up to date, then connect again. If the PC showed a protocol error, upgrade WisWork PC before retrying.',
     }[bridgeState.status]
     return (
       <StatusScreen
