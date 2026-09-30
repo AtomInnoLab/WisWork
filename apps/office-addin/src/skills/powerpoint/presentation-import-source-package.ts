@@ -142,4 +142,22 @@ export async function validatePresentationImportSourcePage(
     )
       invalid()
   }
+
+  for (const path of Object.keys(zip.files).filter(
+    (name) => name.startsWith('ppt/') && name.endsWith('.xml'),
+  )) {
+    const ownerXml = await zip.file(path)!.async('string')
+    const ids = [...ownerXml.matchAll(/\br:(?:id|embed|link)="([^"]+)"/g)].map((match) => match[1]!)
+    if (ids.length === 0) continue
+    const slash = path.lastIndexOf('/')
+    const relsPath = `${path.slice(0, slash + 1)}_rels/${path.slice(slash + 1)}.rels`
+    const relsFile = zip.file(relsPath)
+    if (!relsFile) throw new Error('presentation_import_state_invalid')
+    const relsXml = await relsFile.async('string')
+    if (!validXml(relsXml)) invalid()
+    const root = parser.parse(relsXml).Relationships
+    if (!root) invalid()
+    const defined = new Set(items(root.Relationship).map((entry) => entry['@_Id']))
+    if (ids.some((id) => !defined.has(id))) invalid()
+  }
 }

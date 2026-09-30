@@ -254,6 +254,26 @@ it('rejects a chart page whose embedded editable workbook is missing', async () 
   expect(f.adapter.insertPage).not.toHaveBeenCalled()
 })
 
+it('rejects a chart page whose workbook relationship file is missing', async () => {
+  const deck = benchmarkDeck()
+  const compiled = await compilePresentationDeck({ ...deck, slides: [deck.slides[6]!] })
+  const zip = await JSZip.loadAsync(compiled.bytes)
+  const chartRels = Object.keys(zip.files).find((path) =>
+    /^ppt\/charts\/_rels\/chart\d+\.xml\.rels$/.test(path),
+  )
+  expect(chartRels).toBeDefined()
+  zip.remove(chartRels!)
+  const f = fixture()
+  f.artifact.slideCount = 1
+  f.artifact.pages = [{ id: 'slide-7', title: '数据图表', sourceSlideId: '256#' }]
+  f.artifact.pagePptxBase64 = [await zip.generateAsync({ type: 'base64' })]
+  expect(await f.skill.executeTool(f.call)).toMatchObject({
+    isError: true,
+    output: 'presentation_import_state_invalid',
+  })
+  expect(f.adapter.insertPage).not.toHaveBeenCalled()
+})
+
 it('records an imported production page after its exported package matches', async () => {
   const f = fixture()
   const source = fixturePage
