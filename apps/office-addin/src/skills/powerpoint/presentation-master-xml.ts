@@ -2327,9 +2327,7 @@ export function createPresentationMasterXmlSkill(options: PresentationMasterXmlO
         assertMasterXmlPreparation(originalBase64, edited.base64, edited.changedPaths, c.signal),
       )
     const { base64: preparedBase64, ...expected } = edited
-    const preparedRef = await save(c, 'page-0', decode(preparedBase64)),
-      pages: OriginalPage[] = [],
-      representatives: Progress['originalRepresentatives'] = []
+    const pageIdentity: { slideId: string; masterId: string; layoutId: string }[] = []
     const nativeGraph = new Map<string, string>()
     for (let i = 0; i < originalHost.slideIds.length; i++) {
       const slideId = originalHost.slideIds[i]!,
@@ -2356,107 +2354,139 @@ export function createPresentationMasterXmlSkill(options: PresentationMasterXmlO
       )
         fail('mapping_unproven')
       nativeGraph.set(actual.masterId, selected.contentDigest)
-      const packageRef = await save(c, `page-${i + 1}`, decode(actual.base64))
-      pages.push({ slideId, packageRef, masterId: actual.masterId, layoutId: actual.layoutId })
-      if (
-        !representatives.some(
-          (v) => v.masterId === actual.masterId && v.layoutId === actual.layoutId,
-        )
-      )
-        representatives.push({ masterId: actual.masterId, layoutId: actual.layoutId, packageRef })
+      pageIdentity.push({ slideId, masterId: actual.masterId, layoutId: actual.layoutId })
     }
     if (!same(host(await inspect(c)), originalHost)) fail('drift')
     const affectedDigests = preparation.original.masters
         .filter((m) => preparation.affectedMasterPaths.includes(m.path))
         .map((m) => m.contentDigest),
-      affectedPageCount = pages.filter(
+      affectedPageCount = pageIdentity.filter(
         (p) =>
           p.slideId === sourceSlideId || affectedDigests.includes(nativeGraph.get(p.masterId)!),
       ).length
-    const s: Snapshot = {
-      version: 1,
-      documentId,
-      changeId: c.changeId,
-      sourceSlideId,
-      packageSourceSlideId: preparation.original.sourceSlideId,
-      original: originalHost,
-      pages,
-      carrierRef: pages[0]!.packageRef,
-      preparedRef,
-      originalInventory: preparation.original,
-      preparedInventory: preparation.prepared,
-      affectedMasterPaths: preparation.affectedMasterPaths,
-      replacements: owned,
-      expected,
-    }
-    const snapshotRef = await save(c, 'snapshot', json(s)),
-      progress: Progress = {
-        originalRepresentatives: representatives,
-        originalMappings: [],
-        importedRepresentatives: [],
-        importedMappings: [],
-        restoredRepresentatives: [],
-        restoredMappings: [],
-        ownedSources: [],
-        roles: {},
-        mode: 'forward',
-        fallbackOriginalIds: [],
-        pageMappings: pages.map((p) => ({ originalSlideId: p.slideId, currentSlideId: p.slideId })),
-        importedMasterIds: [],
-        restoredMasterIds: [],
-        introducedMasterIds: [],
-      }
-    const initial: Proof = {
-        version: 1,
-        documentId,
-        changeId: c.changeId,
-        sequence: 0,
-        host: originalHost,
-        progress,
-      },
-      currentProofRef = await save(c, 'receipt-0', json(initial))
-    const r: PresentationMasterXmlChange = {
-      version: 1,
-      kind: 'master_xml',
-      documentId,
-      changeId: c.changeId,
-      intent,
-      sourceSlideId,
-      packageSourceSlideId: s.packageSourceSlideId,
-      snapshotRef,
-      preparedRef,
-      currentProofRef,
-      state: 'prepared',
-      cursor: { phase: 'original_probe_stage', index: 0, substep: 0 },
-      receiptCount: 0,
-      scope: {
-        originalMasterId: source.masterId,
-        affectedPageCount,
-        originalLayoutCount: originalHost.masters.find((m) => m.masterId === source.masterId)!
-          .layouts.length,
-        ...(s.affectedMasterPaths.length
-          ? { affectedMasterCount: s.affectedMasterPaths.length }
-          : {}),
-      },
-      introducedMasterCount: 0,
-      inventoryCleanupVerified: false,
-      reviews: [],
-    }
-    if (!validatePresentationMasterXmlChange(r)) fail('state_invalid')
-    await load(c, r)
-    if (!same(host(await inspect(c)), originalHost)) fail('drift')
-    const targets = pages
+    const targets = pageIdentity
       .filter(
         (p) =>
           p.slideId === sourceSlideId || affectedDigests.includes(nativeGraph.get(p.masterId)!),
       )
       .map((p) => p.slideId)
+    const prepareConfirmed = async (ctx: Context) => {
+      if (!same(host(await inspect(ctx)), originalHost)) fail('drift')
+      const preparedRef = await save(ctx, 'page-0', decode(preparedBase64)),
+        pages: OriginalPage[] = [],
+        representatives: Progress['originalRepresentatives'] = []
+      for (let i = 0; i < pageIdentity.length; i++) {
+        const identity = pageIdentity[i]!,
+          actual = await awaited(ctx, async () =>
+            structuredClone(await options.adapter.readPage(identity.slideId, ctx.signal)),
+          )
+        if (
+          actual.slideId !== identity.slideId ||
+          actual.digest !== originalHost.pages[i]!.digest ||
+          actual.masterId !== identity.masterId ||
+          actual.layoutId !== identity.layoutId
+        )
+          fail('drift')
+        const packageRef = await save(ctx, `page-${i + 1}`, decode(actual.base64))
+        pages.push({ ...identity, packageRef })
+        if (
+          !representatives.some(
+            (v) => v.masterId === identity.masterId && v.layoutId === identity.layoutId,
+          )
+        )
+          representatives.push({
+            masterId: identity.masterId,
+            layoutId: identity.layoutId,
+            packageRef,
+          })
+      }
+      if (!same(host(await inspect(ctx)), originalHost)) fail('drift')
+      const s: Snapshot = {
+        version: 1,
+        documentId,
+        changeId: c.changeId,
+        sourceSlideId,
+        packageSourceSlideId: preparation.original.sourceSlideId,
+        original: originalHost,
+        pages,
+        carrierRef: pages[0]!.packageRef,
+        preparedRef,
+        originalInventory: preparation.original,
+        preparedInventory: preparation.prepared,
+        affectedMasterPaths: preparation.affectedMasterPaths,
+        replacements: owned,
+        expected,
+      }
+      const snapshotRef = await save(ctx, 'snapshot', json(s)),
+        progress: Progress = {
+          originalRepresentatives: representatives,
+          originalMappings: [],
+          importedRepresentatives: [],
+          importedMappings: [],
+          restoredRepresentatives: [],
+          restoredMappings: [],
+          ownedSources: [],
+          roles: {},
+          mode: 'forward',
+          fallbackOriginalIds: [],
+          pageMappings: pages.map((p) => ({
+            originalSlideId: p.slideId,
+            currentSlideId: p.slideId,
+          })),
+          importedMasterIds: [],
+          restoredMasterIds: [],
+          introducedMasterIds: [],
+        }
+      const initial: Proof = {
+          version: 1,
+          documentId,
+          changeId: c.changeId,
+          sequence: 0,
+          host: originalHost,
+          progress,
+        },
+        currentProofRef = await save(ctx, 'receipt-0', json(initial))
+      const r: PresentationMasterXmlChange = {
+        version: 1,
+        kind: 'master_xml',
+        documentId,
+        changeId: c.changeId,
+        intent,
+        sourceSlideId,
+        packageSourceSlideId: s.packageSourceSlideId,
+        snapshotRef,
+        preparedRef,
+        currentProofRef,
+        state: 'prepared',
+        cursor: { phase: 'original_probe_stage', index: 0, substep: 0 },
+        receiptCount: 0,
+        scope: {
+          originalMasterId: source.masterId,
+          affectedPageCount,
+          originalLayoutCount: originalHost.masters.find((m) => m.masterId === source.masterId)!
+            .layouts.length,
+          ...(s.affectedMasterPaths.length
+            ? { affectedMasterCount: s.affectedMasterPaths.length }
+            : {}),
+        },
+        introducedMasterCount: 0,
+        inventoryCleanupVerified: false,
+        reviews: [],
+      }
+      if (!validatePresentationMasterXmlChange(r)) fail('state_invalid')
+      await load(ctx, r)
+      if (!same(host(await inspect(ctx)), originalHost)) fail('drift')
+      return r
+    }
     return options.proposals.propose({
       operation: 'edit_slide_master_xml',
       toolName: 'edit_slide_master_xml',
       title: intent,
       preview: {
-        ...summary(r),
+        changeId: c.changeId,
+        state: 'prepared',
+        sourceSlideId,
+        qaPassed: false,
         changedPaths: edited.changedPaths,
         qaScope: { basis: 'master_xml_savepoint', hostSlideIds: targets },
       },
@@ -2465,7 +2495,6 @@ export function createPresentationMasterXmlSkill(options: PresentationMasterXmlO
       validate: async (nextSignal) => {
         try {
           const ctx = { ...c, signal: nextSignal }
-          await load(ctx, r)
           return same(host(await inspect(ctx)), originalHost)
         } catch (error) {
           if (nextSignal?.aborted || c.originalSignal?.aborted || c.epoch !== epoch) throw error
@@ -2474,13 +2503,12 @@ export function createPresentationMasterXmlSkill(options: PresentationMasterXmlO
       },
       execute: async (nextSignal) => {
         const ctx = { ...c, signal: nextSignal }
-        await load(ctx, r)
-        if (!same(host(await inspect(ctx)), originalHost)) fail('drift')
+        const r = await prepareConfirmed(ctx)
         await store(ctx, r)
         await drive(ctx, r)
       },
       verify: async (nextSignal) => {
-        const current = record(r.changeId)
+        const current = record(c.changeId)
         await checked(context(current, nextSignal), current)
       },
     })

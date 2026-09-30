@@ -1,16 +1,17 @@
 import { afterEach, expect, it } from 'vitest'
 import { masterXmlFixture, cleanupMasterXmlFixtures } from './helpers/master-xml-fixture.js'
 afterEach(cleanupMasterXmlFixtures)
-it('backs up all originals and preserves proposed capability before writes', async () => {
+it('backs up all originals after confirmation and preserves proposed capability before writes', async () => {
   const f = await masterXmlFixture(25)
   const p = await f.propose()
   expect(p.toolName).toBe('edit_slide_master_xml')
   expect(p.preview.qaScope).toEqual({ basis: 'master_xml_savepoint', hostSlideIds: f.order })
   expect(f.adapter.stage).not.toHaveBeenCalled()
   expect(f.adapter.readPage).toHaveBeenCalledTimes(25)
-  expect(f.request.mock.calls.some(([v]: any) => v.operation === 'package_backup_finish')).toBe(
-    true,
-  )
+  expect(f.request).not.toHaveBeenCalled()
+  f.proposals.reject()
+  expect(f.request).not.toHaveBeenCalled()
+  expect(f.data.size).toBe(0)
 })
 it('durably probes unused layouts and updates every dependent before deleting source', async () => {
   const f = await masterXmlFixture(25),
