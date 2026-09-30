@@ -35,6 +35,41 @@ it('releases confirmed uploads if a later original page backup fails before pers
   expect(f.data.size).toBe(0)
   expect(f.adapter.stage).not.toHaveBeenCalled()
 })
+it('releases confirmed backups when the first settings write fails before commit', async () => {
+  const f = await masterXmlFixture(2)
+  const p = await f.propose()
+  f.options.writeMasterXmlChange = async () => {
+    throw Error('settings_failed')
+  }
+  await expect(f.confirm()).rejects.toThrow('settings_failed')
+  const response = await f.request({
+    operation: 'package_backup_list',
+    documentId: 'doc',
+    changeId: String(p.preview.changeId),
+  })
+  expect((await response.json()).backups).toEqual([])
+  expect(f.data.size).toBe(0)
+  expect(f.adapter.stage).not.toHaveBeenCalled()
+})
+it('keeps confirmed savepoints when the first settings write loses its ACK', async () => {
+  const f = await masterXmlFixture(2)
+  const p = await f.propose()
+  const write = f.options.writeMasterXmlChange
+  f.options.writeMasterXmlChange = async (next, expected) => {
+    await write(next, expected)
+    throw Error('settings_ack_lost')
+  }
+  await expect(f.confirm()).rejects.toThrow('settings_ack_lost')
+  const id = String(p.preview.changeId)
+  expect(f.data.get(id)?.state).toBe('prepared')
+  const response = await f.request({
+    operation: 'package_backup_list',
+    documentId: 'doc',
+    changeId: id,
+  })
+  expect((await response.json()).backups.length).toBeGreaterThan(0)
+  expect(f.adapter.stage).not.toHaveBeenCalled()
+})
 it('durably probes unused layouts and updates every dependent before deleting source', async () => {
   const f = await masterXmlFixture(25),
     p = await f.propose()

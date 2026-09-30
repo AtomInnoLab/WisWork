@@ -2513,14 +2513,19 @@ export function createPresentationMasterXmlSkill(options: PresentationMasterXmlO
       },
       execute: async (nextSignal) => {
         const ctx = { ...c, signal: nextSignal }
-        let persistenceAttempted = false
         try {
           const r = await prepareConfirmed(ctx)
-          persistenceAttempted = true
           await store(ctx, r)
           await drive(ctx, r)
         } catch (error) {
-          if (!persistenceAttempted)
+          // Only an observed missing intent permits releasing its savepoints.
+          let absent = false
+          try {
+            absent = options.readMasterXmlChange(c.changeId) === undefined
+          } catch {
+            // Preserve backups if the persistent record cannot be read.
+          }
+          if (absent)
             await Promise.allSettled(
               attemptedRefs.map((backup) =>
                 releasePackageBackup({

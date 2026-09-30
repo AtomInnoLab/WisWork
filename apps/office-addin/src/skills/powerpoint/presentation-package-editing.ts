@@ -729,7 +729,6 @@ export function createPresentationPackageEditingSkill(options: Options) {
           const refs = await Promise.all(
             blobs.map(({ key, bytes }) => packageBackupRefForBytes(key, bytes)),
           )
-          let persistenceAttempted = false
           try {
             for (let i = 0; i < blobs.length; i++)
               if (!same(await save(ctx, blobs[i]!.key, blobs[i]!.bytes), refs[i]))
@@ -761,11 +760,18 @@ export function createPresentationPackageEditingSkill(options: Options) {
               throw Error('presentation_package_state_invalid')
             await backups(ctx, r, snapshot)
             if (!same(proof(await inspect(ctx)), proof(all))) throw Error('proposal_stale')
-            persistenceAttempted = true
             await store(ctx, r)
             await drive(ctx, r, snapshot, 'resume')
           } catch (error) {
-            if (!persistenceAttempted)
+            // A settings write may fail before commit or lose its acknowledgement after commit.
+            // Only an observed absence proves these backups are unreferenced.
+            let absent = false
+            try {
+              absent = options.readPackageChange(c.changeId) === undefined
+            } catch {
+              // Keep the savepoint when its durable state cannot be determined.
+            }
+            if (absent)
               await Promise.allSettled(
                 refs.map((backup) =>
                   releasePackageBackup({

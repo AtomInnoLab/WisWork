@@ -34,6 +34,41 @@ it('releases an uploaded page if the next backup fails before intent persistence
   expect(f.data.size).toBe(0)
   expect(f.adapter.stage).not.toHaveBeenCalled()
 })
+it('releases all backups when the first settings write fails before commit', async () => {
+  const f = await fixture()
+  const p = await f.propose()
+  f.write.mockImplementationOnce(async () => {
+    throw Error('settings_failed')
+  })
+  await expect(f.confirm()).rejects.toThrow('settings_failed')
+  const response = await f.request({
+    operation: 'package_backup_list',
+    documentId: 'doc',
+    changeId: String(p.preview.changeId),
+  })
+  expect((await response.json()).backups).toEqual([])
+  expect(f.data.size).toBe(0)
+  expect(f.adapter.stage).not.toHaveBeenCalled()
+})
+it('keeps savepoints when the first settings write commits but loses its ACK', async () => {
+  const f = await fixture()
+  const p = await f.propose()
+  const write = f.write.getMockImplementation()!
+  f.write.mockImplementationOnce(async (next, expected) => {
+    await write(next, expected)
+    throw Error('settings_ack_lost')
+  })
+  await expect(f.confirm()).rejects.toThrow('settings_ack_lost')
+  const id = String(p.preview.changeId)
+  expect(f.data.get(id)?.state).toBe('prepared')
+  const response = await f.request({
+    operation: 'package_backup_list',
+    documentId: 'doc',
+    changeId: id,
+  })
+  expect((await response.json()).backups).toHaveLength(4)
+  expect(f.adapter.stage).not.toHaveBeenCalled()
+})
 it('persists PC originals, imports then deletes, and restores after reopen', async () => {
   const f = await fixture()
   const p = await f.propose()
