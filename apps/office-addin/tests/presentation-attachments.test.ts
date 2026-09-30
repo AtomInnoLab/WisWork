@@ -157,11 +157,18 @@ it('accepts sparse PDF page hints and rejects overlap with empty pages', async (
     pagesWithoutExtractedText: [2],
     pagesWithSparseExtractedText: [3],
     pagesWithFullPageImage: [1, 2, 3],
+    pagesWithInvisibleTextLayer: [1, 3],
   }
   f.request.mockResolvedValue(new Response(JSON.stringify({ attachments: [item] })))
   expect(await f.skill.list()).toMatchObject([item])
   f.request.mockResolvedValue(
     new Response(JSON.stringify({ attachments: [{ ...item, pagesWithSparseExtractedText: [2] }] })),
+  )
+  await expect(f.skill.list()).rejects.toThrow('presentation_response_invalid')
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({ attachments: [{ ...item, pagesWithInvisibleTextLayer: [1, 4] }] }),
+    ),
   )
   await expect(f.skill.list()).rejects.toThrow('presentation_response_invalid')
 })
@@ -483,16 +490,30 @@ it('preserves bounded PDF page spans while reading source text', async () => {
     new Response(
       JSON.stringify({
         ...value,
-        pageSpans: [value.pageSpans[0], { ...value.pageSpans[1], imageBacked: true }],
+        pageSpans: [
+          value.pageSpans[0],
+          { ...value.pageSpans[1], imageBacked: true, invisibleTextLayer: true },
+        ],
       }),
     ),
   )
-  expect(JSON.parse((await call()).output).pageSpans[1].imageBacked).toBe(true)
+  const marked = JSON.parse((await call()).output)
+  expect(marked.pageSpans[1].imageBacked).toBe(true)
+  expect(marked.pageSpans[1].invisibleTextLayer).toBe(true)
   f.request.mockResolvedValue(
     new Response(
       JSON.stringify({
         ...value,
         pageSpans: [value.pageSpans[0], { ...value.pageSpans[1], imageBacked: false }],
+      }),
+    ),
+  )
+  expect(await call()).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        ...value,
+        pageSpans: [value.pageSpans[0], { ...value.pageSpans[1], invisibleTextLayer: true }],
       }),
     ),
   )

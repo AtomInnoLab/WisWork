@@ -1293,7 +1293,16 @@ export function AgentWorkspace(props: {
                           {file.pagesWithFullPageImage.length > 20
                             ? ` 等 ${file.pagesWithFullPageImage.length} `
                             : ' '}
-                          页含覆盖整页的图像；提取文字可能来自 OCR，引用前请与原 PDF 核对。
+                          页含覆盖整页的图像；请核对提取文字与原 PDF。
+                        </p>
+                      ) : null}
+                      {file.pagesWithInvisibleTextLayer?.length ? (
+                        <p role="status">
+                          第 {file.pagesWithInvisibleTextLayer.slice(0, 20).join('、')}
+                          {file.pagesWithInvisibleTextLayer.length > 20
+                            ? ` 等 ${file.pagesWithInvisibleTextLayer.length} `
+                            : ' '}
+                          页含不可见文字层；该文字未经核对，不能仅凭匹配结果支持主张，请补充经核对文本。
                         </p>
                       ) : null}
                       {file.status === 'failed' && file.error === 'parse_failed' && (

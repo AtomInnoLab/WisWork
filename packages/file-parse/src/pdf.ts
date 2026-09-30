@@ -134,7 +134,11 @@ function installDomMatrixPolyfill(): void {
   g.DOMMatrix = DOMMatrixPolyfill
 }
 
-type PdfPageExtraction = { pages: string[]; pagesWithFullPageImage: number[] }
+type PdfPageExtraction = {
+  pages: string[]
+  pagesWithFullPageImage: number[]
+  pagesWithInvisibleTextLayer: number[]
+}
 
 /** Extract ordered page text and report pages painted by a near-full-page raster image. */
 export async function pdfToPagesWithImageCoverage(
@@ -160,12 +164,14 @@ export async function pdfToPagesWithImageCoverage(
   })
   const doc = await loadingTask.promise
   try {
-    const fullPageImage = async (page: Awaited<ReturnType<typeof doc.getPage>>) => {
+    const inspectPage = async (page: Awaited<ReturnType<typeof doc.getPage>>) => {
       const operations = await page.getOperatorList()
       const [left, bottom, right, top] = page.view
       const pageArea = (right - left) * (top - bottom)
       let matrix = [1, 0, 0, 1, 0, 0]
       const stack: number[][] = []
+      let fullPageImage = false
+      let invisibleTextLayer = false
       for (let j = 0; j < operations.fnArray.length; j++) {
         const op = operations.fnArray[j]
         if (op === OPS.save) stack.push(matrix.slice())
@@ -183,26 +189,30 @@ export async function pdfToPagesWithImageCoverage(
           ]
         } else if (op === OPS.paintImageXObject || op === OPS.paintInlineImageXObject) {
           const [a, b, c, d] = matrix
-          if (pageArea > 0 && Math.abs(a * d - b * c) / pageArea >= 0.8) return true
-        }
+          if (pageArea > 0 && Math.abs(a * d - b * c) / pageArea >= 0.8) fullPageImage = true
+        } else if (op === OPS.setTextRenderingMode && operations.argsArray[j]?.[0] === 3)
+          invisibleTextLayer = true
       }
-      return false
+      return { fullPageImage, invisibleTextLayer }
     }
     // Inspect every page in smaller PDFs. For long PDFs, sample first; a scan-like
     // sample triggers complete inspection. A negative sample is not an OCR guarantee.
-    const sampled = new Map<number, boolean>()
+    const sampled = new Map<number, Awaited<ReturnType<typeof inspectPage>>>()
     if (inspectImages && doc.numPages > 64) {
       const sampleNumbers = new Set([doc.numPages])
       for (let i = 1; i <= doc.numPages; i += 16) sampleNumbers.add(i)
       for (const i of sampleNumbers) {
         const page = await doc.getPage(i)
-        sampled.set(i, await fullPageImage(page))
+        sampled.set(i, await inspectPage(page))
         page.cleanup()
       }
     }
-    const inspectAll = inspectImages && (doc.numPages <= 64 || [...sampled.values()].some(Boolean))
+    const inspectAll =
+      inspectImages &&
+      (doc.numPages <= 64 || [...sampled.values()].some((value) => value.fullPageImage))
     const pages: string[] = []
     const pagesWithFullPageImage: number[] = []
+    const pagesWithInvisibleTextLayer: number[] = []
     for (let i = 1; i <= doc.numPages; i++) {
       const page = await doc.getPage(i)
       const content = await page.getTextContent()
@@ -214,11 +224,14 @@ export async function pdfToPagesWithImageCoverage(
         }
       }
       pages.push(text.trim())
-      if ((sampled.get(i) ?? (inspectAll && (await fullPageImage(page)))) === true)
+      const inspected = sampled.get(i) ?? (inspectAll ? await inspectPage(page) : undefined)
+      if (inspected?.fullPageImage) {
         pagesWithFullPageImage.push(i)
+        if (inspected.invisibleTextLayer) pagesWithInvisibleTextLayer.push(i)
+      }
       page.cleanup()
     }
-    return { pages, pagesWithFullPageImage }
+    return { pages, pagesWithFullPageImage, pagesWithInvisibleTextLayer }
   } finally {
     await loadingTask.destroy()
   }

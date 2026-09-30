@@ -48,7 +48,13 @@ export interface PresentationClaimEvidence {
     totalChars: number
     text: string
     offsetUnit: 'utf16_code_unit'
-    locatorSpans?: { locator: string; start: number; end: number; imageBacked?: true }[]
+    locatorSpans?: {
+      locator: string
+      start: number
+      end: number
+      imageBacked?: true
+      invisibleTextLayer?: true
+    }[]
     provenance?:
       { binding: 'fetched_url_matched'; retrievedAt: number } | { binding: 'user_supplied' }
   }
@@ -128,6 +134,7 @@ const schema = object({
             start: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
             end: number(0, MAX_PRESENTATION_SOURCE_TEXT_CHARS),
             imageBacked: { type: 'boolean', enum: [true] },
+            invisibleTextLayer: { type: 'boolean', enum: [true] },
           },
           ['locator', 'start', 'end'],
         ),
@@ -369,6 +376,7 @@ export function parsePresentationClaimEvidence(value: unknown): PresentationClai
         !Number.isSafeInteger(span.end) ||
         span.start > span.end ||
         (span.imageBacked === true && locatorUnit !== '页') ||
+        (span.invisibleTextLayer === true && span.imageBacked !== true) ||
         span.end > attachment.totalChars ||
         span.end <= attachment.offset ||
         span.start >= attachment.offset + attachment.text.length ||

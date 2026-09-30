@@ -183,3 +183,28 @@ export function buildPdfFixture(text: string | string[]): Uint8Array {
   out += `trailer\n<< /Size ${bodies.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`
   return new TextEncoder().encode(out)
 }
+
+export function buildImageBackedPdfFixture(text: string, invisible = false): Uint8Array {
+  const stream = `q 612 0 0 792 0 0 cm /Im1 Do Q\nBT /F1 24 Tf ${invisible ? '3 Tr ' : ''}72 720 Td (${text}) Tj ET`
+  const image = 'FF0000>'
+  const bodies = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+    `<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length ${image.length} >>\nstream\n${image}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ]
+  let out = '%PDF-1.4\n'
+  const offsets = [0]
+  for (let i = 0; i < bodies.length; i++) {
+    offsets.push(out.length)
+    out += `${i + 1} 0 obj\n${bodies[i]}\nendobj\n`
+  }
+  const xrefStart = out.length
+  out += `xref\n0 ${bodies.length + 1}\n0000000000 65535 f \n`
+  for (let i = 1; i <= bodies.length; i++)
+    out += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`
+  out += `trailer\n<< /Size ${bodies.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`
+  return new TextEncoder().encode(out)
+}

@@ -110,7 +110,13 @@ it('preserves image-backed PDF spans and a scanned blank page without claiming O
       locatorSpans: [
         { locator: '第 1 页', start: 0, end: 1, imageBacked: true },
         { locator: '第 2 页', start: 3, end: 3, imageBacked: true },
-        { locator: '第 3 页', start: 5, end: 9, imageBacked: true },
+        {
+          locator: '第 3 页',
+          start: 5,
+          end: 9,
+          imageBacked: true,
+          invisibleTextLayer: true,
+        },
       ],
     },
     excerptMatch: { status: 'found', offset: 5, locator: '第 3 页' },
@@ -118,6 +124,19 @@ it('preserves image-backed PDF spans and a scanned blank page without claiming O
   expect(parsePresentationClaimEvidence(value).attachment.locatorSpans).toEqual(
     value.attachment.locatorSpans,
   )
+  expect(() =>
+    parsePresentationClaimEvidence({
+      ...value,
+      attachment: {
+        ...value.attachment,
+        locatorSpans: value.attachment.locatorSpans.map((span) => {
+          if (span.locator !== '第 3 页') return span
+          const { imageBacked: _imageBacked, ...withoutImage } = span
+          return withoutImage
+        }),
+      },
+    }),
+  ).toThrow()
   expect(() =>
     parsePresentationClaimEvidence({
       ...value,

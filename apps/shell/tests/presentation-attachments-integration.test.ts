@@ -422,6 +422,9 @@ it('retains the unreadable page of the real P0-11 NACA scan through PC restart a
       pagesWithoutExtractedText: [2],
       pagesWithSparseExtractedText: expect.arrayContaining([24, 30]),
       pagesWithFullPageImage: Array.from({ length: 30 }, (_, index) => index + 1),
+      pagesWithInvisibleTextLayer: Array.from({ length: 30 }, (_, index) => index + 1).filter(
+        (page) => page !== 2,
+      ),
     }),
   ])
   const read = await client.executeTool({
@@ -434,7 +437,12 @@ it('retains the unreadable page of the real P0-11 NACA scan through PC restart a
   expect(page.pageSpans).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ locator: '第 2 页', start: expect.any(Number), imageBacked: true }),
-      expect.objectContaining({ locator: '第 3 页', start: expect.any(Number), imageBacked: true }),
+      expect.objectContaining({
+        locator: '第 3 页',
+        start: expect.any(Number),
+        imageBacked: true,
+        invisibleTextLayer: true,
+      }),
     ]),
   )
   const blank = page.pageSpans.find((span: { locator: string }) => span.locator === '第 2 页')

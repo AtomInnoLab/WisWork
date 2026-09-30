@@ -12,7 +12,10 @@ import {
 } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
 import { presentationPlanClaims } from '@wiswork/pptx-engine/presentation-plan'
 import { createPresentationService } from '../src/main/presentation-service'
-import { buildPdfFixture } from '../../../packages/file-parse/tests/helpers/fixtures'
+import {
+  buildImageBackedPdfFixture,
+  buildPdfFixture,
+} from '../../../packages/file-parse/tests/helpers/fixtures'
 const roots: string[] = []
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -217,6 +220,37 @@ it('allows supported review for a matching ordinary text PDF page', async () => 
     ),
   ).toMatchObject({ outcome: 'supported' })
 })
+it('allows visible native text over a full-page PDF image after literal review', async () => {
+  const f = await setup(undefined, {
+    raw: Buffer.from(buildImageBackedPdfFixture('Visible evidence')),
+    name: 'image-background.pdf',
+    excerpt: 'Visible evidence',
+    locator: '第 1 页',
+  })
+  const request = { ...f.request, offset: 0 }
+  const evidence = decode(await f.service(request, new AbortController().signal))
+  expect(evidence.attachment.locatorSpans).toEqual(
+    expect.arrayContaining([expect.objectContaining({ imageBacked: true })]),
+  )
+  expect(evidence.attachment.locatorSpans[0].invisibleTextLayer).toBeUndefined()
+  expect(
+    decode(
+      await f.service(
+        {
+          ...request,
+          operation: 'production_record_claim_review',
+          reviewId: 'visible-over-image',
+          evidenceDigest: createHash('sha256')
+            .update(presentationClaimEvidenceContent(evidence))
+            .digest('hex'),
+          outcome: 'supported',
+          notes: 'The visible text contains the cited excerpt.',
+        },
+        new AbortController().signal,
+      ),
+    ),
+  ).toMatchObject({ outcome: 'supported' })
+})
 it('does not mark unverified image-backed scan text as supported', async () => {
   const raw = readFileSync(
     new URL(
@@ -234,7 +268,13 @@ it('does not mark unverified image-backed scan text as supported', async () => {
   const evidence = decode(await f.service(request, new AbortController().signal))
   expect(evidence.excerptMatch).toMatchObject({ status: 'found', locator: '第 3 页' })
   expect(evidence.attachment.locatorSpans).toEqual(
-    expect.arrayContaining([expect.objectContaining({ locator: '第 3 页', imageBacked: true })]),
+    expect.arrayContaining([
+      expect.objectContaining({
+        locator: '第 3 页',
+        imageBacked: true,
+        invisibleTextLayer: true,
+      }),
+    ]),
   )
   const body = {
     ...request,

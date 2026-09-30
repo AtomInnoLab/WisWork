@@ -239,7 +239,7 @@ export async function handlePresentationProduction(
           !matchedSpan
         )
           throw new Error('evidence_excerpt_not_found')
-        if (matchedSpan?.imageBacked) throw new Error('evidence_image_backed_unverified')
+        if (matchedSpan?.invisibleTextLayer) throw new Error('evidence_image_backed_unverified')
         const planned = canonicalSourceLocator(evidence.source.locator)
         if (planned && evidence.attachment.locatorSpans && match.locator !== planned)
           throw new Error('evidence_locator_mismatch')
@@ -471,7 +471,13 @@ export async function handlePresentationProduction(
       totalChars: number
       text: string
       sourceUri: string
-      pageSpans?: { locator: string; start: number; end: number; imageBacked?: true }[]
+      pageSpans?: {
+        locator: string
+        start: number
+        end: number
+        imageBacked?: true
+        invisibleTextLayer?: true
+      }[]
     }
     check(signal)
     if (

@@ -123,6 +123,7 @@ interface Metadata {
   pagesWithoutExtractedText?: number[]
   pagesWithSparseExtractedText?: number[]
   pagesWithFullPageImage?: number[]
+  pagesWithInvisibleTextLayer?: number[]
 }
 async function directory(path: string, create = true) {
   if (create) {
@@ -350,6 +351,19 @@ async function metadata(dir: string, id: string): Promise<Metadata> {
       ))
   )
     fail('invalid_state')
+  if (
+    m.pagesWithInvisibleTextLayer !== undefined &&
+    (!m.pagesWithFullPageImage ||
+      !Array.isArray(m.pagesWithInvisibleTextLayer) ||
+      m.pagesWithInvisibleTextLayer.length < 1 ||
+      m.pagesWithInvisibleTextLayer.length > m.pagesWithFullPageImage.length ||
+      m.pagesWithInvisibleTextLayer.some(
+        (page, index) =>
+          !m.pagesWithFullPageImage!.includes(page) ||
+          (index > 0 && page <= m.pagesWithInvisibleTextLayer![index - 1]!),
+      ))
+  )
+    fail('invalid_state')
   if (m.status !== 'ready' && m.licenseDeclaration !== undefined) fail('invalid_state')
   if (m.status !== 'ready' && m.animationHandling !== undefined) fail('invalid_state')
   if (
@@ -377,6 +391,9 @@ const publicMetadata = (m: Metadata, receivedBytes: number) => ({
     ? { pagesWithSparseExtractedText: m.pagesWithSparseExtractedText }
     : {}),
   ...(m.pagesWithFullPageImage ? { pagesWithFullPageImage: m.pagesWithFullPageImage } : {}),
+  ...(m.pagesWithInvisibleTextLayer
+    ? { pagesWithInvisibleTextLayer: m.pagesWithInvisibleTextLayer }
+    : {}),
   ...(m.source ? { source: m.source } : {}),
   ...(m.sourceUrlHash ? { sourceUrlHash: m.sourceUrlHash } : {}),
   ...(m.retrievedAt ? { retrievedAt: m.retrievedAt } : {}),
@@ -1315,6 +1332,9 @@ export function createPresentationAttachmentService(options: {
                 ...(parsed.pagesWithFullPageImage?.length
                   ? { pagesWithFullPageImage: parsed.pagesWithFullPageImage }
                   : {}),
+                ...(parsed.pagesWithInvisibleTextLayer?.length
+                  ? { pagesWithInvisibleTextLayer: parsed.pagesWithInvisibleTextLayer }
+                  : {}),
               }
             }
           } catch (error) {
@@ -1421,6 +1441,9 @@ export function createPresentationAttachmentService(options: {
                         ...section,
                         ...(m.pagesWithFullPageImage?.includes(index + 1)
                           ? { imageBacked: true }
+                          : {}),
+                        ...(m.pagesWithInvisibleTextLayer?.includes(index + 1)
+                          ? { invisibleTextLayer: true }
                           : {}),
                       },
                     ]

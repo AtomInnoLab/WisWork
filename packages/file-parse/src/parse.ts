@@ -16,6 +16,7 @@ export interface ParsedFile {
   error?: string
   sections?: { locator: string; start: number; end: number }[]
   pagesWithFullPageImage?: number[]
+  pagesWithInvisibleTextLayer?: number[]
 }
 
 export function paragraphSections(text: string): NonNullable<ParsedFile['sections']> {
@@ -62,9 +63,8 @@ export async function parseFileToText(filePath: string): Promise<ParsedFile> {
       case 'xlsx':
         return { ok: true, kind: 'text', text: await xlsxToText(await readFile(filePath)) }
       case 'pdf': {
-        const { pages, pagesWithFullPageImage } = await pdfToPagesWithImageCoverage(
-          await readFile(filePath),
-        )
+        const { pages, pagesWithFullPageImage, pagesWithInvisibleTextLayer } =
+          await pdfToPagesWithImageCoverage(await readFile(filePath))
         if (pages.every((page) => !page.trim()))
           return { ok: false, kind: 'text', error: 'pdf_no_extractable_text' }
         const sections: NonNullable<ParsedFile['sections']> = []
@@ -79,6 +79,7 @@ export async function parseFileToText(filePath: string): Promise<ParsedFile> {
           text: pages.join('\n\n'),
           sections,
           ...(pagesWithFullPageImage.length ? { pagesWithFullPageImage } : {}),
+          ...(pagesWithInvisibleTextLayer.length ? { pagesWithInvisibleTextLayer } : {}),
         }
       }
     }

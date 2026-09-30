@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseFileToText } from '../src/index'
-import { buildPdfFixture, writeFixture } from './helpers/fixtures'
+import { buildImageBackedPdfFixture, buildPdfFixture, writeFixture } from './helpers/fixtures'
 import { resolve } from 'node:path'
 
 describe('parseFileToText: pdf', () => {
@@ -19,6 +19,22 @@ describe('parseFileToText: pdf', () => {
       { locator: '第 1 页', start: 0, end: 8 },
       { locator: '第 2 页', start: 10, end: 21 },
     ])
+  })
+
+  it('separates a full-page image with visible text from an invisible text layer', async () => {
+    const visible = await parseFileToText(
+      writeFixture('image-visible.pdf', buildImageBackedPdfFixture('Visible evidence')),
+    )
+    expect(visible.ok).toBe(true)
+    expect(visible.pagesWithFullPageImage).toEqual([1])
+    expect(visible.pagesWithInvisibleTextLayer).toBeUndefined()
+
+    const invisible = await parseFileToText(
+      writeFixture('image-invisible.pdf', buildImageBackedPdfFixture('OCR evidence', true)),
+    )
+    expect(invisible.ok).toBe(true)
+    expect(invisible.pagesWithFullPageImage).toEqual([1])
+    expect(invisible.pagesWithInvisibleTextLayer).toEqual([1])
   })
 
   it('fails gracefully on a corrupt pdf', async () => {
