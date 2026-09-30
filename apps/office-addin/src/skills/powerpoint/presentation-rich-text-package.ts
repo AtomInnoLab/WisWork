@@ -202,6 +202,18 @@ export async function inspectPowerPointTextShapeFingerprints(
     resourceDigests.set(root, digest)
     return digest
   }
+  const layoutRelations = relationships.filter((relation) =>
+    (attr(relation, 'Type') ?? '').endsWith('/slideLayout'),
+  )
+  if (layoutRelations.length > 1) throw Error('office_api_unsupported')
+  let sharedStyleDigest: string | undefined
+  if (layoutRelations.length) {
+    const relation = layoutRelations[0]!
+    if (attr(relation, 'TargetMode') === 'External') throw Error('office_api_unsupported')
+    const path = relatedPath(slidePath, attr(relation, 'Target') ?? '')
+    if (!path) throw Error('office_api_unsupported')
+    sharedStyleDigest = await resourceClosureDigest(path)
+  }
   const referenced = (shape: Node): string[] => {
     const ids = new Set<string>()
     const visit = (value: unknown): void => {
@@ -240,7 +252,7 @@ export async function inspectPowerPointTextShapeFingerprints(
       (!allowNoTextBody && (kind !== 'p:sp' || !tags(children, 'p:txBody').length))
     )
       throw Error('office_api_unsupported')
-    const linked = []
+    const linked: unknown[] = [['sharedStyle', sharedStyleDigest]]
     for (const relationId of referenced(original)) {
       const matched = relationships.filter(
         (entry) => (entry[':@'] as Node | undefined)?.['@_Id'] === relationId,

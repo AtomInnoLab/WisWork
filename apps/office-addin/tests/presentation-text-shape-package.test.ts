@@ -274,3 +274,31 @@ it('protects an unsupported graphic frame and fails closed when its package mapp
     ),
   ).rejects.toThrow('office_api_unsupported')
 })
+
+it('detects a shared theme change even when the shape XML is unchanged', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const zip = await JSZip.loadAsync((await compilePresentationDeck(deck)).bytes)
+  const slide = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const id = slide.match(/<p:sp\b[^]*?<p:cNvPr id="(\d+)"/)?.[1]
+  const themePath = Object.keys(zip.files).find((path) => /^ppt\/theme\/theme\d+\.xml$/.test(path))
+  expect(id).toBeDefined()
+  expect(themePath).toBeDefined()
+  const inspect = async () =>
+    (
+      await inspectPowerPointTextShapeFingerprints(
+        await zip.generateAsync({ type: 'base64' }),
+        [id!],
+        undefined,
+        true,
+      )
+    )[id!]!
+  const before = await inspect()
+  const theme = await zip.file(themePath!)!.async('string')
+  const changed = theme.replace(/<a:srgbClr val="[0-9A-Fa-f]{6}"\/>/, '<a:srgbClr val="ABCDEF"/>')
+  expect(changed).not.toBe(theme)
+  zip.file(themePath!, changed)
+  const after = await inspect()
+  expect(after.exact).not.toBe(before.exact)
+  expect(after.formatting).not.toBe(before.formatting)
+})
