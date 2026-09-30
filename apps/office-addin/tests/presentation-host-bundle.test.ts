@@ -1,14 +1,26 @@
 import JSZip from 'jszip'
 import { createHash } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { PNG } from 'pngjs'
 import { describe, expect, it, vi } from 'vitest'
 import { deliveryReportFixture } from './presentation-delivery-fixture.js'
 import { createPresentationHostBundleSkill } from '../src/skills/powerpoint/presentation-host-bundle.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
+const onePagePdf = new TextEncoder().encode(
+  '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\nxref\n0 4\n0000000000 65535 f \ntrailer<</Root 1 0 R/Size 4>>\nstartxref\n0\n%%EOF',
+)
+it('parses the PDF fixture', async () => {
+  const { readPdfPageCount } = await import('../src/skills/shared/browser-pdf.js')
+  expect(await readPdfPageCount(onePagePdf)).toBe(1)
+})
 async function setup(vfs = new InMemoryVfs()) {
   const report = await deliveryReportFixture()
   const pptx = await new JSZip()
+    .file(
+      'ppt/presentation.xml',
+      '<p:presentation xmlns:p="p"><p:sldIdLst><p:sldId id="1"/></p:sldIdLst></p:presentation>',
+    )
     .file('ppt/slides/slide1.xml', '<title>用户修改后的当前文稿</title>')
     .generateAsync({ type: 'uint8array' })
   let receipt: Record<string, unknown> | undefined
@@ -55,7 +67,7 @@ async function setup(vfs = new InMemoryVfs()) {
     return Response.json(receipt)
   })
   const exportDocument = vi.fn(async (format: 'pptx' | 'pdf') =>
-    format === 'pptx' ? pptx : new TextEncoder().encode('%PDF-1.7\ncurrent host pdf'),
+    format === 'pptx' ? pptx : onePagePdf,
   )
   const options = {
     available: () => true,
@@ -218,6 +230,58 @@ describe('current native host delivery package', () => {
       'unavailable',
     )
   })
+  it('does not include a header-only invalid PDF', async () => {
+    const f = await setup()
+    f.exportDocument.mockImplementation(async (format) =>
+      format === 'pptx' ? f.pptx : new TextEncoder().encode('%PDF-1.7\nnot a PDF'),
+    )
+    expect((await f.call(undefined, { include_pdf: true })).isError).toBeFalsy()
+    const zip = await JSZip.loadAsync(f.bytes())
+    expect(zip.file('presentation.pdf')).toBeNull()
+    expect(JSON.parse(await zip.file('manifest.json')!.async('string')).checks.pdf).toBe(
+      'unavailable',
+    )
+  })
+  it('does not include a one-page PDF for a two-slide PPTX', async () => {
+    const f = await setup()
+    const twoSlides = await new JSZip()
+      .file(
+        'ppt/presentation.xml',
+        '<p:presentation xmlns:p="p"><p:sldIdLst><p:sldId id="1"/><p:sldId id="2"/></p:sldIdLst></p:presentation>',
+      )
+      .file('ppt/slides/slide1.xml', '<slide>first</slide>')
+      .file('ppt/slides/slide2.xml', '<slide>second</slide>')
+      .generateAsync({ type: 'uint8array' })
+    f.exportDocument.mockImplementation(async (format) =>
+      format === 'pptx' ? twoSlides : onePagePdf,
+    )
+    expect((await f.call(undefined, { include_pdf: true })).isError).toBeFalsy()
+    const zip = await JSZip.loadAsync(f.bytes())
+    expect(zip.file('presentation.pdf')).toBeNull()
+    expect(JSON.parse(await zip.file('manifest.json')!.async('string')).checks.pdf).toBe(
+      'unavailable',
+    )
+  })
+  it('reads the eight-page reference PPTX before deciding whether to include a PDF', async () => {
+    const f = await setup()
+    const reference = new Uint8Array(
+      await readFile(
+        new URL(
+          '../../../docs/product/ppt-benchmark-materials/PPT-P0-10/p0-10-reference.pptx',
+          import.meta.url,
+        ),
+      ),
+    )
+    f.exportDocument.mockImplementation(async (format) =>
+      format === 'pptx' ? reference : onePagePdf,
+    )
+    expect((await f.call(undefined, { include_pdf: true })).isError).toBeFalsy()
+    const zip = await JSZip.loadAsync(f.bytes())
+    expect(zip.file('presentation.pdf')).toBeNull()
+    expect(JSON.parse(await zip.file('manifest.json')!.async('string')).checks.pdf).toBe(
+      'unavailable',
+    )
+  })
   it('does not publish a bundle when the host structure changes during export', async () => {
     const f = await setup()
     let left = 1
@@ -241,7 +305,7 @@ describe('current native host delivery package', () => {
     }))
     f.exportDocument.mockImplementation(async (format) => {
       if (format === 'pdf') left = 2
-      return format === 'pptx' ? f.pptx : new TextEncoder().encode('%PDF-1.7\ncurrent host pdf')
+      return format === 'pptx' ? f.pptx : onePagePdf
     })
     const skill = createPresentationHostBundleSkill({ ...f.options, verifySlides })
     const result = await skill.executeTool({
@@ -258,11 +322,15 @@ describe('current native host delivery package', () => {
   it('does not publish PDF when slide text changes without geometry drift', async () => {
     const f = await setup()
     const changedPptx = await new JSZip()
+      .file(
+        'ppt/presentation.xml',
+        '<p:presentation xmlns:p="p"><p:sldIdLst><p:sldId id="1"/></p:sldIdLst></p:presentation>',
+      )
       .file('ppt/slides/slide1.xml', '<title>导出期间修改的文字</title>')
       .generateAsync({ type: 'uint8array' })
     let pptxReads = 0
     f.exportDocument.mockImplementation(async (format) => {
-      if (format === 'pdf') return new TextEncoder().encode('%PDF-1.7\ncurrent host pdf')
+      if (format === 'pdf') return onePagePdf
       return ++pptxReads === 1 ? f.pptx : changedPptx
     })
     const result = await f.call(undefined, { include_pdf: true })
@@ -275,12 +343,16 @@ describe('current native host delivery package', () => {
   it('accepts a changed ZIP timestamp and document property when slide content is unchanged', async () => {
     const f = await setup()
     const laterPptx = await new JSZip()
+      .file(
+        'ppt/presentation.xml',
+        '<p:presentation xmlns:p="p"><p:sldIdLst><p:sldId id="1"/></p:sldIdLst></p:presentation>',
+      )
       .file('ppt/slides/slide1.xml', '<title>用户修改后的当前文稿</title>')
       .file('docProps/core.xml', '<modified>later</modified>')
       .generateAsync({ type: 'uint8array' })
     let pptxReads = 0
     f.exportDocument.mockImplementation(async (format) => {
-      if (format === 'pdf') return new TextEncoder().encode('%PDF-1.7\ncurrent host pdf')
+      if (format === 'pdf') return onePagePdf
       return ++pptxReads === 1 ? f.pptx : laterPptx
     })
     expect((await f.call(undefined, { include_pdf: true })).isError).toBeFalsy()
@@ -289,16 +361,24 @@ describe('current native host delivery package', () => {
   it('rejects changed picture bytes even when slide geometry is unchanged', async () => {
     const f = await setup()
     const first = await new JSZip()
+      .file(
+        'ppt/presentation.xml',
+        '<p:presentation xmlns:p="p"><p:sldIdLst><p:sldId id="1"/></p:sldIdLst></p:presentation>',
+      )
       .file('ppt/slides/slide1.xml', '<slide/>')
       .file('ppt/media/image1.png', Uint8Array.of(1, 2, 3))
       .generateAsync({ type: 'uint8array' })
     const changed = await new JSZip()
+      .file(
+        'ppt/presentation.xml',
+        '<p:presentation xmlns:p="p"><p:sldIdLst><p:sldId id="1"/></p:sldIdLst></p:presentation>',
+      )
       .file('ppt/slides/slide1.xml', '<slide/>')
       .file('ppt/media/image1.png', Uint8Array.of(4, 5, 6))
       .generateAsync({ type: 'uint8array' })
     let pptxReads = 0
     f.exportDocument.mockImplementation(async (format) => {
-      if (format === 'pdf') return new TextEncoder().encode('%PDF-1.7\ncurrent host pdf')
+      if (format === 'pdf') return onePagePdf
       return ++pptxReads === 1 ? first : changed
     })
     expect((await f.call(undefined, { include_pdf: true })).output).toBe('office_document_changed')

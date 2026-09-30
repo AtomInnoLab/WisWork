@@ -5,6 +5,39 @@ function cancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error('cancelled')
 }
 
+export async function readPdfPageCount(source: Uint8Array, signal?: AbortSignal): Promise<number> {
+  cancelled(signal)
+  if (source.byteLength < 5 || source.byteLength > MAX_PDF_BYTES)
+    throw new Error('office_read_failed')
+  if (typeof window !== 'undefined') GlobalWorkerOptions.workerSrc = workerUrl
+  const loading = getDocument({
+    data: source.slice(),
+    useWorkerFetch: false,
+    useWasm: false,
+    stopAtErrors: true,
+  })
+  let abortDestroy: Promise<void> | undefined
+  const abort = () => {
+    abortDestroy ??= loading.destroy()
+  }
+  signal?.addEventListener('abort', abort, { once: true })
+  try {
+    const pdf = await loading.promise
+    cancelled(signal)
+    if (!Number.isSafeInteger(pdf.numPages) || pdf.numPages < 1)
+      throw new Error('office_read_failed')
+    await pdf.getPage(pdf.numPages)
+    cancelled(signal)
+    return pdf.numPages
+  } catch (error) {
+    if (signal?.aborted) throw new Error('cancelled', { cause: error })
+    throw new Error('office_read_failed', { cause: error })
+  } finally {
+    signal?.removeEventListener('abort', abort)
+    await (abortDestroy ?? loading.destroy())
+  }
+}
+
 export async function renderPdfPageToPng(
   source: Uint8Array,
   pageNumber: number,
