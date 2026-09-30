@@ -158,17 +158,21 @@ function checkImageAttachment(metadata, asset, id) {
     throw new Error('PC image attachment digest mismatch')
 }
 
-export async function checkCompiledDelivery(compiled, exported, projectId, expectedText) {
+export async function checkCompiledDelivery(compiled, exported, projectId, expectedTexts) {
+  const pageCount = expectedTexts?.length
   if (
+    !Array.isArray(expectedTexts) ||
+    pageCount < 1 ||
+    pageCount > 8 ||
     compiled?.projectId !== projectId ||
     compiled.status !== 'compiled' ||
-    compiled.report?.slideCount !== 1 ||
+    compiled.report?.slideCount !== pageCount ||
     typeof compiled.pptxBase64 !== 'string' ||
     exported?.projectId !== projectId ||
     exported.status !== 'exported' ||
     exported.source !== 'compiled' ||
     exported.requestId !== compiled.requestId ||
-    exported.slideCount !== 1 ||
+    exported.slideCount !== pageCount ||
     typeof exported.pdfBase64 !== 'string'
   )
     throw new Error('PC compiled delivery response invalid')
@@ -185,12 +189,14 @@ export async function checkCompiledDelivery(compiled, exported, projectId, expec
   )
     throw new Error('PC compiled delivery bytes invalid')
   const zip = await JSZip.loadAsync(pptx)
-  const slide = await zip.file('ppt/slides/slide1.xml')?.async('string')
+  for (let i = 0; i < pageCount; i++) {
+    const slide = await zip.file(`ppt/slides/slide${i + 1}.xml`)?.async('string')
+    if (!slide?.includes(`<a:t>${expectedTexts[i]}</a:t>`))
+      throw new Error('PC compiled delivery content invalid')
+  }
   if (
-    !slide ||
-    zip.file('ppt/slides/slide2.xml') ||
-    !slide.includes(`<a:t>${expectedText}</a:t>`) ||
-    (await PDFDocument.load(pdf)).getPageCount() !== 1
+    zip.file(`ppt/slides/slide${pageCount + 1}.xml`) ||
+    (await PDFDocument.load(pdf)).getPageCount() !== pageCount
   )
     throw new Error('PC compiled delivery content invalid')
   return { pptxSha256: createHash('sha256').update(pptx).digest('hex'), pdfBytes: pdf.length }
@@ -265,8 +271,12 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     options.compiledRequestId !== undefined &&
     (typeof options.compiledRequestId !== 'string' ||
       !/^[A-Za-z0-9_-]{1,128}$/.test(options.compiledRequestId) ||
-      typeof options.expectedSlideText !== 'string' ||
-      !/^[A-Za-z0-9 _-]{1,128}$/.test(options.expectedSlideText))
+      !Array.isArray(options.expectedSlideTexts) ||
+      options.expectedSlideTexts.length < 1 ||
+      options.expectedSlideTexts.length > 8 ||
+      options.expectedSlideTexts.some(
+        (value) => typeof value !== 'string' || !/^[A-Za-z0-9 _-]{1,128}$/.test(value),
+      ))
   )
     throw new Error('invalid compiled delivery smoke fixture')
   const timeoutMs = options.timeoutMs ?? 120_000
@@ -389,7 +399,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         compiled,
         exported,
         projectId,
-        options.expectedSlideText,
+        options.expectedSlideTexts,
       )
     }
     const attachmentPageCount = checkAttachmentList(

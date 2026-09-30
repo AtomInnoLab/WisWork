@@ -91,7 +91,7 @@ app.whenReady().then(async () => {
     version: 1, id: projectId, title: 'Electron real Relay smoke',
     style: { fontFace: 'Arial', background: 'FFFFFF', textColor: '111111', accentColor: '3366FF' },
     assets: [], claims: [],
-    slides: [{ id: 'slide-1', title: 'One', elements: [{ id: 'title', kind: 'text', text: 'Electron real Relay', x: 1, y: 1, w: 8, h: 1 }] }],
+    slides: Array.from({ length: 8 }, (_, index) => ({ id: 'slide-' + (index + 1), title: 'Page ' + (index + 1), elements: [{ id: 'title', kind: 'text', text: 'Electron real Relay page ' + (index + 1), x: 1, y: 1, w: 8, h: 1 }] })),
   }
   const compiled = JSON.parse(Buffer.from(await presentation({ operation: 'compile', documentId, requestId: 'run-1', deck }, new AbortController().signal)).toString('utf8'))
   if (compiled.status !== 'compiled') throw Error('Electron PC compile failed')
@@ -133,11 +133,14 @@ app.whenReady().then(async () => {
     timeoutMs: 15_000,
     uploadFixtures: true,
     compiledRequestId: 'run-1',
-    expectedSlideText: 'Electron real Relay',
+    expectedSlideTexts: Array.from(
+      { length: 8 },
+      (_, index) => `Electron real Relay page ${index + 1}`,
+    ),
   })
   if (
     result.projectId !== projectId ||
-    result.slideCount !== 1 ||
+    result.slideCount !== 8 ||
     !result.uploadChecked ||
     !result.imageChecked ||
     !result.textChecked ||
@@ -162,7 +165,7 @@ app.whenReady().then(async () => {
     })
   })
   console.log(
-    'Electron PC + Rust Relay business smoke passed: pairing, compiled PPTX readback, PDF rendering, TXT/PNG upload, native image readback and cleanup',
+    'Electron PC + Rust Relay business smoke passed: pairing, eight-page PPTX readback and PDF rendering, TXT/PNG upload, native image readback and cleanup',
   )
 } finally {
   for (const child of children.reverse()) {

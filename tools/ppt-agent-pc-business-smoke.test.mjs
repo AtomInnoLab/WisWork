@@ -11,16 +11,18 @@ import {
   inspectPcBusiness,
 } from './ppt-agent-pc-business-smoke.mjs'
 
-test('compiled delivery check binds editable PPTX text and one rendered PDF page', async () => {
+test('compiled delivery check binds all PPTX text pages to the rendered PDF count', async () => {
   const zip = new JSZip()
   zip.file('ppt/slides/slide1.xml', '<p:sld><a:t>Smoke title</a:t></p:sld>')
+  zip.file('ppt/slides/slide2.xml', '<p:sld><a:t>Second page</a:t></p:sld>')
   const pdf = await PDFDocument.create()
+  pdf.addPage()
   pdf.addPage()
   const compiled = {
     projectId: 'project-1',
     requestId: 'run-1',
     status: 'compiled',
-    report: { slideCount: 1 },
+    report: { slideCount: 2 },
     pptxBase64: (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
   }
   const exported = {
@@ -28,23 +30,19 @@ test('compiled delivery check binds editable PPTX text and one rendered PDF page
     requestId: 'run-1',
     status: 'exported',
     source: 'compiled',
-    slideCount: 1,
+    slideCount: 2,
     pdfBase64: Buffer.from(await pdf.save()).toString('base64'),
   }
-  const checked = await checkCompiledDelivery(compiled, exported, 'project-1', 'Smoke title')
+  const expected = ['Smoke title', 'Second page']
+  const checked = await checkCompiledDelivery(compiled, exported, 'project-1', expected)
   assert.match(checked.pptxSha256, /^[a-f0-9]{64}$/)
   assert.ok(checked.pdfBytes > 100)
   await assert.rejects(
-    checkCompiledDelivery(
-      compiled,
-      { ...exported, requestId: 'other' },
-      'project-1',
-      'Smoke title',
-    ),
+    checkCompiledDelivery(compiled, { ...exported, requestId: 'other' }, 'project-1', expected),
     /response invalid/,
   )
   await assert.rejects(
-    checkCompiledDelivery(compiled, exported, 'project-1', 'Different title'),
+    checkCompiledDelivery(compiled, exported, 'project-1', ['Smoke title', 'Different title']),
     /content invalid/,
   )
 })

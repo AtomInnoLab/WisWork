@@ -4,7 +4,7 @@
 
 ## 当前检查点：O6 Electron+Relay 编译包与 PDF 交付回读（2026-09-30）
 
-严格整体仍 **64%（575/9）**，完整候选专业任务 **19/20**，真实 PowerPoint 专业任务 **0/20**。已有 CI 门禁的真实 Electron PC + Rust Relay 冒烟从配对、项目状态、TXT/PNG 附件扩展到编译成果：经 Relay 读取 PC 生成的单页 PPTX，校验请求身份、包内原生文字和页面数量，再使用独立 `presentation-pdf.v1` 能力导出并读取真实 LibreOffice 渲染的单页 PDF。初次探针误把 PDF 请求发到通用 `presentation.v1`，PC 正确执行能力隔离并撤销会话；改用专用能力后，未修改的生产 PC 客户端全链路通过。9 项脚本测试及真实 Electron+Relay 冒烟通过。此结果加强本机从生成到 PDF 交付的跨运行时证据，仍不包含 Office.js 导入、PowerPoint 宿主截图、保存重开或真实发布账号/跨平台验收，O6 与整体档位不变。
+严格整体仍 **64%（575/9）**，完整候选专业任务 **19/20**，真实 PowerPoint 专业任务 **0/20**。已有 CI 门禁的真实 Electron PC + Rust Relay 冒烟从配对、项目状态、TXT/PNG 附件扩展到八页编译成果：经 Relay 读取 PC 生成的八页 PPTX，逐页校验包内原生文字和页数，再使用独立 `presentation-pdf.v1` 能力导出并读取真实 LibreOffice 渲染的八页 PDF。初次探针误把 PDF 请求发到通用 `presentation.v1`，PC 正确执行能力隔离并撤销会话；改用专用能力后，未修改的生产 PC 客户端全链路通过。9 项脚本测试及真实 Electron+Relay 八页冒烟通过。八页仅为简单文字夹具，证明本机规模链路，不是专业任务或视觉验收；仍不包含 Office.js 导入、PowerPoint 宿主截图、保存重开或真实发布账号/跨平台验收，O6 与整体档位不变。
 
 ## 上轮检查点：O5 现稿文字补充平面字符保真（2026-09-30）
 
