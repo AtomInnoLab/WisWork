@@ -243,6 +243,50 @@ test('directory acceptance checks the actual PPTX and reopen evidence hashes', a
     record.artifacts.pptx_sha256 = sha256(pictureDeck)
     await writeFile(join(directory, '01.json'), JSON.stringify([record]))
     assert.equal((await readPresentationAcceptance(directory)).passed, 1)
+    const missingPicture = await JSZip.loadAsync(pictureDeck)
+    const picturePath = Object.keys(missingPicture.files).find((path) =>
+      path.startsWith('ppt/media/'),
+    )
+    assert.ok(picturePath)
+    missingPicture.remove(picturePath)
+    const brokenPictureDeck = await missingPicture.generateAsync({ type: 'nodebuffer' })
+    await writeFile(join(directory, 'final.pptx'), brokenPictureDeck)
+    record.artifacts.pptx_sha256 = sha256(brokenPictureDeck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_pptx_missing_asset/)
+    const chartPresentation = new PptxGenJS()
+    for (let index = 0; index < 7; index++)
+      chartPresentation.addSlide().addText(`Slide ${index + 1}`)
+    chartPresentation
+      .addSlide()
+      .addChart(
+        chartPresentation.ChartType.bar,
+        [{ name: 'Synthetic', labels: ['A', 'B'], values: [1, 2] }],
+        { x: 1, y: 1, w: 4, h: 3 },
+      )
+    const chartDeck = Buffer.from(await chartPresentation.write({ outputType: 'nodebuffer' }))
+    await writeFile(join(directory, 'final.pptx'), chartDeck)
+    record.artifacts.pptx_sha256 = sha256(chartDeck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    assert.equal((await readPresentationAcceptance(directory)).passed, 1)
+    const missingChart = await JSZip.loadAsync(chartDeck)
+    const chartPath = Object.keys(missingChart.files).find((path) =>
+      /^ppt\/charts\/chart\d+\.xml$/.test(path),
+    )
+    assert.ok(chartPath)
+    missingChart.remove(chartPath)
+    const brokenChartDeck = await missingChart.generateAsync({ type: 'nodebuffer' })
+    await writeFile(join(directory, 'final.pptx'), brokenChartDeck)
+    record.artifacts.pptx_sha256 = sha256(brokenChartDeck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_pptx_missing_asset/)
+    const malformedChart = await JSZip.loadAsync(chartDeck)
+    malformedChart.file(chartPath, '<c:chartSpace/>')
+    const malformedChartDeck = await malformedChart.generateAsync({ type: 'nodebuffer' })
+    await writeFile(join(directory, 'final.pptx'), malformedChartDeck)
+    record.artifacts.pptx_sha256 = sha256(malformedChartDeck)
+    await writeFile(join(directory, '01.json'), JSON.stringify([record]))
+    await assert.rejects(readPresentationAcceptance(directory), /acceptance_pptx_missing_asset/)
     const distinctPictures = new PptxGenJS()
     for (let index = 0; index < 6; index++)
       distinctPictures.addSlide().addText(`Slide ${index + 1}`)

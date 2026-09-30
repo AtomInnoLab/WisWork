@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { readdir, readFile, realpath, stat } from 'node:fs/promises'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { isAbsolute, posix, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import JSZip from 'jszip'
@@ -296,7 +296,7 @@ export async function readPresentationAcceptance(directory) {
   return report
 }
 
-async function verifyPptx(path) {
+export async function verifyPptx(path) {
   try {
     const zip = await JSZip.loadAsync(await readFile(path))
     const expandedBytes = Object.values(zip.files).reduce(
@@ -328,6 +328,14 @@ async function verifyPptx(path) {
     const seenTargets = new Set()
     const seenContent = new Set()
     const seenSlideIds = new Set()
+    const tagged = (value, key) => {
+      if (Array.isArray(value)) return value.flatMap((item) => tagged(item, key))
+      if (!value || typeof value !== 'object') return []
+      return Object.entries(value).flatMap(([name, child]) => [
+        ...(name === key ? [child] : []),
+        ...tagged(child, key),
+      ])
+    }
     for (const slide of slideIds) {
       const target = slideRels.get(slide['@_r:id'])
       if (!target || !/^slides\/slide\d+\.xml$/.test(target))
@@ -344,6 +352,49 @@ async function verifyPptx(path) {
         !['p:sp', 'p:pic', 'p:graphicFrame', 'p:grpSp', 'p:cxnSp'].some((key) => tree[key])
       )
         throw new Error('acceptance_pptx_blank_slide')
+      const pictures = tagged(tree, 'p:pic')
+      const charts = tagged(tree, 'c:chart')
+      if (pictures.length || charts.length) {
+        const slideName = posix.basename(target)
+        const relations = await xml(`ppt/slides/_rels/${slideName}.rels`)
+        const byId = new Map(
+          []
+            .concat(relations.Relationships?.Relationship ?? [])
+            .map((entry) => [entry['@_Id'], entry]),
+        )
+        for (const [kind, id] of [
+          ...pictures.map((picture) => [
+            'image',
+            picture?.['p:blipFill']?.['a:blip']?.['@_r:embed'],
+          ]),
+          ...charts.map((chart) => ['chart', chart?.['@_r:id']]),
+        ]) {
+          const relation = byId.get(id)
+          const assetTarget = relation?.['@_Target']
+          const assetPath =
+            typeof assetTarget === 'string' && assetTarget.startsWith('/ppt/')
+              ? assetTarget.slice(1)
+              : typeof assetTarget === 'string' && !assetTarget.startsWith('/')
+                ? posix.normalize(posix.join('ppt/slides', assetTarget))
+                : ''
+          if (
+            !id ||
+            !relation ||
+            relation['@_TargetMode'] !== undefined ||
+            relation['@_Type'] !==
+              `http://schemas.openxmlformats.org/officeDocument/2006/relationships/${kind}` ||
+            !assetPath.startsWith(kind === 'image' ? 'ppt/media/' : 'ppt/charts/') ||
+            !zip.file(assetPath) ||
+            zip.file(assetPath)._data?.uncompressedSize === 0
+          )
+            throw new Error('acceptance_pptx_missing_asset')
+          if (kind === 'chart') {
+            const chartPart = await xml(assetPath)
+            if (!chartPart['c:chartSpace']?.['c:chart'])
+              throw new Error('acceptance_pptx_missing_asset')
+          }
+        }
+      }
       const content = JSON.stringify(tree)
       if (!/"@_r:(?:embed|link|id)"/.test(content)) {
         if (seenContent.has(content)) throw new Error('acceptance_pptx_duplicate_slide')
