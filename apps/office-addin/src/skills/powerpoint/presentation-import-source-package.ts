@@ -202,6 +202,33 @@ export async function validatePresentationImportSourcePage(
   const rels = parser.parse(relsXml).Relationships
   const slide = parser.parse(slideXml)['p:sld']
   if (!types || !presentation || !rels || !slide?.['p:cSld']?.['p:spTree']) invalid()
+  const defaults = new Map<string, string>()
+  const overrides = new Map<string, string>()
+  for (const entry of items(types.Default)) {
+    const extension = entry['@_Extension'],
+      mime = entry['@_ContentType']
+    if (typeof extension === 'string' && typeof mime === 'string') {
+      if (defaults.has(extension.toLowerCase())) invalid()
+      defaults.set(extension.toLowerCase(), mime)
+    } else invalid()
+  }
+  for (const entry of items(types.Override)) {
+    const path = entry['@_PartName'],
+      mime = entry['@_ContentType']
+    if (typeof path === 'string' && typeof mime === 'string') {
+      if (overrides.has(path)) invalid()
+      overrides.set(path, mime)
+    } else invalid()
+  }
+  const contentTypeFor = (path: string) =>
+    overrides.get(`/${path}`) ?? defaults.get(path.slice(path.lastIndexOf('.') + 1).toLowerCase())
+  if (
+    contentTypeFor('ppt/presentation.xml') !==
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml' ||
+    contentTypeFor(slidePaths[0]!) !==
+      'application/vnd.openxmlformats-officedocument.presentationml.slide+xml'
+  )
+    invalid()
   const slideIds = items(presentation['p:sldIdLst']?.['p:sldId'])
   const numericId = Number(sourceSlideId.slice(0, -1))
   if (
@@ -307,6 +334,13 @@ export async function validatePresentationImportSourcePage(
   }
 
   for (const [path, kind] of referencedParts) {
+    const expectedMime = {
+      png: 'image/png',
+      jpeg: 'image/jpeg',
+      chart: 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml',
+      workbook: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }[kind]
+    if (contentTypeFor(path) !== expectedMime) invalid()
     const file = zip.file(path) ?? invalid()
     if (kind === 'workbook') {
       const book = await loadBoundedZip(

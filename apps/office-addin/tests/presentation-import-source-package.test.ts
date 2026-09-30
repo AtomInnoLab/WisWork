@@ -28,6 +28,62 @@ it('accepts a compiled native image page and rejects an external image relations
     'presentation_import_state_invalid',
   )
 })
+it('rejects a referenced image without its package content type', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = '[Content_Types].xml'
+  const xml = await zip.file(path)!.async('string')
+  const changed = xml.replace(/<Default\b[^>]*Extension="png"[^>]*\/>/, '')
+  expect(changed).not.toBe(xml)
+  zip.file(path, changed)
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
+it('rejects mismatched chart and workbook package content types', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const original = await JSZip.loadAsync(bytes)
+  const xml = await original.file('[Content_Types].xml')!.async('string')
+  for (const mime of [
+    'application/vnd.openxmlformats-officedocument.drawingml.chart+xml',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ]) {
+    const zip = await JSZip.loadAsync(bytes)
+    const changed = xml.replace(mime, 'application/octet-stream')
+    expect(changed).not.toBe(xml)
+    zip.file('[Content_Types].xml', changed)
+    await expect(
+      validatePresentationImportSourcePage(
+        (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+        '256#',
+      ),
+    ).rejects.toThrow('presentation_import_state_invalid')
+  }
+})
+it('rejects a slide without its presentation slide content type', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = '[Content_Types].xml'
+  const xml = await zip.file(path)!.async('string')
+  const changed = xml.replace(/<Override\b[^>]*PartName="\/ppt\/slides\/slide1\.xml"[^>]*\/>/, '')
+  expect(changed).not.toBe(xml)
+  zip.file(path, changed)
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
 it('rejects an unrelated embedded object relationship before host import', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[0]!]
