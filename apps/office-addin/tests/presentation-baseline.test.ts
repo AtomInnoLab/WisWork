@@ -1151,3 +1151,40 @@ it('reads a final-page baseline for a 512-page generic restore without enlarging
   expect(f.adapter.readPage).toHaveBeenCalledTimes(2)
   expect(f.adapter.readPage.mock.calls.every(([id]) => id === ids[511])).toBe(true)
 })
+
+it('checks all 512 pages with the final twenty-sixth baseline window', async () => {
+  const f = fixture()
+  const ids = Array.from({ length: 512 }, (_, index) => `large-${index}`)
+  for (const id of ids) f.pages.set(id, page(id))
+  f.setContext({
+    ...f.getContext(),
+    slideIds: ids,
+    selectedSlideIds: [ids[0]!],
+    selectedShapeIds: [],
+  })
+  const windows: string[] = []
+  for (let page_offset = 0; page_offset < ids.length; page_offset += 20) {
+    const result = await f.call('read_presentation_baseline', { scope: 'deck', page_offset })
+    expect(result.isError, result.output).not.toBe(true)
+    windows.push(JSON.parse(result.output).baselineId)
+  }
+  expect(windows).toHaveLength(26)
+  const checked = await f.call('check_presentation_baseline_windows', { baseline_ids: windows })
+  expect(checked.isError, checked.output).not.toBe(true)
+  expect(JSON.parse(checked.output)).toMatchObject({
+    totalPages: 512,
+    coveredPages: 512,
+    complete: true,
+    unchanged: true,
+    atomicSnapshot: false,
+    writeAuthorized: false,
+  })
+  f.pages.set(ids[511]!, page(ids[511]!, 'last-page edit'))
+  const drift = await f.call('check_presentation_baseline_windows', { baseline_ids: windows })
+  expect(drift.isError, drift.output).not.toBe(true)
+  expect(JSON.parse(drift.output)).toMatchObject({
+    complete: true,
+    unchanged: false,
+    changedSlideIds: [ids[511]],
+  })
+})

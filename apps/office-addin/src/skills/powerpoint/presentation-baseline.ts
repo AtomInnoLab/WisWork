@@ -18,6 +18,7 @@ import { presentationPackageDigest } from './powerpoint-package.js'
 
 const MAX_BYTES = 256 * 1024
 const MAX_PAGES = 20
+const MAX_DECK_WINDOWS = 26
 const MAX_SESSION_BASELINES = 32
 type ScopeKind = 'current' | 'selected' | 'deck'
 interface Scope {
@@ -178,14 +179,14 @@ const tools: AgentToolDef[] = [
   {
     name: 'check_presentation_baseline_windows',
     description:
-      'Freshly check 1–25 retained deck baseline windows, report covered pages and drift. Complete coverage means every page was checked in this call; captures remain sequential and non-atomic. Never grants QA or write approval.',
+      'Freshly check 1–26 retained deck baseline windows, report covered pages and drift. Complete coverage means every page was checked in this call; captures remain sequential and non-atomic. Never grants QA or write approval.',
     inputSchema: {
       type: 'object',
       properties: {
         baseline_ids: {
           type: 'array',
           minItems: 1,
-          maxItems: 25,
+          maxItems: MAX_DECK_WINDOWS,
           items: { type: 'string', minLength: 1, maxLength: 128 },
         },
       },
@@ -327,7 +328,7 @@ export function createPresentationBaselineSkill(options: Options): PresentationB
             Object.keys(call.input).some((key) => key !== 'baseline_ids') ||
             !Array.isArray(call.input.baseline_ids) ||
             call.input.baseline_ids.length < 1 ||
-            call.input.baseline_ids.length > 25 ||
+            call.input.baseline_ids.length > MAX_DECK_WINDOWS ||
             call.input.baseline_ids.some((id) => !validId(id, 128)) ||
             new Set(call.input.baseline_ids).size !== call.input.baseline_ids.length
           )
