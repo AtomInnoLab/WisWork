@@ -12,12 +12,14 @@ import {
 import {
   parsePresentationDeliveryBundleManifest,
   parsePresentationDeliveryBundleReceipt,
+  presentationDeliveryScreenshotFiles,
   type PresentationDeliveryBundleManifest,
   type PresentationDeliveryBundleReceipt,
 } from '@wiswork/project-store/presentation-delivery-bundle'
 import { validatePresentationQaRecord } from './presentation-qa.js'
 import { validatePresentationHistoryEntry } from './presentation-change-history.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
+import type { PowerPointAdapter, PowerPointPageInspection } from './browser-powerpoint-adapter.js'
 
 interface Options {
   available(): boolean
@@ -25,6 +27,8 @@ interface Options {
   request(body: unknown, signal?: AbortSignal): Promise<Response>
   documentId(): Promise<string>
   exportDocument(format: 'pptx' | 'pdf', signal?: AbortSignal): Promise<Uint8Array>
+  verifySlides?: NonNullable<PowerPointAdapter['verifySlides']>
+  inspectPage?: (slideId: string, signal?: AbortSignal) => Promise<PowerPointPageInspection>
   vfs: InMemoryVfs
   readQuality?(projectId: string, requestId: string): unknown
   readCheckpoints?(): unknown
@@ -59,13 +63,14 @@ const tools: AgentToolDef[] = [
   {
     name: 'export_current_presentation_bundle',
     description:
-      'Export the entire current PowerPoint document using the native Office API, optional native PDF, frozen project evidence and historical QA/checkpoint metadata into a ZIP persisted on paired local PC and session attachments. Historical records do not prove current host quality, source truth or save/reopen fidelity; no project completion is implied.',
+      'Export the entire current PowerPoint document using the native Office API, optional native PDF and eight unreviewed current-host screenshots, frozen project evidence and historical QA/checkpoint metadata into a ZIP persisted on paired local PC and session attachments. Screenshots do not prove visual pass, source truth or save/reopen fidelity; no project completion is implied.',
     inputSchema: {
       type: 'object',
       properties: {
         project_id: { type: 'string' },
         request_id: { type: 'string' },
         include_pdf: { type: 'boolean' },
+        include_page_screenshots: { type: 'boolean' },
       },
       required: ['project_id', 'request_id'],
       additionalProperties: false,
@@ -135,11 +140,17 @@ export function createPresentationHostBundleSkill(
           !id(input.request_id) ||
           Object.keys(input).some(
             (key) =>
-              !['project_id', 'request_id', restore ? 'bundle_id' : 'include_pdf'].includes(key),
+              ![
+                'project_id',
+                'request_id',
+                ...(restore ? ['bundle_id'] : ['include_pdf', 'include_page_screenshots']),
+              ].includes(key),
           ) ||
           (restore
             ? !hash(input.bundle_id)
-            : input.include_pdf !== undefined && typeof input.include_pdf !== 'boolean')
+            : (input.include_pdf !== undefined && typeof input.include_pdf !== 'boolean') ||
+              (input.include_page_screenshots !== undefined &&
+                typeof input.include_page_screenshots !== 'boolean'))
         )
           throw Error('invalid_tool_input')
         const projectId = input.project_id,
@@ -331,6 +342,64 @@ export function createPresentationHostBundleSkill(
             json(rawHistory).length > 4 * 1024 * 1024
           )
             throw Error('presentation_delivery_bundle_history_invalid')
+          const screenshotFiles: Record<string, Uint8Array> = {}
+          const screenshotMetadata: Array<{
+            pageNo: number
+            hostSlideId: string
+            capturedAt: string
+            sha256: string
+          }> = []
+          if (input.include_page_screenshots) {
+            if (!options.verifySlides || !options.inspectPage)
+              throw Error('office_screenshot_unavailable')
+            const before = await options.verifySlides(controller.signal)
+            await current()
+            const slideIds = before.slides.map((slide) => slide.slideId)
+            if (slideIds.length !== 8 || new Set(slideIds).size !== 8)
+              throw Error('office_screenshot_unavailable')
+            for (const [index, slideId] of slideIds.entries()) {
+              const shot = await options.inspectPage(slideId, controller.signal)
+              await current()
+              if (
+                shot.slideId !== slideId ||
+                shot.screenshot.mime !== 'image/png' ||
+                shot.screenshot.renderer ||
+                typeof shot.screenshot.base64 !== 'string'
+              )
+                throw Error('office_screenshot_unavailable')
+              let binary: string
+              try {
+                binary = atob(shot.screenshot.base64)
+                if (btoa(binary) !== shot.screenshot.base64)
+                  throw Error('office_screenshot_unavailable')
+              } catch {
+                throw Error('office_screenshot_unavailable')
+              }
+              const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+              if (
+                bytes.length < 24 ||
+                bytes.length > 64 * 1024 ||
+                bytes.slice(0, 8).join(',') !== '137,80,78,71,13,10,26,10' ||
+                new TextDecoder().decode(bytes.slice(12, 16)) !== 'IHDR'
+              )
+                throw Error('office_screenshot_unavailable')
+              const name = presentationDeliveryScreenshotFiles[index]!
+              screenshotFiles[name] = bytes
+              screenshotMetadata.push({
+                pageNo: index + 1,
+                hostSlideId: slideId,
+                capturedAt: new Date().toISOString(),
+                sha256: await digest(bytes),
+              })
+            }
+            const after = await options.verifySlides(controller.signal)
+            await current()
+            if (
+              JSON.stringify(after.slides.map((slide) => slide.slideId)) !==
+              JSON.stringify(slideIds)
+            )
+              throw Error('office_screenshot_unavailable')
+          }
           const qa = rawQa == null ? null : JSON.parse(JSON.stringify(rawQa))
           const checkpoints = JSON.parse(JSON.stringify(rawHistory))
           const checks: PresentationDeliveryBundleManifest['checks'] = {
@@ -340,12 +409,16 @@ export function createPresentationHostBundleSkill(
             roundTrip: 'not_run',
             hostQa: qa ? 'historical_records_only' : 'not_checked',
             pdf: pdfState,
+            pageScreenshots: input.include_page_screenshots
+              ? 'captured_unreviewed'
+              : 'not_included',
           }
           const quality = {
             version: 1,
             scope: 'historical_records_only',
             checks,
             needsRecapture: true,
+            currentHostScreenshots: screenshotMetadata,
             record: qa,
             pages: report.pages.map((page) => ({
               pageId: page.pageId,
@@ -361,7 +434,7 @@ export function createPresentationHostBundleSkill(
             ],
           }
           const readme =
-            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取，导出期间的修改可能导致两份快照不同，尚未核对二者一致性。不可用时不会用编译预览 PDF 代替。研究若存在，research.json/.md 保留冲突双方和缺口。' +
+            '# 当前 PowerPoint 交付包\n\n保存整个当前 PowerPoint 文稿，包含用户修改和可能不属于本项目的页面。证据、主张和来源属于所选任务的冻结生产计划；不证明修改后文稿与计划一致。\n\nquality.json 和 checkpoints.json 是本次读取的历史记录，需要重新验收当前页面。若含 page-1.png 至 page-8.png，它们是当前宿主逐页采集、未经人工复核的截图；采集与 PPTX 导出并非原子快照。保存点只包含元数据和本机备份引用，不含备份文件；本包不是独立可还原的保存点备份。来源权威性、时效性、当前宿主视觉和保存重开检查仍待完成；生成 ZIP 和字节校验不代表项目完成。\n\nPDF 若存在来自当前宿主；PPTX 与 PDF 分别读取，导出期间的修改可能导致两份快照不同，尚未核对二者一致性。不可用时不会用编译预览 PDF 代替。研究若存在，research.json/.md 保留冲突双方和缺口。' +
             (report.plan.research
               ? '本包研究记录来自冻结计划绑定的指定版本，与 evidence.json 中的研究记录一致；仍不代表来源权威性、时效性或当前宿主事实已核验。'
               : '本包研究记录为读取时本项目的历史研究，未绑定当前生产任务，不等于冻结主张或宿主事实核验。') +
@@ -380,6 +453,7 @@ export function createPresentationHostBundleSkill(
               entries: checkpoints,
             }),
             'README.md': encoder.encode(readme),
+            ...screenshotFiles,
           }
           if (research) {
             files['research.json'] = json(research)

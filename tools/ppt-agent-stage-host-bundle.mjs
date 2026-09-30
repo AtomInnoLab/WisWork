@@ -15,7 +15,8 @@ const REQUIRED = [
   'checkpoints.json',
   'README.md',
 ]
-const OPTIONAL = ['presentation.pdf', 'research.json', 'research.md']
+const SCREENSHOTS = Array.from({ length: 8 }, (_, index) => `page-${index + 1}.png`)
+const OPTIONAL = ['presentation.pdf', 'research.json', 'research.md', ...SCREENSHOTS]
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const validId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 const validHash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
@@ -68,7 +69,7 @@ export async function stagePresentationHostBundle(bundlePath, outputDirectory, c
       declared.has(file.name) ||
       !Number.isSafeInteger(file.sizeBytes) ||
       file.sizeBytes < 1 ||
-      file.sizeBytes > 20 * 1024 * 1024 ||
+      file.sizeBytes > (SCREENSHOTS.includes(file.name) ? 64 * 1024 : 20 * 1024 * 1024) ||
       !validHash(file.sha256)
     )
       throw new Error('stage_manifest_invalid')
@@ -78,7 +79,11 @@ export async function stagePresentationHostBundle(bundlePath, outputDirectory, c
     REQUIRED.some((name) => !declared.has(name)) ||
     declared.size + 1 !== entries.length ||
     (manifest.checks.pdf === 'included') !== declared.has('presentation.pdf') ||
-    declared.has('research.json') !== declared.has('research.md')
+    declared.has('research.json') !== declared.has('research.md') ||
+    (manifest.checks.pageScreenshots === 'captured_unreviewed') !==
+      SCREENSHOTS.every((name) => declared.has(name)) ||
+    (manifest.checks.pageScreenshots !== 'captured_unreviewed' &&
+      SCREENSHOTS.some((name) => declared.has(name)))
   )
     throw new Error('stage_manifest_invalid')
   const files = new Map()
@@ -105,7 +110,17 @@ export async function stagePresentationHostBundle(bundlePath, outputDirectory, c
     evidence?.requestId !== manifest.requestId ||
     quality?.scope !== 'historical_records_only' ||
     quality?.needsRecapture !== true ||
-    !Array.isArray(claims)
+    !Array.isArray(claims) ||
+    (manifest.checks.pageScreenshots === 'captured_unreviewed' &&
+      (!Array.isArray(quality.currentHostScreenshots) ||
+        quality.currentHostScreenshots.length !== 8 ||
+        quality.currentHostScreenshots.some(
+          (shot, index) =>
+            shot?.pageNo !== index + 1 ||
+            typeof shot.hostSlideId !== 'string' ||
+            !shot.hostSlideId ||
+            shot.sha256 !== declared.get(SCREENSHOTS[index]).sha256,
+        )))
   )
     throw new Error('stage_evidence_invalid')
   const output = resolve(outputDirectory)
@@ -129,9 +144,21 @@ export async function stagePresentationHostBundle(bundlePath, outputDirectory, c
     historicalClaimsFile: 'claims.json',
     historicalQualityFile: 'quality.json',
     historicalEvidenceFile: 'evidence.json',
+    pageScreenshots:
+      manifest.checks.pageScreenshots === 'captured_unreviewed'
+        ? quality.currentHostScreenshots.map((shot, index) => ({
+            pageNo: index + 1,
+            file: SCREENSHOTS[index],
+            sha256: shot.sha256,
+            hostSlideId: shot.hostSlideId,
+            status: 'unreviewed',
+          }))
+        : [],
     missingEvidence: [
       'PowerPoint 保存、关闭、重开后的文件和可编辑对象核验',
-      '当前文稿逐页宿主截图与视觉复核',
+      manifest.checks.pageScreenshots === 'captured_unreviewed'
+        ? '已采集宿主截图的逐页人工视觉复核与当前文稿一致性检查'
+        : '当前文稿逐页宿主截图与视觉复核',
       '当前版本五层 QA 与来源/专业判断复核',
       '操作员、宿主版本、时间、故障和人工修正记录',
     ],

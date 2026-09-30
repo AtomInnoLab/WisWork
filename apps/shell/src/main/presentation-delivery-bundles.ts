@@ -171,7 +171,7 @@ async function validateBundleZip(raw: Buffer) {
       start = raw.readUInt32LE(end + 16)
     if (
       !count ||
-      count > 12 ||
+      count > 20 ||
       count !== raw.readUInt16LE(end + 8) ||
       start + raw.readUInt32LE(end + 12) !== end
     )
@@ -601,6 +601,19 @@ export function createPresentationDeliveryBundleService(options: {
             !files.get('presentation.pdf')!.subarray(0, 5).equals(Buffer.from('%PDF-')))
         )
           fail('unsupported_file')
+        for (let page = 1; page <= 8; page++) {
+          const image = files.get(`page-${page}.png`)
+          if (!image) continue
+          if (
+            image.length < 24 ||
+            !image.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) ||
+            image.toString('ascii', 12, 16) !== 'IHDR' ||
+            image.readUInt32BE(16) < 1 ||
+            image.readUInt32BE(20) < 1 ||
+            image.readUInt32BE(16) * image.readUInt32BE(20) > 16_000_000
+          )
+            fail('unsupported_file')
+        }
         check(signal)
         const ready = {
           ...r,

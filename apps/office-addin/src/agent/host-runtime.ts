@@ -1133,6 +1133,9 @@ export function createOfficeHostRuntime(
           vfs,
           nativeAvailable: supportsPowerPointDocumentExport,
           exportDocument: exportPowerPointDocument,
+          verifySlides: (signal) => powerPointAdapter!.verifySlides(signal),
+          inspectPage: (slideId, signal) =>
+            powerPointAdapter!.inspectPresentationPage(slideId, signal),
           readQuality: (projectId, requestId) => {
             const artifact = production?.artifact(projectId)
             if (!artifact || artifact.requestId !== requestId) return null

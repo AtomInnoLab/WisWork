@@ -1234,6 +1234,19 @@ it('restores delivery receipt lists on reopen and dispatches explicit current-ho
     expect.any(AbortSignal),
   )
   expect(f.controller.snapshot().project?.status).toBe('pending')
+  await f.controller.exportCurrentBundle?.(false, true)
+  expect(f.executeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name: 'export_current_presentation_bundle',
+      input: {
+        project_id: 'project-1',
+        request_id: 'pages',
+        include_pdf: false,
+        include_page_screenshots: true,
+      },
+    }),
+    expect.any(AbortSignal),
+  )
   expect(f.request).toHaveBeenCalledWith(
     {
       operation: 'delivery_bundle_list',

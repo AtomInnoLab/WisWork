@@ -207,7 +207,7 @@ export interface PresentationProjectController {
   recordProductionFeedback?(pages: PresentationProductionFeedbackPage[]): Promise<void>
   readBoundResearch?(): Promise<void>
   currentBundleAvailable?(): boolean
-  exportCurrentBundle?(includePdf?: boolean): Promise<void>
+  exportCurrentBundle?(includePdf?: boolean, includePageScreenshots?: boolean): Promise<void>
   restoreDeliveryBundle?(bundleId: string): Promise<void>
   readDeliveryBundles?(): Promise<void>
   deleteDeliveryBundle?(bundleId: string): Promise<void>
@@ -1378,6 +1378,7 @@ export function createPresentationProjectController(
     includePdf = false,
     bundleId?: string,
     deleteBundleId?: string,
+    includePageScreenshots = false,
   ) => {
     const project = state.project
     const requestId = project?.production?.requestId
@@ -1458,7 +1459,10 @@ export function createPresentationProjectController(
                 project_id: project.projectId,
                 request_id: requestId,
                 ...(tool === 'export_current_presentation_bundle'
-                  ? { include_pdf: includePdf }
+                  ? {
+                      include_pdf: includePdf,
+                      ...(includePageScreenshots ? { include_page_screenshots: true } : {}),
+                    }
                   : { bundle_id: bundleId }),
               },
             },
@@ -2460,8 +2464,14 @@ export function createPresentationProjectController(
     readBoundResearch,
     currentBundleAvailable: () =>
       options.available() && options.nativeDocumentExportAvailable?.() === true,
-    exportCurrentBundle: (includePdf = false) =>
-      bundleAction('export_current_presentation_bundle', includePdf),
+    exportCurrentBundle: (includePdf = false, includePageScreenshots = false) =>
+      bundleAction(
+        'export_current_presentation_bundle',
+        includePdf,
+        undefined,
+        undefined,
+        includePageScreenshots,
+      ),
     restoreDeliveryBundle: (bundleId) =>
       bundleAction('restore_presentation_delivery_bundle', false, bundleId),
     readDeliveryBundles: () => bundleAction(),

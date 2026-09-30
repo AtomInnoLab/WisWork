@@ -1,5 +1,6 @@
 import JSZip from 'jszip'
 import { createHash } from 'node:crypto'
+import { PNG } from 'pngjs'
 import { describe, expect, it, vi } from 'vitest'
 import { deliveryReportFixture } from './presentation-delivery-fixture.js'
 import { createPresentationHostBundleSkill } from '../src/skills/powerpoint/presentation-host-bundle.js'
@@ -85,6 +86,62 @@ async function setup(vfs = new InMemoryVfs()) {
   }
 }
 describe('current native host delivery package', () => {
+  it('includes eight current-host screenshots as unreviewed evidence when explicitly requested', async () => {
+    const f = await setup()
+    const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+    const ids = Array.from({ length: 8 }, (_, index) => `host-${index + 1}`)
+    const verifySlides = vi.fn(async () => ({
+      slideWidth: 960,
+      slideHeight: 540,
+      slides: ids.map((slideId, slideIndex) => ({
+        slideId,
+        slideIndex,
+        shapes: [],
+        shapesTruncated: false,
+        overflows: [],
+        overlaps: [],
+        overlapsTruncated: false,
+      })),
+      truncated: false,
+    }))
+    const inspectPage = vi.fn(async (slideId: string) => ({
+      slideId,
+      slideWidth: 960,
+      slideHeight: 540,
+      shapes: [],
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+      screenshot: { mime: 'image/png' as const, base64: png.toString('base64') },
+    }))
+    const skill = createPresentationHostBundleSkill({ ...f.options, verifySlides, inspectPage })
+    const result = await skill.executeTool({
+      id: 'screenshots',
+      name: 'export_current_presentation_bundle',
+      input: {
+        project_id: f.report.projectId,
+        request_id: f.report.requestId,
+        include_page_screenshots: true,
+      },
+    })
+    expect(result.isError).not.toBe(true)
+    expect(verifySlides).toHaveBeenCalledTimes(2)
+    expect(inspectPage.mock.calls.map((call) => call[0])).toEqual(ids)
+    const zip = await JSZip.loadAsync(f.bytes())
+    const manifest = JSON.parse(await zip.file('manifest.json')!.async('string'))
+    expect(manifest.checks.pageScreenshots).toBe('captured_unreviewed')
+    expect(
+      manifest.files.filter((file: { name: string }) => /^page-\d\.png$/.test(file.name)),
+    ).toHaveLength(8)
+    const quality = JSON.parse(await zip.file('quality.json')!.async('string'))
+    expect(quality.currentHostScreenshots).toHaveLength(8)
+    expect(
+      quality.currentHostScreenshots.map((shot: { hostSlideId: string }) => shot.hostSlideId),
+    ).toEqual(ids)
+    expect(await zip.file('page-8.png')!.async('nodebuffer')).toEqual(png)
+    expect(quality.checks.roundTrip).toBe('not_run')
+  })
   it('persists actual edited host bytes and every evidence file, then restores without exporting again', async () => {
     const f = await setup()
     const result = await f.call(undefined, { include_pdf: true })
@@ -116,6 +173,7 @@ describe('current native host delivery package', () => {
       roundTrip: 'not_run',
       hostQa: 'not_checked',
       pdf: 'included',
+      pageScreenshots: 'not_included',
     })
     for (const file of manifest.files) {
       const bytes = await zip.file(file.name)!.async('uint8array')

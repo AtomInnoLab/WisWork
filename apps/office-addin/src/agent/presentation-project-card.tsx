@@ -555,6 +555,14 @@ export function PresentationProjectCard(props: {
               >
                 导出当前文稿交付包（含宿主 PDF）
               </button>
+              <button
+                type="button"
+                disabled={disabled || !project.production}
+                onClick={() => void controller.exportCurrentBundle?.(false, true)}
+              >
+                导出当前文稿交付包（含 8 页宿主截图）
+              </button>
+              <p>截图仅在当前文稿恰好 8 页且宿主支持截图时采集；逐页人工复核和保存重开仍需完成。</p>
               <p>宿主 PDF 不可用时仍保留 PPTX 包，并标明 PDF 未包含。</p>
             </>
           )}

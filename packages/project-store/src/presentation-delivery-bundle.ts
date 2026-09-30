@@ -8,6 +8,10 @@ export const presentationDeliveryBundleFiles = [
   'checkpoints.json',
   'README.md',
 ] as const
+export const presentationDeliveryScreenshotFiles = Array.from(
+  { length: 8 },
+  (_, index) => `page-${index + 1}.png`,
+)
 export interface PresentationDeliveryBundleManifest {
   version: 1
   scope: 'current_office_document'
@@ -26,6 +30,7 @@ export interface PresentationDeliveryBundleManifest {
     roundTrip: 'not_run'
     hostQa: 'not_checked' | 'historical_records_only'
     pdf: 'included' | 'not_requested' | 'unavailable'
+    pageScreenshots?: 'not_included' | 'captured_unreviewed'
   }
 }
 export interface PresentationDeliveryBundleReceipt {
@@ -90,7 +95,8 @@ export function parsePresentationDeliveryBundleManifest(
     !hash(m.planDigest) ||
     !time(m.createdAt) ||
     !Array.isArray(m.files) ||
-    ![8, 9, 10, 11].includes(m.files.length)
+    m.files.length < 8 ||
+    m.files.length > 19
   )
     fail()
   const names = new Set<string>()
@@ -104,12 +110,17 @@ export function parsePresentationDeliveryBundleManifest(
         'presentation.pdf',
         'research.json',
         'research.md',
+        ...presentationDeliveryScreenshotFiles,
       ].includes(file.name as (typeof presentationDeliveryBundleFiles)[number]) ||
       names.has(file.name) ||
       !integer(
         file.sizeBytes,
         1,
-        file.name === 'presentation.pdf' ? 10 * 1024 * 1024 : 20 * 1024 * 1024,
+        file.name === 'presentation.pdf'
+          ? 10 * 1024 * 1024
+          : presentationDeliveryScreenshotFiles.includes(file.name)
+            ? 64 * 1024
+            : 20 * 1024 * 1024,
       ) ||
       !hash(file.sha256)
     )
@@ -127,6 +138,7 @@ export function parsePresentationDeliveryBundleManifest(
       'roundTrip',
       'hostQa',
       'pdf',
+      ...(m.checks.pageScreenshots === undefined ? [] : ['pageScreenshots']),
     ]) ||
     m.checks.completion !== 'not_verified' ||
     m.checks.sourceAuthority !== 'not_verified' ||
@@ -135,7 +147,13 @@ export function parsePresentationDeliveryBundleManifest(
     !['not_checked', 'historical_records_only'].includes(m.checks.hostQa) ||
     !['included', 'not_requested', 'unavailable'].includes(m.checks.pdf) ||
     (m.checks.pdf === 'included') !== names.has('presentation.pdf') ||
-    names.has('research.json') !== names.has('research.md')
+    names.has('research.json') !== names.has('research.md') ||
+    (m.checks.pageScreenshots === 'captured_unreviewed') !==
+      presentationDeliveryScreenshotFiles.every((name) => names.has(name)) ||
+    ((m.checks.pageScreenshots === undefined || m.checks.pageScreenshots === 'not_included') &&
+      presentationDeliveryScreenshotFiles.some((name) => names.has(name))) ||
+    (m.checks.pageScreenshots !== undefined &&
+      !['not_included', 'captured_unreviewed'].includes(m.checks.pageScreenshots))
   )
     fail()
   return structuredClone(m)

@@ -85,6 +85,11 @@ export async function deliveryBundleFixture(
       roundTrip: 'not_run' as const,
       hostQa: 'not_checked' as const,
       pdf: 'not_requested' as const,
+      ...(Array.from({ length: 8 }, (_, index) => `page-${index + 1}.png`).every((name) =>
+        files.has(name),
+      )
+        ? { pageScreenshots: 'captured_unreviewed' as const }
+        : {}),
     },
   }
   const zip = new JSZip()

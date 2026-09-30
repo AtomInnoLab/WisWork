@@ -13,6 +13,7 @@ it('rejects unknown manifest fields and operations before writing', async () => 
 import { writeFileSync, symlinkSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { PNG } from 'pngjs'
 import { afterEach } from 'vitest'
 import { parsePresentationDeliveryBundleReceipt } from '@wiswork/project-store/presentation-delivery-bundle'
 import {
@@ -53,6 +54,20 @@ it('uploads with overlapping retry, restores ready metadata/read/list and explic
   ).toEqual({ bundles: [ready] })
   expect(await f.call('delete')).toEqual({ bundleId, deleted: true })
   await expect(f.call('metadata')).rejects.toThrow('not_found')
+})
+it('accepts eight bounded host screenshots and rejects a corrupt image before publication', async () => {
+  const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+  const f = await fixture((files) => {
+    for (let page = 1; page <= 8; page++) files.set(`page-${page}.png`, png)
+  })
+  await f.upload()
+  expect(parsePresentationDeliveryBundleReceipt(await f.call('finish')).state).toBe('ready')
+  const broken = await fixture((files) => {
+    for (let page = 1; page <= 8; page++)
+      files.set(`page-${page}.png`, page === 8 ? Buffer.from('corrupt png') : png)
+  })
+  await broken.upload()
+  await expect(broken.call('finish')).rejects.toThrow('unsupported_file')
 })
 it('rejects overlap conflict, mismatched identity and frozen evidence before publication', async () => {
   const f = await fixture((files) => {
@@ -164,6 +179,25 @@ it('rejects inconsistent manifests and ready receipts and returns detached copie
   const parsed = parsePresentationDeliveryBundleManifest(f.manifest)
   parsed.files[0]!.name = 'changed'
   expect(f.manifest.files[0]!.name).toBe('presentation.pptx')
+  const screenshots = Array.from({ length: 8 }, (_, index) => ({
+    name: `page-${index + 1}.png`,
+    sizeBytes: 128,
+    sha256: hash(`page-${index + 1}`),
+  }))
+  expect(
+    parsePresentationDeliveryBundleManifest({
+      ...f.manifest,
+      files: [...f.manifest.files, ...screenshots],
+      checks: { ...f.manifest.checks, pageScreenshots: 'captured_unreviewed' },
+    }).files,
+  ).toHaveLength(16)
+  expect(() =>
+    parsePresentationDeliveryBundleManifest({
+      ...f.manifest,
+      files: [...f.manifest.files, ...screenshots.slice(0, 7)],
+      checks: { ...f.manifest.checks, pageScreenshots: 'captured_unreviewed' },
+    }),
+  ).toThrow('invalid_state')
   for (const manifest of [
     { ...f.manifest, extra: true },
     { ...f.manifest, createdAt: '2026-02-30T00:00:00.000Z' },
