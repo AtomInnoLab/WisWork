@@ -391,14 +391,19 @@ app.whenReady().then(async () => {
     productionFixture: { requestId: 'production-run-1', deck, plan, expectedSlideTexts },
     readExistingProduction: true,
   })
-  if (
-    recovered.compiledDelivery?.pptxSha256 !== result.compiledDelivery.pptxSha256 ||
-    recovered.compiledDelivery?.pdfBytes !== result.compiledDelivery.pdfBytes ||
+  // Both PDF responses were independently parsed and checked for page count above.
+  // LibreOffice renders on demand, so its output byte length is not a durable receipt.
+  const changedAfterRestart = [
+    recovered.compiledDelivery?.pptxSha256 !== result.compiledDelivery.pptxSha256
+      ? 'compiled_pptx'
+      : undefined,
     JSON.stringify(recovered.productionDelivery?.pageDigests) !==
-      JSON.stringify(result.productionDelivery.pageDigests) ||
-    recovered.productionDelivery?.pdfBytes !== result.productionDelivery.pdfBytes
-  )
-    throw new Error('Electron PC delivery changed after restart')
+    JSON.stringify(result.productionDelivery.pageDigests)
+      ? 'production_pages'
+      : undefined,
+  ].filter(Boolean)
+  if (changedAfterRestart.length)
+    throw new Error(`Electron PC delivery changed after restart: ${changedAfterRestart.join(', ')}`)
   smokeStage = 'running production crash'
   const blocked = firstLine(
     restartedPc,

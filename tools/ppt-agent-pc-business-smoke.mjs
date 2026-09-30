@@ -222,12 +222,65 @@ export function releaseProductionFixture(projectId) {
     title: `Page ${index + 1}`,
     elements: [{ id: 'title', kind: 'text', text, x: 1, y: 1, w: 8, h: 1 }],
   }))
+  slides[2].elements.push({
+    id: 'image',
+    kind: 'image',
+    x: 1,
+    y: 2.5,
+    w: 3,
+    h: 3,
+    assetId: 'smoke-image',
+    fit: 'contain',
+  })
+  slides[3].elements.push({
+    id: 'shape',
+    kind: 'shape',
+    x: 1,
+    y: 2.5,
+    w: 3,
+    h: 2,
+    shape: 'roundRect',
+  })
+  slides[5].elements.push({
+    id: 'table',
+    kind: 'table',
+    x: 1,
+    y: 2.5,
+    w: 8,
+    h: 2,
+    rows: [
+      ['Plan', 'Result'],
+      ['A', '120'],
+      ['B', '90'],
+    ],
+  })
+  slides[6].elements.push({
+    id: 'chart',
+    kind: 'chart',
+    x: 1,
+    y: 2.5,
+    w: 8,
+    h: 3,
+    chartType: 'bar',
+    categories: ['A', 'B'],
+    series: [{ name: 'Result', values: [120, 90] }],
+  })
   const deck = {
     version: 1,
     id: projectId,
     title: 'Release smoke',
     style,
-    assets: [],
+    assets: [
+      {
+        id: 'smoke-image',
+        mime: 'image/png',
+        width: 1,
+        height: 1,
+        base64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4AWP4DwQACfsD/c8LaHIAAAAASUVORK5CYII=',
+        source: 'Synthetic release fixture',
+      },
+    ],
     claims: [],
     slides,
   }
@@ -252,7 +305,7 @@ export function releaseProductionFixture(projectId) {
       purpose: 'Verify native text',
       claimIds: [],
       layout: 'content',
-      requiredAssets: [],
+      requiredAssets: slide.id === 'slide-3' ? ['smoke-image'] : [],
       acceptanceCriteria: ['Native text remains editable'],
     })),
   }
@@ -612,6 +665,49 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
           zip.file('ppt/slides/slide2.xml')
         )
           throw new Error('PC production page content invalid')
+        if (slide.elements.some((element) => element.kind === 'image')) {
+          const media = Object.keys(zip.files).filter((path) =>
+            /^ppt\/media\/[^/]+\.png$/.test(path),
+          )
+          if (!xml.includes('<p:pic>') || media.length !== 1)
+            throw new Error('PC production native image missing')
+          const image = await zip.file(media[0]).async('nodebuffer')
+          PNG.sync.read(image)
+          const assetId = slide.elements.find((element) => element.kind === 'image').assetId
+          const expected = fixture.deck.assets.find((asset) => asset.id === assetId)
+          if (!expected?.base64 || !image.equals(Buffer.from(expected.base64, 'base64')))
+            throw new Error('PC production native image changed')
+        }
+        if (
+          slide.elements.some(
+            (element) => element.kind === 'shape' && element.shape === 'roundRect',
+          ) &&
+          !xml.includes('prst="roundRect"')
+        )
+          throw new Error('PC production native shape missing')
+        if (slide.elements.some((element) => element.kind === 'table') && !xml.includes('<a:tbl>'))
+          throw new Error('PC production native table missing')
+        if (slide.elements.some((element) => element.kind === 'chart')) {
+          const chart = Object.keys(zip.files).filter((path) =>
+            /^ppt\/charts\/chart\d+\.xml$/.test(path),
+          )
+          const workbook = Object.keys(zip.files).filter((path) =>
+            /^ppt\/embeddings\/[^/]+\.xlsx$/.test(path),
+          )
+          if (!xml.includes('<c:chart ') || chart.length !== 1 || workbook.length !== 1)
+            throw new Error('PC production native chart missing')
+          const chartXml = await zip.file(chart[0]).async('string')
+          if (!chartXml.includes('<c:ser>') || !chartXml.includes('<c:externalData '))
+            throw new Error('PC production native chart data missing')
+          const book = await JSZip.loadAsync(await zip.file(workbook[0]).async('nodebuffer'))
+          if (!book.file('xl/workbook.xml') || !book.file('xl/worksheets/sheet1.xml'))
+            throw new Error('PC production native chart workbook missing')
+          const sheet = await book.file('xl/worksheets/sheet1.xml').async('string')
+          for (const series of slide.elements.find((element) => element.kind === 'chart').series)
+            for (const value of series.values)
+              if (!chartXml.includes(`<c:v>${value}</c:v>`) || !sheet.includes(`<v>${value}</v>`))
+                throw new Error('PC production native chart data changed')
+        }
         pageDigests.push(createHash('sha256').update(bytes).digest('hex'))
         pagePptxBase64.push(page.pptxBase64)
         sourcePages.push({ id: slide.id, title: slide.title, sourceSlideId: page.sourceSlideId })
