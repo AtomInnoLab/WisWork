@@ -28,6 +28,26 @@ it('accepts a compiled native image page and rejects an external image relations
     'presentation_import_state_invalid',
   )
 })
+it('rejects a referenced PNG with damaged image data before host import', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = Object.keys(zip.files).find((name) => /^ppt\/media\/[^/]+\.png$/.test(name))
+  expect(path).toBeDefined()
+  const image = await zip.file(path!)!.async('nodebuffer')
+  const damaged = Buffer.from(image)
+  const idat = damaged.indexOf(Buffer.from('IDAT'))
+  expect(idat).toBeGreaterThan(0)
+  damaged[idat + 4] ^= 1
+  zip.file(path!, damaged)
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
 it('rejects a referenced image without its package content type', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[2]!]

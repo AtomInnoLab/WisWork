@@ -1,6 +1,7 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { loadBoundedZip, MAX_PPTX_IMPORT_PAGE_BYTES } from './powerpoint-package.js'
 import { inspectPowerPointChartSourcesBatch } from './presentation-chart-source-package.js'
+import { validateSkillPackageImage } from '../shared/skill-package.js'
 
 const parser = new XMLParser({ ignoreAttributes: false, parseAttributeValue: false })
 const HYPERLINK_REL =
@@ -46,37 +47,6 @@ const validXml = (xml: string): boolean =>
   new TextEncoder().encode(xml).byteLength <= 512 * 1024 &&
   !/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) &&
   XMLValidator.validate(xml) === true
-const validPngStructure = (bytes: Uint8Array): boolean => {
-  if (
-    bytes.length < 57 ||
-    [137, 80, 78, 71, 13, 10, 26, 10].some((value, index) => bytes[index] !== value)
-  )
-    return false
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  let offset = 8
-  let chunks = 0
-  let hasImageData = false
-  while (offset + 12 <= bytes.length) {
-    const length = view.getUint32(offset)
-    if (length > bytes.length - offset - 12) return false
-    const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
-    if (chunks++ === 0) {
-      if (
-        type !== 'IHDR' ||
-        length !== 13 ||
-        view.getUint32(offset + 8) === 0 ||
-        view.getUint32(offset + 12) === 0
-      )
-        return false
-    } else if (type === 'IDAT') {
-      if (length > 0) hasImageData = true
-    } else if (type === 'IEND') {
-      return length === 0 && hasImageData && offset + 12 === bytes.length
-    }
-    offset += length + 12
-  }
-  return false
-}
 const validJpegStructure = (bytes: Uint8Array): boolean => {
   if (
     bytes.length < 20 ||
@@ -400,7 +370,14 @@ export async function validatePresentationImportSourcePage(
     }
     const bytes = await file.async('uint8array')
     if (kind === 'png') {
-      if (!validPngStructure(bytes)) invalid()
+      try {
+        await validateSkillPackageImage('png', bytes, async (data) => {
+          const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+          return { width: view.getUint32(16), height: view.getUint32(20), close() {} }
+        })
+      } catch {
+        invalid()
+      }
     } else if (!validJpegStructure(bytes)) invalid()
   }
 
