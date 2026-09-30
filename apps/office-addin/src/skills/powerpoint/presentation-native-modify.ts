@@ -262,6 +262,16 @@ export function createPresentationNativeModifySkill(options: Options) {
         new Set(beforeShapes.shapes.map((shape) => shape.id)).size !== beforeShapes.shapes.length
       )
         throw Error('office_read_failed')
+      const beforeSemantic = await options.adapter.snapshotSlide(p.slideIndex, signal, true)
+      await guard(r.documentId, signal, token, newWrite)
+      if (beforeSemantic.slideId !== p.hostSlideId) throw Error('presentation_document_changed')
+      const shapeIds = (shapes: Array<{ id: string }>) =>
+        shapes.map((shape) => shape.id).sort((a, b) => a.localeCompare(b))
+      if (
+        !beforeSemantic.shapes ||
+        !same(shapeIds(beforeSemantic.shapes), shapeIds(beforeShapes.shapes))
+      )
+        throw Error('office_read_failed')
       await check(r, signal, token, newWrite)
       const next = { ...r, inFlightIndex: r.nextIndex }
       await options.writeExistingBatch(next, r)
@@ -292,6 +302,31 @@ export function createPresentationNativeModifySkill(options: Options) {
               : !same(
                   [beforeTarget.id, beforeTarget.name, beforeTarget.type],
                   [afterTarget.id, afterTarget.name, afterTarget.type],
+                )))
+      )
+        throw Error('office_verify_failed')
+      const afterSemantic = await options.adapter.snapshotSlide(p.slideIndex, signal, true)
+      await guard(r.documentId, signal, token, newWrite)
+      if (afterSemantic.slideId !== p.hostSlideId) throw Error('office_verify_failed')
+      const beforeContent = beforeSemantic.shapes,
+        afterContent = afterSemantic.shapes
+      if (!afterContent || !same(shapeIds(afterContent), shapeIds(afterShapes.shapes)))
+        throw Error('office_verify_failed')
+      const otherContent = (shapes: typeof beforeContent) =>
+        shapes.filter((shape) => shape.id !== op.shape_id).sort((a, b) => a.id.localeCompare(b.id))
+      const original = beforeContent.find((shape) => shape.id === op.shape_id),
+        current = afterContent.find((shape) => shape.id === op.shape_id)
+      if (
+        !same(otherContent(beforeContent), otherContent(afterContent)) ||
+        (op.op === 'delete_shape'
+          ? Boolean(current)
+          : !original ||
+            !current ||
+            (op.op === 'set_shape_text'
+              ? !same({ ...original, text: '' }, { ...current, text: '' })
+              : !same(
+                  [original.id, original.name, original.type, original.text],
+                  [current.id, current.name, current.type, current.text],
                 )))
       )
         throw Error('office_verify_failed')

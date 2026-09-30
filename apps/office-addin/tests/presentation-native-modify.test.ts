@@ -48,8 +48,9 @@ async function fixture(pageCount = 2) {
     { ...shape, id: 'graphic-sdk', type: 'Picture' },
     ...Array.from({ length: 32 }, (_, i) => ({ ...shape, id: `sdk-${i}` })),
   ]
-  let text = 'old',
-    counter = 0
+  const texts = new Map<string, string>()
+  let counter = 0
+  const textFor = (id: string) => texts.get(id) ?? 'old'
   const packages = new Map<string, string>()
   const packageFor = async (slideId: string) => {
     zip.file(
@@ -99,6 +100,10 @@ async function fixture(pageCount = 2) {
     snapshotSlide: vi.fn(async (index: number) => ({
       slideId: `s${index + 1}`,
       fingerprint: 'old',
+      shapes: shapes.map((item) => ({
+        ...structuredClone(item),
+        text: item.type === 'Picture' ? '' : textFor(item.id),
+      })),
     })),
     exportPresentationPagePackage: vi.fn(async (slideId: string) => ({
       slideId,
@@ -113,12 +118,12 @@ async function fixture(pageCount = 2) {
     readSlideText: vi.fn(async (index: number, id: string) => ({
       slideId: `s${index + 1}`,
       shapeId: id,
-      text,
-      paragraphs: [text],
+      text: textFor(id),
+      paragraphs: [textFor(id)],
     })),
     executeDeclarative: vi.fn(async (ops: NativeModifyOperation[]) => {
       for (const op of ops) {
-        if (op.op === 'set_shape_text') text = op.text
+        if (op.op === 'set_shape_text') texts.set(op.shape_id, op.text)
         else if (op.op === 'delete_shape')
           shapes.splice(
             shapes.findIndex((s) => s.id === op.shape_id),
@@ -190,6 +195,8 @@ async function fixture(pageCount = 2) {
     setFailSecondIntent: () => (failSecondIntent = true),
     clearFailSecondIntent: () => (failSecondIntent = false),
     setAfterWrite: (fn: () => void) => (afterWrite = fn),
+    setTargetText: (value: string) => texts.set('sdk-id', value),
+    setOtherText: (value: string) => texts.set('sdk-0', value),
   }
 }
 const textOp: NativeModifyOperation = {
@@ -388,6 +395,35 @@ it('does not acknowledge a native text edit that also moves an unrelated shape',
     nextIndex: 0,
     inFlightIndex: 0,
   })
+})
+it('does not acknowledge a native text edit that also changes unrelated text', async () => {
+  const f = await fixture()
+  f.setAfterWrite(() => f.setOtherText('changed without a matching operation'))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({
+    state: 'applying',
+    nextIndex: 0,
+    inFlightIndex: 0,
+  })
+})
+it('does not acknowledge a native geometry edit that also changes target text', async () => {
+  const f = await fixture()
+  f.setAfterWrite(() => f.setTargetText('changed without a matching operation'))
+  const proposed = await f.propose([geometryOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('does not start a native write without a complete semantic shape snapshot', async () => {
+  const f = await fixture()
+  const proposed = await f.propose([textOp])
+  f.adapter.snapshotSlide.mockImplementation(async (index: number) => ({
+    slideId: `s${index + 1}`,
+    fingerprint: 'old',
+    shapes: undefined as never,
+  }))
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_read_failed')
+  expect(f.adapter.executeDeclarative).not.toHaveBeenCalled()
 })
 it.each([
   geometryOp,

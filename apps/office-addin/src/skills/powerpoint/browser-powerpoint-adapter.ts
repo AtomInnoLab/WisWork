@@ -264,7 +264,12 @@ export interface PowerPointAdapter {
   snapshotSlide(
     slideIndex: number,
     signal?: AbortSignal,
-  ): Promise<{ slideId: string; fingerprint: string }>
+    includeShapes?: boolean,
+  ): Promise<{
+    slideId: string
+    fingerprint: string
+    shapes?: Array<PowerPointShape & { text: string }>
+  }>
   editSlideText(
     slideIndex: number,
     shapeId: string,
@@ -1777,7 +1782,12 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
   async snapshotSlide(
     slideIndex: number,
     signal?: AbortSignal,
-  ): Promise<{ slideId: string; fingerprint: string }> {
+    includeShapes = false,
+  ): Promise<{
+    slideId: string
+    fingerprint: string
+    shapes?: Array<PowerPointShape & { text: string }>
+  }> {
     cancelled(signal)
     return this.run('1.4', async (context) => {
       const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
@@ -1813,7 +1823,11 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           }
         })
         .sort((first, second) => first.id.localeCompare(second.id))
-      return { slideId, fingerprint: `${slideId}:${hash(JSON.stringify(semanticShapes))}` }
+      return {
+        slideId,
+        fingerprint: `${slideId}:${hash(JSON.stringify(semanticShapes))}`,
+        ...(includeShapes ? { shapes: semanticShapes } : {}),
+      }
     })
   }
 

@@ -149,9 +149,15 @@ async function durableCompatibility(
       return result
     },
   )
-  fake.snapshotSlide = vi.fn(async () => ({
+  fake.snapshotSlide = vi.fn(async (_slideIndex: number, signal?: AbortSignal) => ({
     slideId: initial.slideId,
     fingerprint: 'initial-native-page',
+    shapes: await Promise.all(
+      initial.shapes.map(async (shape) => ({
+        ...shape,
+        text: (await fake.readSlideText(0, shape.id, signal)).text,
+      })),
+    ),
   }))
   fake.exportPresentationPagePackage = vi.fn(async (slideId: string) => ({
     slideId,
@@ -1365,6 +1371,14 @@ describe('PowerPoint compatibility skill', () => {
     })
     const proposals = createStructuredProposalController(),
       f = await durableCompatibility(fake, proposals)
+    fake.snapshotSlide = vi.fn(async () => ({
+      slideId: 'slide-1',
+      fingerprint: 'native-page',
+      shapes: [
+        { ...(geometryWritten ? afterShape : beforeShape), text: 'Hello' },
+        ...(deletionWritten ? [] : [{ ...deletedShape, text: 'Hello' }]),
+      ],
+    }))
     const result = await f.skill.executeTool(
       call('execute_office_js', {
         program: {
@@ -2162,9 +2176,10 @@ describe('browser PowerPoint adapter', () => {
       },
     })
     const subject = new BrowserPowerPointAdapter()
-    await expect(subject.snapshotSlide(0)).resolves.toMatchObject({
+    await expect(subject.snapshotSlide(0, undefined, true)).resolves.toMatchObject({
       slideId: 's1',
       fingerprint: expect.stringMatching(/^s1:\d+:[0-9a-f]{8}$/),
+      shapes: [expect.objectContaining({ id: '2', text: 'Old' })],
     })
     await subject.editSlideText(0, '2', 'New')
     expect(textRange.text).toBe('New')
