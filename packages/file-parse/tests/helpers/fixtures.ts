@@ -156,7 +156,12 @@ export async function buildXlsxFixture(): Promise<Uint8Array> {
 export function buildPdfFixture(
   text: string | string[],
   options:
-    | { imagePage: number; invisibleText?: boolean; unusedInvisibleMode?: boolean }
+    | {
+        imagePage: number
+        invisibleText?: boolean
+        unusedInvisibleMode?: boolean
+        imageOffsetX?: number
+      }
     | undefined = undefined,
 ): Uint8Array {
   const pages = Array.isArray(text) ? text : [text]
@@ -171,7 +176,7 @@ export function buildPdfFixture(
     ),
     ...pages.map((page, index) => {
       const image = options?.imagePage === index + 1
-      const stream = `${image ? 'q 612 0 0 792 0 0 cm /Im1 Do Q\n' : ''}BT /F1 24 Tf ${image && options?.invisibleText ? '3 Tr ' : ''}72 720 Td (${page}) Tj ${image && options?.unusedInvisibleMode ? '3 Tr ' : ''}ET`
+      const stream = `${image ? `q 612 0 0 792 ${options?.imageOffsetX ?? 0} 0 cm /Im1 Do Q\n` : ''}BT /F1 24 Tf ${image && options?.invisibleText ? '3 Tr ' : ''}72 720 Td (${page}) Tj ${image && options?.unusedInvisibleMode ? '3 Tr ' : ''}ET`
       return `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`
     }),
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',

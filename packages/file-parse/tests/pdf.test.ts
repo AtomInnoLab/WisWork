@@ -59,6 +59,18 @@ describe('parseFileToText: pdf', () => {
     expect(result.pagesWithInvisibleTextLayer).toBeUndefined()
   })
 
+  it('does not count mostly off-page images as full-page coverage', async () => {
+    for (const offset of [300, 700]) {
+      const result = await parseFileToText(
+        writeFixture(
+          `off-page-image-${offset}.pdf`,
+          buildPdfFixture('Visible evidence', { imagePage: 1, imageOffsetX: offset }),
+        ),
+      )
+      expect(result.pagesWithFullPageImage).toBeUndefined()
+    }
+  })
+
   it('fails gracefully on a corrupt pdf', async () => {
     const path = writeFixture('broken.pdf', Buffer.from('%PDF-1.4 garbage'))
     const result = await parseFileToText(path)

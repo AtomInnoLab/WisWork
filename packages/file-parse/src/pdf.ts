@@ -194,8 +194,23 @@ export async function pdfToPagesWithImageCoverage(
             b * y + d * z + f,
           ]
         } else if (op === OPS.paintImageXObject || op === OPS.paintInlineImageXObject) {
-          const [a, b, c, d] = matrix
-          if (pageArea > 0 && Math.abs(a * d - b * c) / pageArea >= 0.8) fullPageImage = true
+          const [a, b, c, d, e, f] = matrix
+          const xs = [e, a + e, c + e, a + c + e]
+          const ys = [f, b + f, d + f, b + d + f]
+          const visibleWidth = Math.max(
+            0,
+            Math.min(right, Math.max(...xs)) - Math.max(left, Math.min(...xs)),
+          )
+          const visibleHeight = Math.max(
+            0,
+            Math.min(top, Math.max(...ys)) - Math.max(bottom, Math.min(...ys)),
+          )
+          if (
+            pageArea > 0 &&
+            Math.abs(a * d - b * c) / pageArea >= 0.8 &&
+            (visibleWidth * visibleHeight) / pageArea >= 0.8
+          )
+            fullPageImage = true
         } else if (op === OPS.setTextRenderingMode)
           textRenderingMode = operations.argsArray[j]?.[0] as number
         else if (
