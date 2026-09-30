@@ -95,6 +95,28 @@ const messages: AgentMessage[] = [
   },
 ]
 describe('presentation completed-read conversation checkpoints', () => {
+  it('restores an audited baseline read without replaying its completed tool', async () => {
+    const f = await fixture()
+    const checkpoint = f.checkpoint()
+    const toolName = 'check_presentation_baseline'
+    await checkpoint.begin('run', 'Read the deck')
+    await checkpoint.tool('run', 'tool_pending', toolName, false, 'baseline-1')
+    await checkpoint.tool('run', 'tool_completed', toolName, false, 'baseline-1')
+    const saved: AgentMessage[] = [
+      { role: 'user', text: 'Read the deck' },
+      { role: 'assistant', text: '', toolCalls: [{ id: 'baseline-1', name: toolName, input: {} }] },
+      { role: 'tool', results: [{ id: 'baseline-1', name: toolName, output: 'unchanged' }] },
+    ]
+    await checkpoint.conversation('run', saved)
+    const reopened = f.session()
+    expect(reopened.snapshot().recoveryAvailable).toBe(true)
+    await reopened.resumeInterrupted!()
+    await vi.waitFor(() => expect(f.stream).toHaveBeenCalledOnce())
+    expect(f.stream.mock.calls[0]![0].messages).toEqual(saved)
+    expect(f.executeTool).not.toHaveBeenCalled()
+    reopened.dispose()
+  })
+
   it('retries a complete multi-read batch once and removes local results after completion', async () => {
     const f = await fixture()
     const session = f.session()
