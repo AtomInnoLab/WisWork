@@ -103,9 +103,8 @@ export async function validatePresentationImportSourcePage(
           typeof rel['@_Id'] !== 'string' ||
           typeof rel['@_Type'] !== 'string' ||
           typeof rel['@_Target'] !== 'string' ||
-          (rel['@_TargetMode'] !== undefined && rel['@_TargetMode'] !== 'External') ||
-          (rel['@_TargetMode'] !== 'External' &&
-            !zip.file(internalTarget(slidePaths[0]!, rel['@_Target'] as string) ?? '')),
+          rel['@_TargetMode'] !== undefined ||
+          !zip.file(internalTarget(slidePaths[0]!, rel['@_Target'] as string) ?? ''),
       ) ||
       new Set(references.map((rel) => rel['@_Id'])).size !== references.length
     )
@@ -134,9 +133,8 @@ export async function validatePresentationImportSourcePage(
           typeof entry['@_Id'] !== 'string' ||
           typeof entry['@_Type'] !== 'string' ||
           typeof entry['@_Target'] !== 'string' ||
-          (entry['@_TargetMode'] !== undefined && entry['@_TargetMode'] !== 'External') ||
-          (entry['@_TargetMode'] !== 'External' &&
-            !zip.file(internalTarget(owner, entry['@_Target'] as string) ?? '')),
+          entry['@_TargetMode'] !== undefined ||
+          !zip.file(internalTarget(owner, entry['@_Target'] as string) ?? ''),
       ) ||
       new Set(entries.map((entry) => entry['@_Id'])).size !== entries.length
     )
