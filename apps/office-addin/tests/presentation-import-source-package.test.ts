@@ -91,3 +91,48 @@ it('rejects a chart relationship redirected to a different existing XML part', a
     'presentation_import_state_invalid',
   )
 })
+
+it('rejects an empty image part even when its local relationship is intact', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = Object.keys(zip.files).find((name) => /^ppt\/media\/[^/]+\.png$/.test(name))
+  expect(path).toBeDefined()
+  zip.file(path!, new Uint8Array())
+  const changed = (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64')
+  await expect(validatePresentationImportSourcePage(changed, '256#')).rejects.toThrow(
+    'presentation_import_state_invalid',
+  )
+})
+
+it('rejects non-image bytes stored under a referenced PNG filename', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = Object.keys(zip.files).find((name) => /^ppt\/media\/[^/]+\.png$/.test(name))
+  expect(path).toBeDefined()
+  zip.file(path!, 'not a PNG image')
+  const changed = (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64')
+  await expect(validatePresentationImportSourcePage(changed, '256#')).rejects.toThrow(
+    'presentation_import_state_invalid',
+  )
+})
+
+it('rejects a chart part whose XML no longer contains a chart', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[6]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = Object.keys(zip.files).find((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name))
+  expect(path).toBeDefined()
+  zip.file(
+    path!,
+    '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>',
+  )
+  const changed = (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64')
+  await expect(validatePresentationImportSourcePage(changed, '256#')).rejects.toThrow(
+    'presentation_import_state_invalid',
+  )
+})

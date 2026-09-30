@@ -92,6 +92,15 @@ export async function validatePresentationImportSourcePage(
   )
     invalid()
 
+  const referencedParts = new Map<string, 'png' | 'jpeg' | 'chart'>()
+  const rememberTypedPart = (owner: string, rel: Record<string, unknown>): void => {
+    const type = rel['@_Type'] as string
+    const path = typedTarget(owner, type, rel['@_Target'] as string)!
+    if (type.endsWith('/image'))
+      referencedParts.set(path, path.toLowerCase().endsWith('.png') ? 'png' : 'jpeg')
+    else if (type.endsWith('/chart')) referencedParts.set(path, 'chart')
+  }
+
   const slideRelsPath = slidePaths[0]!.replace('/slides/', '/slides/_rels/') + '.rels'
   const slideRelsFile = zip.file(slideRelsPath)
   const referencedIds = [...slideXml.matchAll(/\br:(?:id|embed|link)="([^"]+)"/g)].map(
@@ -118,6 +127,7 @@ export async function validatePresentationImportSourcePage(
       new Set(references.map((rel) => rel['@_Id'])).size !== references.length
     )
       invalid()
+    references.forEach((rel) => rememberTypedPart(slidePaths[0]!, rel))
     const ids = new Set(references.map((rel) => rel['@_Id']))
     if (referencedIds.some((id) => !ids.has(id))) invalid()
   }
@@ -148,6 +158,32 @@ export async function validatePresentationImportSourcePage(
           ),
       ) ||
       new Set(entries.map((entry) => entry['@_Id'])).size !== entries.length
+    )
+      invalid()
+    entries.forEach((entry) => rememberTypedPart(owner, entry))
+  }
+
+  for (const [path, kind] of referencedParts) {
+    const file = zip.file(path) ?? invalid()
+    if (kind === 'chart') {
+      const xml = await file.async('string')
+      if (!validXml(xml) || !parser.parse(xml)['c:chartSpace']?.['c:chart']) invalid()
+      continue
+    }
+    const bytes = await file.async('uint8array')
+    if (kind === 'png') {
+      if (
+        bytes.length < 24 ||
+        [137, 80, 78, 71, 13, 10, 26, 10].some((value, index) => bytes[index] !== value) ||
+        String.fromCharCode(...bytes.slice(12, 16)) !== 'IHDR'
+      )
+        invalid()
+    } else if (
+      bytes.length < 4 ||
+      bytes[0] !== 0xff ||
+      bytes[1] !== 0xd8 ||
+      bytes.at(-2) !== 0xff ||
+      bytes.at(-1) !== 0xd9
     )
       invalid()
   }
