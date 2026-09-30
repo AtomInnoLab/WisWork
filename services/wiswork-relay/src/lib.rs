@@ -790,6 +790,9 @@ async fn negotiate(
         tx,
         json!({"version":PROTOCOL_V2,"type":"pc.negotiated","pairing_version":pairing.version,"capabilities":negotiated}),
     );
+    if let Some(attempts) = store.claim_attempts.get_mut(&subject) {
+        attempts.1 = attempts.1.saturating_sub(1);
+    }
     Ok(())
 }
 
@@ -1006,6 +1009,11 @@ async fn claim(
             json!({"version":1,"type":"pc.claimed","pairing_id":p.id,"host":p.host,"origin":OFFICE_ORIGIN,"verification_code":p.code,"expires_in":p.expires.saturating_duration_since(Instant::now()).as_secs()})
         },
     );
+    if !negotiated_claim {
+        if let Some(attempts) = s.claim_attempts.get_mut(&subject) {
+            attempts.1 = attempts.1.saturating_sub(1);
+        }
+    }
     Ok(())
 }
 

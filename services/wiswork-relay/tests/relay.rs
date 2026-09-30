@@ -803,12 +803,13 @@ async fn check_v2_body(capability: &str, rejected: Option<(&str, serde_json::Val
 }
 
 #[tokio::test]
-async fn three_valid_v2_negotiations_and_claims_share_one_subject_budget() {
+async fn valid_v2_negotiations_do_not_exhaust_invalid_code_budget() {
     let url = server().await;
-    let mut office = socket(&url, ORIGIN).await;
+    let mut offices = Vec::new();
     let mut pcs = Vec::new();
 
-    for host in ["Word", "Excel", "PowerPoint"] {
+    for host in ["Word", "Excel", "PowerPoint", "Word", "Excel", "PowerPoint"] {
+        let mut office = socket(&url, ORIGIN).await;
         send(
             &mut office,
             json!({"version":2,"type":"office.create","host":host,"capabilities":["agent.v1"]}),
@@ -831,7 +832,57 @@ async fn three_valid_v2_negotiations_and_claims_share_one_subject_budget() {
         .await;
         assert_eq!(recv(&mut pc).await["type"], "pc.claimed");
         pcs.push(pc);
+        offices.push(office);
     }
+
+    for attempt in 0..6 {
+        let mut invalid = pc_socket(&url).await;
+        send(
+            &mut invalid,
+            json!({"version":2,"type":"pc.negotiate","verification_code":"999999","capabilities":["agent.v1"]}),
+        )
+        .await;
+        assert_eq!(
+            recv(&mut invalid).await["code"],
+            if attempt < 5 {
+                "invalid_code"
+            } else {
+                "claim_limit"
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn valid_v1_claims_do_not_exhaust_invalid_code_budget() {
+    let url = server().await;
+    let mut offices = Vec::new();
+    let mut pcs = Vec::new();
+    for _ in 0..6 {
+        let mut office = socket(&url, ORIGIN).await;
+        send(
+            &mut office,
+            json!({"version":1,"type":"office.create","host":"Word"}),
+        )
+        .await;
+        let created = recv(&mut office).await;
+        let mut pc = pc_socket(&url).await;
+        send(
+            &mut pc,
+            json!({"version":1,"type":"pc.claim","verification_code":created["verification_code"]}),
+        )
+        .await;
+        assert_eq!(recv(&mut pc).await["type"], "pc.claimed");
+        offices.push(office);
+        pcs.push(pc);
+    }
+    let mut invalid = pc_socket(&url).await;
+    send(
+        &mut invalid,
+        json!({"version":1,"type":"pc.claim","verification_code":"999999"}),
+    )
+    .await;
+    assert_eq!(recv(&mut invalid).await["code"], "invalid_code");
 }
 
 #[tokio::test]
