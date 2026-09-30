@@ -4,6 +4,14 @@ import {
   cleanupPackageFixtures,
 } from './helpers/package-editing-fixture.js'
 afterEach(cleanupPackageFixtures)
+it('does not upload PC backups for a rejected proposal', async () => {
+  const f = await fixture()
+  await f.propose()
+  expect(f.request).not.toHaveBeenCalled()
+  f.proposals.reject()
+  expect(f.request).not.toHaveBeenCalled()
+  expect(f.data.size).toBe(0)
+})
 it('persists PC originals, imports then deletes, and restores after reopen', async () => {
   const f = await fixture()
   const p = await f.propose()

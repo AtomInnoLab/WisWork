@@ -679,8 +679,6 @@ export function createPresentationPackageEditingSkill(options: Options) {
         all.pages[slideIndex]!.digest
       )
         throw Error('presentation_package_backup_invalid')
-      const originalRef = await save(c, 'page-0', decode(originalBase64)),
-        preparedRef = await save(c, 'page-1', decode(preparedBase64))
       const snapshot: Snapshot = {
         version: 1,
         documentId,
@@ -692,34 +690,17 @@ export function createPresentationPackageEditingSkill(options: Options) {
         expected,
         restoreExpected,
       }
-      const snapshotRef = await save(c, 'snapshot', json(snapshot)),
-        currentProofRef = await save(c, 'receipt-0', json(proof(all)))
-      const r: PresentationPackageChange = {
-        version: 1,
-        kind: 'package_xml',
-        documentId,
-        changeId: c.changeId,
-        intent: explanation ?? `Edit slide ${kind} XML`,
-        sourceKind: kind,
-        sourceSlideId,
-        packageSourceSlideId,
-        snapshotRef,
-        originalRef,
-        preparedRef,
-        currentProofRef,
-        state: 'prepared',
-        receipts: [],
-        reviews: [],
-      }
-      if (!validatePresentationPackageChange(r)) throw Error('presentation_package_state_invalid')
-      await backups(c, r, snapshot)
       if (!same(proof(await inspect(c)), proof(all))) throw Error('proposal_stale')
+      const intent = explanation ?? `Edit slide ${kind} XML`
       return options.proposals.propose({
         operation: kind === 'chart' ? 'edit_slide_chart' : 'edit_slide_xml',
         toolName: kind === 'chart' ? 'edit_slide_chart' : 'edit_slide_xml',
-        title: r.intent,
+        title: intent,
         preview: {
-          ...summary(r),
+          changeId: c.changeId,
+          state: 'prepared',
+          sourceSlideId,
+          qaPassed: false,
           changedPaths: edited.changedPaths,
           qaScope: { basis: 'package_xml_savepoint', hostSlideIds: [sourceSlideId] },
         },
@@ -728,7 +709,6 @@ export function createPresentationPackageEditingSkill(options: Options) {
         validate: async (signal) => {
           try {
             const ctx = { ...c, signal }
-            await backups(ctx, r, snapshot)
             return same(proof(await inspect(ctx)), proof(all))
           } catch (error) {
             if (signal?.aborted || c.originalSignal?.aborted || c.epoch !== epoch) throw error
@@ -737,13 +717,37 @@ export function createPresentationPackageEditingSkill(options: Options) {
         },
         execute: async (signal) => {
           const ctx = { ...c, signal }
+          if (!same(proof(await inspect(ctx)), proof(all))) throw Error('proposal_stale')
+          const originalRef = await save(ctx, 'page-0', decode(originalBase64)),
+            preparedRef = await save(ctx, 'page-1', decode(preparedBase64)),
+            snapshotRef = await save(ctx, 'snapshot', json(snapshot)),
+            currentProofRef = await save(ctx, 'receipt-0', json(proof(all)))
+          const r: PresentationPackageChange = {
+            version: 1,
+            kind: 'package_xml',
+            documentId,
+            changeId: c.changeId,
+            intent,
+            sourceKind: kind,
+            sourceSlideId,
+            packageSourceSlideId,
+            snapshotRef,
+            originalRef,
+            preparedRef,
+            currentProofRef,
+            state: 'prepared',
+            receipts: [],
+            reviews: [],
+          }
+          if (!validatePresentationPackageChange(r))
+            throw Error('presentation_package_state_invalid')
           await backups(ctx, r, snapshot)
           if (!same(proof(await inspect(ctx)), proof(all))) throw Error('proposal_stale')
           await store(ctx, r)
           await drive(ctx, r, snapshot, 'resume')
         },
         verify: async (signal) => {
-          const current = record(r.changeId)
+          const current = record(c.changeId)
           await check(context(current, signal), current)
         },
       })
