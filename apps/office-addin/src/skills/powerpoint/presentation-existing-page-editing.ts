@@ -258,7 +258,7 @@ tools.unshift({
 tools.unshift({
   name: 'prepare_existing_presentation_text_revision',
   description:
-    'Prepare a native text edit as a one-slide PPTX while preserving formatting runs, paragraphs, native soft breaks, and tabs. Start is a zero-based offset in the shape text: each paragraph boundary or soft break counts as one newline, and each tab counts as one character. The selected text must not cross a newline. For a length-changing edit spanning runs, provide run_replacements in affected-run order; their concatenation must equal after. This writes only to VFS; stage the returned PPTX with the existing page change flow.',
+    'Prepare a native text edit as a one-slide PPTX while preserving formatting runs, paragraphs, native soft breaks, tabs, fields and hyperlinks. Start is a zero-based offset in the shape text: each paragraph boundary or soft break counts as one newline, and each tab counts as one character. The selected text must not cross a newline or change a dynamic field or hyperlinked run; unrelated fields and links stay intact. For a length-changing edit spanning runs, provide run_replacements in affected-run order; their concatenation must equal after. This writes only to VFS; stage the returned PPTX with the existing page change flow.',
   inputSchema: {
     type: 'object',
     properties: {

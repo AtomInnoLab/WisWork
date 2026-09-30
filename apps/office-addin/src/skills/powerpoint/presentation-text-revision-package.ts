@@ -21,6 +21,7 @@ const invalidText = (value: string) => /[\r\n]/.test(value) || /[\uD800-\uDFFF]/
 type Run = {
   xml: string
   text: string
+  immutable: boolean
   globalStart: number
   openTag: string
   openStart: number
@@ -33,7 +34,6 @@ function plainRuns(shapeXml: string): { runs: Run[]; text: string } {
   const bodies = [...shapeXml.matchAll(/<p:txBody\b[^>]*>[\s\S]*?<\/p:txBody>/g)]
   if (bodies.length !== 1) fail()
   const body = bodies[0]![0]
-  if (/<a:(?:fld|hlinkClick|hlinkMouseOver)\b/.test(body)) fail()
   const paragraphs = [...body.matchAll(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g)]
   if (
     !paragraphs.length ||
@@ -47,16 +47,20 @@ function plainRuns(shapeXml: string): { runs: Run[]; text: string } {
     if (paragraphIndex) fullText += '\n'
     const tokens = [
       ...paragraph[0].matchAll(
-        /<a:r\b[^>]*>[\s\S]*?<\/a:r>|<a:br\b[^>]*\/>|<a:br\b[^>]*>[\s\S]*?<\/a:br>|<a:tab\b[^>]*\/>|<a:tab\b[^>]*>[\s\S]*?<\/a:tab>/g,
+        /<a:r\b[^>]*>[\s\S]*?<\/a:r>|<a:fld\b[^>]*>[\s\S]*?<\/a:fld>|<a:br\b[^>]*\/>|<a:br\b[^>]*>[\s\S]*?<\/a:br>|<a:tab\b[^>]*\/>|<a:tab\b[^>]*>[\s\S]*?<\/a:tab>/g,
       ),
     ]
     if (tokens.length > 4000) fail()
     const paragraphRuns = tokens.filter(([xml]) => xml.startsWith('<a:r'))
     if (
       [...paragraph[0].matchAll(/<a:r\b/g)].length !== paragraphRuns.length ||
+      [...paragraph[0].matchAll(/<a:fld\b/g)].length !==
+        tokens.filter(([xml]) => xml.startsWith('<a:fld')).length ||
       [...paragraph[0].matchAll(/<a:br\b/g)].length +
         [...paragraph[0].matchAll(/<a:tab\b/g)].length !==
-        tokens.length - paragraphRuns.length
+        tokens.length -
+          paragraphRuns.length -
+          tokens.filter(([xml]) => xml.startsWith('<a:fld')).length
     )
       fail()
     for (const match of tokens) {
@@ -83,6 +87,7 @@ function plainRuns(shapeXml: string): { runs: Run[]; text: string } {
       result.push({
         xml,
         text: value as string,
+        immutable: xml.startsWith('<a:fld') || /<a:hlink(?:Click|MouseOver)\b/.test(xml),
         globalStart: fullText.length,
         openTag,
         openStart,
@@ -173,6 +178,7 @@ export async function replacePowerPointTextRangePackage(
   let rewritten = original
   const patches: Array<{ from: number; to: number; value: string }> = []
   const patchRun = (run: Run, replacement: string) => {
+    if (run.immutable) fail()
     if (invalidText(replacement)) fail()
     if (/^[ \t]|[ \t]$/.test(replacement)) {
       const space = /\bxml:space\s*=\s*(['"])([^'"]*)\1/.exec(run.openTag)

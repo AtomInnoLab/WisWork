@@ -172,6 +172,49 @@ it('counts and preserves a native tab between runs', async () => {
   expect(output.replace('<a:t>成果报</a:t>', '<a:t>汇报</a:t>')).toBe(xml.replace(shape, tabbed))
 })
 
+it('preserves an unrelated dynamic field and rejects edits to its cached text', async () => {
+  const { zip, xml, shape, id } = await fixture()
+  const withField = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:t>科研</a:t></a:r><a:fld id="{12345678-1234-1234-1234-123456789012}" type="slidenum"><a:rPr lang="zh-CN"/><a:t>1</a:t></a:fld><a:r><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, withField))
+  const source = await zip.generateAsync({ type: 'base64' })
+  await expect(replacePowerPointTextRangePackage(source, id, 2, '1', '2')).rejects.toThrow(
+    'presentation_existing_target_unsupported',
+  )
+  const revised = await replacePowerPointTextRangePackage(source, id, 3, '汇', '成果')
+  const output = await (
+    await JSZip.loadAsync(revised.base64, { base64: true })
+  )
+    .file('ppt/slides/slide1.xml')!
+    .async('string')
+  expect(output).toContain('<a:t>1</a:t></a:fld><a:r><a:t>成果报</a:t>')
+  expect(output.replace('<a:t>成果报</a:t>', '<a:t>汇报</a:t>')).toBe(xml.replace(shape, withField))
+})
+
+it('preserves an unrelated hyperlink run and rejects changing its label', async () => {
+  const { zip, xml, shape, id } = await fixture()
+  const withLink = shape.replace(
+    '<a:t>科研汇报</a:t>',
+    '<a:rPr lang="zh-CN"><a:hlinkClick r:id="rId99"/></a:rPr><a:t>科研</a:t></a:r><a:r><a:t>汇报</a:t>',
+  )
+  zip.file('ppt/slides/slide1.xml', xml.replace(shape, withLink))
+  const source = await zip.generateAsync({ type: 'base64' })
+  await expect(replacePowerPointTextRangePackage(source, id, 0, '科', '项')).rejects.toThrow(
+    'presentation_existing_target_unsupported',
+  )
+  const revised = await replacePowerPointTextRangePackage(source, id, 2, '汇', '成果')
+  const output = await (
+    await JSZip.loadAsync(revised.base64, { base64: true })
+  )
+    .file('ppt/slides/slide1.xml')!
+    .async('string')
+  expect(output).toContain('<a:hlinkClick r:id="rId99"/></a:rPr><a:t>科研</a:t>')
+  expect(output).toContain('<a:t>成果报</a:t>')
+  expect(output.replace('<a:t>成果报</a:t>', '<a:t>汇报</a:t>')).toBe(xml.replace(shape, withLink))
+})
+
 it('preserves complete supplementary Unicode characters beside and inside native edits', async () => {
   const { zip, xml, shape, id } = await fixture()
   zip.file('ppt/slides/slide1.xml', xml.replace(shape, shape.replace('科研汇报', 'A😀B')))
