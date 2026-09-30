@@ -5,6 +5,22 @@ import { inspectPowerPointChartSourcesBatch } from './presentation-chart-source-
 const parser = new XMLParser({ ignoreAttributes: false, parseAttributeValue: false })
 const HYPERLINK_REL =
   'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink'
+const INTERNAL_RELATIONSHIPS = new Set(
+  [
+    'slide',
+    'slideLayout',
+    'slideMaster',
+    'theme',
+    'notesSlide',
+    'notesMaster',
+    'image',
+    'chart',
+    'package',
+    'presProps',
+    'viewProps',
+    'tableStyles',
+  ].map((name) => `http://schemas.openxmlformats.org/officeDocument/2006/relationships/${name}`),
+)
 export const validHttpLink = (target: unknown): boolean => {
   if (
     typeof target !== 'string' ||
@@ -179,6 +195,7 @@ export async function validatePresentationImportSourcePage(
     typeof rel['@_Target'] === 'string' &&
     (allowedExternal(owner, rel) ||
       (rel['@_TargetMode'] === undefined &&
+        INTERNAL_RELATIONSHIPS.has(rel['@_Type']) &&
         !!zip.file(typedTarget(owner, rel['@_Type'], rel['@_Target']) ?? '')))
   if (referencedIds.length && !slideRelsFile) invalid()
   if (slideRelsFile) {

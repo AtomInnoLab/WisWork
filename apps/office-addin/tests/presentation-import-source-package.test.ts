@@ -27,6 +27,28 @@ it('accepts a compiled native image page and rejects an external image relations
     'presentation_import_state_invalid',
   )
 })
+it('rejects an unrelated embedded object relationship before host import', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const { bytes } = await compilePresentationDeck(deck)
+  const zip = await JSZip.loadAsync(bytes)
+  const path = 'ppt/slides/_rels/slide1.xml.rels'
+  const xml = await zip.file(path)!.async('string')
+  zip.file('ppt/embeddings/unrelated.bin', new Uint8Array([1, 2, 3]))
+  zip.file(
+    path,
+    xml.replace(
+      '</Relationships>',
+      '<Relationship Id="rIdUnrelated" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="../embeddings/unrelated.bin"/></Relationships>',
+    ),
+  )
+  await expect(
+    validatePresentationImportSourcePage(
+      (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64'),
+      '256#',
+    ),
+  ).rejects.toThrow('presentation_import_state_invalid')
+})
 it('resolves single-quoted image references and rejects a missing relationship', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[2]!]
