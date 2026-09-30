@@ -417,6 +417,30 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         projectId,
         options.expectedSlideTexts,
       )
+      const source = await request('presentation.v1', {
+        operation: 'read_import_source',
+        documentId,
+        projectId,
+        requestId: options.compiledRequestId,
+        source: 'compiled',
+      })
+      if (
+        source?.version !== 1 ||
+        source.documentId !== documentId ||
+        source.projectId !== projectId ||
+        source.requestId !== options.compiledRequestId ||
+        source.source !== 'compiled' ||
+        source.artifactDigest !== createHash('sha256').update(compiled.pptxBase64).digest('hex') ||
+        !Array.isArray(source.pages) ||
+        source.pages.length !== options.expectedSlideTexts.length ||
+        source.pages.some(
+          (page, index) =>
+            page.id !== compiled.pages?.[index]?.id ||
+            page.title !== compiled.pages?.[index]?.title ||
+            page.sourceSlideId !== compiled.pages?.[index]?.sourceSlideId,
+        )
+      )
+        throw new Error('PC compiled import source invalid')
     }
     let productionDelivery
     if (options.productionFixture) {
@@ -451,6 +475,8 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       )
         throw new Error('PC page production incomplete')
       const pageDigests = []
+      const pagePptxBase64 = []
+      const sourcePages = []
       for (const [index, slide] of fixture.deck.slides.entries()) {
         const page = await request('presentation.v1', {
           operation: 'production_page',
@@ -464,6 +490,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
           page.status !== 'compiled' ||
           page.planRevision !== 1 ||
           page.report?.slideCount !== 1 ||
+          typeof page.sourceSlideId !== 'string' ||
           typeof page.pptxBase64 !== 'string'
         )
           throw new Error('PC production page identity invalid')
@@ -482,7 +509,40 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         )
           throw new Error('PC production page content invalid')
         pageDigests.push(createHash('sha256').update(bytes).digest('hex'))
+        pagePptxBase64.push(page.pptxBase64)
+        sourcePages.push({ id: slide.id, title: slide.title, sourceSlideId: page.sourceSlideId })
       }
+      const source = await request('presentation.v1', {
+        operation: 'read_import_source',
+        ...base,
+        source: 'production',
+      })
+      const importContent = JSON.stringify({
+        documentId,
+        projectId,
+        requestId: fixture.requestId,
+        planRevision: 1,
+        pages: sourcePages,
+        pagePptxBase64,
+      })
+      if (
+        source?.version !== 1 ||
+        source.documentId !== documentId ||
+        source.projectId !== projectId ||
+        source.requestId !== fixture.requestId ||
+        source.source !== 'production' ||
+        source.planRevision !== 1 ||
+        source.artifactDigest !== createHash('sha256').update(importContent).digest('hex') ||
+        !Array.isArray(source.pages) ||
+        source.pages.length !== sourcePages.length ||
+        source.pages.some(
+          (page, index) =>
+            page.id !== sourcePages[index].id ||
+            page.title !== sourcePages[index].title ||
+            page.sourceSlideId !== sourcePages[index].sourceSlideId,
+        )
+      )
+        throw new Error('PC production import source invalid')
       const exported = await request('presentation-production-pdf.v1', {
         operation: 'export_pdf',
         ...base,

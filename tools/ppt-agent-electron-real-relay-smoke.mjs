@@ -202,7 +202,7 @@ app.whenReady().then(async () => {
     })
   })
   console.log(
-    'Electron PC + Rust Relay business smoke passed: pairing, eight-page compile and planned page production, PPTX/PDF readback, TXT/PNG upload, native image readback and cleanup',
+    'Electron PC + Rust Relay business smoke passed: pairing, eight-page compile and planned page production, import-source digests, PPTX/PDF readback, TXT/PNG upload, native image readback and cleanup',
   )
 } finally {
   for (const child of children.reverse()) {
