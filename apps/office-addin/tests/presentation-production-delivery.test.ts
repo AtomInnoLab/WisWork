@@ -1,5 +1,7 @@
 import { expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
+import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { createStructuredProposalController } from '../src/agent/proposal-controller'
 import {
   createPresentationAgentRunCheckpoint,
@@ -148,6 +150,30 @@ it('keeps the page uncertain if host slide order changes during package readback
     completed: [],
     inFlight: { sourceSlideId: '256#' },
   })
+})
+
+it('detects changed native image bytes in a compiled SlideIR page after import', async () => {
+  const f = fixture()
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[2]!]
+  const compiled = await compilePresentationDeck(deck)
+  const source = Buffer.from(compiled.bytes).toString('base64')
+  const changed = await JSZip.loadAsync(compiled.bytes)
+  const mediaPath = Object.keys(changed.files).find((path) =>
+    /^ppt\/media\/[^/]+\.png$/.test(path),
+  )!
+  expect(mediaPath).toBeDefined()
+  changed.file(mediaPath, new Uint8Array([1, 2, 3]))
+  f.artifact.pagePptxBase64 = [source, source, source]
+  const skill = createPresentationProductionDeliverySkill({
+    ...f.options,
+    adapter: { ...f.adapter, exportPage: async () => changed.generateAsync({ type: 'base64' }) },
+  })
+  expect((await skill.executeTool(f.call)).isError).not.toBe(true)
+  await expect(f.proposals.confirm(f.proposals.pending()!.id)).rejects.toThrow(
+    'office_state_uncertain',
+  )
+  expect(f.receipts.get('production/project/request')?.checkpoint?.completed).toEqual([])
 })
 it('reconciles an interrupted append only after exact package and host-order proof', async () => {
   const f = fixture()
