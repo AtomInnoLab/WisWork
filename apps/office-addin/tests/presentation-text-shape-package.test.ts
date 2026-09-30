@@ -216,3 +216,44 @@ it('fingerprints a connector and a group with their children in a real PPTX pack
     ),
   ).rejects.toThrow('office_api_unsupported')
 })
+
+it('protects an unsupported graphic frame and fails closed when its package mapping is missing', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  const zip = await JSZip.loadAsync((await compilePresentationDeck(deck)).bytes)
+  const slide = await zip.file('ppt/slides/slide1.xml')!.async('string')
+  const graphic =
+    '<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="9010" name="diagram"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="100" y="200"/><a:ext cx="300" cy="400"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:relIds xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" r:dm="rIdWisDiagram"/></a:graphicData></a:graphic></p:graphicFrame>'
+  zip.file('ppt/slides/slide1.xml', slide.replace('</p:spTree>', `${graphic}</p:spTree>`))
+  const relsPath = 'ppt/slides/_rels/slide1.xml.rels'
+  const rels = await zip.file(relsPath)!.async('string')
+  zip.file(
+    relsPath,
+    rels.replace(
+      '</Relationships>',
+      '<Relationship Id="rIdWisDiagram" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData" Target="../diagrams/dataWiswork.xml"/></Relationships>',
+    ),
+  )
+  zip.file('ppt/diagrams/dataWiswork.xml', '<diagram>first</diagram>')
+  const inspect = async () =>
+    (
+      await inspectPowerPointTextShapeFingerprints(
+        await zip.generateAsync({ type: 'base64' }),
+        ['9010'],
+        undefined,
+        true,
+      )
+    )['9010']!
+  const before = await inspect()
+  zip.file('ppt/diagrams/dataWiswork.xml', '<diagram>second</diagram>')
+  const after = await inspect()
+  expect(after.exact).not.toBe(before.exact)
+  await expect(
+    inspectPowerPointTextShapeFingerprints(
+      await zip.generateAsync({ type: 'base64' }),
+      ['9011'],
+      undefined,
+      true,
+    ),
+  ).rejects.toThrow('office_api_unsupported')
+})

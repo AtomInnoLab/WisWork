@@ -320,6 +320,9 @@ export function createPresentationNativeModifySkill(options: Options) {
             shape.type !== 'Image' &&
             shape.type !== 'Picture' &&
             shape.type !== 'Chart' &&
+            ['TextBox', 'GeometricShape', 'Callout', 'Freeform', 'Placeholder'].includes(
+              shape.type,
+            ) &&
             (shape.type === 'TextBox' || shape.text),
         )
         .map((shape) => shape.id)
@@ -388,7 +391,7 @@ export function createPresentationNativeModifySkill(options: Options) {
         tables: tableIds,
         charts: chartIds,
         ordinary: beforeSemantic.shapes
-          .filter((shape) => ['TextBox', 'GeometricShape', 'Line', 'Group'].includes(shape.type))
+          .filter((shape) => !['Image', 'Picture', 'Table', 'Chart'].includes(shape.type))
           .map((shape) => shape.id),
       }
       const packageProof = async (ids: typeof proofIds) => {

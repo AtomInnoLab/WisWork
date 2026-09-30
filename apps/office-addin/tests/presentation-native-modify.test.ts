@@ -51,6 +51,10 @@ async function fixture(pageCount = 2) {
     { ...shape, id: 'image-sdk', type: 'Image' },
     { ...shape, id: 'line-sdk', type: 'Line' },
     { ...shape, id: 'group-sdk', type: 'Group' },
+    { ...shape, id: 'callout-sdk', type: 'Callout' },
+    { ...shape, id: 'freeform-sdk', type: 'Freeform' },
+    { ...shape, id: 'smartart-sdk', type: 'SmartArt' },
+    { ...shape, id: 'ole-sdk', type: 'Ole' },
     ...Array.from({ length: 32 }, (_, i) => ({ ...shape, id: `sdk-${i}` })),
   ]
   const texts = new Map<string, string>()
@@ -63,6 +67,7 @@ async function fixture(pageCount = 2) {
   let textStructure = 'a'.repeat(64)
   let emptyTextStructure = 'e'.repeat(64)
   let ordinaryStructure = '7'.repeat(64)
+  let ordinaryDriftId = 'sdk-1'
   let counter = 0
   const textFor = (id: string) => texts.get(id) ?? 'old'
   const packages = new Map<string, string>()
@@ -287,9 +292,9 @@ async function fixture(pageCount = 2) {
               ids.ordinary.map((id) => [
                 id,
                 {
-                  exact: id === 'sdk-1' ? ordinaryStructure : '8'.repeat(64),
-                  content: id === 'sdk-1' ? ordinaryStructure : '8'.repeat(64),
-                  formatting: id === 'sdk-1' ? ordinaryStructure : '8'.repeat(64),
+                  exact: id === ordinaryDriftId ? ordinaryStructure : '8'.repeat(64),
+                  content: id === ordinaryDriftId ? ordinaryStructure : '8'.repeat(64),
+                  formatting: id === ordinaryDriftId ? ordinaryStructure : '8'.repeat(64),
                 },
               ]),
             ),
@@ -337,6 +342,7 @@ async function fixture(pageCount = 2) {
     },
     setEmptyTextStructure: (value: string) => (emptyTextStructure = value),
     setOrdinaryStructure: (value: string) => (ordinaryStructure = value),
+    setOrdinaryDriftId: (value: string) => (ordinaryDriftId = value),
     setTableStyle: (value: string) => (tableStyle = value),
     addChart: () => shapes.push({ ...shape, id: 'chart-sdk', type: 'Chart' }),
     setChartFingerprint: (value: string) => (chartFingerprint = value),
@@ -376,7 +382,14 @@ it('uses one coherent package proof on each side of a native write and acknowled
   await f.proposals.confirm(proposed.proposalId)
   expect(combined).toHaveBeenCalledTimes(2)
   expect(combined.mock.calls[0]![1].ordinary).toEqual(
-    expect.arrayContaining(['line-sdk', 'group-sdk']),
+    expect.arrayContaining([
+      'line-sdk',
+      'group-sdk',
+      'callout-sdk',
+      'freeform-sdk',
+      'smartart-sdk',
+      'ole-sdk',
+    ]),
   )
   const after = await combined.mock.results[1]!.value
   expect(f.saved(proposed.changeId).pages[0]!.expectedPackageDigest).toBe(
@@ -416,6 +429,15 @@ it('keeps a native write uncertain when the combined package readback is incompl
 })
 it('does not acknowledge a hidden geometric shape style change in the combined package', async () => {
   const f = await fixture()
+  f.enableCombinedProof()
+  f.setAfterWrite(() => f.setOrdinaryStructure('9'.repeat(64)))
+  const proposed = await f.propose([textOp])
+  await expect(f.proposals.confirm(proposed.proposalId)).rejects.toThrow('office_verify_failed')
+  expect(f.saved(proposed.changeId)).toMatchObject({ inFlightIndex: 0, nextIndex: 0 })
+})
+it('does not acknowledge a hidden SmartArt package change in an unrelated shape', async () => {
+  const f = await fixture()
+  f.setOrdinaryDriftId('smartart-sdk')
   f.enableCombinedProof()
   f.setAfterWrite(() => f.setOrdinaryStructure('9'.repeat(64)))
   const proposed = await f.propose([textOp])

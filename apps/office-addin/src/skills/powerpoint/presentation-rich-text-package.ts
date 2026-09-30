@@ -139,7 +139,7 @@ async function shapeHash(shape: Node, relationships: unknown): Promise<string> {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-/** Exact XML guard for ordinary shapes, connectors, and groups. */
+/** Exact XML guard for top-level native shapes and their referenced resources. */
 export async function inspectPowerPointTextShapeFingerprints(
   base64: string,
   shapeIds: string[],
@@ -174,7 +174,11 @@ export async function inspectPowerPointTextShapeFingerprints(
       }
       if (!value || typeof value !== 'object') return
       for (const [key, child] of Object.entries(value as Node)) {
-        if (['@_r:id', '@_r:embed', '@_r:link'].includes(key) && typeof child === 'string')
+        if (
+          key.startsWith('@_r:') &&
+          typeof child === 'string' &&
+          /^rId[A-Za-z0-9_-]+$/.test(child)
+        )
           ids.add(child)
         else visit(child)
       }
@@ -187,7 +191,9 @@ export async function inspectPowerPointTextShapeFingerprints(
   const shapeTree = tags(slide, 'p:spTree')[0]?.['p:spTree'] as Node[] | undefined
   if (!shapeTree) throw Error('office_api_unsupported')
   for (const original of shapeTree) {
-    const kind = ['p:sp', 'p:cxnSp', 'p:grpSp'].find((key) => Array.isArray(original[key]))
+    const kind = ['p:sp', 'p:cxnSp', 'p:grpSp', 'p:graphicFrame', 'p:pic', 'p:contentPart'].find(
+      (key) => Array.isArray(original[key]),
+    )
     if (!kind) continue
     const children = original[kind] as Node[]
     const id = attr(tags(children, 'p:cNvPr')[0], 'id')
