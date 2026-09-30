@@ -1164,14 +1164,18 @@ it('validates claim review inputs and preserves explicit server conflicts', asyn
     'evidence_source_mismatch',
     'evidence_excerpt_not_found',
     'evidence_locator_mismatch',
+    'evidence_image_backed_unverified',
     'request_conflict',
     'quota_exceeded',
   ]) {
     f.request.mockResolvedValue(new Response(JSON.stringify({ error })))
-    expect(await f.skill.executeTool(recordReviewCall)).toMatchObject({
+    const result = await f.skill.executeTool(recordReviewCall)
+    expect(result).toMatchObject({
       isError: true,
       output: `presentation_${error}`,
     })
+    if (error === 'evidence_image_backed_unverified')
+      expect(result.summary).toContain('补充经核对的可读取来源')
   }
 })
 it('does not authorize reviews from evidence reads cancelled before publication', async () => {

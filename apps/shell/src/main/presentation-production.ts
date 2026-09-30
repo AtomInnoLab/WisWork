@@ -227,13 +227,21 @@ export async function handlePresentationProduction(
         }
       }
       if (request.outcome === 'supported') {
-        if (evidence.excerptMatch.status !== 'found') throw new Error('evidence_excerpt_not_found')
-        const planned = canonicalSourceLocator(evidence.source.locator)
-        if (
-          planned &&
-          evidence.attachment.locatorSpans &&
-          evidence.excerptMatch.locator !== planned
+        const match = evidence.excerptMatch
+        if (match.status !== 'found') throw new Error('evidence_excerpt_not_found')
+        const matchedSpan = evidence.attachment.locatorSpans?.find(
+          (span) =>
+            span.start <= match.offset && match.offset + evidence.source.excerpt.length <= span.end,
         )
+        if (
+          /\.pdf$/i.test(evidence.attachment.name) &&
+          evidence.attachment.locatorSpans &&
+          !matchedSpan
+        )
+          throw new Error('evidence_excerpt_not_found')
+        if (matchedSpan?.imageBacked) throw new Error('evidence_image_backed_unverified')
+        const planned = canonicalSourceLocator(evidence.source.locator)
+        if (planned && evidence.attachment.locatorSpans && match.locator !== planned)
           throw new Error('evidence_locator_mismatch')
       }
       check(signal)

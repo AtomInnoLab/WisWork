@@ -223,7 +223,7 @@ const tools: AgentToolDef[] = Object.keys(operations).map((name) => ({
     name === 'read_presentation_page_reviews'
       ? 'Read all claim/source review history for one frozen page, including missing reviews and mixed judgments. No last-write-wins. Statuses summarize historical agent judgments across possibly different windows; they do not verify truth or current host content. Use review IDs to read reasons, then re-read original evidence before judging.'
       : name === 'record_presentation_claim_review'
-        ? 'Persist an agent judgment for one previously read frozen claim/source evidence window. Read evidence in this session first; use supported, contradicted or insufficient_evidence and explain limitations in notes. Same review_id is immutable and idempotent. This does not verify truth, source authority, timeliness or host content.'
+        ? 'Persist an agent judgment for one previously read frozen claim/source evidence window. Read evidence in this session first; use supported, contradicted or insufficient_evidence and explain limitations in notes. Do not mark imageBacked PDF text supported from OCR alone; obtain a verified readable source or record insufficient_evidence. Same review_id is immutable and idempotent. This does not verify truth, source authority, timeliness or host content.'
         : name === 'read_presentation_claim_review'
           ? 'Read one historical agent judgment by exact production request/review ID. Does not revalidate current evidence or authorize another review.'
           : name === 'read_presentation_claim_evidence'
@@ -574,6 +574,7 @@ export function createPresentationProductionSkill(
                 'evidence_changed',
                 'evidence_excerpt_not_found',
                 'evidence_locator_mismatch',
+                'evidence_image_backed_unverified',
                 'research_binding_invalid',
                 'source_assessment_invalid',
                 'research_unavailable',
@@ -958,15 +959,17 @@ export function createPresentationProductionSkill(
                       ? '当前证据窗口没有计划引用的原文摘录；请调整读取范围后再记录“支持”'
                       : code === 'presentation_evidence_locator_mismatch'
                         ? '当前证据的页码或段落与计划不一致；请核对来源定位后再记录“支持”'
-                        : code === 'presentation_evidence_source_unsupported'
-                          ? '当前证据读取仅支持已上传附件来源；此来源不能通过本工具读取'
-                          : code === 'presentation_evidence_source_mismatch'
-                            ? '计划来源网址与网页快照的实际抓取网址不一致；请核对来源后重新读取证据'
-                            : code === 'presentation_page_replacement_required'
-                              ? '当前修订尚无已提交页面映射，不能整批追加导入；请先完成页面替换'
-                              : code === 'presentation_upgrade_required'
-                                ? '当前 PC 尚不支持页级生产，请升级 WisWork PC 后重试'
-                                : '页级生产操作未完成；已保存成果保留，可刷新查看',
+                        : code === 'presentation_evidence_image_backed_unverified'
+                          ? '当前原文来自整页图像上的未校对文字层；请补充经核对的可读取来源，或记录证据不足。'
+                          : code === 'presentation_evidence_source_unsupported'
+                            ? '当前证据读取仅支持已上传附件来源；此来源不能通过本工具读取'
+                            : code === 'presentation_evidence_source_mismatch'
+                              ? '计划来源网址与网页快照的实际抓取网址不一致；请核对来源后重新读取证据'
+                              : code === 'presentation_page_replacement_required'
+                                ? '当前修订尚无已提交页面映射，不能整批追加导入；请先完成页面替换'
+                                : code === 'presentation_upgrade_required'
+                                  ? '当前 PC 尚不支持页级生产，请升级 WisWork PC 后重试'
+                                  : '页级生产操作未完成；已保存成果保留，可刷新查看',
         }
       }
     },

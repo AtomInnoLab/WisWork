@@ -53,9 +53,14 @@ async function setup(
       sizeBytes: raw.length,
     }),
   ).not.toHaveProperty('error')
-  expect(
-    await call('attachment_chunk', { attachmentId, offset: 0, base64: raw.toString('base64') }),
-  ).not.toHaveProperty('error')
+  for (let offset = 0; offset < raw.length; offset += 128 * 1024)
+    expect(
+      await call('attachment_chunk', {
+        attachmentId,
+        offset,
+        base64: raw.subarray(offset, offset + 128 * 1024).toString('base64'),
+      }),
+    ).not.toHaveProperty('error')
   expect(await call('attachment_finish', { attachmentId })).not.toHaveProperty('error')
   await call('save_plan', { projectId: deck.id, expectedRevision: 0, plan })
   await call('production_begin', { projectId: deck.id, requestId: 'run', planRevision: 1, deck })
@@ -180,6 +185,75 @@ it('binds a supported PDF review to the planned page locator', async () => {
   expect(decode(await f.service(body, new AbortController().signal))).toEqual({
     error: 'evidence_locator_mismatch',
   })
+})
+it('allows supported review for a matching ordinary text PDF page', async () => {
+  const f = await setup(undefined, {
+    raw: Buffer.from(buildPdfFixture(['First page', 'Target evidence'])),
+    name: 'evidence.pdf',
+    excerpt: 'Target evidence',
+    locator: '第 2 页',
+  })
+  const request = { ...f.request, offset: 0 }
+  const evidence = decode(await f.service(request, new AbortController().signal))
+  expect(evidence.excerptMatch).toMatchObject({ status: 'found', locator: '第 2 页' })
+  expect(evidence.attachment.locatorSpans).not.toEqual(
+    expect.arrayContaining([expect.objectContaining({ imageBacked: true })]),
+  )
+  expect(
+    decode(
+      await f.service(
+        {
+          ...request,
+          operation: 'production_record_claim_review',
+          reviewId: 'ordinary-pdf',
+          evidenceDigest: createHash('sha256')
+            .update(presentationClaimEvidenceContent(evidence))
+            .digest('hex'),
+          outcome: 'supported',
+          notes: 'The cited page contains the literal source excerpt.',
+        },
+        new AbortController().signal,
+      ),
+    ),
+  ).toMatchObject({ outcome: 'supported' })
+})
+it('does not mark unverified image-backed scan text as supported', async () => {
+  const raw = readFileSync(
+    new URL(
+      '../../../docs/product/ppt-benchmark-materials/PPT-P0-11/naca-rm-l50b01-1950-real-scan.pdf',
+      import.meta.url,
+    ),
+  )
+  const f = await setup(undefined, {
+    raw,
+    name: 'naca-scan.pdf',
+    excerpt: 'NATIONAL ADVISORY COMMITTEE FOR AERONAUTICS',
+    locator: '第 3 页',
+  })
+  const request = { ...f.request, offset: 0, maxChars: 8000 }
+  const evidence = decode(await f.service(request, new AbortController().signal))
+  expect(evidence.excerptMatch).toMatchObject({ status: 'found', locator: '第 3 页' })
+  expect(evidence.attachment.locatorSpans).toEqual(
+    expect.arrayContaining([expect.objectContaining({ locator: '第 3 页', imageBacked: true })]),
+  )
+  const body = {
+    ...request,
+    operation: 'production_record_claim_review',
+    reviewId: 'scan-review',
+    evidenceDigest: createHash('sha256')
+      .update(presentationClaimEvidenceContent(evidence))
+      .digest('hex'),
+    outcome: 'supported',
+    notes: 'OCR text alone is not sufficient',
+  }
+  expect(decode(await f.service(body, new AbortController().signal))).toEqual({
+    error: 'evidence_image_backed_unverified',
+  })
+  expect(
+    decode(
+      await f.service({ ...body, outcome: 'insufficient_evidence' }, new AbortController().signal),
+    ),
+  ).toMatchObject({ outcome: 'insufficient_evidence' })
 })
 it('rejects changed evidence, invalid requests and cancellation without writing', async () => {
   const f = await setup()

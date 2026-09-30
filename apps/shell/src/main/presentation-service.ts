@@ -178,6 +178,7 @@ const errorCodes = new Set([
   'evidence_changed',
   'evidence_excerpt_not_found',
   'evidence_locator_mismatch',
+  'evidence_image_backed_unverified',
   'attachment_conflict',
   'revision_conflict',
   'quota_exceeded',
