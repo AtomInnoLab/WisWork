@@ -531,6 +531,20 @@ export class PresentationLifecycleStore {
     }
     return paths.at(-1)!
   }
+  private isTombstone(raw: unknown, s: PresentationLifecycleScope): boolean {
+    if (!plain(raw) || raw.version !== 2) return false
+    if (
+      !exact(raw, ['version', 'state', 'projectHash', 'documentHash', 'prunedAt']) ||
+      raw.state !== 'deleted' ||
+      raw.projectHash !== hash(s.projectId) ||
+      !date(raw.prunedAt) ||
+      typeof raw.documentHash !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(raw.documentHash)
+    )
+      invalid('invalid_state')
+    if (raw.documentHash !== hash(s.documentId)) invalid('document_mismatch')
+    return true
+  }
   read(input: PresentationLifecycleScope): PresentationLifecycleRecord | undefined {
     const s = owned(input)
     scope(s)
@@ -538,6 +552,7 @@ export class PresentationLifecycleStore {
     if (!directory) return undefined
     const raw = readJson(join(directory, 'lifecycle.json'), ancestors(directory))
     if (raw === undefined) return undefined
+    if (this.isTombstone(raw, s)) invalid('project_deleted')
     const record = parsePresentationLifecycle(raw)
     if (record.projectId !== s.projectId) invalid('invalid_state')
     if (record.documentId !== s.documentId) invalid('document_mismatch')
@@ -551,10 +566,47 @@ export class PresentationLifecycleStore {
     if (!directory) return undefined
     const raw = readJson(join(directory, 'lifecycle.json'), ancestors(directory))
     if (raw === undefined) return undefined
+    if (this.isTombstone(raw, s)) invalid('project_deleted')
     const record = parsePresentationLifecycle(raw)
     if (record.projectId !== s.projectId) invalid('invalid_state')
     if (record.documentId !== s.documentId) invalid('document_mismatch')
     return record
+  }
+  /** Prune only a completed audit after its configured interval; keep a hashed anti-revival marker. */
+  pruneExpiredAudit(input: PresentationLifecycleScope, now: Date = new Date()): boolean {
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) invalid()
+    return this.transaction(input, (s) => {
+      const directory = this.directory(s, false, false)
+      if (!directory) return false
+      const parents = ancestors(directory)
+      const legacyPath = join(directory, 'lifecycle.json')
+      const raw = readJson(legacyPath, parents)
+      if (raw === undefined) return false
+      if (this.isTombstone(raw, s)) return false
+      const r = parsePresentationLifecycle(raw)
+      if (r.projectId !== s.projectId) invalid('invalid_state')
+      if (r.documentId !== s.documentId) invalid('document_mismatch')
+      const days = r.policy.auditRetentionDays
+      if (
+        r.state !== 'deleted' ||
+        days === null ||
+        now.getTime() < Date.parse(r.updatedAt) ||
+        now.getTime() - Date.parse(r.updatedAt) < days * 86400000
+      )
+        return false
+      writeJson(
+        legacyPath,
+        {
+          version: 2,
+          state: 'deleted',
+          projectHash: hash(s.projectId),
+          documentHash: hash(s.documentId),
+          prunedAt: now.toISOString(),
+        },
+        parents,
+      )
+      return true
+    })
   }
   private transaction<T>(
     input: PresentationLifecycleScope,

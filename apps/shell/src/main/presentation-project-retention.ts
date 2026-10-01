@@ -117,9 +117,9 @@ export function createPresentationProjectRetentionService(options: {
   let running = false
   return {
     async tick() {
-      if (running) return { considered: 0, started: 0, resumed: 0, skipped: 0 }
+      if (running) return { considered: 0, started: 0, resumed: 0, pruned: 0, skipped: 0 }
       running = true
-      const counts = { considered: 0, started: 0, resumed: 0, skipped: 0 }
+      const counts = { considered: 0, started: 0, resumed: 0, pruned: 0, skipped: 0 }
       try {
         const now = (options.now ?? (() => new Date()))()
         if (!(now instanceof Date) || !Number.isFinite(now.getTime()))
@@ -127,6 +127,10 @@ export function createPresentationProjectRetentionService(options: {
         for (const scope of controlScopes(root)) {
           counts.considered++
           try {
+            if (life.pruneExpiredAudit(scope, now)) {
+              counts.pruned++
+              continue
+            }
             const record = life.readControl(scope)
             if (!record) {
               counts.skipped++

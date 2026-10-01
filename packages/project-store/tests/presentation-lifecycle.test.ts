@@ -202,6 +202,78 @@ it('exports bounded minimal anonymous audit without private identifiers, paths, 
     counts: { failed: 1 },
   })
 })
+it('expires a completed anonymous audit while retaining an irreversible identity tombstone', () => {
+  const f = fixture()
+  const initial = f.store.initialize(f.scope)
+  const policy = f.store.setPolicy(f.scope, initial.revision, {
+    contentRetentionDays: null,
+    auditRetentionDays: 1,
+  })
+  const started = f.store.beginDeletion(f.scope, policy.revision, {
+    deletionId: 'delete',
+    reason: 'user',
+    resources: [resource()],
+  })
+  const result = f.store.recordDeletionResult(f.scope, started.revision, {
+    deletionId: 'delete',
+    resourceId: 'own',
+    status: 'removed',
+  })
+  const deleted = f.store.finishDeletion(f.scope, result.revision, 'delete')
+  const directory = join(
+    f.root,
+    'presentation-project-lifecycles',
+    createHash('sha256').update(f.scope.projectId).digest('hex'),
+  )
+  expect(
+    f.store.pruneExpiredAudit(f.scope, new Date(Date.parse(deleted.updatedAt) + 86400000 - 1)),
+  ).toBe(false)
+  expect(
+    f.store.pruneExpiredAudit(f.scope, new Date(Date.parse(deleted.updatedAt) + 86400000)),
+  ).toBe(true)
+  expect(readdirSync(directory)).toEqual(['lifecycle.json'])
+  const marker = readFileSync(join(directory, 'lifecycle.json'), 'utf8')
+  expect(marker).not.toContain(f.scope.projectId + '"')
+  expect(marker).not.toContain(f.scope.documentId)
+  expect(marker).not.toContain('"deletionId"')
+  expect(marker).not.toContain('"resourceId"')
+  expect(() => parsePresentationLifecycle(JSON.parse(marker))).toThrow('invalid_state')
+  expect(() => f.store.readControl(f.scope)).toThrow('project_deleted')
+  expect(() => f.store.initialize(f.scope)).toThrow('project_deleted')
+  expect(() => f.store.exportAudit(f.scope)).toThrow('project_deleted')
+  expect(() => f.store.readControl({ ...f.scope, documentId: 'other' })).toThrow(
+    'document_mismatch',
+  )
+  expect(
+    f.store.pruneExpiredAudit(f.scope, new Date(Date.parse(deleted.updatedAt) + 86400000)),
+  ).toBe(false)
+})
+it('retains the old audit when atomic tombstone publication fails and retries cleanly', () => {
+  const f = fixture()
+  const initial = f.store.initialize(f.scope, {
+    contentRetentionDays: null,
+    auditRetentionDays: 1,
+  })
+  const started = f.store.beginDeletion(f.scope, initial.revision, {
+    deletionId: 'delete',
+    reason: 'user',
+    resources: [resource()],
+  })
+  const result = f.store.recordDeletionResult(f.scope, started.revision, {
+    deletionId: 'delete',
+    resourceId: 'own',
+    status: 'removed',
+  })
+  const deleted = f.store.finishDeletion(f.scope, result.revision, 'delete')
+  const now = new Date(Date.parse(deleted.updatedAt) + 86400000)
+  vi.mocked(renameSync).mockImplementationOnce(() => {
+    throw Error('simulated_rename_failure')
+  })
+  expect(() => f.store.pruneExpiredAudit(f.scope, now)).toThrow('simulated_rename_failure')
+  expect(f.store.exportAudit(f.scope).events.at(-1)?.action).toBe('deletion_finished')
+  expect(f.store.pruneExpiredAudit(f.scope, now)).toBe(true)
+  expect(() => f.store.initialize(f.scope)).toThrow('project_deleted')
+})
 it.each([
   { contentRetentionDays: 0, auditRetentionDays: null },
   { contentRetentionDays: null, auditRetentionDays: 36501 },

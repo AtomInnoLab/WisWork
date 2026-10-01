@@ -55,7 +55,13 @@ function fixture() {
 it('never cleans an existing project with the default null content policy', async () => {
   const f = fixture()
   f.life.initialize(f.scope)
-  expect(await f.make().tick()).toEqual({ considered: 1, started: 0, resumed: 0, skipped: 1 })
+  expect(await f.make().tick()).toEqual({
+    considered: 1,
+    started: 0,
+    resumed: 0,
+    pruned: 0,
+    skipped: 1,
+  })
   expect(f.store.projectScope(f.scope.projectId, f.scope.documentId)).toEqual(f.scope)
   expect(f.life.read(f.scope)?.state).toBe('active')
 })
@@ -68,12 +74,26 @@ it('starts an expired saved policy through the durable retention deletion intent
     auditRetentionDays: null,
   })
   const result = await f.make().tick()
-  expect(result).toEqual({ considered: 1, started: 1, resumed: 0, skipped: 0 })
+  expect(result).toEqual({ considered: 1, started: 1, resumed: 0, pruned: 0, skipped: 0 })
   const tombstone = f.life.readControl(f.scope)
   expect(tombstone?.state).toBe('deleted')
   expect(tombstone?.deletion?.reason).toBe('retention')
   expect(f.store.projectScope(f.scope.projectId, f.scope.documentId)).toBeUndefined()
   expect(existsSync(f.root)).toBe(true)
+})
+
+it('prunes expired anonymous audit after content deletion without reviving the project', async () => {
+  const f = fixture()
+  const initial = f.life.initialize(f.scope)
+  f.life.setPolicy(f.scope, initial.revision, {
+    contentRetentionDays: 30,
+    auditRetentionDays: 1,
+  })
+  expect((await f.make().tick()).started).toBe(1)
+  expect((await f.make().tick()).pruned).toBe(1)
+  expect(() => f.life.initialize(f.scope)).toThrow('project_deleted')
+  expect(() => f.life.exportAudit(f.scope)).toThrow('project_deleted')
+  expect((await f.make().tick()).considered).toBe(0)
 })
 
 it('waits until the actual content activity exceeds the saved retention interval', async () => {
@@ -83,7 +103,13 @@ it('waits until the actual content activity exceeds the saved retention interval
     contentRetentionDays: 60,
     auditRetentionDays: null,
   })
-  expect(await f.make().tick()).toEqual({ considered: 1, started: 0, resumed: 0, skipped: 1 })
+  expect(await f.make().tick()).toEqual({
+    considered: 1,
+    started: 0,
+    resumed: 0,
+    pruned: 0,
+    skipped: 1,
+  })
   expect(f.store.projectScope(f.scope.projectId, f.scope.documentId)).toEqual(f.scope)
 })
 
@@ -96,7 +122,13 @@ it('skips an expired project while its actual foreground work is registered', as
   })
   const work = registerPresentationProjectWork({ scope: { root: f.root, ...f.scope } })
   try {
-    expect(await f.make().tick()).toEqual({ considered: 1, started: 0, resumed: 0, skipped: 1 })
+    expect(await f.make().tick()).toEqual({
+      considered: 1,
+      started: 0,
+      resumed: 0,
+      pruned: 0,
+      skipped: 1,
+    })
     expect(f.life.read(f.scope)?.state).toBe('active')
   } finally {
     work.finish()
@@ -111,7 +143,13 @@ it('never follows a symlinked control directory during enumeration', async () =>
   const name = createHash('sha256').update('external').digest('hex')
   mkdirSync(join(f.root, 'presentation-project-lifecycles'))
   symlinkSync(external, join(f.root, 'presentation-project-lifecycles', name))
-  expect(await f.make().tick()).toEqual({ considered: 0, started: 0, resumed: 0, skipped: 0 })
+  expect(await f.make().tick()).toEqual({
+    considered: 0,
+    started: 0,
+    resumed: 0,
+    pruned: 0,
+    skipped: 0,
+  })
   expect(existsSync(external)).toBe(true)
 })
 
@@ -131,7 +169,13 @@ it('resumes the original durable retention intent after an interrupted pass', as
       { resourceId: project.resourceId, kind: 'project', ownership: 'project_exclusive' },
     ],
   })
-  expect(await f.make().tick()).toEqual({ considered: 1, started: 0, resumed: 1, skipped: 0 })
+  expect(await f.make().tick()).toEqual({
+    considered: 1,
+    started: 0,
+    resumed: 1,
+    pruned: 0,
+    skipped: 0,
+  })
   expect(f.life.readControl(f.scope)?.deletion?.deletionId).toBe('original_retention')
   expect(f.life.readControl(f.scope)?.state).toBe('deleted')
 })

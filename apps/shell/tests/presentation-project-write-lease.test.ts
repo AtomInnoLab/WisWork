@@ -59,6 +59,32 @@ it('rejects deleting and reopened deleted tombstones without reviving them', () 
   )
   expect(reopened.read(f.scope)?.state).toBe('deleted')
 })
+it('keeps project read, write and creation leases closed after anonymous audit expiry', () => {
+  const f = fixture()
+  f.store.initialize(f.scope, { contentRetentionDays: null, auditRetentionDays: 1 })
+  f.store.beginDeletion(f.scope, 0, {
+    deletionId: 'delete',
+    reason: 'user',
+    resources: [{ resourceId: 'own', kind: 'project', ownership: 'project_exclusive' }],
+  })
+  f.store.recordDeletionResult(f.scope, 1, {
+    deletionId: 'delete',
+    resourceId: 'own',
+    status: 'removed',
+  })
+  const deleted = f.store.finishDeletion(f.scope, 2, 'delete')
+  f.store.pruneExpiredAudit(f.scope, new Date(Date.parse(deleted.updatedAt) + 86400000))
+  const reopened = new PresentationLifecycleStore(f.root)
+  expect(() => capturePresentationProjectReadLease({ ...f, store: reopened })).toThrow(
+    'project_deleted',
+  )
+  expect(() => capturePresentationProjectWriteLease({ ...f, store: reopened })).toThrow(
+    'project_deleted',
+  )
+  expect(() => capturePresentationProjectCreationLease({ ...f, store: reopened })).toThrow(
+    'project_deleted',
+  )
+})
 it('checks cancellation at admission and on every write assertion', () => {
   const f = fixture(),
     abort = new AbortController()
