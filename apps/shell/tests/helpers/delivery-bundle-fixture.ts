@@ -67,6 +67,25 @@ export async function deliveryBundleFixture(
     ),
   )
   modify?.(files)
+  if (
+    files.get('quality.json')?.toString() === 'historical not verified' &&
+    [...files.keys()].some((name) => /^page-\d+\.png$/.test(name))
+  )
+    files.set(
+      'quality.json',
+      Buffer.from(
+        JSON.stringify({
+          currentHostScreenshots: [...files]
+            .filter(([name]) => /^page-\d+\.png$/.test(name))
+            .map(([name, bytes]) => ({
+              pageNo: Number(name.slice(5, -4)),
+              hostSlideId: `host-${name.slice(5, -4)}`,
+              capturedAt: new Date().toISOString(),
+              sha256: hash(bytes),
+            })),
+        }),
+      ),
+    )
   const manifest = {
     version: 1 as const,
     scope: 'current_office_document' as const,

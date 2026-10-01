@@ -642,6 +642,28 @@ export function createPresentationDeliveryBundleService(options: {
           const count = presentationDeliveryScreenshotFiles.filter((name) => files.has(name)).length
           if (count !== (await pptxSlideCount(files.get('presentation.pptx')!)))
             fail('invalid_state')
+          const quality = JSON.parse(files.get('quality.json')!.toString()) as {
+            currentHostScreenshots?: unknown
+          }
+          const shots = quality?.currentHostScreenshots
+          if (!Array.isArray(shots) || shots.length !== count) fail('invalid_state')
+          for (let index = 0; index < count; index++) {
+            const shot = shots[index] as Record<string, unknown> | undefined
+            const name = presentationDeliveryScreenshotFiles[index]!
+            if (
+              !shot ||
+              Object.keys(shot).sort().join(',') !== 'capturedAt,hostSlideId,pageNo,sha256' ||
+              shot.pageNo !== index + 1 ||
+              typeof shot.hostSlideId !== 'string' ||
+              !shot.hostSlideId ||
+              shot.hostSlideId.length > 256 ||
+              typeof shot.capturedAt !== 'string' ||
+              !Number.isFinite(Date.parse(shot.capturedAt)) ||
+              new Date(shot.capturedAt).toISOString() !== shot.capturedAt ||
+              shot.sha256 !== hash(files.get(name)!)
+            )
+              fail('invalid_state')
+          }
         }
         check(signal)
         const ready = {

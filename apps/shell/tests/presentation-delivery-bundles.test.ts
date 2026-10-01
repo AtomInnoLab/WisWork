@@ -128,6 +128,29 @@ it('accepts complete screenshots for a real compiled eight-page PPTX', async () 
   await f.upload()
   expect(parsePresentationDeliveryBundleReceipt(await f.call('finish')).state).toBe('ready')
 })
+it('rejects screenshot metadata whose digest disagrees with the actual image', async () => {
+  const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+  const pptx = await pptxWithPages(3)
+  const f = await fixture((files) => {
+    files.set('presentation.pptx', pptx)
+    for (let page = 1; page <= 3; page++) files.set(`page-${page}.png`, png)
+    files.set(
+      'quality.json',
+      Buffer.from(
+        JSON.stringify({
+          currentHostScreenshots: Array.from({ length: 3 }, (_, index) => ({
+            pageNo: index + 1,
+            hostSlideId: `host-${index + 1}`,
+            capturedAt: new Date().toISOString(),
+            sha256: index === 2 ? '0'.repeat(64) : hash(png),
+          })),
+        }),
+      ),
+    )
+  })
+  await f.upload()
+  await expect(f.call('finish')).rejects.toThrow('invalid_state')
+})
 it('rejects overlap conflict, mismatched identity and frozen evidence before publication', async () => {
   const f = await fixture((files) => {
     const v = JSON.parse(files.get('evidence.json')!.toString())
