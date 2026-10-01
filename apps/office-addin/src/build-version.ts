@@ -31,8 +31,14 @@ export async function deployedBuildId(fetcher: typeof fetch = fetch): Promise<st
         if (!response.ok) return undefined
         const payload: unknown = await response.json()
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined
-        const buildId = (payload as Record<string, unknown>).buildId
-        return typeof buildId === 'string' && BUILD_ID.test(buildId) ? buildId : undefined
+        const metadata = payload as Record<string, unknown>
+        const buildId = metadata.buildId
+        return typeof buildId === 'string' &&
+          BUILD_ID.test(buildId) &&
+          metadata.presentationMinPcProtocol === 2 &&
+          metadata.presentationMinRelayProtocol === 2
+          ? buildId
+          : undefined
       })(),
       new Promise<undefined>((resolve) => {
         timer = setTimeout(() => {

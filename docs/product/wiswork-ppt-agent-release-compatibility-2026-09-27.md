@@ -1,5 +1,7 @@
 # PPT Agent 发布兼容矩阵（工程证据）
 
+2026-10-01 本机补充：生产 Taskpane 启动读取 `version.json` 时也要求 PC/Relay 的 PPT 最低协议字段均为 v2；任一缺失或不兼容均进入可重试的版本未核实状态，阻止文档工具和 PC 连接入口。重新构建的 Taskpane 已通过本机 Electron PC + Rust Relay 端到端冒烟，真实 PowerPoint 宿主仍待验收。
+
 2026-10-01 本机补充：Office 发布包的 `version.json` 明确写入 `presentationMinPcProtocol: 2` 和 `presentationMinRelayProtocol: 2`，作为 PPT 功能的最低协议版本；旧版 `agent.v1` 基础会话仍按下表兼容。发布预检要求这两个字段均为 2，并逐一对比部署站点元数据，避免发布包与站点声明不一致。构建产物测试、Office 类型检查和发布预检 18/18 已在本机通过。
 
 2026-10-01 本机补充：发布预检把 `taskpane.html` 的全部 `modulepreload` 引用纳入校验，与团队登录两页一致；缺文件或外域/非哈希路径均拒绝。预检还从发布包内 JS/MJS 的相对动态/静态导入及根路径或相对 Worker URL、CSS 的根路径或相对 URL 收集运行时依赖，要求引用文件存在且符合哈希命名。缺失分包、Worker 和图片用例均被拒绝，预检测试 18/18 通过；设置本机 HTTPS 测试 Origin 后构建的 17 个发布文件通过完整检查。未设置 `VITE_WISWORK_ADDIN_ORIGIN` 的普通本地构建不会生成发布 Manifest，不作为完整发布包。

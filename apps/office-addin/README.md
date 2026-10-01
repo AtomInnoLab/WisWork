@@ -124,10 +124,12 @@ while testing Electron PC, Rust Relay, Taskpane, eight-page production and recov
 Chrome are simulated; this does not replace a real PowerPoint save/reopen check.
 
 The build also emits `dist/version.json` with the same build ID compiled into the Taskpane,
-plus the configured presentation rollout and remote diagnostic sample percentages.
+the configured presentation rollout and remote diagnostic sample percentages, and the minimum
+PC/Relay protocol versions required for PPT features.
 Serve `version.json` and `taskpane.html` without stale caches, and deploy them atomically with
 their hashed `assets/` files. On Taskpane startup, a mismatched build ID asks the user to reload
-with a build-specific URL; an older deployment without `version.json` remains usable. The check
+with a build-specific URL. A production deployment without valid `version.json` or the required
+protocol fields keeps document tools disabled until the version check succeeds. The check
 does not interrupt a Taskpane that is already running. A version match is only an asset-version
 check; protocol capabilities and real Office compatibility still need separate release testing.
 

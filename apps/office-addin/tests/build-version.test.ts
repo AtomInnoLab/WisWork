@@ -6,7 +6,16 @@ afterEach(() => vi.useRealTimers())
 
 describe('deployedBuildId', () => {
   it('reads a valid same-origin build without cache', async () => {
-    const fetcher = vi.fn(async () => new Response(JSON.stringify({ buildId: 'release_123' })))
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            buildId: 'release_123',
+            presentationMinPcProtocol: 2,
+            presentationMinRelayProtocol: 2,
+          }),
+        ),
+    )
     expect(await deployedBuildId(fetcher as typeof fetch)).toBe('release_123')
     expect(fetcher).toHaveBeenCalledWith(new URL('https://office.example/version.json'), {
       cache: 'no-store',
@@ -23,6 +32,14 @@ describe('deployedBuildId', () => {
       ).toBeUndefined()
     },
   )
+
+  it.each([
+    { buildId: 'release_123' },
+    { buildId: 'release_123', presentationMinPcProtocol: 1, presentationMinRelayProtocol: 2 },
+    { buildId: 'release_123', presentationMinPcProtocol: 2, presentationMinRelayProtocol: 1 },
+  ])('rejects missing or incompatible PPT protocol metadata: %j', async (payload) => {
+    expect(await deployedBuildId(async () => new Response(JSON.stringify(payload)))).toBeUndefined()
+  })
 
   it('allows older deployments without metadata', async () => {
     expect(await deployedBuildId(async () => new Response('', { status: 404 }))).toBeUndefined()
