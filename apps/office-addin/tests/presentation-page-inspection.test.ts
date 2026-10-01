@@ -184,6 +184,24 @@ describe('exact imported PowerPoint page inspection', () => {
       [960, 640, 480, 320, 240].map((width) => [{ width }]),
     )
   })
+  it('rejects a resized screenshot when the native page geometry changes during recapture', async () => {
+    const { adapter, slide, shapes, context } = setup([shape('moving', 10, 10)])
+    const dense = new PNG({ width: 400, height: 200 })
+    let seed = 7
+    for (let i = 0; i < dense.data.length; i++) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+      dense.data[i] = seed >>> 24
+    }
+    slide.getImageAsBase64.mockReturnValueOnce({ value: PNG.sync.write(dense).toString('base64') })
+    context.sync
+      .mockImplementationOnce(async () => {})
+      .mockImplementationOnce(async () => {
+        shapes.items[0]!.left = 50
+      })
+    await expect(adapter.inspectPresentationPage('host-page-25')).rejects.toThrow(
+      'office_concurrent_change',
+    )
+  })
   it('inspects 120 shapes and marks overlap truncation instead of returning a clean result', async () => {
     const { adapter } = setup(Array.from({ length: 120 }, (_, i) => shape(String(i))))
     const result = await adapter.inspectPresentationPage('host-page-25')

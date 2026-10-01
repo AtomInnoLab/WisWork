@@ -1660,6 +1660,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           slideHeight <= 0
         )
           throw new Error('office_read_failed')
+        const shapeCount = collection.items.length
         const raw = (collection.items as RuntimeRecord[]).slice(0, MAX_POWERPOINT_SHAPES)
         for (const shape of raw) {
           if (
@@ -1733,8 +1734,10 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         // Keep a single PNG well below the Office transport's 256 KiB total request limit.
         // Use the same deterministic widths when recapturing for a review.
         const fitsModelBudget = () => atob(base64).length <= 64 * 1024
+        let recaptured = false
         for (const width of fallbackBase64 ? [] : [640, 480, 320, 240]) {
           if (fitsModelBudget()) break
+          recaptured = true
           const smaller = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)(
             {
               width,
@@ -1744,6 +1747,22 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           base64 = screenshot(smaller.value)
         }
         if (!fitsModelBudget()) throw new Error('office_image_too_large')
+        if (recaptured) {
+          ;(slide.load as (properties: string) => void)('id')
+          ;(pageSetup.load as (properties: string[]) => void)(['slideWidth', 'slideHeight'])
+          loadShapes(collection, MAX_POWERPOINT_SHAPES)
+          await sync(context, signal)
+          if (
+            slide.id !== slideId ||
+            pageSetup.slideWidth !== slideWidth ||
+            pageSetup.slideHeight !== slideHeight ||
+            !Array.isArray(collection.items) ||
+            collection.items.length !== shapeCount ||
+            JSON.stringify(collection.items.slice(0, MAX_POWERPOINT_SHAPES).map(shapeInfo)) !==
+              JSON.stringify(shapes)
+          )
+            throw new Error('office_concurrent_change')
+        }
         cancelled(signal)
         return {
           slideId,
