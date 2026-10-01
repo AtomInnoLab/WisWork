@@ -1,0 +1,975 @@
+{
+  "version": 1,
+  "id": "p0-12-branded-research-candidate",
+  "title": "编程培训与生物医学工作流可复现性：品牌汇报候选",
+  "style": {
+    "fontFace": "WisWork Benchmark Display 2026",
+    "fontFallbacks": [
+      "Noto Sans CJK SC"
+    ],
+    "background": "FFFFFF",
+    "textColor": "102A43",
+    "accentColor": "007F86"
+  },
+  "assets": [],
+  "claims": [
+    {
+      "id": "sample",
+      "text": "培训前 14 人、三个月后 12 人",
+      "source": "doi:10.1371/journal.pone.0230697",
+      "locator": "第 5 页"
+    },
+    {
+      "id": "score",
+      "text": "均分 1.6/6 到 2.2/6；p=0.318",
+      "source": "doi:10.1371/journal.pone.0230697",
+      "locator": "第 5 页"
+    },
+    {
+      "id": "open-source",
+      "text": "开源软件使用 7/14 到 10/12",
+      "source": "doi:10.1371/journal.pone.0230697",
+      "locator": "第 5 页"
+    },
+    {
+      "id": "limitations",
+      "text": "小样本、选择/应答、单人编码和功效限制",
+      "source": "doi:10.1371/journal.pone.0230697",
+      "locator": "第 9 页"
+    },
+    {
+      "id": "checklist-six",
+      "text": "S1 Checklist 列出六项可复现实践，空白表本身不提供参与者个体原始分数。",
+      "source": "local:deardorff-2020-checklist.pdf",
+      "locator": "PDF 第 1 页 / Reproducibility Score Card"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "科研工作流可复现性：编程培训观察",
+      "claimIds": [],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "cover-title",
+          "x": 1.03,
+          "y": 1.65,
+          "w": 10.8,
+          "h": 1,
+          "text": "科研工作流可复现性：编程培训观察",
+          "fontSize": 29,
+          "bold": true
+        },
+        {
+          "kind": "text",
+          "id": "cover-subtitle",
+          "x": 1.03,
+          "y": 2.85,
+          "w": 10.8,
+          "h": 0.5,
+          "text": "PLOS ONE 原文与 S1 Checklist · 品牌模板约束 · 科学审阅待完成",
+          "fontSize": 18
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.65,
+          "w": 11.4,
+          "h": 0.24,
+          "text": "Deardorff 2020 · PLOS ONE · CC BY 4.0 · 研究与品牌审阅待完成",
+          "fontSize": 9
+        },
+        {
+          "id": "brand-bar",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.16,
+          "fill": "007F86",
+          "lineColor": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "brand-label",
+          "kind": "text",
+          "text": "WW  /  RESEARCH",
+          "x": 0.62,
+          "y": 0.3,
+          "w": 3,
+          "h": 0.3,
+          "fontSize": 10,
+          "color": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "cover-rule",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0.62,
+          "y": 1.18,
+          "w": 0.16,
+          "h": 4.6,
+          "fill": "007F86",
+          "lineColor": "007F86",
+          "role": "decoration"
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "问题与研究范围",
+      "claimIds": [],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "id": "content-panel",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0.62,
+          "y": 1.9,
+          "w": 7.05,
+          "h": 4.55,
+          "fill": "E8F5F3",
+          "lineColor": "E8F5F3",
+          "role": "background"
+        },
+        {
+          "kind": "text",
+          "id": "content-title",
+          "x": 0.62,
+          "y": 0.94,
+          "w": 11.6,
+          "h": 0.7,
+          "text": "问题与研究范围",
+          "fontSize": 26,
+          "bold": true
+        },
+        {
+          "kind": "text",
+          "id": "content-body",
+          "x": 0.9,
+          "y": 2.17,
+          "w": 6.4,
+          "h": 3.8,
+          "text": "问题：入门编程培训后，研究人员的可复现工作流实践出现了哪些自述变化？研究对象和结论限于这项小样本观察。",
+          "fontSize": 18
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.65,
+          "w": 11.4,
+          "h": 0.24,
+          "text": "Deardorff 2020 · PLOS ONE · CC BY 4.0 · 研究与品牌审阅待完成",
+          "fontSize": 9
+        },
+        {
+          "id": "brand-bar",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.16,
+          "fill": "007F86",
+          "lineColor": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "brand-label",
+          "kind": "text",
+          "text": "WW  /  RESEARCH",
+          "x": 0.62,
+          "y": 0.3,
+          "w": 3,
+          "h": 0.3,
+          "fontSize": 10,
+          "color": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "evidence-panel",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 8.05,
+          "y": 1.9,
+          "w": 4.63,
+          "h": 4.55,
+          "fill": "FFFFFF",
+          "lineColor": "D8E2E9",
+          "role": "background"
+        },
+        {
+          "id": "evidence-label",
+          "kind": "text",
+          "text": "原文证据",
+          "x": 8.38,
+          "y": 2.35,
+          "w": 3.95,
+          "h": 0.42,
+          "fontSize": 18,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "evidence-key",
+          "kind": "text",
+          "text": "观察范围",
+          "x": 8.38,
+          "y": 3.25,
+          "w": 3.75,
+          "h": 0.9,
+          "fontSize": 29,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "content-source",
+          "kind": "text",
+          "text": "PLOS ONE 原文\n只讨论本项小样本观察",
+          "x": 8.38,
+          "y": 5.45,
+          "w": 3.95,
+          "h": 0.55,
+          "fontSize": 11
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "访谈设计与样本流失",
+      "claimIds": [
+        "sample"
+      ],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "id": "content-panel",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0.62,
+          "y": 1.9,
+          "w": 7.05,
+          "h": 4.55,
+          "fill": "E8F5F3",
+          "lineColor": "E8F5F3",
+          "role": "background"
+        },
+        {
+          "kind": "text",
+          "id": "content-title",
+          "x": 0.62,
+          "y": 0.94,
+          "w": 11.6,
+          "h": 0.7,
+          "text": "访谈设计与样本流失",
+          "fontSize": 26,
+          "bold": true
+        },
+        {
+          "kind": "text",
+          "id": "content-body",
+          "x": 0.9,
+          "y": 2.17,
+          "w": 6.4,
+          "h": 3.8,
+          "text": "培训前访谈 14 人，三个月后 12 人完成后访谈。分母不同，不能把两次计数直接视为同一批人的个体转变。",
+          "fontSize": 18
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.65,
+          "w": 11.4,
+          "h": 0.24,
+          "text": "Deardorff 2020 · PLOS ONE · CC BY 4.0 · 研究与品牌审阅待完成",
+          "fontSize": 9
+        },
+        {
+          "id": "brand-bar",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.16,
+          "fill": "007F86",
+          "lineColor": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "brand-label",
+          "kind": "text",
+          "text": "WW  /  RESEARCH",
+          "x": 0.62,
+          "y": 0.3,
+          "w": 3,
+          "h": 0.3,
+          "fontSize": 10,
+          "color": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "evidence-panel",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 8.05,
+          "y": 1.9,
+          "w": 4.63,
+          "h": 4.55,
+          "fill": "FFFFFF",
+          "lineColor": "D8E2E9",
+          "role": "background"
+        },
+        {
+          "id": "evidence-label",
+          "kind": "text",
+          "text": "原文证据",
+          "x": 8.38,
+          "y": 2.35,
+          "w": 3.95,
+          "h": 0.42,
+          "fontSize": 18,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "evidence-key",
+          "kind": "text",
+          "text": "14 → 12",
+          "x": 8.38,
+          "y": 3.25,
+          "w": 3.75,
+          "h": 0.9,
+          "fontSize": 29,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "content-source",
+          "kind": "text",
+          "text": "论文 PDF 第 5 页\n前测 14 人，后访 12 人",
+          "x": 8.38,
+          "y": 5.45,
+          "w": 3.95,
+          "h": 0.55,
+          "fontSize": 11
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "六项清单：测量什么",
+      "claimIds": [
+        "checklist-six"
+      ],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "id": "content-panel",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0.62,
+          "y": 1.9,
+          "w": 7.05,
+          "h": 4.55,
+          "fill": "E8F5F3",
+          "lineColor": "E8F5F3",
+          "role": "background"
+        },
+        {
+          "kind": "text",
+          "id": "content-title",
+          "x": 0.62,
+          "y": 0.94,
+          "w": 11.6,
+          "h": 0.7,
+          "text": "六项清单：测量什么",
+          "fontSize": 26,
+          "bold": true
+        },
+        {
+          "kind": "text",
+          "id": "content-body",
+          "x": 0.9,
+          "y": 2.17,
+          "w": 6.4,
+          "h": 3.8,
+          "text": "S1 Checklist 是六项可复现实践的空白测量表，不提供参与者个体原始分数。报告只使用论文已发表的汇总值。",
+          "fontSize": 18
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.65,
+          "w": 11.4,
+          "h": 0.24,
+          "text": "Deardorff 2020 · PLOS ONE · CC BY 4.0 · 研究与品牌审阅待完成",
+          "fontSize": 9
+        },
+        {
+          "id": "brand-bar",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.16,
+          "fill": "007F86",
+          "lineColor": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "brand-label",
+          "kind": "text",
+          "text": "WW  /  RESEARCH",
+          "x": 0.62,
+          "y": 0.3,
+          "w": 3,
+          "h": 0.3,
+          "fontSize": 10,
+          "color": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "evidence-panel",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 8.05,
+          "y": 1.9,
+          "w": 4.63,
+          "h": 4.55,
+          "fill": "FFFFFF",
+          "lineColor": "D8E2E9",
+          "role": "background"
+        },
+        {
+          "id": "evidence-label",
+          "kind": "text",
+          "text": "原文证据",
+          "x": 8.38,
+          "y": 2.35,
+          "w": 3.95,
+          "h": 0.42,
+          "fontSize": 18,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "evidence-key",
+          "kind": "text",
+          "text": "6 项实践",
+          "x": 8.38,
+          "y": 3.25,
+          "w": 3.75,
+          "h": 0.9,
+          "fontSize": 29,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "content-source",
+          "kind": "text",
+          "text": "S1 Checklist · PDF 第 1 页\n六项空白量表；无个人原始分数",
+          "x": 8.38,
+          "y": 5.45,
+          "w": 3.95,
+          "h": 0.55,
+          "fontSize": 11
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "清单均分：不可夸大变化",
+      "claimIds": [
+        "score"
+      ],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "id": "content-panel",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0.62,
+          "y": 1.9,
+          "w": 7.05,
+          "h": 4.55,
+          "fill": "E8F5F3",
+          "lineColor": "E8F5F3",
+          "role": "background"
+        },
+        {
+          "kind": "text",
+          "id": "content-title",
+          "x": 0.62,
+          "y": 0.94,
+          "w": 11.6,
+          "h": 0.7,
+          "text": "清单均分：不可夸大变化",
+          "fontSize": 26,
+          "bold": true
+        },
+        {
+          "kind": "text",
+          "id": "content-body",
+          "x": 0.9,
+          "y": 2.17,
+          "w": 6.4,
+          "h": 3.8,
+          "text": "六项清单均分从 1.6/6 到 2.2/6；论文报告差异未达统计显著（p = 0.318）。这不是培训因果效果的证明。",
+          "fontSize": 18
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.65,
+          "w": 11.4,
+          "h": 0.24,
+          "text": "Deardorff 2020 · PLOS ONE · CC BY 4.0 · 研究与品牌审阅待完成",
+          "fontSize": 9
+        },
+        {
+          "id": "brand-bar",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.16,
+          "fill": "007F86",
+          "lineColor": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "brand-label",
+          "kind": "text",
+          "text": "WW  /  RESEARCH",
+          "x": 0.62,
+          "y": 0.3,
+          "w": 3,
+          "h": 0.3,
+          "fontSize": 10,
+          "color": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "evidence-panel",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 8.05,
+          "y": 1.9,
+          "w": 4.63,
+          "h": 4.55,
+          "fill": "FFFFFF",
+          "lineColor": "D8E2E9",
+          "role": "background"
+        },
+        {
+          "id": "evidence-label",
+          "kind": "text",
+          "text": "原文证据",
+          "x": 8.38,
+          "y": 2.35,
+          "w": 3.95,
+          "h": 0.42,
+          "fontSize": 18,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "evidence-key",
+          "kind": "text",
+          "text": "p = 0.318",
+          "x": 8.38,
+          "y": 3.25,
+          "w": 3.75,
+          "h": 0.9,
+          "fontSize": 29,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "content-source",
+          "kind": "text",
+          "text": "论文 PDF 第 5 页\n均分 1.6/6 → 2.2/6；p=0.318",
+          "x": 8.38,
+          "y": 5.45,
+          "w": 3.95,
+          "h": 0.55,
+          "fontSize": 11
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "Table 1：开源工具使用",
+      "claimIds": [
+        "open-source"
+      ],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "id": "chart-panel",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0.62,
+          "y": 1.9,
+          "w": 12.05,
+          "h": 4.55,
+          "fill": "FFFFFF",
+          "lineColor": "D8E2E9",
+          "role": "background"
+        },
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.62,
+          "y": 0.94,
+          "w": 11.6,
+          "h": 0.7,
+          "text": "Table 1：开源工具使用",
+          "fontSize": 26,
+          "bold": true
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.82,
+          "w": 11.4,
+          "h": 0.72,
+          "text": "Table 1 中“使用开源软件”为培训前 7/14、三个月后 10/12。图中展示计数，横轴同时标出不同分母。",
+          "fontSize": 17
+        },
+        {
+          "kind": "chart",
+          "id": "table1-open-source-native",
+          "x": 1.05,
+          "y": 2.85,
+          "w": 10.9,
+          "h": 3.2,
+          "chartType": "bar",
+          "categories": [
+            "前测 n=14",
+            "三个月后 n=12"
+          ],
+          "series": [
+            {
+              "name": "报告使用开源软件的人数",
+              "values": [
+                7,
+                10
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.65,
+          "w": 11.4,
+          "h": 0.24,
+          "text": "Deardorff 2020 · PLOS ONE · CC BY 4.0 · 研究与品牌审阅待完成",
+          "fontSize": 9
+        },
+        {
+          "id": "brand-bar",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.16,
+          "fill": "007F86",
+          "lineColor": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "brand-label",
+          "kind": "text",
+          "text": "WW  /  RESEARCH",
+          "x": 0.62,
+          "y": 0.3,
+          "w": 3,
+          "h": 0.3,
+          "fontSize": 10,
+          "color": "007F86",
+          "role": "decoration"
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "定性观察与研究局限",
+      "claimIds": [
+        "limitations"
+      ],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "id": "content-panel",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0.62,
+          "y": 1.9,
+          "w": 7.05,
+          "h": 4.55,
+          "fill": "E8F5F3",
+          "lineColor": "E8F5F3",
+          "role": "background"
+        },
+        {
+          "kind": "text",
+          "id": "content-title",
+          "x": 0.62,
+          "y": 0.94,
+          "w": 11.6,
+          "h": 0.7,
+          "text": "定性观察与研究局限",
+          "fontSize": 26,
+          "bold": true
+        },
+        {
+          "kind": "text",
+          "id": "content-body",
+          "x": 0.9,
+          "y": 2.17,
+          "w": 6.4,
+          "h": 3.8,
+          "text": "访谈提示受访者对“分享代码”的理解可能改变。作者列出小样本、招募/应答偏差、单人编码与定量分析功效不足等局限。",
+          "fontSize": 18
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.65,
+          "w": 11.4,
+          "h": 0.24,
+          "text": "Deardorff 2020 · PLOS ONE · CC BY 4.0 · 研究与品牌审阅待完成",
+          "fontSize": 9
+        },
+        {
+          "id": "brand-bar",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.16,
+          "fill": "007F86",
+          "lineColor": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "brand-label",
+          "kind": "text",
+          "text": "WW  /  RESEARCH",
+          "x": 0.62,
+          "y": 0.3,
+          "w": 3,
+          "h": 0.3,
+          "fontSize": 10,
+          "color": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "evidence-panel",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 8.05,
+          "y": 1.9,
+          "w": 4.63,
+          "h": 4.55,
+          "fill": "FFFFFF",
+          "lineColor": "D8E2E9",
+          "role": "background"
+        },
+        {
+          "id": "evidence-label",
+          "kind": "text",
+          "text": "原文证据",
+          "x": 8.38,
+          "y": 2.35,
+          "w": 3.95,
+          "h": 0.42,
+          "fontSize": 18,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "evidence-key",
+          "kind": "text",
+          "text": "小样本",
+          "x": 8.38,
+          "y": 3.25,
+          "w": 3.75,
+          "h": 0.9,
+          "fontSize": 29,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "content-source",
+          "kind": "text",
+          "text": "论文 PDF 第 9 页\n作者列出小样本与分析局限",
+          "x": 8.38,
+          "y": 5.45,
+          "w": 3.95,
+          "h": 0.55,
+          "fontSize": 11
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "结论与待核验事项",
+      "claimIds": [],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.62,
+          "y": 0.94,
+          "w": 11.6,
+          "h": 0.7,
+          "text": "结论与待核验事项",
+          "fontSize": 26,
+          "bold": true
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 2.05,
+          "w": 11.4,
+          "h": 0.9,
+          "text": "可以报告受访者自述与清单汇总的变化；不能声称已证明普遍或因果效果。仍需科研审阅、真实 PowerPoint 的图表编辑与保存重开验收。",
+          "fontSize": 20
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.65,
+          "w": 11.4,
+          "h": 0.24,
+          "text": "Deardorff 2020 · PLOS ONE · CC BY 4.0 · 研究与品牌审阅待完成",
+          "fontSize": 9
+        },
+        {
+          "id": "brand-bar",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.16,
+          "fill": "007F86",
+          "lineColor": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "brand-label",
+          "kind": "text",
+          "text": "WW  /  RESEARCH",
+          "x": 0.62,
+          "y": 0.3,
+          "w": 3,
+          "h": 0.3,
+          "fontSize": 10,
+          "color": "007F86",
+          "role": "decoration"
+        },
+        {
+          "id": "conclusion-panel",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 0.9,
+          "y": 3.45,
+          "w": 5.55,
+          "h": 2.2,
+          "fill": "E8F5F3",
+          "lineColor": "D8E2E9",
+          "role": "background"
+        },
+        {
+          "id": "conclusion-label",
+          "kind": "text",
+          "text": "可陈述",
+          "x": 1.1,
+          "y": 3.72,
+          "w": 5.1,
+          "h": 0.4,
+          "fontSize": 17,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "conclusion-body",
+          "kind": "text",
+          "text": "自述与清单汇总出现变化；研究只支持受限描述。",
+          "x": 1.1,
+          "y": 4.3,
+          "w": 5.1,
+          "h": 1.03,
+          "fontSize": 16
+        },
+        {
+          "id": "review-panel",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 6.75,
+          "y": 3.45,
+          "w": 5.55,
+          "h": 2.2,
+          "fill": "E8F5F3",
+          "lineColor": "D8E2E9",
+          "role": "background"
+        },
+        {
+          "id": "review-label",
+          "kind": "text",
+          "text": "待核验",
+          "x": 6.95,
+          "y": 3.72,
+          "w": 5.1,
+          "h": 0.4,
+          "fontSize": 17,
+          "color": "007F86",
+          "bold": true
+        },
+        {
+          "id": "review-body",
+          "kind": "text",
+          "text": "科学解释、真实宿主字体、图表编辑与保存重开。",
+          "x": 6.95,
+          "y": 4.3,
+          "w": 5.1,
+          "h": 1.03,
+          "fontSize": 16
+        }
+      ]
+    }
+  ]
+}

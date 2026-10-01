@@ -47,7 +47,7 @@ const fallbackImage = p014Fallback ? await readFile(fallbackImagePath) : undefin
 const fallbackImageSha = fallbackImage
   ? createHash('sha256').update(fallbackImage).digest('hex')
   : undefined
-const batchCases = ['P0-05', 'P0-06', 'P0-07', 'P0-08', 'P0-15', 'P0-16', 'P0-18']
+const batchCases = ['P0-05', 'P0-06', 'P0-07', 'P0-08', 'P0-12', 'P0-15', 'P0-16', 'P0-18']
 const builtTaskpane = process.argv.includes('--built-taskpane')
 if (builtTaskpane) {
   const dist = join(root, 'apps/office-addin/dist')
@@ -410,12 +410,14 @@ try {
   const relayBundle = join(temp, 'office-relay-client.cjs')
   const poolBundle = join(temp, 'office-relay-pool.cjs')
   const compilerBundle = join(temp, 'presentation-compiler.cjs')
+  const fontBundle = join(temp, 'font-metrics.cjs')
   await build({
     entryPoints: {
       'presentation-service': join(root, 'apps/shell/src/main/presentation-service.ts'),
       'office-relay-client': join(root, 'apps/shell/src/main/office-relay-client.ts'),
       'office-relay-pool': join(root, 'apps/shell/src/main/office-relay-pool.ts'),
       'presentation-compiler': join(root, 'packages/pptx-engine/src/presentation-compiler.ts'),
+      'font-metrics': join(root, 'packages/font-metrics/src/metrics.ts'),
     },
     outdir: temp,
     outExtension: { '.js': '.cjs' },
@@ -451,6 +453,7 @@ const { createPresentationService } = require(${JSON.stringify(serviceBundle)})
 const { createOfficeRelayClient } = require(${JSON.stringify(relayBundle)})
 const { createOfficeRelayPool } = require(${JSON.stringify(poolBundle)})
 const { compilePresentationDeck } = require(${JSON.stringify(compilerBundle)})
+const { isInstalledFontFamily } = require(${JSON.stringify(fontBundle)})
 const documentId = ${JSON.stringify(documentId)}
 const projectId = ${JSON.stringify(projectId)}
 const concurrentDocuments = ${JSON.stringify(concurrentDocuments)}
@@ -478,7 +481,7 @@ app.whenReady().then(async () => {
         console.log('PRODUCTION_BLOCKED')
         await new Promise(() => {})
       }
-      return compilePresentationDeck(input, options)
+      return compilePresentationDeck(input, { ...options, fontAvailable: isInstalledFontFamily })
     },
   })
   const deck = ${JSON.stringify(deck)}
@@ -783,6 +786,15 @@ app.whenReady().then(async () => {
             },
             timeoutMs: caseName === 'P0-10' ? 120_000 : 60_000,
             sourceAttachments: bundle.sourceAttachments,
+            ...(caseName === 'P0-12'
+              ? {
+                  expectedFontResolution: {
+                    requested: 'WisWork Benchmark Display 2026',
+                    used: 'Noto Sans CJK SC',
+                    substituted: true,
+                  },
+                }
+              : {}),
             ...(p014Fallback
               ? { remoteImageCandidates: { urls: fallbackUrls, attachmentId: fallbackImageSha } }
               : {}),

@@ -1,6 +1,8 @@
 # PPT-P0-12 候选材料包：品牌模板与字体回退
 
-状态：**真实专业来源和自制品牌模板已冻结；品牌/科研审阅及真实 PowerPoint 执行未完成**。本包不计入 20 项任务通过数。
+状态：**真实专业来源、自制品牌模板和八页来源绑定候选已冻结；品牌/科研审阅及真实 PowerPoint 执行未完成**。本包不计入 20 项任务通过数。
+
+`generate-candidate.mjs` 使用本包两份 PDF、Brand Kit 和 P0-01 的冻结科研候选内容生成 `reference-plan.json`、`reference-deck.json`；额外为 S1 Checklist 建立独立来源与待审主张。八页采用模板封面和内容槽位，原生图表保持 7/14、10/12 的不同分母。`verify-candidate.mjs` 核对来源摘要、完整来源映射、槽位几何、字体候选和图表数据。本机 Electron PC + Rust Relay + 构建版 Taskpane 冒烟上传两份 PDF、生产八页并回读 PPTX/PDF；真实字体探针确认缺失的 `WisWork Benchmark Display 2026` 回退到已安装的 `Noto Sans CJK SC`。八页已用 LibreOffice 渲染逐页检查；该结果不证明真实 PowerPoint 字形或专业内容通过。
 
 ## 材料与授权
 

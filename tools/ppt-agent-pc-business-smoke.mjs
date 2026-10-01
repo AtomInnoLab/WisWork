@@ -809,6 +809,13 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
           typeof page.pptxBase64 !== 'string'
         )
           throw new Error('PC production page identity invalid')
+        if (
+          options.expectedFontResolution &&
+          (page.report?.fontResolution?.requested !== options.expectedFontResolution.requested ||
+            page.report.fontResolution.used !== options.expectedFontResolution.used ||
+            page.report.fontResolution.substituted !== options.expectedFontResolution.substituted)
+        )
+          throw new Error('PC production font fallback mismatch')
         const bytes = Buffer.from(page.pptxBase64, 'base64')
         if (
           !bytes.length ||
