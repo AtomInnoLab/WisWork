@@ -77,6 +77,22 @@ function taskpaneScript(html) {
   return entries[0].slice(1)
 }
 
+function modulePreloadReferences(html, page) {
+  const preloads = [...html.matchAll(/<link\b[^>]*>/g)]
+    .map(([element]) => ({
+      rel: element.match(/\brel=["']([^"']+)["']/)?.[1],
+      href: element.match(/\bhref=["']([^"']+)["']/)?.[1],
+    }))
+    .filter(({ rel }) => rel?.split(/\s+/).includes('modulepreload'))
+  if (
+    preloads.some(
+      ({ href }) => !/^\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{7,}\.js$/.test(href || ''),
+    )
+  )
+    throw new Error(`invalid Office ${page} preload reference`)
+  return preloads.map(({ href }) => href.slice(1))
+}
+
 function teamAuthReferences(html, page) {
   const entry = page === 'team-auth-start.html' ? 'teamAuthStart' : 'teamAuthCallback'
   const scripts = [...html.matchAll(/<script\b[^>]*>/g)].map(
@@ -92,19 +108,7 @@ function teamAuthReferences(html, page) {
       .length !== 1
   )
     throw new Error(`invalid Office ${page} script reference`)
-  const preloads = [...html.matchAll(/<link\b[^>]*>/g)]
-    .map(([element]) => ({
-      rel: element.match(/\brel=["']([^"']+)["']/)?.[1],
-      href: element.match(/\bhref=["']([^"']+)["']/)?.[1],
-    }))
-    .filter(({ rel }) => rel?.split(/\s+/).includes('modulepreload'))
-  if (
-    preloads.some(
-      ({ href }) => !/^\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{7,}\.js$/.test(href || ''),
-    )
-  )
-    throw new Error(`invalid Office ${page} preload reference`)
-  return [local[0].slice(1), ...preloads.map(({ href }) => href.slice(1))]
+  return [local[0].slice(1), ...modulePreloadReferences(html, page)]
 }
 
 function releaseAsset(path) {
@@ -136,7 +140,7 @@ export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
   const referenced = [...checkManifest(manifest, expectedOrigin), ...referencedStylesheets(html)]
   if (html.includes('__WISWORK_CONNECT_ORIGINS__')) throw new Error('unresolved connect policy')
   const entry = taskpaneScript(html)
-  referenced.push(entry)
+  referenced.push(entry, ...modulePreloadReferences(html, 'taskpane.html'))
   for (const page of releaseHtml.slice(1)) {
     const content = await readFile(resolve(dist, page), 'utf8')
     if (content.includes('__WISWORK_CONNECT_ORIGINS__'))

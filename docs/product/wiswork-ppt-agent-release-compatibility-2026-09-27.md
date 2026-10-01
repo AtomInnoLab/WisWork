@@ -1,5 +1,7 @@
 # PPT Agent 发布兼容矩阵（工程证据）
 
+2026-10-01 本机补充：发布预检现把 `taskpane.html` 的全部 `modulepreload` 引用纳入校验，与团队登录两页一致；缺文件或外域/非哈希路径均拒绝。预检测试 16/16 通过，设置本机 HTTPS 测试 Origin 后重新构建并核验 17 个发布文件。未设置 `VITE_WISWORK_ADDIN_ORIGIN` 的普通本地构建不会生成发布 Manifest，不作为完整发布包。
+
 依据[完整方案](./wiswork-ppt-agent-solution-and-implementation-plan-2026-09-22.md) §10 O6。此表描述当前协议实现和自动化证据，不代替 Windows/Mac PowerPoint Desktop/Web 的发布验收。
 
 本机 `node tools/ppt-agent-electron-real-relay-smoke.mjs` 还验证 Chrome Taskpane 发起真实 Relay 配对、从 Electron PC 读回已持久编译的项目，并在传输中断后续接会话、重新读取项目；Taskpane 重开后重新配对仍能恢复同一项目。浏览器使用 Office.js 测试宿主和协议帧传输桥；这项结果不覆盖发布域名的网络连接或真实 PowerPoint 宿主。

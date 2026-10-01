@@ -440,6 +440,27 @@ test('checks both team authentication pages and their hashed dependencies', asyn
   await assert.rejects(inspectOfficeBuild(dist, 'https://office.example'), /ENOENT/)
 })
 
+test('checks taskpane module preloads as release dependencies', async (t) => {
+  const dist = await artifact(t)
+  const taskpane =
+    '<script src="/assets/taskpane-AbC_123.js"></script><link rel="modulepreload" href="/assets/shared-AbC_123.js">'
+  await writeFile(resolve(dist, 'taskpane.html'), taskpane)
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /missing referenced asset: assets\/shared-AbC_123.js/,
+  )
+  await writeFile(resolve(dist, 'assets/shared-AbC_123.js'), 'export const shared = true')
+  await inspectOfficeBuild(dist, 'https://office.example')
+  await writeFile(
+    resolve(dist, 'taskpane.html'),
+    taskpane.replace('/assets/shared-AbC_123.js', 'https://other.example/shared.js'),
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /invalid Office taskpane.html preload reference/,
+  )
+})
+
 test('rejects unlisted and symlinked release files', async (t) => {
   const dist = await artifact(t)
   await writeFile(resolve(dist, 'assets/unexpected.map'), '{}')
