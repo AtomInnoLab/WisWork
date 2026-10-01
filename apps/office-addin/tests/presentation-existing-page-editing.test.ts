@@ -1,6 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { PNG } from 'pngjs'
 import { createPresentationChangesController } from '../src/agent/presentation-changes.js'
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill'
@@ -17,6 +19,7 @@ import type { PresentationPageReplacementInspection } from '../src/skills/powerp
 import type { InMemoryVfs } from '../src/skills/shared/vfs'
 import type { PresentationExistingChange } from '../src/skills/powerpoint/presentation-existing-change'
 import type { PresentationExistingBatch } from '../src/skills/powerpoint/presentation-existing-batch'
+import { createPresentationService } from '../../shell/src/main/presentation-service'
 
 vi.mock('../src/skills/powerpoint/powerpoint-package', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/skills/powerpoint/powerpoint-package')>()),
@@ -31,7 +34,11 @@ vi.mock('../src/skills/powerpoint/powerpoint-package', async (importOriginal) =>
 const binary = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
 const base64 = (value: Uint8Array) =>
   btoa(Array.from(value, (x) => String.fromCharCode(x)).join(''))
-afterEach(() => vi.unstubAllGlobals())
+const temporaryRoots: string[] = []
+afterEach(() => {
+  vi.unstubAllGlobals()
+  temporaryRoots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }))
+})
 
 it('keeps a frozen P0-19 three-object edit in one saved page transaction through undo', async () => {
   const material = new URL(
@@ -143,7 +150,13 @@ it('replaces only the frozen P0-13 page-four left picture through the saved page
   expect(pictures[0]).toContain('descr="自制示意图 7，非研究测量数据"')
   expect(pictures[1]).toContain('descr="自制示意图 8，非研究测量数据"')
   const targetId = /<p:cNvPr id="(\d+)"/.exec(pictures[0])![1]
-  const f = await fixture()
+  const root = mkdtempSync(join(tmpdir(), 'wiswork-p0-13-office-pc-'))
+  temporaryRoots.push(root)
+  let service = createPresentationService({ userDataPath: root })
+  const f = await fixture(
+    async (body, signal) =>
+      new Response(Buffer.from(await service(body, signal ?? new AbortController().signal))),
+  )
   f.changeBackup(original)
   f.setCurrentPage(original)
   f.preparedFiles.set('/home/user/schematic-12.png', replacement)
@@ -196,15 +209,48 @@ it('replaces only the frozen P0-13 page-four left picture through the saved page
     state: 'staged',
     pictureTarget: { shapeId: targetId },
   })
+  const saved = f.records.get(changeId)!
+  expect(saved.sourceBackup).toBeDefined()
+  service = createPresentationService({ userDataPath: root })
+  for (const [backup, expected] of [
+    [saved.backup, Buffer.from(original)],
+    [saved.sourceBackup!, Buffer.from(f.preparedFiles.get(revision.path)!)],
+  ] as const) {
+    const callPc = async (operation: string, extra: Record<string, unknown>) =>
+      JSON.parse(
+        Buffer.from(
+          await service(
+            { operation, documentId: 'doc', backupId: backup.backupId, ...extra },
+            new AbortController().signal,
+          ),
+        ).toString(),
+      ) as Record<string, unknown>
+    expect(await callPc('existing_page_backup_status', {})).toMatchObject({
+      status: 'ready',
+      sha256: backup.sha256,
+      sizeBytes: expected.length,
+    })
+    const chunks: Buffer[] = []
+    for (let offset = 0; offset < expected.length; offset += 128 * 1024) {
+      const part = await callPc('existing_page_backup_read', {
+        offset,
+        length: Math.min(128 * 1024, expected.length - offset),
+      })
+      chunks.push(Buffer.from(part.base64 as string, 'base64'))
+    }
+    expect(Buffer.concat(chunks).equals(expected)).toBe(true)
+  }
+  f.reopen()
   expect((await f.call('commit', { change_id: changeId })).isError).not.toBe(true)
   expect((await f.confirm()).status).toBe('confirmed')
   expect(f.records.get(changeId)?.state).toBe('applied')
   expect((await f.call('undo', { change_id: changeId })).isError).not.toBe(true)
   expect((await f.confirm()).status).toBe('confirmed')
   expect(f.records.get(changeId)?.state).toBe('undone')
-  expect(Buffer.from(f.data()).equals(Buffer.from(original))).toBe(true)
 })
-async function fixture() {
+async function fixture(
+  requestOverride?: (body: Record<string, unknown>, signal?: AbortSignal) => Promise<Response>,
+) {
   const make = async (text: string) => {
     const zip = new JSZip()
     zip.file(
@@ -322,8 +368,9 @@ async function fixture() {
   const backupStore = new Map<string, { meta: typeof defaultMeta; data: Uint8Array }>()
   let failCurrentBackup = false
   let onSourceRead: (() => void) | undefined
-  const request = vi.fn(async (body: unknown) => {
+  const request = vi.fn(async (body: unknown, signal?: AbortSignal) => {
     const input = body as Record<string, unknown>
+    if (requestOverride) return requestOverride(input, signal)
     const op = input.operation
     const entry = backupStore.get(String(input.backupId)) ?? {
       meta: { ...defaultMeta },
