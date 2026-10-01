@@ -36,4 +36,5 @@ for number in $(seq -w 1 20); do
   echo "PPT-P0-$number: local material checks passed"
 done
 
-echo "Summary: 20 candidate directories, $manifest_count hash manifests, $validator_count case validators passed. Professional review and PowerPoint host acceptance remain separate."
+node tools/verify-ppt-benchmark-remaining.mjs
+echo "Summary: 20 candidate directories, $manifest_count hash manifests, $validator_count case validators and 5 additional source/structure checks passed. Professional review and PowerPoint host acceptance remain separate."
