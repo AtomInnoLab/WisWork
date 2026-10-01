@@ -49,6 +49,35 @@ const root = () => mkdtempSync(join(tmpdir(), 'presentation-service-'))
 const result = () => ({ bytes: new Uint8Array([1, 2, 3]), report })
 
 describe('presentation service', () => {
+  it('cancels a project read queued behind compilation without releasing the active lock', async () => {
+    const userDataPath = root()
+    let started!: () => void
+    let finish!: (value: ReturnType<typeof result>) => void
+    const compiling = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const output = new Promise<ReturnType<typeof result>>((resolve) => {
+      finish = resolve
+    })
+    const compile = vi.fn(async () => {
+      started()
+      return output
+    })
+    const service = createPresentationService({ userDataPath, compile })
+    const first = service(input, signal())
+    await compiling
+    const read = { operation: 'get', projectId: 'deck', documentId: input.documentId }
+    const cancelled = new AbortController()
+    const second = service(read, cancelled.signal)
+    cancelled.abort()
+    expect(decode(await second)).toEqual({ error: 'aborted' })
+    const third = service(read, signal())
+    expect(compile).toHaveBeenCalledTimes(1)
+    finish(result())
+    expect(decode(await first)).toMatchObject({ status: 'compiled' })
+    expect(decode(await third)).toMatchObject({ status: 'compiled' })
+    expect(compile).toHaveBeenCalledTimes(1)
+  })
   it('deduplicates concurrent calls and persists full result across recreation', async () => {
     const userDataPath = root()
     const compile = vi.fn(async () => result())

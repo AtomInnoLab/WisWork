@@ -123,7 +123,11 @@ const ordinaryProjectWriteOperations = new Set([
 ])
 const MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 const locks = new Map<string, Promise<void>>()
-async function acquireProjectLock(root: string, projectId: string): Promise<() => void> {
+async function acquireProjectLock(
+  root: string,
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<() => void> {
   const key = `${resolve(root)}\0${projectId}`
   const previous = locks.get(key) ?? Promise.resolve()
   let release!: () => void
@@ -131,7 +135,27 @@ async function acquireProjectLock(root: string, projectId: string): Promise<() =
     release = done
   })
   locks.set(key, current)
-  await previous
+  let acquired = true
+  if (signal) {
+    acquired = signal.aborted
+      ? false
+      : await new Promise<boolean>((resolve) => {
+          const onAbort = () => resolve(false)
+          signal.addEventListener('abort', onAbort, { once: true })
+          void previous.then(() => {
+            signal.removeEventListener('abort', onAbort)
+            resolve(true)
+          })
+        })
+  } else await previous
+  if (!acquired || signal?.aborted) {
+    // A cancelled waiter remains in the queue until the active owner exits.
+    void previous.then(() => {
+      release()
+      if (locks.get(key) === current) locks.delete(key)
+    })
+    throw new Error('aborted')
+  }
   return () => {
     release()
     if (locks.get(key) === current) locks.delete(key)
@@ -1525,7 +1549,7 @@ export function createPresentationService(options: {
             throw new Error('access_denied')
           }
         : assertProjectCurrent
-      const release = await acquireProjectLock(options.userDataPath, projectId)
+      const release = await acquireProjectLock(options.userDataPath, projectId, signal)
       const guardedResponse = (value: unknown) => {
         assertProjectCurrent?.()
         return boundedResponse(value)
