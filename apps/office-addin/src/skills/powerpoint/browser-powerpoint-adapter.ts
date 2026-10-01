@@ -25,7 +25,7 @@ export const MAX_POWERPOINT_RESULT_BYTES = 256 * 1024
 export const MAX_POWERPOINT_SNAPSHOT_BASE64 = 8 * 1024 * 1024
 export const MAX_POWERPOINT_VERIFY_OVERLAPS = 1_000
 export const MAX_POWERPOINT_VERIFY_SLIDES = 20
-export const MAX_POWERPOINT_VERIFY_SHAPES = 100
+export const MAX_POWERPOINT_VERIFY_SHAPES = MAX_POWERPOINT_SHAPES
 export const MAX_POWERPOINT_VERIFY_OVERFLOWS = 2_000
 
 function uncertainPowerPointState(errorLocation: string, cause?: unknown): Error {
@@ -1846,6 +1846,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         slides: results,
         truncated:
           slideItems.length > MAX_POWERPOINT_VERIFY_SLIDES ||
+          results.some((slide) => slide.shapesTruncated) ||
           remainingOverlaps <= 0 ||
           remainingOverflows <= 0,
       }

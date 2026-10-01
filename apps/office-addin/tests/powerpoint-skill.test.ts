@@ -2159,6 +2159,58 @@ describe('browser PowerPoint adapter', () => {
     expect(sync).toHaveBeenCalled()
   })
 
+  it('verifies all shapes on a 120-object slide and reports incomplete reads over capacity', async () => {
+    const shapes = {
+      load: vi.fn(),
+      items: Array.from({ length: 120 }, (_, index) => ({
+        id: String(index + 1),
+        name: `Shape ${index + 1}`,
+        type: 'TextBox',
+        left: index * 2,
+        top: 0,
+        width: 1,
+        height: 1,
+      })),
+    }
+    const slides = { load: vi.fn(), items: [{ id: 's1', shapes }] }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({
+            presentation: {
+              slides,
+              pageSetup: { slideWidth: 960, slideHeight: 540, load: vi.fn() },
+            },
+            sync: vi.fn().mockResolvedValue(undefined),
+          }),
+      },
+    })
+    const subject = new BrowserPowerPointAdapter()
+    const complete = await subject.verifySlides()
+    expect(complete.slides[0]?.shapes).toHaveLength(120)
+    expect(complete.slides[0]?.shapesTruncated).toBe(false)
+    expect(complete.truncated).toBe(false)
+    shapes.items = Array.from({ length: 1001 }, (_, index) => ({
+      id: String(index + 1),
+      name: `Shape ${index + 1}`,
+      type: 'TextBox',
+      left: index * 2,
+      top: 0,
+      width: 1,
+      height: 1,
+    }))
+    const incomplete = await subject.verifySlides()
+    expect(incomplete.slides[0]?.shapes).toHaveLength(1000)
+    expect(incomplete.slides[0]?.shapesTruncated).toBe(true)
+    expect(incomplete.truncated).toBe(true)
+  })
+
   it('checks cancellation before every write/sync and implements text edit and duplicate', async () => {
     const packageZip = new JSZip()
     packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
