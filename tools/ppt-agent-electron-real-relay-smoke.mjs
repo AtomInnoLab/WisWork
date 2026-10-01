@@ -31,6 +31,9 @@ const expectedSlideTexts = Array.from(
   (_, index) => `Electron real Relay page ${index + 1}`,
 )
 const selectedBenchmark = process.argv.find((arg) => arg.startsWith('--benchmark='))
+const benchmarkBatch = process.argv.includes('--benchmark-batch')
+if (benchmarkBatch && selectedBenchmark) throw new Error('choose one benchmark mode')
+const batchCases = ['P0-05', 'P0-06', 'P0-07', 'P0-08', 'P0-15', 'P0-16', 'P0-18']
 const builtTaskpane = process.argv.includes('--built-taskpane')
 if (builtTaskpane) {
   const dist = join(root, 'apps/office-addin/dist')
@@ -712,52 +715,95 @@ app.whenReady().then(async () => {
   )
     throw new Error('Electron PC fresh release production incomplete')
   if (!concurrentBenchmark) {
-    smokeStage = `${researchCaseId}${benchmarkVariant ? ` ${benchmarkVariant}` : ''} real-source production`
-    const sourceStartedAt = Date.now()
-    let sourceOperation = 'pairing'
-    const researchResult = await inspectPcBusiness(
-      origin,
-      `${researchCaseId}${benchmarkVariant ? `-${benchmarkVariant}` : ''}-local-document`,
-      researchDeck.id,
-      {
-        onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
-        onProgress: (stage) => {
-          sourceOperation = stage
-        },
-        timeoutMs: benchmarkCase === 'P0-10' ? 120_000 : 60_000,
-        sourceAttachments: researchSources,
-        productionFixture: {
-          requestId: `${researchCaseId}${benchmarkVariant ? `-${benchmarkVariant}` : ''}-production`,
-          deck: researchDeck,
-          plan: researchPlan,
-          expectedSlideTexts: researchDeck.slides.map((slide) => slide.title),
-        },
-        ...(derivedPageFixture ? { derivedPageFixture } : {}),
-        createProduction: true,
-      },
-    ).catch((error) => {
-      throw new Error(
-        `${error.message} after ${Math.round((Date.now() - sourceStartedAt) / 1000)}s at ${sourceOperation}`,
-      )
-    })
-    if (
-      !researchResult.sourceChecked ||
-      researchResult.productionDelivery?.pageDigests.length !== 8 ||
-      researchResult.productionDelivery.pdfBytes < 100 ||
-      (derivedPageFixture &&
-        (researchResult.productionDelivery.derivedPage?.pageId !== 'p04' ||
-          researchResult.productionDelivery.derivedPage.pageDigests.length !== 8))
-    )
-      throw new Error(`Electron PC ${researchCaseId} source-backed production incomplete`)
-    console.log(
-      JSON.stringify({
-        type: 'ppt_benchmark_timing',
-        caseId: benchmarkVariant ? `${benchmarkCase}:${benchmarkVariant}` : benchmarkCase,
-        scope: 'source_backed_production',
-        elapsedMs: Date.now() - sourceStartedAt,
-        pageCount: 8,
-      }),
-    )
+    const cases = benchmarkBatch ? batchCases : [benchmarkCase]
+    const failures = []
+    for (const caseName of cases) {
+      const caseId = `PPT-${caseName}`
+      const caseVariant = benchmarkBatch ? undefined : benchmarkVariant
+      const bundle = benchmarkBatch
+        ? await loadBenchmarkBundle(root, caseId)
+        : { plan: researchPlan, deck: researchDeck, sourceAttachments: researchSources }
+      const revision =
+        caseName === 'P0-18'
+          ? benchmarkBatch
+            ? {
+                requestId: 'P0-18-revised-p04',
+                pageId: 'p04',
+                slide: JSON.parse(
+                  await readFile(
+                    join(
+                      root,
+                      'docs/product/ppt-benchmark-materials/PPT-P0-18/revised-page-deck.json',
+                    ),
+                    'utf8',
+                  ),
+                ).slides[0],
+              }
+            : derivedPageFixture
+          : undefined
+      smokeStage = `${caseId}${caseVariant ? ` ${caseVariant}` : ''} real-source production`
+      const sourceStartedAt = Date.now()
+      let sourceOperation = 'pairing'
+      const request = () =>
+        inspectPcBusiness(
+          origin,
+          `${caseId}${caseVariant ? `-${caseVariant}` : ''}-local-document`,
+          bundle.deck.id,
+          {
+            onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+            onProgress: (stage) => {
+              sourceOperation = stage
+            },
+            timeoutMs: caseName === 'P0-10' ? 120_000 : 60_000,
+            sourceAttachments: bundle.sourceAttachments,
+            productionFixture: {
+              requestId: `${caseId}${caseVariant ? `-${caseVariant}` : ''}-production`,
+              deck: bundle.deck,
+              plan: bundle.plan,
+              expectedSlideTexts: bundle.deck.slides.map((slide) => slide.title),
+            },
+            ...(revision ? { derivedPageFixture: revision } : {}),
+            createProduction: true,
+          },
+        )
+      try {
+        let researchResult
+        const pairingDeadline = Date.now() + 130_000
+        while (!researchResult) {
+          try {
+            researchResult = await request()
+          } catch (error) {
+            if (!String(error).includes('create_rate_limited') || Date.now() >= pairingDeadline)
+              throw error
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, 10_000))
+          }
+        }
+        if (
+          !researchResult.sourceChecked ||
+          researchResult.productionDelivery?.pageDigests.length !== 8 ||
+          researchResult.productionDelivery.pdfBytes < 100 ||
+          (revision &&
+            (researchResult.productionDelivery.derivedPage?.pageId !== 'p04' ||
+              researchResult.productionDelivery.derivedPage.pageDigests.length !== 8))
+        )
+          throw new Error('source-backed production incomplete')
+        console.log(
+          JSON.stringify({
+            type: 'ppt_benchmark_timing',
+            caseId: caseVariant ? `${caseName}:${caseVariant}` : caseName,
+            scope: 'source_backed_production',
+            elapsedMs: Date.now() - sourceStartedAt,
+            pageCount: 8,
+          }),
+        )
+      } catch (error) {
+        const message = `${caseId}: ${error.message} after ${Math.round((Date.now() - sourceStartedAt) / 1000)}s at ${sourceOperation}`
+        if (!benchmarkBatch) throw new Error(message, { cause: error })
+        failures.push(message)
+        console.error(message)
+      }
+    }
+    if (failures.length) throw new Error(`benchmark batch failed: ${failures.join(' | ')}`)
   }
   const pendingProjectId = `${projectId}-recovery`
   smokeStage = 'pending production setup'
@@ -855,7 +901,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    `Electron PC + Rust Relay business smoke passed (${builtTaskpane ? 'built' : 'development'} Taskpane): ${builtTaskpane ? 'incompatible protocol metadata blocks connection until retry, ' : ''}browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, ${concurrentBenchmark ? 'three parallel P0-17 source-backed eight-page productions' : 'three concurrent documents'}, fresh eight-page release production${concurrentBenchmark ? '' : `, ${researchCaseId} frozen source upload and eight-page production`}${derivedPageFixture ? ', P0-18 parent-bound single-page revision preserving seven page packages' : ''}, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and ${sourceBackedCrash ? 'P0-20 source-backed page-five crash recovery' : 'running job crash recovery'}`,
+    `Electron PC + Rust Relay business smoke passed (${builtTaskpane ? 'built' : 'development'} Taskpane): ${builtTaskpane ? 'incompatible protocol metadata blocks connection until retry, ' : ''}browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, ${concurrentBenchmark ? 'three parallel P0-17 source-backed eight-page productions' : 'three concurrent documents'}, fresh eight-page release production${concurrentBenchmark ? '' : `, ${benchmarkBatch ? batchCases.join('/') : researchCaseId} frozen source upload and eight-page production`}${derivedPageFixture || benchmarkBatch ? ', P0-18 parent-bound single-page revision preserving seven page packages' : ''}, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and ${sourceBackedCrash ? 'P0-20 source-backed page-five crash recovery' : 'running job crash recovery'}`,
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {
