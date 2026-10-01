@@ -186,7 +186,24 @@ export function createPresentationExistingPageBackupService(options: {
       release = resolve
     })
     locks.set(document, tail)
-    await previous
+    const acquired = signal.aborted
+      ? false
+      : await new Promise<boolean>((resolve) => {
+          const onAbort = () => resolve(false)
+          signal.addEventListener('abort', onAbort, { once: true })
+          void previous.then(() => {
+            signal.removeEventListener('abort', onAbort)
+            resolve(true)
+          })
+        })
+    if (!acquired || signal.aborted) {
+      // Preserve queue order while the active owner finishes its write or render.
+      void previous.then(() => {
+        release()
+        if (locks.get(document) === tail) locks.delete(document)
+      })
+      fail('aborted')
+    }
     try {
       check(signal)
       await directory(root)

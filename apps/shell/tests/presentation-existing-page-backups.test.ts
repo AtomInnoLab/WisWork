@@ -216,6 +216,55 @@ it('renders only a ready, document-scoped page package and returns its identity'
     error: 'not_found',
   })
 })
+
+it('cancels a queued page-savepoint read without overtaking an active render', async () => {
+  const f = await fixture()
+  await f.call('existing_page_backup_begin', f.begin)
+  await f.call('existing_page_backup_chunk', {
+    backupId: f.begin.backupId,
+    offset: 0,
+    base64: f.raw.toString('base64'),
+  })
+  await f.call('existing_page_backup_finish', { backupId: f.begin.backupId })
+  let rendering!: () => void
+  let finish!: (image: Uint8Array) => void
+  const started = new Promise<void>((resolve) => {
+    rendering = resolve
+  })
+  const image = new Promise<Uint8Array>((resolve) => {
+    finish = resolve
+  })
+  const service = createPresentationService({
+    userDataPath: f.userDataPath,
+    renderPage: async () => {
+      rendering()
+      return image
+    },
+  })
+  const body = (operation: string) => ({
+    operation,
+    documentId: 'document-1',
+    backupId: f.begin.backupId,
+  })
+  const first = service(body('existing_page_backup_render'), new AbortController().signal)
+  await started
+  const controller = new AbortController()
+  const second = service(body('existing_page_backup_status'), controller.signal)
+  controller.abort()
+  expect(JSON.parse(Buffer.from(await second).toString())).toEqual({ error: 'aborted' })
+  const third = service(body('existing_page_backup_status'), new AbortController().signal)
+  finish(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  )
+  expect(JSON.parse(Buffer.from(await first).toString())).toMatchObject({ mime: 'image/png' })
+  expect(JSON.parse(Buffer.from(await third).toString())).toMatchObject({
+    status: 'ready',
+    sha256: f.begin.sha256,
+  })
+})
 it('abandons only a matching incomplete fallback upload without releasing a ready savepoint', async () => {
   const f = await fixture()
   await f.call('existing_page_backup_begin', f.begin)
