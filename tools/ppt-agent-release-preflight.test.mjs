@@ -484,6 +484,19 @@ test('checks runtime chunks and workers referenced by built assets', async (t) =
     inspectOfficeBuild(dist, 'https://office.example'),
     /invalid Office runtime reference/,
   )
+  await writeFile(entry, 'const version="release_123"; import "./side-effect-AbC_123.js"')
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /missing referenced asset: assets\/side-effect-AbC_123.js/,
+  )
+  await writeFile(
+    entry,
+    'const version="release_123"; new URL("./relative-worker-AbC_123.js", import.meta.url)',
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /missing referenced asset: assets\/relative-worker-AbC_123.js/,
+  )
 })
 
 test('checks stylesheet asset references', async (t) => {
@@ -498,6 +511,14 @@ test('checks stylesheet asset references', async (t) => {
   )
   await writeFile(resolve(dist, 'assets/logo-AbC_123.png'), Buffer.from([137, 80, 78, 71]))
   await inspectOfficeBuild(dist, 'https://office.example')
+  await writeFile(
+    resolve(dist, 'assets/taskpane-AbC_123.css'),
+    'body{background:url(./missing-AbC_123.png)}',
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /missing referenced asset: assets\/missing-AbC_123.png/,
+  )
 })
 
 test('rejects unlisted and symlinked release files', async (t) => {

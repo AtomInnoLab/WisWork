@@ -122,17 +122,21 @@ function releaseAsset(path) {
 
 function runtimeReferences(path, source) {
   const references = []
+  const localAsset = (value) =>
+    value.startsWith('/assets/') ? value.slice(1) : `assets/${value.slice(2)}`
   if (/\.(?:js|mjs)$/.test(path)) {
     for (const match of source.matchAll(
-      /(?:\bimport\s*\(|\bfrom\s*)["']\.\/([^"'?#]+\.(?:js|mjs))["']/g,
+      /(?:\bimport\s*(?:\(\s*)?|\bfrom\s*)["']\.\/([^"'?#]+\.(?:js|mjs))["']/g,
     ))
       references.push(`assets/${match[1]}`)
-    for (const match of source.matchAll(/\bnew\s+URL\s*\(\s*["'](\/assets\/[^"'?#]+)["']/g))
-      references.push(match[1].slice(1))
+    for (const match of source.matchAll(
+      /\bnew\s+URL\s*\(\s*["']((?:\/assets\/|\.\/)[^"'?#]+)["']/g,
+    ))
+      references.push(localAsset(match[1]))
   }
   if (path.endsWith('.css')) {
-    for (const match of source.matchAll(/\burl\(\s*["']?(\/assets\/[^"'?#)]+)["']?\s*\)/g))
-      references.push(match[1].slice(1))
+    for (const match of source.matchAll(/\burl\(\s*["']?((?:\/assets\/|\.\/)[^"'?#)]+)["']?\s*\)/g))
+      references.push(localAsset(match[1]))
   }
   if (references.some((reference) => !releaseAsset(reference)))
     throw new Error(`invalid Office runtime reference: ${path}`)
