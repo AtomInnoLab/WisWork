@@ -67,7 +67,7 @@ it('imports eight mixed native pages and resumes after a known pre-write interru
     snapshot: async () => ({ slideIds: [...host], fingerprint: JSON.stringify(host) }),
     insert: vi.fn(),
     insertPage: vi.fn(async (bytes: string) => {
-      if (host.length === 5 && !interrupted) {
+      if (host.length === 4 && !interrupted) {
         interrupted = true
         throw new Error('cancelled')
       }
@@ -100,10 +100,10 @@ it('imports eight mixed native pages and resumes after a known pre-write interru
     await proposals.confirm(proposals.pending()!.id)
   }
   await expect(confirm()).rejects.toThrow('cancelled')
-  expect(host).toHaveLength(5)
+  expect(host).toHaveLength(4)
   expect(
     binding.readReceipt('production/eight-page-project/eight-page-run')?.checkpoint?.completed,
-  ).toHaveLength(4)
+  ).toHaveLength(3)
   binding = createPresentationDocumentBinding(settings)
   await confirm()
   expect(host).toHaveLength(9)

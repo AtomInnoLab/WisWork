@@ -1,0 +1,237 @@
+{
+  "version": 1,
+  "projectId": "p0-16-resume-reference",
+  "title": "计算可复现性研究：断线续跑八页候选稿",
+  "brief": {
+    "objective": "基于两份冻结 PDF 与两张授权示意图制作八页研究汇报，并验证同任务断线续跑",
+    "audience": "科研专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": [
+      "研究问题与方法",
+      "六项清单",
+      "Table 1 原生图表",
+      "统计结论与局限",
+      "两张自制示意图及权利声明"
+    ],
+    "constraints": [
+      "科学解释待专业审阅",
+      "真实 PowerPoint 保存重开尚未验收",
+      "不得将示意图当成研究测量结果"
+    ]
+  },
+  "sources": [
+    {
+      "id": "paper-page-5",
+      "title": "Deardorff 2020 论文 PDF 第 5 页",
+      "uri": "doi:10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "第 5 页",
+      "excerpt": "only 12 researchers\nparticipated in the post-workshop interviews."
+    },
+    {
+      "id": "paper-score",
+      "title": "Deardorff 2020 论文 PDF 第 5 页：清单均分",
+      "uri": "doi:10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "第 5 页",
+      "excerpt": "1.6 to 2.2\nand ranged from 0 to 6, however this was not a statistically significant difference (t(11) = -1.04,\np = 0.318)"
+    },
+    {
+      "id": "paper-table-1",
+      "title": "Deardorff 2020 Table 1",
+      "uri": "doi:10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "第 5 页",
+      "excerpt": "Use open source software 7 10"
+    },
+    {
+      "id": "paper-page-9",
+      "title": "Deardorff 2020 论文 PDF 第 9 页",
+      "uri": "doi:10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "第 9 页",
+      "excerpt": "The analysis and coding for this project was also performed solely by the author, and\na different researcher might have interpreted slightly different themes. Finally, because of the\nsmall sample size, the quantitative analysis lacked appropriate power."
+    },
+    {
+      "id": "supplement-checklist",
+      "title": "Deardorff 2020 补充清单 PDF",
+      "uri": "doi:10.1371/journal.pone.0230697.s001",
+      "snapshotAttachmentId": "c1bffef3f6b97236b2329b952791aa1e0d3176e2c7c5cd3e21a1e61e6e068ad9",
+      "locator": "PDF 第 1 页",
+      "excerpt": "Participant ID: ___________ Ariel Deardorff, August 12, 2019\nReproducibility Score Card\nNote: Researchers are given 1pt for each yes to calculate a total score\nAs part of your research workflow do you currently or intend to:\nQuestion Pre-Workshop\n(Y/N)\nPost-Workshop\n(Y/N)\nUse programming languages like R, Python, or the\ncommand line for data acquisition, processing, or\nanalysis?\nTransform step-by-"
+    },
+    {
+      "id": "illustration-rights",
+      "title": "P0-16 自制示意图授权声明",
+      "uri": "local:asset-rights.json",
+      "snapshotAttachmentId": "2ddacc1ce88f28c4977beab27f09793b4af17acf722a86a67d257b0c15e6f3bd",
+      "locator": "assets 1–2",
+      "excerpt": "\"assets\": [\n    {\n      \"file\": \"images/schematic-01.png\",\n      \"sha256\": \"7d38aa598d1ba91551d70307e3c9c91abffd5b39d1b9f9844f479204bdd9fe10\",\n      \"author\": \"WisWork benchmark team\",\n      \"usePermission\": \"Authorized for this benchmark\",\n      \"attribution\": \"WisWork self-authored schematic 1; not research measurement data\"\n    },\n    {\n      \"file\": \"images/schema"
+    }
+  ],
+  "claims": [
+    {
+      "id": "sample",
+      "statement": "培训前 14 人、三个月后 12 人",
+      "type": "fact",
+      "sourceIds": ["paper-page-5"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "score",
+      "statement": "均分 1.6/6 到 2.2/6；p=0.318",
+      "type": "fact",
+      "sourceIds": ["paper-score"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "open-source",
+      "statement": "开源软件使用 7/14 到 10/12",
+      "type": "fact",
+      "sourceIds": ["paper-table-1"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "limitations",
+      "statement": "小样本、选择/应答、单人编码和功效限制",
+      "type": "fact",
+      "sourceIds": ["paper-page-9"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "checklist-design",
+      "statement": "六项清单来自论文补充材料，研究表述仍待科研审阅",
+      "type": "fact",
+      "sourceIds": ["supplement-checklist"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "illustrations",
+      "statement": "两张自制示意图只用于说明，不代表研究测量数据",
+      "type": "judgment",
+      "sourceIds": ["illustration-rights"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "科研工作流可复现性：编程培训观察",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": [],
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留来源与研究局限"]
+    },
+    {
+      "id": "p02",
+      "title": "问题与研究范围",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": ["illustrations"],
+      "layout": "content",
+      "requiredAssets": ["schematic-1"],
+      "acceptanceCriteria": ["原生可编辑文字", "保留来源与研究局限"]
+    },
+    {
+      "id": "p03",
+      "title": "访谈设计与样本流失",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": ["sample"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留来源与研究局限"]
+    },
+    {
+      "id": "p04",
+      "title": "六项清单：测量什么",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": ["illustrations", "checklist-design"],
+      "layout": "content",
+      "requiredAssets": ["schematic-2"],
+      "acceptanceCriteria": ["原生可编辑文字", "保留来源与研究局限"]
+    },
+    {
+      "id": "p05",
+      "title": "清单均分：不可夸大变化",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": ["score"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留来源与研究局限"]
+    },
+    {
+      "id": "p06",
+      "title": "Table 1：开源工具使用",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": ["open-source"],
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留来源与研究局限"],
+      "chartData": [
+        {
+          "elementId": "table1-open-source-native",
+          "categories": ["前测 n=14", "三个月后 n=12"],
+          "series": [
+            {
+              "name": "报告使用开源软件的人数",
+              "points": [
+                {
+                  "value": 7,
+                  "claimId": "open-source",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "paper-table-1",
+                    "excerptOffset": 25,
+                    "excerptText": "7"
+                  }
+                },
+                {
+                  "value": 10,
+                  "claimId": "open-source",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "paper-table-1",
+                    "excerptOffset": 27,
+                    "excerptText": "10"
+                  }
+                }
+              ]
+            }
+          ],
+          "unit": "people"
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "定性观察与研究局限",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": ["limitations"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留来源与研究局限"]
+    },
+    {
+      "id": "p08",
+      "title": "结论与待核验事项",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": [],
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留来源与研究局限"]
+    }
+  ]
+}

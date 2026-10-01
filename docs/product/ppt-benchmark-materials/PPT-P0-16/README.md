@@ -1,6 +1,6 @@
 # PPT-P0-16 候选材料包：断线与同任务续跑
 
-状态：**真实研究原文、授权示意图、八页目标和两个故障时点已冻结；科研审阅及真实 PowerPoint/Relay 执行未完成**。本包只计候选材料，不计专业任务通过。
+状态：**真实研究原文、授权示意图、来源绑定八页参考稿和两个故障时点已冻结；科研审阅及真实 PowerPoint 执行未完成**。本包只计候选材料，不计专业任务通过。
 
 ## 输入与授权
 
@@ -8,7 +8,11 @@
 - `images/schematic-01.png`、`images/schematic-03.png`：从 [P0-13](../PPT-P0-13/README.md) 独立复制的 WisWork 自制示意图，授权和摘要见 `asset-rights.json`。它们不是研究测量数据。
 - `scenario.json`：八页目标、上传块回执丢失和部分页导入后 Taskpane/Relay 中断的固定时点。此文件仅规定实验，不证明断线已发生。
 
-`SHA256SUMS` 冻结六份输入文件，`verify-materials.mjs` 核对全部摘要、图片授权、页序和故障步骤。复用原文不复用其他任务的执行结果。
+`node --import tsx generate-reference.cjs` 从两份 PDF、授权声明和两张示意图生成 `reference-plan.json`、`reference-deck.json` 与八页原生可编辑的 `wiswork-generated-candidate.pptx`。第 6 页保留 Table 1 原生图表及不同分母。`SHA256SUMS` 冻结六份输入和三份参考产物；`node --import tsx verify-materials.mjs` 核对全部摘要、PDF 摘录、计划绑定、图片授权、原生图表与八页结构。复用原文不复用其他任务的执行结果。
+
+本机自动化已覆盖 F1 首个 128 KiB 上传块回执丢失后，从 PC 已确认偏移恢复；F2 在前三页回执已持久化、第 4 页写入前中断，重建文档绑定后完成八页且不重复插入前三页。F2 使用 Office 宿主模拟器，不能作为真实 PowerPoint 断线证据。
+
+`node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-16 --built-taskpane` 已在本机通过构建版 Taskpane、Electron PC 和 Rust Relay 的来源上传、计划保存、八页生产、PPTX/PDF 回读及会话恢复。该运行验证生产链路，未按 F1/F2 精确时间点强制断线；这两个故障点分别由上述定向自动化覆盖。
 
 ## 固定任务提示
 
