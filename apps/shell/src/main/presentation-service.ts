@@ -296,12 +296,14 @@ export function createPresentationService(options: {
         ? { revision: record.revision, plan: parsePresentationPlan(record.plan) }
         : undefined
     },
-    acquireProjectLock: (projectId) => acquireProjectLock(options.userDataPath, projectId),
+    acquireProjectLock: (projectId, signal) =>
+      acquireProjectLock(options.userDataPath, projectId, signal),
   })
   const deliveryBundles = createPresentationDeliveryBundleService({
     ...options,
     captureProjectLease: captureFactoryLease,
-    acquireProjectLock: (projectId) => acquireProjectLock(options.userDataPath, projectId),
+    acquireProjectLock: (projectId, signal) =>
+      acquireProjectLock(options.userDataPath, projectId, signal),
   })
   const research = createPresentationResearchService({
     userDataPath: options.userDataPath,
@@ -394,7 +396,8 @@ export function createPresentationService(options: {
         readExistingProject: () => scope,
       })
     },
-    acquireProjectLock: (projectId) => acquireProjectLock(options.userDataPath, projectId),
+    acquireProjectLock: (projectId, signal) =>
+      acquireProjectLock(options.userDataPath, projectId, signal),
     assertRecordUnprotected: async (documentId, projectId, ledgerId, signal) => {
       const plans: unknown[] = []
       const current = store.plan(projectId, documentId, true)

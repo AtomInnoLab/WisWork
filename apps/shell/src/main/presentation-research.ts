@@ -14,7 +14,7 @@ import { canonicalSourceLocator, matchesFetchedSourceUrl } from './presentation-
 export function createPresentationResearchService(optionsValue: {
   userDataPath: string
   attachments?: ReturnType<typeof createPresentationAttachmentService>
-  acquireProjectLock?: (projectId: string) => Promise<() => void>
+  acquireProjectLock?: (projectId: string, signal?: AbortSignal) => Promise<() => void>
   captureProjectLease?: (input: {
     scope: Readonly<{ documentId: string; projectId: string }>
     operation: string
@@ -233,9 +233,9 @@ export function createPresentationResearchService(optionsValue: {
     let projectLock: Promise<(() => void) | undefined> | undefined
     try {
       const captured = options.captureProjectLease?.({ scope, operation: op, signal })
-      projectLock = options.acquireProjectLock?.(projectId)
       lease = captured instanceof Promise ? await captured : captured
       assertCurrent()
+      projectLock = options.acquireProjectLock?.(projectId, signal)
       const run = async () => {
         const release = await projectLock
         try {

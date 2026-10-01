@@ -127,7 +127,7 @@ interface Options {
     documentId: string,
     projectId: string,
   ): { revision: number; plan: PresentationPlan } | undefined
-  acquireProjectLock(projectId: string): Promise<() => void>
+  acquireProjectLock(projectId: string, signal?: AbortSignal): Promise<() => void>
   captureProjectLease?(
     scope: Readonly<{ documentId: string; projectId: string }>,
     mode: 'read' | 'write',
@@ -242,7 +242,7 @@ export function createPresentationTeamService(options: Options) {
         snapshot(body.documentId, body.projectId, body.planRevision)
         const guard = capture(body.documentId, body.projectId, 'read', signal, register)
         guard()
-        const release = await options.acquireProjectLock(body.projectId)
+        const release = await options.acquireProjectLock(body.projectId, signal)
         try {
           check(signal)
           guard()
@@ -269,7 +269,7 @@ export function createPresentationTeamService(options: Options) {
         snapshot(doc, project, body.planRevision)
         const guard = capture(doc, project, 'write', signal, register)
         guard()
-        const release = await options.acquireProjectLock(project)
+        const release = await options.acquireProjectLock(project, signal)
         try {
           check(signal)
           guard()
@@ -344,7 +344,7 @@ export function createPresentationTeamService(options: Options) {
       )
       guard()
       if (operation === 'team_project_read') return { team: ledger }
-      const release = await options.acquireProjectLock(ledger.projectId)
+      const release = await options.acquireProjectLock(ledger.projectId, signal)
       try {
         guard()
         ledger = authorized(body.teamId, context)

@@ -18,7 +18,7 @@ afterEach(() => {
 })
 function fixture(
   controlled = true,
-  acquireProjectLock?: (projectId: string) => Promise<() => void>,
+  acquireProjectLock?: (projectId: string, signal?: AbortSignal) => Promise<() => void>,
 ) {
   const root = mkdtempSync(join(tmpdir(), 'research-service-fence-'))
   roots.push(root)
@@ -115,6 +115,18 @@ it('legacy pure reads leave absent research and lifecycle namespaces absent', as
     await service({ operation: 'research_list', ...f.scope }, new AbortController().signal),
   ).toMatchObject({ totalRecords: 0 })
   expect(readdirSync(f.root)).toEqual([])
+})
+
+it('passes the active cancellation signal to project lock admission', async () => {
+  const controller = new AbortController()
+  let admittedSignal: AbortSignal | undefined
+  const f = fixture(true, async (_projectId, signal) => {
+    admittedSignal = signal
+    controller.abort()
+    return () => {}
+  })
+  await expect(f.service(f.request, controller.signal)).rejects.toThrow('aborted')
+  expect(admittedSignal?.aborted).toBe(true)
 })
 
 it('owns validated request and draft aliases across project lock admission', async () => {

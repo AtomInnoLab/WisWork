@@ -264,7 +264,7 @@ async function pptxSlideCount(bytes: Buffer): Promise<number> {
 }
 export function createPresentationDeliveryBundleService(options: {
   userDataPath: string
-  acquireProjectLock?(projectId: string): Promise<() => void>
+  acquireProjectLock?(projectId: string, signal?: AbortSignal): Promise<() => void>
   captureProjectLease?(
     scope: Readonly<{ documentId: string; projectId: string }>,
     mode: 'read' | 'write',
@@ -338,7 +338,7 @@ export function createPresentationDeliveryBundleService(options: {
         check(signal)
       }
       guard()
-      releaseProject = await options.acquireProjectLock?.(projectId)
+      releaseProject = await options.acquireProjectLock?.(projectId, signal)
       guard()
       const project = join(root, hash(documentId), hash(projectId))
       const previous = locks.get(project) ?? Promise.resolve()
