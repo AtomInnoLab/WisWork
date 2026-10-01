@@ -28,6 +28,10 @@ import {
   supportsPresentationAttachment,
 } from './skills/powerpoint/presentation-attachments.js'
 import { PresentationProjectCard } from './agent/presentation-project-card.js'
+import {
+  openPowerPointPresentationCopy,
+  supportsPowerPointPresentationCopy,
+} from './skills/powerpoint/presentation-copy.js'
 import { PresentationWorkflowCard } from './agent/presentation-workflow-card.js'
 import { PresentationStageCard } from './agent/presentation-stage-card.js'
 import { presentationStageTimeline } from './agent/presentation-stage-timeline.js'
@@ -644,6 +648,8 @@ export function AgentWorkspace(props: {
   const [durableFiles, setDurableFiles] = useState<PresentationAttachmentMetadata[]>([])
   const [skills, setSkills] = useState<readonly string[]>(ui.skills())
   const [uploadError, setUploadError] = useState('')
+  const [copyStatus, setCopyStatus] = useState('')
+  const [copyPending, setCopyPending] = useState(false)
   const [uploadPending, setUploadPending] = useState(false)
   const [uploadStatus, setUploadStatus] = useState('')
   const [imageUrl, setImageUrl] = useState('')
@@ -1590,6 +1596,41 @@ export function AgentWorkspace(props: {
       )}
 
       <section className="composer-shell" aria-label="Message WisWork Agent">
+        {host === 'powerpoint' && ui.project && (
+          <section aria-label="制作位置">
+            <strong>制作位置</strong>
+            <p>
+              可以在当前文档制作。已有内容时建议先创建副本，避免覆盖原稿。现有项目不会自动迁移到副本。
+            </p>
+            <button
+              type="button"
+              disabled={
+                copyPending ||
+                uploadPending ||
+                state.busy ||
+                state.applying ||
+                projectPhase !== 'idle' ||
+                !supportsPowerPointPresentationCopy()
+              }
+              onClick={() => {
+                setCopyPending(true)
+                setCopyStatus('正在创建副本…')
+                void openPowerPointPresentationCopy()
+                  .then(() =>
+                    setCopyStatus(
+                      '副本已打开。请先另存为新文件，再在副本中打开 WisWork 并开始制作。',
+                    ),
+                  )
+                  .catch(() => setCopyStatus('创建副本失败；当前文档没有因本次操作被写入。'))
+                  .finally(() => setCopyPending(false))
+              }}
+            >
+              创建副本后制作
+            </button>
+            {!supportsPowerPointPresentationCopy() && <p>当前 PowerPoint 不支持创建副本。</p>}
+            {copyStatus && <p role="status">{copyStatus}</p>}
+          </section>
+        )}
         {host === 'powerpoint' && ui.team && (
           <PresentationTeamCard
             controller={ui.team}
