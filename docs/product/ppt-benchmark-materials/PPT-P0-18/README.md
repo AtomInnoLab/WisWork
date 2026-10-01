@@ -19,7 +19,7 @@
 
 本包新增的父稿和修订页是可复核的**候选产物**。单页包摘要证明本地生成流程对七页采取字节保留策略；它们仍不构成真实 PowerPoint 的宿主导入/替换回执、人工确认或 QA 通过记录。
 
-本机 `node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-18 --built-taskpane` 已完成构建版 Taskpane、Electron PC 与 Rust Relay 的论文和权利文件上传、父计划保存、八页生产、PPTX/PDF 回读及恢复；多图片页逐图核对原始素材字节。LibreOffice 将父稿渲染为八页 PDF、修订包渲染为一页 PDF；目视检查第 4 页修订前后，原生三步流程和两张示意图可读。本机检查没有实际执行 PowerPoint 宿主页替换。
+本机 `node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-18 --built-taskpane` 已完成构建版 Taskpane、Electron PC 与 Rust Relay 的论文和权利文件上传、父计划保存、八页生产、PPTX/PDF 回读及恢复；多图片页逐图核对原始素材字节。该测试还在 PC 上从父任务派生第 4 页修订、核对父任务摘要绑定和子任务完成回执，逐页回读证明其余七个单页 PPTX 字节完全复用、第 4 页改变且包含三个原生流程形状，并核对父任务第 4 页未被覆盖。LibreOffice 将父稿渲染为八页 PDF、修订包渲染为一页 PDF；目视检查第 4 页修订前后，原生三步流程和两张示意图可读。本机检查没有实际执行 PowerPoint 宿主页替换。
 
 - 第 4 页修订：保留标题、研究事实和来源页脚；做原生三步流程，明确示意图并非研究数据。
 - 第 1、2、3、5、6、7、8 页：不得重编译或重插入；核对其编译产物摘要、宿主页面包摘要、原生对象清单、截图和 QA 记录。新版单页替换事务会持续检查这些已导入业务页的页面包摘要；第 8 页逻辑依赖第 4 页，修订后重新检查其引用与视觉连贯性，但无理由不改内容。

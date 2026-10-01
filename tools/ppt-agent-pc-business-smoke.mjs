@@ -427,6 +427,20 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       options.productionFixture.expectedSlideTexts.length > 8)
   )
     throw new Error('invalid production smoke fixture')
+  if (
+    options.derivedPageFixture &&
+    (!options.createProduction ||
+      !options.productionFixture ||
+      typeof options.derivedPageFixture.requestId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(options.derivedPageFixture.requestId) ||
+      options.derivedPageFixture.requestId === options.productionFixture.requestId ||
+      typeof options.derivedPageFixture.pageId !== 'string' ||
+      options.derivedPageFixture.slide?.id !== options.derivedPageFixture.pageId ||
+      !options.productionFixture.deck.slides.some(
+        (slide) => slide.id === options.derivedPageFixture.pageId,
+      ))
+  )
+    throw new Error('invalid derived page smoke fixture')
   const timeoutMs = options.timeoutMs ?? 120_000
   const socket = (options.connect ?? ((url, config) => new WebSocket(url, config)))(
     relayUrl(relayOrigin),
@@ -858,7 +872,81 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         (await PDFDocument.load(pdf)).getPageCount() !== fixture.expectedSlideTexts.length
       )
         throw new Error('PC production PDF invalid')
-      productionDelivery = { pageDigests, pdfBytes: pdf.length }
+      let derivedPage
+      if (options.derivedPageFixture) {
+        const revision = options.derivedPageFixture
+        const childBase = { documentId, projectId, requestId: revision.requestId }
+        const started = await request('presentation.v1', {
+          operation: 'production_rebuild_page',
+          ...childBase,
+          parentRequestId: fixture.requestId,
+          pageId: revision.pageId,
+          slide: revision.slide,
+        })
+        if (
+          started?.compiledCount !== fixture.deck.slides.length - 1 ||
+          started?.revision?.parentRequestId !== fixture.requestId ||
+          started.revision.pageId !== revision.pageId ||
+          !/^[a-f0-9]{64}$/.test(started.revision.parentInputDigest)
+        )
+          throw new Error('PC derived page parent binding invalid')
+        const completed = await request('presentation.v1', {
+          operation: 'production_run',
+          ...childBase,
+        })
+        if (
+          completed?.status !== 'compiled' ||
+          completed.compiledCount !== fixture.deck.slides.length ||
+          completed.revision?.parentRequestId !== fixture.requestId ||
+          completed.revision.pageId !== revision.pageId
+        )
+          throw new Error('PC derived page production incomplete')
+        const childDigests = []
+        for (const [index, slide] of fixture.deck.slides.entries()) {
+          const page = await request('presentation.v1', {
+            operation: 'production_page',
+            ...childBase,
+            pageId: slide.id,
+          })
+          if (
+            page?.status !== 'compiled' ||
+            page.pageId !== slide.id ||
+            typeof page.pptxBase64 !== 'string'
+          )
+            throw new Error('PC derived page receipt invalid')
+          const childBytes = Buffer.from(page.pptxBase64, 'base64')
+          const changed = slide.id === revision.pageId
+          if (changed === (page.pptxBase64 === pagePptxBase64[index]))
+            throw new Error('PC derived page preservation mismatch')
+          if (changed) {
+            const zip = await JSZip.loadAsync(childBytes)
+            const xml = await zip.file('ppt/slides/slide1.xml')?.async('string')
+            if (!xml || (xml.match(/prst="roundRect"/g) ?? []).length !== 3)
+              throw new Error('PC derived page native flow missing')
+          }
+          childDigests.push(createHash('sha256').update(childBytes).digest('hex'))
+        }
+        const parentTarget = await request('presentation.v1', {
+          operation: 'production_page',
+          ...base,
+          pageId: revision.pageId,
+        })
+        const targetIndex = fixture.deck.slides.findIndex((slide) => slide.id === revision.pageId)
+        if (parentTarget?.pptxBase64 !== pagePptxBase64[targetIndex])
+          throw new Error('PC derived page overwrote parent')
+        derivedPage = {
+          requestId: revision.requestId,
+          parentRequestId: fixture.requestId,
+          pageId: revision.pageId,
+          parentInputDigest: started.revision.parentInputDigest,
+          pageDigests: childDigests,
+        }
+      }
+      productionDelivery = {
+        pageDigests,
+        pdfBytes: pdf.length,
+        ...(derivedPage ? { derivedPage } : {}),
+      }
     }
     const attachmentPageCount = checkAttachmentList(
       await request('presentation-assets.v1', { operation: 'attachment_list_assets', documentId }),

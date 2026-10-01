@@ -50,6 +50,19 @@ const {
   deck: researchDeck,
   sourceAttachments: researchSources,
 } = await loadBenchmarkBundle(root, researchCaseId, benchmarkVariant)
+const derivedPageFixture =
+  researchCaseId === 'PPT-P0-18'
+    ? {
+        requestId: 'P0-18-revised-p04',
+        pageId: 'p04',
+        slide: JSON.parse(
+          await readFile(
+            join(root, 'docs/product/ppt-benchmark-materials/PPT-P0-18/revised-page-deck.json'),
+            'utf8',
+          ),
+        ).slides[0],
+      }
+    : undefined
 const temp = await mkdtemp(join(tmpdir(), 'ppt-electron-real-relay-'))
 const deck = {
   version: 1,
@@ -669,13 +682,17 @@ app.whenReady().then(async () => {
           plan: researchPlan,
           expectedSlideTexts: researchDeck.slides.map((slide) => slide.title),
         },
+        ...(derivedPageFixture ? { derivedPageFixture } : {}),
         createProduction: true,
       },
     )
     if (
       !researchResult.sourceChecked ||
       researchResult.productionDelivery?.pageDigests.length !== 8 ||
-      researchResult.productionDelivery.pdfBytes < 100
+      researchResult.productionDelivery.pdfBytes < 100 ||
+      (derivedPageFixture &&
+        (researchResult.productionDelivery.derivedPage?.pageId !== 'p04' ||
+          researchResult.productionDelivery.derivedPage.pageDigests.length !== 8))
     )
       throw new Error(`Electron PC ${researchCaseId} source-backed production incomplete`)
   }
@@ -775,7 +792,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    `Electron PC + Rust Relay business smoke passed (${builtTaskpane ? 'built' : 'development'} Taskpane): browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, ${concurrentBenchmark ? 'three parallel P0-17 source-backed eight-page productions' : 'three concurrent documents'}, fresh eight-page release production${concurrentBenchmark ? '' : `, ${researchCaseId} frozen source upload and eight-page production`}, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery`,
+    `Electron PC + Rust Relay business smoke passed (${builtTaskpane ? 'built' : 'development'} Taskpane): browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, ${concurrentBenchmark ? 'three parallel P0-17 source-backed eight-page productions' : 'three concurrent documents'}, fresh eight-page release production${concurrentBenchmark ? '' : `, ${researchCaseId} frozen source upload and eight-page production`}${derivedPageFixture ? ', P0-18 parent-bound single-page revision preserving seven page packages' : ''}, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery`,
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {
