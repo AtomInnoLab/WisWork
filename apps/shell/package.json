@@ -19,6 +19,7 @@
     "dist:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
+    "fast-xml-parser": "5.10.1",
     "pdf-lib": "^1.17.1",
     "ws": "^8.21.1"
   },

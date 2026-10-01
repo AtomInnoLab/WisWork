@@ -14,6 +14,9 @@ import { writeFileSync, symlinkSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { PNG } from 'pngjs'
+import JSZip from 'jszip'
+import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
+import { benchmarkDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-benchmark'
 import { afterEach } from 'vitest'
 import { parsePresentationDeliveryBundleReceipt } from '@wiswork/project-store/presentation-delivery-bundle'
 import {
@@ -22,6 +25,14 @@ import {
 } from './helpers/delivery-bundle-fixture'
 afterEach(cleanupDeliveryBundleFixtures)
 const hash = (v: string | Uint8Array) => createHash('sha256').update(v).digest('hex')
+async function pptxWithPages(count: number): Promise<Buffer> {
+  return new JSZip()
+    .file(
+      'ppt/presentation.xml',
+      `<p:presentation xmlns:p="p"><p:sldIdLst>${Array.from({ length: count }, (_, index) => `<p:sldId id="${index + 1}"/>`).join('')}</p:sldIdLst></p:presentation>`,
+    )
+    .generateAsync({ type: 'nodebuffer' })
+}
 it('uploads with overlapping retry, restores ready metadata/read/list and explicit cleanup', async () => {
   const f = await fixture()
   const begun = await f.begin()
@@ -57,12 +68,15 @@ it('uploads with overlapping retry, restores ready metadata/read/list and explic
 })
 it('accepts eight bounded host screenshots and rejects a corrupt image before publication', async () => {
   const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+  const pptx = await pptxWithPages(8)
   const f = await fixture((files) => {
+    files.set('presentation.pptx', pptx)
     for (let page = 1; page <= 8; page++) files.set(`page-${page}.png`, png)
   })
   await f.upload()
   expect(parsePresentationDeliveryBundleReceipt(await f.call('finish')).state).toBe('ready')
   const broken = await fixture((files) => {
+    files.set('presentation.pptx', pptx)
     for (let page = 1; page <= 8; page++)
       files.set(`page-${page}.png`, page === 8 ? Buffer.from('corrupt png') : png)
   })
@@ -71,7 +85,9 @@ it('accepts eight bounded host screenshots and rejects a corrupt image before pu
 })
 it.each([3, 20])('accepts %i contiguous host screenshots through PC publication', async (count) => {
   const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+  const pptx = await pptxWithPages(count)
   const f = await fixture((files) => {
+    files.set('presentation.pptx', pptx)
     for (let page = 1; page <= count; page++) files.set(`page-${page}.png`, png)
   })
   await f.upload()
@@ -83,12 +99,34 @@ it.each([3, 20])('accepts %i contiguous host screenshots through PC publication'
 })
 it('rejects an invalid screenshot on the twentieth page before PC publication', async () => {
   const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+  const pptx = await pptxWithPages(20)
   const f = await fixture((files) => {
+    files.set('presentation.pptx', pptx)
     for (let page = 1; page <= 20; page++)
       files.set(`page-${page}.png`, page === 20 ? Buffer.from('corrupt png') : png)
   })
   await f.upload()
   await expect(f.call('finish')).rejects.toThrow('unsupported_file')
+})
+it('rejects screenshot coverage that is shorter than the actual PPTX', async () => {
+  const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+  const { bytes } = await compilePresentationDeck(benchmarkDeck())
+  const f = await fixture((files) => {
+    files.set('presentation.pptx', Buffer.from(bytes))
+    for (let page = 1; page <= 3; page++) files.set(`page-${page}.png`, png)
+  })
+  await f.upload()
+  await expect(f.call('finish')).rejects.toThrow('invalid_state')
+})
+it('accepts complete screenshots for a real compiled eight-page PPTX', async () => {
+  const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+  const { bytes } = await compilePresentationDeck(benchmarkDeck())
+  const f = await fixture((files) => {
+    files.set('presentation.pptx', Buffer.from(bytes))
+    for (let page = 1; page <= 8; page++) files.set(`page-${page}.png`, png)
+  })
+  await f.upload()
+  expect(parsePresentationDeliveryBundleReceipt(await f.call('finish')).state).toBe('ready')
 })
 it('rejects overlap conflict, mismatched identity and frozen evidence before publication', async () => {
   const f = await fixture((files) => {

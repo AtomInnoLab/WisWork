@@ -7,9 +7,9 @@ import { lstat, mkdir, open, readdir, rm } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
 import JSZip from 'jszip'
+import { XMLParser } from 'fast-xml-parser'
 import { PresentationStore, assertPresentationId } from '@wiswork/project-store'
 import {
-  presentationDeliveryBundleFiles,
   presentationDeliveryScreenshotFiles,
   parsePresentationDeliveryBundleManifest,
   parsePresentationDeliveryBundleReceipt,
@@ -159,7 +159,10 @@ function classicExtra(raw: Buffer, start: number, length: number) {
 }
 // Bound each inflation before the existing package reader allocates XML/media.
 // Reject ZIP64, encryption, duplicate/unsafe paths and inconsistent local headers.
-async function validateBundleZip(raw: Buffer) {
+async function validateBundleZip(
+  raw: Buffer,
+  limits = { entries: 32, entryBytes: 20 * 1024 * 1024, totalBytes: 32 * 1024 * 1024 },
+) {
   try {
     let end = -1
     for (let i = raw.length - 22; i >= Math.max(0, raw.length - 65557); i--)
@@ -173,8 +176,7 @@ async function validateBundleZip(raw: Buffer) {
       start = raw.readUInt32LE(end + 16)
     if (
       !count ||
-      count >
-        presentationDeliveryBundleFiles.length + presentationDeliveryScreenshotFiles.length + 4 ||
+      count > limits.entries ||
       count !== raw.readUInt16LE(end + 8) ||
       start + raw.readUInt32LE(end + 12) !== end
     )
@@ -198,8 +200,8 @@ async function validateBundleZip(raw: Buffer) {
         ![0, 0x8000].includes((raw.readUInt32LE(cursor + 38) >>> 16) & 0xf000) ||
         ![0, 8].includes(method) ||
         raw.readUInt16LE(cursor + 34) !== 0 ||
-        expanded > 20 * 1024 * 1024 ||
-        total + expanded > 32 * 1024 * 1024 ||
+        expanded > limits.entryBytes ||
+        total + expanded > limits.totalBytes ||
         local + 30 > start ||
         raw.readUInt32LE(local) !== 0x04034b50 ||
         raw.readUInt16LE(local + 8) !== method ||
@@ -226,7 +228,7 @@ async function validateBundleZip(raw: Buffer) {
       if (content + compressed > start) fail('unsupported_file')
       const input = raw.subarray(content, content + compressed),
         inflated =
-          method === 0 ? input : inflateRawSync(input, { maxOutputLength: 20 * 1024 * 1024 })
+          method === 0 ? input : inflateRawSync(input, { maxOutputLength: limits.entryBytes })
       if (
         inflated.length !== expanded ||
         (name.endsWith('.xml') && /<!DOCTYPE|<!ENTITY/i.test(inflated.toString('utf8')))
@@ -240,6 +242,25 @@ async function validateBundleZip(raw: Buffer) {
   } catch {
     fail('unsupported_file')
   }
+}
+async function pptxSlideCount(bytes: Buffer): Promise<number> {
+  const zip = await validateBundleZip(bytes, {
+    entries: 4096,
+    entryBytes: 32 * 1024 * 1024,
+    totalBytes: 128 * 1024 * 1024,
+  })
+  const file = zip.file('ppt/presentation.xml')
+  if (!file) fail('unsupported_file')
+  const xml = await file.async('string')
+  if (xml.length > 1024 * 1024) fail('unsupported_file')
+  const parsed = new XMLParser({
+    removeNSPrefix: true,
+    processEntities: false,
+    isArray: (name) => name === 'sldId',
+  }).parse(xml) as { presentation?: { sldIdLst?: { sldId?: unknown[] } } }
+  const count = parsed.presentation?.sldIdLst?.sldId?.length
+  if (!integer(count, 1, 4096)) fail('unsupported_file')
+  return count
 }
 export function createPresentationDeliveryBundleService(options: {
   userDataPath: string
@@ -616,6 +637,11 @@ export function createPresentationDeliveryBundleService(options: {
             image.readUInt32BE(16) * image.readUInt32BE(20) > 16_000_000
           )
             fail('unsupported_file')
+        }
+        if (r.manifest.checks.pageScreenshots === 'captured_unreviewed') {
+          const count = presentationDeliveryScreenshotFiles.filter((name) => files.has(name)).length
+          if (count !== (await pptxSlideCount(files.get('presentation.pptx')!)))
+            fail('invalid_state')
         }
         check(signal)
         const ready = {
