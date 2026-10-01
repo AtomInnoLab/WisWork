@@ -1,6 +1,6 @@
 # PPT Agent 本机工程基线（2026-10-01）
 
-P0-14 本机故障路径冒烟使用 `node tools/ppt-agent-electron-real-relay-smoke.mjs --p0-14-fallback --built-taskpane`。在 Electron PC、Rust Relay 与构建版 Taskpane 链路上，首选图片 URL 注入受控下载失败，第二个 URL 返回冻结 NASA 2K 图片（原图 SHA256 `ddbd57640789b4d60fe1dd0c57bd7563d7ad9d109732dcada2d814c3fa957cbe`）；再次导入同一 URL 命中缓存，PC 下载适配器限定备用图片只能读取一次。八页发布冒烟的第三页改为引用这张已导入的 PC 附件；回读页包中的图片媒体，以 PC 规范化后资产摘要核对。后续 PPTX/PDF 回读及恢复流程通过，退出码 0。八页的其他内容仍是合成演示内容，这项证据不能代替 P0-14 专业任务成品和真实 PowerPoint 宿主验收。
+P0-14 本机故障路径冒烟使用 `node tools/ppt-agent-electron-real-relay-smoke.mjs --p0-14-fallback --built-taskpane`。在 Electron PC、Rust Relay 与构建版 Taskpane 链路上，首选图片 URL 注入受控下载失败，第二个 URL 返回冻结 NASA 2K 图片（原图 SHA256 `ddbd57640789b4d60fe1dd0c57bd7563d7ad9d109732dcada2d814c3fa957cbe`）；再次导入同一 URL 命中缓存，PC 下载适配器限定备用图片只能读取一次。现已上传三份冻结 NASA HTML 来源，并将该附件用于八页来源绑定候选的第 1、4 页；页包图片媒体按 PC 规范化后资产摘要核对。八页 PPTX/PDF 回读及恢复流程通过，改进布局的最终来源任务段耗时 **34.532 秒**，整条脚本退出码 0。本机 LibreOffice 渲染八页已逐页查看，无裁切与几何重叠；此时间不含人工解释审阅与真实 PowerPoint 操作，本机候选不能替代专业审阅和宿主验收。
 
 依据[完整方案](./wiswork-ppt-agent-solution-and-implementation-plan-2026-09-22.md)阶段 0 和 §17，记录固定任务在本机构建版 Taskpane、Electron PC、Rust Relay 上的可复跑工程耗时。环境为 Linux x86_64、16 个逻辑 CPU、Node.js v25.8.2；本次没有运行跨平台 CI。
 

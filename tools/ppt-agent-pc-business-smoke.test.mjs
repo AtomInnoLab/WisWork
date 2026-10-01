@@ -203,6 +203,10 @@ test('real PC smoke checks image fallback order and cache through Relay', async 
   })
   assert.deepEqual(seen, [urls[0], urls[1], urls[1]])
   assert.equal(result.remoteImageFallback?.attachmentId, attachmentId)
+  assert.equal(result.remoteImageFallback?.assetSha256, attachmentId)
+  assert.deepEqual(result.remoteImageFallback?.attemptedUrls, urls)
+  assert.equal(result.remoteImageFallback?.cacheHit, true)
+  assert.match(result.remoteImageFallback?.primaryFailureAt, /^\d{4}-\d\d-\d\dT/)
 })
 
 test('real PC smoke rejects a response with mismatched session identity', async (t) => {

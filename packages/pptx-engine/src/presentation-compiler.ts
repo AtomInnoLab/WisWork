@@ -347,6 +347,10 @@ function xmlText(value: unknown): string {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) return value.map(xmlText).join('')
   if (!value || typeof value !== 'object') return ''
+  if ('a:p' in value)
+    return xmlItems((value as XmlNode)['a:p'])
+      .map(xmlText)
+      .join('\n')
   return Object.entries(value)
     .map(([key, child]) =>
       key === 'a:t' ? xmlText(child) : key.startsWith('@_') ? '' : xmlText(child),

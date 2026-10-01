@@ -58,7 +58,7 @@ if (builtTaskpane) {
 }
 const [benchmarkCase, selectedVariant] = selectedBenchmark
   ? selectedBenchmark.slice('--benchmark='.length).split(':')
-  : ['P0-01']
+  : [p014Fallback ? 'P0-14' : 'P0-01']
 const concurrentBenchmark = benchmarkCase === 'P0-17' && selectedVariant === 'all'
 const sourceBackedCrash = benchmarkCase === 'P0-20'
 const benchmarkVariant = concurrentBenchmark ? 'science' : selectedVariant
@@ -730,24 +730,17 @@ app.whenReady().then(async () => {
   smokeStage = 'fresh release production'
   const releaseProjectId = `${projectId}-release`
   const releaseFixture = releaseProductionFixture(releaseProjectId)
-  if (p014Fallback)
-    releaseFixture.deck.assets = [{ id: 'smoke-image', attachmentId: fallbackImageSha }]
   const releaseResult = await inspectPcBusiness(origin, documentId, releaseProjectId, {
     onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
     productionFixture: releaseFixture,
     createProduction: true,
     timeoutMs: 45_000,
-    ...(p014Fallback
-      ? { remoteImageCandidates: { urls: fallbackUrls, attachmentId: fallbackImageSha } }
-      : {}),
   })
   if (
     releaseResult.productionDelivery?.pageDigests.length !== 8 ||
     releaseResult.productionDelivery.pdfBytes < 100
   )
     throw new Error('Electron PC fresh release production incomplete')
-  if (p014Fallback)
-    console.log(`P0-14 controlled image fallback and cache passed: ${fallbackImageSha}`)
   if (!concurrentBenchmark) {
     const cases = benchmarkBatch ? batchCases : [benchmarkCase]
     const failures = []
@@ -790,6 +783,9 @@ app.whenReady().then(async () => {
             },
             timeoutMs: caseName === 'P0-10' ? 120_000 : 60_000,
             sourceAttachments: bundle.sourceAttachments,
+            ...(p014Fallback
+              ? { remoteImageCandidates: { urls: fallbackUrls, attachmentId: fallbackImageSha } }
+              : {}),
             productionFixture: {
               requestId: `${caseId}${caseVariant ? `-${caseVariant}` : ''}-production`,
               deck: bundle.deck,
@@ -814,6 +810,7 @@ app.whenReady().then(async () => {
         }
         if (
           !researchResult.sourceChecked ||
+          (p014Fallback && researchResult.remoteImageFallback?.attachmentId !== fallbackImageSha) ||
           researchResult.productionDelivery?.pageDigests.length !== 8 ||
           researchResult.productionDelivery.pdfBytes < 100 ||
           (revision &&
@@ -821,6 +818,10 @@ app.whenReady().then(async () => {
               researchResult.productionDelivery.derivedPage.pageDigests.length !== 8))
         )
           throw new Error('source-backed production incomplete')
+        if (p014Fallback)
+          console.log(
+            JSON.stringify({ type: 'p0_14_fallback', ...researchResult.remoteImageFallback }),
+          )
         console.log(
           JSON.stringify({
             type: 'ppt_benchmark_timing',

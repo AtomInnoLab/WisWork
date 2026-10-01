@@ -39,6 +39,75 @@ assert(
   'svs',
 )
 assert(guidelines.includes('NASA Images and Media Usage Guidelines'), 'guidelines')
+const plan = JSON.parse((await read('reference-plan.json')).toString('utf8'))
+const deck = JSON.parse((await read('reference-deck.json')).toString('utf8'))
+assert(plan.projectId === deck.id && plan.domain === 'science', 'candidate_identity')
+assert(plan.slides.length === 8 && deck.slides.length === 8, 'candidate_page_count')
+assert(
+  plan.slides.every(
+    (page, index) => page.id === deck.slides[index].id && page.title === deck.slides[index].title,
+  ),
+  'candidate_page_binding',
+)
+const snapshots = new Map([
+  [
+    'https://science.nasa.gov/earth/earth-observatory/2024-was-the-warmest-year-on-record-153806/',
+    await read('nasa-2024-article.html'),
+  ],
+  ['https://svs.gsfc.nasa.gov/5450', await read('nasa-svs-5450.html')],
+  [
+    'https://www.nasa.gov/nasa-brand-center/images-and-media/',
+    await read('nasa-media-guidelines.html'),
+  ],
+])
+assert(
+  plan.sources.length >= 5 &&
+    plan.sources.every((source) => {
+      const snapshot = snapshots.get(source.uri)
+      return (
+        snapshot &&
+        sha(snapshot) === source.snapshotAttachmentId &&
+        snapshot.toString('utf8').includes(source.excerpt)
+      )
+    }),
+  'candidate_source_snapshots',
+)
+const claims = new Set(plan.claims.map((claim) => claim.id))
+const sourceIds = new Set(plan.sources.map((source) => source.id))
+const sourceById = new Map(plan.sources.map((source) => [source.id, source]))
+assert(
+  claims.size === plan.claims.length &&
+    deck.claims.length === plan.claims.length &&
+    plan.claims.every(
+      (claim, index) =>
+        claim.reviewStatus === 'needs_review' &&
+        claim.sourceIds.length > 0 &&
+        claim.sourceIds.every((id) => sourceIds.has(id)) &&
+        deck.claims[index]?.id === claim.id &&
+        deck.claims[index]?.text === claim.statement &&
+        deck.claims[index]?.source ===
+          claim.sourceIds.map((id) => sourceById.get(id).uri).join(' ; '),
+    ) &&
+    plan.slides.every((page) => page.claimIds.every((id) => claims.has(id))),
+  'candidate_claim_binding',
+)
+assert(
+  deck.assets.length === 1 &&
+    deck.assets[0].id === rights.assetId &&
+    deck.assets[0].attachmentId === rights.candidates[1].sha256 &&
+    ['p01', 'p04'].every((pageId) =>
+      deck.slides
+        .find((page) => page.id === pageId)
+        ?.elements.some(
+          (element) =>
+            element.kind === 'image' && element.assetId === rights.assetId && element.altText,
+        ),
+    ) &&
+    deck.slides
+      .find((page) => page.id === 'p06')
+      ?.elements.some((element) => element.kind === 'table' && element.rows.length === 5),
+  'candidate_native_asset_and_table',
+)
 const zip = await JSZip.loadAsync(await read('p0-14-reference.pptx'))
 const slides = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
 assert(slides.length === 8, 'slide_count')
@@ -56,5 +125,5 @@ for (const name of media)
     'inserted_image',
   )
 console.log(
-  'PPT-P0-14 materials verified: 2 NASA images, 2 source pages, rights guidance, 8 slides, native table',
+  'PPT-P0-14 materials verified: 2 NASA images, 3 source snapshots, 8-page candidate, native table',
 )

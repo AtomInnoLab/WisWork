@@ -89,6 +89,30 @@ test('loads only the selected P0-17 document plan and its own frozen PDF', async
   }
 })
 
+test('loads frozen HTML source snapshots for a source-backed benchmark', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'ppt-benchmark-bundle-'))
+  try {
+    const directory = join(root, 'docs/product/ppt-benchmark-materials/PPT-P0-14')
+    await mkdir(directory, { recursive: true })
+    const html = Buffer.from('<html><body>NASA 2024 1.28 °C</body></html>')
+    const digest = createHash('sha256').update(html).digest('hex')
+    await writeFile(join(directory, 'nasa-source.html'), html)
+    await writeFile(
+      join(directory, 'reference-plan.json'),
+      JSON.stringify({ projectId: 'candidate', sources: [{ snapshotAttachmentId: digest }] }),
+    )
+    await writeFile(
+      join(directory, 'reference-deck.json'),
+      JSON.stringify({ id: 'candidate', slides: [{ id: 'p01' }] }),
+    )
+    const bundle = await loadBenchmarkBundle(root, 'PPT-P0-14')
+    assert.equal(bundle.sourceAttachments[0].name, 'nasa-source.html')
+    assert.deepEqual(bundle.sourceAttachments[0].bytes, html)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('loads the frozen external near-limit P0-10 PDF through its legacy attachment URI', async () => {
   const root = await mkdtemp(join(tmpdir(), 'ppt-benchmark-bundle-'))
   try {

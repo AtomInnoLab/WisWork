@@ -441,7 +441,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     fallback &&
     options.productionFixture &&
     !options.productionFixture.deck.assets?.some(
-      (asset) => asset.id === 'smoke-image' && asset.attachmentId === fallback.attachmentId,
+      (asset) => asset.attachmentId === fallback.attachmentId,
     )
   )
     throw new Error('fallback image must be used by production fixture')
@@ -576,6 +576,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       const failed = await importUrl(fallback.urls[0])
       if (failed?.error !== 'remote_image_unavailable')
         throw new Error('PC primary image did not fail as expected')
+      const primaryFailureAt = new Date().toISOString()
       const imported = await importUrl(fallback.urls[1])
       if (
         imported?.status !== 'ready' ||
@@ -596,6 +597,11 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       remoteImageFallback = {
         attachmentId: imported.attachmentId,
         assetSha256: imported.assetSha256,
+        attemptedUrls: fallback.urls,
+        primaryFailureAt,
+        cacheHit: true,
+        projectId,
+        productionRequestId: options.productionFixture?.requestId,
       }
     }
     if (sourceAttachments.length) {
@@ -614,7 +620,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       for (const source of sourceAttachments) {
         if (
           typeof source.name !== 'string' ||
-          !/\.(?:pdf|csv|json|docx|txt|md|xlsx|pptx)$/i.test(source.name) ||
+          !/\.(?:pdf|csv|json|docx|txt|md|html|xlsx|pptx)$/i.test(source.name) ||
           !Buffer.isBuffer(source.bytes) ||
           source.bytes.length < 1 ||
           source.bytes.length > 50 * 1024 * 1024 ||

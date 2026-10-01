@@ -11,6 +11,18 @@ import {
 import { benchmarkDeck } from './fixtures/presentation-benchmark'
 
 describe('presentation contract and compiler', () => {
+  it('round-trips native multiline text without losing paragraph boundaries', async () => {
+    const deck = benchmarkDeck()
+    deck.slides = [deck.slides[0]!]
+    const body = deck.slides[0]!.elements[1]!
+    if (body.kind !== 'text') throw new Error('invalid fixture')
+    body.text = '第一行\n第二行'
+    const result = await compilePresentationDeck(deck)
+    expect(result.report.checks.structure).toBe('passed')
+    const zip = await JSZip.loadAsync(result.bytes)
+    const xml = await zip.file('ppt/slides/slide1.xml')!.async('string')
+    expect(xml).toMatch(/<a:t>第一行<\/a:t>[\s\S]*<a:t>第二行<\/a:t>/)
+  })
   it('selects an installed fallback font and reports the substitution', async () => {
     const deck = benchmarkDeck()
     deck.style.fontFace = 'Unavailable Benchmark Font'
