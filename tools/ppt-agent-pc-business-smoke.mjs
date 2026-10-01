@@ -438,6 +438,14 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
   )
     throw new Error('invalid production smoke fixture')
   if (
+    fallback &&
+    options.productionFixture &&
+    !options.productionFixture.deck.assets?.some(
+      (asset) => asset.id === 'smoke-image' && asset.attachmentId === fallback.attachmentId,
+    )
+  )
+    throw new Error('fallback image must be used by production fixture')
+  if (
     options.derivedPageFixture &&
     (!options.createProduction ||
       !options.productionFixture ||
@@ -579,7 +587,16 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       const cached = await importUrl(fallback.urls[1])
       if (cached?.attachmentId !== imported.attachmentId || cached.status !== 'ready')
         throw new Error('PC fallback image cache invalid')
-      remoteImageFallback = { attachmentId: imported.attachmentId }
+      const asset = await request('presentation-assets.v1', {
+        operation: 'attachment_asset',
+        documentId,
+        attachmentId: imported.attachmentId,
+      })
+      checkImageAttachment(imported, asset, imported.attachmentId)
+      remoteImageFallback = {
+        attachmentId: imported.attachmentId,
+        assetSha256: imported.assetSha256,
+      }
     }
     if (sourceAttachments.length) {
       const sourceHashes = new Set(sourceAttachments.map((source) => source.sha256))
@@ -813,7 +830,11 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
           const expected = images.map((element) =>
             fixture.deck.assets.find((asset) => asset.id === element.assetId),
           )
-          if (expected.some((asset) => !asset?.base64))
+          if (
+            expected.some(
+              (asset) => !asset?.base64 && asset?.attachmentId !== fallback?.attachmentId,
+            )
+          )
             throw new Error('PC production native image missing')
           const actualDigests = await Promise.all(
             media.map(async (path) => {
@@ -823,7 +844,9 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
             }),
           )
           const expectedDigests = expected.map((asset) =>
-            createHash('sha256').update(Buffer.from(asset.base64, 'base64')).digest('hex'),
+            asset.base64
+              ? createHash('sha256').update(Buffer.from(asset.base64, 'base64')).digest('hex')
+              : remoteImageFallback?.assetSha256,
           )
           if (actualDigests.sort().join(',') !== expectedDigests.sort().join(','))
             throw new Error('PC production native image changed')

@@ -161,18 +161,38 @@ test('real PC smoke rejects an unrelated project response', async (t) => {
 
 test('real PC smoke checks image fallback order and cache through Relay', async (t) => {
   const urls = ['https://93.184.216.34/failed.png', 'https://93.184.216.34/fallback.png']
-  const attachmentId = 'a'.repeat(64)
+  const image = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4AWP4DwQACfsD/c8LaHIAAAAASUVORK5CYII=',
+    'base64',
+  )
+  const attachmentId = createHash('sha256').update(image).digest('hex')
   const seen = []
   const origin = await fakeRelay(
     t,
     { projectId: 'project-1', status: 'compiled', slideCount: 0, slides: [], history: [] },
     undefined,
     (body) => {
+      if (body.operation === 'attachment_asset')
+        return {
+          id: attachmentId,
+          mime: 'image/png',
+          width: 1,
+          height: 1,
+          base64: image.toString('base64'),
+        }
       if (body.operation !== 'attachment_import_url') return undefined
       seen.push(body.url)
       return body.url === urls[0]
         ? { error: 'remote_image_unavailable' }
-        : { attachmentId, kind: 'image', status: 'ready', source: urls[1] }
+        : {
+            attachmentId,
+            kind: 'image',
+            status: 'ready',
+            source: urls[1],
+            width: 1,
+            height: 1,
+            assetSha256: attachmentId,
+          }
     },
     ['presentation-remote-images.v1'],
   )

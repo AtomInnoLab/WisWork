@@ -729,9 +729,12 @@ app.whenReady().then(async () => {
     throw new Error('Electron PC test attachments were not cleaned up')
   smokeStage = 'fresh release production'
   const releaseProjectId = `${projectId}-release`
+  const releaseFixture = releaseProductionFixture(releaseProjectId)
+  if (p014Fallback)
+    releaseFixture.deck.assets = [{ id: 'smoke-image', attachmentId: fallbackImageSha }]
   const releaseResult = await inspectPcBusiness(origin, documentId, releaseProjectId, {
     onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
-    productionFixture: releaseProductionFixture(releaseProjectId),
+    productionFixture: releaseFixture,
     createProduction: true,
     timeoutMs: 45_000,
     ...(p014Fallback
