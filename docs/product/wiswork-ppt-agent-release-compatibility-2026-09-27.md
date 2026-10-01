@@ -18,6 +18,8 @@
 
 构建版本探测、Manifest、能力协商分别解决静态资源、协议能力和会话入口的问题；三者不能互相替代。发布时应先部署支持 v2 的 Relay 和 PC，再发布 v2 Taskpane，并保留旧 Taskpane 的回滚包。`version.json`、`taskpane.html` 与其哈希资源需原子发布；真实 Win/Mac/Web 混合版本与端到端冒烟仍待执行。
 
+本机还可运行 `node tools/ppt-agent-legacy-pc-compat-smoke.mjs`。它从历史提交 `1d611fd3` 编译实际 v1 PC Relay 客户端，与当前 Rust Relay 的 v2 Office 邀请交互，核对旧客户端进入 `disconnected:protocol_violation`、新版 Office 收到 `office.pc_incompatible`，并验证原邀请码随后可由 v2 PC 认领。该检查不使用模拟 PC 帧，也不需要跨平台 CI；历史客户端源码并不等于已发布旧 PC 安装包，仍需发布包级混合版本验收。
+
 本机跨运行时门禁 `node tools/ppt-agent-electron-real-relay-smoke.mjs` 已覆盖真实 Electron PC 与 Rust Relay 的三次进程会话：首次完成八页编译、逐页生产、PPTX/PDF 读取和 TXT/PNG 附件上传回读清理，并在另一个项目保存计划、开始一项待执行的八页生产任务；PC 正常退出后以相同用户数据目录重启并重新配对，继续执行待处理任务，逐页检查 PPTX、导入来源和 PDF，再只读检查已完成任务的全部交付摘要。第二进程另起独立八页后台任务，第一页完成、第二页进入编译时强制退出；第三进程检查持久 `interrupted` 回执，显式续跑后确认第一页未重编、第二页重试且全部八页完成。它验证本机 PC 进程恢复读取、待执行任务续接和部分完成后台任务恢复，不代表系统断电时磁盘耐久性、部署后的 Relay/PC/Taskpane 混合版本或 PowerPoint 宿主恢复验收。
 
 灰度构建可设置 `VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT=0..100`（默认 100）。Taskpane 按已保存文稿的 Office 地址只读分桶；部分灰度中未保存或未命中的 PowerPoint 文稿在启动 Agent 前显示不可用状态。比例随新构建发布，回滚需要保留并切回旧构建及 Manifest。该开关只控制 PPT Agent 入口。可另设 `VITE_WISWORK_OFFICE_DIAGNOSTIC_SAMPLE_PERCENT=0..100`（默认 100），按运行 trace 对脱敏失败诊断远程抽样，本地诊断仍完整；抽样不是健康指标验收，也不能代表真实宿主兼容或部署后全链路冒烟已完成。
