@@ -1,6 +1,6 @@
 # PPT Agent 发布兼容矩阵（工程证据）
 
-2026-10-01 本机补充：生产 Taskpane 启动读取 `version.json` 时也要求 PC/Relay 的 PPT 最低协议字段均为 v2；任一缺失或不兼容均进入可重试的版本未核实状态，阻止文档工具和 PC 连接入口。重新构建的 Taskpane 已通过本机 Electron PC + Rust Relay 端到端冒烟，真实 PowerPoint 宿主仍待验收。
+2026-10-01 本机补充：生产 Taskpane 启动读取 `version.json` 时也要求 PC/Relay 的 PPT 最低协议字段均为 v2；任一缺失或不兼容均进入可重试的版本未核实状态，阻止文档工具和 PC 连接入口。构建版端到端冒烟现注入 HTTP 200 但 PC 最低协议为 v1 的响应，确认连接入口隐藏，重试后继续 Electron PC + Rust Relay 配对、八页生产、PPTX/PDF 回读与恢复，退出码 0。真实 PowerPoint 宿主仍待验收。
 
 2026-10-01 本机补充：Office 发布包的 `version.json` 明确写入 `presentationMinPcProtocol: 2` 和 `presentationMinRelayProtocol: 2`，作为 PPT 功能的最低协议版本；旧版 `agent.v1` 基础会话仍按下表兼容。发布预检要求这两个字段均为 2，并逐一对比部署站点元数据，避免发布包与站点声明不一致。构建产物测试、Office 类型检查和发布预检 18/18 已在本机通过。
 
