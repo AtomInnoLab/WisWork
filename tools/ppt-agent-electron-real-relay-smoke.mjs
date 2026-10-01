@@ -1,7 +1,7 @@
 /* global window, document */
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -29,6 +29,15 @@ const expectedSlideTexts = Array.from(
   { length: 8 },
   (_, index) => `Electron real Relay page ${index + 1}`,
 )
+const researchMaterials = join(root, 'docs/product/ppt-benchmark-materials/PPT-P0-01')
+const researchDeck = JSON.parse(
+  await readFile(join(researchMaterials, 'reference-deck.json'), 'utf8'),
+)
+const researchPlan = JSON.parse(
+  await readFile(join(researchMaterials, 'reference-plan.json'), 'utf8'),
+)
+const researchPdf = await readFile(join(researchMaterials, 'deardorff-2020-article.pdf'))
+const researchSourceSha256 = createHash('sha256').update(researchPdf).digest('hex')
 const deck = {
   version: 1,
   id: projectId,
@@ -547,6 +556,29 @@ app.whenReady().then(async () => {
     releaseResult.productionDelivery.pdfBytes < 100
   )
     throw new Error('Electron PC fresh release production incomplete')
+  smokeStage = 'P0-01 real-source research production'
+  const researchResult = await inspectPcBusiness(origin, 'p0-01-local-document', researchDeck.id, {
+    onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+    timeoutMs: 60_000,
+    sourceAttachment: {
+      name: 'deardorff-2020-article.pdf',
+      bytes: researchPdf,
+      sha256: researchSourceSha256,
+    },
+    productionFixture: {
+      requestId: 'p0-01-research-production',
+      deck: researchDeck,
+      plan: researchPlan,
+      expectedSlideTexts: researchDeck.slides.map((slide) => slide.title),
+    },
+    createProduction: true,
+  })
+  if (
+    !researchResult.sourceChecked ||
+    researchResult.productionDelivery?.pageDigests.length !== 8 ||
+    researchResult.productionDelivery.pdfBytes < 100
+  )
+    throw new Error('Electron PC P0-01 source-backed production incomplete')
   const pendingProjectId = `${projectId}-recovery`
   smokeStage = 'pending production setup'
   const pendingFixture = {
@@ -582,15 +614,27 @@ app.whenReady().then(async () => {
   )
     throw new Error('Electron PC pending production did not resume after restart')
   smokeStage = 'completed delivery recovery'
-  const recovered = await inspectPcBusiness(origin, documentId, projectId, {
-    onCode: (code) => restartedPc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
-    timeoutMs: 15_000,
-    compiledRequestId: 'run-1',
-    expectedSlideTexts,
-    manualObservation: 'read',
-    productionFixture: { requestId: 'production-run-1', deck, plan, expectedSlideTexts },
-    readExistingProduction: true,
-  })
+  // This smoke opens more than ten pairings from one loopback IP. Respect the
+  // Relay's 120-second production limit instead of relaxing it for the test.
+  const recoveryDeadline = Date.now() + 130_000
+  let recovered
+  while (!recovered) {
+    try {
+      recovered = await inspectPcBusiness(origin, documentId, projectId, {
+        onCode: (code) => restartedPc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+        timeoutMs: 15_000,
+        compiledRequestId: 'run-1',
+        expectedSlideTexts,
+        manualObservation: 'read',
+        productionFixture: { requestId: 'production-run-1', deck, plan, expectedSlideTexts },
+        readExistingProduction: true,
+      })
+    } catch (error) {
+      if (!String(error).includes('create_rate_limited') || Date.now() >= recoveryDeadline)
+        throw error
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10_000))
+    }
+  }
   // Both PDF responses were independently parsed and checked for page count above.
   // LibreOffice renders on demand, so its output byte length is not a durable receipt.
   const changedAfterRestart = [
@@ -631,7 +675,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    'Electron PC + Rust Relay business smoke passed: browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery',
+    'Electron PC + Rust Relay business smoke passed: browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, P0-01 real PDF source upload and eight-page chart production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery',
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {

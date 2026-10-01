@@ -1,6 +1,11 @@
 const { readFile, writeFile } = require('node:fs/promises')
 const { join } = require('node:path')
 const { compilePresentationDeck } = require('@wiswork/pptx-engine/presentation-compiler')
+const prettier = require('prettier')
+const {
+  assertDeckMatchesPresentationPlan,
+  parsePresentationPlan,
+} = require('@wiswork/pptx-engine/presentation-plan')
 
 async function main() {
   const root = __dirname
@@ -35,21 +40,21 @@ async function main() {
     '来源：论文 PDF 第 5、9 页；局限见第 9 页',
     '原件已冻结；科研审阅与 PowerPoint 宿主验收待完成',
   ]
-  const source = 'Deardorff 2020，PLOS ONE e0230697'
+  const source = 'doi:10.1371/journal.pone.0230697'
   const claims = [
-    { id: 'sample', text: '培训前 14 人、三个月后 12 人', source, locator: 'PDF 第 5 页' },
-    { id: 'score', text: '均分 1.6/6 到 2.2/6；p=0.318', source, locator: 'PDF 第 5 页' },
+    { id: 'sample', text: '培训前 14 人、三个月后 12 人', source, locator: '第 5 页' },
+    { id: 'score', text: '均分 1.6/6 到 2.2/6；p=0.318', source, locator: '第 5 页' },
     {
       id: 'open-source',
       text: '开源软件使用 7/14 到 10/12',
       source,
-      locator: 'PDF 第 5 页 Table 1',
+      locator: '第 5 页',
     },
     {
       id: 'limitations',
       text: '小样本、选择/应答、单人编码和功效限制',
       source,
-      locator: 'PDF 第 9 页',
+      locator: '第 9 页',
     },
   ]
   const deck = {
@@ -127,7 +132,140 @@ async function main() {
       ],
     })),
   }
+  const tableExcerpt = 'Use open source software 7 10'
+  const sampleExcerpt = 'only 12 researchers\nparticipated in the post-workshop interviews.'
+  const scoreExcerpt =
+    '1.6 to 2.2\nand ranged from 0 to 6, however this was not a statistically significant difference (t(11) = -1.04,\np = 0.318)'
+  const limitationsExcerpt =
+    'The analysis and coding for this project was also performed solely by the author, and\na different researcher might have interpreted slightly different themes. Finally, because of the\nsmall sample size, the quantitative analysis lacked appropriate power.'
+  const plan = {
+    version: 1,
+    projectId: deck.id,
+    title: deck.title,
+    brief: {
+      objective: '基于冻结原文制作八页科研会议候选汇报，保留样本、统计和因果边界',
+      audience: '科研专业审阅者',
+      language: 'zh-CN',
+      minutes: 8,
+      requiredContent: ['研究问题与方法', '六项清单', 'Table 1 原生图表', '统计结论与局限'],
+      constraints: ['科学解释待专业审阅', '真实 PowerPoint 保存重开尚未验收'],
+    },
+    sources: [
+      {
+        id: 'paper-page-5',
+        title: 'Deardorff 2020 论文 PDF 第 5 页',
+        uri: source,
+        snapshotAttachmentId: basis.sourceSha256,
+        locator: '第 5 页',
+        excerpt: sampleExcerpt,
+      },
+      {
+        id: 'paper-score',
+        title: 'Deardorff 2020 论文 PDF 第 5 页：清单均分',
+        uri: source,
+        snapshotAttachmentId: basis.sourceSha256,
+        locator: '第 5 页',
+        excerpt: scoreExcerpt,
+      },
+      {
+        id: 'paper-table-1',
+        title: 'Deardorff 2020 Table 1',
+        uri: source,
+        snapshotAttachmentId: basis.sourceSha256,
+        locator: '第 5 页',
+        excerpt: tableExcerpt,
+      },
+      {
+        id: 'paper-page-9',
+        title: 'Deardorff 2020 论文 PDF 第 9 页',
+        uri: source,
+        snapshotAttachmentId: basis.sourceSha256,
+        locator: '第 9 页',
+        excerpt: limitationsExcerpt,
+      },
+    ],
+    claims: claims.map((claim) => ({
+      id: claim.id,
+      statement: claim.text,
+      type: 'fact',
+      sourceIds: [
+        claim.id === 'open-source'
+          ? 'paper-table-1'
+          : claim.id === 'limitations'
+            ? 'paper-page-9'
+            : claim.id === 'score'
+              ? 'paper-score'
+              : 'paper-page-5',
+      ],
+      confidence: 'low',
+      reviewStatus: 'needs_review',
+    })),
+    style: deck.style,
+    slides: deck.slides.map((slide, index) => ({
+      id: slide.id,
+      title: slide.title,
+      purpose: '呈现本研究的受限证据与待审解释',
+      claimIds: slide.claimIds,
+      layout: index === 0 ? 'cover' : index === 5 ? 'chart' : index === 7 ? 'summary' : 'content',
+      requiredAssets: [],
+      acceptanceCriteria: ['原生可编辑文字', '保留来源与研究局限'],
+      ...(index === 5
+        ? {
+            chartData: [
+              {
+                elementId: 'table1-open-source-native',
+                categories: [
+                  `前测 n=${basis.table1OpenSource.beforeDenominator}`,
+                  `三个月后 n=${basis.table1OpenSource.afterDenominator}`,
+                ],
+                series: [
+                  {
+                    name: '报告使用开源软件的人数',
+                    points: [
+                      {
+                        value: basis.table1OpenSource.before,
+                        claimId: 'open-source',
+                        basis: {
+                          kind: 'source',
+                          sourceId: 'paper-table-1',
+                          excerptOffset: tableExcerpt.indexOf(' 7 ') + 1,
+                          excerptText: '7',
+                        },
+                      },
+                      {
+                        value: basis.table1OpenSource.after,
+                        claimId: 'open-source',
+                        basis: {
+                          kind: 'source',
+                          sourceId: 'paper-table-1',
+                          excerptOffset: tableExcerpt.lastIndexOf('10'),
+                          excerptText: '10',
+                        },
+                      },
+                    ],
+                  },
+                ],
+                unit: 'people',
+              },
+            ],
+          }
+        : {}),
+    })),
+  }
+  assertDeckMatchesPresentationPlan(deck, parsePresentationPlan(plan))
   const result = await compilePresentationDeck(deck)
+  const formatJson = async (name, value) => {
+    const path = join(root, name)
+    await writeFile(
+      path,
+      await prettier.format(JSON.stringify(value), {
+        ...(await prettier.resolveConfig(path)),
+        parser: 'json',
+      }),
+    )
+  }
+  await formatJson('reference-plan.json', plan)
+  await formatJson('reference-deck.json', deck)
   await writeFile(join(root, 'p0-01-reference.pptx'), result.bytes)
   console.log(
     `P0-01 candidate reference: ${result.bytes.length} bytes, ${deck.slides.length} native slides`,

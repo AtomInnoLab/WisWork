@@ -4,7 +4,9 @@
 
 ## 本机候选参考稿
 
-`basis.json` 固定论文 PDF 第 5 页的 14/12 人样本、清单均分 1.6/6→2.2/6、`p=0.318`，以及 Table 1 “使用开源软件”7/14→10/12；第 9 页固定作者所述局限。`node --import tsx generate-reference.cjs` 使用产品 PptxGenJS 编译器生成 `p0-01-reference.pptx`：八页原生文字和一张带嵌入 Excel 工作簿的原生图表，图表横轴分别写明两次样本分母。`node verify-materials.mjs` 核对冻结原 PDF 的页数与原文锚点、图表缓存与工作簿值、八页结构和 SHA256SUMS。参考稿只供本机流程复现；文字与图表解释仍是待科研审阅的候选内容，不能代替真实 PowerPoint 导入、编辑、保存、重开或专业任务验收。
+`basis.json` 固定论文 PDF 第 5 页的 14/12 人样本、清单均分 1.6/6→2.2/6、`p=0.318`，以及 Table 1 “使用开源软件”7/14→10/12；第 9 页固定作者所述局限。`reference-plan.json` 是产品结构化制作计划，四条事实均标为 `needs_review`，来源摘录逐字匹配本机 PDF 解析器的原文；`reference-deck.json` 是与计划匹配的八页可编辑卡片。`node --import tsx generate-reference.cjs` 使用产品 PptxGenJS 编译器生成 `p0-01-reference.pptx`：八页原生文字和一张带嵌入 Excel 工作簿的原生图表，图表横轴分别写明两次样本分母。`node --import tsx verify-materials.mjs` 核对原 PDF 页数与摘录、计划/卡片绑定、图表缓存与工作簿值、八页结构和 SHA256SUMS。
+
+本机 `node tools/ppt-agent-electron-real-relay-smoke.mjs` 已通过真实 Electron PC + Rust Relay 链路：上传冻结论文 PDF、保存计划、逐页生产八页，回读 PPTX/PDF，检查页面文字、原生图表及工作簿；该脚本同时验证并发与生产恢复。参考稿和本机链路仍是待科研审阅的候选内容，真实 PowerPoint 导入、编辑、保存、重开及专业任务验收尚未执行。
 
 ## 来源、版本和使用条件
 

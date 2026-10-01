@@ -5,6 +5,13 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import JSZip from 'jszip'
+import {
+  assertDeckMatchesPresentationPlan,
+  parsePresentationPlan,
+} from '@wiswork/pptx-engine/presentation-plan'
+import { parsePresentationDeck } from '@wiswork/pptx-engine/presentation'
+import { checkPresentationChartData } from '@wiswork/pptx-engine/presentation-chart-data'
+import { pdfToPages } from '../../../../packages/file-parse/src/pdf.ts'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const basis = JSON.parse(readFileSync(join(root, 'basis.json'), 'utf8'))
@@ -39,6 +46,7 @@ for (const anchor of [
   'Use open source software',
 ])
   assert(page5.includes(anchor), `original page 5 missing: ${anchor}`)
+assert.match(page5, /Use open source software\s+7\s+10/)
 const page9 = execFileSync('pdftotext', ['-f', '9', '-l', '9', '-layout', article, '-'], {
   encoding: 'utf8',
 })
@@ -49,6 +57,32 @@ assert(
     'Reproducibility Score Card',
   ),
 )
+const plan = parsePresentationPlan(
+  JSON.parse(readFileSync(join(root, 'reference-plan.json'), 'utf8')),
+)
+const deck = parsePresentationDeck(
+  JSON.parse(readFileSync(join(root, 'reference-deck.json'), 'utf8')),
+)
+assertDeckMatchesPresentationPlan(deck, plan)
+assert.equal(plan.sources.length, 4)
+assert(plan.sources.every((source) => source.snapshotAttachmentId === basis.sourceSha256))
+const extractedPages = await pdfToPages(readFileSync(article))
+for (const source of plan.sources) {
+  const page = Number(source.locator?.match(/^第 (\d+) 页$/)?.[1])
+  assert(Number.isInteger(page), `source ${source.id} has no PDF page locator`)
+  assert(
+    extractedPages[page - 1]?.includes(source.excerpt),
+    `source ${source.id} excerpt is absent from PDF parser output`,
+  )
+}
+assert.equal(plan.claims.length, 4)
+assert(plan.claims.every((claim) => claim.reviewStatus === 'needs_review'))
+assert.equal(plan.slides.length, 8)
+assert.equal(deck.slides.length, 8)
+const chartData = checkPresentationChartData(plan, 'p06', [
+  deck.slides[5].elements.find((el) => el.kind === 'chart'),
+])
+assert(chartData.charts.every((chart) => chart.findings.length === 0))
 
 const pptx = await JSZip.loadAsync(readFileSync(join(root, 'p0-01-reference.pptx')))
 assert.equal(
@@ -80,7 +114,14 @@ for (let i = 1; i <= 8; i++) {
   assert(!slide.includes('attachment:'), `slide ${i}: raw attachment ID leaked into citation`)
 }
 const manifest = readFileSync(join(root, 'SHA256SUMS'), 'utf8').trim().split('\n')
-for (const name of [basis.sourceFile, basis.checklistFile, 'basis.json', 'p0-01-reference.pptx'])
+for (const name of [
+  basis.sourceFile,
+  basis.checklistFile,
+  'basis.json',
+  'reference-plan.json',
+  'reference-deck.json',
+  'p0-01-reference.pptx',
+])
   assert(
     manifest.includes(`${sha(readFileSync(join(root, name)))}  ${name}`),
     `hash missing: ${name}`,

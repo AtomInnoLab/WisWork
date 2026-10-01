@@ -333,19 +333,22 @@ async function uploadFixture(request, documentId, name, bytes, kind) {
     begin.receivedBytes !== 0
   )
     throw new Error('PC smoke fixture already exists or upload failed')
-  const chunk = await request('presentation-assets.v1', {
-    operation: 'attachment_chunk',
-    documentId,
-    attachmentId,
-    offset: 0,
-    base64: bytes.toString('base64'),
-  })
-  if (
-    chunk?.attachmentId !== attachmentId ||
-    chunk.status !== 'uploading' ||
-    chunk.receivedBytes !== bytes.length
-  )
-    throw new Error('PC smoke upload chunk failed')
+  for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {
+    const part = bytes.subarray(offset, offset + 64 * 1024)
+    const chunk = await request('presentation-assets.v1', {
+      operation: 'attachment_chunk',
+      documentId,
+      attachmentId,
+      offset,
+      base64: part.toString('base64'),
+    })
+    if (
+      chunk?.attachmentId !== attachmentId ||
+      chunk.status !== 'uploading' ||
+      chunk.receivedBytes !== offset + part.length
+    )
+      throw new Error('PC smoke upload chunk failed')
+  }
   const finished = await request('presentation-assets.v1', {
     operation: 'attachment_finish',
     documentId,
@@ -526,6 +529,22 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         throw new Error('invalid PC business JSON')
       }
     }
+    if (options.sourceAttachment) {
+      const source = options.sourceAttachment
+      if (
+        typeof source.name !== 'string' ||
+        !/\.pdf$/i.test(source.name) ||
+        !Buffer.isBuffer(source.bytes) ||
+        source.bytes.length < 1 ||
+        source.bytes.length > 10 * 1024 * 1024 ||
+        createHash('sha256').update(source.bytes).digest('hex') !== source.sha256 ||
+        options.productionFixture?.plan?.sources?.some(
+          (item) => item.snapshotAttachmentId !== source.sha256,
+        )
+      )
+        throw new Error('invalid source-backed production fixture')
+      await uploadFixture(request, documentId, source.name, source.bytes, 'text')
+    }
     if (options.createProduction) {
       const fixture = options.productionFixture
       const saved = await request('presentation.v1', {
@@ -673,7 +692,18 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
           (page, index) => page.id !== fixture.deck.slides[index]?.id || page.state !== 'compiled',
         )
       )
-        throw new Error('PC page production incomplete')
+        throw new Error(
+          `PC page production incomplete: ${JSON.stringify({
+            status: produced?.status,
+            error: produced?.error,
+            compiledCount: produced?.compiledCount,
+            pages: produced?.pages?.map((page) => ({
+              id: page.id,
+              state: page.state,
+              error: page.error,
+            })),
+          })}`,
+        )
       const pageDigests = []
       const pagePptxBase64 = []
       const sourcePages = []
@@ -917,6 +947,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       uploadChecked: Boolean(options.uploadFixtures),
       ...(compiledDelivery ? { compiledDelivery } : {}),
       ...(productionDelivery ? { productionDelivery } : {}),
+      ...(options.sourceAttachment ? { sourceChecked: true } : {}),
       ...(manualObservation ? { manualObservation } : {}),
     }
   } finally {
