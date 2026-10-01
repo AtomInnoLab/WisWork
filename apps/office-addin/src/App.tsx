@@ -1600,7 +1600,7 @@ export function AgentWorkspace(props: {
           <section aria-label="制作位置">
             <strong>制作位置</strong>
             <p>
-              可以在当前文档制作。已有内容时建议先创建副本，避免覆盖原稿。现有项目不会自动迁移到副本。
+              可以在当前文档制作。已有内容时建议先保存原稿、再创建副本。现有项目不会自动迁移到副本。
             </p>
             <button
               type="button"
@@ -1621,7 +1621,16 @@ export function AgentWorkspace(props: {
                       '副本已打开。请先另存为新文件，再在副本中打开 WisWork 并开始制作。',
                     ),
                   )
-                  .catch(() => setCopyStatus('创建副本失败；当前文档没有因本次操作被写入。'))
+                  .catch((error: unknown) =>
+                    setCopyStatus(
+                      error instanceof Error && error.message === 'presentation_document_changed'
+                        ? '导出期间文档已切换，副本未打开。请回到原文档重试。'
+                        : error instanceof Error &&
+                            error.message === 'presentation_copy_save_source_first'
+                          ? '请先保存当前文档，再创建副本；未保存的两份文稿可能共用项目身份。'
+                          : '创建副本失败；请检查文档身份、导出权限和 PowerPoint 版本。',
+                    ),
+                  )
                   .finally(() => setCopyPending(false))
               }}
             >
