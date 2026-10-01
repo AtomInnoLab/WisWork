@@ -103,6 +103,11 @@ export interface RichTextShape {
   paragraphs: Array<{
     alignment?: string
     knownAlignment?: string
+    /** Upstream master style only; layout and placeholder inheritance remain unresolved. */
+    masterStyleCandidate?: {
+      kind: 'title' | 'body'
+      font: Record<string, string | number | boolean>
+    }
     listStyleFont?: Record<string, string | number | boolean>
     paragraphDefaultFont?: Record<string, string | number | boolean>
     endParagraphFont?: Record<string, string | number | boolean>
@@ -335,8 +340,14 @@ async function linkedThemeStyle(
   colors: Record<string, string>
   typefaces: Record<string, string>
   otherFonts: Array<Record<string, string | number | boolean>>
+  placeholderFonts: Record<'title' | 'body', Array<Record<string, string | number | boolean>>>
 }> {
-  const empty = { colors: {}, typefaces: {}, otherFonts: [] }
+  const empty = {
+    colors: {},
+    typefaces: {},
+    otherFonts: [],
+    placeholderFonts: { title: [], body: [] },
+  }
   const layoutPath = await related(zip, slidePath, 'slideLayout')
   const masterPath = layoutPath && (await related(zip, layoutPath, 'slideMaster'))
   const themePath = masterPath && (await related(zip, masterPath, 'theme'))
@@ -350,16 +361,24 @@ async function linkedThemeStyle(
   const colors: Record<string, string> = {}
   const typefaces: Record<string, string> = {}
   const otherFonts: Array<Record<string, string | number | boolean>> = []
+  const placeholderFonts: Record<
+    'title' | 'body',
+    Array<Record<string, string | number | boolean>>
+  > = { title: [], body: [] }
   const textStyles = tags(master, 'p:txStyles')
-  const otherStyle =
-    textStyles.length === 1 ? tags(textStyles[0]!['p:txStyles'] as Node[], 'p:otherStyle') : []
-  if (otherStyle.length === 1) {
-    const children = otherStyle[0]!['p:otherStyle'] as Node[]
+  for (const [tag, fonts] of [
+    ['p:otherStyle', otherFonts],
+    ['p:titleStyle', placeholderFonts.title],
+    ['p:bodyStyle', placeholderFonts.body],
+  ] as const) {
+    const styles = textStyles.length === 1 ? tags(textStyles[0]!['p:txStyles'] as Node[], tag) : []
+    if (styles.length !== 1) continue
+    const children = styles[0]![tag] as Node[]
     const defaults = tags(children, 'a:defPPr')[0]
     const defaultFont = defaults ? directFont(defaults['a:defPPr'] as Node[]) : {}
     for (let level = 0; level < 9; level++) {
       const property = tags(children, `a:lvl${level + 1}pPr`)[0]
-      otherFonts[level] = knownFont(
+      fonts[level] = knownFont(
         defaultFont,
         property ? directFont(property[`a:lvl${level + 1}pPr`] as Node[]) : {},
       )
@@ -376,7 +395,7 @@ async function linkedThemeStyle(
     if (face && face.length <= 256 && !Array.from(face).some((char) => char.charCodeAt(0) < 32))
       typefaces[symbol] = face
   }
-  if (!scheme) return { colors, typefaces, otherFonts }
+  if (!scheme) return { colors, typefaces, otherFonts, placeholderFonts }
   const exactRgb = (key: string) => {
     const entry = tags(scheme['a:clrScheme'] as Node[], `a:${key}`)[0]
     const children = (entry?.[`a:${key}`] as Node[] | undefined) ?? []
@@ -393,7 +412,7 @@ async function linkedThemeStyle(
     const rgb = exactRgb(key)
     if (rgb) colors[key] = rgb
   }
-  if (!mapping) return { colors, typefaces, otherFonts }
+  if (!mapping) return { colors, typefaces, otherFonts, placeholderFonts }
   for (const key of [
     'bg1',
     'tx1',
@@ -413,7 +432,7 @@ async function linkedThemeStyle(
     const rgb = exactRgb(mapped)
     if (rgb) colors[key] = rgb
   }
-  return { colors, typefaces, otherFonts }
+  return { colors, typefaces, otherFonts, placeholderFonts }
 }
 
 /** Local formatting plus explicit master other-text style and exact theme RGB where provable. */
@@ -437,7 +456,15 @@ export async function inspectPowerPointRichText(
     if (!packageShapeId || !/^\d+$/.test(packageShapeId)) throw new Error('office_api_unsupported')
     const listStyle = tags(body['p:txBody'] as Node[], 'a:lstStyle')[0]
     const listChildren = (listStyle?.['a:lstStyle'] as Node[] | undefined) ?? []
-    const ordinaryShape = tags(shape['p:sp'] as Node[], 'p:ph').length === 0
+    const placeholders = tags(shape['p:sp'] as Node[], 'p:ph')
+    const ordinaryShape = placeholders.length === 0
+    const placeholderType = placeholders.length === 1 ? attr(placeholders[0], 'type') : undefined
+    const candidateKind: 'title' | 'body' | undefined =
+      placeholderType === 'title' || placeholderType === 'ctrTitle'
+        ? 'title'
+        : placeholderType === 'body'
+          ? 'body'
+          : undefined
     const paragraphs = tags(body['p:txBody'] as Node[], 'a:p').map((paragraph) => {
       const children = paragraph['a:p'] as Node[]
       const paragraphProperties = tags(children, 'a:pPr')[0]
@@ -455,6 +482,10 @@ export async function inspectPowerPointRichText(
         : {}
       const listStyleFont = knownFont(defaultFont, levelFont)
       const masterFont = ordinaryShape && level !== undefined ? themeStyle.otherFonts[level] : {}
+      const candidateFont =
+        candidateKind && level !== undefined
+          ? themeStyle.placeholderFonts[candidateKind][level]
+          : undefined
       const knownAlignment =
         alignment ?? attr(levelProperties, 'algn') ?? attr(defaultProperties, 'algn')
       const paragraphDefaultFont = paragraphProperties
@@ -497,6 +528,9 @@ export async function inspectPowerPointRichText(
       runCount += runs.length
       textLength += runs.reduce((total, run) => total + run.text.length, 0)
       return {
+        ...(candidateKind && candidateFont && Object.keys(candidateFont).length
+          ? { masterStyleCandidate: { kind: candidateKind, font: candidateFont } }
+          : {}),
         ...(alignment ? { alignment } : {}),
         ...(knownAlignment ? { knownAlignment } : {}),
         ...(Object.keys(listStyleFont).length ? { listStyleFont } : {}),

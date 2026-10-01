@@ -464,6 +464,7 @@ it('reads explicit master other-text font only for a non-placeholder shape', asy
     `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree>
       <p:sp><p:nvSpPr><p:cNvPr id="7" name="Ordinary"/></p:nvSpPr><p:txBody><a:p><a:r><a:t>Ordinary</a:t></a:r><a:r><a:rPr><a:latin typeface="Run Face"/></a:rPr><a:t>Override</a:t></a:r></a:p></p:txBody></p:sp>
       <p:sp><p:nvSpPr><p:cNvPr id="8" name="Placeholder"/><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Placeholder</a:t></a:r></a:p></p:txBody></p:sp>
+      <p:sp><p:nvSpPr><p:cNvPr id="9" name="Title"/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Title</a:t></a:r></a:p></p:txBody></p:sp>
     </p:spTree></p:cSld></p:sld>`,
   )
   zip.file(
@@ -477,7 +478,7 @@ it('reads explicit master other-text font only for a non-placeholder shape', asy
   )
   zip.file(
     'ppt/slideMasters/slideMaster1.xml',
-    '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:txStyles><p:otherStyle><a:lvl1pPr><a:defRPr sz="1800" b="1"><a:latin typeface="Master Face"/></a:defRPr></a:lvl1pPr></p:otherStyle></p:txStyles></p:sldMaster>',
+    '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:txStyles><p:titleStyle><a:lvl1pPr><a:defRPr sz="3200"><a:latin typeface="Title Face"/></a:defRPr></a:lvl1pPr></p:titleStyle><p:bodyStyle><a:lvl1pPr><a:defRPr sz="2000"><a:latin typeface="Body Face"/></a:defRPr></a:lvl1pPr></p:bodyStyle><p:otherStyle><a:lvl1pPr><a:defRPr sz="1800" b="1"><a:latin typeface="Master Face"/></a:defRPr></a:lvl1pPr></p:otherStyle></p:txStyles></p:sldMaster>',
   )
   zip.file(
     'ppt/slideMasters/_rels/slideMaster1.xml.rels',
@@ -497,6 +498,14 @@ it('reads explicit master other-text font only for a non-placeholder shape', asy
     bold: true,
   })
   expect(report.shapes[1]?.paragraphs[0]?.runs[0]?.knownFont).not.toHaveProperty('typeface')
+  expect(report.shapes[1]?.paragraphs[0]?.masterStyleCandidate).toEqual({
+    kind: 'body',
+    font: { typeface: 'Body Face', sizePt: 20 },
+  })
+  expect(report.shapes[2]?.paragraphs[0]?.masterStyleCandidate).toEqual({
+    kind: 'title',
+    font: { typeface: 'Title Face', sizePt: 32 },
+  })
   zip.remove('ppt/slideMasters/_rels/slideMaster1.xml.rels')
   const withoutTheme = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
   expect(withoutTheme.shapes[0]?.paragraphs[0]?.runs[0]?.knownFont.typeface).toBe('Master Face')
