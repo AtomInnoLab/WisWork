@@ -3,8 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
+import JSZip from 'jszip'
+import { readFileSync } from 'node:fs'
 import { compilePresentationDeck } from '@wiswork/pptx-engine/presentation-compiler'
 import { benchmarkPlannedDeck } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
+import { replacePowerPointPictureMediaPackage } from '../../office-addin/src/skills/powerpoint/presentation-picture-package'
 import { createPresentationService } from '../src/main/presentation-service'
 
 const roots: string[] = []
@@ -76,6 +79,103 @@ it('persists exact single-page package, resumes chunks and reads after restart',
     length: 131072,
   })
   expect(Buffer.from(read.base64 as string, 'base64')).toEqual(f.raw)
+})
+
+it('keeps frozen P0-13 original and picture revision as distinct durable PC savepoints', async () => {
+  const material = new URL(
+    '../../../docs/product/ppt-benchmark-materials/PPT-P0-13/',
+    import.meta.url,
+  )
+  const zip = await JSZip.loadAsync(
+    readFileSync(new URL('wiswork-image-dense-research-draft.pptx', material)),
+  )
+  for (let page = 1; page <= 8; page++)
+    if (page !== 4) {
+      zip.remove(`ppt/slides/slide${page}.xml`)
+      zip.remove(`ppt/slides/_rels/slide${page}.xml.rels`)
+    }
+  zip.file(
+    'ppt/presentation.xml',
+    (await zip.file('ppt/presentation.xml')!.async('string')).replace(
+      /<p:sldId\b[^>]*\/>/g,
+      (item) => (item.includes('r:id="rId5"') ? item : ''),
+    ),
+  )
+  const original = Buffer.from(await zip.generateAsync({ type: 'uint8array' }))
+  const slide = await zip.file('ppt/slides/slide4.xml')!.async('string')
+  const pictureId = /<p:pic\b[\s\S]*?<p:cNvPr id="(\d+)"/.exec(slide)![1]
+  const replacement = readFileSync(new URL('images/schematic-12.png', material))
+  const revised = Buffer.from(
+    (
+      await replacePowerPointPictureMediaPackage(original.toString('base64'), pictureId, {
+        mime: 'image/png',
+        base64: replacement.toString('base64'),
+      })
+    ).base64,
+    'base64',
+  )
+  expect(revised.equals(original)).toBe(false)
+  const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-p0-13-savepoints-'))
+  roots.push(userDataPath)
+  const request = async (
+    operation: string,
+    body: Record<string, unknown>,
+    service = createPresentationService({ userDataPath }),
+  ) =>
+    JSON.parse(
+      Buffer.from(
+        await service(
+          { operation, documentId: 'P0-13-document', ...body },
+          new AbortController().signal,
+        ),
+      ).toString(),
+    ) as Record<string, unknown>
+  for (const [backupId, value] of [
+    ['p013-original', original],
+    ['p013-revised', revised],
+  ] as const) {
+    const scope = {
+      backupId,
+      hostSlideId: 'host-page-4',
+      slideIds: ['host-page-1', 'host-page-4', 'host-page-8'],
+      sha256: sha(value),
+      sizeBytes: value.length,
+    }
+    expect(await request('existing_page_backup_begin', scope)).toMatchObject({
+      status: 'uploading',
+      receivedBytes: 0,
+    })
+    for (let offset = 0; offset < value.length; offset += 128 * 1024)
+      await request('existing_page_backup_chunk', {
+        backupId,
+        offset,
+        base64: value.subarray(offset, offset + 128 * 1024).toString('base64'),
+      })
+    expect(await request('existing_page_backup_finish', { backupId })).toMatchObject({
+      status: 'ready',
+      sha256: sha(value),
+    })
+  }
+  const restarted = createPresentationService({ userDataPath })
+  for (const [backupId, value] of [
+    ['p013-original', original],
+    ['p013-revised', revised],
+  ] as const) {
+    const chunks: Buffer[] = []
+    for (let offset = 0; offset < value.length; offset += 128 * 1024) {
+      const read = await request(
+        'existing_page_backup_read',
+        {
+          backupId,
+          offset,
+          length: Math.min(128 * 1024, value.length - offset),
+        },
+        restarted,
+      )
+      chunks.push(Buffer.from(read.base64 as string, 'base64'))
+    }
+    expect(Buffer.concat(chunks).equals(value)).toBe(true)
+  }
 })
 it('renders only a ready, document-scoped page package and returns its identity', async () => {
   const f = await fixture()
