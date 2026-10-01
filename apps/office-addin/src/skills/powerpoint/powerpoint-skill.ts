@@ -62,7 +62,10 @@ const shapeInput = exactObject({
   shape_id: stringField({ minLength: 1, maxLength: 256 }),
   explanation: optionalField(stringField({ maxLength: 50 })),
 })
-const verifyInput = exactObject({ explanation: optionalField(stringField({ maxLength: 50 })) })
+const verifyInput = exactObject({
+  slide_index: optionalField(integerField({ min: 0, max: MAX_SLIDE_INDEX })),
+  explanation: optionalField(stringField({ maxLength: 50 })),
+})
 const textEditInput = exactObject({
   slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
   shape_id: stringField({ minLength: 1, maxLength: 256 }),
@@ -380,10 +383,11 @@ const tools = [
   },
   {
     name: 'verify_slides',
-    description: 'Check bounded slides for negative, out-of-bounds, and overlapping geometry.',
+    description:
+      'Check bounded slides for negative, out-of-bounds, and overlapping geometry. Pass slide_index to return one full page when the whole-deck result exceeds the output budget.',
     inputSchema: {
       type: 'object',
-      properties: { explanation: { type: 'string', maxLength: 50 } },
+      properties: slideProperties,
       required: [],
       additionalProperties: false,
     },
@@ -2123,9 +2127,24 @@ export function createPowerPointSkill(options: {
           }
         }
         if (call.name === 'verify_slides') {
-          verifyInput(call.input)
+          const input = verifyInput(call.input)
+          const deck = await options.adapter.verifySlides(signal)
+          if (input.slide_index !== undefined) {
+            const slide = deck.slides.find((value) => value.slideIndex === input.slide_index)
+            if (!slide) throw new Error('invalid_tool_input')
+            return {
+              output: boundedJson({
+                slideWidth: deck.slideWidth,
+                slideHeight: deck.slideHeight,
+                slide,
+                deckTruncated: deck.truncated ?? false,
+              }),
+              mutated: false,
+              summary: 'Verified PowerPoint slide',
+            }
+          }
           return {
-            output: boundedJson(await options.adapter.verifySlides(signal)),
+            output: boundedJson(deck),
             mutated: false,
             summary: 'Verified PowerPoint slides',
           }

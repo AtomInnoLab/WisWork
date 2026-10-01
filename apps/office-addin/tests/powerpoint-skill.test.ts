@@ -577,6 +577,41 @@ describe('PowerPoint compatibility skill', () => {
       isError: true,
     })
   })
+  it('returns a requested slide without serializing the whole complex deck', async () => {
+    const shape = { id: '1', name: 'Object', type: 'TextBox', left: 0, top: 0, width: 1, height: 1 }
+    const slides = Array.from({ length: 20 }, (_, slideIndex) => ({
+      slideId: `s${slideIndex}`,
+      slideIndex,
+      shapes: Array.from({ length: 1000 }, (_, index) => ({ ...shape, id: String(index + 1) })),
+      shapesTruncated: false,
+      overflows: [],
+      overlaps: [],
+      overlapsTruncated: false,
+    }))
+    const skill = createPowerPointSkill({
+      adapter: adapter({
+        verifySlides: vi
+          .fn()
+          .mockResolvedValue({ slideWidth: 960, slideHeight: 540, slides, truncated: false }),
+      }),
+      proposals: createStructuredProposalController(),
+    })
+    const result = await skill.executeTool(call('verify_slides', { slide_index: 19 }))
+    expect(result.isError).not.toBe(true)
+    expect(JSON.parse(result.output)).toMatchObject({
+      slideWidth: 960,
+      slideHeight: 540,
+      slide: { slideId: 's19', slideIndex: 19, shapesTruncated: false },
+      deckTruncated: false,
+    })
+    expect(JSON.parse(result.output).slide.shapes).toHaveLength(1000)
+    await expect(
+      skill.executeTool(call('verify_slides', { slide_index: 20 })),
+    ).resolves.toMatchObject({
+      output: 'invalid_tool_input',
+      isError: true,
+    })
+  })
   it('uses a labeled fallback screenshot and keeps a missing image in a waiting state', async () => {
     const failure = Object.assign(new Error('office_read_failed'), {
       code: 'office_screenshot_unavailable',
