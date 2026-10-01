@@ -1,0 +1,334 @@
+{
+  "version": 1,
+  "projectId": "p0-18-parent-candidate",
+  "title": "计算可复现性研究：失败页单独重做候选",
+  "domain": "science",
+  "brief": {
+    "objective": "先生产八页父稿，再只重做第 4 页的原生三步证据路径",
+    "audience": "科研专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": [
+      "14/12 不同分母",
+      "1.6/6 到 2.2/6 且不显著",
+      "Table 1 原生图表",
+      "自制示意图权利"
+    ],
+    "constraints": [
+      "不得推断因果效果",
+      "示意图不是研究测量数据",
+      "生成后的真实 PowerPoint 导入回执待验",
+      "第 1、2、3、5、6、7、8 页不得重编译或重插入"
+    ]
+  },
+  "sources": [
+    {
+      "id": "paper-method",
+      "title": "原论文摘要的访谈方法与起始样本",
+      "uri": "https://doi.org/10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "PDF 1 methods",
+      "excerpt": "This mixed methods study consisted of in-depth interviews with 14 biomedical researchers\nbefore and after participation in an introductory programming workshop.",
+      "asOf": "2020-07-08"
+    },
+    {
+      "id": "paper-sample",
+      "title": "原论文样本与三个月后访谈",
+      "uri": "https://doi.org/10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "PDF 5 sample",
+      "excerpt": "13 of 14 described\nthemselves a “novice” or “beginner” programmer, and only one participant considered them-\nselves to be an “intermediate” programmer. During the second round of interviews in June\n2019, one of the original participants declined to participate as they had not attended both\ndays of the workshop, and another did not respond to emails. Therefore, only 12 researchers\nparticipated in the post-workshop interviews.",
+      "asOf": "2020-07-08"
+    },
+    {
+      "id": "paper-score",
+      "title": "原论文清单均值与显著性",
+      "uri": "https://doi.org/10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "PDF 5 checklist",
+      "excerpt": "The average score for the pre-workshop checklist was 1.6 out of 6 and ranged from 0 to 3, indi-\ncating lower levels of applied best practices in computational reproducibility. Of the six ques-\ntions, participants scored highest on the use of programming language like R, Python, or the\ncommand line at some point in their workflow (n = 7) and using an open source tool (n = 7)\n(see Table 1). Five participants said they shared their code publicly, three said they shared their\ncomputational workflows publicly, one person said they transformed step-by-step workflows\ninto scripts, and none of the participants used version control.\nThree months after completing the workshop, the average score increased from 1.6 to 2.2\nand ranged from 0 to 6, however this was not a statistically significant difference (t(11) = -1.04,\np = 0.318",
+      "asOf": "2020-07-08"
+    },
+    {
+      "id": "paper-table",
+      "title": "原论文 Table 1 开源软件使用人数",
+      "uri": "https://doi.org/10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "PDF 5 Table 1",
+      "excerpt": "Use open source software 7 10",
+      "asOf": "2020-07-08"
+    },
+    {
+      "id": "paper-limitations",
+      "title": "原论文局限段落",
+      "uri": "https://doi.org/10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "PDF 9 limitations",
+      "excerpt": "The analysis and coding for this project was also performed solely by the author, and\na different researcher might have interpreted slightly different themes. Finally, because of the\nsmall sample size, the quantitative analysis lacked appropriate power.",
+      "asOf": "2020-07-08"
+    },
+    {
+      "id": "illustration-rights",
+      "title": "自制示意图 07 权利声明",
+      "uri": "local:asset-rights.json",
+      "snapshotAttachmentId": "e1e1ce234fb0a94594e928ffa54680c165538c66a2355c8644598f480f4c759f",
+      "locator": "P0-13-IMG-07",
+      "excerpt": "\"assetId\": \"P0-13-IMG-07\",\n      \"file\": \"images/schematic-07.png\",\n      \"sha256\": \"4772b5f6ff4767049b2fe56128be8c776ea0fac52d31336ceca011005c6f7812\",\n      \"author\": \"WisWork benchmark team\",\n      \"usePermission\": \"Authorized for this benchmark and image replacement testing\",\n      \"attribution\": \"WisWork self-authored schematic 7; not",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "illustration-rights-08",
+      "title": "自制示意图 08 权利声明",
+      "uri": "local:asset-rights.json",
+      "snapshotAttachmentId": "e1e1ce234fb0a94594e928ffa54680c165538c66a2355c8644598f480f4c759f",
+      "locator": "P0-13-IMG-08",
+      "excerpt": "\"assetId\": \"P0-13-IMG-08\",\n      \"file\": \"images/schematic-08.png\",\n      \"sha256\": \"2a32776d0fb6d11018b5a323e68b64488ae361e03f1ca1c793a4cf93dcb003ab\",\n      \"author\": \"WisWork benchmark team\",\n      \"usePermission\": \"Authorized for this benchmark and image replacement testing\",\n      \"attribution\": \"WisWork self-authored schematic 8; not"
+    }
+  ],
+  "claims": [
+    {
+      "id": "sample",
+      "statement": "工作坊前访谈 14 人，三个月后完成访谈 12 人；两时点分母不同。",
+      "sourceIds": ["paper-method", "paper-sample"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "paper",
+        "publicationId": "10.1371/journal.pone.0230697",
+        "version": "2020 PLOS ONE article",
+        "sample": "14 pre-workshop, 12 post-workshop interviews",
+        "method": "qualitative interviews and six-item checklist",
+        "statisticalBasis": "reported p=0.318; paired change not statistically significant",
+        "limitations": "小样本与失访，不可作因果解释"
+      }
+    },
+    {
+      "id": "score",
+      "statement": "六项清单均值从 1.6/6 到 2.2/6，p=0.318，未达统计显著。",
+      "sourceIds": ["paper-score"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "paper",
+        "publicationId": "10.1371/journal.pone.0230697",
+        "version": "2020 PLOS ONE article",
+        "sample": "14 pre-workshop, 12 post-workshop interviews",
+        "method": "qualitative interviews and six-item checklist",
+        "statisticalBasis": "reported p=0.318; paired change not statistically significant",
+        "limitations": "不可宣称工作坊导致改善"
+      }
+    },
+    {
+      "id": "open-source",
+      "statement": "开源软件使用人数前测 7/14、后测 10/12；分母不同。",
+      "sourceIds": ["paper-table", "paper-sample"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "paper",
+        "publicationId": "10.1371/journal.pone.0230697",
+        "version": "2020 PLOS ONE article",
+        "sample": "14 pre-workshop, 12 post-workshop interviews",
+        "method": "qualitative interviews and six-item checklist",
+        "statisticalBasis": "reported p=0.318; paired change not statistically significant",
+        "limitations": "不能把计数差写成相同个人的逐一变化"
+      }
+    },
+    {
+      "id": "limitations",
+      "statement": "小样本、招募与应答偏差、单人编码和统计功效不足限制推断。",
+      "sourceIds": ["paper-limitations"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "paper",
+        "publicationId": "10.1371/journal.pone.0230697",
+        "version": "2020 PLOS ONE article",
+        "sample": "14 pre-workshop, 12 post-workshop interviews",
+        "method": "qualitative interviews and six-item checklist",
+        "statisticalBasis": "reported p=0.318; paired change not statistically significant",
+        "limitations": "论文局限需科研审阅"
+      }
+    },
+    {
+      "id": "illustration",
+      "statement": "第 4 页两张自制示意图不是论文测量数据，权利来自本包声明。",
+      "sourceIds": ["illustration-rights", "illustration-rights-08"],
+      "type": "judgment",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "paper",
+        "publicationId": "10.1371/journal.pone.0230697",
+        "version": "2020 PLOS ONE article",
+        "sample": "14 pre-workshop, 12 post-workshop interviews",
+        "method": "qualitative interviews and six-item checklist",
+        "statisticalBasis": "reported p=0.318; paired change not statistically significant",
+        "limitations": "图示内容和版权声明待人工复核"
+      }
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "122B43",
+    "accentColor": "008086"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "计算可复现性工作坊：研究汇报",
+      "purpose": "保留论文事实与自制示意图的来源及科研解释边界",
+      "claimIds": [],
+      "domainSection": "research_question",
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["八页原生可编辑", "第 4 页两对象可单独修改", "图表数据与论文一致"]
+    },
+    {
+      "id": "p02",
+      "title": "研究问题与汇报范围",
+      "purpose": "保留论文事实与自制示意图的来源及科研解释边界",
+      "claimIds": [],
+      "domainSection": "research_question",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["八页原生可编辑", "第 4 页两对象可单独修改", "图表数据与论文一致"]
+    },
+    {
+      "id": "p03",
+      "title": "研究方法与时间点",
+      "purpose": "保留论文事实与自制示意图的来源及科研解释边界",
+      "claimIds": ["sample"],
+      "domainSection": "methods_and_sample",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["八页原生可编辑", "第 4 页两对象可单独修改", "图表数据与论文一致"]
+    },
+    {
+      "id": "p04",
+      "title": "参与者与证据路径",
+      "purpose": "用原生文字和形状说明招募、工作坊及后访谈三步；自制图仅作示意",
+      "claimIds": ["illustration"],
+      "domainSection": "methods_and_sample",
+      "layout": "content",
+      "requiredAssets": ["participant-illustration", "second-illustration"],
+      "acceptanceCriteria": ["原生三步流程", "两张自制示意图仅作辅助", "其他七页不得重编译"]
+    },
+    {
+      "id": "p05",
+      "title": "六项清单均值",
+      "purpose": "保留论文事实与自制示意图的来源及科研解释边界",
+      "claimIds": ["score"],
+      "domainSection": "results_and_data",
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["八页原生可编辑", "第 4 页两对象可单独修改", "图表数据与论文一致"],
+      "chartData": [
+        {
+          "elementId": "checklist-chart",
+          "categories": ["前测", "三个月后"],
+          "series": [
+            {
+              "name": "六项清单均值",
+              "points": [
+                {
+                  "value": 1.6,
+                  "claimId": "score",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "paper-score",
+                    "excerptOffset": 53,
+                    "excerptText": "1.6"
+                  }
+                },
+                {
+                  "value": 2.2,
+                  "claimId": "score",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "paper-score",
+                    "excerptOffset": 716,
+                    "excerptText": "2.2"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "开源软件使用：不同分母",
+      "purpose": "保留论文事实与自制示意图的来源及科研解释边界",
+      "claimIds": ["open-source"],
+      "domainSection": "results_and_data",
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["八页原生可编辑", "第 4 页两对象可单独修改", "图表数据与论文一致"],
+      "chartData": [
+        {
+          "elementId": "software-chart",
+          "categories": ["前测 n=14", "后测 n=12"],
+          "series": [
+            {
+              "name": "开源软件使用人数",
+              "points": [
+                {
+                  "value": 7,
+                  "claimId": "open-source",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "paper-table",
+                    "excerptOffset": 25,
+                    "excerptText": "7"
+                  }
+                },
+                {
+                  "value": 10,
+                  "claimId": "open-source",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "paper-table",
+                    "excerptOffset": 27,
+                    "excerptText": "10"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "解释边界与局限",
+      "purpose": "保留论文事实与自制示意图的来源及科研解释边界",
+      "claimIds": ["limitations"],
+      "domainSection": "scope_and_limitations",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["八页原生可编辑", "第 4 页两对象可单独修改", "图表数据与论文一致"]
+    },
+    {
+      "id": "p08",
+      "title": "结论与后续审阅",
+      "purpose": "保留论文事实与自制示意图的来源及科研解释边界",
+      "claimIds": ["limitations"],
+      "domainSection": "research_references",
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["八页原生可编辑", "第 4 页两对象可单独修改", "图表数据与论文一致"]
+    }
+  ]
+}

@@ -747,17 +747,32 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
           zip.file('ppt/slides/slide2.xml')
         )
           throw new Error('PC production page content invalid')
-        if (slide.elements.some((element) => element.kind === 'image')) {
+        const images = slide.elements.filter((element) => element.kind === 'image')
+        if (images.length) {
           const media = Object.keys(zip.files).filter((path) =>
             /^ppt\/media\/[^/]+\.png$/.test(path),
           )
-          if (!xml.includes('<p:pic>') || media.length !== 1)
+          if (
+            (xml.match(/<p:pic>/g) ?? []).length !== images.length ||
+            media.length !== images.length
+          )
             throw new Error('PC production native image missing')
-          const image = await zip.file(media[0]).async('nodebuffer')
-          PNG.sync.read(image)
-          const assetId = slide.elements.find((element) => element.kind === 'image').assetId
-          const expected = fixture.deck.assets.find((asset) => asset.id === assetId)
-          if (!expected?.base64 || !image.equals(Buffer.from(expected.base64, 'base64')))
+          const expected = images.map((element) =>
+            fixture.deck.assets.find((asset) => asset.id === element.assetId),
+          )
+          if (expected.some((asset) => !asset?.base64))
+            throw new Error('PC production native image missing')
+          const actualDigests = await Promise.all(
+            media.map(async (path) => {
+              const image = await zip.file(path).async('nodebuffer')
+              PNG.sync.read(image)
+              return createHash('sha256').update(image).digest('hex')
+            }),
+          )
+          const expectedDigests = expected.map((asset) =>
+            createHash('sha256').update(Buffer.from(asset.base64, 'base64')).digest('hex'),
+          )
+          if (actualDigests.sort().join(',') !== expectedDigests.sort().join(','))
             throw new Error('PC production native image changed')
         }
         if (

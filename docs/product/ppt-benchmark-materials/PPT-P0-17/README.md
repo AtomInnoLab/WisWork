@@ -22,6 +22,8 @@
 
 本机生产链路可分别运行 `node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-17:science --built-taskpane`，将 `science` 改为 `legal` 或 `finance` 可验证另两份。三个变体各上传自己的 PDF；本机整链路只验证独立生产，交错三窗口、另存及迟到响应仍须专门验证。
 
+`node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-17:all --built-taskpane` 已在同一 Electron PC 与 Rust Relay 实例中，并发完成三份来源上传、三套计划和 24 页生产，逐项目核对八个页摘要与 PPTX/PDF 回读；三份交付摘要彼此不同。该脚本使用三条 Relay 文档会话和模拟 Office API；真实 PowerPoint 的三窗口关闭、另存及迟到回执注入仍待验。
+
 ## 正式验收仍需完成
 
 1. 科研、法律、财务审阅人分别核对来源和任务边界，登记姓名与日期；EDPB 文档的效力、适用时点及 Apple 财务口径不能由本包自动判断。

@@ -39,9 +39,11 @@ if (builtTaskpane) {
   if (!origin) throw new Error('built Taskpane manifest origin missing')
   await inspectOfficeBuild(dist, origin)
 }
-const [benchmarkCase, benchmarkVariant] = selectedBenchmark
+const [benchmarkCase, selectedVariant] = selectedBenchmark
   ? selectedBenchmark.slice('--benchmark='.length).split(':')
   : ['P0-01']
+const concurrentBenchmark = benchmarkCase === 'P0-17' && selectedVariant === 'all'
+const benchmarkVariant = concurrentBenchmark ? 'science' : selectedVariant
 const researchCaseId = `PPT-${benchmarkCase}`
 const {
   plan: researchPlan,
@@ -562,16 +564,42 @@ app.whenReady().then(async () => {
   smokeStage = 'browser Taskpane to real Relay and PC'
   await inspectBrowserWorkbench(origin, pc)
   const concurrentProgress = []
-  smokeStage = 'three concurrent documents'
+  smokeStage = concurrentBenchmark
+    ? 'P0-17 three concurrent source-backed eight-page productions'
+    : 'three concurrent documents'
+  const concurrentBundles = concurrentBenchmark
+    ? await Promise.all(
+        ['science', 'legal', 'finance'].map((variant) =>
+          loadBenchmarkBundle(root, 'PPT-P0-17', variant),
+        ),
+      )
+    : []
   const concurrentSettled = await Promise.allSettled(
-    concurrentDocuments.map((item) =>
-      inspectPcBusiness(origin, item.documentId, item.projectId, {
-        onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
-        onProgress: (stage) => concurrentProgress.push(`${item.projectId}:${stage}`),
-        timeoutMs: 45_000,
-        compiledRequestId: 'run-concurrent',
-        expectedSlideTexts: [item.text],
-      }),
+    concurrentDocuments.map((item, index) =>
+      inspectPcBusiness(
+        origin,
+        item.documentId,
+        concurrentBenchmark ? concurrentBundles[index].deck.id : item.projectId,
+        {
+          onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+          onProgress: (stage) => concurrentProgress.push(`${item.projectId}:${stage}`),
+          timeoutMs: concurrentBenchmark ? 90_000 : 45_000,
+          ...(concurrentBenchmark
+            ? {
+                sourceAttachments: concurrentBundles[index].sourceAttachments,
+                productionFixture: {
+                  requestId: `P0-17-parallel-${index + 1}`,
+                  deck: concurrentBundles[index].deck,
+                  plan: concurrentBundles[index].plan,
+                  expectedSlideTexts: concurrentBundles[index].deck.slides.map(
+                    (slide) => slide.title,
+                  ),
+                },
+                createProduction: true,
+              }
+            : { compiledRequestId: 'run-concurrent', expectedSlideTexts: [item.text] }),
+        },
+      ),
     ),
   )
   if (concurrentSettled.some((entry) => entry.status === 'rejected'))
@@ -585,12 +613,24 @@ app.whenReady().then(async () => {
   if (
     concurrentResults.some(
       (value, index) =>
-        value.projectId !== concurrentDocuments[index].projectId ||
-        value.slideCount !== 1 ||
-        !value.compiledDelivery?.pptxSha256 ||
-        value.compiledDelivery.pdfBytes < 100,
+        value.projectId !==
+          (concurrentBenchmark
+            ? concurrentBundles[index].deck.id
+            : concurrentDocuments[index].projectId) ||
+        (!concurrentBenchmark && value.slideCount !== 1) ||
+        (concurrentBenchmark
+          ? !value.sourceChecked ||
+            value.productionDelivery?.pageDigests.length !== 8 ||
+            value.productionDelivery.pdfBytes < 100
+          : !value.compiledDelivery?.pptxSha256 || value.compiledDelivery.pdfBytes < 100),
     ) ||
-    new Set(concurrentResults.map((value) => value.compiledDelivery?.pptxSha256)).size !== 3
+    new Set(
+      concurrentResults.map((value) =>
+        concurrentBenchmark
+          ? JSON.stringify(value.productionDelivery?.pageDigests)
+          : value.compiledDelivery?.pptxSha256,
+      ),
+    ).size !== 3
   )
     throw new Error('Electron PC concurrent document sessions crossed project boundaries')
   const attachments = join(
@@ -613,30 +653,32 @@ app.whenReady().then(async () => {
     releaseResult.productionDelivery.pdfBytes < 100
   )
     throw new Error('Electron PC fresh release production incomplete')
-  smokeStage = `${researchCaseId}${benchmarkVariant ? ` ${benchmarkVariant}` : ''} real-source production`
-  const researchResult = await inspectPcBusiness(
-    origin,
-    `${researchCaseId}${benchmarkVariant ? `-${benchmarkVariant}` : ''}-local-document`,
-    researchDeck.id,
-    {
-      onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
-      timeoutMs: 60_000,
-      sourceAttachments: researchSources,
-      productionFixture: {
-        requestId: `${researchCaseId}${benchmarkVariant ? `-${benchmarkVariant}` : ''}-production`,
-        deck: researchDeck,
-        plan: researchPlan,
-        expectedSlideTexts: researchDeck.slides.map((slide) => slide.title),
+  if (!concurrentBenchmark) {
+    smokeStage = `${researchCaseId}${benchmarkVariant ? ` ${benchmarkVariant}` : ''} real-source production`
+    const researchResult = await inspectPcBusiness(
+      origin,
+      `${researchCaseId}${benchmarkVariant ? `-${benchmarkVariant}` : ''}-local-document`,
+      researchDeck.id,
+      {
+        onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+        timeoutMs: 60_000,
+        sourceAttachments: researchSources,
+        productionFixture: {
+          requestId: `${researchCaseId}${benchmarkVariant ? `-${benchmarkVariant}` : ''}-production`,
+          deck: researchDeck,
+          plan: researchPlan,
+          expectedSlideTexts: researchDeck.slides.map((slide) => slide.title),
+        },
+        createProduction: true,
       },
-      createProduction: true,
-    },
-  )
-  if (
-    !researchResult.sourceChecked ||
-    researchResult.productionDelivery?.pageDigests.length !== 8 ||
-    researchResult.productionDelivery.pdfBytes < 100
-  )
-    throw new Error(`Electron PC ${researchCaseId} source-backed production incomplete`)
+    )
+    if (
+      !researchResult.sourceChecked ||
+      researchResult.productionDelivery?.pageDigests.length !== 8 ||
+      researchResult.productionDelivery.pdfBytes < 100
+    )
+      throw new Error(`Electron PC ${researchCaseId} source-backed production incomplete`)
+  }
   const pendingProjectId = `${projectId}-recovery`
   smokeStage = 'pending production setup'
   const pendingFixture = {
@@ -733,7 +775,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    `Electron PC + Rust Relay business smoke passed (${builtTaskpane ? 'built' : 'development'} Taskpane): browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, ${researchCaseId} frozen source upload and eight-page production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery`,
+    `Electron PC + Rust Relay business smoke passed (${builtTaskpane ? 'built' : 'development'} Taskpane): browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, ${concurrentBenchmark ? 'three parallel P0-17 source-backed eight-page productions' : 'three concurrent documents'}, fresh eight-page release production${concurrentBenchmark ? '' : `, ${researchCaseId} frozen source upload and eight-page production`}, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery`,
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {
