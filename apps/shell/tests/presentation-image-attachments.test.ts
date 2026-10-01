@@ -385,6 +385,44 @@ describe('durable presentation image assets', () => {
     await writeFile(path, JSON.stringify(tampered))
     await expect(call({ operation: 'attachment_list_assets' })).rejects.toThrow('invalid_state')
   })
+  it('cancels a queued duplicate import without releasing the active document lock', async () => {
+    const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-remote-queued-abort-'))
+    dirs.push(userDataPath)
+    let startDownload!: () => void
+    let finishDownload!: (response: Response) => void
+    const started = new Promise<void>((resolve) => {
+      startDownload = resolve
+    })
+    const download = new Promise<Response>((resolve) => {
+      finishDownload = resolve
+    })
+    const fetchImage = vi.fn(async () => {
+      startDownload()
+      return download
+    })
+    const service = createPresentationAttachmentService({
+      userDataPath,
+      fetchImage,
+      normalizeImage: async () => ({ bytes: png, width: 1, height: 1 }),
+    })
+    const body = {
+      documentId: 'doc',
+      operation: 'attachment_import_url',
+      url: 'https://93.184.216.34/shared.png',
+    }
+    const first = service(body, new AbortController().signal)
+    await started
+    const cancelled = new AbortController()
+    const second = service(body, cancelled.signal)
+    cancelled.abort()
+    await expect(second).rejects.toThrow('aborted')
+    const third = service(body, new AbortController().signal)
+    expect(fetchImage).toHaveBeenCalledTimes(1)
+    finishDownload(new Response(png, { status: 200 }))
+    const imported = await first
+    expect(await third).toEqual(imported)
+    expect(fetchImage).toHaveBeenCalledTimes(1)
+  })
   it('rejects an oversized remote response without publishing an attachment', async () => {
     const userDataPath = await mkdtemp(join(tmpdir(), 'ppt-remote-large-'))
     dirs.push(userDataPath)

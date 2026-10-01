@@ -653,7 +653,24 @@ export function createPresentationAttachmentService(options: {
       release = r
     })
     locks.set(doc, tail)
-    await previous
+    const acquired = signal.aborted
+      ? false
+      : await new Promise<boolean>((resolve) => {
+          const onAbort = () => resolve(false)
+          signal.addEventListener('abort', onAbort, { once: true })
+          void previous.then(() => {
+            signal.removeEventListener('abort', onAbort)
+            resolve(true)
+          })
+        })
+    if (!acquired || signal.aborted) {
+      // Keep later callers behind the active owner even when this waiter leaves.
+      void previous.then(() => {
+        release()
+        if (locks.get(doc) === tail) locks.delete(doc)
+      })
+      fail('aborted')
+    }
     let acquisition: PresentationAcquisitionRecord | undefined
     const complete = async (item: Metadata, size: number) => {
       if (acquisition) {
