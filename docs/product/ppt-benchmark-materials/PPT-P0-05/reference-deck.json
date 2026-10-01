@@ -1,0 +1,420 @@
+{
+  "version": 1,
+  "id": "p0-05-copyright-case-comparison-reference",
+  "title": "最高法院版权裁判比较：候选汇报",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "assets": [],
+  "claims": [
+    {
+      "id": "g-facts",
+      "text": "Google 案涉及 Android 对 Java 接口声明代码的重新实现；此页将事实背景与法律评价分开。",
+      "source": "https://www.supremecourt.gov/opinions/20pdf/18-956_new_0e04.pdf ; https://www.supremecourt.gov/opinions/20pdf/18-956_new_0e04.pdf",
+      "locator": "第 5 页 ; 第 26 页"
+    },
+    {
+      "id": "g-question",
+      "text": "Google 案提出可版权性与合理使用两个争点；最高法院仅为本案分析假定 API 可版权。",
+      "source": "https://www.supremecourt.gov/opinions/20pdf/18-956_new_0e04.pdf ; https://www.supremecourt.gov/opinions/20pdf/18-956_new_0e04.pdf",
+      "locator": "第 18 页 ; 第 19 页"
+    },
+    {
+      "id": "g-holding",
+      "text": "法院在该重新实现情境下认定合理使用，撤销并发回。",
+      "source": "https://www.supremecourt.gov/opinions/20pdf/18-956_new_0e04.pdf ; https://www.supremecourt.gov/opinions/20pdf/18-956_new_0e04.pdf",
+      "locator": "第 39 页 ; 第 40 页"
+    },
+    {
+      "id": "w-facts",
+      "text": "Warhol 案涉及 Goldsmith 摄影作品和 Prince Series；本稿聚焦被争议的杂志许可用途。",
+      "source": "https://www.supremecourt.gov/opinions/22pdf/21-869_87ad.pdf ; https://www.supremecourt.gov/opinions/22pdf/21-869_87ad.pdf",
+      "locator": "第 7 页 ; 第 18 页"
+    },
+    {
+      "id": "w-holding",
+      "text": "法院就该特定商业许可用途认定合理使用第一因素有利于 Goldsmith，并维持原判。",
+      "source": "https://www.supremecourt.gov/opinions/22pdf/21-869_87ad.pdf ; https://www.supremecourt.gov/opinions/22pdf/21-869_87ad.pdf ; https://www.supremecourt.gov/opinions/22pdf/21-869_87ad.pdf",
+      "locator": "第 18 页 ; 第 19 页 ; 第 44 页"
+    },
+    {
+      "id": "w-limit",
+      "text": "多数意见明确不评价原 Prince Series 的创作、展示或出售。",
+      "source": "https://www.supremecourt.gov/opinions/22pdf/21-869_87ad.pdf",
+      "locator": "第 27 页"
+    },
+    {
+      "id": "comparison",
+      "text": "两案的比较须分别核对作品性质、具体使用目的和市场关系；这是待审研究推论，不是第三案规则。",
+      "source": "https://www.supremecourt.gov/opinions/20pdf/18-956_new_0e04.pdf ; https://www.supremecourt.gov/opinions/22pdf/21-869_87ad.pdf ; https://www.supremecourt.gov/opinions/22pdf/21-869_87ad.pdf",
+      "locator": "第 26 页 ; 第 29 页 ; 第 27 页"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "范围与来源",
+      "claimIds": [],
+      "notes": "中文为待法律专业审阅的研究归纳，非官方译文；历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "范围与来源",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "美国联邦版权法｜历史分析截至 2024-12-01。比较 Google v. Oracle（18-956）与 Warhol v. Goldsmith（21-869）两份官方多数意见；非个案法律意见，法律专业审阅待完成。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "两份最高法院 slip opinion；官方发布不等于最终装订版",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "Google：事实与程序",
+      "claimIds": ["g-facts"],
+      "notes": "中文为待法律专业审阅的研究归纳，非官方译文；历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Google：事实与程序",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "Android 重新实现 Java 接口声明代码。先记录事实与争议对象，再看法院在此情境下的法律评价。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "Google 多数意见 PDF 5、26；事实与判断分开",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "Google：争点与受限判断",
+      "claimIds": ["g-question", "g-holding"],
+      "notes": "中文为待法律专业审阅的研究归纳，非官方译文；历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Google：争点与受限判断",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "争点｜API 可版权性与合理使用。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 2.8,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "处理｜法院为分析假定可版权性，认定具体重新实现构成合理使用；撤销并发回。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "Google 多数意见 PDF 18–19、39–40；不概括所有 API",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "Warhol：事实与程序",
+      "claimIds": ["w-facts"],
+      "notes": "中文为待法律专业审阅的研究归纳，非官方译文；历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Warhol：事实与程序",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "Goldsmith 的 Prince 摄影与 Warhol 的 Prince Series。此处聚焦被诉的杂志商业许可用途，区分作品创作与具体使用。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "Warhol 多数意见 PDF 7、18；不复用原件图像",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "Warhol：判断与明确限定",
+      "claimIds": ["w-holding", "w-limit"],
+      "notes": "中文为待法律专业审阅的研究归纳，非官方译文；历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Warhol：判断与明确限定",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "第一因素｜就该杂志许可用途有利于 Goldsmith；最高法院维持原判。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 2.8,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "明确限定｜多数意见不评价原系列作品的创作、展示或出售。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "Warhol 多数意见 PDF 18–19、27、44；仅本案第一因素",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "两案比较矩阵",
+      "claimIds": ["comparison"],
+      "notes": "中文为待法律专业审阅的研究归纳，非官方译文；历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "两案比较矩阵",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 0.85,
+          "text": "对象｜接口声明代码／摄影衍生图像",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 2.55,
+          "w": 11.4,
+          "h": 0.85,
+          "text": "用途｜软件重新实现／特定杂志许可",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "body-3",
+          "x": 0.9,
+          "y": 3.55,
+          "w": 11.4,
+          "h": 0.85,
+          "text": "范围｜假定可版权性后的合理使用／具体许可的第一因素",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "body-4",
+          "x": 0.9,
+          "y": 4.55,
+          "w": 11.4,
+          "h": 0.85,
+          "text": "结果｜撤销并发回／维持",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "研究比较，非两案对第三案的共同裁判规则",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "差异归因与不得泛化",
+      "claimIds": ["g-question", "w-limit", "comparison"],
+      "notes": "中文为待法律专业审阅的研究归纳，非官方译文；历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "差异归因与不得泛化",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "比较推论须核对作品性质、使用目的和市场关系。不得推出“所有 API 可复制”“所有改编均侵权”“商用必不合理使用”或“新含义单独决定合理使用”。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "Google PDF 26、39；Warhol PDF 27、29；法律审阅待完成",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "核验与人工审阅",
+      "claimIds": [],
+      "notes": "中文为待法律专业审阅的研究归纳，非官方译文；历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "核验与人工审阅",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "原件摘要、正文页码与逐字摘录已固定。须继续核对中文归纳、程序状态、隐私与图像权利、版面及真实 PowerPoint 保存重开；不得将工程产物标为专业验收通过。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "官方 PDF 原件；syllabus 与多数意见分开",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}

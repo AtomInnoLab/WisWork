@@ -3,6 +3,13 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import JSZip from 'jszip'
+import { pdfToPages } from '../../../../packages/file-parse/src/pdf.ts'
+import { parsePresentationDeck } from '@wiswork/pptx-engine/presentation'
+import {
+  assertDeckMatchesPresentationPlan,
+  parsePresentationPlan,
+} from '@wiswork/pptx-engine/presentation-plan'
 
 const root = new URL('./', import.meta.url)
 const readJson = (name) => JSON.parse(readFileSync(new URL(name, root), 'utf8'))
@@ -41,7 +48,18 @@ for (const source of manifest.sources) {
   texts.set(source.id, text.split('\f'))
   console.log(`${source.id}: ${source.bytes} bytes, ${source.pdfPages} pages, SHA-256 OK`)
 }
-assert.equal(readFileSync(new URL('SHA256SUMS', root), 'utf8'), sums.join(''))
+const checksumLines = readFileSync(new URL('SHA256SUMS', root), 'utf8').trim().split('\n')
+assert.equal(checksumLines.slice(0, 2).join('\n') + '\n', sums.join(''))
+for (const line of checksumLines) {
+  const match = /^([a-f0-9]{64}) {2}([a-z0-9.-]+)$/.exec(line)
+  assert(match, `invalid checksum line: ${line}`)
+  assert.equal(
+    createHash('sha256')
+      .update(readFileSync(new URL(match[2], root)))
+      .digest('hex'),
+    match[1],
+  )
+}
 assert.equal(basis.slides.length, 8)
 assert.deepEqual(
   basis.slides.map((slide) => slide.page),
@@ -95,6 +113,56 @@ assert.ok(basis.prohibitedGeneralizations.length >= 5)
 assert.ok(
   manifest.pending.includes('legal_review') && manifest.pending.includes('actual_powerpoint_task'),
 )
+const plan = parsePresentationPlan(readJson('reference-plan.json'))
+const deck = parsePresentationDeck(readJson('reference-deck.json'))
+assertDeckMatchesPresentationPlan(deck, plan)
+assert.equal(plan.domain, 'law')
+assert.equal(plan.sources.length, 12)
+assert.equal(plan.claims.length, basis.statements.length)
+assert.equal(plan.slides.length, 8)
+assert.equal(deck.slides.length, 8)
+assert.deepEqual(
+  plan.slides.map((slide) => slide.claimIds),
+  basis.slides.map((slide) => slide.statementIds),
+)
+assert(plan.slides.every((slide) => slide.domainSection))
+assert(
+  plan.claims.every((claim) => claim.reviewStatus === 'needs_review' && claim.asOf === basis.asOf),
+)
+assert.equal(plan.claims.find((claim) => claim.id === 'comparison')?.type, 'judgment')
+for (const claim of plan.claims) {
+  assert.equal(claim.professionalContext?.domain, 'law')
+  assert.equal(claim.professionalContext?.applicabilityDate, basis.asOf)
+  assert(claim.professionalContext?.limitations)
+  if (claim.id !== 'comparison') {
+    const original = manifest.sources.find((source) =>
+      claim.id.startsWith(source.id === 'google' ? 'g-' : 'w-'),
+    )
+    assert.equal(claim.professionalContext?.caseNumber, original?.docket)
+  }
+}
+const parsedPages = new Map()
+for (const source of plan.sources) {
+  const original = manifest.sources.find((item) => item.sha256 === source.snapshotAttachmentId)
+  assert(original, `unbound original: ${source.id}`)
+  assert.equal(source.uri, original.url)
+  const page = Number(/^第 (\d+) 页$/.exec(source.locator)?.[1])
+  assert(page >= original.majorityPdfPages[0] && page <= original.majorityPdfPages[1])
+  if (!parsedPages.has(original.id))
+    parsedPages.set(original.id, await pdfToPages(readFileSync(new URL(original.file, root))))
+  assert(
+    parsedPages.get(original.id)[page - 1].includes(source.excerpt),
+    `literal excerpt missing: ${source.id}`,
+  )
+}
+const pptx = await JSZip.loadAsync(readFileSync(new URL('p0-05-reference.pptx', root)))
+assert.equal(
+  Object.keys(pptx.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).length,
+  8,
+)
+assert.equal(Object.keys(pptx.files).filter((name) => /^ppt\/media\/[^/]+$/.test(name)).length, 0)
+const matrix = await pptx.file('ppt/slides/slide6.xml')?.async('string')
+assert(matrix?.includes('撤销并发回') && matrix.includes('维持'))
 console.log(
-  '8-page scope and source positions OK; professional, rights and actual PowerPoint review remain pending.',
+  '8-page source-backed editable candidate OK; professional, rights and actual PowerPoint review remain pending.',
 )

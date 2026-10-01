@@ -1,9 +1,9 @@
 /* global window, document */
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
@@ -11,6 +11,7 @@ import electron from 'electron'
 import { chromium } from '@playwright/test'
 import WebSocket from 'ws'
 import { inspectPcBusiness, releaseProductionFixture } from './ppt-agent-pc-business-smoke.mjs'
+import { loadBenchmarkBundle } from './ppt-agent-benchmark-bundle.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const temp = await mkdtemp(join(tmpdir(), 'ppt-electron-real-relay-'))
@@ -29,46 +30,15 @@ const expectedSlideTexts = Array.from(
   { length: 8 },
   (_, index) => `Electron real Relay page ${index + 1}`,
 )
-const researchCaseId = process.argv.includes('--benchmark=P0-04')
-  ? 'PPT-P0-04'
-  : process.argv.includes('--benchmark=P0-03')
-    ? 'PPT-P0-03'
-    : process.argv.includes('--benchmark=P0-02')
-      ? 'PPT-P0-02'
-      : 'PPT-P0-01'
-const researchMaterials = join(root, `docs/product/ppt-benchmark-materials/${researchCaseId}`)
-const researchDeck = JSON.parse(
-  await readFile(join(researchMaterials, 'reference-deck.json'), 'utf8'),
-)
-const researchPlan = JSON.parse(
-  await readFile(join(researchMaterials, 'reference-plan.json'), 'utf8'),
-)
-const researchSourceNames =
-  researchCaseId === 'PPT-P0-04'
-    ? [
-        'originals/2022-federal-rules-evidence.pdf',
-        'originals/2024-federal-rules-evidence.pdf',
-        'originals/2023-courts-amendment-package.pdf',
-      ]
-    : researchCaseId === 'PPT-P0-03'
-      ? [
-          'hess-peterson-2015-article.pdf',
-          'hess-peterson-2015-dictionary.pdf',
-          'treatment-outcomes.csv',
-        ]
-      : researchCaseId === 'PPT-P0-02'
-        ? [
-            'helps-2014-white-noise.pdf',
-            'han-2013-speech-noise.pdf',
-            'mohanathasan-2025-conversation-noise.pdf',
-          ]
-        : ['deardorff-2020-article.pdf']
-const researchSources = await Promise.all(
-  researchSourceNames.map(async (name) => {
-    const bytes = await readFile(join(researchMaterials, name))
-    return { name: basename(name), bytes, sha256: createHash('sha256').update(bytes).digest('hex') }
-  }),
-)
+const selectedBenchmark = process.argv.find((arg) => arg.startsWith('--benchmark='))
+const researchCaseId = selectedBenchmark
+  ? `PPT-${selectedBenchmark.slice('--benchmark='.length)}`
+  : 'PPT-P0-01'
+const {
+  plan: researchPlan,
+  deck: researchDeck,
+  sourceAttachments: researchSources,
+} = await loadBenchmarkBundle(root, researchCaseId)
 const deck = {
   version: 1,
   id: projectId,
