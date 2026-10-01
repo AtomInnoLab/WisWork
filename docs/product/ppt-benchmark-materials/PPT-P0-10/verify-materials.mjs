@@ -9,6 +9,7 @@ import {
   parsePresentationPlan,
   assertDeckMatchesPresentationPlan,
 } from '@wiswork/pptx-engine/presentation-plan'
+import { inspectPresentationGeometry } from '@wiswork/pptx-engine/presentation'
 const root = dirname(fileURLToPath(import.meta.url))
 const read = (n) => JSON.parse(readFileSync(join(root, n), 'utf8'))
 const sha = (b) => createHash('sha256').update(b).digest('hex')
@@ -36,6 +37,7 @@ for (const slide of plan.slides) {
 }
 assert(deck.slides.every((slide) => slide.elements.every((element) => element.kind === 'text')))
 assertDeckMatchesPresentationPlan(deck, plan)
+assert.deepEqual(inspectPresentationGeometry(deck), [], 'Candidate page geometry must compile')
 for (const locator of basis.locators) {
   const text = execFileSync(
     'pdftotext',

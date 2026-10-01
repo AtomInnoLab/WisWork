@@ -510,7 +510,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
           body,
         }),
       )
-      const start = await expected(next, 'relay.start', 30_000)
+      const start = await expected(next, 'relay.start', Math.max(30_000, timeoutMs))
       if (
         start.request_id !== requestId ||
         start.session_id !== approved.session_id ||
@@ -521,7 +521,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       const chunks = []
       let bytes = 0
       for (;;) {
-        const frame = await next(30_000)
+        const frame = await next(Math.max(30_000, timeoutMs))
         if (frame.request_id !== requestId || frame.session_id !== approved.session_id)
           throw new Error('PC response identity mismatch')
         if (frame.type === 'relay.done') break
@@ -551,7 +551,10 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         !options.productionFixture?.plan?.sources?.length ||
         sourceHashes.size !== sourceAttachments.length ||
         options.productionFixture.plan.sources.some(
-          (item) => !sourceHashes.has(item.snapshotAttachmentId),
+          (item) =>
+            !sourceHashes.has(
+              item.snapshotAttachmentId ?? /^attachment:([a-f0-9]{64})$/.exec(item.uri)?.[1],
+            ),
         )
       )
         throw new Error('invalid source-backed production fixture')
@@ -561,7 +564,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
           !/\.(?:pdf|csv|json|docx|txt|md|xlsx|pptx)$/i.test(source.name) ||
           !Buffer.isBuffer(source.bytes) ||
           source.bytes.length < 1 ||
-          source.bytes.length > 10 * 1024 * 1024 ||
+          source.bytes.length > 50 * 1024 * 1024 ||
           createHash('sha256').update(source.bytes).digest('hex') !== source.sha256
         )
           throw new Error('invalid source-backed production fixture')

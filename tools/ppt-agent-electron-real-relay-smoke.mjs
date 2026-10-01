@@ -714,13 +714,17 @@ app.whenReady().then(async () => {
   if (!concurrentBenchmark) {
     smokeStage = `${researchCaseId}${benchmarkVariant ? ` ${benchmarkVariant}` : ''} real-source production`
     const sourceStartedAt = Date.now()
+    let sourceOperation = 'pairing'
     const researchResult = await inspectPcBusiness(
       origin,
       `${researchCaseId}${benchmarkVariant ? `-${benchmarkVariant}` : ''}-local-document`,
       researchDeck.id,
       {
         onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
-        timeoutMs: 60_000,
+        onProgress: (stage) => {
+          sourceOperation = stage
+        },
+        timeoutMs: benchmarkCase === 'P0-10' ? 120_000 : 60_000,
         sourceAttachments: researchSources,
         productionFixture: {
           requestId: `${researchCaseId}${benchmarkVariant ? `-${benchmarkVariant}` : ''}-production`,
@@ -731,7 +735,11 @@ app.whenReady().then(async () => {
         ...(derivedPageFixture ? { derivedPageFixture } : {}),
         createProduction: true,
       },
-    )
+    ).catch((error) => {
+      throw new Error(
+        `${error.message} after ${Math.round((Date.now() - sourceStartedAt) / 1000)}s at ${sourceOperation}`,
+      )
+    })
     if (
       !researchResult.sourceChecked ||
       researchResult.productionDelivery?.pageDigests.length !== 8 ||

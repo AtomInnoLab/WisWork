@@ -23,9 +23,37 @@ export async function loadBenchmarkBundle(repoRoot, caseId, variant) {
     !deck.slides.length
   )
     throw new Error('invalid benchmark plan or deck')
-  const expected = new Set(plan.sources.map((source) => source.snapshotAttachmentId))
+  const expected = new Set(
+    plan.sources.map(
+      (source) =>
+        source.snapshotAttachmentId ?? /^attachment:([a-f0-9]{64})$/.exec(source.uri)?.[1],
+    ),
+  )
   if (!expected.size || [...expected].some((id) => !/^[a-f0-9]{64}$/.test(id)))
     throw new Error('benchmark source snapshot missing')
+  if (caseId === 'PPT-P0-10') {
+    const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'))
+    const source = manifest.source
+    if (
+      expected.size !== 1 ||
+      !expected.has(source?.sha256) ||
+      !Number.isSafeInteger(source.bytes) ||
+      source.bytes < 1 ||
+      source.bytes > 50 * 1024 * 1024
+    )
+      throw new Error('benchmark source manifest mismatch')
+    const sourcePath = process.env[source.environmentOverride] || source.localPath
+    if (typeof sourcePath !== 'string' || !sourcePath.endsWith('.pdf'))
+      throw new Error('benchmark source path invalid')
+    const bytes = await readFile(sourcePath)
+    if (bytes.length !== source.bytes || sha(bytes) !== source.sha256)
+      throw new Error('benchmark source digest mismatch')
+    return {
+      plan,
+      deck,
+      sourceAttachments: [{ name: basename(sourcePath), bytes, sha256: source.sha256 }],
+    }
+  }
   const matched = new Map()
   let visited = 0
   async function scan(dir, depth) {

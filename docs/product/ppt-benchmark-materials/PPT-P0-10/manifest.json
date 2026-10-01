@@ -16,12 +16,12 @@
   },
   "scopeHumanConfirmed": false,
   "files": {
-    "README.md": "9c9a977219e95ef7169e2e83a64ec883b2f5e561820e58ad99f20659c4759284",
+    "README.md": "35f5da764f4529c2bfc9bc509e656ae7fcedeba0fd753aa6e71edba5b3c5e02f",
     "basis.json": "bd6261d251514062c33b7bfb15980001ed1e310280ebc304590cf78a5f23e7a4",
     "reference-plan.json": "b7570dce459a96a33fee499d5543b516c39c4620ad33caecef8fc8a0c8de32be",
-    "reference-deck.json": "0f92d80715ee7a866a97682103deac10e9da0f0fd139dfb397cf8b107cdd43f8",
-    "p0-10-reference.pptx": "f8e151b036fd41ff0aea608fb26592c57f2f63e30f27dd3e8db82928575f3315",
-    "generate-reference.cjs": "3f6f68a366cfc04847cd0fe93606d6721c2501188c78abbca63cdd3439c3febb",
-    "verify-materials.mjs": "7229fadbb0b792e9c283775be124f2eca9326fa962554c078d2850ccbc29add6"
+    "reference-deck.json": "3c296f5ddc67e68cc1f7b37c423df2b4ce913cf9782a1c00a6584d875eb4d671",
+    "p0-10-reference.pptx": "1d4b784796d6efe4c82f9e5769d1faab854caf567b4d7a58f3922dc124839561",
+    "generate-reference.cjs": "073ca80808ad7c57cf939574b56b3f2061c484a2a0296c4cfaac1625f74c0755",
+    "verify-materials.mjs": "cedcbb591e5b44c233c26ae629a859ae232dbfcd0458637442377125d19481a0"
   }
 }
