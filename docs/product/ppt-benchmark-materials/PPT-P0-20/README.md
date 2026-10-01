@@ -12,7 +12,7 @@
 
 本机定向测试分别覆盖：F1 一次可重试模型错误后保留同一指令，且用户结束不会被标为完成；F2 首次截图失败返回待复核而无视觉通过记录，恢复后才写入待审截图；F3 用本包实际八页页模型在四页持久导入回执后、第 5 页写入前取消，重建文档绑定后只补第 5–8 页且不重复写入前四页，并核对原生图表回读。另以两份冻结 PDF、来源绑定计划和实际页模型在 PC 服务中验证：前四页编译落盘，第 5 页编译时中断，重建服务后恢复至八页；前四页回执不变，第 5 页仅重试一次，第 6 页原生图表可回读。PC 编译中断与 F3 的用户取消是不同事件。这些故障点使用模拟模型或 Office 宿主，尚不是一次完整的真实 PowerPoint 故障注入运行。
 
-`node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-20 --built-taskpane` 已在本机通过构建版 Taskpane、Electron PC 与 Rust Relay 的两份 PDF 上传、计划保存、八页生产、PPTX/PDF 回读和恢复。该整链路运行未按 F1/F2/F3 精确时点强制故障，故障证据来自上述定向测试。LibreOffice 已将候选 PPTX 渲染为八页 PDF 并目视检查版面。
+`node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-20 --built-taskpane` 已在本机通过构建版 Taskpane、Electron PC 与 Rust Relay 的两份 PDF 上传、计划保存、八页生产、PPTX/PDF 回读和恢复。该运行还在来源已上传的同一项目上启动第二个持久生产任务，于第 5 页编译期间强制杀掉 Electron PC，重启后核对前四页持久完成、第 5 页执行中、其余页待处理；恢复后八页完成，前四页没有重复编译，第 5 页重试一次。此为真实本机进程崩溃与生产任务恢复，仍不同于 F1 模型错误、F2 Office 截图失败或 F3 用户取消；这些故障证据来自上述定向测试，尚未在同一次真实 PowerPoint 运行中注入。LibreOffice 已将候选 PPTX 渲染为八页 PDF 并目视检查版面。
 
 ## 固定任务提示
 

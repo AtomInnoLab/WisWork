@@ -43,6 +43,7 @@ const [benchmarkCase, selectedVariant] = selectedBenchmark
   ? selectedBenchmark.slice('--benchmark='.length).split(':')
   : ['P0-01']
 const concurrentBenchmark = benchmarkCase === 'P0-17' && selectedVariant === 'all'
+const sourceBackedCrash = benchmarkCase === 'P0-20'
 const benchmarkVariant = concurrentBenchmark ? 'science' : selectedVariant
 const researchCaseId = `PPT-${benchmarkCase}`
 const {
@@ -414,11 +415,15 @@ const documentId = ${JSON.stringify(documentId)}
 const projectId = ${JSON.stringify(projectId)}
 const concurrentDocuments = ${JSON.stringify(concurrentDocuments)}
 app.whenReady().then(async () => {
-  const crashProjectId = projectId + '-crash'
+  const crashProjectId = ${JSON.stringify(sourceBackedCrash ? researchDeck.id : `${projectId}-crash`)}
+  const crashDocumentId = ${JSON.stringify(sourceBackedCrash ? `${researchCaseId}-local-document` : documentId)}
+  const crashDeck = ${JSON.stringify(sourceBackedCrash ? researchDeck : { ...deck, id: `${projectId}-crash` })}
+  const crashPageId = ${JSON.stringify(sourceBackedCrash ? researchDeck.slides[4].id : 'slide-2')}
+  const completedBeforeCrash = ${sourceBackedCrash ? 4 : 1}
   const presentation = createPresentationService({
     userDataPath: ${JSON.stringify(userDataPath)},
     compile: async (input, options) => {
-      if (process.env.PPT_AGENT_SMOKE_STALL === '1' && input.id === crashProjectId && input.slides[0]?.id === 'slide-2') {
+      if (process.env.PPT_AGENT_SMOKE_STALL === '1' && input.id === crashProjectId && input.slides[0]?.id === crashPageId) {
         console.log('PRODUCTION_BLOCKED')
         await new Promise(() => {})
       }
@@ -461,15 +466,16 @@ app.whenReady().then(async () => {
   })
   const crashRequestId = 'production-crash-run'
   const crashCall = async (operation, extra = {}) => JSON.parse(Buffer.from(await presentation({
-    operation, documentId, projectId: crashProjectId,
+    operation, documentId: crashDocumentId, projectId: crashProjectId,
     ...(operation === 'save_plan' ? {} : { requestId: crashRequestId }), ...extra,
   }, new AbortController().signal)).toString('utf8'))
   const crashFailure = error => { console.error(error); app.exit(1) }
   async function startCrashJob() {
-    const crashDeck = { ...deck, id: crashProjectId }
-    const crashPlan = { ...${JSON.stringify(plan)}, projectId: crashProjectId }
-    const saved = await crashCall('save_plan', { expectedRevision: 0, plan: crashPlan })
-    if (saved.revision !== 1) throw Error('crash fixture plan save failed')
+    if (!${sourceBackedCrash}) {
+      const crashPlan = { ...${JSON.stringify(plan)}, projectId: crashProjectId }
+      const saved = await crashCall('save_plan', { expectedRevision: 0, plan: crashPlan })
+      if (saved.revision !== 1) throw Error('crash fixture plan save failed')
+    }
     const begun = await crashCall('production_begin', { planRevision: 1, deck: crashDeck })
     if (begun.status !== 'pending' || begun.total !== 8) throw Error('crash fixture begin failed')
     const started = await crashCall('production_job_start')
@@ -477,17 +483,23 @@ app.whenReady().then(async () => {
   }
   async function resumeCrashJob() {
     const interrupted = await crashCall('production_job_status')
-    if (interrupted.job?.state !== 'interrupted' || interrupted.production?.compiledCount !== 1 ||
-        interrupted.production?.pages?.[0]?.attempt !== 1 || interrupted.production?.pages?.[1]?.attempt !== 1)
-      throw Error('crash fixture did not recover one completed page and one interrupted page')
+    if (interrupted.job?.state !== 'interrupted' || interrupted.production?.compiledCount !== completedBeforeCrash ||
+        interrupted.production?.pages?.slice(0, completedBeforeCrash).some(page => page.state !== 'compiled' || page.attempt !== 1) ||
+        interrupted.production?.pages?.[completedBeforeCrash]?.state !== 'building' ||
+        interrupted.production?.pages?.[completedBeforeCrash]?.attempt !== 1 ||
+        interrupted.production?.pages?.slice(completedBeforeCrash + 1).some(page => page.state !== 'pending' || page.attempt !== 0))
+      throw Error('crash fixture did not recover completed pages and one interrupted page')
     const resumed = await crashCall('production_job_resume')
     if (resumed.job?.state !== 'running') throw Error('crash fixture job resume failed')
     for (let attempt = 0; attempt < 200; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 100))
       const state = await crashCall('production_job_status')
       if (state.job?.state === 'completed') {
-        if (state.production.compiledCount !== 8 || state.production.pages[0].attempt !== 1 ||
-            state.production.pages[1].attempt !== 2 || state.production.pages.some(page => page.state !== 'compiled'))
+        if (state.production.compiledCount !== 8 ||
+            state.production.pages.slice(0, completedBeforeCrash).some(page => page.attempt !== 1) ||
+            state.production.pages[completedBeforeCrash].attempt !== 2 ||
+            state.production.pages.slice(completedBeforeCrash + 1).some(page => page.attempt !== 1) ||
+            state.production.pages.some(page => page.state !== 'compiled'))
           throw Error('crash fixture did not preserve completed page receipts')
         console.log('PRODUCTION_RECOVERED')
         return
@@ -792,7 +804,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    `Electron PC + Rust Relay business smoke passed (${builtTaskpane ? 'built' : 'development'} Taskpane): browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, ${concurrentBenchmark ? 'three parallel P0-17 source-backed eight-page productions' : 'three concurrent documents'}, fresh eight-page release production${concurrentBenchmark ? '' : `, ${researchCaseId} frozen source upload and eight-page production`}${derivedPageFixture ? ', P0-18 parent-bound single-page revision preserving seven page packages' : ''}, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery`,
+    `Electron PC + Rust Relay business smoke passed (${builtTaskpane ? 'built' : 'development'} Taskpane): browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, ${concurrentBenchmark ? 'three parallel P0-17 source-backed eight-page productions' : 'three concurrent documents'}, fresh eight-page release production${concurrentBenchmark ? '' : `, ${researchCaseId} frozen source upload and eight-page production`}${derivedPageFixture ? ', P0-18 parent-bound single-page revision preserving seven page packages' : ''}, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and ${sourceBackedCrash ? 'P0-20 source-backed page-five crash recovery' : 'running job crash recovery'}`,
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {
