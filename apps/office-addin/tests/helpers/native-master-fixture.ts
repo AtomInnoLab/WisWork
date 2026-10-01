@@ -72,7 +72,10 @@ export async function nativeMasterFixture(count = 2) {
   const started = Date.now()
   let exportCount = 0
   let nativeCalls = 0
+  const pagePackages = count === 600 ? new Map<number, string>() : undefined
   const packageFor = async (index: number) => {
+    const cached = pagePackages?.get(index)
+    if (cached) return cached
     const zip = new JSZip(),
       master = native.masters[index % 2]!,
       layout = master.layouts[0]!
@@ -156,7 +159,9 @@ export async function nativeMasterFixture(count = 2) {
       '[Content_Types].xml',
       `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>${picture ? '<Default Extension="png" ContentType="image/png"/>' : ''}</Types>`,
     )
-    return zip.generateAsync({ type: 'base64' })
+    const result = await zip.generateAsync({ type: 'base64' })
+    pagePackages?.set(index, result)
+    return result
   }
   const adapter = {
     inspectSlideMasters: vi.fn(async () => {
@@ -190,6 +195,7 @@ export async function nativeMasterFixture(count = 2) {
     })),
     executeMasterOperations: vi.fn(async (ops: PowerPointMasterOperation[]) => {
       nativeCalls++
+      pagePackages?.clear()
       beforeWrite()
       if (hostMode === 'before_failure') throw Error('sync_failed')
       native = projectedMasterState(native, ops)
