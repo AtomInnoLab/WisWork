@@ -376,8 +376,29 @@ async function linkedThemeStyle(
     if (face && face.length <= 256 && !Array.from(face).some((char) => char.charCodeAt(0) < 32))
       typefaces[symbol] = face
   }
-  if (!mapping || !scheme) return { colors, typefaces, otherFonts }
+  if (!scheme) return { colors, typefaces, otherFonts }
+  const exactRgb = (key: string) => {
+    const entry = tags(scheme['a:clrScheme'] as Node[], `a:${key}`)[0]
+    const children = (entry?.[`a:${key}`] as Node[] | undefined) ?? []
+    const rgbNode = tags(children, 'a:srgbClr')[0]
+    const rgb = attr(rgbNode, 'val')
+    return rgb &&
+      /^[0-9a-fA-F]{6}$/.test(rgb) &&
+      children.length === 1 &&
+      !((rgbNode?.['a:srgbClr'] as Node[] | undefined) ?? []).length
+      ? `#${rgb.toUpperCase()}`
+      : undefined
+  }
+  for (const key of ['dk1', 'lt1', 'dk2', 'lt2']) {
+    const rgb = exactRgb(key)
+    if (rgb) colors[key] = rgb
+  }
+  if (!mapping) return { colors, typefaces, otherFonts }
   for (const key of [
+    'bg1',
+    'tx1',
+    'bg2',
+    'tx2',
     'accent1',
     'accent2',
     'accent3',
@@ -388,18 +409,9 @@ async function linkedThemeStyle(
     'folHlink',
   ]) {
     const mapped = attr(mapping, key)
-    if (!mapped || !/^(accent[1-6]|hlink|folHlink)$/.test(mapped)) continue
-    const entry = tags(scheme['a:clrScheme'] as Node[], `a:${mapped}`)[0]
-    const children = (entry?.[`a:${mapped}`] as Node[] | undefined) ?? []
-    const rgbNode = tags(children, 'a:srgbClr')[0]
-    const rgb = attr(rgbNode, 'val')
-    if (
-      rgb &&
-      /^[0-9a-fA-F]{6}$/.test(rgb) &&
-      children.length === 1 &&
-      !((rgbNode?.['a:srgbClr'] as Node[] | undefined) ?? []).length
-    )
-      colors[key] = `#${rgb.toUpperCase()}`
+    if (!mapped || !/^(?:lt[12]|dk[12]|accent[1-6]|hlink|folHlink)$/.test(mapped)) continue
+    const rgb = exactRgb(mapped)
+    if (rgb) colors[key] = rgb
   }
   return { colors, typefaces, otherFonts }
 }

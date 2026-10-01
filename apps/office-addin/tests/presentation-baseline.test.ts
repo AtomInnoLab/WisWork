@@ -505,7 +505,7 @@ it('resolves only explicitly linked and unmodified theme colors', async () => {
   const zip = new JSZip()
   zip.file(
     'ppt/slides/slide1.xml',
-    `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="7" name="Theme"/></p:nvSpPr><p:txBody><a:p><a:r><a:rPr><a:latin typeface="+mj-lt"/><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:rPr><a:t>Exact</a:t></a:r><a:r><a:rPr><a:solidFill><a:schemeClr val="accent1"><a:tint val="50000"/></a:schemeClr></a:solidFill></a:rPr><a:t>Tinted</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+    `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="7" name="Theme"/></p:nvSpPr><p:txBody><a:p><a:r><a:rPr><a:latin typeface="+mj-lt"/><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:rPr><a:t>Exact</a:t></a:r><a:r><a:rPr><a:solidFill><a:schemeClr val="accent1"><a:tint val="50000"/></a:schemeClr></a:solidFill></a:rPr><a:t>Tinted</a:t></a:r>${['tx1', 'bg1', 'tx2', 'bg2', 'dk1', 'lt1', 'dk2', 'lt2'].map((key) => `<a:r><a:rPr><a:solidFill><a:schemeClr val="${key}"/></a:solidFill></a:rPr><a:t>${key}</a:t></a:r>`).join('')}</a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
   )
   zip.file(
     'ppt/slides/_rels/slide1.xml.rels',
@@ -518,7 +518,7 @@ it('resolves only explicitly linked and unmodified theme colors', async () => {
   )
   zip.file(
     'ppt/slideMasters/slideMaster1.xml',
-    `<p:sldMaster xmlns:p="urn:p"><p:clrMap accent1="accent2"/></p:sldMaster>`,
+    `<p:sldMaster xmlns:p="urn:p"><p:clrMap accent1="accent2" tx1="dk1" bg1="lt1" tx2="dk2" bg2="lt2"/></p:sldMaster>`,
   )
   zip.file(
     'ppt/slideMasters/_rels/slideMaster1.xml.rels',
@@ -526,7 +526,7 @@ it('resolves only explicitly linked and unmodified theme colors', async () => {
   )
   zip.file(
     'ppt/theme/theme1.xml',
-    `<a:theme xmlns:a="urn:a"><a:themeElements><a:clrScheme><a:accent2><a:srgbClr val="123456"/></a:accent2></a:clrScheme><a:fontScheme><a:majorFont><a:latin typeface="Aptos Display"/></a:majorFont></a:fontScheme></a:themeElements></a:theme>`,
+    `<a:theme xmlns:a="urn:a"><a:themeElements><a:clrScheme><a:accent2><a:srgbClr val="123456"/></a:accent2><a:dk1><a:srgbClr val="654321"/></a:dk1><a:lt1><a:srgbClr val="EFEFEF"/></a:lt1><a:dk2><a:srgbClr val="121212"/></a:dk2><a:lt2><a:srgbClr val="F0F0F0"/></a:lt2></a:clrScheme><a:fontScheme><a:majorFont><a:latin typeface="Aptos Display"/></a:majorFont></a:fontScheme></a:themeElements></a:theme>`,
   )
   const base64 = await zip.generateAsync({ type: 'base64' })
   const report = await inspectPowerPointRichText(base64)
@@ -540,8 +540,37 @@ it('resolves only explicitly linked and unmodified theme colors', async () => {
       text: 'Tinted',
       directFont: expect.objectContaining({ themeColor: 'accent1' }),
     }),
+    expect.objectContaining({ text: 'tx1', resolvedThemeColor: '#654321' }),
+    expect.objectContaining({ text: 'bg1', resolvedThemeColor: '#EFEFEF' }),
+    expect.objectContaining({ text: 'tx2', resolvedThemeColor: '#121212' }),
+    expect.objectContaining({ text: 'bg2', resolvedThemeColor: '#F0F0F0' }),
+    expect.objectContaining({ text: 'dk1', resolvedThemeColor: '#654321' }),
+    expect.objectContaining({ text: 'lt1', resolvedThemeColor: '#EFEFEF' }),
+    expect.objectContaining({ text: 'dk2', resolvedThemeColor: '#121212' }),
+    expect.objectContaining({ text: 'lt2', resolvedThemeColor: '#F0F0F0' }),
   ])
   expect(report.shapes[0]?.paragraphs[0]?.runs[1]).not.toHaveProperty('resolvedThemeColor')
+  zip.file('ppt/slideMasters/slideMaster1.xml', '<p:sldMaster xmlns:p="urn:p"/>')
+  const directScheme = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  expect(
+    directScheme.shapes[0]?.paragraphs[0]?.runs.slice(6).map((run) => run.resolvedThemeColor),
+  ).toEqual(['#654321', '#EFEFEF', '#121212', '#F0F0F0'])
+  expect(directScheme.shapes[0]?.paragraphs[0]?.runs[2]).not.toHaveProperty('resolvedThemeColor')
+  zip.file(
+    'ppt/slideMasters/slideMaster1.xml',
+    '<p:sldMaster xmlns:p="urn:p"><p:clrMap accent1="accent2" tx1="dk1" bg1="lt1" tx2="dk2" bg2="lt2"/></p:sldMaster>',
+  )
+  const originalTheme = await zip.file('ppt/theme/theme1.xml')!.async('string')
+  zip.file(
+    'ppt/theme/theme1.xml',
+    originalTheme.replace(
+      '<a:dk1><a:srgbClr val="654321"/></a:dk1>',
+      '<a:dk1><a:sysClr val="windowText" lastClr="654321"/></a:dk1>',
+    ),
+  )
+  const systemColor = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  expect(systemColor.shapes[0]?.paragraphs[0]?.runs[2]).not.toHaveProperty('resolvedThemeColor')
+  zip.file('ppt/theme/theme1.xml', originalTheme)
   zip.file(
     'ppt/slideLayouts/slideLayout1.xml',
     `<p:sldLayout xmlns:p="urn:p" xmlns:a="urn:a"><p:clrMapOvr><a:overrideClrMapping accent1="accent1"/></p:clrMapOvr></p:sldLayout>`,

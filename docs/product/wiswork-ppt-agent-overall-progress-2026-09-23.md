@@ -2042,3 +2042,7 @@ Office 生产构建的 `version.json` 现声明 PPT 功能所需的最低 PC、R
 ## 2026-10-01：O5 现稿富文本母版普通文本字体读取
 
 依据[Microsoft 的 Slide Master 文档](https://learn.microsoft.com/en-us/office/open-xml/presentation/working-with-slide-masters)，母版 `txStyles/otherStyle` 是关联幻灯片普通文本的样式来源。原有富文本检查器只合并页内列表、段落和运行格式，忽略了明确链接母版的 `otherStyle`。现在对**非占位形状**逐级读取该样式的默认字体并先于本地格式合并，直接运行格式仍可覆盖；母版直接字体不再错误依赖主题关系文件。占位符的 `titleStyle`/`bodyStyle`、版式覆盖及更复杂继承仍不推断，`inheritanceResolved` 仍为 false。失败先行用例复现遗漏，修复后文本包、基线和现稿编辑相关测试 **147/147**、Office 浏览器 E2E **2/2** 通过；真实 PowerPoint 的字体显示与保存重开仍未验证。严格整体 **64% → 64%（575/9）**，真实专业任务 **0/20**；继续只在本机开发，不做跨平台 CI。
+
+## 2026-10-01：O5 现稿主题文本色与直接色槽读取
+
+依据[Microsoft 的母版颜色映射示例](https://learn.microsoft.com/en-us/office/open-xml/presentation/working-with-slide-masters)，`bg1/tx1/bg2/tx2` 可映射到主题 `lt1/dk1/lt2/dk2`。此前富文本包检查器只解析 accent/hlink，导致这些文本/背景色与直接使用 `dk1/lt1/dk2/lt2` 的纯 RGB 色槽不显示确定颜色。现在两组色槽均在明确链接主题且对应条目为无变换的 `srgbClr` 时解析；直接色槽不依赖母版 `clrMap`。缺失关系、颜色变换和 `sysClr` 仍保持未解析，不把 `lastClr` 误称为实际宿主颜色。失败先行测试复现 `tx1` 和直接 `dk1` 漏读；相关测试及 Office 类型、lint、格式检查通过。真实 PowerPoint 外观仍待验收；整体 **64% → 64%（575/9）**，真实专业任务 **0/20**，仅本机开发，不做跨平台 CI。
