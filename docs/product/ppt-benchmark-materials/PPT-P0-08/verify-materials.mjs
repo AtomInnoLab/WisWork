@@ -6,6 +6,12 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import JSZip from 'jszip'
 import { reproducePresentationCalculation } from '@wiswork/pptx-engine/presentation-calculation'
+import { checkPresentationChartData } from '@wiswork/pptx-engine/presentation-chart-data'
+import {
+  assertDeckMatchesPresentationPlan,
+  parsePresentationPlan,
+} from '@wiswork/pptx-engine/presentation-plan'
+import { pdfToPages } from '../../../../packages/file-parse/src/pdf.ts'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const basis = JSON.parse(readFileSync(join(root, 'basis.json'), 'utf8'))
@@ -113,6 +119,8 @@ const files = [
   'independent-recalc.csv',
   'toyota-fy2024-form20f.pdf',
   'toyota-fy2024-financial-summary.pdf',
+  'reference-plan.json',
+  'reference-deck.json',
   'p0-08-reference.pptx',
 ]
 assert.equal(hashes.length, files.length)
@@ -152,6 +160,61 @@ assert.deepEqual(rows[3].split(','), [
   '',
   'not_comparable',
 ])
+const plan = parsePresentationPlan(
+  JSON.parse(readFileSync(join(root, 'reference-plan.json'), 'utf8')),
+)
+const deck = JSON.parse(readFileSync(join(root, 'reference-deck.json'), 'utf8'))
+assertDeckMatchesPresentationPlan(deck, plan)
+assert.equal(plan.domain, 'finance')
+assert.equal(plan.slides.length, 8)
+assert.equal(plan.claims.length, 5)
+assert.equal(plan.sources.length, 7)
+assert.ok(plan.claims.every((claim) => claim.reviewStatus === 'needs_review'))
+assert.ok(plan.claims.every((claim) => claim.professionalContext?.domain === 'finance'))
+assert.deepEqual(plan.slides[6].claimIds, ['comparison-gap'])
+assert.match(plan.claims.find((claim) => claim.id === 'comparison-gap').statement, /留空/)
+assert.equal(
+  reproducePresentationCalculation(plan.claims.find((claim) => claim.id === 'fx-illustrative'))
+    .status,
+  'reproduced',
+)
+const sourceFiles = new Map([
+  [basis.companies[0].source, basis.companies[0].localFile],
+  [basis.companies[1].source, basis.companies[1].localFile],
+  [basis.illustrativeFx.source, 'toyota-fy2024-financial-summary.pdf'],
+  ['local:basis.json', 'basis.json'],
+  ['local:independent-recalc.csv', 'independent-recalc.csv'],
+])
+const pagesByFile = new Map()
+for (const source of plan.sources) {
+  const file = sourceFiles.get(source.uri)
+  assert.ok(file, `unknown source: ${source.id}`)
+  const bytes = readFileSync(join(root, file))
+  assert.equal(source.snapshotAttachmentId, createHash('sha256').update(bytes).digest('hex'))
+  if (file.endsWith('.pdf')) {
+    if (!pagesByFile.has(file)) pagesByFile.set(file, await pdfToPages(bytes))
+    const pageNumber = Number(/^PDF (\d+)/.exec(source.locator)?.[1])
+    assert.ok(pageNumber > 0, `missing physical page: ${source.id}`)
+    assert.ok(pagesByFile.get(file)[pageNumber - 1].includes(source.excerpt))
+  } else {
+    assert.ok(bytes.toString('utf8').includes(source.excerpt))
+  }
+}
+assert.equal(
+  plan.sources.find((source) => source.id === 'apple-value').excerpt,
+  String(basis.companies[0].valueMillions),
+)
+assert.equal(
+  plan.sources.find((source) => source.id === 'toyota-value').excerpt,
+  String(basis.companies[1].valueMillions),
+)
+for (const index of [3, 4]) {
+  const slide = deck.slides[index]
+  const chart = slide.elements.find((element) => element.kind === 'chart')
+  assert.ok(chart)
+  const checked = checkPresentationChartData(plan, slide.id, [chart])
+  assert.ok(checked.charts.every((item) => item.findings.length === 0))
+}
 const reference = await JSZip.loadAsync(readFileSync(join(root, 'p0-08-reference.pptx')))
 assert.equal(
   Object.keys(reference.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).length,

@@ -1,6 +1,6 @@
 # PPT-P0-08 跨公司可比性：Apple 与 Toyota 候选材料包
 
-状态：**官方财务原件、口径、复算和八页参考稿已冻结；财务及使用权人工审阅、真实 PowerPoint 执行尚未完成**。本包计入候选材料，不计入 20 项通过数。固定资料截至 2024-11-01。
+状态：**官方财务原件、口径、复算、来源计划、八页参考稿和本机生产链路已验证；财务及使用权人工审阅、真实 PowerPoint 执行尚未完成**。本包计入候选材料，不计入 20 项通过数。固定资料截至 2024-11-01。
 
 ## 来源、报告期与比较边界
 
@@ -9,7 +9,9 @@
 - 示意换算仅为 `45,095,325 / 145 = 311,002.24` **百万美元**，采用 Toyota FY2024 年度栏汇率；它不是 2024-11-01 即期汇率，也不代表 Apple 财年的平均汇率。不可据此与 Apple 净销售额相减、做排名或声称同口径规模。
 - 财年结束日、US GAAP 与 IFRS、产品和金融服务收入范围均不同。`basis.json` 将同口径美元差额和跨公司收入排名明确设为 `null`。Toyota 20-F 于 2024-06-25、财务汇总于 2024-05-08、Apple 10-K 于 2024-11-01 披露，均不晚于固定截至日期；仍需财务审阅人确认主张与适用边界。
 
-`basis.json` 与 `independent-recalc.csv` 冻结数值、公式、来源页和两个留空项。`p0-08-reference.pptx` 是按该口径生成的八页原生参考稿：第 3 页用原生表格列出口径差异，第 7 页的不可比结果为真正**空白单元格**；Apple 和 Toyota 原币数值位于两张独立的原生图表，纵轴各自从零开始，没有混合币种或期间的比较图。运行 `node -r tsx/cjs generate-reference.cjs` 可重建，`node verify-materials.mjs` 与 `sha256sum -c SHA256SUMS` 可核对原件页码、字面数值、受限算术复算、图表底层值和留空项。参考稿的版式检查只提供工程证据，不等于 PowerPoint 宿主或金融结论验收。
+`basis.json` 与 `independent-recalc.csv` 冻结数值、公式、来源页和两个留空项。`reference-plan.json` 为五条带财务审阅状态的主张绑定七条快照来源，附两张图的原币源数值；`reference-deck.json` 保存逐页原生对象。`p0-08-reference.pptx` 是按该计划生成的八页原生参考稿：第 3 页用原生表格列出口径差异，第 7 页的不可比结果为真正**空白单元格**；Apple 和 Toyota 原币数值位于两张独立的原生图表，纵轴各自从零开始，没有混合币种或期间的比较图。运行 `node --import tsx generate-reference.cjs` 可重建，`node --import tsx verify-materials.mjs` 与 `sha256sum -c SHA256SUMS` 可核对来源快照、原件页码、字面数值、受限算术复算、图表底层值和留空项。
+
+本机 `node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-08` 已通过真实 Electron PC、Rust Relay、Chrome 任务窗格、三份并发文档、来源上传、八页生产与 PPTX/PDF 回读，以及待处理和运行中任务恢复。浏览器侧仍是模拟 Office API 的任务窗格，不能替代真实 PowerPoint 保存关闭重开或金融结论验收。
 
 ## 固定任务提示
 

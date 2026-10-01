@@ -189,6 +189,14 @@ async function inspectBrowserWorkbench(origin, pc) {
     })
     const pageErrors = []
     page.on('pageerror', (error) => pageErrors.push(error.message.slice(0, 300)))
+    const requestFailures = []
+    page.on('requestfailed', (request) =>
+      requestFailures.push(`${request.url()}: ${request.failure()?.errorText}`),
+    )
+    const failedResponses = []
+    page.on('response', (received) => {
+      if (received.status() >= 400) failedResponses.push(`${received.status()} ${received.url()}`)
+    })
     const response = await page.goto('https://localhost:3000/taskpane.html')
     try {
       await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
@@ -196,9 +204,10 @@ async function inspectBrowserWorkbench(origin, pc) {
       const state = await page.evaluate(() => ({
         readyState: document.readyState,
         body: document.body?.innerText.slice(0, 500),
+        html: document.documentElement?.outerHTML.slice(0, 800),
       }))
       throw new Error(
-        `Taskpane connect button unavailable: ${JSON.stringify({ status: response?.status(), url: page.url(), ...state, pageErrors })}`,
+        `Taskpane connect button unavailable: ${JSON.stringify({ status: response?.status(), url: page.url(), ...state, pageErrors, requestFailures, failedResponses })}`,
         { cause: error },
       )
     }
