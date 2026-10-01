@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "projectId": "p0-17-legal",
+  "title": "规则说明：EDPB 控制者与处理者指南",
+  "brief": {
+    "objective": "为 LAW-P0-17 独立生成八页，不引用其他两个项目来源",
+    "audience": "法律专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": [
+      "指南封面",
+      "报告目录",
+      "文件版本与适用范围",
+      "概念定义",
+      "角色判断流程",
+      "职责对照",
+      "指南中的限制与例子",
+      "待法律审阅项"
+    ],
+    "constraints": [
+      "只说明 EDPB 指南文本及版本，不提供个案法律意见",
+      "真实 PowerPoint 三窗口与另存验收待完成"
+    ]
+  },
+  "sources": [
+    {
+      "id": "legal-source-1",
+      "title": "规则说明：EDPB 控制者与处理者指南，原件第 1 页",
+      "uri": "local:edpb-guidelines-07-2020.pdf",
+      "snapshotAttachmentId": "f47d0428ebfab4e4767495bd87e11cbd370439105f35baf710fe9fb31a043e22",
+      "locator": "PDF 第 1 页",
+      "excerpt": "ler and\nprocessor in the GDPR\nVersion 2.1\nAdopted on 07 July 2021"
+    },
+    {
+      "id": "legal-source-2",
+      "title": "规则说明：EDPB 控制者与处理者指南，原件第 3 页",
+      "uri": "local:edpb-guidelines-07-2020.pdf",
+      "snapshotAttachmentId": "f47d0428ebfab4e4767495bd87e11cbd370439105f35baf710fe9fb31a043e22",
+      "locator": "PDF 第 3 页",
+      "excerpt": "ecisive in all circumstances.\nA controller determines the purposes and means of the processing, i.e. the why and how of the\nprocessing. The controller must decide on both purposes "
+    },
+    {
+      "id": "legal-source-3",
+      "title": "规则说明：EDPB 控制者与处理者指南，原件第 3 页",
+      "uri": "local:edpb-guidelines-07-2020.pdf",
+      "snapshotAttachmentId": "f47d0428ebfab4e4767495bd87e11cbd370439105f35baf710fe9fb31a043e22",
+      "locator": "PDF 第 3 页",
+      "excerpt": ".\nA controller determines the purposes and means of the processing, i.e. the why and how of the\nprocessing. The controller must decide on both purposes and means. However, some mor"
+    },
+    {
+      "id": "legal-source-4",
+      "title": "规则说明：EDPB 控制者与处理者指南，原件第 5 页",
+      "uri": "local:edpb-guidelines-07-2020.pdf",
+      "snapshotAttachmentId": "f47d0428ebfab4e4767495bd87e11cbd370439105f35baf710fe9fb31a043e22",
+      "locator": "PDF 第 5 页",
+      "excerpt": "the conditions referred to in Article 28(2) and 28(4) for\nengaging another processor (Art. 28(3)(d) GDPR). ........................................................................."
+    },
+    {
+      "id": "legal-source-5",
+      "title": "规则说明：EDPB 控制者与处理者指南，原件第 3 页",
+      "uri": "local:edpb-guidelines-07-2020.pdf",
+      "snapshotAttachmentId": "f47d0428ebfab4e4767495bd87e11cbd370439105f35baf710fe9fb31a043e22",
+      "locator": "PDF 第 3 页",
+      "excerpt": "be qualified as a controller.\nJoint controllers\nThe qualification as joint controllers may arise where more than one actor is involved in the processing.\nThe GDPR introduces specif"
+    }
+  ],
+  "claims": [
+    {
+      "id": "legal-claim-1",
+      "statement": "封面载明 Version 2.1，并区分 2021 年通过与后续版本修订。",
+      "type": "fact",
+      "sourceIds": ["legal-source-1"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "legal-claim-2",
+      "statement": "指南将控制者关联于处理目的和方式的决定；具体关系需结合事实。",
+      "type": "fact",
+      "sourceIds": ["legal-source-2"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "legal-claim-3",
+      "statement": "先识别处理目的，再核对处理方式与实际决定权。",
+      "type": "fact",
+      "sourceIds": ["legal-source-3"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "legal-claim-4",
+      "statement": "处理者义务涉及 Article 28 安排；本页只摘要指南，不代替法规原文。",
+      "type": "fact",
+      "sourceIds": ["legal-source-4"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "legal-claim-5",
+      "statement": "共同控制与处理者关系依具体活动判断，不可按名称自动认定。",
+      "type": "fact",
+      "sourceIds": ["legal-source-5"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "指南封面",
+      "purpose": "仅呈现 LAW-P0-17 项目来源及其专业边界",
+      "claimIds": [],
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p02",
+      "title": "报告目录",
+      "purpose": "仅呈现 LAW-P0-17 项目来源及其专业边界",
+      "claimIds": [],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p03",
+      "title": "文件版本与适用范围",
+      "purpose": "仅呈现 LAW-P0-17 项目来源及其专业边界",
+      "claimIds": ["legal-claim-1"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p04",
+      "title": "概念定义",
+      "purpose": "仅呈现 LAW-P0-17 项目来源及其专业边界",
+      "claimIds": ["legal-claim-2"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p05",
+      "title": "角色判断流程",
+      "purpose": "仅呈现 LAW-P0-17 项目来源及其专业边界",
+      "claimIds": ["legal-claim-3"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p06",
+      "title": "职责对照",
+      "purpose": "仅呈现 LAW-P0-17 项目来源及其专业边界",
+      "claimIds": ["legal-claim-4"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p07",
+      "title": "指南中的限制与例子",
+      "purpose": "仅呈现 LAW-P0-17 项目来源及其专业边界",
+      "claimIds": ["legal-claim-5"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p08",
+      "title": "待法律审阅项",
+      "purpose": "仅呈现 LAW-P0-17 项目来源及其专业边界",
+      "claimIds": [],
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    }
+  ]
+}

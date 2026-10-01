@@ -55,3 +55,36 @@ test('finds each frozen source by digest across the case directory and uploads s
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('loads only the selected P0-17 document plan and its own frozen PDF', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'ppt-benchmark-bundle-'))
+  try {
+    const directory = join(root, 'docs/product/ppt-benchmark-materials/PPT-P0-17')
+    await mkdir(directory, { recursive: true })
+    for (const key of ['science', 'legal', 'finance']) {
+      const bytes = Buffer.from(`%PDF-${key}`)
+      const digest = createHash('sha256').update(bytes).digest('hex')
+      await writeFile(join(directory, `${key}.pdf`), bytes)
+      await writeFile(
+        join(directory, `reference-${key}-plan.json`),
+        JSON.stringify({ projectId: key, sources: [{ snapshotAttachmentId: digest }] }),
+      )
+      await writeFile(
+        join(directory, `reference-${key}-deck.json`),
+        JSON.stringify({ id: key, slides: [{ id: 'p01' }] }),
+      )
+    }
+    const bundle = await loadBenchmarkBundle(root, 'PPT-P0-17', 'legal')
+    assert.equal(bundle.plan.projectId, 'legal')
+    assert.deepEqual(
+      bundle.sourceAttachments.map((item) => item.name),
+      ['legal.pdf'],
+    )
+    await assert.rejects(
+      loadBenchmarkBundle(root, 'PPT-P0-17', '../science'),
+      /invalid benchmark variant/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

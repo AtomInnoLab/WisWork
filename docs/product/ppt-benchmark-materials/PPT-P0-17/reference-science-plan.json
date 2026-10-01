@@ -1,0 +1,223 @@
+{
+  "version": 1,
+  "projectId": "p0-17-science",
+  "title": "科研：生物医学工作流可复现性研讨班",
+  "brief": {
+    "objective": "为 SCI-P0-17 独立生成八页，不引用其他两个项目来源",
+    "audience": "科研专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": [
+      "研究封面",
+      "报告目录",
+      "研究问题",
+      "样本与方法",
+      "工作坊流程",
+      "结果与原文证据",
+      "局限与可比性",
+      "结论与待核验项"
+    ],
+    "constraints": [
+      "小样本观察，不作因果推断；统计表述待科研审阅",
+      "真实 PowerPoint 三窗口与另存验收待完成"
+    ]
+  },
+  "sources": [
+    {
+      "id": "science-source-1",
+      "title": "科研：生物医学工作流可复现性研讨班，原件第 1 页",
+      "uri": "local:deardorff-2020-article.pdf",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "PDF 第 1 页",
+      "excerpt": "ionally reproducible.\nMethods\nThis mixed methods study consisted of in-depth interviews with 14 biomedical researchers\nbefore and after participation in an introductory programming"
+    },
+    {
+      "id": "science-source-2",
+      "title": "科研：生物医学工作流可复现性研讨班，原件第 5 页",
+      "uri": "local:deardorff-2020-article.pdf",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "PDF 第 5 页",
+      "excerpt": "respond to emails. Therefore, only 12 researchers\nparticipated in the post-workshop interviews.\nChecklist scores before and after the workshop\nThe average score for the pre-worksho"
+    },
+    {
+      "id": "science-source-3",
+      "title": "科研：生物医学工作流可复现性研讨班，原件第 5 页",
+      "uri": "local:deardorff-2020-article.pdf",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "PDF 第 5 页",
+      "excerpt": " average score increased from 1.6 to 2.2\nand ranged from 0 to 6, however this was not a statistically significant difference (t(11) = -1.04,\np = 0.318). The post-workshop scores re"
+    },
+    {
+      "id": "science-source-4",
+      "title": "科研：生物医学工作流可复现性研讨班，原件第 5 页",
+      "uri": "local:deardorff-2020-article.pdf",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "PDF 第 5 页",
+      "excerpt": "on control to manage code 0 2\nUse open source software 7 10\nShare your code publicly 5 2\nShare your computational workflow or protocols publicly 3 2\nhttps://doi.org/10.1371/journal"
+    },
+    {
+      "id": "science-source-5",
+      "title": "科研：生物医学工作流可复现性研讨班，原件第 9 页",
+      "uri": "local:deardorff-2020-article.pdf",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "PDF 第 9 页",
+      "excerpt": "emes. Finally, because of the\nsmall sample size, the quantitative analysis lacked appropriate power. A more well-defined\nchecklist administered to a larger group might have reveale"
+    }
+  ],
+  "claims": [
+    {
+      "id": "science-claim-1",
+      "statement": "论文使用工作坊前后访谈观察计算工作流可复现性。",
+      "type": "fact",
+      "sourceIds": ["science-source-1"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "science-claim-2",
+      "statement": "前测 14 人，三个月后访谈 12 人；两时点分母不同。",
+      "type": "fact",
+      "sourceIds": ["science-source-2"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "science-claim-3",
+      "statement": "六项清单均分 1.6/6 到 2.2/6，p=0.318；不能称为统计显著改善。",
+      "type": "fact",
+      "sourceIds": ["science-source-3"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "science-claim-4",
+      "statement": "Table 1 开源软件使用人数前测 7/14、后测 10/12。",
+      "type": "fact",
+      "sourceIds": ["science-source-4"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "science-claim-5",
+      "statement": "小样本及分析者单人编码限制推断范围。",
+      "type": "fact",
+      "sourceIds": ["science-source-5"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "研究封面",
+      "purpose": "仅呈现 SCI-P0-17 项目来源及其专业边界",
+      "claimIds": [],
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p02",
+      "title": "报告目录",
+      "purpose": "仅呈现 SCI-P0-17 项目来源及其专业边界",
+      "claimIds": [],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p03",
+      "title": "研究问题",
+      "purpose": "仅呈现 SCI-P0-17 项目来源及其专业边界",
+      "claimIds": ["science-claim-1"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p04",
+      "title": "样本与方法",
+      "purpose": "仅呈现 SCI-P0-17 项目来源及其专业边界",
+      "claimIds": ["science-claim-2"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p05",
+      "title": "工作坊流程",
+      "purpose": "仅呈现 SCI-P0-17 项目来源及其专业边界",
+      "claimIds": ["science-claim-3"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p06",
+      "title": "结果与原文证据",
+      "purpose": "仅呈现 SCI-P0-17 项目来源及其专业边界",
+      "claimIds": ["science-claim-4"],
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"],
+      "chartData": [
+        {
+          "elementId": "science-chart",
+          "categories": ["前测 n=14", "后测 n=12"],
+          "series": [
+            {
+              "name": "使用开源软件的人数",
+              "points": [
+                {
+                  "value": 7,
+                  "claimId": "science-claim-4",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "science-source-4",
+                    "excerptOffset": 55,
+                    "excerptText": "7"
+                  }
+                },
+                {
+                  "value": 10,
+                  "claimId": "science-claim-4",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "science-source-4",
+                    "excerptOffset": 57,
+                    "excerptText": "10"
+                  }
+                }
+              ]
+            }
+          ],
+          "unit": "people"
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "局限与可比性",
+      "purpose": "仅呈现 SCI-P0-17 项目来源及其专业边界",
+      "claimIds": ["science-claim-5"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p08",
+      "title": "结论与待核验项",
+      "purpose": "仅呈现 SCI-P0-17 项目来源及其专业边界",
+      "claimIds": [],
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    }
+  ]
+}

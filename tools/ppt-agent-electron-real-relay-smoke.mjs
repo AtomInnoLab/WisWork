@@ -39,14 +39,15 @@ if (builtTaskpane) {
   if (!origin) throw new Error('built Taskpane manifest origin missing')
   await inspectOfficeBuild(dist, origin)
 }
-const researchCaseId = selectedBenchmark
-  ? `PPT-${selectedBenchmark.slice('--benchmark='.length)}`
-  : 'PPT-P0-01'
+const [benchmarkCase, benchmarkVariant] = selectedBenchmark
+  ? selectedBenchmark.slice('--benchmark='.length).split(':')
+  : ['P0-01']
+const researchCaseId = `PPT-${benchmarkCase}`
 const {
   plan: researchPlan,
   deck: researchDeck,
   sourceAttachments: researchSources,
-} = await loadBenchmarkBundle(root, researchCaseId)
+} = await loadBenchmarkBundle(root, researchCaseId, benchmarkVariant)
 const temp = await mkdtemp(join(tmpdir(), 'ppt-electron-real-relay-'))
 const deck = {
   version: 1,
@@ -612,17 +613,17 @@ app.whenReady().then(async () => {
     releaseResult.productionDelivery.pdfBytes < 100
   )
     throw new Error('Electron PC fresh release production incomplete')
-  smokeStage = `${researchCaseId} real-source research production`
+  smokeStage = `${researchCaseId}${benchmarkVariant ? ` ${benchmarkVariant}` : ''} real-source production`
   const researchResult = await inspectPcBusiness(
     origin,
-    `${researchCaseId}-local-document`,
+    `${researchCaseId}${benchmarkVariant ? `-${benchmarkVariant}` : ''}-local-document`,
     researchDeck.id,
     {
       onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
       timeoutMs: 60_000,
       sourceAttachments: researchSources,
       productionFixture: {
-        requestId: `${researchCaseId}-research-production`,
+        requestId: `${researchCaseId}${benchmarkVariant ? `-${benchmarkVariant}` : ''}-production`,
         deck: researchDeck,
         plan: researchPlan,
         expectedSlideTexts: researchDeck.slides.map((slide) => slide.title),

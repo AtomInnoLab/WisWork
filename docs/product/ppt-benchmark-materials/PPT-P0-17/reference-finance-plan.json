@@ -1,0 +1,251 @@
+{
+  "version": 1,
+  "projectId": "p0-17-finance",
+  "title": "财务：Apple FY2024 审计年报",
+  "brief": {
+    "objective": "为 FIN-P0-17 独立生成八页，不引用其他两个项目来源",
+    "audience": "财务专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": [
+      "财务封面",
+      "报告目录",
+      "报告期与审计范围",
+      "收入结构",
+      "利润与现金流",
+      "年度对照",
+      "口径与风险",
+      "结论与待财务审阅项"
+    ],
+    "constraints": [
+      "只报告 FY2024 10-K 历史披露值，不虚构预测或投资意见",
+      "真实 PowerPoint 三窗口与另存验收待完成"
+    ]
+  },
+  "sources": [
+    {
+      "id": "finance-source-1",
+      "title": "财务：Apple FY2024 审计年报，原件第 1 页",
+      "uri": "local:apple-fy2024-form10k.pdf",
+      "snapshotAttachmentId": "319e1217afe72f194575e63350ea6c813eaf5caf0c24e59ce8b221fc1b3ea0d4",
+      "locator": "PDF 第 1 页",
+      "excerpt": "CURITIES EXCHANGE ACT OF 1934\nFor the fiscal year ended September 28, 2024\nor\n☐ TRANSITION REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934\nFor the tra"
+    },
+    {
+      "id": "finance-source-2",
+      "title": "财务：Apple FY2024 审计年报，原件第 51 页",
+      "uri": "local:apple-fy2024-form10k.pdf",
+      "snapshotAttachmentId": "319e1217afe72f194575e63350ea6c813eaf5caf0c24e59ce8b221fc1b3ea0d4",
+      "locator": "PDF 第 51 页",
+      "excerpt": "n on the Financial Statements\nWe have audited the accompanying consolidated balance sheets of Apple Inc. (the “Company”) as of September 28, 2024 and\nSeptember 30, 2023, the relate"
+    },
+    {
+      "id": "finance-source-3",
+      "title": "财务：Apple FY2024 审计年报，原件第 32 页",
+      "uri": "local:apple-fy2024-form10k.pdf",
+      "snapshotAttachmentId": "319e1217afe72f194575e63350ea6c813eaf5caf0c24e59ce8b221fc1b3ea0d4",
+      "locator": "PDF 第 32 页",
+      "excerpt": "Services 96,169 85,200 78,129\nTotal net sales 391,035 383,285 394,328\nCost of sales:\nProducts 185,233 189,282 201,471\nServices 25,119 24,855 22,075\nTotal cost of sales 210,352 214,"
+    },
+    {
+      "id": "finance-source-4",
+      "title": "财务：Apple FY2024 审计年报，原件第 35 页",
+      "uri": "local:apple-fy2024-form10k.pdf",
+      "snapshotAttachmentId": "319e1217afe72f194575e63350ea6c813eaf5caf0c24e59ce8b221fc1b3ea0d4",
+      "locator": "PDF 第 35 页",
+      "excerpt": " balances (214) (3,068) 5,562\nNet income 93,736 96,995 99,803\nDividends and dividend equivalents declared (15,218) (14,996) (14,793)\nCommon stock withheld related to net share sett"
+    },
+    {
+      "id": "finance-source-5",
+      "title": "财务：Apple FY2024 审计年报，原件第 3 页",
+      "uri": "local:apple-fy2024-form10k.pdf",
+      "snapshotAttachmentId": "319e1217afe72f194575e63350ea6c813eaf5caf0c24e59ce8b221fc1b3ea0d4",
+      "locator": "PDF 第 3 页",
+      "excerpt": "I\nItem 1. Business 1\nItem 1A. Risk Factors 5\nItem 1B. Unresolved Staff Comments 17\nItem 1C. Cybersecurity 17\nItem 2. Properties 18\nItem 3. Legal Proceedings 18\nItem 4. Mine Safety "
+    }
+  ],
+  "claims": [
+    {
+      "id": "finance-claim-1",
+      "statement": "财政年度截至 2024-09-28；与上一财年的日期不同。",
+      "type": "fact",
+      "sourceIds": ["finance-source-1"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "finance-claim-2",
+      "statement": "合并净销售额 FY2024 为 391,035 百万美元，FY2023 为 383,285 百万美元。",
+      "type": "fact",
+      "sourceIds": ["finance-source-2"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "finance-claim-3",
+      "statement": "净利润与现金流须分别按审计年报原表及单位核对，不将利润等同现金。",
+      "type": "fact",
+      "sourceIds": ["finance-source-3"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "finance-claim-4",
+      "statement": "原生图表并列展示两年净销售额原值；单位为百万美元。",
+      "type": "fact",
+      "sourceIds": ["finance-source-4"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "finance-claim-5",
+      "statement": "比较只覆盖历史披露；重述、分类口径和风险仍待财务审阅。",
+      "type": "fact",
+      "sourceIds": ["finance-source-5"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "finance-sales-2023",
+      "statement": "FY2023 净销售额 383,285 百万美元，取自审计年报。",
+      "type": "calculation",
+      "sourceIds": ["finance-source-3"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "calculation": {
+        "formula": "amount",
+        "inputs": ["amount"],
+        "unit": "USD millions",
+        "reproduction": {
+          "bindings": [
+            { "name": "amount", "inputIndex": 0, "value": 383285, "sourceId": "finance-source-3" }
+          ],
+          "expected": 383285
+        }
+      }
+    },
+    {
+      "id": "finance-sales-2024",
+      "statement": "FY2024 净销售额 391,035 百万美元，取自审计年报。",
+      "type": "calculation",
+      "sourceIds": ["finance-source-3"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "calculation": {
+        "formula": "amount",
+        "inputs": ["amount"],
+        "unit": "USD millions",
+        "reproduction": {
+          "bindings": [
+            { "name": "amount", "inputIndex": 0, "value": 391035, "sourceId": "finance-source-3" }
+          ],
+          "expected": 391035
+        }
+      }
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "财务封面",
+      "purpose": "仅呈现 FIN-P0-17 项目来源及其专业边界",
+      "claimIds": [],
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p02",
+      "title": "报告目录",
+      "purpose": "仅呈现 FIN-P0-17 项目来源及其专业边界",
+      "claimIds": [],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p03",
+      "title": "报告期与审计范围",
+      "purpose": "仅呈现 FIN-P0-17 项目来源及其专业边界",
+      "claimIds": ["finance-claim-1"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p04",
+      "title": "收入结构",
+      "purpose": "仅呈现 FIN-P0-17 项目来源及其专业边界",
+      "claimIds": ["finance-claim-2"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p05",
+      "title": "利润与现金流",
+      "purpose": "仅呈现 FIN-P0-17 项目来源及其专业边界",
+      "claimIds": ["finance-claim-3"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p06",
+      "title": "年度对照",
+      "purpose": "仅呈现 FIN-P0-17 项目来源及其专业边界",
+      "claimIds": ["finance-claim-4", "finance-sales-2023", "finance-sales-2024"],
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"],
+      "chartData": [
+        {
+          "elementId": "finance-chart",
+          "categories": ["FY2023", "FY2024"],
+          "series": [
+            {
+              "name": "净销售额（百万美元）",
+              "points": [
+                {
+                  "value": 383285,
+                  "claimId": "finance-sales-2023",
+                  "basis": { "kind": "calculation" }
+                },
+                {
+                  "value": 391035,
+                  "claimId": "finance-sales-2024",
+                  "basis": { "kind": "calculation" }
+                }
+              ]
+            }
+          ],
+          "unit": "USD millions"
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "口径与风险",
+      "purpose": "仅呈现 FIN-P0-17 项目来源及其专业边界",
+      "claimIds": ["finance-claim-5"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    },
+    {
+      "id": "p08",
+      "title": "结论与待财务审阅项",
+      "purpose": "仅呈现 FIN-P0-17 项目来源及其专业边界",
+      "claimIds": [],
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "来源只来自本项目", "保留项目识别码"]
+    }
+  ]
+}

@@ -5,11 +5,17 @@ import { basename, extname, join } from 'node:path'
 const supported = new Set(['.pdf', '.csv', '.json', '.docx', '.txt', '.md', '.xlsx', '.pptx'])
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
 
-export async function loadBenchmarkBundle(repoRoot, caseId) {
+export async function loadBenchmarkBundle(repoRoot, caseId, variant) {
   if (!/^PPT-P0-(?:0[1-9]|1\d|20)$/.test(caseId)) throw new Error('invalid benchmark case')
+  if (
+    variant !== undefined &&
+    (caseId !== 'PPT-P0-17' || !['science', 'legal', 'finance'].includes(variant))
+  )
+    throw new Error('invalid benchmark variant')
   const directory = join(repoRoot, 'docs/product/ppt-benchmark-materials', caseId)
-  const plan = JSON.parse(await readFile(join(directory, 'reference-plan.json'), 'utf8'))
-  const deck = JSON.parse(await readFile(join(directory, 'reference-deck.json'), 'utf8'))
+  const prefix = variant ? `reference-${variant}` : 'reference'
+  const plan = JSON.parse(await readFile(join(directory, `${prefix}-plan.json`), 'utf8'))
+  const deck = JSON.parse(await readFile(join(directory, `${prefix}-deck.json`), 'utf8'))
   if (
     plan.projectId !== deck.id ||
     !Array.isArray(plan.sources) ||

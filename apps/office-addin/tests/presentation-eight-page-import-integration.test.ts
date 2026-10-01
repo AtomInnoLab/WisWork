@@ -186,3 +186,80 @@ it('imports eight mixed native pages and resumes after a known pre-write interru
   expect(repeated.output).toContain('already_imported')
   expect(adapter.insertPage).toHaveBeenCalledTimes(9)
 })
+
+it('rejects a delayed page receipt after Save As without writing into the new document', async () => {
+  const deck = benchmarkDeck()
+  const compiled = await compilePresentationDeck({ ...deck, slides: [deck.slides[0]!] })
+  const values = new Map<string, unknown>()
+  let location = 'file://legal-original.pptx'
+  const binding = createPresentationDocumentBinding({
+    get: (key) => values.get(key),
+    set: (key, value) => values.set(key, value),
+    save: async () => {},
+    location: () => location,
+  })
+  const artifact: CompiledPresentationArtifact = {
+    documentId: await binding.documentId(),
+    projectId: 'p0-17-legal',
+    requestId: 'p0-17-legal-run',
+    planRevision: 1,
+    pptxBase64: '',
+    pagePptxBase64: [Buffer.from(compiled.bytes).toString('base64')],
+    slideCount: 1,
+    pages: [{ id: 'p01', title: deck.slides[0]!.title, sourceSlideId: '256#' }],
+  }
+  const oldHost = ['old-baseline']
+  const newHost = ['new-copy-baseline']
+  let release!: () => void
+  let started!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const inserting = new Promise<void>((resolve) => {
+    started = resolve
+  })
+  const adapter = {
+    available: () => true,
+    insert: vi.fn(),
+    snapshot: async () => {
+      const ids = location.includes('original') ? oldHost : newHost
+      return { slideIds: [...ids], fingerprint: JSON.stringify(ids) }
+    },
+    insertPage: vi.fn(async () => {
+      started()
+      await gate
+      oldHost.push('old-host-page')
+      return { slideIds: ['old-host-page'] }
+    }),
+    verify: async () => true,
+    exportPage: async () => artifact.pagePptxBase64![0]!,
+  }
+  const proposals = createStructuredProposalController()
+  const skill = createPresentationProductionDeliverySkill({
+    adapter,
+    proposals,
+    available: () => true,
+    artifact: () => artifact,
+    documentId: () => binding.documentId(),
+    readReceipt: (key) => binding.readReceipt(key),
+    writeReceipt: (key, value) => binding.writeReceipt(key, value),
+  })
+  const call = {
+    id: 'import',
+    name: 'import_presentation_production',
+    input: { project_id: artifact.projectId },
+  }
+  expect((await skill.executeTool(call)).isError).not.toBe(true)
+  const confirmation = proposals.confirm(proposals.pending()!.id)
+  await inserting
+  location = 'file://legal-saved-copy.pptx'
+  release()
+  await expect(confirmation).rejects.toThrow('presentation_document_changed')
+  expect(newHost).toEqual(['new-copy-baseline'])
+  expect(adapter.insertPage).toHaveBeenCalledTimes(1)
+  expect(binding.readReceipt('production/p0-17-legal/p0-17-legal-run')).toMatchObject({
+    state: 'pending',
+    checkpoint: { completed: [], inFlight: { sourceSlideId: '256#' } },
+  })
+  expect((await skill.executeTool(call)).output).toBe('presentation_document_changed')
+})

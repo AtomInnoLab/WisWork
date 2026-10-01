@@ -1,0 +1,438 @@
+{
+  "version": 1,
+  "id": "p0-17-legal",
+  "title": "规则说明：EDPB 控制者与处理者指南",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "assets": [],
+  "claims": [
+    {
+      "id": "legal-claim-1",
+      "text": "封面载明 Version 2.1，并区分 2021 年通过与后续版本修订。",
+      "source": "local:edpb-guidelines-07-2020.pdf",
+      "locator": "PDF 第 1 页"
+    },
+    {
+      "id": "legal-claim-2",
+      "text": "指南将控制者关联于处理目的和方式的决定；具体关系需结合事实。",
+      "source": "local:edpb-guidelines-07-2020.pdf",
+      "locator": "PDF 第 3 页"
+    },
+    {
+      "id": "legal-claim-3",
+      "text": "先识别处理目的，再核对处理方式与实际决定权。",
+      "source": "local:edpb-guidelines-07-2020.pdf",
+      "locator": "PDF 第 3 页"
+    },
+    {
+      "id": "legal-claim-4",
+      "text": "处理者义务涉及 Article 28 安排；本页只摘要指南，不代替法规原文。",
+      "source": "local:edpb-guidelines-07-2020.pdf",
+      "locator": "PDF 第 5 页"
+    },
+    {
+      "id": "legal-claim-5",
+      "text": "共同控制与处理者关系依具体活动判断，不可按名称自动认定。",
+      "source": "local:edpb-guidelines-07-2020.pdf",
+      "locator": "PDF 第 3 页"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "指南封面",
+      "claimIds": [],
+      "notes": "LAW-P0-17；只说明 EDPB 指南文本及版本，不提供个案法律意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "指南封面",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "EDPB Guidelines 07/2020 Version 2.1；本稿是指南说明候选稿。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "LAW-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "LAW-P0-17；来源：edpb-guidelines-07-2020.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "报告目录",
+      "claimIds": [],
+      "notes": "LAW-P0-17；只说明 EDPB 指南文本及版本，不提供个案法律意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "报告目录",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "依次说明版本、控制者与处理者概念、角色判断及待审边界。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "LAW-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "LAW-P0-17；来源：edpb-guidelines-07-2020.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "文件版本与适用范围",
+      "claimIds": ["legal-claim-1"],
+      "notes": "LAW-P0-17；只说明 EDPB 指南文本及版本，不提供个案法律意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "文件版本与适用范围",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "封面载明 Version 2.1，并区分 2021 年通过与后续版本修订。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "LAW-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "LAW-P0-17；来源：edpb-guidelines-07-2020.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "概念定义",
+      "claimIds": ["legal-claim-2"],
+      "notes": "LAW-P0-17；只说明 EDPB 指南文本及版本，不提供个案法律意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "概念定义",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "指南将控制者关联于处理目的和方式的决定；具体关系需结合事实。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "LAW-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "LAW-P0-17；来源：edpb-guidelines-07-2020.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "角色判断流程",
+      "claimIds": ["legal-claim-3"],
+      "notes": "LAW-P0-17；只说明 EDPB 指南文本及版本，不提供个案法律意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "角色判断流程",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "先识别处理目的，再核对处理方式与实际决定权。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "LAW-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "LAW-P0-17；来源：edpb-guidelines-07-2020.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "职责对照",
+      "claimIds": ["legal-claim-4"],
+      "notes": "LAW-P0-17；只说明 EDPB 指南文本及版本，不提供个案法律意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "职责对照",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "处理者义务涉及 Article 28 安排；本页只摘要指南，不代替法规原文。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "LAW-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "LAW-P0-17；来源：edpb-guidelines-07-2020.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "指南中的限制与例子",
+      "claimIds": ["legal-claim-5"],
+      "notes": "LAW-P0-17；只说明 EDPB 指南文本及版本，不提供个案法律意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "指南中的限制与例子",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "共同控制与处理者关系依具体活动判断，不可按名称自动认定。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "LAW-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "LAW-P0-17；来源：edpb-guidelines-07-2020.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "待法律审阅项",
+      "claimIds": [],
+      "notes": "LAW-P0-17；只说明 EDPB 指南文本及版本，不提供个案法律意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "待法律审阅项",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "本稿待法律审阅；不作个案法律意见或现行效力结论。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "LAW-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "LAW-P0-17；来源：edpb-guidelines-07-2020.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # PPT-P0-17 三文档并行与另存隔离候选材料
 
-状态：**三套来源与故障步骤已冻结；科研、法律、财务审阅及真实三窗口 PowerPoint 验收未完成**。本包不计入 20 项任务通过数。
+状态：**三套来源、各自来源绑定的八页原生候选稿与故障步骤已冻结；科研、法律、财务审阅及真实三窗口 PowerPoint 验收未完成**。本包不计入 20 项任务通过数。
 
 ## 三套互不混淆的输入
 
@@ -18,7 +18,9 @@
 
 在同一 PC 登录下打开三个 PowerPoint 窗口：交错完成至少两页后关闭科研文档，法律文档另存为新文件，财务文档继续。随后向关闭前及另存前会话注入延迟响应，核对旧文档和其他项目均未被写入。每个项目继续至 8 页，分别保存、关闭、重开并编辑原生对象。保留三窗口录屏、各自 project/request/document/session/slide ID、旧会话拒绝记录、三份文件摘要、逐页截图与五层 QA。单项目成功不替代另两个项目。
 
-`node verify-materials.mjs` 核对三个本地 PDF 摘要、页数、可提取的来源标识，以及三份 8 页任务配置。校验器不运行 Office.js，也不能证明真实窗口隔离、迟到响应被拒绝或资料结论准确。
+`node --import tsx generate-reference.cjs` 从三个本地 PDF 分别构建 `reference-science-*`、`reference-legal-*`、`reference-finance-*` 的计划、页模型与原生 PPTX。三个计划均只绑定本项目 PDF 的 SHA-256 和逐页原文摘录；每页保留识别码，科研稿与财务稿第 6 页包含来源绑定原生图表。`node --import tsx verify-materials.mjs` 核对 13 份冻结文件、PDF 页数和来源标识、24 页计划与编译后 PPTX，并拒绝跨项目来源及识别码混淆。校验器不运行 Office.js，也不能证明真实窗口隔离、迟到响应被拒绝或资料结论准确。
+
+本机生产链路可分别运行 `node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-17:science --built-taskpane`，将 `science` 改为 `legal` 或 `finance` 可验证另两份。三个变体各上传自己的 PDF；本机整链路只验证独立生产，交错三窗口、另存及迟到响应仍须专门验证。
 
 ## 正式验收仍需完成
 
