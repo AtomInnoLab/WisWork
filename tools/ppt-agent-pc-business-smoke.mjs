@@ -385,6 +385,16 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     throw new Error('invalid smoke attachment fixture IDs')
   if (options.uploadFixtures && fixtureIds.some((id) => id !== undefined))
     throw new Error('upload smoke cannot use existing attachment IDs')
+  const fallback = options.remoteImageCandidates
+  if (
+    fallback &&
+    (!Array.isArray(fallback.urls) ||
+      fallback.urls.length !== 2 ||
+      fallback.urls.some((url) => typeof url !== 'string' || !url.startsWith('https://')) ||
+      fallback.urls[0] === fallback.urls[1] ||
+      !/^[a-f0-9]{64}$/.test(fallback.attachmentId))
+  )
+    throw new Error('invalid remote image fallback fixture')
   if (
     [
       options.readExistingProduction,
@@ -467,6 +477,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         capabilities: [
           'presentation.v1',
           'presentation-assets.v1',
+          ...(fallback ? ['presentation-remote-images.v1'] : []),
           ...(options.compiledRequestId ? ['presentation-pdf.v1'] : []),
           ...(options.productionFixture ? ['presentation-production-pdf.v1'] : []),
         ],
@@ -490,6 +501,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       !Array.isArray(approved.capabilities) ||
       !approved.capabilities.includes('presentation.v1') ||
       !approved.capabilities.includes('presentation-assets.v1') ||
+      (fallback && !approved.capabilities.includes('presentation-remote-images.v1')) ||
       (options.compiledRequestId && !approved.capabilities.includes('presentation-pdf.v1')) ||
       (options.productionFixture &&
         !approved.capabilities.includes('presentation-production-pdf.v1'))
@@ -545,6 +557,30 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     }
     const sourceAttachments =
       options.sourceAttachments ?? (options.sourceAttachment ? [options.sourceAttachment] : [])
+    let remoteImageFallback
+    if (fallback) {
+      const importUrl = (url) =>
+        request('presentation-remote-images.v1', {
+          operation: 'attachment_import_url',
+          documentId,
+          url,
+        })
+      const failed = await importUrl(fallback.urls[0])
+      if (failed?.error !== 'remote_image_unavailable')
+        throw new Error('PC primary image did not fail as expected')
+      const imported = await importUrl(fallback.urls[1])
+      if (
+        imported?.status !== 'ready' ||
+        imported.kind !== 'image' ||
+        imported.attachmentId !== fallback.attachmentId ||
+        imported.source !== fallback.urls[1]
+      )
+        throw new Error('PC fallback image import invalid')
+      const cached = await importUrl(fallback.urls[1])
+      if (cached?.attachmentId !== imported.attachmentId || cached.status !== 'ready')
+        throw new Error('PC fallback image cache invalid')
+      remoteImageFallback = { attachmentId: imported.attachmentId }
+    }
     if (sourceAttachments.length) {
       const sourceHashes = new Set(sourceAttachments.map((source) => source.sha256))
       if (
@@ -1063,6 +1099,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       ...(compiledDelivery ? { compiledDelivery } : {}),
       ...(productionDelivery ? { productionDelivery } : {}),
       ...(sourceAttachments.length ? { sourceChecked: true } : {}),
+      ...(remoteImageFallback ? { remoteImageFallback } : {}),
       ...(manualObservation ? { manualObservation } : {}),
     }
   } finally {

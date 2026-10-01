@@ -32,7 +32,21 @@ const expectedSlideTexts = Array.from(
 )
 const selectedBenchmark = process.argv.find((arg) => arg.startsWith('--benchmark='))
 const benchmarkBatch = process.argv.includes('--benchmark-batch')
-if (benchmarkBatch && selectedBenchmark) throw new Error('choose one benchmark mode')
+const p014Fallback = process.argv.includes('--p0-14-fallback')
+if ([benchmarkBatch, Boolean(selectedBenchmark), p014Fallback].filter(Boolean).length > 1)
+  throw new Error('choose one benchmark mode')
+const fallbackUrls = [
+  'https://93.184.216.34/2024GISTEMPMap-timeout.png',
+  'https://93.184.216.34/2024GISTEMPMap_2K.png',
+]
+const fallbackImagePath = join(
+  root,
+  'docs/product/ppt-benchmark-materials/PPT-P0-14/images/nasa-2024-temperature-anomaly-2k.png',
+)
+const fallbackImage = p014Fallback ? await readFile(fallbackImagePath) : undefined
+const fallbackImageSha = fallbackImage
+  ? createHash('sha256').update(fallbackImage).digest('hex')
+  : undefined
 const batchCases = ['P0-05', 'P0-06', 'P0-07', 'P0-08', 'P0-15', 'P0-16', 'P0-18']
 const builtTaskpane = process.argv.includes('--built-taskpane')
 if (builtTaskpane) {
@@ -432,6 +446,7 @@ try {
     driver,
     `
 const { app } = require('electron')
+const { readFileSync } = require('node:fs')
 const { createPresentationService } = require(${JSON.stringify(serviceBundle)})
 const { createOfficeRelayClient } = require(${JSON.stringify(relayBundle)})
 const { createOfficeRelayPool } = require(${JSON.stringify(poolBundle)})
@@ -445,8 +460,19 @@ app.whenReady().then(async () => {
   const crashDeck = ${JSON.stringify(sourceBackedCrash ? researchDeck : { ...deck, id: `${projectId}-crash` })}
   const crashPageId = ${JSON.stringify(sourceBackedCrash ? researchDeck.slides[4].id : 'slide-2')}
   const completedBeforeCrash = ${sourceBackedCrash ? 4 : 1}
+  ${p014Fallback ? 'let fallbackFetches = 0' : ''}
   const presentation = createPresentationService({
     userDataPath: ${JSON.stringify(userDataPath)},
+    ${
+      p014Fallback
+        ? `fetchImage: async (url) => {
+      if (url === ${JSON.stringify(fallbackUrls[0])}) throw Error('controlled_primary_failure')
+      if (url !== ${JSON.stringify(fallbackUrls[1])}) throw Error('unexpected_image_url')
+      if (++fallbackFetches !== 1) throw Error('fallback_image_fetched_again')
+      return new Response(readFileSync(${JSON.stringify(fallbackImagePath)}), { headers: { 'content-type': 'image/png' } })
+    },`
+        : ''
+    }
     compile: async (input, options) => {
       if (process.env.PPT_AGENT_SMOKE_STALL === '1' && input.id === crashProjectId && input.slides[0]?.id === crashPageId) {
         console.log('PRODUCTION_BLOCKED')
@@ -708,12 +734,17 @@ app.whenReady().then(async () => {
     productionFixture: releaseProductionFixture(releaseProjectId),
     createProduction: true,
     timeoutMs: 45_000,
+    ...(p014Fallback
+      ? { remoteImageCandidates: { urls: fallbackUrls, attachmentId: fallbackImageSha } }
+      : {}),
   })
   if (
     releaseResult.productionDelivery?.pageDigests.length !== 8 ||
     releaseResult.productionDelivery.pdfBytes < 100
   )
     throw new Error('Electron PC fresh release production incomplete')
+  if (p014Fallback)
+    console.log(`P0-14 controlled image fallback and cache passed: ${fallbackImageSha}`)
   if (!concurrentBenchmark) {
     const cases = benchmarkBatch ? batchCases : [benchmarkCase]
     const failures = []

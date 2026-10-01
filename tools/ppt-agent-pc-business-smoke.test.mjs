@@ -47,7 +47,7 @@ test('compiled delivery check binds all PPTX text pages to the rendered PDF coun
   )
 })
 
-async function fakeRelay(t, response, mutate = (frame) => frame, handle) {
+async function fakeRelay(t, response, mutate = (frame) => frame, handle, extraCapabilities = []) {
   const server = createServer()
   const sockets = new WebSocketServer({ server })
   t.after(async () => {
@@ -59,7 +59,11 @@ async function fakeRelay(t, response, mutate = (frame) => frame, handle) {
     socket.on('message', (data) => {
       const frame = JSON.parse(data.toString())
       if (frame.type === 'office.create') {
-        assert.deepEqual(frame.capabilities, ['presentation.v1', 'presentation-assets.v1'])
+        assert.deepEqual(frame.capabilities, [
+          'presentation.v1',
+          'presentation-assets.v1',
+          ...extraCapabilities,
+        ])
         socket.send(
           JSON.stringify({
             version: 2,
@@ -75,7 +79,7 @@ async function fakeRelay(t, response, mutate = (frame) => frame, handle) {
             type: 'office.approved',
             session_id: 'session',
             capability: 'office-capability',
-            capabilities: ['presentation.v1', 'presentation-assets.v1'],
+            capabilities: ['presentation.v1', 'presentation-assets.v1', ...extraCapabilities],
             expires_in: 1800,
           }),
         )
@@ -153,6 +157,32 @@ test('real PC smoke rejects an unrelated project response', async (t) => {
     }),
     /PC presentation status response invalid/,
   )
+})
+
+test('real PC smoke checks image fallback order and cache through Relay', async (t) => {
+  const urls = ['https://93.184.216.34/failed.png', 'https://93.184.216.34/fallback.png']
+  const attachmentId = 'a'.repeat(64)
+  const seen = []
+  const origin = await fakeRelay(
+    t,
+    { projectId: 'project-1', status: 'compiled', slideCount: 0, slides: [], history: [] },
+    undefined,
+    (body) => {
+      if (body.operation !== 'attachment_import_url') return undefined
+      seen.push(body.url)
+      return body.url === urls[0]
+        ? { error: 'remote_image_unavailable' }
+        : { attachmentId, kind: 'image', status: 'ready', source: urls[1] }
+    },
+    ['presentation-remote-images.v1'],
+  )
+  const result = await inspectPcBusiness(origin, 'document-1', 'project-1', {
+    onCode: () => {},
+    timeoutMs: 1000,
+    remoteImageCandidates: { urls, attachmentId },
+  })
+  assert.deepEqual(seen, [urls[0], urls[1], urls[1]])
+  assert.equal(result.remoteImageFallback?.attachmentId, attachmentId)
 })
 
 test('real PC smoke rejects a response with mismatched session identity', async (t) => {
