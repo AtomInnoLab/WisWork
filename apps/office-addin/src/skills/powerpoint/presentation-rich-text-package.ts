@@ -90,7 +90,7 @@ function knownFont(...layers: Array<Record<string, string | number | boolean>>) 
 export interface RichTextRun {
   text: string
   directFont: Record<string, string | number | boolean>
-  /** Known local formatting only; theme and master/layout inheritance remain unresolved. */
+  /** Known local formatting and explicit master other-text style; other inheritance remains unresolved. */
   knownFont: Record<string, string | number | boolean>
   /** Exact theme RGB only when the page's linked layout/master/theme chain is unambiguous. */
   resolvedThemeColor?: string
@@ -334,20 +334,37 @@ async function linkedThemeStyle(
 ): Promise<{
   colors: Record<string, string>
   typefaces: Record<string, string>
+  otherFonts: Array<Record<string, string | number | boolean>>
 }> {
-  const empty = { colors: {}, typefaces: {} }
+  const empty = { colors: {}, typefaces: {}, otherFonts: [] }
   const layoutPath = await related(zip, slidePath, 'slideLayout')
   const masterPath = layoutPath && (await related(zip, layoutPath, 'slideMaster'))
   const themePath = masterPath && (await related(zip, masterPath, 'theme'))
-  if (!layoutPath || !masterPath || !themePath) return empty
+  if (!layoutPath || !masterPath) return empty
   const layout = xml(await zip.file(layoutPath)!.async('string'))
   const master = xml(await zip.file(masterPath)!.async('string'))
-  const theme = xml(await zip.file(themePath)!.async('string'))
+  const theme = themePath ? xml(await zip.file(themePath)!.async('string')) : []
   const override = tags(layout, 'a:overrideClrMapping')[0]
   const mapping = override ?? tags(master, 'p:clrMap')[0]
   const scheme = tags(theme, 'a:clrScheme')[0]
   const colors: Record<string, string> = {}
   const typefaces: Record<string, string> = {}
+  const otherFonts: Array<Record<string, string | number | boolean>> = []
+  const textStyles = tags(master, 'p:txStyles')
+  const otherStyle =
+    textStyles.length === 1 ? tags(textStyles[0]!['p:txStyles'] as Node[], 'p:otherStyle') : []
+  if (otherStyle.length === 1) {
+    const children = otherStyle[0]!['p:otherStyle'] as Node[]
+    const defaults = tags(children, 'a:defPPr')[0]
+    const defaultFont = defaults ? directFont(defaults['a:defPPr'] as Node[]) : {}
+    for (let level = 0; level < 9; level++) {
+      const property = tags(children, `a:lvl${level + 1}pPr`)[0]
+      otherFonts[level] = knownFont(
+        defaultFont,
+        property ? directFont(property[`a:lvl${level + 1}pPr`] as Node[]) : {},
+      )
+    }
+  }
   const fontScheme = tags(theme, 'a:fontScheme')[0]
   const fontChildren = (fontScheme?.['a:fontScheme'] as Node[] | undefined) ?? []
   for (const [symbol, tag] of [
@@ -359,7 +376,7 @@ async function linkedThemeStyle(
     if (face && face.length <= 256 && !Array.from(face).some((char) => char.charCodeAt(0) < 32))
       typefaces[symbol] = face
   }
-  if (!mapping || !scheme) return { colors, typefaces }
+  if (!mapping || !scheme) return { colors, typefaces, otherFonts }
   for (const key of [
     'accent1',
     'accent2',
@@ -384,10 +401,10 @@ async function linkedThemeStyle(
     )
       colors[key] = `#${rgb.toUpperCase()}`
   }
-  return { colors, typefaces }
+  return { colors, typefaces, otherFonts }
 }
 
-/** Local formatting plus exact linked theme RGB where provable; layout/master font inheritance remains unresolved. */
+/** Local formatting plus explicit master other-text style and exact theme RGB where provable. */
 export async function inspectPowerPointRichText(
   base64: string,
   signal?: AbortSignal,
@@ -408,6 +425,7 @@ export async function inspectPowerPointRichText(
     if (!packageShapeId || !/^\d+$/.test(packageShapeId)) throw new Error('office_api_unsupported')
     const listStyle = tags(body['p:txBody'] as Node[], 'a:lstStyle')[0]
     const listChildren = (listStyle?.['a:lstStyle'] as Node[] | undefined) ?? []
+    const ordinaryShape = tags(shape['p:sp'] as Node[], 'p:ph').length === 0
     const paragraphs = tags(body['p:txBody'] as Node[], 'a:p').map((paragraph) => {
       const children = paragraph['a:p'] as Node[]
       const paragraphProperties = tags(children, 'a:pPr')[0]
@@ -424,6 +442,7 @@ export async function inspectPowerPointRichText(
         ? directFont(levelProperties[`a:lvl${level! + 1}pPr`] as Node[])
         : {}
       const listStyleFont = knownFont(defaultFont, levelFont)
+      const masterFont = ordinaryShape && level !== undefined ? themeStyle.otherFonts[level] : {}
       const knownAlignment =
         alignment ?? attr(levelProperties, 'algn') ?? attr(defaultProperties, 'algn')
       const paragraphDefaultFont = paragraphProperties
@@ -432,7 +451,7 @@ export async function inspectPowerPointRichText(
       const endParagraphFont = directFont(tags(children, 'a:endParaRPr'))
       const runs: RichTextRun[] = []
       const addRun = (text: string, font: RichTextRun['directFont']) => {
-        const resolved = knownFont(listStyleFont, paragraphDefaultFont, font)
+        const resolved = knownFont(masterFont ?? {}, listStyleFont, paragraphDefaultFont, font)
         const themeColor = resolved.themeColor
         runs.push({
           text,

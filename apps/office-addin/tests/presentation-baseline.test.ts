@@ -457,6 +457,50 @@ it('merges local list, paragraph and run font evidence without claiming master i
   })
   expect(report.shapes[0]?.paragraphs[0]?.runs[1]?.knownFont).not.toHaveProperty('themeColor')
 })
+it('reads explicit master other-text font only for a non-placeholder shape', async () => {
+  const zip = new JSZip()
+  zip.file(
+    'ppt/slides/slide1.xml',
+    `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree>
+      <p:sp><p:nvSpPr><p:cNvPr id="7" name="Ordinary"/></p:nvSpPr><p:txBody><a:p><a:r><a:t>Ordinary</a:t></a:r><a:r><a:rPr><a:latin typeface="Run Face"/></a:rPr><a:t>Override</a:t></a:r></a:p></p:txBody></p:sp>
+      <p:sp><p:nvSpPr><p:cNvPr id="8" name="Placeholder"/><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Placeholder</a:t></a:r></a:p></p:txBody></p:sp>
+    </p:spTree></p:cSld></p:sld>`,
+  )
+  zip.file(
+    'ppt/slides/_rels/slide1.xml.rels',
+    '<Relationships><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/></Relationships>',
+  )
+  zip.file('ppt/slideLayouts/slideLayout1.xml', '<p:sldLayout xmlns:p="urn:p"/>')
+  zip.file(
+    'ppt/slideLayouts/_rels/slideLayout1.xml.rels',
+    '<Relationships><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/></Relationships>',
+  )
+  zip.file(
+    'ppt/slideMasters/slideMaster1.xml',
+    '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:txStyles><p:otherStyle><a:lvl1pPr><a:defRPr sz="1800" b="1"><a:latin typeface="Master Face"/></a:defRPr></a:lvl1pPr></p:otherStyle></p:txStyles></p:sldMaster>',
+  )
+  zip.file(
+    'ppt/slideMasters/_rels/slideMaster1.xml.rels',
+    '<Relationships><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>',
+  )
+  zip.file('ppt/theme/theme1.xml', '<a:theme xmlns:a="urn:a"/>')
+  const report = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  expect(report.inheritanceResolved).toBe(false)
+  expect(report.shapes[0]?.paragraphs[0]?.runs[0]?.knownFont).toMatchObject({
+    typeface: 'Master Face',
+    sizePt: 18,
+    bold: true,
+  })
+  expect(report.shapes[0]?.paragraphs[0]?.runs[1]?.knownFont).toMatchObject({
+    typeface: 'Run Face',
+    sizePt: 18,
+    bold: true,
+  })
+  expect(report.shapes[1]?.paragraphs[0]?.runs[0]?.knownFont).not.toHaveProperty('typeface')
+  zip.remove('ppt/slideMasters/_rels/slideMaster1.xml.rels')
+  const withoutTheme = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  expect(withoutTheme.shapes[0]?.paragraphs[0]?.runs[0]?.knownFont.typeface).toBe('Master Face')
+})
 it('resolves only explicitly linked and unmodified theme colors', async () => {
   const zip = new JSZip()
   zip.file(
