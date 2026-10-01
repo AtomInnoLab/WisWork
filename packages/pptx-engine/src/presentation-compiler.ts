@@ -216,6 +216,7 @@ function verifyGeneratedChartStyle(
   )
   for (const label of labels) {
     if (label['c:spPr'] !== undefined || label['c:tx'] !== undefined) reject()
+    match(label['c:numFmt'], { '@_formatCode': '#,##0.########', '@_sourceLinked': '0' })
     if (type === 'pie') {
       match(label['c:txPr'], text('label', '1800'))
       const points = xmlItems(label['c:dLbl'])
@@ -230,7 +231,8 @@ function verifyGeneratedChartStyle(
       match(label['c:txPr'], text('label'))
     }
   }
-  for (const item of series) {
+  for (const [seriesIndex, item] of series.entries()) {
+    const seriesColor = seriesIndex % 2 === 0 ? deck.style.accentColor : deck.style.textColor
     only(item, [
       'c:idx',
       'c:order',
@@ -263,8 +265,8 @@ function verifyGeneratedChartStyle(
     } else {
       if (item['c:dPt'] !== undefined) reject()
       match(item['c:spPr'], {
-        ...fill(deck.style.accentColor),
-        ...(type === 'line' ? { 'a:ln': line(deck.style.accentColor, '25400') } : {}),
+        ...fill(seriesColor),
+        ...(type === 'line' ? { 'a:ln': line(seriesColor, '25400') } : {}),
         'a:effectLst': '',
       })
       if (type === 'line')
@@ -272,8 +274,8 @@ function verifyGeneratedChartStyle(
           'c:symbol': { '@_val': 'circle' },
           'c:size': { '@_val': '6' },
           'c:spPr': {
-            ...fill(deck.style.accentColor),
-            'a:ln': line(deck.style.accentColor, '9525'),
+            ...fill(seriesColor),
+            'a:ln': line(seriesColor, '9525'),
             'a:effectLst': '',
           },
         })
@@ -1095,11 +1097,17 @@ export async function compilePresentationDeck(
             ...box,
             showLegend: el.series.length > 1,
             showTitle: false,
-            chartColors: [deck.style.accentColor],
+            chartColors:
+              el.series.length > 1 && el.chartType !== 'pie'
+                ? el.series.map((_, index) =>
+                    index % 2 === 0 ? deck.style.accentColor : deck.style.textColor,
+                  )
+                : [deck.style.accentColor],
             ...(el.chartType === 'pie'
               ? { dataBorder: { color: deck.style.accentColor, pt: 0.75 } }
               : {}),
             showValue: true,
+            dataLabelFormatCode: '#,##0.########',
             dataLabelFontFace: deck.style.fontFace,
             dataLabelColor: deck.style.textColor,
             legendColor: deck.style.textColor,

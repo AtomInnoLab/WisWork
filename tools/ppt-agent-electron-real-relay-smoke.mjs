@@ -29,7 +29,11 @@ const expectedSlideTexts = Array.from(
   { length: 8 },
   (_, index) => `Electron real Relay page ${index + 1}`,
 )
-const researchCaseId = process.argv.includes('--benchmark=P0-02') ? 'PPT-P0-02' : 'PPT-P0-01'
+const researchCaseId = process.argv.includes('--benchmark=P0-03')
+  ? 'PPT-P0-03'
+  : process.argv.includes('--benchmark=P0-02')
+    ? 'PPT-P0-02'
+    : 'PPT-P0-01'
 const researchMaterials = join(root, `docs/product/ppt-benchmark-materials/${researchCaseId}`)
 const researchDeck = JSON.parse(
   await readFile(join(researchMaterials, 'reference-deck.json'), 'utf8'),
@@ -38,13 +42,19 @@ const researchPlan = JSON.parse(
   await readFile(join(researchMaterials, 'reference-plan.json'), 'utf8'),
 )
 const researchSourceNames =
-  researchCaseId === 'PPT-P0-02'
+  researchCaseId === 'PPT-P0-03'
     ? [
-        'helps-2014-white-noise.pdf',
-        'han-2013-speech-noise.pdf',
-        'mohanathasan-2025-conversation-noise.pdf',
+        'hess-peterson-2015-article.pdf',
+        'hess-peterson-2015-dictionary.pdf',
+        'treatment-outcomes.csv',
       ]
-    : ['deardorff-2020-article.pdf']
+    : researchCaseId === 'PPT-P0-02'
+      ? [
+          'helps-2014-white-noise.pdf',
+          'han-2013-speech-noise.pdf',
+          'mohanathasan-2025-conversation-noise.pdf',
+        ]
+      : ['deardorff-2020-article.pdf']
 const researchSources = await Promise.all(
   researchSourceNames.map(async (name) => {
     const bytes = await readFile(join(researchMaterials, name))

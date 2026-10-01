@@ -1,6 +1,10 @@
 # PPT-P0-03 候选真实材料包
 
-状态：**论文、数据字典及去个体化汇总表已准备，领域审阅与正式任务执行未完成**。本目录不计入 20 项专业任务通过数。
+状态：**论文、数据字典、去个体化汇总表及八页可编辑候选稿已准备，领域审阅与正式任务执行未完成**。本目录不计入 20 项专业任务通过数。
+
+## 本机候选参考稿
+
+`node --import tsx generate-reference.cjs` 使用冻结论文 PDF、S1 字典 PDF 和四组汇总 CSV，生成 `reference-plan.json`、`reference-deck.json` 与 `p0-03-reference.pptx`。第 5 页是原生可编辑双系列柱状图：`Permitted2`、`Safe2` 的各组同意率按 `round(同意人数 / 组内 n × 100, 2)` 计算，横轴写明各组分母；八个图表数据点在计划中各有可复算计算绑定，均标为待专业审阅。`node --import tsx verify-materials.mjs` 核对 PDF 原文摘录、四组分母总和 1,824、八个比例、图表缓存与嵌入工作簿、八页原生结构和 SHA256。本机 LibreOffice 渲染检查确认两个系列颜色可区分且小数标签可读。`node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-03` 已通过真实 Electron PC + Rust Relay 的三附件上传、计划保存、逐页生产与 PPTX/PDF 回读。参考稿仍须交通研究审阅和真实 PowerPoint 宿主验收。
 
 ## 来源与许可
 

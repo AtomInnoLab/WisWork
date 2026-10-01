@@ -1,0 +1,426 @@
+{
+  "version": 1,
+  "id": "p0-03-road-sign-reference",
+  "title": "美国道路标志：理解与安全感候选汇报",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "assets": [],
+  "claims": [
+    {
+      "id": "sample",
+      "text": "论文收集 1,978 份问卷，排除 154 份非美国答卷后分析 1,824 份。",
+      "source": "doi:10.1371/journal.pone.0136973",
+      "locator": "第 8 页"
+    },
+    {
+      "id": "scope",
+      "text": "网络问卷考察标志理解与主观安全感，并未直接测量交通事故变化。",
+      "source": "doi:10.1371/journal.pone.0136973",
+      "locator": "第 1 页"
+    },
+    {
+      "id": "dictionary",
+      "text": "Permitted2 与 Safe2 分别是两车道场景的通行许可理解和主观安全感同意项。",
+      "source": "doi:10.1371/journal.pone.0136973.s001",
+      "locator": "第 1 页"
+    },
+    {
+      "id": "permitted-1",
+      "text": "1_None：Permitted2 同意 417/489 = 85.28%",
+      "source": "local:treatment-outcomes.csv",
+      "locator": "CSV 第 2 行"
+    },
+    {
+      "id": "safe-1",
+      "text": "1_None：Safe2 同意 316/489 = 64.62%",
+      "source": "local:treatment-outcomes.csv",
+      "locator": "CSV 第 2 行"
+    },
+    {
+      "id": "permitted-2",
+      "text": "2_STR：Permitted2 同意 366/422 = 86.73%",
+      "source": "local:treatment-outcomes.csv",
+      "locator": "CSV 第 3 行"
+    },
+    {
+      "id": "safe-2",
+      "text": "2_STR：Safe2 同意 265/422 = 62.8%",
+      "source": "local:treatment-outcomes.csv",
+      "locator": "CSV 第 3 行"
+    },
+    {
+      "id": "permitted-3",
+      "text": "3_SLM：Permitted2 同意 412/454 = 90.75%",
+      "source": "local:treatment-outcomes.csv",
+      "locator": "CSV 第 4 行"
+    },
+    {
+      "id": "safe-3",
+      "text": "3_SLM：Safe2 同意 307/454 = 67.62%",
+      "source": "local:treatment-outcomes.csv",
+      "locator": "CSV 第 4 行"
+    },
+    {
+      "id": "permitted-4",
+      "text": "4_BMUFL：Permitted2 同意 421/459 = 91.72%",
+      "source": "local:treatment-outcomes.csv",
+      "locator": "CSV 第 5 行"
+    },
+    {
+      "id": "safe-4",
+      "text": "4_BMUFL：Safe2 同意 321/459 = 69.93%",
+      "source": "local:treatment-outcomes.csv",
+      "locator": "CSV 第 5 行"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "美国道路标志：理解与安全感",
+      "claimIds": [],
+      "notes": "汇总比例为待专业审阅的描述性复算；真实 PowerPoint 宿主验收未完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "美国道路标志：理解与安全感",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.5,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "来自论文、S1 字典与去个体化汇总 CSV 的八页候选研究汇报；交通研究审阅仍待完成。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Hess 与 Peterson 2015；数据为候选复算",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "研究问题与测量边界",
+      "claimIds": ["scope"],
+      "notes": "汇总比例为待专业审阅的描述性复算；真实 PowerPoint 宿主验收未完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "研究问题与测量边界",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.5,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "网络问卷考察美国道路标志是否传达骑车人可使用整条车道的规则，以及受访者的主观安全感；它没有直接观测事故率。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "论文 PDF 第 1 页 Abstract；不外推为事故减少",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "样本筛选：不能混用分母",
+      "claimIds": ["sample"],
+      "notes": "汇总比例为待专业审阅的描述性复算；真实 PowerPoint 宿主验收未完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "样本筛选：不能混用分母",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.5,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "收到 1,978 份问卷，排除 154 份非美国答卷后分析 1,824 份。四组汇总人数为 489、422、454、459，总和为 1,824。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "论文 PDF 第 8 页 Data Analysis；汇总 CSV 的 n 列",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "四种标志与两车道指标",
+      "claimIds": ["dictionary"],
+      "notes": "汇总比例为待专业审阅的描述性复算；真实 PowerPoint 宿主验收未完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "四种标志与两车道指标",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.5,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "四组：无标志、Share the Road、Shared Lane Markings、Bicycles May Use Full Lane。Permitted2 是对车道中央骑行许可的同意，Safe2 是对安全感的同意；两项均为主观问卷回答。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "S1 Data 字典 PDF 第 1 页；按组各有自己的分母",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "原生图表：两项同意比例",
+      "claimIds": [
+        "permitted-1",
+        "safe-1",
+        "permitted-2",
+        "safe-2",
+        "permitted-3",
+        "safe-3",
+        "permitted-4",
+        "safe-4"
+      ],
+      "notes": "汇总比例为待专业审阅的描述性复算；真实 PowerPoint 宿主验收未完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "原生图表：两项同意比例",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.5,
+          "w": 11.4,
+          "h": 0.9,
+          "text": "计算式：各组同意人数 ÷ 该组 n × 100%，四舍五入至两位小数。图表横轴写明 n；柱形为原生可编辑数据。",
+          "fontSize": 19
+        },
+        {
+          "kind": "chart",
+          "id": "two-lane-agreement",
+          "x": 0.95,
+          "y": 2.55,
+          "w": 11.35,
+          "h": 3.65,
+          "chartType": "bar",
+          "categories": ["1_None n=489", "2_STR n=422", "3_SLM n=454", "4_BMUFL n=459"],
+          "series": [
+            { "name": "Permitted2 同意率", "values": [85.28, 86.73, 90.75, 91.72] },
+            { "name": "Safe2 同意率", "values": [64.62, 62.8, 67.62, 69.93] }
+          ]
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "汇总 CSV：四组 Permitted2、Safe2 计数；不代表回归调整结果",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "如何阅读组间差异",
+      "claimIds": [
+        "permitted-1",
+        "safe-1",
+        "permitted-2",
+        "safe-2",
+        "permitted-3",
+        "safe-3",
+        "permitted-4",
+        "safe-4"
+      ],
+      "notes": "汇总比例为待专业审阅的描述性复算；真实 PowerPoint 宿主验收未完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "如何阅读组间差异",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.5,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "两项指标均以各组 n 为分母。候选图只给未经调整的描述性比例；不能据此声称已独立复现论文回归、置信区间或因果效应。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "汇总 CSV 与 S1 字典；统计解释待交通研究审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "局限：主观问卷不是事故实验",
+      "claimIds": ["scope"],
+      "notes": "汇总比例为待专业审阅的描述性复算；真实 PowerPoint 宿主验收未完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "局限：主观问卷不是事故实验",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.5,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "美国受访者、Twitter 招募、道路标志理解与感知安全的调查范围，需要与真实道路行为和事故数据分开。论文建议进一步做虚拟现实与道路实验。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "论文 PDF 第 1 页 Abstract；地域与方法边界",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "结论与待核验事项",
+      "claimIds": ["scope"],
+      "notes": "汇总比例为待专业审阅的描述性复算；真实 PowerPoint 宿主验收未完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "结论与待核验事项",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.5,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "可报告各组描述性同意比例和论文的研究问题；不得将主观安全感写成事故率下降。交通研究审阅、真实 PowerPoint 图表数据编辑与保存重开仍待完成。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "三份冻结材料；候选稿尚未通过专业和宿主验收",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}

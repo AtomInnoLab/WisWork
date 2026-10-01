@@ -57,15 +57,17 @@ it.each(['bar', 'line', 'pie'] as const)(
         expect(label(point)['a:latin']['@_typeface']).toBe(deck.style.fontFace)
       }
     }
-    for (const s of series(root, type)) {
-      expect(rgb(s['c:spPr'])['@_val']).toBe(deck.style.accentColor)
+    for (const [index, s] of series(root, type).entries()) {
+      const expectedSeriesColor =
+        type === 'pie' || index % 2 === 0 ? deck.style.accentColor : deck.style.textColor
+      expect(rgb(s['c:spPr'])['@_val']).toBe(expectedSeriesColor)
       if (type === 'pie')
         for (const point of items(s['c:dPt'])) {
           expect(rgb(point['c:spPr'])['@_val']).toBe(deck.style.accentColor)
           expect(rgb(point['c:spPr']['a:ln'])['@_val']).toBe(deck.style.accentColor)
         }
       if (type === 'line')
-        expect(rgb(s['c:marker']['c:spPr']['a:ln'])['@_val']).toBe(deck.style.accentColor)
+        expect(rgb(s['c:marker']['c:spPr']['a:ln'])['@_val']).toBe(expectedSeriesColor)
     }
     if (type === 'pie') {
       expect(root['c:chart']['c:legend']).toBeUndefined()

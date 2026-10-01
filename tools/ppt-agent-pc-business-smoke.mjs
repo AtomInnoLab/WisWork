@@ -544,7 +544,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       for (const source of sourceAttachments) {
         if (
           typeof source.name !== 'string' ||
-          !/\.pdf$/i.test(source.name) ||
+          !/\.(?:pdf|csv)$/i.test(source.name) ||
           !Buffer.isBuffer(source.bytes) ||
           source.bytes.length < 1 ||
           source.bytes.length > 10 * 1024 * 1024 ||
