@@ -8,7 +8,11 @@
 2. `apple-fy2024-q4-financial-statements.pdf`：[Apple 2024-10-31 官方业绩披露](https://www.apple.com/newsroom/pdfs/fy2024-q4/FY24_Q4_Consolidated_Financial_Statements.pdf)，四页，**未经审计**；用第 1、3 页交叉核对年度数值，不能代替审计年报。与 [P0-09](../PPT-P0-09/README.md) 原件字节相同。
 3. `data-dictionary.json`：自制口径字典，固定 `asOf=2024-11-01`、美元百万、合并口径、2024/2023 财年结束日、行名、页码和禁止主张。日期、币种及单位不得被模型猜测或互换。
 
-`independent-recalc.csv` 是上述资料的**独立复算产物**，不作为第四份原始文档。它按 `(2024−2023)/2023×100%`、百分比小数点后两位四舍五入给出净销售额 +2.02%、净利润 −3.36%、经营活动现金流 +6.98%。`p0-07-reference.pptx` 是八页原生图表**参考产物**，非 Agent 执行结果；运行 `node -r tsx/cjs generate-reference.cjs` 可重建。`SHA256SUMS` 冻结三份输入和两份参考产物；运行 `node verify-materials.mjs` 核对摘要、审计/非审计身份、来源行、复算和三张图表底层值。公开披露的权利归原权利人，不将其当作开放许可图片资产。
+`independent-recalc.csv` 是上述资料的**独立复算产物**，不作为第四份原始文档。它按 `(2024−2023)/2023×100%`、百分比小数点后两位四舍五入给出净销售额 +2.02%、净利润 −3.36%、经营活动现金流 +6.98%。`p0-07-reference.pptx` 是八页原生图表**参考产物**，非 Agent 执行结果；运行 `node --import tsx generate-reference.cjs` 可重建。`SHA256SUMS` 冻结三份输入、独立复算表和三份参考产物；运行 `node --import tsx verify-materials.mjs` 核对摘要、审计/非审计身份、来源行、复算和三张图表底层值。公开披露的权利归原权利人，不将其当作开放许可图片资产。
+
+现在同一生成器还输出[来源绑定计划](reference-plan.json)和[原生页模型](reference-deck.json)：19 处摘录或字段绑定两份披露、字典及复算 CSV；12 项声明保留报告期、币种、单位、合并会计口径、审计身份与待审限制。三张图表的六个原值逐点绑定 CSV 年度字段，CSV 与审计年报、未经审计业绩表的行值由校验器分别核对；三项同比按计划公式重算。业绩表只做交叉核对，不能替代审计年报。`SHA256SUMS` 也冻结计划和页模型；`node --import tsx verify-materials.mjs` 校验计划、公式、图表数据与 PPTX OOXML。LibreOffice 已将新候选稿渲染为八页 PDF 并目视检查，三张图表无明显裁切；这仍不是 PowerPoint 宿主验收。
+
+`node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-07` 已在本机 Electron PC + Rust Relay + Chrome Taskpane 完成两份 PDF、JSON 字典和 CSV 复算表上传，保存来源计划，生产八页并回读 PPTX/PDF，以及中断恢复。模型代理为本地空响应桩；这证明本机工程链路，不代表财务专业审阅或真实 PowerPoint 保存重开通过。
 
 ## 固定任务提示
 

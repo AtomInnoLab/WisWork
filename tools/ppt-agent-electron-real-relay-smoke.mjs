@@ -187,8 +187,21 @@ async function inspectBrowserWorkbench(origin, pc) {
         }
       }
     })
-    await page.goto('https://localhost:3000/taskpane.html')
-    await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
+    const pageErrors = []
+    page.on('pageerror', (error) => pageErrors.push(error.message.slice(0, 300)))
+    const response = await page.goto('https://localhost:3000/taskpane.html')
+    try {
+      await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
+    } catch (error) {
+      const state = await page.evaluate(() => ({
+        readyState: document.readyState,
+        body: document.body?.innerText.slice(0, 500),
+      }))
+      throw new Error(
+        `Taskpane connect button unavailable: ${JSON.stringify({ status: response?.status(), url: page.url(), ...state, pageErrors })}`,
+        { cause: error },
+      )
+    }
     const codeText = await page
       .getByText(/Enter code [0-9]{6} in WisWork PC/)
       .textContent({ timeout: 15_000 })
@@ -244,7 +257,18 @@ async function inspectBrowserWorkbench(origin, pc) {
     await workbench.getByText('Browser to real PC project', { exact: true }).waitFor()
     const createdBeforeReload = outbound.filter((type) => type === 'office.create').length
     await page.reload()
-    await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
+    try {
+      await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
+    } catch (error) {
+      const state = await page.evaluate(() => ({
+        readyState: document.readyState,
+        body: document.body?.innerText.slice(0, 700),
+      }))
+      throw new Error(
+        `Taskpane reconnect button unavailable: ${JSON.stringify({ url: page.url(), ...state, pageErrors, outboundTail: outbound.slice(-8), inboundTail: inbound.slice(-8) })}`,
+        { cause: error },
+      )
+    }
     const reopenedCodeText = await page
       .getByText(/Enter code [0-9]{6} in WisWork PC/)
       .textContent({ timeout: 15_000 })

@@ -13,9 +13,13 @@ test('finds each frozen source by digest across the case directory and uploads s
     await mkdir(join(directory, 'originals'), { recursive: true })
     const first = Buffer.from('%PDF-first')
     const second = Buffer.from('treatment,n\nA,2\n')
-    const hashes = [first, second].map((bytes) => createHash('sha256').update(bytes).digest('hex'))
+    const third = Buffer.from('{"asOf":"2024-11-01"}\n')
+    const hashes = [first, second, third].map((bytes) =>
+      createHash('sha256').update(bytes).digest('hex'),
+    )
     await writeFile(join(directory, 'originals/source.pdf'), first)
     await writeFile(join(directory, 'data.csv'), second)
+    await writeFile(join(directory, 'data-dictionary.json'), third)
     await writeFile(
       join(directory, 'reference-plan.json'),
       JSON.stringify({
@@ -24,6 +28,7 @@ test('finds each frozen source by digest across the case directory and uploads s
           { snapshotAttachmentId: hashes[0] },
           { snapshotAttachmentId: hashes[0] },
           { snapshotAttachmentId: hashes[1] },
+          { snapshotAttachmentId: hashes[2] },
         ],
       }),
     )
@@ -37,7 +42,7 @@ test('finds each frozen source by digest across the case directory and uploads s
     const bundle = await loadBenchmarkBundle(root, 'PPT-P0-05')
     assert.deepEqual(
       bundle.sourceAttachments.map((item) => item.name),
-      ['source.pdf', 'data.csv'],
+      ['source.pdf', 'data.csv', 'data-dictionary.json'],
     )
     assert.deepEqual(
       bundle.sourceAttachments.map((item) => item.sha256),

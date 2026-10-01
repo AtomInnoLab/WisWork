@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 
-const supported = new Set(['.pdf', '.csv', '.docx', '.txt', '.md', '.xlsx', '.pptx'])
+const supported = new Set(['.pdf', '.csv', '.json', '.docx', '.txt', '.md', '.xlsx', '.pptx'])
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
 
 export async function loadBenchmarkBundle(repoRoot, caseId) {
