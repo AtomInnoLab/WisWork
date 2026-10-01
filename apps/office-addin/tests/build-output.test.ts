@@ -32,10 +32,14 @@ describe('configured Office build output', () => {
       buildId: string
       presentationRolloutPercent: number
       diagnosticSamplePercent: number
+      presentationMinPcProtocol: number
+      presentationMinRelayProtocol: number
     }
     expect(metadata.buildId).toMatch(/^[A-Za-z0-9_.-]{3,96}$/)
     expect(metadata.presentationRolloutPercent).toBe(25)
     expect(metadata.diagnosticSamplePercent).toBe(10)
+    expect(metadata.presentationMinPcProtocol).toBe(2)
+    expect(metadata.presentationMinRelayProtocol).toBe(2)
     const taskpane = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
     const scriptPath = taskpane.match(/src="(\/assets\/taskpane-[^"]+\.js)"/)?.[1]
     expect(scriptPath).toBeDefined()

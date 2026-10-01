@@ -59,6 +59,8 @@ export default defineConfig(async ({ command, mode }) => {
           buildId,
           presentationRolloutPercent: officePresentationRolloutPercent(env),
           diagnosticSamplePercent: officeDiagnosticSamplePercent(env),
+          presentationMinPcProtocol: 2,
+          presentationMinRelayProtocol: 2,
         }),
       })
       if (deployment) {

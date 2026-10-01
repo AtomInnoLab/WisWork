@@ -14,7 +14,7 @@ import {
 } from './ppt-agent-release-preflight.mjs'
 
 const VERSION =
-  '{"buildId":"release_123","presentationRolloutPercent":25,"diagnosticSamplePercent":10}'
+  '{"buildId":"release_123","presentationRolloutPercent":25,"diagnosticSamplePercent":10,"presentationMinPcProtocol":2,"presentationMinRelayProtocol":2}'
 const TEAM_START =
   '<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script><script src="/assets/teamAuthStart-AbC_123.js"></script><link rel="modulepreload" href="/assets/team-auth-config-AbC_123.js">'
 const TEAM_CALLBACK =
@@ -60,6 +60,8 @@ test('validates complete release artifact', async (t) => {
     buildId: 'release_123',
     presentationRolloutPercent: 25,
     diagnosticSamplePercent: 10,
+    presentationMinPcProtocol: 2,
+    presentationMinRelayProtocol: 2,
     script: 'assets/taskpane-AbC_123.js',
     scriptSha256: createHash('sha256').update('const version="release_123"').digest('hex'),
     htmlSha256: createHash('sha256')
@@ -113,6 +115,22 @@ test('release configuration must match the operator expectation', async (t) => {
   )
   await writeFile(resolve(dist, 'version.json'), '{"buildId":"release_123"}')
   await assert.rejects(inspectOfficeBuild(dist, 'https://office.example'), /invalid version.json/)
+  await writeFile(
+    resolve(dist, 'version.json'),
+    VERSION.replace('"presentationMinPcProtocol":2', '"presentationMinPcProtocol":1'),
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /presentationMinPcProtocol/,
+  )
+  await writeFile(
+    resolve(dist, 'version.json'),
+    VERSION.replace('"presentationMinRelayProtocol":2', '"presentationMinRelayProtocol":1'),
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /presentationMinRelayProtocol/,
+  )
 })
 
 test('v2 pairing smoke negotiates and routes every presentation capability', async (t) => {
@@ -615,6 +633,8 @@ test('checks deployed version, HTML and immutable script as one build', async ()
     buildId: 'release_123',
     presentationRolloutPercent: 25,
     diagnosticSamplePercent: 10,
+    presentationMinPcProtocol: 2,
+    presentationMinRelayProtocol: 2,
     script: 'assets/taskpane-AbC_123.js',
     scriptSha256: createHash('sha256').update('const version="release_123"').digest('hex'),
     htmlSha256: createHash('sha256')

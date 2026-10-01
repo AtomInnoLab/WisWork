@@ -157,6 +157,9 @@ export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
     if (expectedConfig && metadata[key] !== expectedConfig[key])
       throw new Error(`release ${key} differs from expected configuration`)
   }
+  for (const key of ['presentationMinPcProtocol', 'presentationMinRelayProtocol']) {
+    if (metadata[key] !== 2) throw new Error(`invalid version.json ${key}`)
+  }
   const htmlBytes = await readFile(resolve(dist, 'taskpane.html'))
   const html = htmlBytes.toString('utf8')
   const manifest = await readFile(resolve(dist, 'manifest.xml'), 'utf8')
@@ -205,6 +208,8 @@ export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
     buildId: metadata.buildId,
     presentationRolloutPercent: metadata.presentationRolloutPercent,
     diagnosticSamplePercent: metadata.diagnosticSamplePercent,
+    presentationMinPcProtocol: metadata.presentationMinPcProtocol,
+    presentationMinRelayProtocol: metadata.presentationMinRelayProtocol,
     script: entry,
     scriptSha256: sha256(script),
     htmlSha256: sha256(htmlBytes),
@@ -288,7 +293,9 @@ export async function inspectDeployedOffice(origin, build, fetcher = fetch) {
       if (
         metadata.buildId !== build.buildId ||
         metadata.presentationRolloutPercent !== build.presentationRolloutPercent ||
-        metadata.diagnosticSamplePercent !== build.diagnosticSamplePercent
+        metadata.diagnosticSamplePercent !== build.diagnosticSamplePercent ||
+        metadata.presentationMinPcProtocol !== build.presentationMinPcProtocol ||
+        metadata.presentationMinRelayProtocol !== build.presentationMinRelayProtocol
       )
         throw new Error('deployed Office assets differ from release artifact')
     }
