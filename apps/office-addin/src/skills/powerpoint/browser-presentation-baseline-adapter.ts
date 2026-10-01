@@ -48,7 +48,7 @@ export interface PresentationBaselineAdapter {
   readPage(slideId: string, signal?: AbortSignal): Promise<PresentationBaselinePage>
 }
 const MAX_SLIDES = 512
-const MAX_SHAPES = 100
+const MAX_SHAPES = 1_000
 const MAX_TEXT = 12_000
 const MAX_PAGE_TEXT = 120_000
 const MAX_BYTES = 256 * 1024

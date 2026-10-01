@@ -10,6 +10,47 @@ import { createPresentationQaSkill } from '../src/skills/powerpoint/presentation
 import { presentationArtifactContent } from '../src/skills/powerpoint/presentation-page-delivery'
 import { InMemoryVfs } from '../src/skills/shared/vfs'
 
+it('compares a 120-object compiled page against its complete host inspection', async () => {
+  const deck = benchmarkDeck()
+  deck.slides = [deck.slides[0]!]
+  deck.slides[0]!.claimIds = []
+  const seed = deck.slides[0]!.elements.find((element) => element.kind === 'text')!
+  deck.slides[0]!.elements = Array.from({ length: 120 }, (_, index) => ({
+    ...seed,
+    id: `text-${index}`,
+    text: `Value ${index}`,
+    x: (index % 12) + 0.1,
+    y: Math.floor(index / 12) * 0.5 + 0.1,
+    w: 0.8,
+    h: 0.3,
+  }))
+  const { bytes } = await compilePresentationDeck(deck)
+  const parsed = (await openPptx(bytes)).deck.slides[0]!
+  const host = {
+    slideId: 'host',
+    slideWidth: 960,
+    slideHeight: 540,
+    shapes: parsed.elements.map((element, index) => ({
+      id: String(index + 1),
+      name: element.name!,
+      type: 'TextBox',
+      left: (element.transform.offset.x * 72) / 914400,
+      top: (element.transform.offset.y * 72) / 914400,
+      width: (element.transform.offset.cx * 72) / 914400,
+      height: (element.transform.offset.cy * 72) / 914400,
+    })),
+    shapesTruncated: false,
+    overflows: [],
+    overlaps: [],
+    overlapsTruncated: false,
+    screenshot: { mime: 'image/png' as const, base64: '' },
+  }
+  expect(host.shapes).toHaveLength(120)
+  const source = Buffer.from(bytes).toString('base64')
+  const result = await comparePresentationPageStructure(source, 0, host, source)
+  expect(result.structureStatus).toBe('passed')
+})
+
 it('flags speaker notes changed by a host export', async () => {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[0]!]

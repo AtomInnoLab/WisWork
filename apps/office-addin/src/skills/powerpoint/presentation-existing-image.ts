@@ -91,7 +91,7 @@ function snapshot(value: unknown): value is PictureSnapshot {
     s.zOrderPosition >= 0 &&
     Array.isArray(s.shapeIds) &&
     s.shapeIds.length > 0 &&
-    s.shapeIds.length <= 100 &&
+    s.shapeIds.length <= 1_000 &&
     s.shapeIds.every(hostId) &&
     new Set(s.shapeIds).size === s.shapeIds.length &&
     s.shapeIds[s.zOrderPosition] === s.shapeId &&

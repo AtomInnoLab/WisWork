@@ -1285,17 +1285,17 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const slide = await getPageById(context, slideId, signal)
       const shapes = slide.shapes as RuntimeRecord
       if (typeof shapes?.load !== 'function') throw new Error('office_api_unsupported')
-      loadShapes(shapes)
+      loadShapes(shapes, MAX_POWERPOINT_SHAPES)
       await sync(context, signal)
       if (!Array.isArray(shapes.items)) throw new Error('office_read_failed')
-      const items = (shapes.items as RuntimeRecord[]).slice(0, MAX_POWERPOINT_VERIFY_SHAPES)
+      const items = (shapes.items as RuntimeRecord[]).slice(0, MAX_POWERPOINT_SHAPES)
       for (const item of items)
         if (!item || typeof item.id !== 'string' || !item.id.length || item.id.length > 256)
           throw new Error('office_read_failed')
       return {
         slideId,
         shapes: items.map(shapeInfo),
-        shapesTruncated: shapes.items.length > MAX_POWERPOINT_VERIFY_SHAPES,
+        shapesTruncated: shapes.items.length > MAX_POWERPOINT_SHAPES,
       }
     })
   }
@@ -1640,7 +1640,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           })
         ;(slide.load as (properties: string) => void)('id')
         ;(pageSetup.load as (properties: string[]) => void)(['slideWidth', 'slideHeight'])
-        loadShapes(collection)
+        loadShapes(collection, MAX_POWERPOINT_SHAPES)
         const image = fallbackBase64
           ? undefined
           : (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
@@ -1660,7 +1660,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           slideHeight <= 0
         )
           throw new Error('office_read_failed')
-        const raw = (collection.items as RuntimeRecord[]).slice(0, MAX_POWERPOINT_VERIFY_SHAPES)
+        const raw = (collection.items as RuntimeRecord[]).slice(0, MAX_POWERPOINT_SHAPES)
         for (const shape of raw) {
           if (
             !shape ||
@@ -1750,7 +1750,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           slideWidth,
           slideHeight,
           shapes,
-          shapesTruncated: collection.items.length > MAX_POWERPOINT_VERIFY_SHAPES,
+          shapesTruncated: collection.items.length > MAX_POWERPOINT_SHAPES,
           overflows,
           overlaps,
           overlapsTruncated,

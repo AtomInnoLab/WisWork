@@ -582,6 +582,23 @@ it('captures arbitrary current/selected/deck scopes without a generation artifac
   expect(JSON.parse((await f.read('deck')).output).scope.slideIds).toEqual(['s1', 's2'])
   expect(f.inspectPage).not.toHaveBeenCalled()
 })
+it('captures and rechecks a 120-object current page baseline', async () => {
+  const f = fixture()
+  const current = f.pages.get('s2')!
+  current.shapes.push(
+    ...Array.from({ length: 119 }, (_, index) => ({
+      ...current.shapes[0]!,
+      id: `extra-${index}`,
+      name: `Extra ${index}`,
+    })),
+  )
+  const read = await f.read()
+  expect(read.isError, read.output).not.toBe(true)
+  const baseline = JSON.parse(read.output)
+  expect(baseline.pages[0].shapes).toHaveLength(120)
+  const checked = await f.call('check_presentation_baseline', { baseline_id: baseline.baselineId })
+  expect(checked.isError, checked.output).not.toBe(true)
+})
 it('reports manual edits and selection/order drift without silently replacing the baseline', async () => {
   const f = fixture(),
     b = JSON.parse((await f.read('deck')).output)

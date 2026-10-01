@@ -500,7 +500,7 @@ async function readPage(
         if (!text) throw new Error('invalid shape text')
         object.text = text
       }
-    if (!objects.length || objects.length > 100) throw new Error('invalid slide objects')
+    if (!objects.length || objects.length > 1_000) throw new Error('invalid slide objects')
     const backgroundColor = await resolvedBackground(zip, slidePath, root)
     const notesText = await pageNotes(zip, slidePath)
     const extractedLinks = await inspectPowerPointSourceLinksFromZip(zip, slidePath).catch(
@@ -573,7 +573,7 @@ export async function comparePresentationPageStructure(
     sourceIndex >= 32 ||
     !host ||
     !Array.isArray(host.shapes) ||
-    host.shapes.length > 100
+    host.shapes.length > 1_000
   )
     throw new Error('presentation_qa_structure_unavailable')
   const sourcePage = await readPage(sourceBase64, sourceIndex, 10 * 1024 * 1024)

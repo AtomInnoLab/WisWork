@@ -77,7 +77,7 @@ describe('exact imported PowerPoint page inspection', () => {
     expect(slides.load).not.toHaveBeenCalled()
     expect(slides.getItemAt).not.toHaveBeenCalled()
     expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.10')
-    expect(shapes.load).toHaveBeenCalledWith(expect.objectContaining({ $top: 101 }))
+    expect(shapes.load).toHaveBeenCalledWith(expect.objectContaining({ $top: 1001 }))
     expect(slide.getImageAsBase64).toHaveBeenCalledWith({ width: 960 })
     expect(result).toMatchObject({
       slideId: 'host-page-25',
@@ -184,13 +184,20 @@ describe('exact imported PowerPoint page inspection', () => {
       [960, 640, 480, 320, 240].map((width) => [{ width }]),
     )
   })
-  it('explicitly marks shape and overlap truncation instead of returning a clean result', async () => {
-    const { adapter } = setup(Array.from({ length: 101 }, (_, i) => shape(String(i))))
+  it('inspects 120 shapes and marks overlap truncation instead of returning a clean result', async () => {
+    const { adapter } = setup(Array.from({ length: 120 }, (_, i) => shape(String(i))))
     const result = await adapter.inspectPresentationPage('host-page-25')
-    expect(result.shapes).toHaveLength(100)
-    expect(result.shapesTruncated).toBe(true)
+    expect(result.shapes).toHaveLength(120)
+    expect(result.shapesTruncated).toBe(false)
     expect(result.overlaps).toHaveLength(1000)
     expect(result.overlapsTruncated).toBe(true)
+  })
+  it('marks shape truncation only after the host page exceeds 1000 objects', async () => {
+    const { adapter } = setup(Array.from({ length: 1001 }, (_, i) => shape(String(i), i, 0, 0, 0)))
+    const result = await adapter.inspectPresentationPage('host-page-25')
+    expect(result.shapes).toHaveLength(1000)
+    expect(result.shapesTruncated).toBe(true)
+    expect(result.overlapsTruncated).toBe(false)
   })
   it('fails closed for missing or mismatched host page IDs', async () => {
     const { adapter, slides, slide } = setup()

@@ -214,7 +214,7 @@ function validateContext(c: PresentationBaselineContext): void {
     !Array.isArray(c.selectedSlideIds) ||
     !Array.isArray(c.selectedShapeIds) ||
     c.slideIds.length > 512 ||
-    c.selectedShapeIds.length > 100 ||
+    c.selectedShapeIds.length > 1_000 ||
     [c.slideIds, c.selectedSlideIds, c.selectedShapeIds].some(
       (ids) => ids.some((id) => !validId(id)) || new Set(ids).size !== ids.length,
     ) ||
@@ -503,7 +503,7 @@ export function createPresentationBaselineSkill(options: Options): PresentationB
               !page ||
               page.slideId !== id ||
               !Array.isArray(page.shapes) ||
-              page.shapes.length > 100 ||
+              page.shapes.length > 1_000 ||
               new Set(page.shapes.map((s) => s.id)).size !== page.shapes.length
             )
               throw new Error('office_read_failed')

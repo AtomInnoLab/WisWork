@@ -124,7 +124,7 @@ describe('stable host-ID text access', () => {
       shapes: [{ id: 'shape-id' }],
       shapesTruncated: false,
     })
-    expect(shapes.load).toHaveBeenCalledWith(expect.objectContaining({ $top: 101 }))
+    expect(shapes.load).toHaveBeenCalledWith(expect.objectContaining({ $top: 1001 }))
     expect(await adapter.readPresentationPageText('host-27', 'shape-id')).toEqual({
       slideId: 'host-27',
       shapeId: 'shape-id',
@@ -139,9 +139,9 @@ describe('stable host-ID text access', () => {
   })
   it('reports a bounded shape list with explicit truncation', async () => {
     const { adapter, shapes, shape } = setup()
-    shapes.items = Array.from({ length: 101 }, (_, i) => ({ ...shape, id: `shape-${i}` }))
+    shapes.items = Array.from({ length: 1001 }, (_, i) => ({ ...shape, id: `shape-${i}` }))
     const result = await adapter.listPresentationPageShapes('host-27')
-    expect(result.shapes).toHaveLength(100)
+    expect(result.shapes).toHaveLength(1000)
     expect(result.shapesTruncated).toBe(true)
   })
   it('refuses stale expected text and invalid or deleted targets without writing', async () => {

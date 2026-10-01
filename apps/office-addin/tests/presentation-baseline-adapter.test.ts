@@ -90,6 +90,19 @@ describe('existing presentation baseline adapter', () => {
     })
   })
 
+  it('reads a selected page with 120 native objects without truncating the baseline', async () => {
+    const h = host()
+    h.shapes.items = Array.from({ length: 120 }, (_, index) => ({
+      ...h.shape,
+      id: `shape-${index}`,
+      type: 'Group',
+    }))
+    h.selectedShapes.items = h.shapes.items
+    const adapter = new BrowserPresentationBaselineAdapter()
+    expect((await adapter.readContext()).selectedShapeIds).toHaveLength(120)
+    expect((await adapter.readPage('native-slide')).shapes).toHaveLength(120)
+  })
+
   it('preserves selected order and leaves empty selection empty without a first-page fallback', async () => {
     const h = host()
     const other = { ...h.slide, id: 'other' }
@@ -151,7 +164,7 @@ describe('existing presentation baseline adapter', () => {
         return
       }
       if (reason === 'shape count')
-        h.shapes.items = Array.from({ length: 101 }, (_, i) => ({ ...h.shape, id: String(i) }))
+        h.shapes.items = Array.from({ length: 1001 }, (_, i) => ({ ...h.shape, id: String(i) }))
       if (reason === 'single text') h.shape.textFrame.textRange.text = 'x'.repeat(12_001)
       if (reason === 'total text' || reason === 'bytes') {
         h.shape.textFrame.textRange.text = (reason === 'bytes' ? '汉' : 'x').repeat(12_000)

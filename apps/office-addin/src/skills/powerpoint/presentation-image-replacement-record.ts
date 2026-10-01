@@ -78,7 +78,7 @@ function validBaseline(value: unknown): value is PictureSnapshot {
     b.zOrderPosition >= 0 &&
     Array.isArray(b.shapeIds) &&
     b.shapeIds.length > 0 &&
-    b.shapeIds.length < 100 &&
+    b.shapeIds.length <= 1_000 &&
     b.shapeIds.every(hostId) &&
     new Set(b.shapeIds).size === b.shapeIds.length &&
     b.shapeIds[b.zOrderPosition] === b.shapeId &&

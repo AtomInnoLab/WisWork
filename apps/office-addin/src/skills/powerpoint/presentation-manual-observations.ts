@@ -191,7 +191,7 @@ export function createPresentationManualObservationSkill(
             if (
               page.slideId !== slideId ||
               !Array.isArray(page.shapes) ||
-              page.shapes.length > 100 ||
+              page.shapes.length > 1_000 ||
               new Set(page.shapes.map((x) => x.id)).size !== page.shapes.length
             )
               throw new Error('presentation_observation_unavailable')

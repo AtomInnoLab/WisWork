@@ -384,7 +384,7 @@ export async function inspectPowerPointChartSourcesBatch(
 ): Promise<{ reports: Record<string, ChartSourceReport>; unsupported: string[] }> {
   if (
     !Array.isArray(shapeIds) ||
-    shapeIds.length > 100 ||
+    shapeIds.length > 1_000 ||
     shapeIds.some((id) => typeof id !== 'string' || !/^[1-9]\d{0,9}$/.test(id)) ||
     new Set(shapeIds).size !== shapeIds.length
   )

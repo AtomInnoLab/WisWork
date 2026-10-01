@@ -95,6 +95,30 @@ it('captures the exact imported page, publishes real screenshot and persists onl
   expect(f.vfs.list('/home/user')).toContain('/home/user/generated/qa-project-first.png')
   expect(validatePresentationQaRecord(f.readQa())).toBe(true)
 })
+it('retains a complete page capture with 120 native shapes', async () => {
+  const f = setup()
+  const native = f.inspectPage.getMockImplementation()!
+  f.inspectPage.mockImplementation(async () => ({
+    ...(await native()),
+    shapes: Array.from({ length: 120 }, (_, index) => ({
+      id: `shape-${index}`,
+      name: `Shape ${index}`,
+      type: 'GeometricShape',
+      left: index,
+      top: 0,
+      width: 1,
+      height: 1,
+    })),
+  }))
+  const result = await f.skill.executeTool(f.capture)
+  expect(result.isError, result.output).not.toBe(true)
+  expect(f.readQa()?.pages[0]?.structure).toMatchObject({
+    shapeCount: 120,
+    shapesTruncated: false,
+    status: 'passed',
+  })
+  expect(validatePresentationQaRecord(f.readQa())).toBe(true)
+})
 it('labels a PC fallback preview so visual review cannot masquerade as host rendering', async () => {
   const f = setup()
   const native = f.inspectPage.getMockImplementation()!
@@ -306,7 +330,7 @@ it('bounds metadata and rejects unknown fields, false structural passes and malf
     { ...record, pages: [page, page] },
     { ...record, pages: [{ ...page, screenshotBytes: 2 * 1024 * 1024 + 1 }] },
     { ...record, pages: [{ ...page, capturedAt: 'tomorrow' }] },
-    { ...record, pages: [{ ...page, structure: { ...page.structure, shapeCount: 101 } }] },
+    { ...record, pages: [{ ...page, structure: { ...page.structure, shapeCount: 1001 } }] },
     { ...record, pages: [{ ...page, structure: { ...page.structure, overflowCount: 401 } }] },
     { ...record, pages: [{ ...page, structure: { ...page.structure, overlapCount: 1 } }] },
     {

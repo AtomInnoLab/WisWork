@@ -168,7 +168,7 @@ export function validatePresentationQaRecord(value: unknown): value is Presentat
           'shapesTruncated',
           'overlapsTruncated',
         ]) ||
-        !num(s.shapeCount, 100) ||
+        !num(s.shapeCount, 1000) ||
         !num(s.overflowCount, 400) ||
         !num(s.overlapCount, 1000) ||
         typeof s.shapesTruncated !== 'boolean' ||
@@ -280,7 +280,7 @@ function inspection(value: PowerPointPageInspection, hostSlideId: string) {
     !Number.isFinite(value.slideHeight) ||
     value.slideHeight <= 0 ||
     !Array.isArray(value.shapes) ||
-    value.shapes.length > 100 ||
+    value.shapes.length > 1_000 ||
     !Array.isArray(value.overflows) ||
     value.overflows.length > 400 ||
     !Array.isArray(value.overlaps) ||

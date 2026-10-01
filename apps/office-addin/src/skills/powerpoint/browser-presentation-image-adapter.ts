@@ -90,7 +90,7 @@ export class BrowserPresentationImageAdapter {
       if (typeof page.shapes?.load !== 'function' || typeof page.exportAsBase64 !== 'function')
         throw new Error('office_api_unsupported')
       page.shapes.load({
-        $top: 101,
+        $top: 1_001,
         id: true,
         type: true,
         left: true,
@@ -107,7 +107,7 @@ export class BrowserPresentationImageAdapter {
       await context.sync()
       check(signal)
       const shapes = page.shapes.items as Runtime[]
-      if (!Array.isArray(shapes) || shapes.length > 100) throw new Error('office_read_failed')
+      if (!Array.isArray(shapes) || shapes.length > 1_000) throw new Error('office_read_failed')
       const ordered = [...shapes].sort((a, b) => a.zOrderPosition - b.zOrderPosition)
       if (
         ordered.some(
@@ -201,11 +201,11 @@ export class BrowserPresentationImageAdapter {
     const ids: string[] = await runtime().run(async (context: Runtime) => {
       const page = await slide(context, record.hostSlideId, signal)
       if (typeof page.shapes?.load !== 'function') throw new Error('office_api_unsupported')
-      page.shapes.load({ $top: 101, id: true, zOrderPosition: true })
+      page.shapes.load({ $top: 1_001, id: true, zOrderPosition: true })
       await context.sync()
       check(signal)
       const items = page.shapes.items as Runtime[]
-      if (!Array.isArray(items) || items.length > 100) throw new Error('office_read_failed')
+      if (!Array.isArray(items) || items.length > 1_000) throw new Error('office_read_failed')
       const ordered = [...items].sort((a, b) => a.zOrderPosition - b.zOrderPosition)
       if (
         ordered.some(

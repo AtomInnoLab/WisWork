@@ -1272,7 +1272,7 @@ export function createPresentationPageEditingSkill(
               !Number.isSafeInteger(picture.zOrderPosition) ||
               picture.zOrderPosition < 0 ||
               !Array.isArray(picture.shapeIds) ||
-              picture.shapeIds.length > 100 ||
+              picture.shapeIds.length > 1_000 ||
               picture.shapeIds.some((id) => !hostId(id)) ||
               new Set(picture.shapeIds).size !== picture.shapeIds.length ||
               picture.shapeIds[picture.zOrderPosition] !== oldShapeId ||
@@ -1430,7 +1430,7 @@ export function createPresentationPageEditingSkill(
             !result ||
             result.slideId !== hostSlideId ||
             !Array.isArray(result.shapes) ||
-            result.shapes.length > 100 ||
+            result.shapes.length > 1_000 ||
             typeof result.shapesTruncated !== 'boolean' ||
             new Set(result.shapes.map((shape) => shape?.id)).size !== result.shapes.length ||
             result.shapes.some(
