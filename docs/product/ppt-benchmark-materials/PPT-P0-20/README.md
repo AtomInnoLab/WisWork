@@ -10,7 +10,7 @@
 
 输入 PDF 均未修改；须保留作者、题名、来源与许可链接。`node --import tsx generate-reference.cjs` 从两份 PDF 生成 `reference-plan.json`、`reference-deck.json` 和八页原生 `wiswork-generated-candidate.pptx`。计划绑定两份原文逐字摘录，第 6 页 Table 1 为带嵌入工作簿的原生图表。`SHA256SUMS` 冻结三份输入与三份候选产物；`node --import tsx verify-materials.mjs` 核对全部摘要、PDF 摘录、计划与页模型、八页结构及图表底层值。复用原文不复用 P0-01 的验收结果。
 
-本机定向测试分别覆盖：F1 一次可重试模型错误后保留同一指令，且用户结束不会被标为完成；F2 首次截图失败返回待复核而无视觉通过记录，恢复后才写入待审截图；F3 用本包实际八页页模型在四页持久导入回执后、第 5 页写入前取消，重建文档绑定后只补第 5–8 页且不重复写入前四页，并核对原生图表回读。这些故障点使用模拟模型或 Office 宿主，尚不是一次完整的真实 PowerPoint 故障注入运行。
+本机定向测试分别覆盖：F1 一次可重试模型错误后保留同一指令，且用户结束不会被标为完成；F2 首次截图失败返回待复核而无视觉通过记录，恢复后才写入待审截图；F3 用本包实际八页页模型在四页持久导入回执后、第 5 页写入前取消，重建文档绑定后只补第 5–8 页且不重复写入前四页，并核对原生图表回读。另以两份冻结 PDF、来源绑定计划和实际页模型在 PC 服务中验证：前四页编译落盘，第 5 页编译时中断，重建服务后恢复至八页；前四页回执不变，第 5 页仅重试一次，第 6 页原生图表可回读。PC 编译中断与 F3 的用户取消是不同事件。这些故障点使用模拟模型或 Office 宿主，尚不是一次完整的真实 PowerPoint 故障注入运行。
 
 `node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-20 --built-taskpane` 已在本机通过构建版 Taskpane、Electron PC 与 Rust Relay 的两份 PDF 上传、计划保存、八页生产、PPTX/PDF 回读和恢复。该整链路运行未按 F1/F2/F3 精确时点强制故障，故障证据来自上述定向测试。LibreOffice 已将候选 PPTX 渲染为八页 PDF 并目视检查版面。
 

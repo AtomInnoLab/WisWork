@@ -1,7 +1,7 @@
 import { confirmReviewed } from '../../office-addin/tests/presentation-lock-review-fixture.js'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -514,6 +514,102 @@ it('stops subsequent pages on cancellation and keeps earlier completed pages for
   expect(compile).toHaveBeenCalledTimes(2)
   expect(await f.call('production_run', { requestId: 'run' })).toMatchObject({ status: 'compiled' })
   expect(compile).toHaveBeenCalledTimes(9)
+})
+it('resumes P0-20 source-backed production after four persisted pages without recompiling them', async () => {
+  const material = new URL(
+    '../../../docs/product/ppt-benchmark-materials/PPT-P0-20/',
+    import.meta.url,
+  )
+  const plan = JSON.parse(readFileSync(new URL('reference-plan.json', material), 'utf8'))
+  const deck = parsePresentationDeck(
+    JSON.parse(readFileSync(new URL('reference-deck.json', material), 'utf8')),
+  )
+  const controller = new AbortController()
+  const compiledPageIds: string[] = []
+  const compile = vi.fn(async (input: unknown) => {
+    const page = parsePresentationDeck(input)
+    compiledPageIds.push(page.slides[0]!.id)
+    const result = await compilePresentationDeck(page)
+    if (compiledPageIds.length === 5) controller.abort()
+    return result
+  })
+  const userDataPath = mkdtempSync(join(tmpdir(), 'wiswork-p0-20-production-'))
+  roots.push(userDataPath)
+  const service = createPresentationService({ userDataPath, compile })
+  const call = async (operation: string, extra = {}, signal = new AbortController().signal) =>
+    decode(
+      await service(
+        {
+          operation,
+          documentId: 'doc',
+          ...(!operation.startsWith('attachment_') ? { projectId: deck.id } : {}),
+          ...extra,
+        },
+        signal,
+      ),
+    )
+  for (const name of ['deardorff-2020-article.pdf', 'deardorff-2020-checklist.pdf']) {
+    const bytes = readFileSync(new URL(name, material))
+    const attachmentId = createHash('sha256').update(bytes).digest('hex')
+    expect(
+      await call('attachment_begin', {
+        attachmentId,
+        sha256: attachmentId,
+        name,
+        sizeBytes: bytes.length,
+      }),
+    ).toMatchObject({ status: 'uploading' })
+    for (let offset = 0; offset < bytes.length; offset += 64 * 1024)
+      await call('attachment_chunk', {
+        attachmentId,
+        offset,
+        base64: bytes.subarray(offset, offset + 64 * 1024).toString('base64'),
+      })
+    expect(await call('attachment_finish', { attachmentId })).toMatchObject({ status: 'ready' })
+  }
+  expect(await call('save_plan', { expectedRevision: 0, plan })).toMatchObject({ revision: 1 })
+  await call('production_begin', { requestId: 'p0-20-recovery', planRevision: 1, deck })
+  expect(await call('production_run', { requestId: 'p0-20-recovery' }, controller.signal)).toEqual({
+    error: 'aborted',
+  })
+  const interrupted = await call('production_status', { requestId: 'p0-20-recovery' })
+  expect(interrupted).toMatchObject({ status: 'building', compiledCount: 4, total: 8 })
+  expect(interrupted.pages[4]).toMatchObject({ state: 'building', attempt: 1 })
+  expect(
+    interrupted.pages.slice(5).every((page: { state: string }) => page.state === 'pending'),
+  ).toBe(true)
+  const firstFour = await Promise.all(
+    deck.slides
+      .slice(0, 4)
+      .map((slide) => call('production_page', { requestId: 'p0-20-recovery', pageId: slide.id })),
+  )
+  const reopened = createPresentationService({ userDataPath, compile })
+  const resumed = decode(
+    await reopened(
+      {
+        operation: 'production_run',
+        documentId: 'doc',
+        projectId: deck.id,
+        requestId: 'p0-20-recovery',
+      },
+      new AbortController().signal,
+    ),
+  )
+  expect(resumed).toMatchObject({ status: 'compiled', compiledCount: 8, total: 8 })
+  expect(compiledPageIds).toEqual([
+    ...deck.slides.slice(0, 5).map((slide) => slide.id),
+    ...deck.slides.slice(4).map((slide) => slide.id),
+  ])
+  for (const [index, slide] of deck.slides.slice(0, 4).entries())
+    expect(
+      await call('production_page', { requestId: 'p0-20-recovery', pageId: slide.id }),
+    ).toEqual(firstFour[index])
+  const chartPage = await call('production_page', {
+    requestId: 'p0-20-recovery',
+    pageId: deck.slides[5]!.id,
+  })
+  const native = (await openPptx(Buffer.from(chartPage.pptxBase64, 'base64'))).deck.slides[0]!
+  expect(native.elements.some((element) => element.type === 'chart')).toBe(true)
 })
 it('isolates an unavailable image to its referencing page and serializes duplicate runs', async () => {
   const f = await setup()
