@@ -128,15 +128,28 @@ async function inspectBrowserWorkbench(origin, pc) {
           ['wiswork.presentation.document.v1', 'electron-browser-relay-document'],
           ['wiswork.presentation.project.v1', '${browserProjectId}']
         ]);
+        window.__documentUrl = '${browserDocumentUrl}';
         window.Office = { onReady: async () => ({ host: 'PowerPoint' }),
           AsyncResultStatus: { Succeeded: 'succeeded' }, CoercionType: { Text: 'text' },
+          FileType: { Compressed: 'compressed' },
           context: { host: 'PowerPoint', platform: 'PC', requirements: { isSetSupported: () => true },
-            document: { url: '${browserDocumentUrl}',
+            document: { get url() { return window.__documentUrl },
               settings: { get: key => settings.get(key), set: (key, value) => settings.set(key, value),
                 saveAsync: callback => callback({ status: 'succeeded' }) },
+              getFileAsync: (_type, _options, callback) => callback({ status: 'succeeded', value: {
+                size: 5, sliceCount: 1,
+                getSliceAsync: (index, done) => done({ status: 'succeeded', value: {
+                  index, size: 5, data: [80, 75, 3, 4, 1]
+                } }),
+                closeAsync: done => done({ status: 'succeeded' })
+              } }),
               getSelectedDataAsync: (_type, callback) => callback({ status: 'succeeded', value: '' }),
               setSelectedDataAsync: (_value, _options, callback) => callback({ status: 'succeeded' })
-            } } };`,
+            } } };
+        window.PowerPoint = { createPresentation: async base64 => {
+          window.__createdPresentation = base64;
+          window.__createdPresentationCount = (window.__createdPresentationCount || 0) + 1
+        } };`,
       }),
     )
     await page.addInitScript(() => {
@@ -178,6 +191,20 @@ async function inspectBrowserWorkbench(origin, pc) {
       .waitFor({ timeout: 20_000 })
     if (!(await workbench.textContent()).includes('尚未完成视觉验证'))
       throw Error('browser project verification state missing')
+    await page.getByRole('button', { name: '创建副本后制作' }).click()
+    await page.getByText(/副本已打开。请先另存为新文件/).waitFor()
+    if ((await page.evaluate(() => window.__createdPresentation)) !== 'UEsDBAE=')
+      throw Error('browser presentation copy did not receive the exported source')
+    await page.evaluate(() => {
+      window.__documentUrl = ''
+    })
+    await page.getByRole('button', { name: '创建副本后制作' }).click()
+    await page.getByText(/请先保存当前文档，再创建副本/).waitFor()
+    if ((await page.evaluate(() => window.__createdPresentationCount)) !== 1)
+      throw Error('browser presentation copy opened an unsaved source')
+    await page.evaluate((url) => {
+      window.__documentUrl = url
+    }, browserDocumentUrl)
     if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth))
       throw Error('browser project workbench overflows at 320px')
     const firstSocket = sockets.values().next().value
@@ -604,7 +631,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    'Electron PC + Rust Relay business smoke passed: browser Taskpane pairing, project readback, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery',
+    'Electron PC + Rust Relay business smoke passed: browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery',
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {

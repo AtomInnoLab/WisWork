@@ -12,6 +12,8 @@ Taskpane 增加创建副本入口，导出当前 PowerPoint 的有界 PPTX，再
 
 本机定向测试覆盖正常调用、缺失宿主 API、导出期间文档变化、真实文档绑定下的另存切换，以及未保存原稿；5/5 通过。Office 插件 TypeScript、定向 ESLint 和本机构建通过。此证据只证明代码与模拟宿主行为，不证明真实 PowerPoint 对 `createPresentation` 的窗口、设置复制或保存行为；尚未部署。
 
+后续把副本按钮加入本机 Electron PC + Rust Relay + Chrome Taskpane 冒烟：在真实面板点击已保存文档的复制入口，核对导出字节确实传给模拟 Office `createPresentation`；再将宿主 URL 置空，核对面板提示先保存且未再次调用创建 API。完整冒烟同时通过配对、断线恢复、三文档交错、八页 PPTX/PDF 交付、附件和任务恢复。Office API 在 Chrome 中模拟，因此仍不构成真实 PowerPoint 宿主验收。
+
 该入口不克隆 PC 项目、附件、生产任务或 AgentRun。真实副本中的项目身份、Taskpane 重开和实际页面生产仍须实机验证；当前总体成熟度保持 **64%（575/9）**，专业任务实机结果仍为 **0/20**。
 
 ## 部署矩阵
