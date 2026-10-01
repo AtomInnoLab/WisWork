@@ -1,0 +1,408 @@
+{
+  "version": 1,
+  "id": "p0-04-rule-702-historical-reference",
+  "title": "Rule 702 历史规则比较：候选汇报",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "assets": [],
+  "claims": [
+    {
+      "id": "effective",
+      "text": "2023 命令设定 2023-12-01 生效；待决程序仅在公正且可行范围内适用。",
+      "source": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "locator": "第 194 页"
+    },
+    {
+      "id": "old",
+      "text": "2022 历史汇编 Rule 702 开头列出四项条件；仅供与后版文字比较。",
+      "source": "https://www.uscourts.gov/sites/default/files/federal_rules_of_evidence_december_1_2022_0.pdf",
+      "locator": "第 29 页"
+    },
+    {
+      "id": "new-opening",
+      "text": "2024 历史汇编开头增加由提出方向法院作更可能为真的展示。",
+      "source": "https://www.govinfo.gov/content/pkg/CPRT-118HPRT57151/pdf/CPRT-118HPRT57151.pdf",
+      "locator": "第 30 页"
+    },
+    {
+      "id": "new-d",
+      "text": "2024 历史汇编 (d) 使用专家意见反映可靠应用的表述。",
+      "source": "https://www.govinfo.gov/content/pkg/CPRT-118HPRT57151/pdf/CPRT-118HPRT57151.pdf",
+      "locator": "第 31 页"
+    },
+    {
+      "id": "standard",
+      "text": "官方 Note 说明 Rule 104(a) 门槛适用于规则中的可靠性要求。",
+      "source": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "locator": "第 210 页"
+    },
+    {
+      "id": "weight",
+      "text": "官方 Note 保留部分专家证言异议属于重量而非可采性的情形。",
+      "source": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "locator": "第 211 页"
+    },
+    {
+      "id": "scope",
+      "text": "官方 Note 强调专家意见不得超出其基础与方法可靠支持的范围。",
+      "source": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "locator": "第 212 页"
+    },
+    {
+      "id": "certainty",
+      "text": "官方 Note 对实体法要求特定确定程度的证言保留例外。",
+      "source": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "locator": "第 213 页"
+    },
+    {
+      "id": "procedure",
+      "text": "官方 Note 表明修订不新增特定程序。",
+      "source": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "locator": "第 213 页"
+    },
+    {
+      "id": "rule-1101",
+      "text": "联邦证据规则的适用范围须按 Rule 1101 的法院和例外条款判断。",
+      "source": "https://www.govinfo.gov/content/pkg/CPRT-118HPRT57151/pdf/CPRT-118HPRT57151.pdf",
+      "locator": "第 43 页"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "Rule 702：历史文字与官方说明",
+      "claimIds": [],
+      "notes": "中文为待法律专业审阅的组织释义，非官方译本；固定历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Rule 702：历史文字与官方说明",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "固定历史时点 2024-12-01。美国联邦证据规则的版本比较候选稿；不证明今天仍适用，也不提供个案法律意见。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "2022、2024 官方汇编及 2023 最高法院修订包；法律审阅待完成",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "命令与时间线",
+      "claimIds": ["effective"],
+      "notes": "中文为待法律专业审阅的组织释义，非官方译本；固定历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "命令与时间线",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "2023-04-24 最高法院命令；2023-12-01 生效。其后开始的程序按命令适用；当时待决程序仅在公正且可行范围内适用。此处不推断任何案件的具体适用性。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "2023 官方修订包 PDF 194；待决程序限定必须保留",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "旧版：仅作文字对照",
+      "claimIds": ["old"],
+      "notes": "中文为待法律专业审阅的组织释义，非官方译本；固定历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "旧版：仅作文字对照",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "2022 历史汇编 Rule 702 开头列出 (a)–(d) 四项条件；(d) 以专家可靠应用原则和方法到案件事实表述。旧版未含新增短语，不代表可绕开可靠性门槛。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "2022 规则汇编 PDF 29 / 印刷 15；旧文不是当前适用证明",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "新版：开头与 (d) 的差异",
+      "claimIds": ["old", "new-opening", "new-d"],
+      "notes": "中文为待法律专业审阅的组织释义，非官方译本；固定历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "新版：开头与 (d) 的差异",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "开头｜2024 历史汇编明写提出方向法院作更可能为真的展示。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 2.75,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "(d)｜专家意见反映原则和方法对案件事实的可靠应用。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "body-3",
+          "x": 0.9,
+          "y": 3.95,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "(a)–(c) 条件仍在规则中；黑线稿的删除和新增须对照清洁正文。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "旧 PDF 29；历史 PDF 30–31；修订包清洁文本 PDF 198",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "官方 Note：门槛与重量",
+      "claimIds": ["standard", "weight"],
+      "notes": "中文为待法律专业审阅的组织释义，非官方译本；固定历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "官方 Note：门槛与重量",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "Note 强调 Rule 104(a) 门槛适用于可靠性要求；同时保留部分异议属于证言重量而非可采性的情形。不能把任何一端概括为“所有争议只看重量”或“所有事实争议都排除专家”。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "2023 修订包 Note PDF 210–211；Note 是官方解释",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "官方 Note：意见范围与确定性",
+      "claimIds": ["scope", "certainty"],
+      "notes": "中文为待法律专业审阅的组织释义，非官方译本；固定历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "官方 Note：意见范围与确定性",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "每项专家意见须留在其基础和方法可靠支持的范围内。对绝对确定性的警示取决于方法和出错风险；官方 Note 同时保留实体法要求特定确定程度的例外。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "2023 修订包 Note PDF 212–213；不评价具体专家",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "程序与联邦规则适用范围",
+      "claimIds": ["procedure", "rule-1101"],
+      "notes": "中文为待法律专业审阅的组织释义，非官方译本；固定历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "程序与联邦规则适用范围",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "官方 Note 不新增特定程序。Rule 1101 规定联邦证据规则适用的法院、案件及例外；本稿不延伸至所有州法院，也不对任何待决案件作准入结论。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "修订包 Note PDF 213；2024 历史汇编 Rule 1101 PDF 43–44",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "来源与未完成审阅",
+      "claimIds": [],
+      "notes": "中文为待法律专业审阅的组织释义，非官方译本；固定历史 as-of 2024-12-01。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "来源与未完成审阅",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "三份官方 PDF 原件与页码、摘要已冻结；此稿只展示可核对的历史文字与官方解释。法律适用、版权范围、版面与真实 PowerPoint 编辑保存重开仍待复核。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "材料清单与原始 PDF；不得把字面一致当作法律审阅通过",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}

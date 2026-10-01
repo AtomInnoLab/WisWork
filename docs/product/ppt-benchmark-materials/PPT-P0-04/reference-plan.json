@@ -1,0 +1,388 @@
+{
+  "version": 1,
+  "projectId": "p0-04-rule-702-historical-reference",
+  "title": "Rule 702 历史规则比较：候选汇报",
+  "domain": "law",
+  "brief": {
+    "objective": "比较 Rule 702 修订前后文字与官方说明，并保留历史时点、法域和程序边界",
+    "audience": "法律专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": ["命令时间线", "旧新文字差异", "官方 Note", "Rule 1101 适用边界"],
+    "constraints": [
+      "历史 as-of 2024-12-01",
+      "不得提供个案意见",
+      "法律专业审阅待完成",
+      "真实 PowerPoint 验收待完成"
+    ]
+  },
+  "sources": [
+    {
+      "id": "order-effective",
+      "title": "2023-04-24 官方原件 PDF 第 194 页",
+      "uri": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "snapshotAttachmentId": "290a7566ee8f985a60874db840c8790b7aa0dc4218b3fe1c4ff1f3ae42b5977e",
+      "locator": "第 194 页",
+      "excerpt": "December 1, 2023, and shall govern in all proceedings thereafter commenced and, insofar as just\nand practicable, all proceedings then pending.",
+      "asOf": "2023-04-24"
+    },
+    {
+      "id": "old-rule",
+      "title": "2022-12-01 官方原件 PDF 第 29 页",
+      "uri": "https://www.uscourts.gov/sites/default/files/federal_rules_of_evidence_december_1_2022_0.pdf",
+      "snapshotAttachmentId": "27f6d2e56f664f8feb35119771e1b9afc819c593088e084ada60e089fa1863b7",
+      "locator": "第 29 页",
+      "excerpt": "opinion or otherwise if:\n(a) the expert’s scientific, technical, or other specialized\nknowledge will help the trier of fact to understand the evi-\ndence or to determine a fact in issue;\n(b) the testimony is based on sufficient facts or data;\n(c) the testimony is the product of reliable principles and\nmethods; and\n(d) the expert has reliably applied the principles and meth-\nods to the facts of the case.",
+      "asOf": "2022-12-01"
+    },
+    {
+      "id": "new-opening",
+      "title": "2024-12-01 官方原件 PDF 第 30 页",
+      "uri": "https://www.govinfo.gov/content/pkg/CPRT-118HPRT57151/pdf/CPRT-118HPRT57151.pdf",
+      "snapshotAttachmentId": "6d40b9dca62b1acb0d7e762473b6fad7779ef58b6cf19384575210af81a444ad",
+      "locator": "第 30 页",
+      "excerpt": "opinion or otherwise if the proponent demonstrates to the court\nthat it is more likely than not that:",
+      "asOf": "2024-12-01"
+    },
+    {
+      "id": "new-d",
+      "title": "2024-12-01 官方原件 PDF 第 31 页",
+      "uri": "https://www.govinfo.gov/content/pkg/CPRT-118HPRT57151/pdf/CPRT-118HPRT57151.pdf",
+      "snapshotAttachmentId": "6d40b9dca62b1acb0d7e762473b6fad7779ef58b6cf19384575210af81a444ad",
+      "locator": "第 31 页",
+      "excerpt": "(d) the expert’s opinion reflects a reliable application of the\nprinciples and methods to the facts of the case.",
+      "asOf": "2024-12-01"
+    },
+    {
+      "id": "note-standard",
+      "title": "2023-04-24 官方原件 PDF 第 210 页",
+      "uri": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "snapshotAttachmentId": "290a7566ee8f985a60874db840c8790b7aa0dc4218b3fe1c4ff1f3ae42b5977e",
+      "locator": "第 210 页",
+      "excerpt": "Rule 702 has been amended in two respects:\n(1) First, the rule has been amended to clarify and\nemphasize that expert testimony may not be admitted unless\nthe proponent demonstrates to the court that it is more likely\nthan not that the proffered testimony meets the admissibility\nrequirements set forth in the rule. See Rule 104(a).",
+      "asOf": "2023-04-24"
+    },
+    {
+      "id": "note-weight",
+      "title": "2023-04-24 官方原件 PDF 第 211 页",
+      "uri": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "snapshotAttachmentId": "290a7566ee8f985a60874db840c8790b7aa0dc4218b3fe1c4ff1f3ae42b5977e",
+      "locator": "第 211 页",
+      "excerpt": "Some challenges to expert testimony will raise\nmatters of weight rather than admissibility",
+      "asOf": "2023-04-24"
+    },
+    {
+      "id": "note-scope",
+      "title": "2023-04-24 官方原件 PDF 第 212 页",
+      "uri": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "snapshotAttachmentId": "290a7566ee8f985a60874db840c8790b7aa0dc4218b3fe1c4ff1f3ae42b5977e",
+      "locator": "第 212 页",
+      "excerpt": "that each expert opinion must stay within the bounds of what\ncan be concluded from a reliable application of the expert’s\nbasis and methodology.",
+      "asOf": "2023-04-24"
+    },
+    {
+      "id": "note-certainty",
+      "title": "2023-04-24 官方原件 PDF 第 213 页",
+      "uri": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "snapshotAttachmentId": "290a7566ee8f985a60874db840c8790b7aa0dc4218b3fe1c4ff1f3ae42b5977e",
+      "locator": "第 213 页",
+      "excerpt": "This amendment does not, however, bar testimony that\ncomports with substantive law requiring opinions to a\nparticular degree of certainty.",
+      "asOf": "2023-04-24"
+    },
+    {
+      "id": "note-procedure",
+      "title": "2023-04-24 官方原件 PDF 第 213 页",
+      "uri": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "snapshotAttachmentId": "290a7566ee8f985a60874db840c8790b7aa0dc4218b3fe1c4ff1f3ae42b5977e",
+      "locator": "第 213 页",
+      "excerpt": "Nothing in the amendment imposes any new,\nspecific procedures.",
+      "asOf": "2023-04-24"
+    },
+    {
+      "id": "rule-scope",
+      "title": "2024-12-01 官方原件 PDF 第 43 页",
+      "uri": "https://www.govinfo.gov/content/pkg/CPRT-118HPRT57151/pdf/CPRT-118HPRT57151.pdf",
+      "snapshotAttachmentId": "6d40b9dca62b1acb0d7e762473b6fad7779ef58b6cf19384575210af81a444ad",
+      "locator": "第 43 页",
+      "excerpt": "Rule 1101. Applicability of the Rules\n(a) TO COURTS AND JUDGES.",
+      "asOf": "2024-12-01"
+    }
+  ],
+  "claims": [
+    {
+      "id": "effective",
+      "statement": "2023 命令设定 2023-12-01 生效；待决程序仅在公正且可行范围内适用。",
+      "sourceIds": ["order-effective"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-12-01",
+      "jurisdiction": "United States federal courts, subject to Rule 1101",
+      "professionalContext": {
+        "domain": "law",
+        "jurisdiction": "United States federal courts, subject to Rule 1101",
+        "effectLevel": "Supreme Court amendment order",
+        "effectiveFrom": "2023-12-01",
+        "applicabilityDate": "2024-12-01",
+        "originalLocation": "amendment PDF 194",
+        "limitations": "命令范围受待决程序限定"
+      }
+    },
+    {
+      "id": "old",
+      "statement": "2022 历史汇编 Rule 702 开头列出四项条件；仅供与后版文字比较。",
+      "sourceIds": ["old-rule"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2022-12-01",
+      "jurisdiction": "United States federal courts, subject to Rule 1101",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "statute",
+        "jurisdiction": "United States federal courts, subject to Rule 1101",
+        "effectLevel": "federal procedural evidence rule",
+        "applicabilityDate": "2022-12-01",
+        "originalLocation": "old PDF 29",
+        "limitations": "旧文未写新增短语不意味着旧法无可靠性门槛"
+      }
+    },
+    {
+      "id": "new-opening",
+      "statement": "2024 历史汇编开头增加由提出方向法院作更可能为真的展示。",
+      "sourceIds": ["new-opening"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-12-01",
+      "jurisdiction": "United States federal courts, subject to Rule 1101",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "statute",
+        "jurisdiction": "United States federal courts, subject to Rule 1101",
+        "effectLevel": "federal procedural evidence rule",
+        "effectiveFrom": "2023-12-01",
+        "applicabilityDate": "2024-12-01",
+        "originalLocation": "historical PDF 30",
+        "limitations": "历史文字差异，不作今天适用或个案判断"
+      }
+    },
+    {
+      "id": "new-d",
+      "statement": "2024 历史汇编 (d) 使用专家意见反映可靠应用的表述。",
+      "sourceIds": ["new-d"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-12-01",
+      "jurisdiction": "United States federal courts, subject to Rule 1101",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "statute",
+        "jurisdiction": "United States federal courts, subject to Rule 1101",
+        "effectLevel": "federal procedural evidence rule",
+        "effectiveFrom": "2023-12-01",
+        "applicabilityDate": "2024-12-01",
+        "originalLocation": "historical PDF 31",
+        "limitations": "须与 (a)–(c) 一起阅读"
+      }
+    },
+    {
+      "id": "standard",
+      "statement": "官方 Note 说明 Rule 104(a) 门槛适用于规则中的可靠性要求。",
+      "sourceIds": ["note-standard"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-12-01",
+      "jurisdiction": "United States federal courts, subject to Rule 1101",
+      "professionalContext": {
+        "domain": "law",
+        "jurisdiction": "United States federal courts, subject to Rule 1101",
+        "effectLevel": "official explanatory committee note",
+        "applicabilityDate": "2024-12-01",
+        "originalLocation": "amendment PDF 210",
+        "limitations": "解释性 Note 不是新增规则条款"
+      }
+    },
+    {
+      "id": "weight",
+      "statement": "官方 Note 保留部分专家证言异议属于重量而非可采性的情形。",
+      "sourceIds": ["note-weight"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-12-01",
+      "jurisdiction": "United States federal courts, subject to Rule 1101",
+      "professionalContext": {
+        "domain": "law",
+        "jurisdiction": "United States federal courts, subject to Rule 1101",
+        "effectLevel": "official explanatory committee note",
+        "applicabilityDate": "2024-12-01",
+        "originalLocation": "amendment PDF 211",
+        "limitations": "不能概括为全部异议仅关乎重量"
+      }
+    },
+    {
+      "id": "scope",
+      "statement": "官方 Note 强调专家意见不得超出其基础与方法可靠支持的范围。",
+      "sourceIds": ["note-scope"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-12-01",
+      "jurisdiction": "United States federal courts, subject to Rule 1101",
+      "professionalContext": {
+        "domain": "law",
+        "jurisdiction": "United States federal courts, subject to Rule 1101",
+        "effectLevel": "official explanatory committee note",
+        "applicabilityDate": "2024-12-01",
+        "originalLocation": "amendment PDF 212",
+        "limitations": "未评价具体专家意见"
+      }
+    },
+    {
+      "id": "certainty",
+      "statement": "官方 Note 对实体法要求特定确定程度的证言保留例外。",
+      "sourceIds": ["note-certainty"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-12-01",
+      "jurisdiction": "United States federal courts, subject to Rule 1101",
+      "professionalContext": {
+        "domain": "law",
+        "jurisdiction": "United States federal courts, subject to Rule 1101",
+        "effectLevel": "official explanatory committee note",
+        "applicabilityDate": "2024-12-01",
+        "originalLocation": "amendment PDF 213",
+        "limitations": "不能概括为全面禁止确定性表述"
+      }
+    },
+    {
+      "id": "procedure",
+      "statement": "官方 Note 表明修订不新增特定程序。",
+      "sourceIds": ["note-procedure"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-12-01",
+      "jurisdiction": "United States federal courts, subject to Rule 1101",
+      "professionalContext": {
+        "domain": "law",
+        "jurisdiction": "United States federal courts, subject to Rule 1101",
+        "effectLevel": "official explanatory committee note",
+        "applicabilityDate": "2024-12-01",
+        "originalLocation": "amendment PDF 213",
+        "limitations": "不据此省略可靠性审查"
+      }
+    },
+    {
+      "id": "rule-1101",
+      "statement": "联邦证据规则的适用范围须按 Rule 1101 的法院和例外条款判断。",
+      "sourceIds": ["rule-scope"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-12-01",
+      "jurisdiction": "United States federal courts, subject to Rule 1101",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "statute",
+        "jurisdiction": "United States federal courts, subject to Rule 1101",
+        "effectLevel": "federal procedural evidence rule",
+        "applicabilityDate": "2024-12-01",
+        "originalLocation": "historical PDF 43",
+        "limitations": "不延伸至所有州法院或全部程序"
+      }
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "Rule 702：历史文字与官方说明",
+      "purpose": "分层呈现历史规则文字、官方解释和适用边界",
+      "claimIds": [],
+      "domainSection": "legal_question",
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "历史版本和来源清楚", "不形成个案结论"]
+    },
+    {
+      "id": "p02",
+      "title": "命令与时间线",
+      "purpose": "分层呈现历史规则文字、官方解释和适用边界",
+      "claimIds": ["effective"],
+      "domainSection": "applicable_materials",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "历史版本和来源清楚", "不形成个案结论"]
+    },
+    {
+      "id": "p03",
+      "title": "旧版：仅作文字对照",
+      "purpose": "分层呈现历史规则文字、官方解释和适用边界",
+      "claimIds": ["old"],
+      "domainSection": "applicable_materials",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "历史版本和来源清楚", "不形成个案结论"]
+    },
+    {
+      "id": "p04",
+      "title": "新版：开头与 (d) 的差异",
+      "purpose": "分层呈现历史规则文字、官方解释和适用边界",
+      "claimIds": ["old", "new-opening", "new-d"],
+      "domainSection": "analysis_and_alternatives",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "历史版本和来源清楚", "不形成个案结论"]
+    },
+    {
+      "id": "p05",
+      "title": "官方 Note：门槛与重量",
+      "purpose": "分层呈现历史规则文字、官方解释和适用边界",
+      "claimIds": ["standard", "weight"],
+      "domainSection": "analysis_and_alternatives",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "历史版本和来源清楚", "不形成个案结论"]
+    },
+    {
+      "id": "p06",
+      "title": "官方 Note：意见范围与确定性",
+      "purpose": "分层呈现历史规则文字、官方解释和适用边界",
+      "claimIds": ["scope", "certainty"],
+      "domainSection": "analysis_and_alternatives",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "历史版本和来源清楚", "不形成个案结论"]
+    },
+    {
+      "id": "p07",
+      "title": "程序与联邦规则适用范围",
+      "purpose": "分层呈现历史规则文字、官方解释和适用边界",
+      "claimIds": ["procedure", "rule-1101"],
+      "domainSection": "legal_risks",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "历史版本和来源清楚", "不形成个案结论"]
+    },
+    {
+      "id": "p08",
+      "title": "来源与未完成审阅",
+      "purpose": "分层呈现历史规则文字、官方解释和适用边界",
+      "claimIds": [],
+      "domainSection": "legal_conclusion",
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "历史版本和来源清楚", "不形成个案结论"]
+    }
+  ]
+}

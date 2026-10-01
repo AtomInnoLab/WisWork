@@ -13,4 +13,4 @@
 
 专业上下文候选：domain=law；materialKind=statute（产品既有枚举中的法院规则声明，仅技术归类，不改变效力）；jurisdiction=United States federal courts (subject to Rule 1101)；effectLevel=federal procedural evidence rule；effectiveFrom=2023-12-01；applicabilityDate=2024-12-01；originalLocation=Rule 702, official pages above；limitations=historical comparison and official explanatory notes only, no individual admissibility opinion。effectiveUntil、caseNumber 不猜填；修订包不是案件。
 
-演示应区分“可核对文本差异”“官方解释释义”“尚待法律审阅的 applicability 判断”。此处未生成 production plan、review receipt 或 PowerPoint 成果。
+演示应区分“可核对文本差异”“官方解释释义”“尚待法律审阅的 applicability 判断”。已生成技术候选 `reference-plan.json` 和原生 PPTX；法律 review receipt 与真实 PowerPoint 宿主验收仍未形成。

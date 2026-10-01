@@ -4,6 +4,13 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import assert from 'node:assert/strict'
+import JSZip from 'jszip'
+import { pdfToPages } from '../../../../packages/file-parse/src/pdf.ts'
+import { parsePresentationDeck } from '@wiswork/pptx-engine/presentation'
+import {
+  assertDeckMatchesPresentationPlan,
+  parsePresentationPlan,
+} from '@wiswork/pptx-engine/presentation-plan'
 const root = dirname(fileURLToPath(import.meta.url))
 const load = (path) => readFileSync(resolve(root, path))
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
@@ -64,6 +71,58 @@ for (const item of basis.basis) {
     `${item.id} exact literal basis`,
   )
 }
+const plan = parsePresentationPlan(JSON.parse(load('reference-plan.json')))
+const deck = parsePresentationDeck(JSON.parse(load('reference-deck.json')))
+assertDeckMatchesPresentationPlan(deck, plan)
+assert.equal(plan.domain, 'law')
+assert.equal(plan.sources.length, 10)
+assert.equal(plan.claims.length, 10)
+assert(plan.claims.every((claim) => claim.reviewStatus === 'needs_review'))
+assert.equal(plan.slides.length, 8)
+assert.equal(deck.slides.length, 8)
+assert(plan.slides.every((slide) => slide.domainSection))
+assert(plan.claims.every((claim) => claim.professionalContext?.domain === 'law'))
+assert(
+  plan.claims.every(
+    (claim) =>
+      claim.professionalContext?.applicabilityDate ===
+      (claim.id === 'old' ? '2022-12-01' : '2024-12-01'),
+  ),
+)
+const parsedOriginals = new Map()
+for (const source of plan.sources) {
+  const original = manifest.sources.find((item) => item.sha256 === source.snapshotAttachmentId)
+  assert(original, `unbound original: ${source.id}`)
+  assert.equal(source.uri, original.url)
+  const page = Number(source.locator?.match(/^第 (\d+) 页$/)?.[1])
+  assert(Number.isInteger(page) && page > 0 && page <= original.pdfPageCount)
+  if (!parsedOriginals.has(original.path))
+    parsedOriginals.set(original.path, await pdfToPages(load(original.path)))
+  const parsedPages = parsedOriginals.get(original.path)
+  assert(parsedPages[page - 1].includes(source.excerpt), `PDF parser excerpt missing: ${source.id}`)
+}
+for (const id of ['standard', 'weight', 'scope', 'certainty', 'procedure']) {
+  const claim = plan.claims.find((item) => item.id === id)
+  assert(claim)
+  assert.equal(claim.professionalContext.materialKind, undefined)
+  assert.equal(claim.professionalContext.effectLevel, 'official explanatory committee note')
+}
+for (const id of ['old', 'rule-1101'])
+  assert.equal(
+    plan.claims.find((item) => item.id === id)?.professionalContext?.effectiveFrom,
+    undefined,
+  )
+const pptx = await JSZip.loadAsync(load('p0-04-reference.pptx'))
+assert.equal(
+  Object.keys(pptx.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).length,
+  8,
+)
+const comparisonPage = await pptx.file('ppt/slides/slide4.xml')?.async('string')
+assert(comparisonPage?.includes('2024') && comparisonPage.includes('旧 PDF 29'))
+for (const line of load('SHA256SUMS').toString('utf8').trim().split('\n')) {
+  const [digest, name] = line.split(/\s+/)
+  assert.equal(sha(load(name)), digest, `hash mismatch: ${name}`)
+}
 console.log(
-  `Candidate integrity OK: ${manifest.sources.length} official originals, ${extracts.size} exact PDF page extracts, ${basis.basis.length} UTF16 basis anchors; legal/copyright/layout/PowerPoint review pending.`,
+  `Candidate integrity OK: ${manifest.sources.length} official originals, ${extracts.size} exact page extracts, ${basis.basis.length} original anchors, 10 product PDF excerpts and eight native slides; legal/copyright/PowerPoint review pending.`,
 )

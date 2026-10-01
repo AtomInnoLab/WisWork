@@ -1,6 +1,10 @@
 # PPT-P0-04：Rule 702 历史规则差异候选材料
 
-状态：**候选，待审**。固定历史 as-of **2024-12-01**；本材料不证明今天仍适用，不构成个案法律意见。8 页是拟制作演示文稿的范围，并非已制作或验收的 PPT。
+状态：**八页技术候选稿已生成，法律专业待审**。固定历史 as-of **2024-12-01**；本材料不证明今天仍适用，不构成个案法律意见。候选稿已制作，但未通过法律审阅或真实 PowerPoint 宿主验收。
+
+## 本机候选参考稿
+
+`node --import tsx generate-reference.cjs` 从三份冻结官方 PDF 的产品解析文本生成 `reference-plan.json`、`reference-deck.json` 和八页原生可编辑的 `p0-04-reference.pptx`。计划分别绑定旧版、2024 历史版、2023 命令及官方 Committee Note 的 10 个逐字来源摘录；历史时点、法域和来源身份保留在待审专业上下文中。第 4 页呈现旧新开头与 (d) 的差异，第 5–7 页分别保留官方解释、程序与 Rule 1101 适用边界。`node --import tsx verify-materials.mjs` 继续校验原件/页级提取与锚点，并核对计划、原文摘录、八页 OOXML 和 `SHA256SUMS`。LibreOffice 已将八页渲染为 PDF 并目视检查；未见裁切或覆盖。`node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-04` 已经在真实 Electron PC + Rust Relay 链路完成三份 PDF 上传、计划保存、八页生产和 PPTX/PDF 回读。这些工程检查不认证法律适用、官方译文或个案结论。
 
 ## 官方原件
 
@@ -21,7 +25,7 @@
 ## 核对与输入边界
 
 ```sh
-node docs/product/ppt-benchmark-materials/PPT-P0-04/verify-materials.mjs
+node --import tsx docs/product/ppt-benchmark-materials/PPT-P0-04/verify-materials.mjs
 sha256sum docs/product/ppt-benchmark-materials/PPT-P0-04/originals/*.pdf
 pdftotext -f 29 -l 29 -layout docs/product/ppt-benchmark-materials/PPT-P0-04/originals/2022-federal-rules-evidence.pdf -
 pdftotext -f 30 -l 31 -layout docs/product/ppt-benchmark-materials/PPT-P0-04/originals/2024-federal-rules-evidence.pdf -
@@ -36,6 +40,6 @@ pdftotext -f 209 -l 213 -layout docs/product/ppt-benchmark-materials/PPT-P0-04/o
 
 ## 未完成的验收
 
-没有法律专业审阅、实际 PowerPoint 制作、布局验收、宿主 QA、保存重开核对或用户案件适用判断；不标任务 passed 或材料就绪。原件位置/摘要/字面提取的本机核对只是材料完整性检查。八页范围与比较归因分别见 [eight-page-scope.md](eight-page-scope.md) 和 [comparison.md](comparison.md)。
+没有法律专业审阅、真实 PowerPoint 宿主制作/保存重开核对或用户案件适用判断；不标任务 passed 或材料就绪。原件位置/摘要/字面提取和本机参考稿的核对只是技术完整性检查。八页范围与比较归因分别见 [eight-page-scope.md](eight-page-scope.md) 和 [comparison.md](comparison.md)。
 
 取得备注：默认代理导致 TLS 错误，直连官方 HTTPS 成功。USCourts 标题为“Federal Rules of Evidence 2023”的下载链接实际返回 2025 汇编，已排除；未将页面标题当作历史版本证据。下载使用 `HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= curl -fL <manifest URL> -o <manifest path>`，再次下载须先比较固定摘要，变更不能自动覆盖冻结原件。
