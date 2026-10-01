@@ -1,0 +1,450 @@
+{
+  "version": 1,
+  "projectId": "p0-09-hypothetical-reference",
+  "title": "P0-09 情景分析参考稿：非 Apple 指引",
+  "domain": "finance",
+  "brief": {
+    "objective": "严格区分 Apple FY2024 未审计历史披露与 WisWork 自制三种假设情景",
+    "audience": "财务专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": [
+      "历史期间和审计状态",
+      "三情景参数与逐步取整公式",
+      "两张原生图表",
+      "非 Apple 指引提示"
+    ],
+    "constraints": [
+      "Apple 已披露或认可这三种情景",
+      "情景结果是已经发生的事实或投资回报承诺",
+      "用收入和营业利润模型推断净利润、现金流或股价",
+      "财务审阅和真实 PowerPoint 验收待完成"
+    ]
+  },
+  "sources": [
+    {
+      "id": "historical-sales",
+      "title": "Apple FY2024 未审计净销售额",
+      "uri": "https://www.apple.com/newsroom/pdfs/fy2024-q4/FY24_Q4_Consolidated_Financial_Statements.pdf",
+      "snapshotAttachmentId": "af9646018330484238d357f1168ae74194fd768f4ea9921e4b2828c88309320c",
+      "locator": "PDF 1 FY2024 12 months",
+      "excerpt": "Total net sales (1) 94,930 89,498 391,035 383,285",
+      "asOf": "2024-10-31"
+    },
+    {
+      "id": "historical-income",
+      "title": "Apple FY2024 未审计营业利润",
+      "uri": "https://www.apple.com/newsroom/pdfs/fy2024-q4/FY24_Q4_Consolidated_Financial_Statements.pdf",
+      "snapshotAttachmentId": "af9646018330484238d357f1168ae74194fd768f4ea9921e4b2828c88309320c",
+      "locator": "PDF 1 FY2024 12 months",
+      "excerpt": "Operating income 29,591 26,969 123,216 114,301",
+      "asOf": "2024-10-31"
+    },
+    {
+      "id": "model",
+      "title": "WisWork 自制假设与逐步取整公式",
+      "uri": "local:model-inputs.json",
+      "snapshotAttachmentId": "1ad5165ccf97824d1ad6d33118a49cc4818744d24d91c6271c5a648c1df13797",
+      "locator": "model.scenarios / model.formulas",
+      "excerpt": "{\n  \"caseId\": \"PPT-P0-09\",\n  \"materialStatus\": \"candidate_pending_financial_review\",\n  \"asOf\": \"2024-10-31\",\n  \"source\": {\n    \"file\": \"apple-fy2024-q4-financial-statements.pdf\",\n    \"url\": \"https://www.apple.com/newsroom/pdfs/fy2024-q4/FY24_Q4_Consolidated_Financial_Statements.pdf\",\n    \"issuer\": \"Apple Inc.\",\n    \"published\": \"2024-10-31\",\n    \"periodEnd\": \"2024-09-28\",\n    \"page\": 1,\n    \"column\": \"Twelve Months Ended September 28, 2024\",\n    \"auditStatus\": \"unaudited\"\n  },\n  \"historical\": {\n    \"currency\": \"USD\",\n    \"unit\": \"millions\",\n    \"netSales\": 391035,\n    \"operatingIncome\": 123216",
+      "asOf": "2024-10-31"
+    },
+    {
+      "id": "downside-csv",
+      "title": "下行假设独立复算",
+      "uri": "local:scenario-results.csv",
+      "snapshotAttachmentId": "6338949f17da9795a2d317d9e4d5a526e2981fea3b05e4207b7ef22905940898",
+      "locator": "CSV downside",
+      "excerpt": "downside,下行假设,-500,2950,371483,109587,calculated_hypothesis",
+      "asOf": "2024-10-31"
+    },
+    {
+      "id": "base-csv",
+      "title": "基准假设独立复算",
+      "uri": "local:scenario-results.csv",
+      "snapshotAttachmentId": "6338949f17da9795a2d317d9e4d5a526e2981fea3b05e4207b7ef22905940898",
+      "locator": "CSV base",
+      "excerpt": "base,基准假设,300,3150,402766,126871,calculated_hypothesis",
+      "asOf": "2024-10-31"
+    },
+    {
+      "id": "upside-csv",
+      "title": "上行假设独立复算",
+      "uri": "local:scenario-results.csv",
+      "snapshotAttachmentId": "6338949f17da9795a2d317d9e4d5a526e2981fea3b05e4207b7ef22905940898",
+      "locator": "CSV upside",
+      "excerpt": "upside,上行假设,800,3350,422318,141477,calculated_hypothesis",
+      "asOf": "2024-10-31"
+    }
+  ],
+  "claims": [
+    {
+      "id": "historical",
+      "statement": "Apple FY2024 截至 2024-09-28 的十二个月，净销售额 391,035、营业利润 123,216 百万美元，官方表格未经审计。",
+      "sourceIds": ["historical-sales", "historical-income"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-10-31",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-09-28; illustrative next twelve months",
+        "asOf": "2024-10-31",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "unaudited consolidated U.S. GAAP",
+        "limitations": "不可把未经审计表称为审计年报"
+      }
+    },
+    {
+      "id": "model-boundary",
+      "statement": "三种情景由 WisWork 自制，仅是假设性演示，非 Apple 指引或预测。",
+      "sourceIds": ["model"],
+      "type": "judgment",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-10-31",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-09-28; illustrative next twelve months",
+        "asOf": "2024-10-31",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "unaudited consolidated U.S. GAAP",
+        "limitations": "未覆盖税费、营运资金、现金流或股价"
+      }
+    },
+    {
+      "id": "downside-sales",
+      "statement": "下行假设净销售额 371,483 百万美元，仅为自制假设结果。",
+      "sourceIds": ["model", "downside-csv"],
+      "type": "calculation",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-10-31",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-09-28; illustrative next twelve months",
+        "asOf": "2024-10-31",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "unaudited consolidated U.S. GAAP",
+        "limitations": "假设性演示，非 Apple 指引或预测；不推断未建模指标",
+        "formula": "round(historical*(10000+bps)/10000,0)"
+      },
+      "calculation": {
+        "formula": "round(historical*(10000+bps)/10000,0)",
+        "inputs": ["historical", "bps"],
+        "unit": "USD millions",
+        "currency": "USD",
+        "reproduction": {
+          "bindings": [
+            { "name": "historical", "inputIndex": 0, "value": 391035, "sourceId": "model" },
+            { "name": "bps", "inputIndex": 1, "value": -500, "sourceId": "model" }
+          ],
+          "expected": 371483
+        }
+      }
+    },
+    {
+      "id": "downside-income",
+      "statement": "下行假设营业利润 109,587 百万美元，仅为自制假设结果。",
+      "sourceIds": ["model", "downside-csv"],
+      "type": "calculation",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-10-31",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-09-28; illustrative next twelve months",
+        "asOf": "2024-10-31",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "unaudited consolidated U.S. GAAP",
+        "limitations": "假设性演示，非 Apple 指引或预测；不推断未建模指标",
+        "formula": "round(sales*margin/10000,0)"
+      },
+      "calculation": {
+        "formula": "round(sales*margin/10000,0)",
+        "inputs": ["sales", "margin"],
+        "unit": "USD millions",
+        "currency": "USD",
+        "reproduction": {
+          "bindings": [
+            { "name": "sales", "inputIndex": 0, "value": 371483, "sourceId": "downside-csv" },
+            { "name": "margin", "inputIndex": 1, "value": 2950, "sourceId": "model" }
+          ],
+          "expected": 109587
+        }
+      }
+    },
+    {
+      "id": "base-sales",
+      "statement": "基准假设净销售额 402,766 百万美元，仅为自制假设结果。",
+      "sourceIds": ["model", "base-csv"],
+      "type": "calculation",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-10-31",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-09-28; illustrative next twelve months",
+        "asOf": "2024-10-31",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "unaudited consolidated U.S. GAAP",
+        "limitations": "假设性演示，非 Apple 指引或预测；不推断未建模指标",
+        "formula": "round(historical*(10000+bps)/10000,0)"
+      },
+      "calculation": {
+        "formula": "round(historical*(10000+bps)/10000,0)",
+        "inputs": ["historical", "bps"],
+        "unit": "USD millions",
+        "currency": "USD",
+        "reproduction": {
+          "bindings": [
+            { "name": "historical", "inputIndex": 0, "value": 391035, "sourceId": "model" },
+            { "name": "bps", "inputIndex": 1, "value": 300, "sourceId": "model" }
+          ],
+          "expected": 402766
+        }
+      }
+    },
+    {
+      "id": "base-income",
+      "statement": "基准假设营业利润 126,871 百万美元，仅为自制假设结果。",
+      "sourceIds": ["model", "base-csv"],
+      "type": "calculation",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-10-31",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-09-28; illustrative next twelve months",
+        "asOf": "2024-10-31",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "unaudited consolidated U.S. GAAP",
+        "limitations": "假设性演示，非 Apple 指引或预测；不推断未建模指标",
+        "formula": "round(sales*margin/10000,0)"
+      },
+      "calculation": {
+        "formula": "round(sales*margin/10000,0)",
+        "inputs": ["sales", "margin"],
+        "unit": "USD millions",
+        "currency": "USD",
+        "reproduction": {
+          "bindings": [
+            { "name": "sales", "inputIndex": 0, "value": 402766, "sourceId": "base-csv" },
+            { "name": "margin", "inputIndex": 1, "value": 3150, "sourceId": "model" }
+          ],
+          "expected": 126871
+        }
+      }
+    },
+    {
+      "id": "upside-sales",
+      "statement": "上行假设净销售额 422,318 百万美元，仅为自制假设结果。",
+      "sourceIds": ["model", "upside-csv"],
+      "type": "calculation",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-10-31",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-09-28; illustrative next twelve months",
+        "asOf": "2024-10-31",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "unaudited consolidated U.S. GAAP",
+        "limitations": "假设性演示，非 Apple 指引或预测；不推断未建模指标",
+        "formula": "round(historical*(10000+bps)/10000,0)"
+      },
+      "calculation": {
+        "formula": "round(historical*(10000+bps)/10000,0)",
+        "inputs": ["historical", "bps"],
+        "unit": "USD millions",
+        "currency": "USD",
+        "reproduction": {
+          "bindings": [
+            { "name": "historical", "inputIndex": 0, "value": 391035, "sourceId": "model" },
+            { "name": "bps", "inputIndex": 1, "value": 800, "sourceId": "model" }
+          ],
+          "expected": 422318
+        }
+      }
+    },
+    {
+      "id": "upside-income",
+      "statement": "上行假设营业利润 141,477 百万美元，仅为自制假设结果。",
+      "sourceIds": ["model", "upside-csv"],
+      "type": "calculation",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-10-31",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-09-28; illustrative next twelve months",
+        "asOf": "2024-10-31",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "unaudited consolidated U.S. GAAP",
+        "limitations": "假设性演示，非 Apple 指引或预测；不推断未建模指标",
+        "formula": "round(sales*margin/10000,0)"
+      },
+      "calculation": {
+        "formula": "round(sales*margin/10000,0)",
+        "inputs": ["sales", "margin"],
+        "unit": "USD millions",
+        "currency": "USD",
+        "reproduction": {
+          "bindings": [
+            { "name": "sales", "inputIndex": 0, "value": 422318, "sourceId": "upside-csv" },
+            { "name": "margin", "inputIndex": 1, "value": 3350, "sourceId": "model" }
+          ],
+          "expected": 141477
+        }
+      }
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "183247",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "封面：历史披露与假设边界",
+      "purpose": "将历史披露与自制假设及受限公式分开呈现",
+      "claimIds": ["model-boundary"],
+      "domainSection": "financial_question",
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["历史数据有官方原文", "情景计算可复算", "原生图表保留假设标签"]
+    },
+    {
+      "id": "p02",
+      "title": "目录与口径",
+      "purpose": "将历史披露与自制假设及受限公式分开呈现",
+      "claimIds": ["historical", "model-boundary"],
+      "domainSection": "reporting_basis",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["历史数据有官方原文", "情景计算可复算", "原生图表保留假设标签"]
+    },
+    {
+      "id": "p03",
+      "title": "2024 财年历史披露",
+      "purpose": "将历史披露与自制假设及受限公式分开呈现",
+      "claimIds": ["historical"],
+      "domainSection": "reporting_basis",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["历史数据有官方原文", "情景计算可复算", "原生图表保留假设标签"]
+    },
+    {
+      "id": "p04",
+      "title": "情景输入与公式",
+      "purpose": "将历史披露与自制假设及受限公式分开呈现",
+      "claimIds": ["model-boundary"],
+      "domainSection": "financial_results",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["历史数据有官方原文", "情景计算可复算", "原生图表保留假设标签"]
+    },
+    {
+      "id": "p05",
+      "title": "三情景收入原生图表（百万美元）",
+      "purpose": "将历史披露与自制假设及受限公式分开呈现",
+      "claimIds": ["downside-sales", "base-sales", "upside-sales"],
+      "domainSection": "financial_risks_and_scenarios",
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["历史数据有官方原文", "情景计算可复算", "原生图表保留假设标签"],
+      "chartData": [
+        {
+          "elementId": "scenario-sales",
+          "categories": ["下行假设", "基准假设", "上行假设"],
+          "currency": "USD",
+          "unit": "USD millions",
+          "series": [
+            {
+              "name": "净销售额（百万美元）",
+              "points": [
+                {
+                  "value": 371483,
+                  "claimId": "downside-sales",
+                  "basis": { "kind": "calculation" }
+                },
+                { "value": 402766, "claimId": "base-sales", "basis": { "kind": "calculation" } },
+                { "value": 422318, "claimId": "upside-sales", "basis": { "kind": "calculation" } }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "三情景营业利润原生图表（百万美元）",
+      "purpose": "将历史披露与自制假设及受限公式分开呈现",
+      "claimIds": ["downside-income", "base-income", "upside-income"],
+      "domainSection": "financial_risks_and_scenarios",
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["历史数据有官方原文", "情景计算可复算", "原生图表保留假设标签"],
+      "chartData": [
+        {
+          "elementId": "scenario-operating-income",
+          "categories": ["下行假设", "基准假设", "上行假设"],
+          "currency": "USD",
+          "unit": "USD millions",
+          "series": [
+            {
+              "name": "营业利润（百万美元）",
+              "points": [
+                {
+                  "value": 109587,
+                  "claimId": "downside-income",
+                  "basis": { "kind": "calculation" }
+                },
+                { "value": 126871, "claimId": "base-income", "basis": { "kind": "calculation" } },
+                { "value": 141477, "claimId": "upside-income", "basis": { "kind": "calculation" } }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "敏感参数与不可推断事项",
+      "purpose": "将历史披露与自制假设及受限公式分开呈现",
+      "claimIds": ["model-boundary"],
+      "domainSection": "financial_risks_and_scenarios",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["历史数据有官方原文", "情景计算可复算", "原生图表保留假设标签"]
+    },
+    {
+      "id": "p08",
+      "title": "结论、局限与人工审阅",
+      "purpose": "将历史披露与自制假设及受限公式分开呈现",
+      "claimIds": ["historical", "model-boundary"],
+      "domainSection": "financial_actions",
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["历史数据有官方原文", "情景计算可复算", "原生图表保留假设标签"]
+    }
+  ]
+}

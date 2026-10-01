@@ -8,7 +8,9 @@
 2. `model-inputs.json`：WisWork 为测试自制的模型说明，固定截至日期、历史输入、三组增长率/营业利润率、逐步四舍五入公式、八页要求和禁止主张。它不是 Apple 指引或预测。
 3. `scenario-results.csv`：按模型独立复算的三组结果；`evidence_type=calculated_hypothesis`，图表和叙述均须保留此身份。增长率和利润率使用基点；每一步按百万美元四舍五入。该表不是历史披露。
 
-`p0-09-reference.pptx` 是用同一模型编译的八页**参考产物**，含两张原生情景图表；不是 Agent 执行结果。运行 `node -r tsx/cjs generate-reference.cjs` 可重建。`SHA256SUMS` 冻结三份输入和参考产物；运行 `node verify-materials.mjs` 同时核对 PDF 页数、历史表格列、模型公式、三情景 CSV 及图表底层数值。官方 [发布页](https://www.apple.com/newsroom/2024/10/apple-reports-fourth-quarter-results/)可核对发布日期。来源 PDF 的权利归原权利人，勿将其当作开放许可图片资产。
+`reference-plan.json` 将官方历史披露、自制模型和三行独立复算绑定到八页生产计划；六项情景计算主张逐项使用受限公式复核，均标为待财务审阅。`reference-deck.json` 保留对应的原生页对象。`p0-09-reference.pptx` 是按该计划编译的八页**参考产物**，含两张原生情景图表；不是 Agent 执行结果。运行 `node --import tsx generate-reference.cjs` 可重建。`SHA256SUMS` 冻结三份输入、计划、页模型和参考产物；运行 `node --import tsx verify-materials.mjs` 同时核对 PDF 页数与原文、来源快照、模型公式、三情景 CSV、计划绑定及图表底层数值。官方 [发布页](https://www.apple.com/newsroom/2024/10/apple-reports-fourth-quarter-results/)可核对发布日期。来源 PDF 的权利归原权利人，勿将其当作开放许可图片资产。
+
+本机 `node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-09` 已通过真实 Electron PC、Rust Relay 与 Chrome 任务窗格，覆盖三份来源上传、计划保存、八页生产、PPTX/PDF 回读和任务恢复。浏览器中 Office API 仍为模拟对象，不能代替真实 PowerPoint 保存关闭重开或财务专业验收。
 
 ## 固定任务提示
 

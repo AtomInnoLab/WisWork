@@ -1,0 +1,398 @@
+{
+  "version": 1,
+  "id": "p0-09-hypothetical-reference",
+  "title": "P0-09 情景分析参考稿：非 Apple 指引",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "183247",
+    "accentColor": "087D83"
+  },
+  "assets": [],
+  "claims": [
+    {
+      "id": "historical",
+      "text": "Apple FY2024 截至 2024-09-28 的十二个月，净销售额 391,035、营业利润 123,216 百万美元，官方表格未经审计。",
+      "source": "https://www.apple.com/newsroom/pdfs/fy2024-q4/FY24_Q4_Consolidated_Financial_Statements.pdf ; https://www.apple.com/newsroom/pdfs/fy2024-q4/FY24_Q4_Consolidated_Financial_Statements.pdf",
+      "locator": "PDF 1 FY2024 12 months ; PDF 1 FY2024 12 months"
+    },
+    {
+      "id": "model-boundary",
+      "text": "三种情景由 WisWork 自制，仅是假设性演示，非 Apple 指引或预测。",
+      "source": "local:model-inputs.json",
+      "locator": "model.scenarios / model.formulas"
+    },
+    {
+      "id": "downside-sales",
+      "text": "下行假设净销售额 371,483 百万美元，仅为自制假设结果。",
+      "source": "local:model-inputs.json ; local:scenario-results.csv",
+      "locator": "model.scenarios / model.formulas ; CSV downside"
+    },
+    {
+      "id": "downside-income",
+      "text": "下行假设营业利润 109,587 百万美元，仅为自制假设结果。",
+      "source": "local:model-inputs.json ; local:scenario-results.csv",
+      "locator": "model.scenarios / model.formulas ; CSV downside"
+    },
+    {
+      "id": "base-sales",
+      "text": "基准假设净销售额 402,766 百万美元，仅为自制假设结果。",
+      "source": "local:model-inputs.json ; local:scenario-results.csv",
+      "locator": "model.scenarios / model.formulas ; CSV base"
+    },
+    {
+      "id": "base-income",
+      "text": "基准假设营业利润 126,871 百万美元，仅为自制假设结果。",
+      "source": "local:model-inputs.json ; local:scenario-results.csv",
+      "locator": "model.scenarios / model.formulas ; CSV base"
+    },
+    {
+      "id": "upside-sales",
+      "text": "上行假设净销售额 422,318 百万美元，仅为自制假设结果。",
+      "source": "local:model-inputs.json ; local:scenario-results.csv",
+      "locator": "model.scenarios / model.formulas ; CSV upside"
+    },
+    {
+      "id": "upside-income",
+      "text": "上行假设营业利润 141,477 百万美元，仅为自制假设结果。",
+      "source": "local:model-inputs.json ; local:scenario-results.csv",
+      "locator": "model.scenarios / model.formulas ; CSV upside"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "封面：历史披露与假设边界",
+      "claimIds": ["model-boundary"],
+      "notes": "参考稿：历史披露与自制假设分开；非 Apple 指引或预测。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "封面：历史披露与假设边界",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 2.7,
+          "text": "Apple 2024 财年历史披露 + WisWork 自制情景；情景不是 Apple 指引。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "情景假设：WisWork 自制，仅供基准测试；非 Apple 指引",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "目录与口径",
+      "claimIds": ["historical", "model-boundary"],
+      "notes": "参考稿：历史披露与自制假设分开；非 Apple 指引或预测。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "目录与口径",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 2.7,
+          "text": "历史期间：截至 2024-09-28 的十二个月；单位：百万美元；情景仅作演示。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "情景假设：WisWork 自制，仅供基准测试；非 Apple 指引",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "2024 财年历史披露",
+      "claimIds": ["historical"],
+      "notes": "参考稿：历史披露与自制假设分开；非 Apple 指引或预测。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "2024 财年历史披露",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 2.7,
+          "text": "历史净销售额 391,035；营业利润 123,216（百万美元，未经审计）。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Apple 官方 2024 财年财务表，第 1 页；未经审计",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "情景输入与公式",
+      "claimIds": ["model-boundary"],
+      "notes": "参考稿：历史披露与自制假设分开；非 Apple 指引或预测。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "情景输入与公式",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 2.7,
+          "text": "下行 -5% / 29.5%；基准 +3% / 31.5%；上行 +8% / 33.5%。按输入表公式逐步取整。",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "情景假设：WisWork 自制，仅供基准测试；非 Apple 指引",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "三情景收入原生图表（百万美元）",
+      "claimIds": ["downside-sales", "base-sales", "upside-sales"],
+      "notes": "参考稿：历史披露与自制假设分开；非 Apple 指引或预测。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "三情景收入原生图表（百万美元）",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 0.65,
+          "text": "假设性演示，非 Apple 指引或预测。净销售额单位：百万美元。",
+          "fontSize": 19
+        },
+        {
+          "kind": "chart",
+          "id": "scenario-sales",
+          "x": 1,
+          "y": 2.6,
+          "w": 10.8,
+          "h": 3.7,
+          "chartType": "bar",
+          "categories": ["下行假设", "基准假设", "上行假设"],
+          "series": [{ "name": "净销售额（百万美元）", "values": [371483, 402766, 422318] }]
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "情景假设：WisWork 自制，仅供基准测试；非 Apple 指引",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "三情景营业利润原生图表（百万美元）",
+      "claimIds": ["downside-income", "base-income", "upside-income"],
+      "notes": "参考稿：历史披露与自制假设分开；非 Apple 指引或预测。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "三情景营业利润原生图表（百万美元）",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 0.65,
+          "text": "假设性演示，非 Apple 指引或预测。营业利润单位：百万美元。",
+          "fontSize": 19
+        },
+        {
+          "kind": "chart",
+          "id": "scenario-operating-income",
+          "x": 1,
+          "y": 2.6,
+          "w": 10.8,
+          "h": 3.7,
+          "chartType": "bar",
+          "categories": ["下行假设", "基准假设", "上行假设"],
+          "series": [{ "name": "营业利润（百万美元）", "values": [109587, 126871, 141477] }]
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "情景假设：WisWork 自制，仅供基准测试；非 Apple 指引",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "敏感参数与不可推断事项",
+      "claimIds": ["model-boundary"],
+      "notes": "参考稿：历史披露与自制假设分开；非 Apple 指引或预测。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "敏感参数与不可推断事项",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 2.7,
+          "text": "增长率和利润率均为敏感假设；模型未覆盖税费、营运资金、现金流及股价。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "情景假设：WisWork 自制，仅供基准测试；非 Apple 指引",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "结论、局限与人工审阅",
+      "claimIds": ["historical", "model-boundary"],
+      "notes": "参考稿：历史披露与自制假设分开；非 Apple 指引或预测。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "结论、局限与人工审阅",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 2.7,
+          "text": "历史来源：Apple 官方 2024-10-31 财务表；情景由 WisWork 自制，待财务审阅。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "情景假设：WisWork 自制，仅供基准测试；非 Apple 指引",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}
