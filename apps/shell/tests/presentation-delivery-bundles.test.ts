@@ -25,6 +25,23 @@ import {
 } from './helpers/delivery-bundle-fixture'
 afterEach(cleanupDeliveryBundleFixtures)
 const hash = (v: string | Uint8Array) => createHash('sha256').update(v).digest('hex')
+
+it('passes cancellation to project lock before delivery metadata access', async () => {
+  const controller = new AbortController()
+  let lockSignal: AbortSignal | undefined
+  const f = await fixture(undefined, () => ({
+    acquireProjectLock: async (_projectId, signal) => {
+      lockSignal = signal
+      controller.abort()
+      return () => {}
+    },
+  }))
+  const { bundleId: _bundleId, ...identity } = f.base
+  await expect(
+    f.service({ ...identity, operation: 'delivery_bundle_list' }, controller.signal),
+  ).rejects.toThrow('aborted')
+  expect(lockSignal?.aborted).toBe(true)
+})
 async function pptxWithPages(count: number): Promise<Buffer> {
   return new JSZip()
     .file(

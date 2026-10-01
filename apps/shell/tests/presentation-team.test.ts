@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, readdirSync, writeFileSync, symlinkSync, readFileS
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createPresentationService } from '../src/main/presentation-service'
+import { createPresentationTeamService } from '../src/main/presentation-team'
 import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
 import type { PresentationTeamContext } from '@wiswork/pptx-engine/presentation-team'
 const roots: string[] = []
@@ -16,6 +17,34 @@ const context = (actor = owner, pc = owner): PresentationTeamContext => ({
   version: 1,
   actorSubject: actor,
   pcSubject: pc,
+})
+
+it('passes cancellation to the team plan project lock before reading', async () => {
+  const plan = benchmarkPlan()
+  const controller = new AbortController()
+  let lockSignal: AbortSignal | undefined
+  const service = createPresentationTeamService({
+    userDataPath: '/tmp/unused-team-lock-signal',
+    readPlan: () => ({ revision: 1, plan }),
+    acquireProjectLock: async (_projectId, signal) => {
+      lockSignal = signal
+      controller.abort()
+      return () => {}
+    },
+  })
+  await expect(
+    service(
+      {
+        operation: 'team_plan_read',
+        documentId: 'doc',
+        projectId: plan.projectId,
+        planRevision: 1,
+      },
+      context(),
+      controller.signal,
+    ),
+  ).rejects.toThrow('aborted')
+  expect(lockSignal).toBe(controller.signal)
 })
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'team-pc-'))
