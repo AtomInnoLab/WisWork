@@ -1,4 +1,6 @@
 import { expect, it, vi } from 'vitest'
+import JSZip from 'jszip'
+import { readFileSync } from 'node:fs'
 import { createStructuredProposalController } from '../src/agent/proposal-controller'
 import { createPresentationChangesController } from '../src/agent/presentation-changes'
 import { createPresentationDocumentBinding } from '../src/skills/powerpoint/presentation-document'
@@ -17,13 +19,16 @@ const replacementPng =
 vi.mock('../src/skills/shared/import-media', () => ({
   MAX_IMPORT_BYTES: 2 * 1024 * 1024,
   supportsBrowserMediaValidation: () => true,
-  readBoundedImage: async () => ({
-    base64: replacementPng,
-    mime: 'image/png',
-    bytes: 68,
-    width: 1,
-    height: 1,
-  }),
+  readBoundedImage: async (vfs: InMemoryVfs, path: string) => {
+    const image = vfs.readBytes(path)
+    return {
+      base64: Buffer.from(image).toString('base64'),
+      mime: 'image/png',
+      bytes: image.length,
+      width: Buffer.from(image).readUInt32BE(16),
+      height: Buffer.from(image).readUInt32BE(20),
+    }
+  },
 }))
 const bytes = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
 const digest = async (base64: string) =>
@@ -31,9 +36,13 @@ const digest = async (base64: string) =>
     b.toString(16).padStart(2, '0'),
   ).join('')
 
-async function fixture() {
-  const originalDigest = await digest(originalPng),
-    replacementDigest = await digest(replacementPng)
+async function fixture(
+  originalImage = originalPng,
+  replacementImage = replacementPng,
+  imageDetails?: Pick<PictureSnapshot, 'geometry' | 'name' | 'altTextDescription' | 'shapeIds'>,
+) {
+  const originalDigest = await digest(originalImage),
+    replacementDigest = await digest(replacementImage)
   const settings = new Map<string, string>()
   const save = vi.fn(async () => {})
   const binding = createPresentationDocumentBinding(
@@ -51,13 +60,13 @@ async function fixture() {
   const picture = (id: string, mediaDigest: string): PictureSnapshot => ({
     slideId: 'slide',
     shapeId: id,
-    geometry: { left: 10, top: 20, width: 100, height: 80 },
+    geometry: imageDetails?.geometry ?? { left: 10, top: 20, width: 100, height: 80 },
     rotation: 0,
-    name: 'Picture',
+    name: imageDetails?.name ?? 'Picture',
     altTextTitle: 'title',
-    altTextDescription: 'description',
+    altTextDescription: imageDetails?.altTextDescription ?? 'description',
     zOrderPosition: 0,
-    shapeIds: [id],
+    shapeIds: imageDetails?.shapeIds.map((shapeId) => (shapeId === 'old' ? id : shapeId)) ?? [id],
     pictureFingerprint: mediaDigest,
     mediaDigest,
   })
@@ -71,7 +80,13 @@ async function fixture() {
     pages: [
       {
         slideId: 'slide',
-        shapes: [{ id: 'old', type: 'Image', left: 10, top: 20, width: 100, height: 80 }],
+        shapes: [
+          {
+            id: 'old',
+            type: 'Image',
+            ...(imageDetails?.geometry ?? { left: 10, top: 20, width: 100, height: 80 }),
+          },
+        ],
       },
     ],
   }
@@ -90,7 +105,7 @@ async function fixture() {
     }),
     captureOriginal: vi.fn(async () => ({
       snapshot: structuredClone(current),
-      base64: originalPng,
+      base64: originalImage,
     })),
     replace: vi.fn(
       async (
@@ -104,7 +119,7 @@ async function fixture() {
           throw new Error('office_concurrent_change')
         const nextId = id === 'old' ? 'new' : id === 'new' ? 'restored' : `${id}-next`
         await onInserted(nextId)
-        current = picture(nextId, base64 === replacementPng ? replacementDigest : originalDigest)
+        current = picture(nextId, base64 === replacementImage ? replacementDigest : originalDigest)
         return { shapeId: nextId }
       },
     ),
@@ -121,10 +136,10 @@ async function fixture() {
       mime: 'image/png' as const,
     })),
     load: vi.fn(async (_documentId: string, metadata: { attachmentId: string }): Promise<string> =>
-      metadata.attachmentId === originalDigest ? originalPng : replacementPng,
+      metadata.attachmentId === originalDigest ? originalImage : replacementImage,
     ),
   }
-  let assetBytes: Uint8Array = bytes(replacementPng)
+  let assetBytes: Uint8Array = bytes(replacementImage)
   const proposals = createStructuredProposalController()
   const inspectPage = vi.fn(async (slideId: string) => ({
     slideId,
@@ -201,6 +216,73 @@ it('captures the exact native page after confirmed image replacement and undo', 
   expect(f.binding.readExistingImageChange(changeId)?.capture).toMatchObject({
     hostSlideId: 'slide',
   })
+})
+
+it('keeps the frozen P0-13 picture geometry and neighboring object in the native replacement flow', async () => {
+  const material = new URL(
+    '../../../docs/product/ppt-benchmark-materials/PPT-P0-13/',
+    import.meta.url,
+  )
+  const zip = await JSZip.loadAsync(
+    readFileSync(new URL('wiswork-image-dense-research-draft.pptx', material)),
+  )
+  const slide = await zip.file('ppt/slides/slide4.xml')!.async('string')
+  const pictures = [...slide.matchAll(/<p:pic\b[\s\S]*?<\/p:pic>/g)].map(([xml]) => xml)
+  expect(pictures).toHaveLength(2)
+  const left = pictures[0]!
+  const right = pictures[1]!
+  const original = readFileSync(new URL('images/schematic-07.png', material))
+  const replacement = readFileSync(new URL('images/schematic-12.png', material))
+  const relId = /<a:blip r:embed="([^"]+)"/.exec(left)![1]
+  const rels = await zip.file('ppt/slides/_rels/slide4.xml.rels')!.async('string')
+  const media = new RegExp(`<Relationship\\b(?=[^>]*Id="${relId}")[^>]*Target="([^"]+)"`).exec(
+    rels,
+  )![1]
+  expect(
+    Buffer.from(await zip.file(`ppt/${media.replace(/^\.\.\//, '')}`)!.async('uint8array')).equals(
+      original,
+    ),
+  ).toBe(true)
+  const off = /<a:off x="(\d+)" y="(\d+)"/.exec(left)!
+  const ext = /<a:ext cx="(\d+)" cy="(\d+)"/.exec(left)!
+  const geometry = {
+    left: Number(off[1]) / 12700,
+    top: Number(off[2]) / 12700,
+    width: Number(ext[1]) / 12700,
+    height: Number(ext[2]) / 12700,
+  }
+  const f = await fixture(original.toString('base64'), replacement.toString('base64'), {
+    geometry,
+    name: /name="([^"]+)"/.exec(left)![1],
+    altTextDescription: /descr="([^"]+)"/.exec(left)![1],
+    shapeIds: ['old', /<p:cNvPr id="(\d+)"/.exec(right)![1]],
+  })
+  const before = f.current()
+  const proposed = await f.call('replace_existing_presentation_image', {
+    baseline_id: 'baseline',
+    slide_id: 'slide',
+    shape_id: 'old',
+    path: '/schematic-12.png',
+  })
+  expect(proposed.isError, proposed.output).not.toBe(true)
+  expect(f.adapter.replace).not.toHaveBeenCalled()
+  expect((await f.confirm()).status).toBe('confirmed')
+  const after = f.current()
+  expect(after.shapeId).not.toBe(before.shapeId)
+  expect(after.mediaDigest).toBe(await digest(replacement.toString('base64')))
+  expect(after.geometry).toEqual(geometry)
+  expect(after.shapeIds).toEqual(['new', before.shapeIds[1]])
+  expect(after.name).toBe(before.name)
+  expect(after.altTextDescription).toBe(before.altTextDescription)
+  expect(f.backup.save.mock.calls[0]?.[1]).toBe(original.toString('base64'))
+  const changeId = JSON.parse(proposed.output).changeId as string
+  expect(f.binding.readExistingImageChange(changeId)?.state).toBe('complete')
+  expect(
+    (await f.call('undo_existing_presentation_image_change', { change_id: changeId })).isError,
+  ).not.toBe(true)
+  expect((await f.confirm()).status).toBe('confirmed')
+  expect(f.current().mediaDigest).toBe(before.mediaDigest)
+  expect(f.current().geometry).toEqual(geometry)
 })
 
 it('records a reviewed screenshot and rejects reuse after undo', async () => {
