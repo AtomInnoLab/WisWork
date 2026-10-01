@@ -128,6 +128,90 @@ it('does not change a second picture that shares the original image relationship
   )
 })
 
+it('preserves the frozen P0-13 page-four neighbor while replacing its left embedded picture', async () => {
+  const material = new URL(
+    '../../../docs/product/ppt-benchmark-materials/PPT-P0-13/',
+    import.meta.url,
+  )
+  const zip = await JSZip.loadAsync(
+    readFileSync(new URL('wiswork-image-dense-research-draft.pptx', material)),
+  )
+  for (let page = 1; page <= 8; page++)
+    if (page !== 4) {
+      zip.remove(`ppt/slides/slide${page}.xml`)
+      zip.remove(`ppt/slides/_rels/slide${page}.xml.rels`)
+    }
+  zip.file(
+    'ppt/presentation.xml',
+    (await zip.file('ppt/presentation.xml')!.async('string')).replace(
+      /<p:sldId\b[^>]*\/>/g,
+      (item) => (item.includes('r:id="rId5"') ? item : ''),
+    ),
+  )
+  const source = await zip.generateAsync({ type: 'base64' })
+  const xml = await zip.file('ppt/slides/slide4.xml')!.async('string')
+  const pictures = [...xml.matchAll(/<p:pic\b[\s\S]*?<\/p:pic>/g)].map(([picture]) => picture)
+  expect(pictures).toHaveLength(2)
+  const ids = pictures.map((picture) => /<p:cNvPr id="(\d+)"/.exec(picture)![1])
+  const before = await Promise.all(ids.map((id) => inspectPowerPointPicturePackage(source, id)))
+  const replacement = readFileSync(new URL('images/schematic-12.png', material))
+  const changed = await replacePowerPointPictureMediaPackage(source, ids[0]!, {
+    mime: 'image/png',
+    base64: replacement.toString('base64'),
+  })
+  const after = await Promise.all(
+    ids.map((id) => inspectPowerPointPicturePackage(changed.base64, id)),
+  )
+  expect(after[0]!.mediaDigest).toBe(changed.mediaDigest)
+  expect(after[0]!.mediaDigest).not.toBe(before[0]!.mediaDigest)
+  expect(after[1]).toEqual(before[1])
+  const revised = await JSZip.loadAsync(changed.base64, { base64: true })
+  const revisedXml = await revised.file('ppt/slides/slide4.xml')!.async('string')
+  const revisedPictures = [...revisedXml.matchAll(/<p:pic\b[\s\S]*?<\/p:pic>/g)].map(
+    ([picture]) => picture,
+  )
+  expect(revisedPictures[1]).toBe(pictures[1])
+  expect(revisedPictures[0]!.replace(/r:embed="[^"]+"/, '')).toBe(
+    pictures[0]!.replace(/r:embed="[^"]+"/, ''),
+  )
+  const parsed = await openPptx(Buffer.from(changed.base64, 'base64'))
+  expect(parsed.deck.slides).toHaveLength(1)
+  expect(
+    parsed.deck.slides[0]!.elements.filter((element) => element.type === 'picture'),
+  ).toHaveLength(2)
+  if (sofficeAvailable) {
+    const directory = mkdtempSync(join(tmpdir(), 'wiswork-p0-13-roundtrip-'))
+    const inputDirectory = join(directory, 'input')
+    const outputDirectory = join(directory, 'output')
+    mkdirSync(inputDirectory)
+    mkdirSync(outputDirectory)
+    try {
+      const input = join(inputDirectory, 'revised.pptx')
+      writeFileSync(input, Buffer.from(changed.base64, 'base64'))
+      execFileSync(
+        'soffice',
+        [
+          `-env:UserInstallation=file://${join(directory, 'profile')}`,
+          '--headless',
+          '--convert-to',
+          'pptx:Impress MS PowerPoint 2007 XML',
+          '--outdir',
+          outputDirectory,
+          input,
+        ],
+        { timeout: 60_000, stdio: 'pipe' },
+      )
+      const reopened = await openPptx(readFileSync(join(outputDirectory, 'revised.pptx')))
+      expect(reopened.deck.slides).toHaveLength(1)
+      expect(
+        reopened.deck.slides[0]!.elements.filter((element) => element.type === 'picture'),
+      ).toHaveLength(2)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }
+})
+
 it('keeps unsupported pictures separate in a shared package media read', async () => {
   const deck = benchmarkDeck()
   const slide = deck.slides[2]!

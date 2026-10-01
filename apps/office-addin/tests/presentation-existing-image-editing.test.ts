@@ -218,7 +218,7 @@ it('captures the exact native page after confirmed image replacement and undo', 
   })
 })
 
-it('keeps the frozen P0-13 picture geometry and neighboring object in the native replacement flow', async () => {
+it('keeps P0-13 picture geometry in the test-only native adapter path', async () => {
   const material = new URL(
     '../../../docs/product/ppt-benchmark-materials/PPT-P0-13/',
     import.meta.url,
