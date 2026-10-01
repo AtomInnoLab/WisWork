@@ -677,7 +677,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    `Electron PC + Rust Relay business smoke passed: browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, ${researchCaseId} real PDF source upload and eight-page production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery`,
+    `Electron PC + Rust Relay business smoke passed: browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, ${researchCaseId} frozen source upload and eight-page production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery`,
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {

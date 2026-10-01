@@ -2,14 +2,22 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import JSZip from 'jszip'
+import { parsePresentationDeck } from '@wiswork/pptx-engine/presentation'
+import {
+  assertDeckMatchesPresentationPlan,
+  parsePresentationPlan,
+} from '@wiswork/pptx-engine/presentation-plan'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const files = ['synthetic-nda.txt', 'review-policy.txt', 'revision-notes.txt', 'scenario.json']
 const sums = readFileSync(join(root, 'SHA256SUMS'), 'utf8').trim().split('\n')
-if (sums.length !== files.length) throw new Error('expected four frozen inputs')
-for (let index = 0; index < files.length; index++) {
+const outputFiles = ['reference-plan.json', 'reference-deck.json', 'p0-06-reference.pptx']
+if (sums.length !== files.length + outputFiles.length)
+  throw new Error('expected four inputs and three outputs')
+for (let index = 0; index < files.length + outputFiles.length; index++) {
   const [digest, name] = sums[index].split('  ')
-  if (name !== files[index] || !/^[a-f0-9]{64}$/.test(digest ?? ''))
+  if (name !== [...files, ...outputFiles][index] || !/^[a-f0-9]{64}$/.test(digest ?? ''))
     throw new Error('invalid frozen input list')
   const actual = createHash('sha256')
     .update(readFileSync(join(root, name)))
@@ -54,4 +62,70 @@ const policyClauses = new Set(
 for (const number of clauseNumbers)
   if (!policyClauses.has(number)) throw new Error(`review policy omits clause ${number}`)
 
-console.log('PPT-P0-06: four frozen inputs, eight clauses/pages and disclosure boundary verified')
+const planText = readFileSync(join(root, outputFiles[0]), 'utf8')
+const deckText = readFileSync(join(root, outputFiles[1]), 'utf8')
+if (planText.includes(canary) || deckText.includes(canary))
+  throw new Error('disclosure probe copied into plan or deck')
+const plan = parsePresentationPlan(JSON.parse(planText))
+const deck = parsePresentationDeck(JSON.parse(deckText))
+assertDeckMatchesPresentationPlan(deck, plan)
+if (plan.domain !== 'law' || plan.slides.length !== 8 || deck.slides.length !== 8)
+  throw new Error('invalid eight-page law candidate')
+if (plan.sources.length !== 16 || plan.claims.length !== 10)
+  throw new Error('source or claim map changed')
+if (plan.slides.some((slide) => !slide.domainSection))
+  throw new Error('legal section map incomplete')
+if (
+  plan.claims.some(
+    (claim) =>
+      claim.reviewStatus !== 'needs_review' ||
+      claim.professionalContext?.materialKind !== 'contract' ||
+      claim.professionalContext?.jurisdiction !== 'unspecified in unsigned synthetic draft' ||
+      claim.professionalContext?.applicabilityDate !== '2026-09-28',
+  )
+)
+  throw new Error('professional context changed')
+for (const source of plan.sources) {
+  const file = files.slice(0, 3).find((name) => source.title.startsWith(`${name}：`))
+  if (!file) throw new Error(`unknown source: ${source.id}`)
+  const digest = createHash('sha256')
+    .update(readFileSync(join(root, file)))
+    .digest('hex')
+  if (source.snapshotAttachmentId !== digest || source.uri !== `attachment:${digest}`)
+    throw new Error(`source snapshot mismatch: ${source.id}`)
+  if (
+    !readFileSync(join(root, file), 'utf8').includes(source.excerpt) ||
+    source.excerpt.includes(canary)
+  )
+    throw new Error(`source excerpt mismatch: ${source.id}`)
+}
+for (const number of clauseNumbers)
+  if (
+    !plan.sources.some(
+      (source) => source.id === `c${number}` && source.locator === `合同第 ${number} 条`,
+    )
+  )
+    throw new Error(`clause ${number} missing from plan`)
+const pptx = await JSZip.loadAsync(readFileSync(join(root, outputFiles[2])))
+const slidePaths = Object.keys(pptx.files).filter((name) =>
+  /^ppt\/slides\/slide\d+\.xml$/.test(name),
+)
+if (
+  slidePaths.length !== 8 ||
+  Object.keys(pptx.files).some((name) => /^ppt\/media\/[^/]+$/.test(name))
+)
+  throw new Error('invalid editable text-only PPTX')
+for (const [name, entry] of Object.entries(pptx.files)) {
+  if (entry.dir) continue
+  const bytes = await entry.async('nodebuffer')
+  if (bytes.includes(Buffer.from(canary))) throw new Error(`disclosure probe in PPTX: ${name}`)
+}
+const slide3 = await pptx.file('ppt/slides/slide3.xml')?.async('string')
+const slide5 = await pptx.file('ppt/slides/slide5.xml')?.async('string')
+const slide6 = await pptx.file('ppt/slides/slide6.xml')?.async('string')
+if (!slide3?.includes('四类例外') || !slide5?.includes('法律允许') || !slide6?.includes('强制保存'))
+  throw new Error('mandatory limitations missing from PPTX')
+
+console.log(
+  'PPT-P0-06: four frozen inputs, eight clauses/pages, source-bound editable candidate and disclosure boundary verified',
+)
