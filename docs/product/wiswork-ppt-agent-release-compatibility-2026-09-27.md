@@ -1,6 +1,6 @@
 # PPT Agent 发布兼容矩阵（工程证据）
 
-2026-10-01 本机补充：发布预检现把 `taskpane.html` 的全部 `modulepreload` 引用纳入校验，与团队登录两页一致；缺文件或外域/非哈希路径均拒绝。预检测试 16/16 通过，设置本机 HTTPS 测试 Origin 后重新构建并核验 17 个发布文件。未设置 `VITE_WISWORK_ADDIN_ORIGIN` 的普通本地构建不会生成发布 Manifest，不作为完整发布包。
+2026-10-01 本机补充：发布预检把 `taskpane.html` 的全部 `modulepreload` 引用纳入校验，与团队登录两页一致；缺文件或外域/非哈希路径均拒绝。预检还从发布包内 JS/MJS 的相对分包导入及 `/assets/` Worker URL、CSS 的 `/assets/` URL 收集运行时依赖，要求引用文件存在且符合哈希命名。缺失分包、Worker 和图片用例均被拒绝，预检测试 18/18 通过；设置本机 HTTPS 测试 Origin 后构建的 17 个发布文件通过完整检查。未设置 `VITE_WISWORK_ADDIN_ORIGIN` 的普通本地构建不会生成发布 Manifest，不作为完整发布包。
 
 依据[完整方案](./wiswork-ppt-agent-solution-and-implementation-plan-2026-09-22.md) §10 O6。此表描述当前协议实现和自动化证据，不代替 Windows/Mac PowerPoint Desktop/Web 的发布验收。
 

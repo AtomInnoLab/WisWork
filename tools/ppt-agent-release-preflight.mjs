@@ -120,6 +120,25 @@ function releaseAsset(path) {
   )
 }
 
+function runtimeReferences(path, source) {
+  const references = []
+  if (/\.(?:js|mjs)$/.test(path)) {
+    for (const match of source.matchAll(
+      /(?:\bimport\s*\(|\bfrom\s*)["']\.\/([^"'?#]+\.(?:js|mjs))["']/g,
+    ))
+      references.push(`assets/${match[1]}`)
+    for (const match of source.matchAll(/\bnew\s+URL\s*\(\s*["'](\/assets\/[^"'?#]+)["']/g))
+      references.push(match[1].slice(1))
+  }
+  if (path.endsWith('.css')) {
+    for (const match of source.matchAll(/\burl\(\s*["']?(\/assets\/[^"'?#)]+)["']?\s*\)/g))
+      references.push(match[1].slice(1))
+  }
+  if (references.some((reference) => !releaseAsset(reference)))
+    throw new Error(`invalid Office runtime reference: ${path}`)
+  return references
+}
+
 export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
   const origin = new URL(expectedOrigin)
   if (origin.protocol !== 'https:' || origin.origin !== expectedOrigin)
@@ -151,6 +170,7 @@ export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
   if (!script.toString('utf8').includes(metadata.buildId))
     throw new Error('buildId differs from compiled taskpane')
   const files = []
+  const runtime = []
   let totalBytes = 0
   for (const path of entries.sort()) {
     const stat = await lstat(resolve(dist, path))
@@ -169,10 +189,13 @@ export async function inspectOfficeBuild(dist, expectedOrigin, expectedConfig) {
     totalBytes += stat.size
     if (files.length >= 128 || totalBytes > 64 * 1024 * 1024)
       throw new Error('Office release artifact too large')
-    files.push({ path, size: stat.size, sha256: sha256(await readFile(resolve(dist, path))) })
+    const contents = await readFile(resolve(dist, path))
+    files.push({ path, size: stat.size, sha256: sha256(contents) })
+    if (/^assets\/[^/]+\.(?:js|mjs|css)$/.test(path))
+      runtime.push(...runtimeReferences(path, contents.toString('utf8')))
   }
   const present = new Set(files.map((file) => file.path))
-  for (const path of referenced)
+  for (const path of [...referenced, ...runtime])
     if (!present.has(path)) throw new Error(`missing referenced asset: ${path}`)
   return {
     buildId: metadata.buildId,

@@ -461,6 +461,45 @@ test('checks taskpane module preloads as release dependencies', async (t) => {
   )
 })
 
+test('checks runtime chunks and workers referenced by built assets', async (t) => {
+  const dist = await artifact(t)
+  const entry = resolve(dist, 'assets/taskpane-AbC_123.js')
+  await writeFile(
+    entry,
+    'const version="release_123"; import("./lazy-AbC_123.js"); new URL("/assets/extra-worker-AbC_123.js", import.meta.url)',
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /missing referenced asset: assets\/lazy-AbC_123.js/,
+  )
+  await writeFile(resolve(dist, 'assets/lazy-AbC_123.js'), 'export const lazy = true')
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /missing referenced asset: assets\/extra-worker-AbC_123.js/,
+  )
+  await writeFile(resolve(dist, 'assets/extra-worker-AbC_123.js'), 'self.onmessage=()=>{}')
+  await inspectOfficeBuild(dist, 'https://office.example')
+  await writeFile(entry, 'const version="release_123"; import("./missing.js")')
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /invalid Office runtime reference/,
+  )
+})
+
+test('checks stylesheet asset references', async (t) => {
+  const dist = await artifact(t)
+  await writeFile(
+    resolve(dist, 'assets/taskpane-AbC_123.css'),
+    'body{background:url("/assets/logo-AbC_123.png")}',
+  )
+  await assert.rejects(
+    inspectOfficeBuild(dist, 'https://office.example'),
+    /missing referenced asset: assets\/logo-AbC_123.png/,
+  )
+  await writeFile(resolve(dist, 'assets/logo-AbC_123.png'), Buffer.from([137, 80, 78, 71]))
+  await inspectOfficeBuild(dist, 'https://office.example')
+})
+
 test('rejects unlisted and symlinked release files', async (t) => {
   const dist = await artifact(t)
   await writeFile(resolve(dist, 'assets/unexpected.map'), '{}')
