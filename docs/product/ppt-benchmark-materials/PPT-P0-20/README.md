@@ -1,6 +1,6 @@
 # PPT-P0-20 候选材料包：瞬时错误、取消与诚实交付
 
-状态：**两份真实公开研究原文、八页目标和故障时点已冻结；科研审阅、可控故障执行环境及真实 PowerPoint 验收未完成**。本包只计候选材料，不计专业任务通过。
+状态：**两份真实公开研究原文、来源绑定八页原生候选稿和故障时点已冻结；科研审阅、可控故障执行环境及真实 PowerPoint 验收未完成**。本包只计候选材料，不计专业任务通过。
 
 ## 来源与权限
 
@@ -8,7 +8,11 @@
 - `deardorff-2020-checklist.pdf`：同一论文 S1 Checklist，DOI `10.1371/journal.pone.0230697.s001`，与 P0-01 的原始 1 页 PDF 字节相同。它是空白测量清单，不含参与者原始分数。
 - `scenario.json`：本任务独立的八页目的、四条待审关键主张、三处故障注入时点和所需证据。它是验收控制文件，**不是论文事实的人工批准记录，也不是已运行的故障注入程序**。
 
-输入 PDF 均未修改；须保留作者、题名、来源与许可链接。`SHA256SUMS` 冻结全部输入字节，`verify-materials.mjs` 核对摘要、八页顺序、四条主张和故障时点。复用原文不复用 P0-01 的验收结果。
+输入 PDF 均未修改；须保留作者、题名、来源与许可链接。`node --import tsx generate-reference.cjs` 从两份 PDF 生成 `reference-plan.json`、`reference-deck.json` 和八页原生 `wiswork-generated-candidate.pptx`。计划绑定两份原文逐字摘录，第 6 页 Table 1 为带嵌入工作簿的原生图表。`SHA256SUMS` 冻结三份输入与三份候选产物；`node --import tsx verify-materials.mjs` 核对全部摘要、PDF 摘录、计划与页模型、八页结构及图表底层值。复用原文不复用 P0-01 的验收结果。
+
+本机定向测试分别覆盖：F1 一次可重试模型错误后保留同一指令，且用户结束不会被标为完成；F2 首次截图失败返回待复核而无视觉通过记录，恢复后才写入待审截图；F3 用本包实际八页页模型在四页持久导入回执后、第 5 页写入前取消，重建文档绑定后只补第 5–8 页且不重复写入前四页，并核对原生图表回读。这些故障点使用模拟模型或 Office 宿主，尚不是一次完整的真实 PowerPoint 故障注入运行。
+
+`node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-20 --built-taskpane` 已在本机通过构建版 Taskpane、Electron PC 与 Rust Relay 的两份 PDF 上传、计划保存、八页生产、PPTX/PDF 回读和恢复。该整链路运行未按 F1/F2/F3 精确时点强制故障，故障证据来自上述定向测试。LibreOffice 已将候选 PPTX 渲染为八页 PDF 并目视检查版面。
 
 ## 固定任务提示
 
