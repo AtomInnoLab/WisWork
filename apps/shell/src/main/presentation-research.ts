@@ -233,9 +233,11 @@ export function createPresentationResearchService(optionsValue: {
     let projectLock: Promise<(() => void) | undefined> | undefined
     try {
       const captured = options.captureProjectLease?.({ scope, operation: op, signal })
+      projectLock = options.acquireProjectLock?.(projectId, signal)
+      // Lease acquisition may be async; observe an early lock rejection until run awaits it.
+      void projectLock?.catch(() => {})
       lease = captured instanceof Promise ? await captured : captured
       assertCurrent()
-      projectLock = options.acquireProjectLock?.(projectId, signal)
       const run = async () => {
         const release = await projectLock
         try {

@@ -15,11 +15,13 @@ function setup(fetchImage: (url: string, signal: AbortSignal) => Promise<Respons
     service({ documentId: 'doc', ...body }, signal)
   return { call, root }
 }
-it('records cancellation and safely rejects corrupt history without fetching', async () => {
-  const fetchImage = vi.fn(async () => null)
-  const { call, root } = setup(fetchImage)
+it('records an active download cancellation and rejects corrupt history without retrying', async () => {
   const controller = new AbortController()
-  controller.abort()
+  const fetchImage = vi.fn(async () => {
+    controller.abort()
+    return null
+  })
+  const { call, root } = setup(fetchImage)
   await expect(
     call(
       { operation: 'attachment_import_url', url: 'https://8.8.8.8/image?token=secret' },
@@ -29,7 +31,7 @@ it('records cancellation and safely rejects corrupt history without fetching', a
   expect(await call({ operation: 'attachment_acquisition_history' })).toMatchObject({
     records: [{ state: 'rejected', error: 'aborted' }],
   })
-  expect(fetchImage).not.toHaveBeenCalled()
+  expect(fetchImage).toHaveBeenCalledTimes(1)
   const dir = join(root, 'presentation-acquisition-history')
   writeFileSync(join(dir, readdirSync(dir)[0]!), 'sensitive disk exception')
   await expect(call({ operation: 'attachment_acquisition_history' })).rejects.toThrow(
@@ -38,7 +40,7 @@ it('records cancellation and safely rejects corrupt history without fetching', a
   await expect(
     call({ operation: 'attachment_import_url', url: 'https://8.8.8.8/image' }),
   ).rejects.toThrow(/^invalid_state$/)
-  expect(fetchImage).not.toHaveBeenCalled()
+  expect(fetchImage).toHaveBeenCalledTimes(1)
 })
 it('saves the staged animated attachment as rejected and reuses its download', async () => {
   const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64')
