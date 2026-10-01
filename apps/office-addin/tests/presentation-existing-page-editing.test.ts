@@ -114,6 +114,96 @@ it('keeps a frozen P0-19 three-object edit in one saved page transaction through
   // Compare package bytes natively; generic deep equality walks every array element.
   expect(Buffer.from(f.data()).equals(Buffer.from(original, 'base64'))).toBe(true)
 })
+
+it('replaces only the frozen P0-13 page-four left picture through the saved page flow', async () => {
+  const material = new URL(
+    '../../../docs/product/ppt-benchmark-materials/PPT-P0-13/',
+    import.meta.url,
+  )
+  const zip = await JSZip.loadAsync(
+    readFileSync(new URL('wiswork-image-dense-research-draft.pptx', material)),
+  )
+  for (let page = 1; page <= 8; page++)
+    if (page !== 4) {
+      zip.remove(`ppt/slides/slide${page}.xml`)
+      zip.remove(`ppt/slides/_rels/slide${page}.xml.rels`)
+    }
+  zip.file(
+    'ppt/presentation.xml',
+    (await zip.file('ppt/presentation.xml')!.async('string')).replace(
+      /<p:sldId\b[^>]*\/>/g,
+      (item) => (item.includes('r:id="rId5"') ? item : ''),
+    ),
+  )
+  const original = await zip.generateAsync({ type: 'uint8array' })
+  const replacement = readFileSync(new URL('images/schematic-12.png', material))
+  const sourceXml = await zip.file('ppt/slides/slide4.xml')!.async('string')
+  const pictures = [...sourceXml.matchAll(/<p:pic\b[\s\S]*?<\/p:pic>/g)].map(([xml]) => xml)
+  expect(pictures).toHaveLength(2)
+  expect(pictures[0]).toContain('descr="自制示意图 7，非研究测量数据"')
+  expect(pictures[1]).toContain('descr="自制示意图 8，非研究测量数据"')
+  const targetId = /<p:cNvPr id="(\d+)"/.exec(pictures[0])![1]
+  const f = await fixture()
+  f.changeBackup(original)
+  f.setCurrentPage(original)
+  f.preparedFiles.set('/home/user/schematic-12.png', replacement)
+  vi.stubGlobal(
+    'createImageBitmap',
+    vi.fn(async (blob: Blob) => {
+      const decoded = PNG.sync.read(Buffer.from(await blob.arrayBuffer()))
+      return { width: decoded.width, height: decoded.height, close: vi.fn() }
+    }),
+  )
+  const prepared = await f.skill.executeTool({
+    id: 'prepare-p0-13',
+    name: 'prepare_existing_presentation_image_revision',
+    input: {
+      baseline_id: 'baseline',
+      slide_id: 'old',
+      shape_id: targetId,
+      path: '/home/user/schematic-12.png',
+    },
+  })
+  expect(prepared.isError, prepared.output).not.toBe(true)
+  const revision = JSON.parse(prepared.output)
+  const revised = await JSZip.loadAsync(f.preparedFiles.get(revision.path)!)
+  const revisedXml = await revised.file('ppt/slides/slide4.xml')!.async('string')
+  const revisedPictures = [...revisedXml.matchAll(/<p:pic\b[\s\S]*?<\/p:pic>/g)].map(([xml]) => xml)
+  expect(revisedPictures[1]).toBe(pictures[1])
+  expect(revisedPictures[0].replace(/r:embed="[^"]+"/, '')).toBe(
+    pictures[0].replace(/r:embed="[^"]+"/, ''),
+  )
+  const targetRel = /<a:blip r:embed="([^"]+)"/.exec(revisedPictures[0])![1]
+  const rels = await revised.file('ppt/slides/_rels/slide4.xml.rels')!.async('string')
+  const mediaName = new RegExp(
+    `<Relationship\\b(?=[^>]*Id="${targetRel}")[^>]*Target="([^"]+)"`,
+  ).exec(rels)![1]
+  expect(
+    Buffer.from(
+      await revised.file(`ppt/${mediaName.replace(/^\.\.\//, '')}`)!.async('uint8array'),
+    ).equals(replacement),
+  ).toBe(true)
+  const staged = await f.call('stage', {
+    baseline_id: 'baseline',
+    slide_id: 'old',
+    path: revision.path,
+    picture_shape_id: targetId,
+  })
+  expect(staged.isError, staged.output).not.toBe(true)
+  expect((await f.confirm()).status).toBe('confirmed')
+  const changeId = [...f.records.keys()][0]!
+  expect(f.records.get(changeId)).toMatchObject({
+    state: 'staged',
+    pictureTarget: { shapeId: targetId },
+  })
+  expect((await f.call('commit', { change_id: changeId })).isError).not.toBe(true)
+  expect((await f.confirm()).status).toBe('confirmed')
+  expect(f.records.get(changeId)?.state).toBe('applied')
+  expect((await f.call('undo', { change_id: changeId })).isError).not.toBe(true)
+  expect((await f.confirm()).status).toBe('confirmed')
+  expect(f.records.get(changeId)?.state).toBe('undone')
+  expect(Buffer.from(f.data()).equals(Buffer.from(original))).toBe(true)
+})
 async function fixture() {
   const make = async (text: string) => {
     const zip = new JSZip()
