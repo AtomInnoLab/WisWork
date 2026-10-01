@@ -83,7 +83,10 @@ it('propagates a saved brand palette and font into actual native chart XML throu
     }
     const series = xml.match(/<c:ser>[\s\S]*?<\/c:ser>/g)
     expect(series).toHaveLength(2)
-    for (const item of series!) expect(item).toContain('val="B35E24"')
+    for (const [index, item] of series!.entries()) {
+      const fill = item.match(/<c:spPr>[\s\S]*?<\/c:spPr>/)?.[0]
+      expect(fill).toContain(`val="${index === 0 ? style.accentColor : style.textColor}"`)
+    }
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

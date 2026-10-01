@@ -158,6 +158,7 @@ export async function inspectPresentationProjectInventory(options: {
         if (!now || !identity(now, entry.info) || now.isSymbolicLink()) fail()
         if (
           observed &&
+          (entry.path === base || entry.path.startsWith(base + sep)) &&
           (now.mtimeMs !== entry.info.mtimeMs ||
             now.ctimeMs !== entry.info.ctimeMs ||
             now.birthtimeMs !== entry.info.birthtimeMs)

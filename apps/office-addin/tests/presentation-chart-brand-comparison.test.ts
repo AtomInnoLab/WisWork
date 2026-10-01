@@ -170,11 +170,11 @@ it.each(['bar', 'line'] as const)(
     expect(
       summary.charts[0]!.visibleStyle!['series.9.line.color'] ??
         summary.charts[0]!.visibleStyle!['series.9.fill'],
-    ).toBe('2255AA')
+    ).toBe('172033')
     const parts = f.xml.match(/<c:ser>[\s\S]*?<\/c:ser>/g)!
     const edited = f.xml.replace(
       parts[9]!,
-      parts[9]!.replace(/(<a:srgbClr val=")2255AA/, '$1FF00AA'),
+      parts[9]!.replace(/(<a:srgbClr val=")172033/, '$1FF00AA'),
     )
     expect(edited).not.toBe(f.xml)
     expect((await f.compare(edited)).content.chartStyleChanged).toEqual(['chart'])

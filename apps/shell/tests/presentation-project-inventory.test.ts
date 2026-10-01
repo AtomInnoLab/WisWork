@@ -67,6 +67,24 @@ function project(root: string, id = 'p', doc = 'doc') {
   })
   return `projects/presentations/${hash(id)}`
 }
+it('ignores sibling temporary-directory activity while checking a project inventory', async () => {
+  const root = fixture()
+  project(root)
+  const sibling = `${root}-peer`
+  roots.push(sibling)
+  openHook.after = (path) => {
+    if (!path.endsWith('/project.json')) return
+    openHook.after = undefined
+    mkdirSync(sibling)
+  }
+  const inventory = await inspectPresentationProjectInventory({
+    userDataPath: root,
+    documentId: 'doc',
+    projectId: 'p',
+    observeActivity: {},
+  })
+  expect(inventory.activity?.decidable).toBe(true)
+})
 it('scans actual project/research/delivery/page namespaces while retaining same-document shared originals for both projects', async () => {
   const root = fixture()
   project(root)

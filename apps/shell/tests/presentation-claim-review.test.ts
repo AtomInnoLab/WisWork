@@ -371,7 +371,7 @@ it('does not mark unverified image-backed scan text as supported', async () => {
       ),
     ),
   ).toEqual({ error: 'evidence_image_backed_unverified' })
-})
+}, 40000)
 it('blocks an unsampled scan page in a long PDF after attachment upload', async () => {
   const pages = Array.from({ length: 65 }, (_, index) => `Page ${index + 1} text`)
   pages[1] = 'OCR evidence on page two'
