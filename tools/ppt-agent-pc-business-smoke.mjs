@@ -529,21 +529,30 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
         throw new Error('invalid PC business JSON')
       }
     }
-    if (options.sourceAttachment) {
-      const source = options.sourceAttachment
+    const sourceAttachments =
+      options.sourceAttachments ?? (options.sourceAttachment ? [options.sourceAttachment] : [])
+    if (sourceAttachments.length) {
+      const sourceHashes = new Set(sourceAttachments.map((source) => source.sha256))
       if (
-        typeof source.name !== 'string' ||
-        !/\.pdf$/i.test(source.name) ||
-        !Buffer.isBuffer(source.bytes) ||
-        source.bytes.length < 1 ||
-        source.bytes.length > 10 * 1024 * 1024 ||
-        createHash('sha256').update(source.bytes).digest('hex') !== source.sha256 ||
-        options.productionFixture?.plan?.sources?.some(
-          (item) => item.snapshotAttachmentId !== source.sha256,
+        !options.productionFixture?.plan?.sources?.length ||
+        sourceHashes.size !== sourceAttachments.length ||
+        options.productionFixture.plan.sources.some(
+          (item) => !sourceHashes.has(item.snapshotAttachmentId),
         )
       )
         throw new Error('invalid source-backed production fixture')
-      await uploadFixture(request, documentId, source.name, source.bytes, 'text')
+      for (const source of sourceAttachments) {
+        if (
+          typeof source.name !== 'string' ||
+          !/\.pdf$/i.test(source.name) ||
+          !Buffer.isBuffer(source.bytes) ||
+          source.bytes.length < 1 ||
+          source.bytes.length > 10 * 1024 * 1024 ||
+          createHash('sha256').update(source.bytes).digest('hex') !== source.sha256
+        )
+          throw new Error('invalid source-backed production fixture')
+        await uploadFixture(request, documentId, source.name, source.bytes, 'text')
+      }
     }
     if (options.createProduction) {
       const fixture = options.productionFixture
@@ -947,7 +956,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       uploadChecked: Boolean(options.uploadFixtures),
       ...(compiledDelivery ? { compiledDelivery } : {}),
       ...(productionDelivery ? { productionDelivery } : {}),
-      ...(options.sourceAttachment ? { sourceChecked: true } : {}),
+      ...(sourceAttachments.length ? { sourceChecked: true } : {}),
       ...(manualObservation ? { manualObservation } : {}),
     }
   } finally {

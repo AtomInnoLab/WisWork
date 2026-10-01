@@ -1,6 +1,10 @@
 # PPT-P0-02 候选真实材料包：背景噪声与认知任务
 
-状态：**三篇公开原始论文已固定；冲突矩阵为待审预标注，专业审阅和真实 PowerPoint 执行未完成**。本目录不计入 20 项专业任务通过数。
+状态：**三篇公开原始论文、结构化计划与八页可编辑候选稿已固定；冲突矩阵为待审预标注，专业审阅和真实 PowerPoint 执行未完成**。本目录不计入 20 项专业任务通过数。
+
+## 本机候选参考稿
+
+`node --import tsx generate-reference.cjs` 从三篇冻结 PDF 的第一页抽取连续原文摘录，生成 `reference-plan.json`、`reference-deck.json` 和八页原生可编辑的 `p0-02-reference.pptx`。第 6 页同页并列有利、未见显著差异和不利结果；第 7 页列出人群、噪声、任务和指标的不可比因素。三条事实均标为 `needs_review`。`node --import tsx verify-materials.mjs` 核对三篇原件页数、来源摘录、计划与卡片绑定、八页 OOXML 结构、比较页和冻结哈希。本机 LibreOffice 将八页渲染为 PDF 后已逐页检查。`node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-02` 已经在真实 Electron PC + Rust Relay 链路完成三篇 PDF 上传、计划保存、八页生产和 PPTX/PDF 回读；参考稿仍须领域审阅和真实 PowerPoint 宿主验收。
 
 ## 来源与授权
 

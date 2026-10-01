@@ -29,15 +29,28 @@ const expectedSlideTexts = Array.from(
   { length: 8 },
   (_, index) => `Electron real Relay page ${index + 1}`,
 )
-const researchMaterials = join(root, 'docs/product/ppt-benchmark-materials/PPT-P0-01')
+const researchCaseId = process.argv.includes('--benchmark=P0-02') ? 'PPT-P0-02' : 'PPT-P0-01'
+const researchMaterials = join(root, `docs/product/ppt-benchmark-materials/${researchCaseId}`)
 const researchDeck = JSON.parse(
   await readFile(join(researchMaterials, 'reference-deck.json'), 'utf8'),
 )
 const researchPlan = JSON.parse(
   await readFile(join(researchMaterials, 'reference-plan.json'), 'utf8'),
 )
-const researchPdf = await readFile(join(researchMaterials, 'deardorff-2020-article.pdf'))
-const researchSourceSha256 = createHash('sha256').update(researchPdf).digest('hex')
+const researchSourceNames =
+  researchCaseId === 'PPT-P0-02'
+    ? [
+        'helps-2014-white-noise.pdf',
+        'han-2013-speech-noise.pdf',
+        'mohanathasan-2025-conversation-noise.pdf',
+      ]
+    : ['deardorff-2020-article.pdf']
+const researchSources = await Promise.all(
+  researchSourceNames.map(async (name) => {
+    const bytes = await readFile(join(researchMaterials, name))
+    return { name, bytes, sha256: createHash('sha256').update(bytes).digest('hex') }
+  }),
+)
 const deck = {
   version: 1,
   id: projectId,
@@ -556,29 +569,30 @@ app.whenReady().then(async () => {
     releaseResult.productionDelivery.pdfBytes < 100
   )
     throw new Error('Electron PC fresh release production incomplete')
-  smokeStage = 'P0-01 real-source research production'
-  const researchResult = await inspectPcBusiness(origin, 'p0-01-local-document', researchDeck.id, {
-    onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
-    timeoutMs: 60_000,
-    sourceAttachment: {
-      name: 'deardorff-2020-article.pdf',
-      bytes: researchPdf,
-      sha256: researchSourceSha256,
+  smokeStage = `${researchCaseId} real-source research production`
+  const researchResult = await inspectPcBusiness(
+    origin,
+    `${researchCaseId}-local-document`,
+    researchDeck.id,
+    {
+      onCode: (code) => pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n'),
+      timeoutMs: 60_000,
+      sourceAttachments: researchSources,
+      productionFixture: {
+        requestId: `${researchCaseId}-research-production`,
+        deck: researchDeck,
+        plan: researchPlan,
+        expectedSlideTexts: researchDeck.slides.map((slide) => slide.title),
+      },
+      createProduction: true,
     },
-    productionFixture: {
-      requestId: 'p0-01-research-production',
-      deck: researchDeck,
-      plan: researchPlan,
-      expectedSlideTexts: researchDeck.slides.map((slide) => slide.title),
-    },
-    createProduction: true,
-  })
+  )
   if (
     !researchResult.sourceChecked ||
     researchResult.productionDelivery?.pageDigests.length !== 8 ||
     researchResult.productionDelivery.pdfBytes < 100
   )
-    throw new Error('Electron PC P0-01 source-backed production incomplete')
+    throw new Error(`Electron PC ${researchCaseId} source-backed production incomplete`)
   const pendingProjectId = `${projectId}-recovery`
   smokeStage = 'pending production setup'
   const pendingFixture = {
@@ -675,7 +689,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    'Electron PC + Rust Relay business smoke passed: browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, P0-01 real PDF source upload and eight-page chart production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery',
+    `Electron PC + Rust Relay business smoke passed: browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, ${researchCaseId} real PDF source upload and eight-page production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery`,
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {
