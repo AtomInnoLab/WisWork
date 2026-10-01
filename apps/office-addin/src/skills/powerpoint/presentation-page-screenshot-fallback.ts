@@ -16,9 +16,12 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const screenshotFailure = (error: unknown) =>
   !!error &&
   typeof error === 'object' &&
-  ['office_screenshot_unavailable', 'ActivityLimitReached', 'Timeout'].includes(
-    String((error as { code?: unknown }).code),
-  )
+  [
+    'office_screenshot_unavailable',
+    'office_image_too_large',
+    'ActivityLimitReached',
+    'Timeout',
+  ].includes(String((error as { code?: unknown }).code))
 
 async function cleanupBackup(
   request: Request,

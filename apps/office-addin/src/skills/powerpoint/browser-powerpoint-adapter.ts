@@ -1746,7 +1746,10 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           await sync(context, signal)
           base64 = screenshot(smaller.value)
         }
-        if (!fitsModelBudget()) throw new Error('office_image_too_large')
+        if (!fitsModelBudget())
+          throw Object.assign(new Error('office_image_too_large'), {
+            code: 'office_image_too_large',
+          })
         if (recaptured) {
           ;(slide.load as (properties: string) => void)('id')
           ;(pageSetup.load as (properties: string[]) => void)(['slideWidth', 'slideHeight'])

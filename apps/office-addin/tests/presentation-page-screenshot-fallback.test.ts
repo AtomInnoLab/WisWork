@@ -9,14 +9,14 @@ const png =
 const hostError = () =>
   Object.assign(new Error('office_read_failed'), { code: 'office_screenshot_unavailable' })
 
-async function fixture() {
+async function fixture(failure: Error = hostError()) {
   const deck = benchmarkDeck()
   deck.slides = [deck.slides[0]!]
   const base64 = Buffer.from((await compilePresentationDeck(deck)).bytes).toString('base64')
   const exportPage = vi.fn(async () => ({ slideId: 'host-1', slideIds: ['host-1'], base64 }))
   const inspectPage = vi.fn(
     async (_slideId: string, _signal?: AbortSignal, replacement?: string) => {
-      if (!replacement) throw hostError()
+      if (!replacement) throw failure
       return {
         slideId: 'host-1',
         screenshot: { mime: 'image/png', base64: replacement, renderer: 'libreoffice' },
@@ -103,6 +103,24 @@ it('uses a bounded PC PNG only after export identity and semantic content are re
   expect(f.exportPage).toHaveBeenCalledTimes(3)
   expect(f.operations).toContain('existing_page_backup_render')
   expect(f.operations.at(-1)).toBe('existing_page_backup_release')
+})
+
+it('uses PC rendering when every host screenshot width exceeds the image budget', async () => {
+  const f = await fixture(
+    Object.assign(new Error('office_image_too_large'), { code: 'office_image_too_large' }),
+  )
+  expect((await f.inspect('host-1')).screenshot).toEqual({
+    mime: 'image/png',
+    base64: png,
+    renderer: 'libreoffice',
+  })
+  expect(f.operations).toContain('existing_page_backup_render')
+})
+
+it('does not render a stale host page after a concurrent edit', async () => {
+  const f = await fixture(new Error('office_concurrent_change'))
+  await expect(f.inspect('host-1')).rejects.toThrow('office_concurrent_change')
+  expect(f.exportPage).not.toHaveBeenCalled()
 })
 
 it('rejects a changed host page after PC rendering', async () => {
