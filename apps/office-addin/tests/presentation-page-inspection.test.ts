@@ -132,6 +132,22 @@ describe('exact imported PowerPoint page inspection', () => {
     expect(slides.getItemAt).toHaveBeenCalledTimes(2)
     expect(context.sync).toHaveBeenCalledTimes(5)
   })
+  it('labels an oversized ordinary slide screenshot with its original host page ID', async () => {
+    const { adapter, slides, slide } = setup()
+    const dense = new PNG({ width: 400, height: 200 })
+    let seed = 7
+    for (let i = 0; i < dense.data.length; i++) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+      dense.data[i] = seed >>> 24
+    }
+    Object.assign(slides, { getCount: vi.fn(() => ({ value: 1 })) })
+    slides.getItemAt.mockImplementation(() => slide)
+    slide.getImageAsBase64.mockReturnValue({ value: PNG.sync.write(dense).toString('base64') })
+    await expect(adapter.screenshotSlide(0)).rejects.toMatchObject({
+      code: 'office_image_too_large',
+      targetSlideId: 'host-page-25',
+    })
+  })
   it('binds an exhausted ordinary screenshot to its first page and rejects index drift', async () => {
     const { adapter, context, slides, slide } = setup()
     Object.assign(slides, { getCount: vi.fn(() => ({ value: 1 })) })

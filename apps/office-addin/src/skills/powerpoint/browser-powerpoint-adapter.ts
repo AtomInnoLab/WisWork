@@ -1531,7 +1531,16 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             slide.id.length > 256
           )
             throw new Error('office_read_failed')
-          return { slideId, base64: image.value, mime: 'image/png' }
+          if (image.value.length > Math.ceil((64 * 1024) / 3) * 4)
+            throw Object.assign(new Error('office_image_too_large'), {
+              code: 'office_image_too_large',
+            })
+          const base64 = validatePowerPointPageScreenshot(image.value)
+          if (atob(base64).length > 64 * 1024)
+            throw Object.assign(new Error('office_image_too_large'), {
+              code: 'office_image_too_large',
+            })
+          return { slideId, base64, mime: 'image/png' }
         },
         signal,
       )
@@ -1540,7 +1549,12 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
       if (
         !targetSlideId ||
-        !['office_screenshot_unavailable', 'ActivityLimitReached', 'Timeout'].includes(String(code))
+        ![
+          'office_screenshot_unavailable',
+          'office_image_too_large',
+          'ActivityLimitReached',
+          'Timeout',
+        ].includes(String(code))
       )
         throw error
       const failure = error instanceof Error ? error : new Error(String(error))

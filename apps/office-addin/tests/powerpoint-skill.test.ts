@@ -636,6 +636,14 @@ describe('PowerPoint compatibility skill', () => {
       visualAvailableToModel: true,
     })
     expect(screenshotFallback).toHaveBeenCalledWith(0, undefined, undefined)
+    ;(fake.screenshotSlide as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      Object.assign(new Error('office_image_too_large'), {
+        code: 'office_image_too_large',
+        targetSlideId: 'host-slide-1',
+      }),
+    )
+    await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    expect(screenshotFallback).toHaveBeenLastCalledWith(0, undefined, 'host-slide-1')
     const boundFailure = Object.assign(new Error('busy'), {
       code: 'Timeout',
       targetSlideId: 'host-slide-1',

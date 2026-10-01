@@ -2032,9 +2032,12 @@ export function createPowerPointSkill(options: {
               error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
             if (
               !options.screenshotFallback ||
-              !['office_screenshot_unavailable', 'ActivityLimitReached', 'Timeout'].includes(
-                String(code),
-              )
+              ![
+                'office_screenshot_unavailable',
+                'office_image_too_large',
+                'ActivityLimitReached',
+                'Timeout',
+              ].includes(String(code))
             )
               throw error
             try {
