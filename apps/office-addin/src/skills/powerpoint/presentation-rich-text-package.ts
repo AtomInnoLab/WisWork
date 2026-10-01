@@ -24,6 +24,10 @@ function tags(tree: Node[], tag: string): Node[] {
     ),
   )
 }
+function uniqueTag(tree: Node[], tag: string): Node | undefined {
+  const matches = tags(tree, tag)
+  return matches.length === 1 ? matches[0] : undefined
+}
 function attr(node: Node | undefined, name: string): string | undefined {
   const value = (node?.[':@'] as Node | undefined)?.[`@_${name}`]
   return typeof value === 'string' ? value : undefined
@@ -355,9 +359,13 @@ async function linkedThemeStyle(
   const layout = xml(await zip.file(layoutPath)!.async('string'))
   const master = xml(await zip.file(masterPath)!.async('string'))
   const theme = themePath ? xml(await zip.file(themePath)!.async('string')) : []
-  const override = tags(layout, 'a:overrideClrMapping')[0]
-  const mapping = override ?? tags(master, 'p:clrMap')[0]
-  const scheme = tags(theme, 'a:clrScheme')[0]
+  const overrides = tags(layout, 'a:overrideClrMapping')
+  const mapping = overrides.length
+    ? overrides.length === 1
+      ? overrides[0]
+      : undefined
+    : uniqueTag(master, 'p:clrMap')
+  const scheme = uniqueTag(theme, 'a:clrScheme')
   const colors: Record<string, string> = {}
   const typefaces: Record<string, string> = {}
   const otherFonts: Array<Record<string, string | number | boolean>> = []
@@ -374,32 +382,34 @@ async function linkedThemeStyle(
     const styles = textStyles.length === 1 ? tags(textStyles[0]!['p:txStyles'] as Node[], tag) : []
     if (styles.length !== 1) continue
     const children = styles[0]![tag] as Node[]
-    const defaults = tags(children, 'a:defPPr')[0]
+    const defaults = uniqueTag(children, 'a:defPPr')
     const defaultFont = defaults ? directFont(defaults['a:defPPr'] as Node[]) : {}
     for (let level = 0; level < 9; level++) {
-      const property = tags(children, `a:lvl${level + 1}pPr`)[0]
+      const properties = tags(children, `a:lvl${level + 1}pPr`)
+      if (properties.length > 1) continue
+      const property = properties[0]
       fonts[level] = knownFont(
         defaultFont,
         property ? directFont(property[`a:lvl${level + 1}pPr`] as Node[]) : {},
       )
     }
   }
-  const fontScheme = tags(theme, 'a:fontScheme')[0]
+  const fontScheme = uniqueTag(theme, 'a:fontScheme')
   const fontChildren = (fontScheme?.['a:fontScheme'] as Node[] | undefined) ?? []
   for (const [symbol, tag] of [
     ['+mj-lt', 'a:majorFont'],
     ['+mn-lt', 'a:minorFont'],
   ] as const) {
-    const font = tags(fontChildren, tag)[0]
-    const face = attr(tags((font?.[tag] as Node[] | undefined) ?? [], 'a:latin')[0], 'typeface')
+    const font = uniqueTag(fontChildren, tag)
+    const face = attr(uniqueTag((font?.[tag] as Node[] | undefined) ?? [], 'a:latin'), 'typeface')
     if (face && face.length <= 256 && !Array.from(face).some((char) => char.charCodeAt(0) < 32))
       typefaces[symbol] = face
   }
   if (!scheme) return { colors, typefaces, otherFonts, placeholderFonts }
   const exactRgb = (key: string) => {
-    const entry = tags(scheme['a:clrScheme'] as Node[], `a:${key}`)[0]
+    const entry = uniqueTag(scheme['a:clrScheme'] as Node[], `a:${key}`)
     const children = (entry?.[`a:${key}`] as Node[] | undefined) ?? []
-    const rgbNode = tags(children, 'a:srgbClr')[0]
+    const rgbNode = uniqueTag(children, 'a:srgbClr')
     const rgb = attr(rgbNode, 'val')
     return rgb &&
       /^[0-9a-fA-F]{6}$/.test(rgb) &&

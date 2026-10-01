@@ -506,6 +506,25 @@ it('reads explicit master other-text font only for a non-placeholder shape', asy
     kind: 'title',
     font: { typeface: 'Title Face', sizePt: 32 },
   })
+  const masterXml = await zip.file('ppt/slideMasters/slideMaster1.xml')!.async('string')
+  zip.file(
+    'ppt/slideMasters/slideMaster1.xml',
+    masterXml
+      .replace(
+        '</a:lvl1pPr></p:titleStyle>',
+        '</a:lvl1pPr><a:lvl1pPr><a:defRPr sz="4000"/></a:lvl1pPr></p:titleStyle>',
+      )
+      .replace(
+        '</a:lvl1pPr></p:otherStyle>',
+        '</a:lvl1pPr><a:lvl1pPr><a:defRPr sz="4000"/></a:lvl1pPr></p:otherStyle>',
+      ),
+  )
+  const ambiguousLevel = await inspectPowerPointRichText(
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(ambiguousLevel.shapes[0]?.paragraphs[0]?.runs[0]?.knownFont).not.toHaveProperty('typeface')
+  expect(ambiguousLevel.shapes[2]?.paragraphs[0]).not.toHaveProperty('masterStyleCandidate')
+  zip.file('ppt/slideMasters/slideMaster1.xml', masterXml)
   zip.remove('ppt/slideMasters/_rels/slideMaster1.xml.rels')
   const withoutTheme = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
   expect(withoutTheme.shapes[0]?.paragraphs[0]?.runs[0]?.knownFont.typeface).toBe('Master Face')
@@ -559,6 +578,38 @@ it('resolves only explicitly linked and unmodified theme colors', async () => {
     expect.objectContaining({ text: 'lt2', resolvedThemeColor: '#F0F0F0' }),
   ])
   expect(report.shapes[0]?.paragraphs[0]?.runs[1]).not.toHaveProperty('resolvedThemeColor')
+  const originalMaster = await zip.file('ppt/slideMasters/slideMaster1.xml')!.async('string')
+  const originalThemeForAmbiguity = await zip.file('ppt/theme/theme1.xml')!.async('string')
+  zip.file(
+    'ppt/theme/theme1.xml',
+    originalThemeForAmbiguity.replace(
+      '<a:accent2><a:srgbClr val="123456"/></a:accent2>',
+      '<a:accent2><a:srgbClr val="123456"/></a:accent2><a:accent2><a:srgbClr val="ABCDEF"/></a:accent2>',
+    ),
+  )
+  const duplicateColor = await inspectPowerPointRichText(
+    await zip.generateAsync({ type: 'base64' }),
+  )
+  expect(duplicateColor.shapes[0]?.paragraphs[0]?.runs[0]).not.toHaveProperty('resolvedThemeColor')
+  zip.file(
+    'ppt/theme/theme1.xml',
+    originalThemeForAmbiguity.replace(
+      '<a:majorFont><a:latin typeface="Aptos Display"/></a:majorFont>',
+      '<a:majorFont><a:latin typeface="Aptos Display"/></a:majorFont><a:majorFont><a:latin typeface="Other"/></a:majorFont>',
+    ),
+  )
+  const duplicateFont = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  expect(duplicateFont.shapes[0]?.paragraphs[0]?.runs[0]).not.toHaveProperty(
+    'resolvedThemeTypeface',
+  )
+  zip.file('ppt/theme/theme1.xml', originalThemeForAmbiguity)
+  zip.file(
+    'ppt/slideMasters/slideMaster1.xml',
+    originalMaster.replace('/></p:sldMaster>', '/><p:clrMap accent1="accent1"/></p:sldMaster>'),
+  )
+  const duplicateMap = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  expect(duplicateMap.shapes[0]?.paragraphs[0]?.runs[0]).not.toHaveProperty('resolvedThemeColor')
+  zip.file('ppt/slideMasters/slideMaster1.xml', originalMaster)
   zip.file('ppt/slideMasters/slideMaster1.xml', '<p:sldMaster xmlns:p="urn:p"/>')
   const directScheme = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
   expect(
