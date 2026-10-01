@@ -9,9 +9,11 @@
 - `images/schematic-01.png` 至 `schematic-12.png` 与 `asset-rights.json`：自制授权示意图，**不代表论文测量数据**。现稿已嵌入图片；独立文件用于权利核对和生成绑定稿的素材输入。
 - `scenario.json`：任意现稿的两对象修改、禁止修改页、手工位移冲突和生成绑定稿目标。生成绑定稿必须在验收时由 WisWork 从同一论文生产并导入，实际 Project/Slide/Host ID 与回执不能由材料包预造。
 
-`wiswork-generated-candidate.pptx` 使用仓库 PPTX 引擎和同一研究内容编译，含八页原生对象、同一授权示意图与两张图表。它只是生成路径的可检查候选，尚无 PowerPoint 导入映射。可运行 `node -r tsx/cjs generate-bound-candidate.cjs` 重建。
+`reference-plan.json` 与 `reference-deck.json` 将论文 PDF 原文、图片权利声明、八页施工图、目标页自制示意图及两张图表底层值接入 WisWork 生产输入。`wiswork-generated-candidate.pptx` 由同一原生页模型编译，含八页原生对象、授权示意图与两张图表；它仍只是生成路径的可检查候选，尚无 PowerPoint 导入映射。可运行 `node --import tsx generate-bound-candidate.cjs` 重建。
 
-`SHA256SUMS` 冻结上述 17 份输入；`verify-materials.mjs` 核对全部摘要、图片许可、两份八页原生稿、四张原生图表和第 4 页目标对象。复用原文与素材不复用其他任务的执行结果。
+`SHA256SUMS` 冻结上述 17 份原输入及新增的计划、页模型，共 19 份文件；`verify-materials.mjs` 核对全部摘要、论文摘录、图片权利、两份八页原生稿、图表缓存及嵌入工作簿和第 4 页目标对象。复用原文与素材不复用其他任务的执行结果。
+
+本机 `node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-15 --built-taskpane` 已用构建后的 Taskpane、真实 Electron PC 与 Rust Relay 完成论文 PDF、权利 JSON 上传、计划保存、八页生产、PPTX/PDF 回读与任务恢复；生成候选稿还通过 LibreOffice 八页渲染。它只验证生成路径的工程链路，不能制造另一份真实 PowerPoint 文档的导入映射，也不能替代任意现稿路径的宿主修改和保存重开证据。
 
 ## 固定任务提示
 
