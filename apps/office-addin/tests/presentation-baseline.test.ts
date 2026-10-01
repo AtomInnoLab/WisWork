@@ -677,6 +677,26 @@ it('reads formatted runs from a real PptxGenJS slide without claiming inherited 
     }),
   ])
 })
+it('does not claim a direct color or font when run formatting contains conflicting declarations', async () => {
+  const zip = new JSZip()
+  zip.file(
+    'ppt/slides/slide1.xml',
+    `<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="7" name="Ambiguous"/></p:nvSpPr><p:txBody><a:p>
+      <a:r><a:rPr><a:latin typeface="First"/><a:latin typeface="Second"/><a:solidFill><a:srgbClr val="112233"/><a:schemeClr val="accent1"/></a:solidFill></a:rPr><a:t>Mixed</a:t></a:r>
+      <a:r><a:rPr><a:solidFill><a:srgbClr val="112233"/><a:srgbClr val="445566"/></a:solidFill></a:rPr><a:t>Duplicate</a:t></a:r>
+      <a:r><a:rPr><a:solidFill><a:srgbClr val="112233"><a:tint val="50000"/></a:srgbClr></a:solidFill></a:rPr><a:t>Transformed</a:t></a:r>
+      <a:r><a:rPr><a:latin typeface="Single"/><a:solidFill><a:srgbClr val="778899"/></a:solidFill></a:rPr><a:t>Exact</a:t></a:r>
+    </a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+  )
+  const report = await inspectPowerPointRichText(await zip.generateAsync({ type: 'base64' }))
+  const runs = report.shapes[0]?.paragraphs[0]?.runs
+  expect(runs?.[0]?.knownFont).not.toHaveProperty('color')
+  expect(runs?.[0]?.knownFont).not.toHaveProperty('themeColor')
+  expect(runs?.[0]?.knownFont).not.toHaveProperty('typeface')
+  expect(runs?.[1]?.knownFont).not.toHaveProperty('color')
+  expect(runs?.[2]?.knownFont).not.toHaveProperty('color')
+  expect(runs?.[3]?.knownFont).toMatchObject({ color: '#778899', typeface: 'Single' })
+})
 it('follows theme relationships in a complete generated PPTX package', async () => {
   const deck = new PptxGenJS()
   deck.addSlide().addText('Theme-linked', { x: 1, y: 1, w: 3, h: 1, color: '123456' })

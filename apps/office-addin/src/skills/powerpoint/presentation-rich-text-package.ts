@@ -52,14 +52,19 @@ function directFont(run: Node[]): Record<string, string | number | boolean> {
     properties['a:defRPr'] ??
     properties['a:endParaRPr']) as Node[]
   const size = attr(properties, 'sz')
-  const fill = tags(propertyTree, 'a:solidFill')[0]
+  const fill = uniqueTag(propertyTree, 'a:solidFill')
   const fillTree = (fill?.['a:solidFill'] as Node[] | undefined) ?? []
-  const color = attr(tags(fillTree, 'a:srgbClr')[0], 'val')
-  const themeColor = attr(tags(fillTree, 'a:schemeClr')[0], 'val')
-  const themeColorModified = (
-    (tags(fillTree, 'a:schemeClr')[0]?.['a:schemeClr'] as Node[] | undefined) ?? []
-  ).some((node) => Object.keys(node).some((key) => key !== ':@' && key !== '#text'))
-  const typeface = attr(tags(propertyTree, 'a:latin')[0], 'typeface')
+  const rgbNode = fillTree.length === 1 ? uniqueTag(fillTree, 'a:srgbClr') : undefined
+  const schemeNode = fillTree.length === 1 ? uniqueTag(fillTree, 'a:schemeClr') : undefined
+  const color =
+    rgbNode && !((rgbNode['a:srgbClr'] as Node[] | undefined) ?? []).length
+      ? attr(rgbNode, 'val')
+      : undefined
+  const themeColor = attr(schemeNode, 'val')
+  const themeColorModified = ((schemeNode?.['a:schemeClr'] as Node[] | undefined) ?? []).some(
+    (node) => Object.keys(node).some((key) => key !== ':@' && key !== '#text'),
+  )
+  const typeface = attr(uniqueTag(propertyTree, 'a:latin'), 'typeface')
   return {
     ...(size && /^\d+$/.test(size) ? { sizePt: Number(size) / 100 } : {}),
     ...(color && /^[0-9a-fA-F]{6}$/.test(color) ? { color: `#${color.toUpperCase()}` } : {}),
