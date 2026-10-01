@@ -2350,18 +2350,39 @@ function StatusScreen(props: {
 
 export function App() {
   const [versionState, setVersionState] = useState<BuildVersionState>({ status: 'checking' })
+  const [versionAttempt, setVersionAttempt] = useState(0)
   useEffect(() => {
     let active = true
     void (async () => {
       const deployed = await deployedBuildId()
-      if (active) setVersionState(resolveBuildVersion(deployed, __WISWORK_OFFICE_BUILD_ID__))
+      if (active)
+        setVersionState(
+          resolveBuildVersion(deployed, __WISWORK_OFFICE_BUILD_ID__, import.meta.env.PROD),
+        )
     })()
     return () => {
       active = false
     }
-  }, [])
+  }, [versionAttempt])
   if (versionState.status === 'checking')
     return <StatusScreen title="Checking WisWork version" detail="Checking for updates…" busy />
+  if (versionState.status === 'unavailable')
+    return (
+      <StatusScreen
+        title="Cannot verify WisWork version"
+        detail="Check the connection and retry before using document tools."
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setVersionState({ status: 'checking' })
+            setVersionAttempt((attempt) => attempt + 1)
+          }}
+        >
+          Retry version check
+        </button>
+      </StatusScreen>
+    )
   if (versionState.status === 'stale')
     return (
       <StatusScreen

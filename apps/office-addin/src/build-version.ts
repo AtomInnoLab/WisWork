@@ -1,12 +1,17 @@
 const BUILD_ID = /^[A-Za-z0-9_.-]{3,96}$/
 
 export type BuildVersionState =
-  { status: 'checking' } | { status: 'current' } | { status: 'stale'; buildId: string }
+  | { status: 'checking' }
+  | { status: 'current' }
+  | { status: 'unavailable' }
+  | { status: 'stale'; buildId: string }
 
 export function resolveBuildVersion(
   deployed: string | undefined,
   current: string,
+  requireMetadata = false,
 ): BuildVersionState {
+  if (!deployed && requireMetadata) return { status: 'unavailable' }
   return deployed && deployed !== current
     ? { status: 'stale', buildId: deployed }
     : { status: 'current' }

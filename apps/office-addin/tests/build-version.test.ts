@@ -50,6 +50,19 @@ describe('deployedBuildId', () => {
 })
 
 describe('resolveBuildVersion', () => {
+  it('blocks production document tools when deployed metadata cannot be verified', () => {
+    expect(resolveBuildVersion(undefined, 'release_123', true)).toEqual({
+      status: 'unavailable',
+    })
+    expect(resolveBuildVersion('release_123', 'release_123', true)).toEqual({
+      status: 'current',
+    })
+    expect(resolveBuildVersion('release_124', 'release_123', true)).toEqual({
+      status: 'stale',
+      buildId: 'release_124',
+    })
+  })
+
   it('treats sentinel-like build IDs as real deployed versions', () => {
     expect(resolveBuildVersion('checking', 'previous')).toEqual({
       status: 'stale',

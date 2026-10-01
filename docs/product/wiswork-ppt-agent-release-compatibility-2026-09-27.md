@@ -2,6 +2,8 @@
 
 2026-10-01 本机补充：发布预检把 `taskpane.html` 的全部 `modulepreload` 引用纳入校验，与团队登录两页一致；缺文件或外域/非哈希路径均拒绝。预检还从发布包内 JS/MJS 的相对分包导入及 `/assets/` Worker URL、CSS 的 `/assets/` URL 收集运行时依赖，要求引用文件存在且符合哈希命名。缺失分包、Worker 和图片用例均被拒绝，预检测试 18/18 通过；设置本机 HTTPS 测试 Origin 后构建的 17 个发布文件通过完整检查。未设置 `VITE_WISWORK_ADDIN_ORIGIN` 的普通本地构建不会生成发布 Manifest，不作为完整发布包。
 
+2026-10-01 本机补充：生产 Taskpane 的 `version.json` 请求失败、超时或元数据无效时进入可重试的版本未核实状态，文档工具和 PC 连接入口均不开放；开发服务器仍允许缺少该文件。构建版浏览器冒烟首次注入 HTTP 503，核对只显示版本重试入口，再恢复版本响应并完成真实 Relay/PC 业务链。此为本机生产构建和模拟 Office.js 宿主的版本门禁证据，不能替代部署站点或真实 PowerPoint 混合版本验收。
+
 依据[完整方案](./wiswork-ppt-agent-solution-and-implementation-plan-2026-09-22.md) §10 O6。此表描述当前协议实现和自动化证据，不代替 Windows/Mac PowerPoint Desktop/Web 的发布验收。
 
 本机 `node tools/ppt-agent-electron-real-relay-smoke.mjs` 还验证 Chrome Taskpane 发起真实 Relay 配对、从 Electron PC 读回已持久编译的项目，并在传输中断后续接会话、重新读取项目；Taskpane 重开后重新配对仍能恢复同一项目。浏览器使用 Office.js 测试宿主和协议帧传输桥；这项结果不覆盖发布域名的网络连接或真实 PowerPoint 宿主。

@@ -201,6 +201,14 @@ async function inspectBrowserWorkbench(origin, pc) {
         } };`,
       }),
     )
+    if (builtTaskpane) {
+      let failedVersionChecks = 0
+      await page.route('https://localhost:3000/version.json', (route) => {
+        if (failedVersionChecks++ === 0)
+          return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' })
+        return route.continue()
+      })
+    }
     await page.addInitScript(() => {
       const sockets = new Map()
       window.__relayDispatch = (id, type, data) => {
@@ -237,6 +245,12 @@ async function inspectBrowserWorkbench(origin, pc) {
       if (received.status() >= 400) failedResponses.push(`${received.status()} ${received.url()}`)
     })
     const response = await page.goto('https://localhost:3000/taskpane.html')
+    if (builtTaskpane) {
+      await page.getByRole('heading', { name: 'Cannot verify WisWork version' }).waitFor()
+      if (await page.getByRole('button', { name: 'Connect to WisWork PC' }).count())
+        throw Error('unverified Taskpane version exposed PC connection')
+      await page.getByRole('button', { name: 'Retry version check' }).click()
+    }
     try {
       await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
     } catch (error) {
@@ -804,7 +818,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    `Electron PC + Rust Relay business smoke passed (${builtTaskpane ? 'built' : 'development'} Taskpane): browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, ${concurrentBenchmark ? 'three parallel P0-17 source-backed eight-page productions' : 'three concurrent documents'}, fresh eight-page release production${concurrentBenchmark ? '' : `, ${researchCaseId} frozen source upload and eight-page production`}${derivedPageFixture ? ', P0-18 parent-bound single-page revision preserving seven page packages' : ''}, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and ${sourceBackedCrash ? 'P0-20 source-backed page-five crash recovery' : 'running job crash recovery'}`,
+    `Electron PC + Rust Relay business smoke passed (${builtTaskpane ? 'built' : 'development'} Taskpane): ${builtTaskpane ? 'version lookup failure blocks connection until retry, ' : ''}browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, ${concurrentBenchmark ? 'three parallel P0-17 source-backed eight-page productions' : 'three concurrent documents'}, fresh eight-page release production${concurrentBenchmark ? '' : `, ${researchCaseId} frozen source upload and eight-page production`}${derivedPageFixture ? ', P0-18 parent-bound single-page revision preserving seven page packages' : ''}, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and ${sourceBackedCrash ? 'P0-20 source-backed page-five crash recovery' : 'running job crash recovery'}`,
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {
