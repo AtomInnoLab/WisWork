@@ -9,6 +9,8 @@ import { inflateRawSync } from 'node:zlib'
 import JSZip from 'jszip'
 import { PresentationStore, assertPresentationId } from '@wiswork/project-store'
 import {
+  presentationDeliveryBundleFiles,
+  presentationDeliveryScreenshotFiles,
   parsePresentationDeliveryBundleManifest,
   parsePresentationDeliveryBundleReceipt,
   type PresentationDeliveryBundleReceipt,
@@ -171,7 +173,8 @@ async function validateBundleZip(raw: Buffer) {
       start = raw.readUInt32LE(end + 16)
     if (
       !count ||
-      count > 20 ||
+      count >
+        presentationDeliveryBundleFiles.length + presentationDeliveryScreenshotFiles.length + 4 ||
       count !== raw.readUInt16LE(end + 8) ||
       start + raw.readUInt32LE(end + 12) !== end
     )
@@ -601,8 +604,8 @@ export function createPresentationDeliveryBundleService(options: {
             !files.get('presentation.pdf')!.subarray(0, 5).equals(Buffer.from('%PDF-')))
         )
           fail('unsupported_file')
-        for (let page = 1; page <= 8; page++) {
-          const image = files.get(`page-${page}.png`)
+        for (const name of presentationDeliveryScreenshotFiles) {
+          const image = files.get(name)
           if (!image) continue
           if (
             image.length < 24 ||

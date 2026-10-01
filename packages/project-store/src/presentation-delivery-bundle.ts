@@ -9,7 +9,7 @@ export const presentationDeliveryBundleFiles = [
   'README.md',
 ] as const
 export const presentationDeliveryScreenshotFiles = Array.from(
-  { length: 8 },
+  { length: 20 },
   (_, index) => `page-${index + 1}.png`,
 )
 export interface PresentationDeliveryBundleManifest {
@@ -96,7 +96,7 @@ export function parsePresentationDeliveryBundleManifest(
     !time(m.createdAt) ||
     !Array.isArray(m.files) ||
     m.files.length < 8 ||
-    m.files.length > 19
+    m.files.length > 31
   )
     fail()
   const names = new Set<string>()
@@ -128,6 +128,9 @@ export function parsePresentationDeliveryBundleManifest(
     names.add(file.name)
     total += file.sizeBytes
   }
+  const screenshotCount = presentationDeliveryScreenshotFiles.filter((name) =>
+    names.has(name),
+  ).length
   if (
     total > 32 * 1024 * 1024 ||
     presentationDeliveryBundleFiles.some((name) => !names.has(name)) ||
@@ -149,9 +152,12 @@ export function parsePresentationDeliveryBundleManifest(
     (m.checks.pdf === 'included') !== names.has('presentation.pdf') ||
     names.has('research.json') !== names.has('research.md') ||
     (m.checks.pageScreenshots === 'captured_unreviewed') !==
-      presentationDeliveryScreenshotFiles.every((name) => names.has(name)) ||
+      (screenshotCount > 0 &&
+        presentationDeliveryScreenshotFiles
+          .slice(0, screenshotCount)
+          .every((name) => names.has(name))) ||
     ((m.checks.pageScreenshots === undefined || m.checks.pageScreenshots === 'not_included') &&
-      presentationDeliveryScreenshotFiles.some((name) => names.has(name))) ||
+      screenshotCount > 0) ||
     (m.checks.pageScreenshots !== undefined &&
       !['not_included', 'captured_unreviewed'].includes(m.checks.pageScreenshots))
   )

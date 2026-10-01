@@ -107,6 +107,100 @@ async function setup(vfs = new InMemoryVfs()) {
   }
 }
 describe('current native host delivery package', () => {
+  it.each([3, 20])(
+    'includes screenshots for every page of a %i-page current document',
+    async (count) => {
+      const f = await setup()
+      f.exportDocument.mockImplementation(async () => pptxWithPages(count))
+      const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+      const ids = Array.from({ length: count }, (_, index) => `host-${index + 1}`)
+      const skill = createPresentationHostBundleSkill({
+        ...f.options,
+        verifySlides: async () => ({
+          slideWidth: 960,
+          slideHeight: 540,
+          slides: ids.map((slideId, slideIndex) => ({
+            slideId,
+            slideIndex,
+            shapes: [],
+            shapesTruncated: false,
+            overflows: [],
+            overlaps: [],
+            overlapsTruncated: false,
+          })),
+          truncated: false,
+        }),
+        inspectPage: async (slideId: string) => ({
+          slideId,
+          slideWidth: 960,
+          slideHeight: 540,
+          shapes: [],
+          shapesTruncated: false,
+          overflows: [],
+          overlaps: [],
+          overlapsTruncated: false,
+          screenshot: { mime: 'image/png' as const, base64: png.toString('base64') },
+        }),
+      })
+      const result = await skill.executeTool({
+        id: 'variable-page-screenshots',
+        name: 'export_current_presentation_bundle',
+        input: {
+          project_id: f.report.projectId,
+          request_id: f.report.requestId,
+          include_page_screenshots: true,
+        },
+      })
+      expect(result.isError).not.toBe(true)
+      const zip = await JSZip.loadAsync(f.bytes())
+      const manifest = JSON.parse(await zip.file('manifest.json')!.async('string'))
+      expect(
+        manifest.files.filter((file: { name: string }) => /^page-\d+\.png$/.test(file.name)),
+      ).toHaveLength(count)
+      expect(manifest.checks.pageScreenshots).toBe('captured_unreviewed')
+      expect(zip.file(`page-${count}.png`)).not.toBeNull()
+    },
+  )
+
+  it('does not publish partial screenshots for a document over the 20-page limit', async () => {
+    const f = await setup()
+    f.exportDocument.mockImplementation(async () => pptxWithPages(21))
+    const ids = Array.from({ length: 20 }, (_, index) => `host-${index + 1}`)
+    const inspectPage = vi.fn()
+    const skill = createPresentationHostBundleSkill({
+      ...f.options,
+      verifySlides: async () => ({
+        slideWidth: 960,
+        slideHeight: 540,
+        slides: ids.map((slideId, slideIndex) => ({
+          slideId,
+          slideIndex,
+          shapes: [],
+          shapesTruncated: false,
+          overflows: [],
+          overlaps: [],
+          overlapsTruncated: false,
+        })),
+        truncated: true,
+      }),
+      inspectPage,
+    })
+    const result = await skill.executeTool({
+      id: 'too-many-page-screenshots',
+      name: 'export_current_presentation_bundle',
+      input: {
+        project_id: f.report.projectId,
+        request_id: f.report.requestId,
+        include_page_screenshots: true,
+      },
+    })
+    expect(result.output).toBe('office_screenshot_unavailable')
+    expect(inspectPage).not.toHaveBeenCalled()
+    expect(f.request.mock.calls.some(([body]) => body.operation === 'delivery_bundle_begin')).toBe(
+      false,
+    )
+  })
+
   it('includes eight current-host screenshots as unreviewed evidence when explicitly requested', async () => {
     const f = await setup()
     const eightPagePptx = await pptxWithPages(8)

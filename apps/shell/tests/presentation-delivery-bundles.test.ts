@@ -69,6 +69,27 @@ it('accepts eight bounded host screenshots and rejects a corrupt image before pu
   await broken.upload()
   await expect(broken.call('finish')).rejects.toThrow('unsupported_file')
 })
+it.each([3, 20])('accepts %i contiguous host screenshots through PC publication', async (count) => {
+  const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+  const f = await fixture((files) => {
+    for (let page = 1; page <= count; page++) files.set(`page-${page}.png`, png)
+  })
+  await f.upload()
+  const ready = parsePresentationDeliveryBundleReceipt(await f.call('finish'))
+  expect(ready.state).toBe('ready')
+  expect(ready.manifest.files.filter((file) => /^page-\d+\.png$/.test(file.name))).toHaveLength(
+    count,
+  )
+})
+it('rejects an invalid screenshot on the twentieth page before PC publication', async () => {
+  const png = PNG.sync.write(new PNG({ width: 2, height: 2 }))
+  const f = await fixture((files) => {
+    for (let page = 1; page <= 20; page++)
+      files.set(`page-${page}.png`, page === 20 ? Buffer.from('corrupt png') : png)
+  })
+  await f.upload()
+  await expect(f.call('finish')).rejects.toThrow('unsupported_file')
+})
 it('rejects overlap conflict, mismatched identity and frozen evidence before publication', async () => {
   const f = await fixture((files) => {
     const v = JSON.parse(files.get('evidence.json')!.toString())
@@ -191,10 +212,17 @@ it('rejects inconsistent manifests and ready receipts and returns detached copie
       checks: { ...f.manifest.checks, pageScreenshots: 'captured_unreviewed' },
     }).files,
   ).toHaveLength(16)
+  expect(
+    parsePresentationDeliveryBundleManifest({
+      ...f.manifest,
+      files: [...f.manifest.files, ...screenshots.slice(0, 3)],
+      checks: { ...f.manifest.checks, pageScreenshots: 'captured_unreviewed' },
+    }).files,
+  ).toHaveLength(11)
   expect(() =>
     parsePresentationDeliveryBundleManifest({
       ...f.manifest,
-      files: [...f.manifest.files, ...screenshots.slice(0, 7)],
+      files: [...f.manifest.files, screenshots[0]!, screenshots[2]!],
       checks: { ...f.manifest.checks, pageScreenshots: 'captured_unreviewed' },
     }),
   ).toThrow('invalid_state')
