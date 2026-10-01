@@ -17,6 +17,9 @@ let relay
 let office
 let modernPc
 let legacyClient
+let modernClient
+let legacyOffice
+let legacyOfficeSocket
 
 function receive(socket, type, timeoutMs = 10_000) {
   return new Promise((resolveFrame, reject) => {
@@ -59,6 +62,42 @@ async function opened(socket) {
   })
 }
 
+async function until(read, predicate, name) {
+  const deadline = Date.now() + 10_000
+  let value = read()
+  while (!predicate(value) && Date.now() < deadline) {
+    await new Promise((resolveNext) => setTimeout(resolveNext, 10))
+    value = read()
+  }
+  if (!predicate(value)) throw new Error(`${name} timed out`)
+  return value
+}
+
+function browserSocket(url) {
+  const socket = new WebSocket(url, { headers: { Origin: origin } })
+  const adapter = {
+    get readyState() {
+      return socket.readyState
+    },
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+    send(value) {
+      socket.send(value)
+    },
+    close() {
+      socket.close()
+    },
+  }
+  socket.on('open', () => adapter.onopen?.())
+  socket.on('message', (data) => adapter.onmessage?.({ data: data.toString() }))
+  socket.on('close', () => adapter.onclose?.())
+  socket.on('error', () => adapter.onerror?.())
+  legacyOfficeSocket = socket
+  return adapter
+}
+
 try {
   const source = execFileSync(
     'git',
@@ -74,6 +113,37 @@ try {
     format: 'cjs',
   })
   const { createOfficeRelayClient } = createRequire(import.meta.url)(output)
+  const oldOfficeSource = execFileSync(
+    'git',
+    ['show', `${legacyRevision}:apps/office-addin/src/relay/session.ts`],
+    { cwd: root, encoding: 'utf8' },
+  )
+  const oldOfficeOutput = join(temp, 'legacy-office.cjs')
+  await build({
+    stdin: {
+      contents: oldOfficeSource,
+      loader: 'ts',
+      resolveDir: join(root, 'apps/office-addin/src/relay'),
+      sourcefile: 'legacy-office-session.ts',
+    },
+    outfile: oldOfficeOutput,
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+  })
+  const { createOfficeRelaySession } = createRequire(import.meta.url)(oldOfficeOutput)
+  const modernOutput = join(temp, 'modern-client.cjs')
+  await build({
+    entryPoints: [join(root, 'apps/shell/src/main/office-relay-client.ts')],
+    outfile: modernOutput,
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    external: ['electron'],
+  })
+  const { createOfficeRelayClient: createModernClient } = createRequire(import.meta.url)(
+    modernOutput,
+  )
   relay = spawn(
     'cargo',
     [
@@ -153,11 +223,57 @@ try {
   const claimed = await claimedPromise
   if (claimed.pairing_id !== created.pairing_id)
     throw new Error('v2 invitation was consumed by legacy PC')
+  modernPc.close()
+  modernPc = undefined
+  office.close()
+  office = undefined
+
+  legacyOffice = createOfficeRelaySession({ createSocket: () => browserSocket(url) })
+  const connected = legacyOffice.connect('powerpoint')
+  const oldInvitation = await until(
+    () => legacyOffice.snapshot(),
+    (state) => state.status === 'pending',
+    'legacy Office invitation',
+  )
+  modernClient = createModernClient({
+    endpoint: url,
+    connect: (endpoint, accessToken) =>
+      new WebSocket(endpoint, { headers: { Authorization: `Bearer ${accessToken}` } }),
+    getValidAccountStatus: async () => ({ loggedIn: true }),
+    getAccessToken: async () => token,
+    proxy: async ({ body }) => ({
+      status: 200,
+      contentType: 'application/json',
+      body: new TextEncoder().encode(JSON.stringify({ echoed: body })),
+    }),
+    negotiateCapabilities: true,
+    onPending() {},
+  })
+  await modernClient.claim(oldInvitation.verificationCode)
+  const pending = await until(
+    () => modernClient.listPending(),
+    (items) => items.length === 1,
+    'modern PC pairing',
+  )
+  if (!(await modernClient.approve(pending[0].pairingId)))
+    throw new Error('modern PC could not approve legacy Office pairing')
+  await connected
+  if (legacyOffice.snapshot().status !== 'connected' || modernClient.status() !== 'paired')
+    throw new Error('legacy Office did not connect to modern PC')
+  const reply = await legacyOffice.authenticatedFetch('/v1/office/messages', {
+    method: 'POST',
+    body: JSON.stringify({ ping: 'legacy-office' }),
+  })
+  if (reply.status !== 200 || (await reply.json()).echoed?.ping !== 'legacy-office')
+    throw new Error('legacy Office agent request did not round trip')
   process.stdout.write(
-    `Legacy PC ${legacyRevision} compatibility smoke passed: v1 claim rejected, v2 invitation retained\n`,
+    `Historical ${legacyRevision} compatibility smoke passed: v1 PC rejected by v2 invitation; v1 Office paired with modern PC and completed agent.v1 request\n`,
   )
 } finally {
   legacyClient?.revoke()
+  modernClient?.revoke()
+  legacyOffice?.disconnect()
+  legacyOfficeSocket?.close()
   office?.close()
   modernPc?.close()
   relay?.kill('SIGTERM')

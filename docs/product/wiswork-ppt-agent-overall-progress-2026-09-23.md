@@ -2022,3 +2022,5 @@ Markdown 失败根因是此实现工作树的 `node_modules/node_modules` 符号
 ## 2026-10-01：历史 v1 PC 客户端与当前 Relay 的真实协议组合
 
 O6 发布兼容矩阵新增本机可复现脚本：从历史提交 `1d611fd3` 编译旧版 PC Relay 客户端源码，以旧客户端实际发送的 v1 `pc.claim` 认领当前 Rust Relay 的 v2 Office 邀请。实测旧客户端进入 `disconnected:protocol_violation`，新版 Office 收到与该邀请精确绑定的 `office.pc_incompatible`，随后同一验证码可被 v2 PC 成功认领；脚本退出码 0，子进程均已清理。这补强“旧 PC + 新 Taskpane/Relay”的协议证据，但还不是已发布旧 PC 二进制或真实 PowerPoint 宿主测试。严格整体维持 **64%（575/9）**，候选材料 **20/20**，真实 PowerPoint 专业任务 **0/20**；继续本机开发，不做跨平台 CI。
+
+同脚本补充反向组合：编译历史 v1 Office Relay 会话源码，通过当前 Rust Relay 与当前 PC 客户端完成配对和 `agent.v1` 请求/响应。两个方向同次执行，退出码 0；旧 Office 使用测试 WebSocket 宿主适配层，仍不是旧发布 Taskpane 包或 PowerPoint 宿主验收。严格整体 **64% → 64%（575/9）**，真实 PowerPoint 专业任务 **0/20**。
