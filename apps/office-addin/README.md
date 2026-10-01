@@ -117,6 +117,12 @@ A valid configured build emits `dist/manifest.xml`; an invalid build emits no de
 The task-pane CSP allows only the fixed WSS Relay. There are no OAuth callback pages, direct
 WisUsage connections, wildcard origins, or source maps in the deployment output.
 
+To exercise the built Taskpane on this machine before deployment, build it as above, then run
+`node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-09 --built-taskpane` from the
+repository root. The command checks the local build files and serves those bytes over local HTTPS
+while testing Electron PC, Rust Relay, Taskpane, eight-page production and recovery. Office APIs in
+Chrome are simulated; this does not replace a real PowerPoint save/reopen check.
+
 The build also emits `dist/version.json` with the same build ID compiled into the Taskpane,
 plus the configured presentation rollout and remote diagnostic sample percentages.
 Serve `version.json` and `taskpane.html` without stale caches, and deploy them atomically with

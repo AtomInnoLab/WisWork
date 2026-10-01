@@ -1,7 +1,7 @@
 /* global window, document */
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -12,9 +12,9 @@ import { chromium } from '@playwright/test'
 import WebSocket from 'ws'
 import { inspectPcBusiness, releaseProductionFixture } from './ppt-agent-pc-business-smoke.mjs'
 import { loadBenchmarkBundle } from './ppt-agent-benchmark-bundle.mjs'
+import { inspectOfficeBuild } from './ppt-agent-release-preflight.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const temp = await mkdtemp(join(tmpdir(), 'ppt-electron-real-relay-'))
 const children = []
 const documentId = 'electron-real-relay-document'
 const projectId = 'electron-real-relay-project'
@@ -31,6 +31,14 @@ const expectedSlideTexts = Array.from(
   (_, index) => `Electron real Relay page ${index + 1}`,
 )
 const selectedBenchmark = process.argv.find((arg) => arg.startsWith('--benchmark='))
+const builtTaskpane = process.argv.includes('--built-taskpane')
+if (builtTaskpane) {
+  const dist = join(root, 'apps/office-addin/dist')
+  const manifest = await readFile(join(dist, 'manifest.xml'), 'utf8')
+  const origin = /<AppDomain>([^<]+)<\/AppDomain>/.exec(manifest)?.[1]
+  if (!origin) throw new Error('built Taskpane manifest origin missing')
+  await inspectOfficeBuild(dist, origin)
+}
 const researchCaseId = selectedBenchmark
   ? `PPT-${selectedBenchmark.slice('--benchmark='.length)}`
   : 'PPT-P0-01'
@@ -39,6 +47,7 @@ const {
   deck: researchDeck,
   sourceAttachments: researchSources,
 } = await loadBenchmarkBundle(root, researchCaseId)
+const temp = await mkdtemp(join(tmpdir(), 'ppt-electron-real-relay-'))
 const deck = {
   version: 1,
   id: projectId,
@@ -81,8 +90,21 @@ let smokeStage = 'setup'
 
 async function inspectBrowserWorkbench(origin, pc) {
   const dev = spawn(
-    'npm',
-    ['run', 'dev', '-w', '@wiswork/office-addin', '--', '--host', '127.0.0.1'],
+    builtTaskpane ? 'npx' : 'npm',
+    builtTaskpane
+      ? [
+          '--no-install',
+          'vite',
+          'preview',
+          '--config',
+          'apps/office-addin/vite.config.ts',
+          '--host',
+          '127.0.0.1',
+          '--port',
+          '3000',
+          '--strictPort',
+        ]
+      : ['run', 'dev', '-w', '@wiswork/office-addin', '--', '--host', '127.0.0.1'],
     {
       cwd: root,
       stdio: ['ignore', 'pipe', 'inherit'],
@@ -710,7 +732,7 @@ app.whenReady().then(async () => {
   await recoveredJob
   await stopPc(recoveredPc)
   console.log(
-    `Electron PC + Rust Relay business smoke passed: browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, ${researchCaseId} frozen source upload and eight-page production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery`,
+    `Electron PC + Rust Relay business smoke passed (${builtTaskpane ? 'built' : 'development'} Taskpane): browser Taskpane pairing, project readback, presentation copy action, real Relay session resume and Taskpane reopen, three concurrent documents, fresh eight-page release production, ${researchCaseId} frozen source upload and eight-page production, PPTX/PDF readback, TXT/PNG upload, durable delivery and manual observation, pending production recovery and running job crash recovery`,
   )
 } catch (error) {
   throw new Error(`Electron PC smoke failed during ${smokeStage}: ${error.message}`, {
