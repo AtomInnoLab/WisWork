@@ -621,6 +621,7 @@ app.whenReady().then(async () => {
         ),
       )
     : []
+  const concurrentStartedAt = Date.now()
   const concurrentSettled = await Promise.allSettled(
     concurrentDocuments.map((item, index) =>
       inspectPcBusiness(
@@ -680,6 +681,16 @@ app.whenReady().then(async () => {
     ).size !== 3
   )
     throw new Error('Electron PC concurrent document sessions crossed project boundaries')
+  if (concurrentBenchmark)
+    console.log(
+      JSON.stringify({
+        type: 'ppt_benchmark_timing',
+        caseId: 'P0-17:all',
+        scope: 'three_source_backed_productions',
+        elapsedMs: Date.now() - concurrentStartedAt,
+        pageCount: 24,
+      }),
+    )
   const attachments = join(
     userDataPath,
     'presentation-attachments',
@@ -702,6 +713,7 @@ app.whenReady().then(async () => {
     throw new Error('Electron PC fresh release production incomplete')
   if (!concurrentBenchmark) {
     smokeStage = `${researchCaseId}${benchmarkVariant ? ` ${benchmarkVariant}` : ''} real-source production`
+    const sourceStartedAt = Date.now()
     const researchResult = await inspectPcBusiness(
       origin,
       `${researchCaseId}${benchmarkVariant ? `-${benchmarkVariant}` : ''}-local-document`,
@@ -729,6 +741,15 @@ app.whenReady().then(async () => {
           researchResult.productionDelivery.derivedPage.pageDigests.length !== 8))
     )
       throw new Error(`Electron PC ${researchCaseId} source-backed production incomplete`)
+    console.log(
+      JSON.stringify({
+        type: 'ppt_benchmark_timing',
+        caseId: benchmarkVariant ? `${benchmarkCase}:${benchmarkVariant}` : benchmarkCase,
+        scope: 'source_backed_production',
+        elapsedMs: Date.now() - sourceStartedAt,
+        pageCount: 8,
+      }),
+    )
   }
   const pendingProjectId = `${projectId}-recovery`
   smokeStage = 'pending production setup'
