@@ -161,6 +161,8 @@ function checkImageAttachment(metadata, asset, id) {
 }
 
 export async function checkCompiledDelivery(compiled, exported, projectId, expectedTexts) {
+  if (typeof exported?.error === 'string' && /^[a-z_]{1,64}$/.test(exported.error))
+    throw new Error(`PC compiled PDF export failed: ${exported.error}`)
   const pageCount = expectedTexts?.length
   if (
     !Array.isArray(expectedTexts) ||

@@ -178,6 +178,14 @@ jobs:
         with:
           workspaces: apps/sheets/native/xlsx-engine
 
+      # Jobs run on separate hosts; the unit-test job's renderer is not shared.
+      - name: Install presentation rendering tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-impress poppler-utils
+          soffice --version
+          pdftoppm -v
+
       - name: Install dependencies
         run: npm ci
 

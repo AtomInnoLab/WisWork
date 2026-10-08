@@ -47,6 +47,13 @@ test('compiled delivery check binds all PPTX text pages to the rendered PDF coun
   )
 })
 
+test('compiled delivery exposes PDF renderer failures without dumping payloads', async () => {
+  await assert.rejects(
+    checkCompiledDelivery({}, { error: 'renderer_unavailable' }, 'project-1', ['Title']),
+    /PC compiled PDF export failed: renderer_unavailable/,
+  )
+})
+
 async function fakeRelay(
   t,
   response,
