@@ -1,0 +1,168 @@
+{
+  "version": 1,
+  "documentId": "19930086231",
+  "sourceRecord": "https://ntrs.nasa.gov/citations/19930086231",
+  "sourceDownload": "https://ntrs.nasa.gov/api/citations/19930086231/downloads/19930086231.pdf",
+  "title": "Preliminary Investigation of Constant-geometry, Variable Mach Number, Supersonic Tunnel with Porous Walls",
+  "publicationDate": "1950-05-03",
+  "rights": "NASA NTRS record: Work of the US Gov. Public Use Permitted.",
+  "rawDownloadSha256": "ca9f84b755db8000ffd59a698f20d533c36a60e2e4bf16877ad5d6ee18448636",
+  "rawDownloadBytes": 12861692,
+  "rawPdfHeaderOffset": 436,
+  "normalizedPdfSha256": "f85151353196d18b0c22b49717823a871ce63970e50f694f9e3dc211ca40c2ba",
+  "normalizedPdfBytes": 12861256,
+  "pages": 30,
+  "ocrReviewStatus": "unverified",
+  "pageCoverage": [
+    {
+      "page": 1,
+      "extractedCharacters": 1125,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 2,
+      "extractedCharacters": 0,
+      "status": "no_text"
+    },
+    {
+      "page": 3,
+      "extractedCharacters": 1972,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 4,
+      "extractedCharacters": 2027,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 5,
+      "extractedCharacters": 1902,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 6,
+      "extractedCharacters": 2824,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 7,
+      "extractedCharacters": 5248,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 8,
+      "extractedCharacters": 2862,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 9,
+      "extractedCharacters": 2807,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 10,
+      "extractedCharacters": 2732,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 11,
+      "extractedCharacters": 1321,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 12,
+      "extractedCharacters": 2093,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 13,
+      "extractedCharacters": 2009,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 14,
+      "extractedCharacters": 684,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 15,
+      "extractedCharacters": 353,
+      "status": "sparse_unverified"
+    },
+    {
+      "page": 16,
+      "extractedCharacters": 577,
+      "status": "sparse_unverified"
+    },
+    {
+      "page": 17,
+      "extractedCharacters": 719,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 18,
+      "extractedCharacters": 496,
+      "status": "sparse_unverified"
+    },
+    {
+      "page": 19,
+      "extractedCharacters": 2349,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 20,
+      "extractedCharacters": 4758,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 21,
+      "extractedCharacters": 3589,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 22,
+      "extractedCharacters": 5329,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 23,
+      "extractedCharacters": 708,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 24,
+      "extractedCharacters": 27,
+      "status": "sparse_unverified"
+    },
+    {
+      "page": 25,
+      "extractedCharacters": 507,
+      "status": "sparse_unverified"
+    },
+    {
+      "page": 26,
+      "extractedCharacters": 784,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 27,
+      "extractedCharacters": 2078,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 28,
+      "extractedCharacters": 10856,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 29,
+      "extractedCharacters": 1102,
+      "status": "ocr_unverified"
+    },
+    {
+      "page": 30,
+      "extractedCharacters": 5,
+      "status": "sparse_unverified"
+    }
+  ]
+}

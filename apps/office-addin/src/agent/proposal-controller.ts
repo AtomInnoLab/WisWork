@@ -1,9 +1,19 @@
 import type { OfficeDocumentClient } from '../office-document.js'
 import { officeIdentifiers, type OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
+import { validatePowerPointPageScreenshot } from '../skills/powerpoint/browser-powerpoint-adapter.js'
 
 export type ProposalOperation = 'replace' | 'append'
 export const MAX_PROPOSAL_SELECTION_LENGTH = 12_000
 export const MAX_PROPOSAL_PREVIEW_BYTES = 64 * 1024
+const MAX_POST_WRITE_PAGES = 8
+const MAX_POST_WRITE_BYTES = 8 * 1024 * 1024
+
+export type ProposalPostWriteEvidence =
+  | {
+      status: 'captured'
+      pages: readonly { slideId: string; pngBase64: string; digest: string }[]
+    }
+  | { status: 'unavailable'; reason: string }
 
 export interface ProposalImpact {
   host: string
@@ -12,6 +22,7 @@ export interface ProposalImpact {
 }
 
 export interface StructuredProposal {
+  lockReview?: PresentationLockReview
   id: string
   operation: string
   toolName?: string
@@ -24,7 +35,16 @@ export interface StructuredProposal {
   code?: string
 }
 
-export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id'> {
+export type PresentationLockReview =
+  | { state: 'checking' }
+  | { state: 'unavailable' }
+  | {
+      state: 'ready'
+      token: string
+      pages: { projectId: string; pageId: string; title: string; slideIds: string[] }[]
+    }
+
+export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id' | 'lockReview'> {
   /** Host-owned scope; never copied from model input or exposed in the proposal UI. */
   powerPointMutation?: { indexes: number[]; scaffold: boolean }
   verificationBinding?: {
@@ -35,10 +55,11 @@ export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id'
   validate(signal?: AbortSignal): boolean | Promise<boolean>
   execute(signal?: AbortSignal): void | Promise<void>
   verify?(signal?: AbortSignal): void | Promise<void>
+  postWrite?(): ProposalPostWriteEvidence | Promise<ProposalPostWriteEvidence>
 }
 
 export type ProposalDecision =
-  | { status: 'confirmed' }
+  | { status: 'confirmed'; postWrite?: ProposalPostWriteEvidence }
   | {
       status: 'applied_unverified'
       historyId?: string
@@ -52,6 +73,15 @@ interface ProposalDecisionLifecycle {
   promise: Promise<ProposalDecision>
   resolve(value: ProposalDecision): void
   settled: boolean
+}
+
+export interface StructuredProposalWriteHooks {
+  review?(
+    proposal: StructuredProposal,
+    signal: AbortSignal,
+  ): Promise<Extract<PresentationLockReview, { state: 'ready' }> | undefined>
+  beforeWrite(proposal: StructuredProposal, signal: AbortSignal): Promise<void>
+  afterWrite(): void
 }
 
 export interface StructuredProposalController {
@@ -133,6 +163,10 @@ const PROPOSAL_ERROR_CODES = new Set([
   'office_recovery_failed',
   'office_concurrent_change',
   'office_state_uncertain',
+  'presentation_existing_backup_capacity',
+  'presentation_lock_review_pending',
+  'presentation_lock_review_unavailable',
+  'presentation_lock_review_stale',
   'office_applied_unverified',
   'office_write_pending',
 ])
@@ -168,8 +202,49 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
+async function boundedPostWrite(
+  value: ProposalPostWriteEvidence,
+): Promise<ProposalPostWriteEvidence> {
+  if (value?.status === 'unavailable') {
+    if (!/^[a-z_]{1,64}$/.test(value.reason)) throw new Error('invalid_evidence')
+    return { status: 'unavailable', reason: value.reason }
+  }
+  if (
+    value?.status !== 'captured' ||
+    !Array.isArray(value.pages) ||
+    value.pages.length < 1 ||
+    value.pages.length > MAX_POST_WRITE_PAGES
+  )
+    throw new Error('invalid_evidence')
+  const seen = new Set<string>()
+  let totalBytes = 0
+  const pages = []
+  for (const page of value.pages) {
+    if (
+      !page ||
+      typeof page.slideId !== 'string' ||
+      !page.slideId ||
+      page.slideId.length > 256 ||
+      seen.has(page.slideId)
+    )
+      throw new Error('invalid_evidence')
+    seen.add(page.slideId)
+    validatePowerPointPageScreenshot(page.pngBase64)
+    const bytes = Uint8Array.from(atob(page.pngBase64), (char) => char.charCodeAt(0))
+    totalBytes += bytes.byteLength
+    if (totalBytes > MAX_POST_WRITE_BYTES) throw new Error('invalid_evidence')
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('')
+    if (page.digest !== digest) throw new Error('invalid_evidence')
+    pages.push({ slideId: page.slideId, pngBase64: page.pngBase64, digest })
+  }
+  return { status: 'captured', pages }
+}
+
 export function createStructuredProposalController(
   diagnostics?: Pick<OfficeDiagnostics, 'setTool' | 'record'>,
+  hooks?: StructuredProposalWriteHooks,
 ): StructuredProposalController {
   const diagnose = (action: () => void) => {
     try {
@@ -183,6 +258,7 @@ export function createStructuredProposalController(
         snapshot: StructuredProposal
         request: StructuredProposalRequest
         decision: ProposalDecisionLifecycle
+        reviewController?: AbortController
       }
     | undefined
   let confirming: AbortController | undefined
@@ -198,6 +274,7 @@ export function createStructuredProposalController(
     auditListeners.forEach((listener) => listener({ kind: 'settled', id: decision.id, ...value }))
   }
   const invalidate = (status: 'rejected' | 'cancelled') => {
+    current?.reviewController?.abort()
     if (current) settle(current.decision, { status })
     current = undefined
     confirming?.abort()
@@ -231,7 +308,6 @@ export function createStructuredProposalController(
         request.impact.host.length > 32 ||
         !Number.isSafeInteger(request.impact.count) ||
         request.impact.count < 0 ||
-        request.impact.targets.length > 256 ||
         request.impact.targets.some((target) => !target || target.length > 512) ||
         (request.verificationBinding !== undefined &&
           (!request.verificationBinding.callId ||
@@ -253,6 +329,7 @@ export function createStructuredProposalController(
       )
         invalidProposal()
       const publicValue = snapshot({
+        ...(hooks?.review ? { lockReview: { state: 'checking' as const } } : {}),
         id: crypto.randomUUID(),
         operation: request.operation,
         toolName: request.toolName,
@@ -264,8 +341,13 @@ export function createStructuredProposalController(
         after: request.after,
         code: request.code,
       })
+      // Reserve room for the failure state even when the original preview fills the budget.
+      if (hooks?.review) snapshot({ ...publicValue, lockReview: { state: 'unavailable' } })
       diagnose(() => diagnostics?.setTool(request.toolName ?? request.operation))
-      if (current) settle(current.decision, { status: 'cancelled' })
+      if (current) {
+        current.reviewController?.abort()
+        settle(current.decision, { status: 'cancelled' })
+      }
       let resolve!: (value: ProposalDecision) => void
       const promise = new Promise<ProposalDecision>((next) => {
         resolve = next
@@ -274,6 +356,27 @@ export function createStructuredProposalController(
         snapshot: publicValue,
         request: { ...request },
         decision: { id: publicValue.id, promise, resolve, settled: false },
+      }
+      if (hooks?.review) {
+        const pending = current
+        const reviewController = new AbortController()
+        pending.reviewController = reviewController
+        void Promise.resolve()
+          .then(() => hooks.review!(publicValue, reviewController.signal))
+          .then((review) => {
+            if (current !== pending || reviewController.signal.aborted) return
+            const { lockReview: _previous, ...value } = pending.snapshot
+            pending.snapshot = snapshot({ ...value, ...(review ? { lockReview: review } : {}) })
+            publish()
+          })
+          .catch(() => {
+            if (current !== pending || reviewController.signal.aborted) return
+            pending.snapshot = snapshot({
+              ...pending.snapshot,
+              lockReview: { state: 'unavailable' },
+            })
+            publish()
+          })
       }
       auditListeners.forEach((listener) =>
         listener({
@@ -307,6 +410,10 @@ export function createStructuredProposalController(
       if (confirming) throw new Error('proposal_confirmation_in_progress')
       const proposal = current
       if (!proposal || proposal.snapshot.id !== id) throw new Error('proposal_missing')
+      if (proposal.snapshot.lockReview?.state === 'checking')
+        throw new Error('presentation_lock_review_pending')
+      if (proposal.snapshot.lockReview?.state === 'unavailable')
+        throw new Error('presentation_lock_review_unavailable')
       if (quarantine) {
         current = undefined
         publish()
@@ -325,13 +432,49 @@ export function createStructuredProposalController(
         }
         phase = 'write'
         phaseStartedAt = Date.now()
-        await proposal.request.execute(controller.signal)
-        phase = 'verify'
-        phaseStartedAt = Date.now()
-        // Once execute resolves, cancellation cannot truthfully imply that the write was not
-        // applied. Always reconcile/verify; use an un-aborted signal when Stop raced the commit.
-        await proposal.request.verify?.(controller.signal.aborted ? undefined : controller.signal)
-        settle(proposal.decision, { status: 'confirmed' })
+        let releaseFailed = false
+        let releaseError: unknown
+        try {
+          if (hooks) {
+            await hooks.beforeWrite(proposal.snapshot, controller.signal)
+            if (controller.signal.aborted) throw new Error('proposal_stale')
+            // Persisting invalidation may await Office. Recheck the proposal against any
+            // document changes made during that wait before dispatching its write.
+            phase = 'validate'
+            phaseStartedAt = Date.now()
+            if (!(await proposal.request.validate(controller.signal)) || controller.signal.aborted)
+              throw new Error('proposal_stale')
+            phase = 'write'
+            phaseStartedAt = Date.now()
+          }
+          await proposal.request.execute(controller.signal)
+          phase = 'verify'
+          phaseStartedAt = Date.now()
+          // Once execute resolves, cancellation cannot truthfully imply that the write was not
+          // applied. Always reconcile/verify; use an un-aborted signal when Stop raced the commit.
+          await proposal.request.verify?.(controller.signal.aborted ? undefined : controller.signal)
+        } finally {
+          try {
+            hooks?.afterWrite()
+          } catch (error) {
+            releaseFailed = true
+            releaseError = error
+          }
+        }
+        // Keep the primary write error when both write and release fail.
+        if (releaseFailed) throw releaseError
+        let postWrite: ProposalPostWriteEvidence | undefined
+        if (proposal.request.postWrite) {
+          try {
+            postWrite = await boundedPostWrite(await proposal.request.postWrite())
+          } catch {
+            postWrite = { status: 'unavailable', reason: 'capture_failed' }
+          }
+        }
+        settle(
+          proposal.decision,
+          postWrite ? { status: 'confirmed', postWrite } : { status: 'confirmed' },
+        )
       } catch (error) {
         const code = stableProposalError(error)
         if (phase === 'validate' && controller.signal.aborted) {

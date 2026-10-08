@@ -1,14 +1,19 @@
 import {
   suspendToolExecution,
+  parseAgentResumeMessages,
   encodeOfficeScreenshotResult,
+  type AgentMessage,
   type AgentSkill,
+  type AgentToolCall,
   type ToolExecution,
   type ToolExecutionOutcome,
 } from '@wiswork/agent-core'
-import { createAgentHarness } from '@wiswork/agent-harness'
+import { acpToolActivity, createAgentHarness } from '@wiswork/agent-harness'
+import { presentationRecoveryReceiptFeedback } from './presentation-recovery-feedback.js'
 import type { OfficePowerPointVisualReviewer } from '../skills/powerpoint/powerpoint-verification.js'
 import { withPrefetchedPowerPointImage } from '../skills/powerpoint/powerpoint-import-media.js'
 import { useSyncExternalStore } from 'react'
+import type { OfficeHost } from '../office-document.js'
 import type {
   OfficeProposal,
   ProposalController,
@@ -23,9 +28,14 @@ import {
   type OfficeClarificationQuestion,
   type OfficePresentationTimeline,
   type ProposalPresentationEvent,
+  type ToolPresentationEvent,
 } from './presentation-state.js'
+import {
+  isDiagnosticToolError,
+  type OfficeDiagnostics,
+  type PresentationDiagnosticContext,
+} from '../diagnostics/office-diagnostics.js'
 import type { PresentationVerificationStringKey } from '@wiswork/i18n'
-import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 import { MAX_OBSERVED_TOOL_CALLS, type OfficeAgentTransport } from './transport.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
@@ -39,6 +49,7 @@ export interface OfficeAgentSnapshot {
   error?: string
   errorMessage?: string
   retryable: boolean
+  recoveryAvailable?: boolean
   proposal?: OfficeProposal | StructuredProposal
   questionnaire?: readonly OfficeClarificationQuestion[]
   timeline: OfficePresentationTimeline
@@ -54,6 +65,7 @@ export interface OfficeAgentSession {
   reject(): void
   newTask(): void
   retry(): void
+  resumeInterrupted?(): Promise<void>
   answerQuestionnaire?(answers: string): void
   skipQuestionnaire?(): void
   logout(): void
@@ -77,6 +89,27 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
     code: 'proposal_stale',
     message: '文档内容已发生变化，刚才的修改未应用。',
     retryable: true,
+  },
+  presentation_lock_review_pending: {
+    code: 'presentation_lock_review_pending',
+    message: '正在核对锁页状态，请等待核对完成。',
+    retryable: false,
+  },
+  presentation_lock_review_unavailable: {
+    code: 'presentation_lock_review_unavailable',
+    message: '无法可靠核对锁页状态，本次修改未应用。请恢复连接或页面身份后重新生成提案。',
+    retryable: false,
+  },
+  presentation_lock_review_stale: {
+    code: 'presentation_lock_review_stale',
+    message: '锁页、计划或页面身份已变化，本次修改未应用。请重新读取并生成提案。',
+    retryable: false,
+  },
+  presentation_existing_backup_capacity: {
+    code: 'presentation_existing_backup_capacity',
+    message:
+      '保存点备份容量已满。请在修改差异与撤销中释放已结束记录的备份，再重新发起修改。释放后该记录无法重新应用；不会自动重试。',
+    retryable: false,
   },
   office_write_failed: {
     code: 'office_write_failed',
@@ -143,6 +176,12 @@ const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
     code: 'request_timeout',
     message: 'The Agent took too long to respond. Try again.',
     retryable: true,
+  },
+  presentation_run_checkpoint_unavailable: {
+    code: 'presentation_run_checkpoint_unavailable',
+    message:
+      'The tool may have changed this presentation, but its completion record could not be saved. Inspect the document before starting another task.',
+    retryable: false,
   },
   transport_stream_budget_exceeded: {
     code: 'transport_stream_budget_exceeded',
@@ -290,7 +329,9 @@ function diagnosticToolError(output: string): string {
     return 'design_contract_visual_review_failed'
   if (output === 'raw_office_program_invalid') return 'invalid_tool_input'
   const safe = (value: string) =>
-    DIAGNOSTIC_TOOL_ERRORS.has(value) || /^office_recovery_failed:word_[a-z_]+$/.test(value)
+    isDiagnosticToolError(value) ||
+    DIAGNOSTIC_TOOL_ERRORS.has(value) ||
+    /^office_recovery_failed:word_[a-z_]+$/.test(value)
   if (safe(output)) return output
   try {
     const parsed = JSON.parse(output) as { error?: unknown; reason?: unknown }
@@ -313,11 +354,101 @@ export function presentationClarificationText(
   return boundedText(question)
 }
 
+function screenshotWaitingDiagnostic(
+  call: AgentToolCall,
+  execution: ToolExecution,
+): string | undefined {
+  if (
+    execution.isError ||
+    execution.mutated !== false ||
+    ![
+      'capture_presentation_page_qa',
+      'record_presentation_page_review',
+      'compare_presentation_page_structure',
+    ].includes(call.name) ||
+    new TextEncoder().encode(execution.output).byteLength > 4096
+  )
+    return undefined
+  try {
+    const value = JSON.parse(execution.output) as Record<string, unknown>
+    const pageId = call.input.page_id
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      Object.keys(value).length !== 4 ||
+      value.status !== 'waiting_screenshot' ||
+      value.retryable !== true ||
+      typeof pageId !== 'string' ||
+      !/^[a-zA-Z0-9_-]{1,80}$/.test(pageId) ||
+      value.pageId !== pageId ||
+      typeof value.hostSlideId !== 'string' ||
+      !value.hostSlideId.trim() ||
+      value.hostSlideId.length > 256
+    )
+      return undefined
+    return 'presentation_screenshot_waiting'
+  } catch {
+    return undefined
+  }
+}
+
+function presentationDiagnosticContext(
+  call: AgentToolCall,
+): PresentationDiagnosticContext | undefined {
+  const string = (value: unknown) => (typeof value === 'string' ? value : undefined)
+  const projectId = string(call.input.project_id)
+  const requestId = string(call.input.request_id)
+  const pageId = string(call.input.page_id ?? call.input.host_slide_id ?? call.input.slide_id)
+  if (!projectId && !requestId && !pageId) return undefined
+  return {
+    tool_call_id: call.id,
+    ...(projectId ? { project_id: projectId } : {}),
+    ...(requestId ? { request_id: requestId } : {}),
+    ...(pageId ? { page_id: pageId } : {}),
+  }
+}
+
 export function createOfficeAgentSession(dependencies: {
+  host?: OfficeHost
   transport: OfficeAgentTransport
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
+  runCheckpoint?: {
+    interrupted: boolean
+    scrubFailed?: boolean
+    recovery?: {
+      runId?: string
+      instruction: string
+      phase: 'running' | 'tool_pending' | 'tool_completed'
+      toolName?: string
+      toolCallId?: string
+      restartSafe?: boolean
+      messages?: AgentMessage[]
+      importReceipt?: {
+        state: 'complete' | 'partial' | 'uncertain'
+        completed: number
+        total?: number
+      }
+      changeReceipt?: { total: number; unresolved: number }
+    }
+    readRecovery?(): NonNullable<
+      Parameters<typeof createOfficeAgentSession>[0]['runCheckpoint']
+    >['recovery']
+    validateDocument?(): Promise<boolean>
+    begin(runId: string, instruction: string): Promise<void>
+    tool?(
+      runId: string,
+      phase: 'tool_pending' | 'tool_completed',
+      toolName: string,
+      mutated?: boolean,
+      toolCallId?: string,
+    ): Promise<void>
+    finish(runId: string): Promise<void>
+    conversation?(runId: string, messages: readonly AgentMessage[]): Promise<void>
+    adopt?(runId: string, messages: readonly AgentMessage[]): Promise<void>
+  }
   presentationText?: (key: PresentationVerificationStringKey) => string
   /**
    * PC-managed PowerPoint autonomy. Ordinary bounded proposals still use the Office
@@ -345,6 +476,8 @@ export function createOfficeAgentSession(dependencies: {
     proposal: OfficeProposal | StructuredProposal | undefined,
   ): proposal is StructuredProposal =>
     dependencies.automaticPowerPointMutations === true &&
+    !dependencies.runCheckpoint &&
+    (!proposal || !('lockReview' in proposal) || proposal.lockReview === undefined) &&
     proposal !== undefined &&
     'impact' in proposal &&
     proposal.impact.host.toLowerCase() === 'powerpoint' &&
@@ -426,6 +559,15 @@ export function createOfficeAgentSession(dependencies: {
   }
   const listeners = new Set<() => void>()
   let disposed = false
+  const pendingAuditedRead = (
+    recovery: NonNullable<typeof dependencies.runCheckpoint>['recovery'],
+  ) =>
+    recovery?.phase === 'tool_pending' &&
+    recovery.restartSafe === true &&
+    !recovery.messages &&
+    Boolean(recovery.toolName) &&
+    Boolean(recovery.toolCallId)
+  const receiptFeedback = presentationRecoveryReceiptFeedback(dependencies.runCheckpoint?.recovery)
   let state: Omit<OfficeAgentSnapshot, 'proposal'> = {
     assistantText: '',
     activity: '',
@@ -433,7 +575,30 @@ export function createOfficeAgentSession(dependencies: {
     applying: false,
     status: 'idle',
     retryable: false,
-    timeline: emptyPresentationTimeline(),
+    recoveryAvailable:
+      !dependencies.runCheckpoint?.scrubFailed &&
+      dependencies.runCheckpoint?.recovery?.restartSafe !== false &&
+      (!dependencies.runCheckpoint?.recovery?.messages ||
+        Boolean(
+          dependencies.runCheckpoint.recovery.runId &&
+          dependencies.runCheckpoint.adopt &&
+          dependencies.runCheckpoint.conversation &&
+          parseAgentResumeMessages(dependencies.runCheckpoint.recovery.messages),
+        )) &&
+      (dependencies.runCheckpoint?.recovery?.phase === 'running' ||
+        pendingAuditedRead(dependencies.runCheckpoint?.recovery) ||
+        (dependencies.runCheckpoint?.recovery?.phase === 'tool_completed' &&
+          dependencies.runCheckpoint?.recovery?.restartSafe === true)) &&
+      Boolean(dependencies.runCheckpoint?.recovery?.instruction),
+    timeline: dependencies.runCheckpoint?.interrupted
+      ? appendPresentationEvent(emptyPresentationTimeline(), {
+          id: 'event-1',
+          kind: 'system',
+          text: dependencies.runCheckpoint.scrubFailed
+            ? '上次运行已中断。旧版检查点中的请求原文仍保留在本 PPTX：清理保存失败。请先保存可写副本并重新打开，期间不能继续该运行。'
+            : `上次前台 Agent 运行在面板关闭时中断。${receiptFeedback}${dependencies.runCheckpoint.recovery?.messages ? '已保留完整只读结果，可在核对文档后继续；旧结果代表历史读取，当前状态仍需重新核对。' : dependencies.runCheckpoint.recovery?.phase === 'running' ? '尚未调用工具，可在核对文档后主动重新运行原请求。' : pendingAuditedRead(dependencies.runCheckpoint.recovery) ? '已审计的只读调用尚未完成；核对文档后可主动重新读取，旧结果不会复用。' : dependencies.runCheckpoint.recovery?.phase === 'tool_completed' && dependencies.runCheckpoint.recovery.restartSafe ? '此前仅运行了可重读工具，可在核对文档后主动重新运行原请求。' : '请先核对项目、页面和写入记录；未自动重放写入。'}运行阶段保存在演示文稿设置中，请求与可恢复的读取结果仅保存在本机浏览器。`,
+        })
+      : emptyPresentationTimeline(),
   }
   let cached: OfficeAgentSnapshot = { ...state, proposal: visibleProposal() }
 
@@ -444,11 +609,72 @@ export function createOfficeAgentSession(dependencies: {
     listeners.forEach((listener) => listener())
   }
 
-  let nextEventId = 0
+  let nextEventId = dependencies.runCheckpoint?.interrupted ? 1 : 0
   let sessionEpoch = 0
+  let pendingStart = false
+  let activeRunId: string | undefined
+  let toolsStarted = false
+  let recoveryPending = false
+  let checkpointBeginFailed = false
+  const readRecovery = () => {
+    try {
+      return (
+        dependencies.runCheckpoint?.readRecovery?.() ??
+        (dependencies.runCheckpoint?.readRecovery
+          ? undefined
+          : dependencies.runCheckpoint?.recovery)
+      )
+    } catch {
+      return undefined
+    }
+  }
+  const safeRecovery = () => {
+    const checkpoint = dependencies.runCheckpoint
+    if (
+      !checkpoint ||
+      checkpoint.scrubFailed ||
+      (activeRunId && unsettledToolRuns.has(activeRunId))
+    )
+      return undefined
+    if (toolsStarted && !checkpoint.readRecovery) return undefined
+    const record = readRecovery()
+    if (checkpoint.readRecovery && !record) return undefined
+    if (
+      !record &&
+      !toolsStarted &&
+      new TextEncoder().encode(lastInstruction).byteLength <= 8 * 1024
+    )
+      return { instruction: lastInstruction, phase: 'running' as const }
+    if (record?.restartSafe === false) return undefined
+    if (
+      record?.messages &&
+      (!record.runId ||
+        !checkpoint.adopt ||
+        !checkpoint.conversation ||
+        !parseAgentResumeMessages(record.messages))
+    )
+      return undefined
+    if (
+      !record?.instruction ||
+      new TextEncoder().encode(record.instruction).byteLength > 8 * 1024 ||
+      record.importReceipt?.state === 'uncertain' ||
+      record.changeReceipt?.total
+    )
+      return undefined
+    return record.phase === 'running' ||
+      pendingAuditedRead(record) ||
+      (record.phase === 'tool_completed' && record.restartSafe === true)
+      ? record
+      : undefined
+  }
+  const unsettledToolRuns = new Set<string>()
+  const finishCheckpoint = () => {
+    const id = activeRunId
+    activeRunId = undefined
+    if (id && !unsettledToolRuns.has(id))
+      void dependencies.runCheckpoint?.finish(id).catch(() => undefined)
+  }
   let activeAssistantId: string | undefined
-  let cumulativeAssistantText = ''
-  let assistantSegmentPrefix = ''
   let lastInstruction = ''
   let clarificationResolve: ((value: ToolExecution) => void) | undefined
   let questionnaireAnsweredPendingPlan = false
@@ -501,6 +727,15 @@ export function createOfficeAgentSession(dependencies: {
       )
   const appendPendingProposal = () => {
     const proposal = visibleProposal()
+    const existing =
+      proposal &&
+      state.timeline.find((event) => event.kind === 'proposal' && event.proposal.id === proposal.id)
+    if (existing?.kind === 'proposal' && existing.state === 'pending') {
+      replace(existing.id, (event) =>
+        event.kind === 'proposal' ? { ...event, proposal: proposal! } : event,
+      )
+      return
+    }
     if (
       proposal &&
       !state.timeline.some(
@@ -518,6 +753,38 @@ export function createOfficeAgentSession(dependencies: {
   ): Promise<ToolExecution> => {
     const decision = await proposals.waitForDecision(proposalId)
     if (decision.status === 'confirmed') {
+      const postWrite = decision.postWrite
+      if (postWrite) {
+        const pages = postWrite.status === 'captured' ? postWrite.pages : []
+        return {
+          output: JSON.stringify({
+            proposalId,
+            status: 'applied',
+            qaPassed: false,
+            visualReview: 'pending',
+            instruction:
+              'Capture and inspect each affected page with a one-page review tool before recording a visual judgment.',
+            postWrite:
+              postWrite.status === 'captured'
+                ? {
+                    status: 'captured',
+                    pages: pages.map(({ slideId, digest }) => ({ slideId, digest })),
+                  }
+                : postWrite,
+          }),
+          mutated: true,
+          summary: 'Applied approved change; visual review pending',
+          display: pages.length
+            ? {
+                kind: 'images',
+                items: pages.map((page) => ({
+                  url: `data:image/png;base64,${page.pngBase64}`,
+                  title: page.slideId,
+                })),
+              }
+            : undefined,
+        }
+      }
       return {
         output: JSON.stringify({ proposalId, status: 'applied' }),
         mutated: true,
@@ -547,7 +814,12 @@ export function createOfficeAgentSession(dependencies: {
       }
     }
     if (decision.status === 'failed') {
-      if (decision.error === 'proposal_stale') staleTools.add(toolName)
+      const stale =
+        decision.error === 'proposal_stale' ||
+        ['presentation_lock_review_stale', 'presentation_lock_review_unavailable'].includes(
+          decision.error,
+        )
+      if (stale) staleTools.add(toolName)
       return {
         output: JSON.stringify({
           proposalId,
@@ -566,7 +838,7 @@ export function createOfficeAgentSession(dependencies: {
         // even when this was the only write attempted in the turn.
         mutated: decision.error === 'office_verify_failed',
         summary: 'Approved change failed',
-        stopToolBatch: decision.error === 'proposal_stale',
+        stopToolBatch: stale,
       }
     }
     return {
@@ -590,6 +862,7 @@ export function createOfficeAgentSession(dependencies: {
       return dependencies.skill.reviewFinalResponse?.(context)
     },
     async executeTool(call, signal): Promise<ToolExecutionOutcome> {
+      toolsStarted = true
       if (call.name === 'ask_clarification') {
         if (clarificationResolve)
           return {
@@ -667,17 +940,68 @@ export function createOfficeAgentSession(dependencies: {
           stopToolBatch: true,
         }
       }
+      const runId = activeRunId
+      const epoch = sessionEpoch
+      const currentRun = () => epoch === sessionEpoch && runId === activeRunId && !disposed
+      const checkpointCompleted = async (mutated: boolean): Promise<boolean> => {
+        if (runId && !currentRun()) unsettledToolRuns.delete(runId)
+        if (runId && currentRun() && dependencies.runCheckpoint?.tool)
+          try {
+            await dependencies.runCheckpoint.tool(
+              runId,
+              'tool_completed',
+              call.name,
+              mutated,
+              call.id,
+            )
+            unsettledToolRuns.delete(runId)
+          } catch {
+            return false
+          }
+        return true
+      }
+      const checkpointed = async (result: ToolExecution): Promise<ToolExecution> =>
+        (await checkpointCompleted(result.mutated === true))
+          ? result
+          : {
+              output: JSON.stringify({ error: 'presentation_run_checkpoint_unavailable' }),
+              isError: true,
+              mutated: result.mutated,
+              summary: 'Run checkpoint unavailable',
+              fatalError: 'presentation_run_checkpoint_unavailable',
+            }
+      if (runId && dependencies.runCheckpoint?.tool) {
+        try {
+          await dependencies.runCheckpoint.tool(runId, 'tool_pending', call.name, false, call.id)
+          unsettledToolRuns.add(runId)
+        } catch {
+          return {
+            output: JSON.stringify({ error: 'presentation_run_checkpoint_unavailable' }),
+            isError: true,
+            mutated: false,
+            summary: 'Run checkpoint unavailable',
+            stopToolBatch: true,
+            fatalError: 'presentation_run_checkpoint_unavailable',
+          }
+        }
+      }
+      if (!currentRun())
+        return {
+          output: JSON.stringify({ error: 'presentation_run_cancelled' }),
+          isError: true,
+          mutated: false,
+          summary: 'Run cancelled',
+          stopToolBatch: true,
+        }
       const outcome = await dependencies.skill.executeTool(call, signal)
-      if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') return outcome
+      if ('kind' in outcome && outcome.kind === 'tool-execution-suspension')
+        return suspendToolExecution(outcome.result.then(checkpointed))
       if (call.name === 'plan_deck' && !outcome.isError) questionnaireAnsweredPendingPlan = false
       const proposal = proposals.pending()
-      if (!proposal) return outcome
-      const final = finalProposalExecution(proposal.id, outcome, call.name)
+      if (!proposal) return checkpointed(outcome)
+      const final = finalProposalExecution(proposal.id, outcome, call.name).then(checkpointed)
       if (isAutomaticProposal(proposal)) {
-        void proposals.confirm(proposal.id).catch(() => {
-          // The proposal controller records a stable failed decision. finalProposalExecution
-          // resumes the same tool call with that safe result instead of creating an unhandled task.
-        })
+        void proposals.confirm(proposal.id).catch(() => undefined)
       }
       return suspendToolExecution(final)
     },
@@ -693,7 +1017,6 @@ export function createOfficeAgentSession(dependencies: {
         return
       observedTools.set(activity.callId, 'running')
       if (existing) return
-      assistantSegmentPrefix = cumulativeAssistantText
       closeAssistantSegment()
       diagnose((diagnostics) => diagnostics.setTool(activity.toolName))
       append({
@@ -750,7 +1073,6 @@ export function createOfficeAgentSession(dependencies: {
     if (!definition) return { output: 'unknown_tool', isError: true }
     const epoch = sessionEpoch
     const current = () => !disposed && epoch === sessionEpoch
-    assistantSegmentPrefix = cumulativeAssistantText
     closeAssistantSegment()
     diagnose((diagnostics) => diagnostics.setTool(call.toolName))
     const existing = state.timeline.find(
@@ -871,9 +1193,8 @@ export function createOfficeAgentSession(dependencies: {
     }
   })
   const clearConversation = () => {
+    checkpointBeginFailed = false
     activeAssistantId = undefined
-    cumulativeAssistantText = ''
-    assistantSegmentPrefix = ''
     questionnaireAnsweredPendingPlan = false
     state = {
       ...state,
@@ -885,6 +1206,7 @@ export function createOfficeAgentSession(dependencies: {
       error: undefined,
       errorMessage: undefined,
       retryable: false,
+      recoveryAvailable: false,
       timeline: emptyPresentationTimeline(),
       questionnaire: undefined,
     }
@@ -893,6 +1215,12 @@ export function createOfficeAgentSession(dependencies: {
   const harness = createAgentHarness({
     transport: dependencies.transport,
     skill: sessionSkill,
+    systemSuffix: () =>
+      resumingReadConversation
+        ? '\nThis run resumes a saved read-only conversation. Restored tool results are historical observations. Revalidate relevant live document/project state before making changes or claiming its current state; do not treat cached results as proof that the document is unchanged.'
+        : resumingPendingRead
+          ? '\nAn audited read-only tool was interrupted before its result was saved. No result from that call was restored. Re-read the live document/project state and reestablish any session-only baseline before making changes or claiming a result.'
+          : '',
     events: {
       onPresentationClarify: ({ question }) =>
         append({
@@ -929,47 +1257,26 @@ export function createOfficeAgentSession(dependencies: {
         }),
       onPresentationReceipt: ({ facts }) => dependencies.presentationText?.(facts.status),
       onText: (assistantText) => {
-        if (!assistantText.startsWith(assistantSegmentPrefix)) assistantSegmentPrefix = ''
-        cumulativeAssistantText = assistantText
-        const segment = boundedText(assistantText.slice(assistantSegmentPrefix.length))
-        if (!activeAssistantId) {
-          activeAssistantId = eventId()
-          append({
-            id: activeAssistantId,
-            kind: 'assistant',
-            text: segment,
-            streaming: true,
-          })
-        } else {
-          replace(activeAssistantId, (event) => ({
-            ...event,
-            text: segment,
-            streaming: true,
-          }))
-        }
-        publish({ assistantText: segment })
+        // Presentation is driven by ACP agent_message_chunk updates below.
+        publish({ assistantText: boundedText(assistantText) })
       },
       onToolStart: (call) => {
         toolStartedAt.set(call.id, Date.now())
-        diagnose((diagnostics) => diagnostics.setTool(call.name))
-        cumulativeAssistantText = ''
-        assistantSegmentPrefix = ''
-        closeAssistantSegment()
-        const summary = toolActivity(call.name, 'running')
-        append({
-          id: eventId(),
-          kind: 'tool',
-          callId: call.id,
-          name: boundedText(call.name),
-          summary,
-          state: 'running',
+        diagnose((diagnostics) => {
+          const context = presentationDiagnosticContext(call)
+          if (context) diagnostics.setTool(call.name, context)
+          else diagnostics.setTool(call.name)
         })
-        publish({ activity: summary })
       },
       onToolExecuted: (event) => {
-        if (event.execution.isError) {
-          const errorCode = diagnosticToolError(event.execution.output)
-          diagnose((diagnostics) =>
+        const errorCode = event.execution.isError
+          ? diagnosticToolError(event.execution.output)
+          : screenshotWaitingDiagnostic(event.call, event.execution)
+        if (errorCode) {
+          diagnose((diagnostics) => {
+            const context = presentationDiagnosticContext(event.call)
+            if (context) diagnostics.setTool(event.call.name, context)
+            else diagnostics.setTool(event.call.name)
             diagnostics.record({
               phase: 'tool',
               errorCode,
@@ -980,39 +1287,32 @@ export function createOfficeAgentSession(dependencies: {
                 0,
                 Date.now() - (toolStartedAt.get(event.call.id) ?? Date.now()),
               ),
-            }),
-          )
-        }
-        toolStartedAt.delete(event.call.id)
-        const tool = [...state.timeline]
-          .reverse()
-          .find((item) => item.kind === 'tool' && item.callId === event.call.id)
-        if (tool) {
-          const summary = toolActivity(
-            event.call.name,
-            event.execution.isError ? 'error' : 'complete',
-          )
-          replace(tool.id, (item) => {
-            if (item.kind !== 'tool') return item
-            return {
-              ...item,
-              summary,
-              state: event.execution.isError ? 'error' : 'complete',
-              output: boundedText(event.execution.output),
-              ...(event.execution.display ? { display: event.execution.display } : {}),
-            }
+            })
           })
         }
+        toolStartedAt.delete(event.call.id)
         appendPendingProposal()
-        publish({
-          activity: toolActivity(event.call.name, event.execution.isError ? 'error' : 'complete'),
-        })
       },
-      onTurnEnd: () => {
+      onTurnEnd: async () => {
+        const runId = activeRunId
+        const epoch = sessionEpoch
+        if (runId && dependencies.runCheckpoint?.conversation) {
+          await dependencies.runCheckpoint.conversation(runId, harness.messages)
+          if (disposed || epoch !== sessionEpoch || runId !== activeRunId) return
+        }
         activeAssistantId = undefined
         publish({ activity: 'Thinking…' })
       },
       onDone: (result) => {
+        diagnose((diagnostics) => {
+          diagnostics.setTool('agent_run')
+          diagnostics.record({
+            phase: 'run',
+            errorCode: result.cancelled ? 'cancelled' : 'agent_run_completed',
+            durationMs: Math.max(0, Date.now() - runStartedAt),
+          })
+        })
+        finishCheckpoint()
         automaticRecoveryAttempt = 0
         if (recoveryTimer) clearTimeout(recoveryTimer)
         recoveryTimer = undefined
@@ -1031,9 +1331,36 @@ export function createOfficeAgentSession(dependencies: {
           })
       },
       onError: (error) => {
+        const transient = [
+          'network_error',
+          'provider_unavailable',
+          'request_timeout',
+          'transport_timeout',
+        ].includes(error)
+        if (error === 'presentation_run_checkpoint_unavailable') activeRunId = undefined
+        else if (!(transient && dependencies.runCheckpoint)) finishCheckpoint()
         const safeError = safeRunError(error)
+        const retryable =
+          safeError.retryable &&
+          (!dependencies.runCheckpoint || (transient && Boolean(safeRecovery())))
+        const latestRecovery = readRecovery()
+        const baseMessage =
+          error === 'presentation_run_checkpoint_unavailable' &&
+          latestRecovery?.restartSafe === true
+            ? '读取结果未能保存，后续模型请求已停止，运行检查点已保留。请检查本机浏览器存储，重新打开后核对文档并恢复任务。'
+            : dependencies.runCheckpoint && transient && !retryable
+              ? '运行已中断，检查点已保留。请核对项目、页面和写入记录；不能重跑可能已写入的原请求。'
+              : dependencies.runCheckpoint && transient
+                ? latestRecovery?.messages
+                  ? '服务暂时中断，读取结果已保留。可在核对当前文档后主动继续，已完成读取不自动重放。'
+                  : '服务暂时中断，运行阶段已保留。可在核对当前文档后主动重新运行安全请求；未自动重放。'
+                : safeError.message
+        const message =
+          dependencies.runCheckpoint &&
+          (transient || error === 'presentation_run_checkpoint_unavailable')
+            ? `${baseMessage}影响范围：本次前台运行；后台进度以项目工作台为准。${presentationRecoveryReceiptFeedback(latestRecovery)}${latestRecovery?.restartSafe === true ? '' : '未自动重放写入，请按工作台记录核对后继续。'}`
+            : baseMessage
         diagnose((diagnostics) => {
-          // This measures the whole run, not the most recently observed Office tool.
           diagnostics.setTool('agent_run')
           diagnostics.record({
             phase: 'transport',
@@ -1043,11 +1370,16 @@ export function createOfficeAgentSession(dependencies: {
         })
         activeAssistantId = undefined
         const delay = AUTOMATIC_RECOVERY_DELAYS_MS[automaticRecoveryAttempt]
-        if (AUTOMATIC_RECOVERY_ERRORS.has(safeError.code) && delay !== undefined && !disposed) {
+        if (
+          !dependencies.runCheckpoint &&
+          AUTOMATIC_RECOVERY_ERRORS.has(safeError.code) &&
+          delay !== undefined &&
+          !disposed
+        ) {
           automaticRecoveryAttempt += 1
           recoveryTimer = setTimeout(() => {
             recoveryTimer = undefined
-            startRun(RECOVERY_INSTRUCTION, '', true)
+            startRun(RECOVERY_INSTRUCTION, undefined, undefined, false, '', true)
           }, delay)
           publish({
             busy: true,
@@ -1062,7 +1394,7 @@ export function createOfficeAgentSession(dependencies: {
         append({
           id: eventId(),
           kind: 'error',
-          text: safeError.message,
+          text: message,
           code: safeError.code,
         })
         publish({
@@ -1070,11 +1402,84 @@ export function createOfficeAgentSession(dependencies: {
           activity: '',
           status: 'error',
           error: safeError.code,
-          errorMessage: safeError.message,
-          retryable: safeError.retryable,
+          errorMessage: message,
+          retryable,
         })
       },
     },
+  })
+
+  const unsubscribeAcp = harness.subscribeAcp(({ update }) => {
+    if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
+      const chunkText = update.content.text
+      const messageId = update.messageId ?? activeAssistantId ?? eventId()
+      if (activeAssistantId !== messageId) {
+        if (activeAssistantId) {
+          replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
+        }
+        activeAssistantId = messageId
+        append({
+          id: messageId,
+          kind: 'assistant',
+          text: boundedText(chunkText),
+          streaming: true,
+        })
+      } else {
+        replace(messageId, (event) => ({
+          ...event,
+          text: boundedText(`${event.kind === 'assistant' ? event.text : ''}${chunkText}`),
+          streaming: true,
+        }))
+      }
+      return
+    }
+    if (update.sessionUpdate === 'tool_call') {
+      if (activeAssistantId) {
+        replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
+        activeAssistantId = undefined
+      }
+      const name = update.name ?? 'tool'
+      const summary = acpToolActivity(
+        name,
+        'running',
+        dependencies.host === undefined || dependencies.host === 'powerpoint',
+      )
+      append({
+        id: eventId(),
+        kind: 'tool',
+        callId: update.toolCallId,
+        name: boundedText(name),
+        summary,
+        state: 'running',
+      })
+      publish({ activity: summary })
+      return
+    }
+    if (update.sessionUpdate === 'tool_call_update') {
+      const tool = [...state.timeline]
+        .reverse()
+        .find(
+          (item): item is ToolPresentationEvent =>
+            item.kind === 'tool' && item.callId === update.toolCallId,
+        )
+      if (!tool) return
+      const terminal = update.status === 'failed' ? 'error' : 'complete'
+      const summary = acpToolActivity(
+        tool.name,
+        terminal,
+        dependencies.host === undefined || dependencies.host === 'powerpoint',
+      )
+      replace(tool.id, (item) =>
+        item.kind === 'tool'
+          ? {
+              ...item,
+              summary,
+              state: terminal,
+            }
+          : item,
+      )
+      publish({ activity: summary })
+    }
   })
 
   const unsubscribeProposals = proposals.subscribe(() => {
@@ -1087,26 +1492,42 @@ export function createOfficeAgentSession(dependencies: {
     }
   })
 
-  const startRun = (instruction: string, displayText = instruction, recovering = false) => {
+  let resumingReadConversation = false
+  let resumingPendingRead = false
+  const startRun = (
+    instruction: string,
+    messages?: readonly AgentMessage[],
+    resumedRunId?: string,
+    pendingRead = false,
+    displayText?: string,
+    recovering = false,
+  ) => {
     const value = instruction.trim()
-    if (!value || harness.snapshot.busy || state.applying || disposed) return
+    if (!value || harness.snapshot.busy || pendingStart || state.applying || disposed) return
     if (!recovering) {
       if (recoveryTimer) clearTimeout(recoveryTimer)
       recoveryTimer = undefined
       automaticRecoveryAttempt = 0
+      diagnose((diagnostics) => diagnostics.startTrace())
     }
     sessionEpoch += 1
     observedTools.clear()
     recordedToolFailures.clear()
-    if (!recovering) diagnose((diagnostics) => diagnostics.startTrace())
     staleTools.clear()
+    checkpointBeginFailed = false
+    toolsStarted = false
     runStartedAt = Date.now()
+    resumingReadConversation = Boolean(messages)
+    resumingPendingRead = pendingRead
     proposals.newTurn()
     if (!recovering) lastInstruction = value
     activeAssistantId = undefined
-    cumulativeAssistantText = ''
-    assistantSegmentPrefix = ''
-    if (displayText) append({ id: eventId(), kind: 'user', text: boundedText(displayText) })
+    if (displayText !== '')
+      append({
+        id: eventId(),
+        kind: messages ? 'assistant' : 'user',
+        text: messages ? '从已保存的读取结果继续。' : boundedText(displayText ?? value),
+      })
     publish({
       assistantText: '',
       activity: 'Thinking…',
@@ -1115,9 +1536,113 @@ export function createOfficeAgentSession(dependencies: {
       error: undefined,
       errorMessage: undefined,
       retryable: false,
+      recoveryAvailable: false,
     })
-    if (recovering) harness.resume(value)
-    else harness.run(value)
+    if (!dependencies.runCheckpoint) {
+      if (recovering) harness.resume(value)
+      else harness.run(value)
+      return
+    }
+    pendingStart = true
+    const epoch = sessionEpoch
+    const runId = messages && resumedRunId ? resumedRunId : crypto.randomUUID()
+    const checkpointStart =
+      messages && resumedRunId && dependencies.runCheckpoint.adopt
+        ? dependencies.runCheckpoint.adopt(runId, messages)
+        : dependencies.runCheckpoint.begin(runId, value)
+    void checkpointStart
+      .then(async () => {
+        if (disposed || epoch !== sessionEpoch) {
+          pendingStart = false
+          void dependencies.runCheckpoint?.finish(runId).catch(() => undefined)
+          return
+        }
+        activeRunId = runId
+        if (messages) {
+          pendingStart = false
+          if (!harness.resume(messages)) throw new Error('presentation_run_checkpoint_unavailable')
+        } else {
+          pendingStart = false
+          harness.run(value)
+        }
+      })
+      .catch(() => {
+        pendingStart = false
+        if (disposed || epoch !== sessionEpoch) return
+        if (activeRunId && !unsettledToolRuns.has(activeRunId)) activeRunId = undefined
+        checkpointBeginFailed = !messages
+        const checkpointError = messages
+          ? '无法恢复运行上下文，检查点已保留。请核对当前文档和本地存储后重试。'
+          : '无法保存运行检查点，请确认文档可保存后重试。'
+        append({
+          id: eventId(),
+          kind: 'error',
+          text: checkpointError,
+          code: 'presentation_run_checkpoint_unavailable',
+        })
+        publish({
+          busy: false,
+          activity: '',
+          status: 'error',
+          error: 'presentation_run_checkpoint_unavailable',
+          errorMessage: checkpointError,
+          retryable: messages ? Boolean(safeRecovery()) : true,
+        })
+      })
+  }
+
+  const resumeRecovery = async (interrupted: boolean) => {
+    const checkpoint = dependencies.runCheckpoint
+    const epoch = sessionEpoch
+    let checkpointSnapshot: string | undefined
+    try {
+      const latest = checkpoint?.readRecovery?.()
+      if (checkpointBeginFailed && latest) return
+      checkpointSnapshot = JSON.stringify(latest)
+    } catch {
+      return
+    }
+    const candidate = () =>
+      !interrupted && checkpointBeginFailed && !toolsStarted && !activeRunId && lastInstruction
+        ? { instruction: lastInstruction, phase: 'running' as const }
+        : safeRecovery()
+    const original = candidate()
+    const originalSnapshot = original ? JSON.stringify(original) : undefined
+    if (
+      !checkpoint?.validateDocument ||
+      recoveryPending ||
+      state.busy ||
+      state.applying ||
+      disposed ||
+      (interrupted ? !state.recoveryAvailable : !state.retryable) ||
+      !originalSnapshot
+    )
+      return
+    recoveryPending = true
+    try {
+      if (!(await checkpoint.validateDocument())) return
+      if (JSON.stringify(checkpoint.readRecovery?.()) !== checkpointSnapshot) return
+      if (
+        epoch !== sessionEpoch ||
+        state.busy ||
+        state.applying ||
+        disposed ||
+        (interrupted ? !state.recoveryAvailable : !state.retryable)
+      )
+        return
+      const record = candidate()
+      if (record && JSON.stringify(record) === originalSnapshot)
+        startRun(
+          record.instruction,
+          'messages' in record ? record.messages : undefined,
+          'runId' in record ? record.runId : undefined,
+          pendingAuditedRead(record),
+        )
+    } catch {
+      /* identity or recovery unavailable: do not replay */
+    } finally {
+      recoveryPending = false
+    }
   }
 
   return {
@@ -1133,11 +1658,24 @@ export function createOfficeAgentSession(dependencies: {
     reviseDesignContract(designMd) {
       startRun(
         `Revise the active presentation DESIGN.md to exactly the contract below. Keep the existing page plan unless consistency requires a change. Call plan_deck with the revised style and do not edit slides in this turn.\n\n${designMd}`,
+        undefined,
+        undefined,
+        false,
         '更新 DESIGN.md',
       )
     },
     stop() {
       if (disposed) return
+      if (recoveryPending) {
+        sessionEpoch += 1
+        publish({ retryable: false, recoveryAvailable: false, status: 'cancelled' })
+        return
+      }
+      if (pendingStart) {
+        sessionEpoch += 1
+        publish({ busy: false, activity: '', status: 'cancelled' })
+        return
+      }
       const wasRecovering = recoveryTimer !== undefined
       if (recoveryTimer) clearTimeout(recoveryTimer)
       recoveryTimer = undefined
@@ -1208,7 +1746,11 @@ export function createOfficeAgentSession(dependencies: {
           activity: writePending
             ? (dependencies.presentationText?.('write_pending_quarantined') ??
               'Write may still be running; further edits are frozen pending reconciliation or reload.')
-            : 'Document updated',
+            : event?.proposal &&
+                'impact' in event.proposal &&
+                event.proposal.impact.host === 'local_team'
+              ? '团队记录已保存'
+              : 'Document updated',
           error: undefined,
           errorMessage: undefined,
           retryable: false,
@@ -1251,6 +1793,7 @@ export function createOfficeAgentSession(dependencies: {
       recoveryTimer = undefined
       automaticRecoveryAttempt = 0
       sessionEpoch += 1
+      finishCheckpoint()
       harness.reset()
       proposals.logout()
       lastInstruction = ''
@@ -1266,8 +1809,14 @@ export function createOfficeAgentSession(dependencies: {
         disposed
       )
         return
-      automaticRecoveryAttempt = 0
-      startRun(RECOVERY_INSTRUCTION, '', true)
+      if (dependencies.runCheckpoint) void resumeRecovery(false)
+      else {
+        automaticRecoveryAttempt = 0
+        startRun(RECOVERY_INSTRUCTION, undefined, undefined, false, '', true)
+      }
+    },
+    async resumeInterrupted() {
+      await resumeRecovery(true)
     },
     answerQuestionnaire(answers) {
       const resolve = clarificationResolve
@@ -1297,6 +1846,7 @@ export function createOfficeAgentSession(dependencies: {
     logout() {
       if (disposed) return
       sessionEpoch += 1
+      finishCheckpoint()
       diagnose((diagnostics) => diagnostics.clear())
       harness.reset()
       proposals.logout()
@@ -1321,6 +1871,7 @@ export function createOfficeAgentSession(dependencies: {
       dependencies.transport.setToolActivityHandler?.(undefined)
       dependencies.remoteTools?.setToolHandler?.(undefined)
       sessionEpoch += 1
+      unsubscribeAcp()
       unsubscribeProposals()
       harness.dispose()
       proposals.logout()

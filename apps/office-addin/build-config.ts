@@ -1,3 +1,4 @@
+import { officeTeamAuthConfig } from './src/agent/team-auth-config.js'
 export const PREFERRED_OFFICE_BRIDGE_PORT = 43_127
 export const OFFICE_RELAY_CONNECT_ORIGIN = 'wss://office.8-216-134-194.sslip.io'
 export const DEFAULT_OFFICE_BRIDGE_PORTS = Object.freeze([
@@ -49,6 +50,33 @@ export function officeRemoteDiagnosticsEnabled(env: BuildEnv): boolean {
   throw new Error('invalid_office_remote_diagnostics')
 }
 
+export function officeDiagnosticSamplePercent(env: BuildEnv): number {
+  const value = env.VITE_WISWORK_OFFICE_DIAGNOSTIC_SAMPLE_PERCENT
+  if (value === undefined || value === '') return 100
+  if (!/^(?:0|[1-9]\d?|100)$/.test(value))
+    throw new Error('invalid_office_diagnostic_sample_percent')
+  return Number(value)
+}
+
+export function officePresentationRolloutPercent(env: BuildEnv): number {
+  const value = env.VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT
+  if (value === undefined || value === '') return 100
+  if (!/^(?:0|[1-9]\d?|100)$/.test(value)) throw new Error('invalid_presentation_rollout_percent')
+  return Number(value)
+}
+
+export function presentationRolloutEnabled(
+  documentUrl: string | undefined,
+  percent: number,
+): boolean {
+  if (percent === 100) return true
+  if (!documentUrl || percent === 0) return false
+  // Stable per presentation across reloads; no identifier is sent to the release server.
+  let hash = 2_166_136_261
+  for (const char of documentUrl) hash = Math.imul(hash ^ char.charCodeAt(0), 16_777_619)
+  return (hash >>> 0) % 100 < percent
+}
+
 export function officePairingResumeEnabled(env: BuildEnv): boolean {
   const value = env.VITE_WISWORK_OFFICE_PAIRING_RESUME
   if (value === undefined || value === '1') return true
@@ -96,6 +124,8 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
     void officeWorkspaceMode(env)
     void officeCapabilityFlags(env)
     void officeRemoteDiagnosticsEnabled(env)
+    void officeDiagnosticSamplePercent(env)
+    void officePresentationRolloutPercent(env)
     void officePairingResumeEnabled(env)
     void officeBuildId(env, 'development')
   } catch {
@@ -122,9 +152,15 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
 
 export function deploymentConnectOrigins(env: BuildEnv): string {
   try {
-    return officeTransportMode(env) === 'relay'
-      ? OFFICE_RELAY_CONNECT_ORIGIN
-      : officeBridgeEndpoints(env).join(' ')
+    const origins =
+      officeTransportMode(env) === 'relay'
+        ? OFFICE_RELAY_CONNECT_ORIGIN
+        : officeBridgeEndpoints(env).join(' ')
+    const auth = officeTeamAuthConfig(
+      env,
+      env.VITE_WISWORK_ADDIN_ORIGIN || 'https://localhost:3000',
+    )
+    return auth ? `${origins} ${new URL(auth.callbackEndpoint).origin}` : origins
   } catch {
     return ''
   }

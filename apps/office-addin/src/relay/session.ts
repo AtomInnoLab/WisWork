@@ -23,6 +23,7 @@ const MAX_RELAY_FRAME_BYTES = Math.ceil((MAX_CHUNK_BYTES * 4) / 3) + 4096
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 // Finish before Relay's 300s deadline so the client owns cancellation and preserves pairing.
 const REQUEST_TIMEOUT_MS = 290_000
+const TEAM_TOKEN_TIMEOUT_MS = 10_000
 // agent.v1 can carry a whole Enhanced tool loop. Transport owns its progress
 // timeout and 30-minute cap; this watchdog also covers a lost cancellation.
 const AGENT_REQUEST_TIMEOUT_MS = 30 * 60_000 + 10_000
@@ -60,6 +61,8 @@ export interface RelayWebSocket {
 export type OfficeRelayStatus =
   | 'offline'
   | 'connecting'
+  | 'incompatible'
+  | 'pc_incompatible'
   | 'reconnecting'
   | 'pending'
   | 'waiting_for_pc'
@@ -77,6 +80,8 @@ export interface OfficeRelaySnapshot {
 
 export interface OfficeRelaySession {
   snapshot(): OfficeRelaySnapshot
+  /** Local diagnostics only; never expose the session capability. */
+  diagnosticSessionId(): string | undefined
   subscribe(listener: () => void): () => void
   connect(host: OfficeHost): Promise<void>
   disconnect(): void
@@ -105,6 +110,22 @@ export type OfficeRelayToolHandler = (
 
 export type OfficeRelayCapability =
   | 'agent.v1'
+  | 'web-search.v1'
+  | 'web-fetch.v1'
+  | 'image-search.v1'
+  | 'presentation.v1'
+  | 'presentation-team.v1'
+  | 'presentation-attachments.v1'
+  | 'presentation-assets.v1'
+  | 'presentation-remote-images.v1'
+  | 'presentation-webpages.v1'
+  | 'presentation-asset-rights.v1'
+  | 'presentation-animation-frame.v1'
+  | 'presentation-pdf.v1'
+  | 'presentation-production-pdf.v1'
+  | 'presentation-master-backups.v1'
+  | 'presentation-package-backups.v1'
+  | 'presentation-governance.v1'
   | 'enhanced-lease.v1'
   | 'web-search.v1'
   | 'web-fetch.v1'
@@ -124,6 +145,7 @@ export interface OfficeBindingInvalidationChannel {
 }
 
 export interface OfficeRelaySessionDependencies {
+  getTeamAccessToken?: () => Promise<string | null>
   createSocket?: (url: string) => RelayWebSocket
   randomUUID?: () => string
   capabilities?: readonly OfficeRelayCapability[]
@@ -237,7 +259,10 @@ export function createOfficeRelaySession(
   const createSocket = dependencies.createSocket ?? browserSocket
   const randomUUID = dependencies.randomUUID ?? (() => crypto.randomUUID())
   const requestedCapabilities = [...(dependencies.capabilities ?? [])]
-  const persistentPairing = dependencies.persistentPairing !== false
+  // Team authorization uses an isolated session, never the document pairing's host key.
+  const persistentPairing =
+    dependencies.persistentPairing !== false &&
+    !requestedCapabilities.includes('presentation-team.v1')
   const configuredBindingStore = persistentPairing ? dependencies.bindingStore : undefined
   const browserBindingStore =
     persistentPairing && !configuredBindingStore ? createBrowserOfficeBindingStore() : undefined
@@ -262,6 +287,16 @@ export function createOfficeRelaySession(
   let state: OfficeRelaySnapshot = { status: 'offline' }
   let socket: RelayWebSocket | undefined
   let host: Exclude<OfficeHost, 'unknown'> | undefined
+  const hostCapabilities = () =>
+    requestedCapabilities.filter(
+      (name) =>
+        ![
+          'presentation-team.v1',
+          'presentation-master-backups.v1',
+          'presentation-package-backups.v1',
+          'presentation-governance.v1',
+        ].includes(name) || host === 'powerpoint',
+    )
   let connectionMode: 'legacy' | 'enroll' | 'resume' = 'legacy'
   let storedBinding: OfficeStoredBinding | undefined
   let enrollment: OfficeBindingEnrollment | undefined
@@ -284,6 +319,15 @@ export function createOfficeRelaySession(
   let pairingId: string | undefined
   let sessionId: string | undefined
   let capability: string | undefined
+  let activeHost: OfficeHost = 'unknown'
+  let resumeCredentials:
+    | {
+        host: OfficeHost
+        sessionId: string
+        capability: string
+        capabilities: OfficeRelayCapability[]
+      }
+    | undefined
   let negotiatedCapabilities: OfficeRelayCapability[] = []
   let request: ActiveRequest | undefined
   let toolHandler: OfficeRelayToolHandler | undefined
@@ -296,6 +340,7 @@ export function createOfficeRelaySession(
   let runtimeGeneration = -1
   let runtimeExpiryTimer: ReturnType<typeof setTimeout> | undefined
   let generation = 0
+  let teamTokenPending: { cancel(): void } | undefined
   let settleConnect: (() => void) | undefined
   let pairingTimer: ReturnType<typeof setTimeout> | undefined
   let unsubscribeInvalidation: (() => void) | undefined
@@ -347,6 +392,7 @@ export function createOfficeRelaySession(
     close = true,
     settle = true,
     requestError = 'relay_disconnected',
+    retainResume = false,
   ) => {
     if (request && sessionId && capability) {
       try {
@@ -361,6 +407,8 @@ export function createOfficeRelaySession(
         // Revocation must still complete when the peer is already unavailable.
       }
     }
+    teamTokenPending?.cancel()
+    teamTokenPending = undefined
     generation += 1
     finishRequest(requestError)
     for (const activeTool of activeTools.values()) activeTool.controller.abort()
@@ -373,6 +421,7 @@ export function createOfficeRelaySession(
     pairingId = undefined
     sessionId = undefined
     capability = undefined
+    if (!retainResume) resumeCredentials = undefined
     negotiatedCapabilities = []
     challengeInFlight = false
     remembered = undefined
@@ -546,7 +595,7 @@ export function createOfficeRelaySession(
             version: 2,
             type: 'office.create',
             host: hostLabels[host],
-            capabilities: requestedCapabilities,
+            capabilities: hostCapabilities(),
             features: [PAIRING_RESUME_FEATURE],
             binding_public_key: enrollment.publicKey,
           })
@@ -555,7 +604,7 @@ export function createOfficeRelaySession(
             version: protocolVersion,
             type: 'office.create',
             host: hostLabels[host],
-            ...(protocolVersion === 2 ? { capabilities: requestedCapabilities } : {}),
+            ...(protocolVersion === 2 ? { capabilities: hostCapabilities() } : {}),
           })
         }
       } catch {
@@ -577,7 +626,7 @@ export function createOfficeRelaySession(
   const prepareEnrollment = async (intent: number) => {
     if (!bindingStore || !host) return startAttempt('legacy')
     try {
-      const prepared = await bindingStore.createEnrollment(host, requestedCapabilities)
+      const prepared = await bindingStore.createEnrollment(host, hostCapabilities())
       if (intent !== generation || explicitlyDisconnected) {
         await bindingStore.abort(prepared).catch(() => undefined)
         return
@@ -613,7 +662,7 @@ export function createOfficeRelaySession(
       return
     }
     try {
-      const loaded = await bindingStore.load(connectingHost, requestedCapabilities)
+      const loaded = await bindingStore.load(connectingHost, hostCapabilities())
       if (intent !== generation || explicitlyDisconnected) return
       if (loaded) {
         if (invalidatedBindings.has(loaded.bindingId)) await prepareEnrollment(intent)
@@ -684,6 +733,15 @@ export function createOfficeRelaySession(
     } catch {
       return protocolFailure()
     }
+    if (
+      protocolVersion === 2 &&
+      state.status === 'connecting' &&
+      frame.version === 1 &&
+      frame.type === 'relay.error' &&
+      frame.code === 'invalid_frame' &&
+      exactKeys(frame, ['version', 'type', 'code'])
+    )
+      return revoke('incompatible')
     if (
       frame.version !== protocolVersion ||
       typeof frame.type !== 'string' ||
@@ -835,6 +893,18 @@ export function createOfficeRelaySession(
         revoke('expired')
       }, frame.expires_in * 1000)
       publish({ status: 'pending', verificationCode: frame.verification_code })
+      return
+    }
+    if (frame.type === 'office.pc_incompatible') {
+      if (
+        protocolVersion !== 2 ||
+        (state.status !== 'pending' && state.status !== 'waiting_for_pc') ||
+        frameBytes > MAX_CONTROL_FRAME_BYTES ||
+        !exactKeys(frame, ['version', 'type', 'pairing_id']) ||
+        frame.pairing_id !== pairingId
+      )
+        return protocolFailure()
+      revoke('pc_incompatible')
       return
     }
     if (frame.type === 'office.binding_offer') {
@@ -1029,10 +1099,18 @@ export function createOfficeRelaySession(
         protocolVersion === 2 &&
         Array.isArray(frame.capabilities) &&
         frame.capabilities.length > 0 &&
+        (!frame.capabilities.includes('presentation-team.v1') || frame.capabilities.length === 1) &&
         frame.capabilities.every(
           (value, index, values) =>
             typeof value === 'string' &&
             requestedCapabilities.includes(value as OfficeRelayCapability) &&
+            (![
+              'presentation-team.v1',
+              'presentation-master-backups.v1',
+              'presentation-package-backups.v1',
+              'presentation-governance.v1',
+            ].includes(value) ||
+              activeHost === 'powerpoint') &&
             values.indexOf(value) === index,
         )
           ? (frame.capabilities as OfficeRelayCapability[])
@@ -1074,6 +1152,13 @@ export function createOfficeRelaySession(
       sessionId = frame.session_id
       capability = frame.capability
       negotiatedCapabilities = approvedCapabilities
+      if (protocolVersion === 2)
+        resumeCredentials = {
+          host: activeHost,
+          sessionId: frame.session_id,
+          capability: frame.capability,
+          capabilities: [...approvedCapabilities],
+        }
       pairingId = undefined
       if (pairingTimer !== undefined) clearTimeout(pairingTimer)
       pairingTimer = undefined
@@ -1088,6 +1173,47 @@ export function createOfficeRelaySession(
           : {}),
         ...(remembered === false ? { remembered: false as const } : {}),
       })
+      return
+    }
+    if (frame.type === 'office.resumed') {
+      if (
+        protocolVersion !== 2 ||
+        state.status !== 'connecting' ||
+        !resumeCredentials ||
+        frameBytes > MAX_CONTROL_FRAME_BYTES ||
+        !(
+          exactKeys(frame, ['version', 'type', 'session_id', 'expires_in', 'capabilities']) ||
+          (exactKeys(frame, [
+            'version',
+            'type',
+            'session_id',
+            'expires_in',
+            'capabilities',
+            'pc_online',
+          ]) &&
+            typeof frame.pc_online === 'boolean')
+        ) ||
+        frame.session_id !== resumeCredentials.sessionId ||
+        !expiry(frame.expires_in, 1800) ||
+        JSON.stringify(frame.capabilities) !== JSON.stringify(resumeCredentials.capabilities)
+      )
+        return protocolFailure()
+      sessionId = resumeCredentials.sessionId
+      capability = resumeCredentials.capability
+      negotiatedCapabilities = [...resumeCredentials.capabilities]
+      settleConnect?.()
+      settleConnect = undefined
+      publish({
+        status: frame.pc_online === false ? 'waiting_for_pc' : 'connected',
+        capabilities: Object.freeze([...negotiatedCapabilities]),
+      })
+      return
+    }
+    if (frame.type === 'office.pc_online') {
+      if (frameBytes > MAX_CONTROL_FRAME_BYTES || !exactKeys(frame, ['version', 'type']))
+        return protocolFailure()
+      if (sessionId && state.status === 'waiting_for_pc')
+        publish({ status: 'connected', capabilities: Object.freeze([...negotiatedCapabilities]) })
       return
     }
     if (frame.type === 'relay.session_state') {
@@ -1396,12 +1522,153 @@ export function createOfficeRelaySession(
   }
 
   const api: OfficeRelaySession = {
+    diagnosticSessionId: () => sessionId ?? resumeCredentials?.sessionId,
     snapshot: () => state,
     subscribe(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
     connect(nextHost) {
+      activeHost = nextHost
+      host = nextHost === 'unknown' ? undefined : nextHost
+      if (!bindingStore || protocolVersion !== 2) {
+        const host = nextHost
+        explicitlyDisconnected = false
+        connectionMode = 'legacy'
+        revoke(
+          'offline',
+          true,
+          true,
+          'relay_disconnected',
+          host !== 'unknown' && resumeCredentials?.host === host,
+        )
+        activeHost = host
+        if (
+          requestedCapabilities.includes('presentation-team.v1') &&
+          (requestedCapabilities.length !== 1 || host !== 'powerpoint')
+        )
+          return Promise.reject(new Error('relay_invalid_capabilities'))
+        if (host === 'unknown') return Promise.resolve()
+        const epoch = generation
+        publish({ status: 'connecting' })
+        return new Promise<void>((resolve) => {
+          settleConnect = resolve
+          let retried = false
+          let resumeAttempts = 0
+          const openSocket = (resuming: boolean) => {
+            let opened: RelayWebSocket
+            try {
+              opened = createSocket(OFFICE_RELAY_URL)
+            } catch {
+              revoke('offline')
+              return
+            }
+            socket = opened
+            const fallback = () => {
+              if (retried || epoch !== generation || socket !== opened) return
+              retried = true
+              resumeCredentials = undefined
+              socket = undefined
+              if (opened.readyState <= 1) opened.close()
+              openSocket(false)
+            }
+            const retryResume = () => {
+              if (resumeAttempts >= 2) return fallback()
+              resumeAttempts += 1
+              socket = undefined
+              if (opened.readyState <= 1) opened.close()
+              setTimeout(() => {
+                if (epoch === generation && state.status === 'connecting') openSocket(true)
+              }, 100 * resumeAttempts)
+            }
+            opened.onopen = () => {
+              if (epoch !== generation || socket !== opened) return
+              try {
+                send(
+                  resuming && resumeCredentials
+                    ? {
+                        version: 2,
+                        type: 'office.resume',
+                        session_id: resumeCredentials.sessionId,
+                        capability: resumeCredentials.capability,
+                        host: hostLabels[host],
+                      }
+                    : {
+                        version: protocolVersion,
+                        type: 'office.create',
+                        host: hostLabels[host],
+                        ...(protocolVersion === 2
+                          ? {
+                              capabilities: requestedCapabilities.filter(
+                                (name) =>
+                                  ![
+                                    'presentation-team.v1',
+                                    'presentation-master-backups.v1',
+                                    'presentation-package-backups.v1',
+                                    'presentation-governance.v1',
+                                  ].includes(name) || activeHost === 'powerpoint',
+                              ),
+                            }
+                          : {}),
+                      },
+                )
+              } catch {
+                if (resuming) fallback()
+                else protocolFailure()
+              }
+            }
+            opened.onmessage = (event) => {
+              if (epoch !== generation || socket !== opened) return
+              if (resuming && state.status === 'connecting' && typeof event.data === 'string') {
+                try {
+                  const frame = JSON.parse(event.data) as Record<string, unknown>
+                  if (
+                    frame.version === 2 &&
+                    frame.type === 'relay.error' &&
+                    frame.code === 'session_active'
+                  )
+                    return retryResume()
+                  if (
+                    frame.type === 'relay.error' &&
+                    [
+                      'invalid_session',
+                      'invalid_capability',
+                      'invalid_frame',
+                      'unknown_type',
+                    ].includes(String(frame.code))
+                  )
+                    return fallback()
+                } catch {
+                  /* handled by protocol validation */
+                }
+              }
+              void handleFrame(event.data, epoch).catch(() => {
+                if (epoch === generation) protocolFailure()
+              })
+            }
+            opened.onerror = () => {
+              if (epoch !== generation || socket !== opened) return
+              if (state.status === 'connected')
+                revoke('offline', true, true, 'relay_disconnected', protocolVersion === 2)
+              else if (resuming) fallback()
+              else revoke('offline')
+            }
+            opened.onclose = () => {
+              if (epoch !== generation || socket !== opened) return
+              if (resuming && state.status === 'connecting') fallback()
+              else
+                revoke(
+                  'offline',
+                  false,
+                  true,
+                  'relay_disconnected',
+                  state.status === 'connected' && protocolVersion === 2,
+                )
+            }
+          }
+          openSocket(protocolVersion === 2 && resumeCredentials?.host === host)
+        })
+      }
       const abandoned = enrollment
       const abandonedBindingId = bindingOffer?.bindingId
       explicitlyDisconnected = true
@@ -1453,6 +1720,27 @@ export function createOfficeRelaySession(
       enrollment = undefined
       bindingOffer = undefined
       if (abandoned) void bindingStore?.abort(abandoned, abandonedBindingId).catch(() => undefined)
+      if (request && sessionId && capability) {
+        try {
+          send({
+            version: protocolVersion,
+            type: 'office.cancel',
+            session_id: sessionId,
+            capability,
+            request_id: request.id,
+          })
+        } catch {
+          /* revocation completes even if the socket failed */
+        }
+        finishRequest('relay_disconnected')
+      }
+      if (protocolVersion === 2 && state.status === 'connected' && sessionId && capability) {
+        try {
+          send({ version: 2, type: 'office.leave', session_id: sessionId, capability })
+        } catch {
+          /* socket already closed */
+        }
+      }
       revoke('offline')
     },
     async forget() {
@@ -1475,6 +1763,27 @@ export function createOfficeRelaySession(
       storedBinding = undefined
       enrollment = undefined
       bindingOffer = undefined
+      if (request && sessionId && capability) {
+        try {
+          send({
+            version: protocolVersion,
+            type: 'office.cancel',
+            session_id: sessionId,
+            capability,
+            request_id: request.id,
+          })
+        } catch {
+          /* revocation completes even if the socket failed */
+        }
+        finishRequest('relay_disconnected')
+      }
+      if (protocolVersion === 2 && state.status === 'connected' && sessionId && capability) {
+        try {
+          send({ version: 2, type: 'office.leave', session_id: sessionId, capability })
+        } catch {
+          /* socket already closed */
+        }
+      }
       revoke('offline')
       if (abandoned) await bindingStore?.abort(abandoned, targetBindingId)
       if (!targetBindingId) return
@@ -1498,7 +1807,8 @@ export function createOfficeRelaySession(
         state.status !== 'connected'
       )
         throw new Error('relay_disconnected')
-      if (request && !request.backgroundDesignRead) throw new Error('relay_busy')
+      if (teamTokenPending || (request && !request.backgroundDesignRead))
+        throw new Error('relay_busy')
       if (init.method !== 'POST' || typeof init.body !== 'string')
         throw new Error('relay_invalid_request')
       if (encoder.encode(init.body).byteLength > MAX_REQUEST_BYTES)
@@ -1536,8 +1846,80 @@ export function createOfficeRelaySession(
       if (request) throw new Error('relay_busy')
       if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody))
         throw new Error('relay_invalid_request')
+      const governanceOperations = [
+        'project_deletion_preview',
+        'project_deletion_confirm',
+        'project_deletion_resume',
+        'project_lifecycle_initialize',
+        'project_lifecycle_read',
+        'project_lifecycle_set_policy',
+        'project_lifecycle_export_audit',
+      ]
+      const governance = governanceOperations.includes(
+        String((parsedBody as Record<string, unknown>).operation),
+      )
+      if (
+        capabilityName === 'presentation-governance.v1'
+          ? activeHost !== 'powerpoint' || !governance
+          : governanceOperations
+              .slice(0, 3)
+              .includes(String((parsedBody as Record<string, unknown>).operation))
+      )
+        throw new Error('relay_invalid_request')
+      if ('team_context' in parsedBody || 'access_token' in parsedBody)
+        throw new Error('relay_invalid_request')
       const bodyBytes = encoder.encode(JSON.stringify(parsedBody)).byteLength
       if (bodyBytes > MAX_REQUEST_BYTES) throw new Error('relay_request_too_large')
+      const body = JSON.parse(JSON.stringify(parsedBody)) as unknown
+      let accessToken: string | undefined
+      if (capabilityName === 'presentation-team.v1') {
+        if (activeHost !== 'powerpoint' || !dependencies.getTeamAccessToken)
+          throw new Error('relay_team_auth_unavailable')
+        if (signal?.aborted) throw new Error('relay_cancelled')
+        const owner = generation,
+          opened = socket,
+          boundSession = sessionId
+        let cancel = () => {}
+        const pending = { cancel: () => cancel() }
+        teamTokenPending = pending
+        try {
+          const token = await new Promise<string | null>((resolve, reject) => {
+            const done = (value: string | null, error?: string) => {
+              clearTimeout(timer)
+              signal?.removeEventListener('abort', aborted)
+              if (error) reject(new Error(error))
+              else resolve(value)
+            }
+            const timer = setTimeout(
+              () => done(null, 'relay_team_auth_unavailable'),
+              TEAM_TOKEN_TIMEOUT_MS,
+            )
+            const aborted = () => done(null, 'relay_cancelled')
+            cancel = () => done(null, 'relay_disconnected')
+            signal?.addEventListener('abort', aborted, { once: true })
+            Promise.resolve()
+              .then(() => dependencies.getTeamAccessToken!())
+              .then(
+                (value) => done(value),
+                () => done(null, 'relay_team_auth_unavailable'),
+              )
+          })
+          if (
+            owner !== generation ||
+            socket !== opened ||
+            sessionId !== boundSession ||
+            state.status !== 'connected' ||
+            !negotiatedCapabilities.includes(capabilityName)
+          )
+            throw new Error('relay_capability_unavailable')
+          if (signal?.aborted) throw new Error('relay_cancelled')
+          if (typeof token !== 'string' || !token || token.length > 4096)
+            throw new Error('relay_team_auth_unavailable')
+          accessToken = token
+        } finally {
+          if (teamTokenPending === pending) teamTokenPending = undefined
+        }
+      }
       const id = randomUUID()
       return new Promise<Response>((resolve, reject) => {
         const timer = setTimeout(
@@ -1602,7 +1984,8 @@ export function createOfficeRelaySession(
               capability,
               request_id: id,
               ...(protocolVersion === 2 ? { capability_name: capabilityName } : {}),
-              body: parsedBody,
+              ...(accessToken ? { access_token: accessToken } : {}),
+              body,
             })
           } catch {
             protocolFailure()

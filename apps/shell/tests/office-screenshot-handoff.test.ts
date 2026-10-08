@@ -18,6 +18,7 @@ afterEach(() => vi.unstubAllGlobals())
 describe('Office screenshot delivery', () => {
   it('delivers the native screenshot through the agent, unchanged Relay v2, PC proxy, and MCP image content', async () => {
     const png = {
+      slideId: 'slide-1',
       mime: 'image/png' as const,
       base64:
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4AWP4DwQACfsD/c8LaHIAAAAASUVORK5CYII=',

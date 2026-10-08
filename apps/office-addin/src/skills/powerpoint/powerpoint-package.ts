@@ -3,8 +3,10 @@ import JSZip from 'jszip'
 
 export const MAX_PPTX_PACKAGE_BYTES = 8 * 1024 * 1024
 export const MAX_PPTX_ENTRY_BYTES = 2 * 1024 * 1024
+export const MAX_PPTX_IMPORT_PAGE_BYTES = 10 * 1024 * 1024
 export const MAX_PPTX_ENTRIES = 256
 export const MAX_PPTX_XML_BYTES = 512 * 1024
+export const MAX_PPTX_PAGE_SHAPES = 1_000
 
 export type PackageEditKind = 'slide' | 'chart' | 'master'
 export interface XmlReplacement {
@@ -20,6 +22,8 @@ export interface PackageEditResult {
   afterXml: Record<string, string>
   preservedHashes: Record<string, string>
 }
+
+const embeddedWorkbookPath = /^ppt\/embeddings\/[A-Za-z0-9_.-]+\.xlsx$/
 
 function hash(value: string | Uint8Array): string {
   const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value
@@ -85,6 +89,40 @@ function canonicalXml(value: string): string | undefined {
   }
 }
 
+// Chart XML edits may change presentation styling, but cached values and their data links
+// require a separate workbook-aware operation with a savepoint and source readback.
+function chartDataIdentity(xml: string): string {
+  if (
+    new TextEncoder().encode(xml).byteLength > MAX_PPTX_XML_BYTES ||
+    /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) ||
+    XMLValidator.validate(xml) !== true
+  )
+    throw new Error('office_api_unsupported')
+  const protectedTags = new Set([
+    'ser',
+    'f',
+    'numCache',
+    'strCache',
+    'multiLvlStrCache',
+    'externalData',
+    'pivotSource',
+    'extLst',
+  ])
+  const found: unknown[] = []
+  const visit = (nodes: unknown): void => {
+    if (!Array.isArray(nodes)) return
+    for (const node of nodes) {
+      if (!node || typeof node !== 'object') continue
+      for (const [tag, value] of Object.entries(node)) {
+        if (protectedTags.has(tag.split(':').at(-1)!)) found.push([tag, stableValue(node)])
+        else visit(value)
+      }
+    }
+  }
+  visit(xmlParser.parse(xml))
+  return JSON.stringify(found)
+}
+
 function backgroundXml(value: string): string | undefined {
   return /<p:bg\b[^>]*\/>|<p:bg\b[^>]*>[\s\S]*?<\/p:bg\s*>/.exec(value)?.[0]
 }
@@ -136,13 +174,18 @@ function compressedMetadata(file: unknown): { compressed?: number; uncompressed?
   }
 }
 
-async function loadBoundedZip(base64: string, signal?: AbortSignal): Promise<JSZip> {
+export async function loadBoundedZip(
+  base64: string,
+  signal?: AbortSignal,
+  checkCRC32 = true,
+  maxBytes = MAX_PPTX_PACKAGE_BYTES,
+  maxEntryBytes = MAX_PPTX_ENTRY_BYTES,
+): Promise<JSZip> {
   if (signal?.aborted) throw new Error('cancelled')
-  if (!base64 || base64.length > Math.ceil(MAX_PPTX_PACKAGE_BYTES / 3) * 4)
-    throw new Error('invalid_tool_input')
+  if (!base64 || base64.length > Math.ceil(maxBytes / 3) * 4) throw new Error('invalid_tool_input')
   let zip: JSZip
   try {
-    zip = await JSZip.loadAsync(base64, { base64: true, checkCRC32: true, createFolders: false })
+    zip = await JSZip.loadAsync(base64, { base64: true, checkCRC32, createFolders: false })
   } catch {
     throw new Error('invalid_tool_input')
   }
@@ -162,11 +205,11 @@ async function loadBoundedZip(base64: string, signal?: AbortSignal): Promise<JSZ
     if (
       metadata.uncompressed === undefined ||
       metadata.compressed === undefined ||
-      metadata.uncompressed > MAX_PPTX_ENTRY_BYTES
+      metadata.uncompressed > maxEntryBytes
     )
       throw new Error('invalid_tool_input')
     total += metadata.uncompressed
-    if (total > MAX_PPTX_PACKAGE_BYTES) throw new Error('invalid_tool_input')
+    if (total > maxBytes) throw new Error('invalid_tool_input')
   }
   return zip
 }
@@ -207,6 +250,12 @@ export async function editPowerPointPackage(
         JSON.stringify(masterLayoutIdentity(replacement.xml))
     )
       throw new Error('office_api_unsupported')
+    if (
+      kind === 'chart' &&
+      /^ppt\/charts\/chart\d+\.xml$/.test(replacement.path) &&
+      chartDataIdentity(before) !== chartDataIdentity(replacement.xml)
+    )
+      throw new Error('office_api_unsupported')
     beforeHashes[replacement.path] = hash(before)
     afterHashes[replacement.path] = hash(replacement.xml)
     beforeXml[replacement.path] = before
@@ -238,6 +287,63 @@ export async function editPowerPointPackage(
   }
 }
 
+/** Build exact import/readback evidence for a synchronized chart XML and embedded XLSX edit. */
+export async function captureChartValuePackageEdit(
+  beforeBase64: string,
+  afterBase64: string,
+  signal?: AbortSignal,
+): Promise<PackageEditResult> {
+  const [before, after] = await Promise.all([
+    loadBoundedZip(beforeBase64, signal),
+    loadBoundedZip(afterBase64, signal),
+  ])
+  const beforePaths = Object.keys(before.files)
+    .filter((path) => !before.files[path]!.dir)
+    .sort()
+  const afterPaths = Object.keys(after.files)
+    .filter((path) => !after.files[path]!.dir)
+    .sort()
+  if (JSON.stringify(beforePaths) !== JSON.stringify(afterPaths))
+    throw new Error('office_api_unsupported')
+  const result: PackageEditResult = {
+    base64: afterBase64,
+    changedPaths: [],
+    beforeHashes: {},
+    afterHashes: {},
+    beforeXml: {},
+    afterXml: {},
+    preservedHashes: {},
+  }
+  for (const path of beforePaths) {
+    if (signal?.aborted) throw new Error('cancelled')
+    const oldBytes = await before.file(path)!.async('uint8array')
+    const newBytes = await after.file(path)!.async('uint8array')
+    const oldHash = hash(oldBytes),
+      newHash = hash(newBytes)
+    if (oldHash === newHash) {
+      result.preservedHashes[path] = oldHash
+      continue
+    }
+    if (!/^ppt\/charts\/chart\d+\.xml$/.test(path) && !embeddedWorkbookPath.test(path))
+      throw new Error('office_api_unsupported')
+    result.changedPaths.push(path)
+    result.beforeHashes[path] = oldHash
+    result.afterHashes[path] = newHash
+    result.beforeXml[path] = embeddedWorkbookPath.test(path)
+      ? ''
+      : new TextDecoder().decode(oldBytes)
+    result.afterXml[path] = embeddedWorkbookPath.test(path)
+      ? ''
+      : new TextDecoder().decode(newBytes)
+  }
+  if (
+    result.changedPaths.length !== 2 ||
+    result.changedPaths.filter((path) => embeddedWorkbookPath.test(path)).length !== 1
+  )
+    throw new Error('office_api_unsupported')
+  return result
+}
+
 export async function verifyImportedPowerPointPackage(
   base64: string,
   expected: Pick<
@@ -267,6 +373,10 @@ export async function verifyImportedPowerPointPackage(
       const before = expected.beforeXml[path]
       const after = expected.afterXml[path]
       if (!file || before === undefined || after === undefined) return false
+      if (embeddedWorkbookPath.test(path)) {
+        if (hash(await file.async('uint8array')) !== expected.afterHashes[path]) return false
+        continue
+      }
       const actual = await file.async('string')
       if (backgroundOnly(before, after)) {
         const actualBackground = backgroundXml(actual)
@@ -294,6 +404,72 @@ export async function verifyImportedPowerPointPackage(
   }
 }
 
+/** Full ownership proof for durable imports; preserve accepted background normalization. */
+export async function verifyImportedPowerPointPackageContent(
+  base64: string,
+  expected: PackageEditResult,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const saved = structuredClone(expected)
+  if (signal?.aborted) throw new Error('cancelled')
+  try {
+    if (!(await verifyImportedPowerPointPackage(base64, saved, signal))) return false
+    const actual = await loadBoundedZip(base64, signal, false)
+    const prepared = await loadBoundedZip(saved.base64, signal, false)
+    const paths = Object.keys(actual.files)
+      .filter((path) => !actual.files[path]!.dir)
+      .sort()
+    const expectedPaths = Object.keys(prepared.files)
+      .filter((path) => !prepared.files[path]!.dir)
+      .sort()
+    if (JSON.stringify(paths) !== JSON.stringify(expectedPaths)) return false
+    let actualTotal = 0,
+      preparedTotal = 0
+    const decoder = new TextDecoder('utf-8', { fatal: true })
+    for (const path of paths) {
+      const actualBytes = await boundedEntryBytes(
+        actual.files[path]!,
+        MAX_PPTX_PACKAGE_BYTES - actualTotal,
+        signal,
+      )
+      const expectedBytes = await boundedEntryBytes(
+        prepared.files[path]!,
+        MAX_PPTX_PACKAGE_BYTES - preparedTotal,
+        signal,
+      )
+      actualTotal += actualBytes.length
+      preparedTotal += expectedBytes.length
+      if (
+        saved.changedPaths.includes(path) &&
+        saved.beforeXml[path] !== undefined &&
+        saved.afterXml[path] !== undefined &&
+        backgroundOnly(saved.beforeXml[path]!, saved.afterXml[path]!)
+      ) {
+        const actualXml = decoder.decode(actualBytes),
+          preparedXml = decoder.decode(expectedBytes)
+        const a = backgroundXml(actualXml),
+          b = backgroundXml(preparedXml)
+        if (
+          !a ||
+          !b ||
+          canonicalXml(a) !== canonicalXml(b) ||
+          withoutBackground(actualXml) !== withoutBackground(preparedXml)
+        )
+          return false
+      } else if (
+        actualBytes.length !== expectedBytes.length ||
+        actualBytes.some((byte, index) => byte !== expectedBytes[index])
+      )
+        return false
+    }
+    return true
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.message === 'cancelled'))
+      throw new Error('cancelled', { cause: error })
+    return false
+  }
+}
+
 export async function verifyPowerPointPackage(
   base64: string,
   expected: Pick<PackageEditResult, 'changedPaths' | 'afterHashes' | 'preservedHashes'>,
@@ -317,7 +493,7 @@ export async function verifyPowerPointPackage(
     for (const path of expected.changedPaths) {
       if (signal?.aborted) throw new Error('cancelled')
       const file = zip.file(path)
-      if (!file || hash(await file.async('string')) !== expected.afterHashes[path]) return false
+      if (!file || hash(await file.async('uint8array')) !== expected.afterHashes[path]) return false
     }
     for (const [path, expectedHash] of Object.entries(expected.preservedHashes)) {
       if (signal?.aborted) throw new Error('cancelled')
@@ -342,7 +518,7 @@ export async function verifyPowerPointPackageInputs(
     for (const [path, expectedHash] of Object.entries(expectedHashes)) {
       if (signal?.aborted) throw new Error('cancelled')
       const file = zip.file(path)
-      if (!file || hash(await file.async('string')) !== expectedHash) return false
+      if (!file || hash(await file.async('uint8array')) !== expectedHash) return false
     }
     return true
   } catch (error) {
@@ -362,4 +538,360 @@ export async function capturePowerPointPackage(
     if (!file.dir) preservedHashes[path] = hash(await file.async('uint8array'))
   }
   return { changedPaths: [], afterHashes: {}, preservedHashes }
+}
+
+export interface PowerPointPicturePackageInspection {
+  pictureFingerprint: string
+  mediaDigest: string
+  shapeIds: string[]
+}
+type PictureNode = Record<string, unknown>
+type PictureBatchCache = {
+  slide?: { path: string; shapes: PictureNode[]; ids: string[] }
+  relationships?: { path: string; rels: PictureNode[] }
+  mediaDigests: Map<string, string>
+}
+/** Resolve an ordinary top-level picture by its exact OOXML name or ID. */
+export async function resolvePowerPointPictureIdentity(
+  base64: string,
+  key: { shapeId?: string; name?: string },
+  signal?: AbortSignal,
+): Promise<{ shapeId: string; name: string; mediaDigest: string }> {
+  if ((key.shapeId === undefined) === (key.name === undefined))
+    throw new Error('invalid_tool_input')
+  const zip = await loadBoundedZip(base64, signal)
+  const paths = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
+  if (paths.length !== 1) throw new Error('office_api_unsupported')
+  const xml = await zip.file(paths[0]!)!.async('string')
+  if (xml.length > MAX_PPTX_XML_BYTES || XMLValidator.validate(xml) !== true)
+    throw new Error('office_api_unsupported')
+  const candidates = [...xml.matchAll(/<p:pic\b[^>]*>[\s\S]*?<\/p:pic>/g)]
+    .map(([picture]) => {
+      const nv = picture.match(/<p:cNvPr\b[^>]*\/?\s*>/)
+      return {
+        shapeId: nv?.[0].match(/\bid="(\d+)"/)?.[1],
+        name: nv?.[0].match(/\bname="([^"]{1,256})"/)?.[1],
+      }
+    })
+    .filter((item) => item.shapeId && item.name)
+  const matches = candidates.filter((item) =>
+    key.shapeId !== undefined ? item.shapeId === key.shapeId : item.name === key.name,
+  )
+  if (matches.length !== 1) throw new Error('office_api_unsupported')
+  const item = matches[0]!
+  const inspected = await inspectPowerPointPicturePackage(base64, item.shapeId!, signal)
+  return { shapeId: item.shapeId!, name: item.name!, mediaDigest: inspected.mediaDigest }
+}
+/** Inspect a conservative, lossless subset: one ordinary top-level embedded raster picture. */
+async function inspectPictureFromZip(
+  zip: JSZip,
+  shapeId: string,
+  signal?: AbortSignal,
+  original?: (base64: string) => void,
+  options: { slideIndex?: number; maxBytes?: number } = {},
+  cache?: PictureBatchCache,
+): Promise<PowerPointPicturePackageInspection> {
+  const unsupported = (): never => {
+    throw new Error('office_api_unsupported')
+  }
+  const paths = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
+  const path =
+    options.slideIndex === undefined
+      ? paths.length === 1
+        ? paths[0]
+        : undefined
+      : paths.includes(`ppt/slides/slide${options.slideIndex + 1}.xml`)
+        ? `ppt/slides/slide${options.slideIndex + 1}.xml`
+        : undefined
+  if (!path) return unsupported()
+  type Node = PictureNode
+  const children = (node: Node, tag: string): Node[] =>
+    Array.isArray(node[tag]) ? (node[tag] as Node[]) : []
+  const child = (nodes: Node[], tag: string): Node =>
+    nodes.find((node) => Object.hasOwn(node, tag)) ?? {}
+  let shapes = cache?.slide?.path === path ? cache.slide.shapes : undefined
+  let ids = cache?.slide?.path === path ? cache.slide.ids : undefined
+  const findNv = (node: Node): Node | undefined => {
+    if (Object.hasOwn(node, 'p:cNvPr')) return node
+    for (const value of Object.values(node))
+      if (Array.isArray(value))
+        for (const nested of value as Node[]) {
+          const found = findNv(nested)
+          if (found) return found
+        }
+    return undefined
+  }
+  if (!shapes || !ids) {
+    const xml = await zip.file(path)!.async('string')
+    if (
+      xml.length > MAX_PPTX_XML_BYTES ||
+      /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml) ||
+      XMLValidator.validate(xml) !== true
+    )
+      unsupported()
+    const root = xmlParser.parse(xml) as Node[]
+    const slide = children(child(root, 'p:sld'), 'p:sld')
+    // A slide animation can target the picture indirectly through nested timing nodes.
+    if (slide.some((node) => Object.hasOwn(node, 'p:timing'))) unsupported()
+    const tree = children(child(children(child(slide, 'p:cSld'), 'p:cSld'), 'p:spTree'), 'p:spTree')
+    shapes = tree.filter((node) =>
+      ['p:sp', 'p:pic', 'p:graphicFrame', 'p:cxnSp', 'p:grpSp'].some((tag) =>
+        Object.hasOwn(node, tag),
+      ),
+    )
+    const rawIds = shapes.map((node) => (findNv(node)?.[':@'] as Node | undefined)?.['@_id'])
+    if (
+      rawIds.length > MAX_PPTX_PAGE_SHAPES ||
+      rawIds.some((id) => typeof id !== 'string' || !id.length || id.length > 256) ||
+      new Set(rawIds).size !== rawIds.length
+    )
+      unsupported()
+    ids = rawIds as string[]
+    if (cache) cache.slide = { path, shapes, ids }
+  }
+  const picture = shapes[ids.indexOf(shapeId)]
+  if (!picture || !Object.hasOwn(picture, 'p:pic')) unsupported()
+  const allowed: Record<string, string[]> = {
+    'p:pic': [],
+    'p:nvPicPr': [],
+    'p:cNvPr': ['id', 'name', 'descr', 'title'],
+    'p:cNvPicPr': [],
+    'p:nvPr': [],
+    'a:picLocks': ['noChangeAspect'],
+    'p:blipFill': ['dpi', 'rotWithShape'],
+    'a:blip': ['r:embed', 'cstate'],
+    'a:stretch': [],
+    'a:fillRect': [],
+    'a:srcRect': ['l', 't', 'r', 'b'],
+    'p:spPr': ['bwMode'],
+    'a:xfrm': ['rot'],
+    'a:off': ['x', 'y'],
+    'a:ext': ['cx', 'cy'],
+    'a:prstGeom': ['prst'],
+    'a:avLst': [],
+  }
+  let embed: string | undefined
+  const inspect = (node: Node) => {
+    const tag = Object.keys(node).find((key) => key !== ':@' && key !== '#text')
+    if (!tag) {
+      if (typeof node['#text'] === 'string' && !/^\s*$/.test(node['#text'])) unsupported()
+      return
+    }
+    if (!Object.hasOwn(allowed, tag)) unsupported()
+    const attributes = (node[':@'] ?? {}) as Node
+    if (Object.keys(attributes).some((key) => !allowed[tag]!.includes(key.slice(2)))) unsupported()
+    if (
+      tag === 'p:spPr' &&
+      attributes['@_bwMode'] !== undefined &&
+      attributes['@_bwMode'] !== 'auto'
+    )
+      unsupported()
+    if (
+      tag === 'p:blipFill' &&
+      attributes['@_rotWithShape'] !== undefined &&
+      !['1', 'true'].includes(String(attributes['@_rotWithShape']))
+    )
+      unsupported()
+    if (tag === 'p:blipFill' && attributes['@_dpi'] !== undefined) unsupported()
+    if (tag === 'a:srcRect' && Object.values(attributes).some((value) => Number(value) !== 0))
+      unsupported()
+    if (tag === 'a:prstGeom' && attributes['@_prst'] !== 'rect') unsupported()
+    if (tag === 'a:blip') {
+      if (embed || typeof attributes['@_r:embed'] !== 'string') unsupported()
+      embed = attributes['@_r:embed'] as string
+    }
+    for (const nested of children(node, tag)) inspect(nested)
+  }
+  inspect(picture!)
+  if (!embed) unsupported()
+  const relPath = path.replace('/slides/', '/slides/_rels/') + '.rels'
+  let rels = cache?.relationships?.path === relPath ? cache.relationships.rels : undefined
+  if (!rels) {
+    const relFile = zip.file(relPath)
+    if (!relFile) unsupported()
+    const relXml = await relFile!.async('string')
+    if (
+      relXml.length > MAX_PPTX_XML_BYTES ||
+      /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(relXml) ||
+      XMLValidator.validate(relXml) !== true
+    )
+      unsupported()
+    rels = children(child(xmlParser.parse(relXml) as Node[], 'Relationships'), 'Relationships')
+      .filter((node) => Object.hasOwn(node, 'Relationship'))
+      .map((node) => (node[':@'] ?? {}) as Node)
+    if (new Set(rels.map((rel) => rel['@_Id'])).size !== rels.length) unsupported()
+    if (cache) cache.relationships = { path: relPath, rels }
+  }
+  const rel = rels.find((item) => item['@_Id'] === embed)
+  if (
+    !rel ||
+    rel['@_TargetMode'] !== undefined ||
+    rel['@_Type'] !== 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image' ||
+    typeof rel['@_Target'] !== 'string' ||
+    !/^\.\.\/media\/[A-Za-z0-9_.-]+\.(?:png|jpe?g)$/i.test(rel['@_Target'])
+  )
+    unsupported()
+  const mediaPath = 'ppt/' + (rel!['@_Target'] as string).slice(3)
+  const sha = async (value: Uint8Array) =>
+    Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(value))))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('')
+  let mediaDigest = cache?.mediaDigests.get(mediaPath)
+  let bytes: Uint8Array | undefined
+  if (!mediaDigest || original) {
+    const media = zip.file(mediaPath)
+    if (!media) unsupported()
+    bytes = await media!.async('uint8array')
+    if (
+      !bytes.length ||
+      bytes.length > 2 * 1024 * 1024 ||
+      (!(bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71) &&
+        !(bytes[0] === 255 && bytes[1] === 216))
+    )
+      unsupported()
+    mediaDigest = await sha(bytes)
+    cache?.mediaDigests.set(mediaPath, mediaDigest)
+  }
+  const pictureFingerprint = await sha(
+    new TextEncoder().encode(JSON.stringify([stableValue(picture), mediaDigest])),
+  )
+  if (signal?.aborted) throw new Error('cancelled')
+  if (original && bytes)
+    original(btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')))
+  return { pictureFingerprint, mediaDigest, shapeIds: ids as string[] }
+}
+
+export async function inspectPowerPointPicturePackage(
+  base64: string,
+  shapeId: string,
+  signal?: AbortSignal,
+  original?: (base64: string) => void,
+  options: { slideIndex?: number; maxBytes?: number } = {},
+): Promise<PowerPointPicturePackageInspection> {
+  const zip = await loadBoundedZip(base64, signal, true, options.maxBytes)
+  return inspectPictureFromZip(zip, shapeId, signal, original, options)
+}
+
+/** Reuse one bounded package load while retaining per-picture unsupported results. */
+export async function inspectPowerPointPictureMediaBatch(
+  base64: string,
+  shapeIds: string[],
+  signal?: AbortSignal,
+  options: { slideIndex?: number; maxBytes?: number } = {},
+): Promise<{
+  mediaDigests: Record<string, string>
+  pictureFingerprints: Record<string, string>
+  unsupported: string[]
+}> {
+  if (
+    !Array.isArray(shapeIds) ||
+    shapeIds.length > MAX_PPTX_PAGE_SHAPES ||
+    shapeIds.some((id) => typeof id !== 'string' || !/^\d{1,10}$/.test(id)) ||
+    new Set(shapeIds).size !== shapeIds.length
+  )
+    throw new Error('invalid_tool_input')
+  const zip = await loadBoundedZip(base64, signal, true, options.maxBytes)
+  const mediaDigests: Record<string, string> = Object.create(null)
+  const pictureFingerprints: Record<string, string> = Object.create(null)
+  const unsupported: string[] = []
+  const cache: PictureBatchCache = { mediaDigests: new Map() }
+  for (const shapeId of shapeIds) {
+    if (signal?.aborted) throw new Error('cancelled')
+    try {
+      const inspected = await inspectPictureFromZip(zip, shapeId, signal, undefined, options, cache)
+      mediaDigests[shapeId] = inspected.mediaDigest
+      pictureFingerprints[shapeId] = inspected.pictureFingerprint
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'office_api_unsupported') throw error
+      unsupported.push(shapeId)
+    }
+  }
+  return { mediaDigests, pictureFingerprints, unsupported }
+}
+
+/** Read only bounded chunks: ZIP headers are untrusted and may understate inflated size. */
+async function boundedEntryBytes(
+  file: JSZip.JSZipObject,
+  remaining: number,
+  signal?: AbortSignal,
+  maxEntryBytes = MAX_PPTX_ENTRY_BYTES,
+): Promise<Uint8Array> {
+  if (signal?.aborted) throw new Error('cancelled')
+  // JSZip 3.10 exposes this browser stream API, but omits it from JSZipObject's types.
+  const source = file as JSZip.JSZipObject & {
+    internalStream(type: 'uint8array'): JSZip.JSZipStreamHelper<Uint8Array>
+  }
+  const stream = source.internalStream('uint8array')
+  return new Promise((resolve, reject) => {
+    const chunks: Uint8Array[] = []
+    let size = 0,
+      settled = false
+    const fail = (message: string) => {
+      if (settled) return
+      settled = true
+      stream.pause()
+      signal?.removeEventListener('abort', abort)
+      chunks.length = 0
+      reject(new Error(message))
+    }
+    const abort = () => fail('cancelled')
+    signal?.addEventListener('abort', abort, { once: true })
+    stream
+      .on('data', (chunk) => {
+        if (settled) return
+        if (signal?.aborted) {
+          abort()
+          return
+        }
+        size += chunk.byteLength
+        if (size > maxEntryBytes || size > remaining) {
+          fail('invalid_tool_input')
+          return
+        }
+        chunks.push(chunk)
+      })
+      .on('error', () => fail('invalid_tool_input'))
+      .on('end', () => {
+        if (settled) return
+        settled = true
+        signal?.removeEventListener('abort', abort)
+        const result = new Uint8Array(size)
+        let offset = 0
+        for (const chunk of chunks) {
+          result.set(chunk, offset)
+          offset += chunk.byteLength
+        }
+        resolve(result)
+      })
+    stream.resume()
+  })
+}
+
+/** Hash entry bytes and paths, excluding ZIP compression and timestamp metadata. */
+export async function presentationPackageDigest(
+  base64: string,
+  signal?: AbortSignal,
+  purpose: 'editing' | 'import_page' = 'editing',
+): Promise<string> {
+  const maxBytes = purpose === 'import_page' ? MAX_PPTX_IMPORT_PAGE_BYTES : MAX_PPTX_PACKAGE_BYTES
+  const maxEntryBytes = purpose === 'import_page' ? maxBytes : MAX_PPTX_ENTRY_BYTES
+  // Parse the index without CRC inflation; validate declared limits before reading any entry.
+  const zip = await loadBoundedZip(base64, signal, false, maxBytes, maxEntryBytes)
+  const sha = async (bytes: Uint8Array): Promise<string> => {
+    if (signal?.aborted) throw new Error('cancelled')
+    const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes))
+    if (signal?.aborted) throw new Error('cancelled')
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
+  const entries: [string, string][] = []
+  let total = 0
+  for (const path of Object.keys(zip.files).sort()) {
+    const file = zip.files[path]!
+    if (file.dir) continue
+    const bytes = await boundedEntryBytes(file, maxBytes - total, signal, maxEntryBytes)
+    total += bytes.byteLength
+    entries.push([path, await sha(bytes)])
+  }
+  if (!entries.length) throw new Error('invalid_tool_input')
+  return sha(new TextEncoder().encode(JSON.stringify(entries)))
 }

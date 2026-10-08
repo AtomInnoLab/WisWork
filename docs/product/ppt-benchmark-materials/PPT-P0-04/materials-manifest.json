@@ -1,0 +1,130 @@
+{
+  "caseId": "PPT-P0-04",
+  "status": "candidate_pending_review",
+  "domain": "law",
+  "historicalAsOf": "2024-12-01",
+  "effectiveFrom": "2023-12-01",
+  "jurisdiction": "United States federal courts; Rule 1101 scope and exclusions retained",
+  "slideCount": 8,
+  "notCompleted": [
+    "legal_review",
+    "copyright_scope_review",
+    "layout_review",
+    "actual_PowerPoint",
+    "host_QA",
+    "saved_reopen_verification"
+  ],
+  "sources": [
+    {
+      "id": "old",
+      "path": "originals/2022-federal-rules-evidence.pdf",
+      "url": "https://www.uscourts.gov/sites/default/files/federal_rules_of_evidence_december_1_2022_0.pdf",
+      "editionOrOrderDate": "2022-12-01",
+      "role": "superseded comparison only",
+      "retrievedAt": "2026-09-29T06:20:27.537484+00:00",
+      "sha256": "27f6d2e56f664f8feb35119771e1b9afc819c593088e084ada60e089fa1863b7",
+      "fileSize": 243580,
+      "pdfPageCount": 42,
+      "extracts": [
+        {
+          "pdfPage": 29,
+          "path": "extracts/old-pdf-page-29.txt",
+          "sha256": "74c329d47592f8ed3c372599866392f4f9b833baa97ae2d29f437a2c3409865b",
+          "fileSize": 2732
+        }
+      ]
+    },
+    {
+      "id": "historical",
+      "path": "originals/2024-federal-rules-evidence.pdf",
+      "url": "https://www.govinfo.gov/content/pkg/CPRT-118HPRT57151/pdf/CPRT-118HPRT57151.pdf",
+      "editionOrOrderDate": "2024-12-01",
+      "role": "official historical compilation",
+      "retrievedAt": "2026-09-29T06:20:27.644857+00:00",
+      "sha256": "6d40b9dca62b1acb0d7e762473b6fad7779ef58b6cf19384575210af81a444ad",
+      "fileSize": 235118,
+      "pdfPageCount": 44,
+      "extracts": [
+        {
+          "pdfPage": 30,
+          "path": "extracts/historical-pdf-page-30.txt",
+          "sha256": "cf1fbedd22f16c66ba78d85791e97188466659815f09f937e6f480166926c2aa",
+          "fileSize": 2805
+        },
+        {
+          "pdfPage": 31,
+          "path": "extracts/historical-pdf-page-31.txt",
+          "sha256": "c0fbf3344e7689b2a8aa99e326251ac834a0352fcb49ed324a35fb674866a0a1",
+          "fileSize": 2884
+        },
+        {
+          "pdfPage": 43,
+          "path": "extracts/historical-pdf-page-43.txt",
+          "sha256": "0f99389ec0474f39cdaf4c185bc8757ea458ce46e52e6ecf9a71de9dc18ac278",
+          "fileSize": 2664
+        },
+        {
+          "pdfPage": 44,
+          "path": "extracts/historical-pdf-page-44.txt",
+          "sha256": "66aaa3032dcdcbee57b205a0128baafe4ccf17f31f3c581f1acb5977d4fbfa9b",
+          "fileSize": 2397
+        }
+      ]
+    },
+    {
+      "id": "amendment",
+      "path": "originals/2023-courts-amendment-package.pdf",
+      "url": "https://www.uscourts.gov/sites/default/files/2023_congressional_package_april_24_2023_0.pdf",
+      "editionOrOrderDate": "2023-04-24",
+      "role": "order plus official committee explanation; notes are explanatory not case opinions",
+      "retrievedAt": "2026-09-29T06:20:28.277765+00:00",
+      "sha256": "290a7566ee8f985a60874db840c8790b7aa0dc4218b3fe1c4ff1f3ae42b5977e",
+      "fileSize": 2676899,
+      "pdfPageCount": 224,
+      "extracts": [
+        {
+          "pdfPage": 194,
+          "path": "extracts/amendment-pdf-page-194.txt",
+          "sha256": "723da1399140c7b5222ecce5022ee2d744a5a23c50bd8fed05faf624a044e282",
+          "fileSize": 710
+        },
+        {
+          "pdfPage": 198,
+          "path": "extracts/amendment-pdf-page-198.txt",
+          "sha256": "0bdb046ef93985b25bca6ba219970eac22d1dbdd50ad17f54737f96a8c3e5ef5",
+          "fileSize": 894
+        },
+        {
+          "pdfPage": 209,
+          "path": "extracts/amendment-pdf-page-209.txt",
+          "sha256": "838820cfa88508310caf03c54ae67f73701e1cf997260d914e1395f1feb186eb",
+          "fileSize": 1084
+        },
+        {
+          "pdfPage": 210,
+          "path": "extracts/amendment-pdf-page-210.txt",
+          "sha256": "69adffb71d42033e6977a5cec59ed212a40e2b592b7b1676f0a99b0fbfd5535e",
+          "fileSize": 1895
+        },
+        {
+          "pdfPage": 211,
+          "path": "extracts/amendment-pdf-page-211.txt",
+          "sha256": "c5796af327a840caf0538db6e5751f6006db3edfe5706a48bab56817ad2c33ca",
+          "fileSize": 1964
+        },
+        {
+          "pdfPage": 212,
+          "path": "extracts/amendment-pdf-page-212.txt",
+          "sha256": "4834c89a8c0a17d569d64e4f6c31337e0960e063fa1731b67e9e229b5a885bf0",
+          "fileSize": 1917
+        },
+        {
+          "pdfPage": 213,
+          "path": "extracts/amendment-pdf-page-213.txt",
+          "sha256": "2ee64e5321ef58c7815d25dde8e747f85335890a6d2be7fe672b47f641f80891",
+          "fileSize": 931
+        }
+      ]
+    }
+  ]
+}

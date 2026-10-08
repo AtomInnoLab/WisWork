@@ -124,6 +124,7 @@ function productionAdapter(state: { text: string; left: number }): PowerPointAda
         ],
       }),
     ),
+    readSlideTable: vi.fn().mockResolvedValue([]),
     readSlideText: vi.fn().mockImplementation(() =>
       Promise.resolve({
         slideId: 'slide-1',
@@ -152,6 +153,51 @@ function productionAdapter(state: { text: string; left: number }): PowerPointAda
       return { createdShapeIds: [] }
     }),
   }
+}
+
+// Model the durable service boundary here; backup persistence and exact native
+// readback are covered by presentation-native-modify and text-style package tests.
+function createVerifiedDurableSkill(options: Parameters<typeof createPowerPointSkill>[0]) {
+  const { adapter, proposals } = options
+  const propose = async (
+    name: string,
+    operations: Array<{ slide_index: number; shape_id: string }>,
+    execute: (signal?: AbortSignal) => Promise<void>,
+  ) => {
+    const targets = await Promise.all(
+      operations.map(
+        async (op) => `${(await adapter.snapshotSlide(op.slide_index)).slideId}/${op.shape_id}`,
+      ),
+    )
+    const result = proposals.propose({
+      operation: name,
+      toolName: name,
+      title: name,
+      preview: {},
+      impact: { host: 'powerpoint', targets, count: targets.length },
+      fingerprint: 'durable-service',
+      validate: async () => true,
+      execute,
+      verify: async () => {},
+    })
+    return { proposalId: result.id, changeId: 'durable-change', status: 'proposed' }
+  }
+  return createPowerPointSkill({
+    ...options,
+    durableModify: (operations, _explanation, _signal) =>
+      propose('execute_office_js', operations, async (signal) => {
+        await adapter.executeDeclarative(operations, signal)
+      }),
+    durableTextEdit: async (input) => ({
+      output: JSON.stringify(
+        await propose('edit_slide_text', [input], (signal) =>
+          adapter.editSlideText(input.slide_index, input.shape_id, input.text, signal),
+        ),
+      ),
+      mutated: false,
+      summary: 'Durable service proposal',
+    }),
+  })
 }
 
 describe('Office PowerPoint presentation verification', () => {
@@ -626,7 +672,7 @@ describe('Office PowerPoint presentation verification', () => {
         }),
       ),
     })
-    const skill = createPowerPointSkill({ adapter, proposals, verificationAuthority })
+    const skill = createVerifiedDurableSkill({ adapter, proposals, verificationAuthority })
     const call = {
       id: 'mixed',
       name: 'execute_office_js',
@@ -688,7 +734,7 @@ describe('Office PowerPoint presentation verification', () => {
       })),
     })
     const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({ adapter, proposals, verificationAuthority })
+    const skill = createVerifiedDurableSkill({ adapter, proposals, verificationAuthority })
     const call = {
       id: 'style-color',
       name: 'execute_office_js',
@@ -812,7 +858,7 @@ describe('Office PowerPoint presentation verification', () => {
       }),
     }
     const telemetry = vi.fn()
-    const skill = createPowerPointSkill({
+    const skill = createVerifiedDurableSkill({
       adapter,
       proposals,
       verificationAuthority,
@@ -894,7 +940,7 @@ describe('Office PowerPoint presentation verification', () => {
   })
 
   it('closes each verified PowerPoint tool batch before enrolling the next batch', () => {
-    const skill = createPowerPointSkill({
+    const skill = createVerifiedDurableSkill({
       adapter: productionAdapter({ text: 'Before', left: 5 }),
       proposals: createStructuredProposalController(),
       verificationAuthority: authority(),
@@ -906,7 +952,11 @@ describe('Office PowerPoint presentation verification', () => {
   it('rejects more than eight unique affected/reference slides before proposal dispatch', async () => {
     const proposals = createStructuredProposalController()
     const adapter = productionAdapter({ text: 'Before', left: 5 })
-    const skill = createPowerPointSkill({ adapter, proposals, verificationAuthority: authority() })
+    const skill = createVerifiedDurableSkill({
+      adapter,
+      proposals,
+      verificationAuthority: authority(),
+    })
     const call = {
       id: 'overbound-reference-scope',
       name: 'execute_office_js',
@@ -936,7 +986,7 @@ describe('Office PowerPoint presentation verification', () => {
 
   it('allows exactly eight unique affected/reference slides without truncating the contract', async () => {
     const proposals = createStructuredProposalController()
-    const skill = createPowerPointSkill({
+    const skill = createVerifiedDurableSkill({
       adapter: productionAdapter({ text: 'Before', left: 5 }),
       proposals,
       verificationAuthority: authority(),
@@ -987,7 +1037,7 @@ describe('Office PowerPoint presentation verification', () => {
           }),
         ),
       })
-      const skill = createPowerPointSkill({ adapter, proposals, verificationAuthority })
+      const skill = createVerifiedDurableSkill({ adapter, proposals, verificationAuthority })
       const calls =
         kind === 'text'
           ? [
@@ -1132,7 +1182,7 @@ describe('Office PowerPoint presentation verification', () => {
         height: 30,
       }),
     })
-    const skill = createPowerPointSkill({ adapter, proposals, verificationAuthority })
+    const skill = createVerifiedDurableSkill({ adapter, proposals, verificationAuthority })
     const enrolled = await skill.presentation!.enroll!([textCall], undefined)
     if (enrolled.kind !== 'ready') throw new Error('not ready')
     await expect(skill.executeTool(textCall)).resolves.toMatchObject({
@@ -1171,7 +1221,7 @@ describe('Office PowerPoint presentation verification', () => {
     async (operations) => {
       const adapter = productionAdapter({ text: 'Before', left: 5 })
       const proposals = createStructuredProposalController()
-      const skill = createPowerPointSkill({
+      const skill = createVerifiedDurableSkill({
         adapter,
         proposals,
         verificationAuthority: authority(),
@@ -1185,7 +1235,10 @@ describe('Office PowerPoint presentation verification', () => {
         kind: 'bypass',
       })
       await expect(skill.executeTool(call)).resolves.toMatchObject({ mutated: false })
-      expect(proposals.pending()).toBeDefined()
+      if (operations.some((operation) => operation.op === 'delete_shape'))
+        expect(proposals.pending()).toBeDefined()
+      else expect(proposals.pending()).toBeUndefined()
+      expect(adapter.executeDeclarative).not.toHaveBeenCalled()
     },
   )
 

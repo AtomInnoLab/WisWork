@@ -2,7 +2,12 @@ import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { configureMetricsCache, familyVerticalMetrics, findSystemFont } from '../src/index'
+import {
+  configureMetricsCache,
+  familyVerticalMetrics,
+  findSystemFont,
+  isInstalledFontFamily,
+} from '../src/index'
 
 const darwin = process.platform === 'darwin'
 const hasHelvetica = darwin && existsSync('/System/Library/Fonts/Helvetica.ttc')
@@ -11,6 +16,10 @@ const cacheDir = join(tmpdir(), `font-metrics-test-${process.pid}`)
 afterEach(() => rmSync(cacheDir, { recursive: true, force: true }))
 
 describe('familyVerticalMetrics', () => {
+  it('checks exact installed families independently of metric extraction', () => {
+    expect(isInstalledFontFamily('WisWork Benchmark Display 2026')).toBe(false)
+    if (hasHelvetica) expect(isInstalledFontFamily('Helvetica')).toBe(true)
+  })
   it('returns plausible metrics for an installed family', () => {
     if (!hasHelvetica) return
     const m = familyVerticalMetrics('Helvetica')

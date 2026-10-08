@@ -1,9 +1,11 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import {
+  captureChartValuePackageEdit,
   editPowerPointPackage,
   verifyImportedPowerPointPackage,
   verifyPowerPointPackage,
+  verifyPowerPointPackageInputs,
 } from '../src/skills/powerpoint/powerpoint-package.js'
 
 async function fixture(extra: Record<string, string> = {}): Promise<string> {
@@ -21,6 +23,22 @@ async function fixture(extra: Record<string, string> = {}): Promise<string> {
 }
 
 describe('bounded PowerPoint package editing', () => {
+  it('verifies chart XML and embedded workbook bytes together', async () => {
+    const before = await fixture({ 'ppt/embeddings/Book1.xlsx': 'old-workbook' })
+    const zip = await JSZip.loadAsync(before, { base64: true })
+    zip.file('ppt/charts/chart1.xml', '<c:chart xmlns:c="urn:c"><c:title>new</c:title></c:chart>')
+    zip.file('ppt/embeddings/Book1.xlsx', 'new-workbook')
+    const after = await zip.generateAsync({ type: 'base64' })
+    const edit = await captureChartValuePackageEdit(before, after)
+    expect(edit.changedPaths).toEqual(['ppt/charts/chart1.xml', 'ppt/embeddings/Book1.xlsx'])
+    expect(await verifyPowerPointPackageInputs(before, edit.beforeHashes)).toBe(true)
+    expect(await verifyImportedPowerPointPackage(after, edit)).toBe(true)
+    expect(await verifyPowerPointPackage(after, edit)).toBe(true)
+    zip.file('ppt/embeddings/Book1.xlsx', 'stale-workbook')
+    expect(
+      await verifyImportedPowerPointPackage(await zip.generateAsync({ type: 'base64' }), edit),
+    ).toBe(false)
+  })
   it('round-trips a slide XML replacement while preserving relationships and unrelated parts', async () => {
     const input = await fixture()
     const edit = await editPowerPointPackage(input, 'slide', [
@@ -84,6 +102,39 @@ describe('bounded PowerPoint package editing', () => {
         },
       ]),
     ).rejects.toThrow('office_api_unsupported')
+  })
+  it('refuses chart XML data-series changes without a synchronized workbook update', async () => {
+    const input = await fixture()
+    const zip = await JSZip.loadAsync(input, { base64: true })
+    zip.file(
+      'ppt/charts/chart1.xml',
+      '<c:chart xmlns:c="urn:c"><c:ser><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>12</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:title>Q1</c:title></c:chart>',
+    )
+    const populated = await zip.generateAsync({ type: 'base64' })
+    await expect(
+      editPowerPointPackage(populated, 'chart', [
+        {
+          path: 'ppt/charts/chart1.xml',
+          xml: '<c:chart xmlns:c="urn:c"><c:ser><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>13</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:title>Q1</c:title></c:chart>',
+        },
+      ]),
+    ).rejects.toThrow('office_api_unsupported')
+    await expect(
+      editPowerPointPackage(populated, 'chart', [
+        {
+          path: 'ppt/charts/chart1.xml',
+          xml: '<c:chart xmlns:c="urn:c" xmlns:x="urn:c"><x:ser><x:val><x:numRef><x:numCache><x:pt idx="0"><x:v>13</x:v></x:pt></x:numCache></x:numRef></x:val></x:ser><c:title>Q1</c:title></c:chart>',
+        },
+      ]),
+    ).rejects.toThrow('office_api_unsupported')
+    await expect(
+      editPowerPointPackage(populated, 'chart', [
+        {
+          path: 'ppt/charts/chart1.xml',
+          xml: '<c:chart xmlns:c="urn:c"><c:ser><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>12</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:title>Q2</c:title></c:chart>',
+        },
+      ]),
+    ).resolves.toMatchObject({ changedPaths: ['ppt/charts/chart1.xml'] })
   })
 
   it('semantically verifies a host-normalized background-only master import', async () => {

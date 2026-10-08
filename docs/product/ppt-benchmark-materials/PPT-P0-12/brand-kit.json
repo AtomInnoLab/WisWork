@@ -1,0 +1,27 @@
+{
+  "id": "wiswork-benchmark-research",
+  "revision": 1,
+  "name": "WisWork 自制研究汇报基准品牌",
+  "allowedColors": ["102A43", "007F86", "E8F5F3", "FFFFFF", "52606D", "D8E2E9"],
+  "layoutComponents": [
+    {
+      "id": "benchmark-cover",
+      "name": "封面",
+      "layout": "cover",
+      "slots": [
+        { "id": "cover-title", "kind": "text", "x": 1.03, "y": 1.65, "w": 10.8, "h": 1 },
+        { "id": "cover-subtitle", "kind": "text", "x": 1.03, "y": 2.85, "w": 10.8, "h": 0.5 }
+      ]
+    },
+    {
+      "id": "benchmark-content",
+      "name": "内容与证据",
+      "layout": "content",
+      "slots": [
+        { "id": "content-title", "kind": "text", "x": 0.62, "y": 0.94, "w": 11.6, "h": 0.7 },
+        { "id": "content-body", "kind": "text", "x": 0.9, "y": 2.17, "w": 6.4, "h": 3.8 },
+        { "id": "content-source", "kind": "text", "x": 8.38, "y": 5.45, "w": 3.95, "h": 0.55 }
+      ]
+    }
+  ]
+}

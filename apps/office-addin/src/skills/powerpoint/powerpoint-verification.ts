@@ -652,6 +652,9 @@ export function createOfficePowerPointVerification(options: {
       }
     },
     recordProposal(value) {
+      // Durable services emit their receipt before the skill attaches its enrolled call binding.
+      const existing = proposals.findIndex((proposal) => proposal.id === value.id)
+      if (existing >= 0) proposals.splice(existing, 1)
       if (proposals.length < 50)
         proposals.push({
           ...value,

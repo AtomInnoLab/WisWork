@@ -1,0 +1,37 @@
+# 单页替换正式提交与整页撤销
+
+基线4011fef3。按原方案§6.4/O3/O5/§21继续完成单页重做，既有隔离分支、高保证/TDD/独立复审/全仓验证。不改原方案。本批实际处理原页，必须同时提供从备份恢复的撤销。
+
+## 设计
+
+staged经确认后保存commit_pending（含冻结父/子完整导入回执），再次核对原页及暂存页内容/位置，删除原页，回读后原子保存applied与子回执映射。父回执标记superseded避免误追加或编辑旧页。重启时commit_pending若已呈applied宿主形态则只补映射不重复删除。
+
+applied经确认后读取同一PC原页备份并核对原始SHA256与包内容指纹，保存undo_pending，将原页单页PPTX插在修订页之后。回读唯一restoredSlideId先保存restore_inserted，再验证备份内容、删除修订页、回读后保存undone与恢复后的父回执映射，子回执superseded。已知restoredSlideId的restore_inserted可检查后继续，不重复插入；undo_pending无已知ID但宿主改变则人工核对。未恢复/未验证原页前绝不删除修订页。
+
+## schema与映射
+
+PresentationPageReplacement扩展state commit_pending/applied/undo_pending/restore_inserted/undone；新增parentReceipt?/childReceipt?（commit_pending起必需，均完整v2回执）和restoredSlideId?（restore_inserted/undone必需）。parent/child严格同doc/页顺序与baseline，只目标hostID从old到new；parent摘要匹配parentArtifactDigest，child目标sourceSlideId匹配sourceSlideId。receipts一经设置immutable，restoredID首次设置后immutable。保留192KiB记录限额并为还原ID预留。staged可到discard_pending或commit_pending；commit_pending→applied→undo_pending→restore_inserted→undone；newpending只在discarded/undone后可开。
+
+同一settings key兼容读旧裸record，写新envelope {version:2,change:record,receipts:Record<string,PresentationImportRecord|null>}。receipt overrides最多32键、总100000字节，null表示superseded；记录与映射同一save，不跨key假装原子。writePageReplacement在commit_pending预先预算最终applied/undone映射，避免删除后容量失败；保留既有overrides跨下一次事务。applied时parent null/child childReceipt；undone时child null/parent将parentReceipt目标ID换成restoredID。readReceipt优先覆盖映射，null抛presentation_import_superseded；writeReceipt禁止改写有overlay的键。原IMPORT_KEY历史不改。失败回滚/文档切换/保存不确定沿用CAS约束。
+
+## adapter
+
+inspect增加applied（before序列old替换为new且new包匹配）、restore_staged（applied中new后追加restored且两包匹配）、undone（before中old替换为restored且原包匹配）状态。commit(record,assertCurrent,signal)只处理commit_pending，staged删除old/applied只回读，写前最终内容位置校验。
+
+undo(record,backupBase64,onRestored,assertCurrent,signal)只处理undo_pending或restore_inserted。前者仅applied形态能插备份，唯一新增ID保存后才能继续；后者restore_staged可删除new，undone仅回读。所有不确定状态保留记录；复用受限强包内容指纹，不重写PPTX。
+
+## tools与active artifact
+
+现有replacement skill增加commit_presentation_page_replacement及undo_presentation_page_replacement，输入project_id/change_id，确认恢复复用同工具。inspect支持所有状态并区分历史记录/当前宿主。commit需active父artifact，undo需active子artifact；重启先显式prepare相应请求。commit构造并校验全子产物bundle（复用production parse status/page、总10MiB限额），计算精确子artifactDigest与回执。提交前重新loadBackup验证身份/摘要/内容；undo同样重新load。CAS/lifecycle/receipt守卫覆盖所有await，终态切换后允许预期的映射变化，不误判为外部修改。单页定位由完整父回执获得。
+
+production prepare允许已有完整v2回执映射的derived请求加载到缓存（最终digest/doc/page mapping核对）；没有回执的derived仍拒绝，不开放派生整套追加。父superseded不能prepare或再导入；undone后父可prepare、子不可prepare。后续编辑/QA用新缓存与映射，原artifact不变，所有终态转换须重新显式prepare相应来源。
+
+## 分工与验证
+
+journal agent owns record/document binding/tests；adapter agent owns adapter/tests；tools agent owns replacement skill/tests及production prepare/tests。root owns runtime readReceipt注入/工具路由与QA、跨层实PC备份+真实settings测试、计划报告与审查。
+
+TDD覆盖删除前日志与备份就绪、applied映射原子切换、容量预检、旧record兼容、superseded拒绝重复导入、恢复不重删/重插、恢复备份后才删修订、手工改动/切文档/取消/CAS失败。独立复审后npm test/typecheck/lint、format/check、licenses，再构建Addin与Shell。保守指纹与真实Office规范化仍需实机验证，20项真实任务/写后截图与内容QA不等于工程测试。
+
+## 回滚
+
+不部署/合并。新envelope旧插件不支持，含未决/已提交替换的文档不能回滚旧插件继续操作；保留PC备份与新journal/mapping，不删除恢复资料。旧文档无预先迁移。Office.js无读写CAS，最后读取与写入间的共同编辑窗口仍需实机验收并明确记录。

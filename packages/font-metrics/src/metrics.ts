@@ -161,3 +161,9 @@ export function familyVerticalMetrics(family: string): FaceVerticalMetrics | nul
   }
   return metrics
 }
+
+/** Exact installed family lookup; unlike metric extraction, a valid face needs no readable OS/2 table. */
+export function isInstalledFontFamily(family: string): boolean {
+  const key = norm(family)
+  return !!key && !!getFontIndex().byFamily.get(key)?.length
+}

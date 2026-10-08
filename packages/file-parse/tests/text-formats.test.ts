@@ -10,7 +10,6 @@ describe('parseFileToText: plain-text formats', () => {
     ['sample.tsv', 'a\tb\tc\n1\t2\t3'],
     ['sample.json', '{"key":"value"}'],
     ['sample.xml', '<root><item>value</item></root>'],
-    ['sample.html', '<html><body><p>page</p></body></html>'],
   ]
 
   for (const [name, content] of cases) {
@@ -20,6 +19,40 @@ describe('parseFileToText: plain-text formats', () => {
       expect(result).toEqual({ ok: true, kind: 'text', text: content })
     })
   }
+
+  it.each(['html', 'htm'])('extracts visible webpage text from .%s', async (ext) => {
+    const path = writeFixture(
+      `page.${ext}`,
+      '<!doctype html><html><head><title>Quarterly report</title><style>.hidden{display:none}</style></head><body><h1>Results &amp; outlook</h1><p>Revenue <strong>grew</strong>.</p><script>secretToken()</script><p hidden>Hidden claim</p><p aria-hidden="true">Decorative label</p><nav>Menu</nav><main><p>Operating profit rose.</p></main></body></html>',
+    )
+    const result = await parseFileToText(path)
+    expect(result).toMatchObject({
+      ok: true,
+      kind: 'text',
+      text: 'Results & outlook\nRevenue grew.\nMenu\nOperating profit rose.',
+      sections: [
+        { locator: '第 1 段', start: 0, end: 17 },
+        { locator: '第 2 段', start: 18, end: 31 },
+        { locator: '第 3 段', start: 32, end: 36 },
+        { locator: '第 4 段', start: 37, end: 59 },
+      ],
+    })
+  })
+
+  it('reads a saved GBK webpage using its declared charset', async () => {
+    const bytes = Buffer.concat([
+      Buffer.from('<html><head><meta charset="gbk"></head><body><p>'),
+      Buffer.from('d6d0cec4', 'hex'),
+      Buffer.from('</p></body></html>'),
+    ])
+    const result = await parseFileToText(writeFixture('chinese.html', bytes))
+    expect(result).toMatchObject({
+      ok: true,
+      kind: 'text',
+      text: '中文',
+      sections: [{ locator: '第 1 段', start: 0, end: 2 }],
+    })
+  })
 
   it('is case-insensitive on the extension', async () => {
     const path = writeFixture('UPPER.TXT', 'upper')

@@ -320,6 +320,9 @@ export const createAgentController = <TSnapshot>(
     enhancedActive = true
   }
   const controller: LifecycleAgentController<TSnapshot> = {
+    get sessionId() {
+      return inner?.sessionId ?? ''
+    },
     get snapshot() {
       return inner?.snapshot ?? { status: 'idle', busy: false, generation: 0 }
     },
@@ -328,6 +331,9 @@ export const createAgentController = <TSnapshot>(
     },
     subscribe(listener) {
       return inner?.subscribe(listener) ?? (() => undefined)
+    },
+    subscribeAcp(listener) {
+      return inner?.subscribeAcp?.(listener) ?? (() => undefined)
     },
     run(instruction, images) {
       return inner?.run(instruction, images) ?? false

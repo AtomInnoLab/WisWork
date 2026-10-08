@@ -30,6 +30,11 @@ Protocol v1 and the original v2 schemas are unchanged. Persistent pairing is an 
 
 The SQLite schema stores binding ids, Relay-computed OIDC subject hashes, public keys, hosts, origins, approved data-capability lists, timestamps, bounded revocation tombstones, and non-resumable enrollment-pending rows. Startup prunes pending rows left by a crash before activation. A subject retains at most 24 recent tombstones so authenticated revocation retries survive lost acknowledgements and restarts without unbounded per-subject growth. It does not store tokens, private keys, document content, requests, challenges, signatures, session ids, or session capabilities.
 
+For the cross-runtime presentation business smoke, run
+`WISWORK_REAL_RELAY_SMOKE=1 pnpm exec vitest run apps/shell/tests/presentation-pc-business-smoke-integration.test.ts` from the repository root. The opt-in test starts `examples/local_business_smoke.rs` on loopback with a test-only local account endpoint, then exercises the real Relay, PC client, presentation service and attachment service. It uploads and deletes only generated fixtures under a temporary PC data directory. This is a local protocol check; deployed Relay and PowerPoint host acceptance still require separate runs.
+
+`node tools/ppt-agent-electron-real-relay-smoke.mjs` runs the same business path with the PC client and services inside a real Electron process, including Electron's native PNG decoding. On Linux it requires `xvfb-run`; it creates temporary project and attachment data and removes the uploaded fixtures. This still uses the local test Relay/account and does not exercise the PowerPoint host.
+
 ## Production
 
 1. Build with `cargo build --release --locked --manifest-path services/wiswork-relay/Cargo.toml`.
@@ -57,3 +62,9 @@ disable enrollment and automatic resume without deleting IndexedDB, `office-pair
 `bindings.sqlite`; re-enable in forward order after confirming schema compatibility. Windows
 Office WebView2, macOS Office, and Word Web real-key persistence smokes remain mandatory manual
 release gates and are not completed by the automated suites.
+
+## Presentation generation capability
+
+Relay v2 supports the optional `presentation.v1` capability. PC advertises it only when a presentation handler is configured; pairing negotiates the intersection of the Office and PC capabilities. Generation uses the existing request and response frames: JSON object requests up to 256 KiB, ordered chunks up to 64 KiB, and responses up to 16 MiB. One request may be active per paired session; independent document sessions can run concurrently. Relay does not interpret presentation payloads or persist projects. V1 remains agent-only.
+
+Deploy this Relay allowlist update before enabling the presentation handler in PC and requesting the capability from the task pane. An older Relay filters the capability out, so clients must check negotiated capabilities before offering generation.

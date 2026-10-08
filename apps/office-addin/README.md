@@ -136,10 +136,32 @@ A valid configured build emits `dist/manifest.xml`; an invalid build emits no de
 The task-pane CSP allows only the fixed WSS Relay. There are no OAuth callback pages, direct
 WisUsage connections, wildcard origins, or source maps in the deployment output.
 
+To exercise the built Taskpane on this machine before deployment, build it as above, then run
+`node tools/ppt-agent-electron-real-relay-smoke.mjs --benchmark=P0-09 --built-taskpane` from the
+repository root. The command checks the local build files and serves those bytes over local HTTPS
+while testing Electron PC, Rust Relay, Taskpane, eight-page production and recovery. Office APIs in
+Chrome are simulated; this does not replace a real PowerPoint save/reopen check.
+
+The build also emits `dist/version.json` with the same build ID compiled into the Taskpane,
+the configured presentation rollout and remote diagnostic sample percentages, and the minimum
+PC/Relay protocol versions required for PPT features.
+Serve `version.json` and `taskpane.html` without stale caches, and deploy them atomically with
+their hashed `assets/` files. On Taskpane startup, a mismatched build ID asks the user to reload
+with a build-specific URL. A production deployment without valid `version.json` or the required
+protocol fields keeps document tools disabled until the version check succeeds. The check
+does not interrupt a Taskpane that is already running. A version match is only an asset-version
+check; protocol capabilities and real Office compatibility still need separate release testing.
+
 The local HTTP bridge is rollback-only. It is never selected automatically. A coordinated rollback
 build must set `VITE_WISWORK_OFFICE_TRANSPORT=loopback` and configure the same bounded port list on
 Office and PC. Remove that flag to return to Relay mode.
 
+For a presentation cohort rollout, build with `VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT=0..100`
+(default `100`). The add-in consistently buckets each saved PowerPoint document URL without writing document settings; documents
+outside the cohort, including unsaved documents during a partial rollout, show an unavailable
+status before the Agent runtime starts. A new build changes
+the rollout percentage. Keep the old build and manifest for rollback. This controls only the
+PowerPoint Agent entry point; it does not certify a host or protocol combination.
 For persistent pairing, deploy in the order **Relay → WisWork PC → taskpane**:
 
 1. Back up `bindings.sqlite`, deploy Relay with its state directory and
@@ -174,14 +196,19 @@ The audited name-by-name and semantic comparison with `hewliyang/office-agents` 
 [`OFFICE_AGENTS_PARITY.md`](./OFFICE_AGENTS_PARITY.md). Host tool names are covered, but raw
 JavaScript execution remains intentionally unavailable and production web retrieval remains gated.
 
-Safe remote failure diagnostics are enabled by default for Relay builds. They contain only bounded
+Safe remote diagnostics are enabled by default for Relay builds. A run-end event records
+whether the Agent stream completed or was cancelled; this is not a claim that a presentation
+was delivered or passed QA. Failure events remain separate. They contain only bounded
 host/build/tool/phase identifiers, stable error codes, requirement-set support, and allowlisted
 Office error identifiers; prompts, document content, tool inputs, formulas, OOXML, screenshots,
 tokens, raw error messages, and stacks are never sent. Use **复制诊断信息** in the task-pane session
 menu or disconnected screen to copy the bounded local diagnostic ring. Relay loss preserves this
 safe ring for troubleshooting; explicit logout and taskpane disposal clear it. Set the exact build flag
 `VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS=0` to retain local export while rolling remote diagnostics
-back; other values invalidate the deployment configuration. Relay operators can correlate a copied
+back; other values invalidate the deployment configuration. Set
+`VITE_WISWORK_OFFICE_DIAGNOSTIC_SAMPLE_PERCENT=0..100` (default `100`) to sample
+remote failure diagnostics by trace. Local diagnostics remain complete; the same trace is
+always kept or skipped as a unit. Changing the rate requires a new build. Relay operators can correlate a copied
 `trace_id` with structured `office_diagnostic` service-log events. Logs should be retained for no
 more than seven days by the deployment log policy.
 The production build identifier defaults to `GITHUB_SHA` (or the current short Git commit outside
@@ -293,7 +320,25 @@ CSP, bundle-size, forged-archive, and vulnerability review.
 ```bash
 npm run test -w @wiswork/office-bridge
 npm run test -w @wiswork/office-addin
+npm run test:e2e:office
 npm run typecheck -w @wiswork/office-bridge
 npm run typecheck -w @wiswork/office-addin
 VITE_WISWORK_ADDIN_ORIGIN=https://office.example npm run build -w @wiswork/office-addin
 ```
+
+`test:e2e:office` starts the local HTTPS Taskpane and substitutes a minimal Office.js PowerPoint
+host. It checks the narrow pre-pairing pane with Chrome keyboard input, then simulates the Relay
+protocol to read a saved project, exercise the project workbench, resume after a dropped session,
+and reconnect after a Taskpane reload. It needs local Chrome. The Relay and PC are simulated; this does not verify real pairing,
+PowerPoint rendering, or host save/reopen behavior.
+
+## PowerPoint 团队登录
+
+团队工作台使用独立的 `presentation-team.v1` Relay 会话。网页登录需同时配置两个公开注册参数：
+
+- `VITE_WISWORK_TEAM_CLIENT_ID`：身份服务已注册的网页客户端 ID。
+- `VITE_WISWORK_TEAM_REDIRECT_URI`：与任务窗格同源的 HTTPS 地址，路径必须为 `/team-auth-callback.html`，不能含查询或片段。生产构建还需设置匹配的 `VITE_WISWORK_ADDIN_ORIGIN`。
+
+两项未配置时不显示登录操作；不能默认沿用桌面 `wiswork://oauth/callback` 注册。Vite 输出 `team-auth-start.html`、`team-auth-callback.html`，发布时须与任务窗格共同提供。登录对话框要求宿主支持 `DialogOrigin 1.1`；网页注册、网关 CORS 和实际 Office 登录需单独验证。
+
+凭证仅保留在任务窗格内存中，重开后需要重新登录。登录显示账号信息不充当团队权限证明，权限仍由 Relay 校验的身份和 PC 账本决定。退出或团队连接失效会清除团队内容与未确认的团队提案；团队账号操作不改变私人工作台的登录。

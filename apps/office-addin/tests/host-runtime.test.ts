@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { acpPresentationStage } from '@wiswork/agent-harness'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
 import type { StructuredProposalController } from '../src/agent/proposal-controller.js'
 import type { ElevatedOfficeAdapter } from '../src/skills/shared/elevated-office-program.js'
@@ -32,18 +33,48 @@ const inventories = {
     'set_cell_range',
   ],
   powerpoint: [
+    'edit_existing_presentation_batch',
+    'edit_existing_presentation_table_batch',
+    'inspect_existing_presentation_batch',
+    'resume_existing_presentation_batch',
+    'reapply_existing_presentation_batch',
+    'reapply_existing_presentation_change',
+    'undo_existing_presentation_batch',
+    'release_existing_presentation_batch',
+    'capture_existing_presentation_batch_page',
+    'record_existing_presentation_batch_page_review',
+    'edit_existing_presentation_text',
+    'edit_existing_presentation_text_range',
+    'edit_existing_presentation_geometry',
+    'edit_existing_presentation_table_cell',
+    'list_existing_presentation_changes',
+    'inspect_existing_presentation_change',
+    'undo_existing_presentation_change',
+    'resume_existing_presentation_change',
+    'release_existing_presentation_change',
+    'capture_existing_presentation_change',
+    'record_existing_presentation_change_review',
     'ask_clarification',
     'bash',
+    'add_slide_ir_objects',
+    'check_presentation_baseline',
+    'check_presentation_baseline_windows',
     'duplicate_slide',
     'edit_slide_chart',
     'edit_slide_master_xml',
-    'edit_slide_text',
     'edit_slide_xml',
     'execute_office_js',
     'get_presentation_state',
     'list_slide_shapes',
     'plan_deck',
     'read',
+    'read_presentation_baseline',
+    'read_presentation_baseline_chart_source',
+    'read_presentation_baseline_complex_page',
+    'read_presentation_baseline_notes',
+    'read_presentation_baseline_source_links',
+    'read_presentation_baseline_rich_text',
+    'read_presentation_baseline_page',
     'read_slide_text',
     'review_slide_screenshot',
     'screenshot_slide',
@@ -53,8 +84,37 @@ const inventories = {
 } as const
 
 describe('host runtime composition', () => {
+  it('gives registered PowerPoint operations a user-facing presentation stage', () => {
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request: vi.fn(),
+        documentId: async () => 'document-1',
+        lastProject: () => 'project-1',
+        rememberProject: async () => undefined,
+      },
+    })
+    try {
+      const unmapped = runtime.skill.tools
+        .filter((tool) => !['read', 'bash'].includes(tool.name))
+        .filter((tool) => !acpPresentationStage(tool.name))
+        .map((tool) => tool.name)
+      expect(unmapped).toEqual([])
+    } finally {
+      runtime.dispose()
+    }
+  })
+
   it('keeps a pending semantic proposal when already-disabled elevated tools are disabled again', async () => {
-    const runtime = createOfficeHostRuntime('powerpoint')
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request: vi.fn(),
+        documentId: async () => 'document-1',
+        lastProject: () => undefined,
+        rememberProject: async () => undefined,
+      },
+    })
     runtime.disableElevatedOffice()
     const proposals = runtime.proposals as StructuredProposalController
     const execute = vi.fn()
@@ -70,6 +130,7 @@ describe('host runtime composition', () => {
     const decision = proposals.waitForDecision(proposal.id)
     runtime.disableElevatedOffice()
     expect(proposals.pending()?.id).toBe(proposal.id)
+    await vi.waitFor(() => expect(proposals.pending()?.lockReview).toBeUndefined())
     await proposals.confirm(proposal.id)
     await expect(decision).resolves.toEqual({ status: 'confirmed' })
     expect(execute).toHaveBeenCalledOnce()
@@ -118,7 +179,7 @@ describe('host runtime composition', () => {
     'composes shared tools with only the %s host skill',
     (host, expected) => {
       const runtime = createOfficeHostRuntime(host as keyof typeof inventories)
-      expect(runtime.skill.tools.map((tool) => tool.name).sort()).toEqual(expected)
+      expect(runtime.skill.tools.map((tool) => tool.name).sort()).toEqual([...expected].sort())
       expect(runtime.vfs).toBeDefined()
       expect(runtime.skills.list()).toEqual([])
     },
@@ -232,4 +293,744 @@ describe('host runtime composition', () => {
       runtime.installSkill(Promise.resolve('---\nname: disabled\ndescription: disabled\n---\nNo.')),
     ).rejects.toThrow('office_capability_disabled')
   })
+})
+
+describe('presentation capability composition', () => {
+  it('routes the advertised production import reconciliation tool to its owner', async () => {
+    vi.stubGlobal('Office', {
+      context: { host: 'PowerPoint', requirements: { isSetSupported: () => true } },
+    })
+    vi.stubGlobal('PowerPoint', { run: vi.fn() })
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request: vi.fn(),
+        documentId: async () => 'doc',
+        lastProject: () => undefined,
+        rememberProject: async () => undefined,
+        readReceipt: () => undefined,
+        writeReceipt: async () => undefined,
+        readPageReplacement: () => undefined,
+        writePageReplacement: async () => undefined,
+      },
+    })
+    try {
+      expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
+        'reconcile_presentation_production_import',
+      )
+      expect(
+        await runtime.skill.executeTool({
+          id: 'reconcile',
+          name: 'reconcile_presentation_production_import',
+          input: {},
+        }),
+      ).toMatchObject({ isError: true, output: 'presentation_restore_required' })
+      expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
+        'reconcile_presentation_page_replacement',
+      )
+      expect(
+        await runtime.skill.executeTool({
+          id: 'replace-reconcile',
+          name: 'reconcile_presentation_page_replacement',
+          input: { project_id: 'project', change_id: 'change' },
+        }),
+      ).toMatchObject({ isError: true, output: 'presentation_restore_required' })
+    } finally {
+      runtime.dispose()
+      vi.unstubAllGlobals()
+    }
+  })
+  it('exposes generation only after negotiation and removes it after disconnect', async () => {
+    let connected = false
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => connected,
+        request: vi.fn(),
+        documentId: async () => 'document-1',
+        lastProject: () => undefined,
+        rememberProject: async () => undefined,
+      },
+    })
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain(
+      'compile_deck_with_pptxgenjs',
+    )
+    connected = true
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain('compile_deck_with_pptxgenjs')
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain('restore_presentation_project')
+    connected = false
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain(
+      'compile_deck_with_pptxgenjs',
+    )
+    expect(
+      await runtime.skill.executeTool({
+        id: 'stale',
+        name: 'compile_deck_with_pptxgenjs',
+        input: {},
+      }),
+    ).toMatchObject({ isError: true, output: 'presentation_unavailable' })
+    runtime.dispose()
+  })
+})
+
+describe('presentation project runtime lifecycle', () => {
+  it('exposes recovery controls and invalidates pending status on clear', async () => {
+    let finish!: (response: Response) => void
+    const request = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve
+        }),
+    )
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request,
+        documentId: async () => 'document-1',
+        lastProject: () => 'project-1',
+        rememberProject: async () => undefined,
+      },
+    })
+    expect(runtime.presentation).toBeDefined()
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain('resume_presentation_project')
+    const pending = runtime.presentation!.refresh()
+    await vi.waitFor(() => expect(request).toHaveBeenCalled())
+    runtime.clearSession()
+    finish(new Response('{}'))
+    await pending
+    expect(runtime.presentation!.snapshot()).toEqual({ phase: 'idle' })
+    runtime.dispose()
+  })
+})
+
+it('composes saved planning tools and clears their asynchronous state with the session', async () => {
+  let finish!: (response: Response) => void
+  const request = vi.fn(
+    () =>
+      new Promise<Response>((resolve) => {
+        finish = resolve
+      }),
+  )
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request,
+      documentId: async () => 'doc-1',
+      lastProject: () => 'project-1',
+      rememberProject: async () => {},
+    },
+  })
+  expect(runtime.skill.tools.map((tool) => tool.name)).toContain('save_presentation_plan')
+  expect(runtime.skill.systemPrompt).toContain('needs_review')
+  const pending = runtime.skill.executeTool({
+    id: 'read',
+    name: 'read_presentation_plan',
+    input: {},
+  })
+  await vi.waitFor(() => expect(request).toHaveBeenCalled())
+  runtime.clearSession()
+  finish(new Response('{}'))
+  expect(await pending).toMatchObject({ isError: true, output: 'cancelled' })
+  expect(runtime.vfs.list('/home/user')).toEqual([])
+  runtime.dispose()
+})
+it('routes every advertised planning tool through the planning skill', async () => {
+  const request = vi.fn(
+    async (body: unknown) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'brand_kit_list'
+            ? { brandKits: [] }
+            : (body as { operation: string }).operation === 'comment_list'
+              ? {
+                  version: 1,
+                  documentId: 'doc-1',
+                  projectId: 'project-1',
+                  revision: 0,
+                  comments: [],
+                }
+              : { preferences: [] },
+        ),
+      ),
+  )
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request,
+      documentId: async () => 'doc-1',
+      lastProject: () => 'project-1',
+      rememberProject: async () => {},
+    },
+  })
+  try {
+    expect(
+      JSON.parse(
+        (
+          await runtime.skill.executeTool({
+            id: 'domain',
+            name: 'read_presentation_domain_skill',
+            input: { domain: 'research' },
+          })
+        ).output,
+      ).sections,
+    ).toContain('method')
+    expect(
+      JSON.parse(
+        (
+          await runtime.skill.executeTool({
+            id: 'brands',
+            name: 'list_presentation_brand_kits',
+            input: {},
+          })
+        ).output,
+      ),
+    ).toEqual({ brandKits: [] })
+    expect(
+      JSON.parse(
+        (
+          await runtime.skill.executeTool({
+            id: 'preferences',
+            name: 'list_presentation_preferences',
+            input: { project_id: 'project-1' },
+          })
+        ).output,
+      ),
+    ).toEqual({ preferences: [] })
+    expect(
+      JSON.parse(
+        (
+          await runtime.skill.executeTool({
+            id: 'comments',
+            name: 'list_presentation_review_comments',
+            input: { project_id: 'project-1' },
+          })
+        ).output,
+      ).comments,
+    ).toEqual([])
+    expect(request).toHaveBeenCalledWith(
+      { operation: 'brand_kit_list', documentId: 'doc-1' },
+      undefined,
+    )
+    expect(request).toHaveBeenCalledWith(
+      { operation: 'preference_list', documentId: 'doc-1', projectId: 'project-1' },
+      undefined,
+    )
+    expect(request).toHaveBeenCalledWith(
+      { operation: 'comment_list', documentId: 'doc-1', projectId: 'project-1' },
+      undefined,
+    )
+  } finally {
+    runtime.dispose()
+  }
+})
+it('routes supported attachments to PC and cancels outstanding reads on disposal', async () => {
+  const request = vi.fn(
+    async (_body: unknown, _signal?: AbortSignal) =>
+      new Response(JSON.stringify({ attachments: [] })),
+  )
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      attachmentsAvailable: () => true,
+      request,
+      documentId: async () => 'doc',
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+    },
+  })
+  expect(runtime.durableAttachmentsAvailable?.()).toBe(true)
+  expect(runtime.skill.tools.map((t) => t.name)).toContain('list_presentation_attachments')
+  expect(
+    await runtime.skill.executeTool({
+      id: 'list',
+      name: 'list_presentation_attachments',
+      input: {},
+    }),
+  ).toMatchObject({ output: '{"attachments":[]}', mutated: false })
+  await runtime.uploadFile('image.png', Promise.resolve(new Uint8Array([1]).buffer))
+  expect(request).toHaveBeenCalledTimes(1)
+  request.mockImplementation(async (_body, signal) => {
+    runtime.dispose()
+    expect(signal?.aborted).toBe(true)
+    return new Response('{"attachments":[]}')
+  })
+  expect(
+    await runtime.skill.executeTool({
+      id: 'list',
+      name: 'list_presentation_attachments',
+      input: {},
+    }),
+  ).toMatchObject({ isError: true, output: 'upload_cancelled' })
+  expect(runtime.vfs.list('/home/user')).toEqual([])
+  await expect(
+    runtime.uploadFile('notes.txt', Promise.resolve(new ArrayBuffer(0))),
+  ).rejects.toThrow('upload_cancelled')
+})
+it('keeps older presentation-only PCs on local attachment behavior', async () => {
+  const request = vi.fn()
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request,
+      documentId: async () => 'doc',
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+    },
+  })
+  expect(runtime.durableAttachmentsAvailable?.()).toBe(false)
+  expect(runtime.skill.tools.map((t) => t.name)).not.toContain('list_presentation_attachments')
+  expect(runtime.skill.tools.map((t) => t.name)).toContain('compile_deck_with_pptxgenjs')
+  await runtime.uploadFile('source.txt', Promise.resolve(new Uint8Array([65]).buffer))
+  expect(request).not.toHaveBeenCalled()
+  expect(runtime.vfs.list('/home/user')).toEqual(['/home/user/source.txt'])
+  runtime.dispose()
+})
+it('retains local image uploads on PCs with document attachments but no asset capability', async () => {
+  const request = vi.fn()
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      attachmentsAvailable: () => true,
+      request,
+      documentId: async () => 'doc',
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+    },
+  })
+  expect(runtime.durableImagesAvailable?.()).toBe(false)
+  await runtime.uploadFile('photo.png', Promise.resolve(new Uint8Array([65]).buffer))
+  expect(request).not.toHaveBeenCalled()
+  expect(runtime.vfs.list('/home/user')).toContain('/home/user/photo.png')
+  runtime.dispose()
+})
+
+it('gates QA by host support and refreshes saved QA after project restoration', async () => {
+  let supported = true
+  vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => supported } } })
+  try {
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request: vi.fn(async () => new Response('{}')),
+        documentId: async () => 'doc',
+        lastProject: () => undefined,
+        rememberProject: async () => {},
+        readReceipt: () => undefined,
+        readQa: () => undefined,
+        writeQa: async () => {},
+      },
+    })
+    expect(runtime.skill.tools.map((t) => t.name)).toContain('capture_presentation_page_qa')
+    expect(runtime.skill.tools.map((t) => t.name)).toContain('read_presentation_page')
+    expect(runtime.skill.tools.map((t) => t.name)).toContain('edit_presentation_page_text')
+    expect(runtime.skill.tools.map((t) => t.name)).toContain('read_presentation_page_geometry')
+    expect(runtime.skill.tools.map((t) => t.name)).toContain('edit_presentation_page_geometry')
+    supported = false
+    expect(runtime.skill.tools.map((t) => t.name)).not.toContain('capture_presentation_page_qa')
+    expect(runtime.skill.tools.map((t) => t.name)).not.toContain('edit_presentation_page_text')
+    expect(runtime.skill.tools.map((t) => t.name)).not.toContain('edit_presentation_page_geometry')
+    supported = true
+    const listener = vi.fn()
+    runtime.qa!.subscribe(listener)
+    await runtime.skill.executeTool({
+      id: 'restore',
+      name: 'restore_presentation_project',
+      input: {},
+    })
+    expect(listener).toHaveBeenCalledOnce()
+    expect(runtime.qa!.revision()).toBe(1)
+    runtime.clearSession()
+    expect(runtime.qa!.read()).toBeUndefined()
+    expect(listener).toHaveBeenCalledTimes(2)
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
+it('exposes attempt history only with both durable hooks and never reads or replays without an artifact', () => {
+  const readQaAttempts = vi.fn(() => [])
+  const writeQaAttempt = vi.fn(async () => {})
+  const request = vi.fn(async () => new Response('{}'))
+  for (const paired of [false, true]) {
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request,
+        documentId: async () => 'doc',
+        lastProject: () => undefined,
+        rememberProject: async () => {},
+        readReceipt: () => undefined,
+        readQa: () => undefined,
+        writeQa: async () => {},
+        readQaAttempts,
+        ...(paired ? { writeQaAttempt } : {}),
+      },
+    })
+    try {
+      if (paired) expect(runtime.qa?.attempts?.()).toEqual([])
+      else expect(runtime.qa?.attempts).toBeUndefined()
+    } finally {
+      runtime.dispose()
+    }
+  }
+  expect(readQaAttempts).not.toHaveBeenCalled()
+  expect(writeQaAttempt).not.toHaveBeenCalled()
+  expect(request).not.toHaveBeenCalled()
+})
+
+it('rejects an injected production attempt for the visible restored whole-deck artifact', async () => {
+  let productionSource = true
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      documentId: async () => 'doc',
+      lastProject: () => 'project',
+      rememberProject: async () => {},
+      request: async () =>
+        new Response(
+          JSON.stringify({
+            projectId: 'project',
+            requestId: 'run',
+            status: 'compiled',
+            pptxBase64: 'UEsDBAAAAAA=',
+            report: { deckId: 'project', slideCount: 1 },
+            pages: [{ id: 'page', title: 'Page', sourceSlideId: '256#' }],
+          }),
+        ),
+      readReceipt: () => undefined,
+      readQa: () => undefined,
+      writeQa: async () => {},
+      writeQaAttempt: async () => {},
+      readQaAttempts: () => [
+        {
+          version: 1,
+          id: '12345678-1234-4234-8234-123456789abc',
+          ...(productionSource ? { source: 'production' as const } : {}),
+          documentId: 'doc',
+          projectId: 'project',
+          requestId: 'run',
+          artifactDigest: 'a'.repeat(64),
+          pageId: 'page',
+          hostSlideId: 'new-slide',
+          startedAt: '2026-09-29T00:00:00.000Z',
+          status: 'started',
+        },
+      ],
+    },
+  })
+  try {
+    const result = await runtime.skill.executeTool({
+      id: 'restore',
+      name: 'restore_presentation_project',
+      input: {},
+    })
+    expect(result.isError).not.toBe(true)
+    expect(() => runtime.qa!.attempts!()).toThrow('presentation_qa_attempt_state_invalid')
+    productionSource = false
+    expect(runtime.qa!.attempts!()).toHaveLength(1)
+    const listener = vi.fn()
+    runtime.qa!.subscribe(listener)
+    const expected = runtime.qa!.attempts!()[0]!
+    await expect(
+      runtime.qa!.closeAttempt!({ ...expected, documentId: 'other-doc' }),
+    ).rejects.toThrow('presentation_document_changed')
+    await expect(runtime.qa!.closeAttempt!({ ...expected, source: 'production' })).rejects.toThrow(
+      'presentation_qa_attempt_stale',
+    )
+    expect(listener).toHaveBeenCalledTimes(2)
+  } finally {
+    runtime.dispose()
+  }
+})
+
+it('invalidates exactly the affected host pages when confirming batch reapply', async () => {
+  const invalidateQa = vi.fn(async (_hostSlideIds?: readonly string[]) => {})
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request: vi.fn(async () => new Response('{}')),
+      documentId: async () => 'doc',
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+      invalidateQa,
+    },
+  })
+  try {
+    const proposals = runtime.proposals as StructuredProposalController
+    const proposal = proposals.propose({
+      operation: 'reapply_existing_presentation_batch',
+      toolName: 'reapply_existing_presentation_batch',
+      title: 'Reapply batch',
+      preview: {},
+      impact: { host: 'powerpoint', targets: ['slide-2', 'slide-1'], count: 2 },
+      fingerprint: 'batch',
+      validate: () => true,
+      execute: () => {},
+    })
+    await vi.waitFor(() => expect(proposals.pending()?.lockReview?.state).not.toBe('checking'))
+    await proposals.confirm(proposal.id)
+    expect(invalidateQa).toHaveBeenCalledExactlyOnceWith(['slide-2', 'slide-1'])
+  } finally {
+    runtime.dispose()
+  }
+})
+
+it('registers and routes background production controls only through the PC job capability', async () => {
+  const request = vi.fn(async () => new Response(JSON.stringify({ error: 'not_found' })))
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      documentId: async () => 'doc',
+      lastProject: () => 'p',
+      rememberProject: async () => {},
+      request,
+    },
+  })
+  try {
+    for (const operation of ['start', 'status', 'pause', 'resume', 'cancel']) {
+      const name = `${operation === 'status' ? 'read' : operation}_presentation_production_job`
+      expect(runtime.skill.tools.map((tool) => tool.name)).toContain(name)
+      const result = await runtime.skill.executeTool({
+        id: operation,
+        name,
+        input: { project_id: 'p', request_id: 'r' },
+      })
+      expect(result.isError).toBe(true)
+      expect(request).toHaveBeenLastCalledWith(
+        {
+          operation: `production_job_${operation}`,
+          documentId: 'doc',
+          projectId: 'p',
+          requestId: 'r',
+        },
+        undefined,
+      )
+    }
+    expect(runtime.vfs.list('/home/user')).toEqual([])
+  } finally {
+    runtime.dispose()
+  }
+})
+
+it('routes evidence delivery and issue actions through their dedicated PC operations', async () => {
+  const request = vi.fn(async () => new Response(JSON.stringify({ error: 'not_found' })))
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      documentId: async () => 'doc',
+      lastProject: () => 'p',
+      rememberProject: async () => {},
+      request,
+    },
+  })
+  const action = {
+    actionId: 'a1',
+    issueId: 'issue-1',
+    issueDigest: 'a'.repeat(64),
+    state: 'explained',
+    note: 'Scoped explanation, not factual acceptance.',
+  }
+  try {
+    for (const [name, operation, extra, body] of [
+      ['read_presentation_delivery_report', 'production_delivery_report', {}, {}],
+      ['export_presentation_delivery_report', 'production_delivery_report', {}, {}],
+      [
+        'record_presentation_issue_action',
+        'production_record_issue_action',
+        { expected_revision: 0, action },
+        { expectedRevision: 0, action },
+      ],
+    ] as const) {
+      expect(runtime.skill.tools.map((tool) => tool.name)).toContain(name)
+      const result = await runtime.skill.executeTool({
+        id: name,
+        name,
+        input: { project_id: 'p', request_id: 'r', ...extra },
+      })
+      expect(result.isError).toBe(true)
+      expect(request).toHaveBeenLastCalledWith(
+        { operation, documentId: 'doc', projectId: 'p', requestId: 'r', ...body },
+        undefined,
+      )
+    }
+    expect(runtime.vfs.list('/home/user')).toEqual([])
+  } finally {
+    runtime.dispose()
+  }
+})
+
+it('exposes durable text undo and hides unreleased native image writes through the runtime', async () => {
+  vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => true } } })
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      documentId: async () => 'doc',
+      request: async () => new Response('{}'),
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+      readReceipt: () => undefined,
+      attachmentsAvailable: () => true,
+      assetsAvailable: () => true,
+      readImageReplacement: () => undefined,
+      writeImageReplacement: async () => {},
+      readTextChange: () => undefined,
+      writeTextChange: async () => {},
+      listImageReplacements: () => [],
+    },
+  })
+  try {
+    for (const name of [
+      'read_presentation_text_change',
+      'inspect_presentation_text_change',
+      'undo_presentation_text_change',
+      'resume_presentation_text_change',
+    ]) {
+      expect(
+        runtime.skill.tools.some((tool) => tool.name === name),
+        name,
+      ).toBe(true)
+      expect(
+        (
+          await runtime.skill.executeTool({
+            id: name,
+            name,
+            input: {
+              page_id: 'p1',
+            },
+          })
+        ).output,
+      ).toBe('presentation_restore_required')
+    }
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain(
+      'replace_presentation_page_image',
+    )
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain(
+      'undo_presentation_image_replacement',
+    )
+    expect(runtime.skill.systemPrompt).toContain('Native picture replacement is unavailable')
+    expect(runtime.skill.systemPrompt).not.toContain('replace_presentation_page_image uses')
+    expect(runtime.changes).toBeDefined()
+    await runtime.changes!.refresh()
+    expect(runtime.changes!.snapshot().entries).toEqual([])
+    runtime.clearSession()
+    expect(runtime.changes!.snapshot().entries).toEqual([])
+  } finally {
+    runtime.dispose()
+    vi.unstubAllGlobals()
+  }
+})
+
+it('exposes existing-page rebuild and routes saved-page inspection through the runtime', async () => {
+  vi.stubGlobal('Office', { context: { requirements: { isSetSupported: () => true } } })
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      documentId: async () => 'doc',
+      request: async () => new Response('{}'),
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+      readExistingBatch: () => undefined,
+      writeExistingBatch: async () => {},
+      readExistingPageChange: () => undefined,
+      writeExistingPageChange: async () => {},
+      readExistingChartChange: () => undefined,
+      writeExistingChartChange: async () => {},
+    },
+  })
+  try {
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
+      'stage_existing_presentation_page_change',
+    )
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
+      'prepare_existing_presentation_original_page_restore',
+    )
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain(
+      'undo_existing_presentation_page_change',
+    )
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain('release_slide_ir_addition')
+    expect(runtime.changes).toBeDefined()
+    expect(runtime.skill.tools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        'update_slide_chart_values',
+        'inspect_slide_chart_values_change',
+        'resume_slide_chart_values_change',
+        'undo_slide_chart_values_change',
+        'release_slide_chart_values_change',
+      ]),
+    )
+    const inspected = await runtime.skill.executeTool({
+      id: 'inspect',
+      name: 'inspect_existing_presentation_page_change',
+      input: { change_id: 'absent' },
+    })
+    expect(inspected).toMatchObject({ isError: true, output: 'presentation_existing_page_missing' })
+  } finally {
+    runtime.dispose()
+    vi.unstubAllGlobals()
+  }
+})
+it.each([
+  'reapply_existing_presentation_change',
+  'reapply_existing_presentation_image_change',
+  'reapply_existing_presentation_page_change',
+])('invalidates exactly the affected host pages when confirming %s', async (operation) => {
+  const invalidateQa = vi.fn(async (_hostSlideIds?: readonly string[]) => {})
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request: vi.fn(async () => new Response('{}')),
+      documentId: async () => 'doc',
+      lastProject: () => undefined,
+      rememberProject: async () => {},
+      invalidateQa,
+    },
+  })
+  try {
+    const proposals = runtime.proposals as StructuredProposalController
+    const proposal = proposals.propose({
+      operation,
+      toolName: operation,
+      title: 'Reapply batch',
+      preview: {},
+      impact: { host: 'powerpoint', targets: ['slide-2'], count: 1 },
+      fingerprint: 'batch',
+      validate: () => true,
+      execute: () => {},
+    })
+    await vi.waitFor(() => expect(proposals.pending()?.lockReview?.state).not.toBe('checking'))
+    await proposals.confirm(proposal.id)
+    expect(invalidateQa).toHaveBeenCalledExactlyOnceWith(['slide-2'])
+  } finally {
+    runtime.dispose()
+  }
+})
+
+it('registers and routes delivery ZIP restore through the actual runtime while native export is unavailable', async () => {
+  const request = vi.fn(async () => new Response(JSON.stringify({ error: 'invalid_request' })))
+  const runtime = createOfficeHostRuntime('powerpoint', {
+    presentation: {
+      available: () => true,
+      request,
+      documentId: async () => 'document-1',
+      lastProject: () => 'project-1',
+      rememberProject: async () => undefined,
+    },
+  })
+  try {
+    expect(
+      runtime.skill.tools.some((tool) => tool.name === 'restore_presentation_delivery_bundle'),
+    ).toBe(true)
+    expect(
+      runtime.skill.tools.some((tool) => tool.name === 'export_current_presentation_bundle'),
+    ).toBe(false)
+    const result = await runtime.skill.executeTool({
+      id: 'restore',
+      name: 'restore_presentation_delivery_bundle',
+      input: { project_id: 'project-1', request_id: 'pages', bundle_id: 'a'.repeat(64) },
+    })
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('presentation_upgrade_required')
+    expect(request).toHaveBeenCalled()
+  } finally {
+    runtime.dispose()
+  }
 })

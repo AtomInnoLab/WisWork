@@ -1,0 +1,485 @@
+{
+  "version": 1,
+  "projectId": "p0-06-synthetic-nda-review-reference",
+  "title": "虚构保密合同风险汇报：候选稿",
+  "domain": "law",
+  "brief": {
+    "objective": "在授权本机测试范围内逐条审阅虚构未签合同，区分原文、建议和待确认问题",
+    "audience": "内部法律与隐私审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": ["八条款", "第 1、4、5、6 条限定", "R1–R5 建议", "禁止披露复核"],
+    "constraints": [
+      "不调用模型服务",
+      "不外发禁止披露字段",
+      "不推断法域或损失数字",
+      "专业与真实 PowerPoint 验收待完成"
+    ]
+  },
+  "sources": [
+    {
+      "id": "status",
+      "title": "synthetic-nda.txt：合同状态与本机授权",
+      "uri": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "snapshotAttachmentId": "9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同状态与本机授权",
+      "excerpt": "本文件由 WisWork 为产品测试自行编写。甲方“青岚研究工作室”和乙方“沧屿设计实验室”均为虚构名称，不代表任何真实组织；双方未签署本文件。本文件没有法律效力，不含真实客户、员工或交易信息。授权范围：仅用于本项目的本机测试、产品演示材料准备和人工审阅；不得作为真实合同或法律建议使用。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "c1",
+      "title": "synthetic-nda.txt：合同第 1 条",
+      "uri": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "snapshotAttachmentId": "9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 1 条",
+      "excerpt": "第 1 条｜定义。甲方向乙方披露并明确标识为“保密”的业务方案、设计草图和测试数据为保密信息。以下不属于保密信息：乙方能以书面记录证明在披露前已合法知悉的信息；非因乙方违约而公开的信息；由有权第三方合法提供的信息；乙方未使用保密信息而独立开发的信息。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "c2",
+      "title": "synthetic-nda.txt：合同第 2 条",
+      "uri": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "snapshotAttachmentId": "9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 2 条",
+      "excerpt": "第 2 条｜使用目的。乙方仅可为评估双方是否开展一项示意性的联合设计试验而使用保密信息。未经甲方事先书面同意，不得将其用于其他项目、模型训练、公开搜索或对外营销。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "c3",
+      "title": "synthetic-nda.txt：合同第 3 条",
+      "uri": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "snapshotAttachmentId": "9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 3 条",
+      "excerpt": "第 3 条｜访问与保护。乙方只可向为使用目的确有必要知悉、并负有不低于本协议保密义务的人员开放访问；应采取与保护自身同类敏感信息相当且不低于合理谨慎程度的措施。乙方应保存获准访问人员和材料发送记录。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "c4",
+      "title": "synthetic-nda.txt：合同第 4 条",
+      "uri": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "snapshotAttachmentId": "9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 4 条",
+      "excerpt": "第 4 条｜例外披露。法律或有权机关要求披露时，乙方可在必要范围内披露；如法律允许，应提前通知甲方，并协助争取保密处理。本条不授权主动公开或向任何模型服务发送原始材料。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "c5",
+      "title": "synthetic-nda.txt：合同第 5 条",
+      "uri": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "snapshotAttachmentId": "9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 5 条",
+      "excerpt": "第 5 条｜期限。协议自双方书面签署之日起生效两年；针对期限内收到的保密信息，保密义务在协议终止后三年继续有效。双方未约定商业合作或排他义务。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "c6",
+      "title": "synthetic-nda.txt：合同第 6 条",
+      "uri": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "snapshotAttachmentId": "9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 6 条",
+      "excerpt": "第 6 条｜返还与删除。甲方书面要求或协议终止后，乙方应在三十日内返还或删除收到的保密信息，并书面确认；因适用法律强制保存的副本可在必要范围内继续保存，仍受本协议约束。实际删除范围与备份保留机制需另行核对。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "c7",
+      "title": "synthetic-nda.txt：合同第 7 条",
+      "uri": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "snapshotAttachmentId": "9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 7 条",
+      "excerpt": "第 7 条｜违约处理。双方应先书面协商补救。损失、举证责任、可获得的救济以及适用法律均未在本测试文本中确定，不能由 Agent 补写为既定条款。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "c8",
+      "title": "synthetic-nda.txt：合同第 8 条",
+      "uri": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "snapshotAttachmentId": "9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 8 条",
+      "excerpt": "第 8 条｜通知与争议。通知方式、送达地址、适用法律、争议解决机构及签署人均留待双方确认。不得据此推断任何具体法域、法院或仲裁机构。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "policy-use",
+      "title": "review-policy.txt：测试审阅口径",
+      "uri": "attachment:dcb6f2f58c3e05d7675fdad05d5e4c1f29099e321ecb12fc0aaeac9b337c3893",
+      "snapshotAttachmentId": "dcb6f2f58c3e05d7675fdad05d5e4c1f29099e321ecb12fc0aaeac9b337c3893",
+      "locator": "测试审阅口径",
+      "excerpt": "材料性质：synthetic-nda.txt 为 WisWork 自有、完全虚构且未经签署的演示输入。本口径是质量测试规则，不是法律意见。保密级别标记为“内部测试”；允许在本地获准测试项目内解析合同、提取条款及制作八页内部审阅稿。禁止把原始合同、内部测试字段或条款全文用于公共搜索、跨项目复用、远程诊断正文及未经授权的第三方分享。若所用 Agent 服务需要发送材料，必须在真实执行前记录目的地、允许字段和授权；无法核验时停止该路径。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "policy-risk",
+      "title": "review-policy.txt：审阅风险分级",
+      "uri": "attachment:dcb6f2f58c3e05d7675fdad05d5e4c1f29099e321ecb12fc0aaeac9b337c3893",
+      "snapshotAttachmentId": "dcb6f2f58c3e05d7675fdad05d5e4c1f29099e321ecb12fc0aaeac9b337c3893",
+      "locator": "审阅风险分级",
+      "excerpt": "风险分级：高风险仅指测试中的审阅优先级，不代表法院判断。第 3、4、6、8 条需列为待确认问题；第 1、2、5、7 条需保留限定语。所有风险项必须指向合同条号，分开列出“合同写了什么”“审阅人提出什么”“仍需谁确认”。不得凭空加入适用法律、损害赔偿上限、通知地址或自动删除保证。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "r1",
+      "title": "revision-notes.txt：修订意见 R1",
+      "uri": "attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "snapshotAttachmentId": "671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "locator": "修订意见 R1",
+      "excerpt": "R1｜对应第 3 条：请明确获准访问人员如何登记、离岗后何时撤权，以及分包方是否包含在“人员”内；建议增加访问记录保留期限。当前合同未写明，不能把建议当作已生效义务。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "r2",
+      "title": "revision-notes.txt：修订意见 R2",
+      "uri": "attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "snapshotAttachmentId": "671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "locator": "修订意见 R2",
+      "excerpt": "R2｜对应第 4 条：请专业审阅人确认通知例外是否充分，以及要求披露时由谁负责范围审查。当前仅允许“法律允许时提前通知”，不得在简报中改写为“一律提前通知”。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "r3",
+      "title": "revision-notes.txt：修订意见 R3",
+      "uri": "attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "snapshotAttachmentId": "671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "locator": "修订意见 R3",
+      "excerpt": "R3｜对应第 6 条：请确认强制留存、备份、灾备副本和删除证明的处理方式；三十日是合同草稿中的返还/删除期限，不等于系统已经做到三十日自动删除。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "r4",
+      "title": "revision-notes.txt：修订意见 R4",
+      "uri": "attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "snapshotAttachmentId": "671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "locator": "修订意见 R4",
+      "excerpt": "R4｜对应第 8 条：请双方在真实签署前决定通知地址、适用法律和争议解决机制。草稿没有指定法域；所有分析都须标记“待专业人士确认”。",
+      "asOf": "2026-09-28"
+    },
+    {
+      "id": "r5",
+      "title": "revision-notes.txt：修订意见 R5",
+      "uri": "attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "snapshotAttachmentId": "671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "locator": "修订意见 R5",
+      "excerpt": "R5｜对应第 1、2、5、7 条：简报保留定义例外、目的限制、签署前未生效、保密义务延续三年、救济未定等限定语；不要补写财务损失数字或责任上限。",
+      "asOf": "2026-09-28"
+    }
+  ],
+  "claims": [
+    {
+      "id": "status",
+      "statement": "材料为 WisWork 自有虚构且未签署的测试合同；仅限获准本机项目制作内部审阅稿。",
+      "sourceIds": ["status", "policy-use"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2026-09-28",
+      "jurisdiction": "unspecified in unsigned synthetic draft",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "contract",
+        "jurisdiction": "unspecified in unsigned synthetic draft",
+        "effectLevel": "unsigned synthetic test draft; no legal effect",
+        "applicabilityDate": "2026-09-28",
+        "originalLocation": "合同状态与本机授权; 测试审阅口径",
+        "limitations": "未签署、无真实合同效力"
+      }
+    },
+    {
+      "id": "c1",
+      "statement": "第 1 条定义保密信息，并列出已合法知悉、非违约公开、第三方合法提供及独立开发四类例外。",
+      "sourceIds": ["c1"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2026-09-28",
+      "jurisdiction": "unspecified in unsigned synthetic draft",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "contract",
+        "jurisdiction": "unspecified in unsigned synthetic draft",
+        "effectLevel": "unsigned synthetic test draft; no legal effect",
+        "applicabilityDate": "2026-09-28",
+        "originalLocation": "合同第 1 条",
+        "limitations": "四类例外不可删除"
+      }
+    },
+    {
+      "id": "c2",
+      "statement": "第 2 条只允许为示意联合设计试验评估使用信息，其他项目、模型训练、公开搜索或营销须先获书面同意。",
+      "sourceIds": ["c2"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2026-09-28",
+      "jurisdiction": "unspecified in unsigned synthetic draft",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "contract",
+        "jurisdiction": "unspecified in unsigned synthetic draft",
+        "effectLevel": "unsigned synthetic test draft; no legal effect",
+        "applicabilityDate": "2026-09-28",
+        "originalLocation": "合同第 2 条",
+        "limitations": "不得扩写授权用途"
+      }
+    },
+    {
+      "id": "c3",
+      "statement": "第 3 条限制必要知悉人员并要求保护和记录；获准人员、离岗撤权、分包方范围仍待确认。",
+      "sourceIds": ["c3", "r1"],
+      "type": "judgment",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2026-09-28",
+      "jurisdiction": "unspecified in unsigned synthetic draft",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "contract",
+        "jurisdiction": "unspecified in unsigned synthetic draft",
+        "effectLevel": "unsigned synthetic test draft; no legal effect",
+        "applicabilityDate": "2026-09-28",
+        "originalLocation": "合同第 3 条; 修订意见 R1",
+        "limitations": "后半是修订建议，未成为合同义务"
+      }
+    },
+    {
+      "id": "c4",
+      "statement": "第 4 条允许依法必要披露；仅在法律允许时提前通知，通知例外和披露范围待专业审阅。",
+      "sourceIds": ["c4", "r2"],
+      "type": "judgment",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2026-09-28",
+      "jurisdiction": "unspecified in unsigned synthetic draft",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "contract",
+        "jurisdiction": "unspecified in unsigned synthetic draft",
+        "effectLevel": "unsigned synthetic test draft; no legal effect",
+        "applicabilityDate": "2026-09-28",
+        "originalLocation": "合同第 4 条; 修订意见 R2",
+        "limitations": "不能改写为一律提前通知"
+      }
+    },
+    {
+      "id": "c5",
+      "statement": "第 5 条写明双方书面签署才生效；草稿约定终止后三年保密延续，当前尚未签署。",
+      "sourceIds": ["c5"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2026-09-28",
+      "jurisdiction": "unspecified in unsigned synthetic draft",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "contract",
+        "jurisdiction": "unspecified in unsigned synthetic draft",
+        "effectLevel": "unsigned synthetic test draft; no legal effect",
+        "applicabilityDate": "2026-09-28",
+        "originalLocation": "合同第 5 条",
+        "limitations": "期限是未生效草稿文字"
+      }
+    },
+    {
+      "id": "c6",
+      "statement": "第 6 条草稿约定三十日返还或删除，并保留法律强制保存例外；备份和删除证明待确认。",
+      "sourceIds": ["c6", "r3"],
+      "type": "judgment",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2026-09-28",
+      "jurisdiction": "unspecified in unsigned synthetic draft",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "contract",
+        "jurisdiction": "unspecified in unsigned synthetic draft",
+        "effectLevel": "unsigned synthetic test draft; no legal effect",
+        "applicabilityDate": "2026-09-28",
+        "originalLocation": "合同第 6 条; 修订意见 R3",
+        "limitations": "不能宣称系统已实现自动删除"
+      }
+    },
+    {
+      "id": "c7",
+      "statement": "第 7 条仅写先协商补救，损失、举证、救济和适用法律仍未确定。",
+      "sourceIds": ["c7"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2026-09-28",
+      "jurisdiction": "unspecified in unsigned synthetic draft",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "contract",
+        "jurisdiction": "unspecified in unsigned synthetic draft",
+        "effectLevel": "unsigned synthetic test draft; no legal effect",
+        "applicabilityDate": "2026-09-28",
+        "originalLocation": "合同第 7 条",
+        "limitations": "不得补写赔偿数字或上限"
+      }
+    },
+    {
+      "id": "c8",
+      "statement": "第 8 条的通知地址、适用法律、争议机构和签署人均留待确认。",
+      "sourceIds": ["c8", "r4"],
+      "type": "judgment",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2026-09-28",
+      "jurisdiction": "unspecified in unsigned synthetic draft",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "contract",
+        "jurisdiction": "unspecified in unsigned synthetic draft",
+        "effectLevel": "unsigned synthetic test draft; no legal effect",
+        "applicabilityDate": "2026-09-28",
+        "originalLocation": "合同第 8 条; 修订意见 R4",
+        "limitations": "不得推断法域、法院或仲裁机构"
+      }
+    },
+    {
+      "id": "followup",
+      "statement": "修订意见 R1–R5 仅是待专业审阅的建议，应由合同责任人与法律/隐私审阅人确认。",
+      "sourceIds": ["r1", "r4", "r5"],
+      "type": "judgment",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2026-09-28",
+      "jurisdiction": "unspecified in unsigned synthetic draft",
+      "professionalContext": {
+        "domain": "law",
+        "materialKind": "contract",
+        "jurisdiction": "unspecified in unsigned synthetic draft",
+        "effectLevel": "unsigned synthetic test draft; no legal effect",
+        "applicabilityDate": "2026-09-28",
+        "originalLocation": "修订意见 R1; 修订意见 R4; 修订意见 R5",
+        "limitations": "建议未写入或生效；不得作为法律意见"
+      }
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "虚构保密合同：内部审阅",
+      "purpose": "内部测试封面：虚构、未签署和权限边界",
+      "claimIds": [],
+      "domainSection": "legal_question",
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "条款号与原文准确",
+        "原文、建议和待确认分开",
+        "不包含禁止披露字段"
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "审阅范围与授权",
+      "purpose": "审阅范围、合同状态和允许使用目的",
+      "claimIds": ["status"],
+      "domainSection": "applicable_materials",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "条款号与原文准确",
+        "原文、建议和待确认分开",
+        "不包含禁止披露字段"
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "条款地图：定义、例外与期限",
+      "purpose": "条款地图：定义、例外和期限",
+      "claimIds": ["c1", "c5"],
+      "domainSection": "applicable_materials",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "条款号与原文准确",
+        "原文、建议和待确认分开",
+        "不包含禁止披露字段"
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "目的限制与访问控制",
+      "purpose": "访问控制与目的限制风险",
+      "claimIds": ["c2", "c3"],
+      "domainSection": "analysis_and_alternatives",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "条款号与原文准确",
+        "原文、建议和待确认分开",
+        "不包含禁止披露字段"
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "依法披露与通知限定",
+      "purpose": "依法披露的通知限定",
+      "claimIds": ["c4"],
+      "domainSection": "legal_risks",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "条款号与原文准确",
+        "原文、建议和待确认分开",
+        "不包含禁止披露字段"
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "返还、删除与留存例外",
+      "purpose": "返还、删除和保留例外",
+      "claimIds": ["c6"],
+      "domainSection": "legal_risks",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "条款号与原文准确",
+        "原文、建议和待确认分开",
+        "不包含禁止披露字段"
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "救济、通知与争议未定",
+      "purpose": "未定条款与待专业确认问题",
+      "claimIds": ["c7", "c8"],
+      "domainSection": "analysis_and_alternatives",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "条款号与原文准确",
+        "原文、建议和待确认分开",
+        "不包含禁止披露字段"
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "修订与人工复核",
+      "purpose": "修订建议、责任人和禁止外发复核",
+      "claimIds": ["followup"],
+      "domainSection": "legal_conclusion",
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "条款号与原文准确",
+        "原文、建议和待确认分开",
+        "不包含禁止披露字段"
+      ]
+    }
+  ]
+}

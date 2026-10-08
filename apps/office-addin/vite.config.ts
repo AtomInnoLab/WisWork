@@ -9,6 +9,8 @@ import {
   deploymentConfig,
   deploymentConnectOrigins,
   officeBuildId,
+  officeDiagnosticSamplePercent,
+  officePresentationRolloutPercent,
   officePairingResumeEnabled,
   renderDeploymentManifest,
 } from './build-config.js'
@@ -52,6 +54,17 @@ export default defineConfig(async ({ command, mode }) => {
       return html.replaceAll('__WISWORK_CONNECT_ORIGINS__', allowedConnectOrigins)
     },
     generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: JSON.stringify({
+          buildId,
+          presentationRolloutPercent: officePresentationRolloutPercent(env),
+          diagnosticSamplePercent: officeDiagnosticSamplePercent(env),
+          presentationMinPcProtocol: 2,
+          presentationMinRelayProtocol: 2,
+        }),
+      })
       if (deployment) {
         this.emitFile({
           type: 'asset',
@@ -67,6 +80,8 @@ export default defineConfig(async ({ command, mode }) => {
     envDir: here,
     publicDir: false as const,
     plugins: [react(), officeIconPlugin, securityConfigPlugin],
+    resolve: { dedupe: ['react', 'react-dom'] },
+    optimizeDeps: { include: ['react', 'react-dom/client', 'react/jsx-dev-runtime'] },
     define: {
       __WISWORK_OFFICE_BUILD_ID__: JSON.stringify(buildId),
       __WISWORK_OFFICE_PAIRING_RESUME__: JSON.stringify(pairingResumeEnabled),
@@ -81,6 +96,8 @@ export default defineConfig(async ({ command, mode }) => {
       rollupOptions: {
         input: {
           taskpane: resolve(here, 'src/taskpane.html'),
+          teamAuthStart: resolve(here, 'src/team-auth-start.html'),
+          teamAuthCallback: resolve(here, 'src/team-auth-callback.html'),
         },
       },
     },

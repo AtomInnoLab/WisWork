@@ -1,0 +1,449 @@
+{
+  "version": 1,
+  "id": "p0-17-science",
+  "title": "科研：生物医学工作流可复现性研讨班",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "assets": [],
+  "claims": [
+    {
+      "id": "science-claim-1",
+      "text": "论文使用工作坊前后访谈观察计算工作流可复现性。",
+      "source": "local:deardorff-2020-article.pdf",
+      "locator": "PDF 第 1 页"
+    },
+    {
+      "id": "science-claim-2",
+      "text": "前测 14 人，三个月后访谈 12 人；两时点分母不同。",
+      "source": "local:deardorff-2020-article.pdf",
+      "locator": "PDF 第 5 页"
+    },
+    {
+      "id": "science-claim-3",
+      "text": "六项清单均分 1.6/6 到 2.2/6，p=0.318；不能称为统计显著改善。",
+      "source": "local:deardorff-2020-article.pdf",
+      "locator": "PDF 第 5 页"
+    },
+    {
+      "id": "science-claim-4",
+      "text": "Table 1 开源软件使用人数前测 7/14、后测 10/12。",
+      "source": "local:deardorff-2020-article.pdf",
+      "locator": "PDF 第 5 页"
+    },
+    {
+      "id": "science-claim-5",
+      "text": "小样本及分析者单人编码限制推断范围。",
+      "source": "local:deardorff-2020-article.pdf",
+      "locator": "PDF 第 9 页"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "研究封面",
+      "claimIds": [],
+      "notes": "SCI-P0-17；小样本观察，不作因果推断；统计表述待科研审阅。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "研究封面",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "Deardorff 2020，PLOS ONE。科研汇报候选稿；本项目资料只取本论文。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "SCI-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "SCI-P0-17；来源：deardorff-2020-article.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "报告目录",
+      "claimIds": [],
+      "notes": "SCI-P0-17；小样本观察，不作因果推断；统计表述待科研审阅。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "报告目录",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "问题、方法、清单结果、Table 1 与局限依次呈现；图表保留不同分母。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "SCI-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "SCI-P0-17；来源：deardorff-2020-article.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "研究问题",
+      "claimIds": ["science-claim-1"],
+      "notes": "SCI-P0-17；小样本观察，不作因果推断；统计表述待科研审阅。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "研究问题",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "论文使用工作坊前后访谈观察计算工作流可复现性。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "SCI-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "SCI-P0-17；来源：deardorff-2020-article.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "样本与方法",
+      "claimIds": ["science-claim-2"],
+      "notes": "SCI-P0-17；小样本观察，不作因果推断；统计表述待科研审阅。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "样本与方法",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "前测 14 人，三个月后访谈 12 人；两时点分母不同。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "SCI-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "SCI-P0-17；来源：deardorff-2020-article.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "工作坊流程",
+      "claimIds": ["science-claim-3"],
+      "notes": "SCI-P0-17；小样本观察，不作因果推断；统计表述待科研审阅。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "工作坊流程",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "六项清单均分 1.6/6 到 2.2/6，p=0.318；不能称为统计显著改善。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "SCI-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "SCI-P0-17；来源：deardorff-2020-article.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "结果与原文证据",
+      "claimIds": ["science-claim-4"],
+      "notes": "SCI-P0-17；小样本观察，不作因果推断；统计表述待科研审阅。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "结果与原文证据",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 0.9,
+          "text": "Table 1 开源软件使用人数前测 7/14、后测 10/12。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "SCI-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "SCI-P0-17；来源：deardorff-2020-article.pdf；待专业审阅",
+          "fontSize": 9
+        },
+        {
+          "kind": "chart",
+          "id": "science-chart",
+          "x": 1,
+          "y": 2.85,
+          "w": 10.8,
+          "h": 3.25,
+          "chartType": "bar",
+          "categories": ["前测 n=14", "后测 n=12"],
+          "series": [{ "name": "使用开源软件的人数", "values": [7, 10] }]
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "局限与可比性",
+      "claimIds": ["science-claim-5"],
+      "notes": "SCI-P0-17；小样本观察，不作因果推断；统计表述待科研审阅。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "局限与可比性",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "小样本及分析者单人编码限制推断范围。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "SCI-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "SCI-P0-17；来源：deardorff-2020-article.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "结论与待核验项",
+      "claimIds": [],
+      "notes": "SCI-P0-17；小样本观察，不作因果推断；统计表述待科研审阅。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "结论与待核验项",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "研究主张待科研审阅；原生对象和真实 PowerPoint 保存重开待验。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "SCI-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "SCI-P0-17；来源：deardorff-2020-article.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}

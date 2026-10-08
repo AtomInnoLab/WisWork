@@ -152,15 +152,39 @@ export async function buildXlsxFixture(): Promise<Uint8Array> {
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
 }
 
-/** minimal single-page pdf with an uncompressed content stream and a correct xref table */
-export function buildPdfFixture(text: string): Uint8Array {
-  const stream = `BT /F1 24 Tf 72 720 Td (${text}) Tj ET`
+/** Minimal PDF with uncompressed page streams and a correct xref table. */
+export function buildPdfFixture(
+  text: string | string[],
+  options:
+    | {
+        imagePage: number
+        invisibleText?: boolean
+        unusedInvisibleMode?: boolean
+        imageOffsetX?: number
+      }
+    | undefined = undefined,
+): Uint8Array {
+  const pages = Array.isArray(text) ? text : [text]
+  const fontId = 3 + pages.length * 2
+  const imageId = fontId + 1
   const bodies = [
     '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
-    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+    `<< /Type /Pages /Kids [${pages.map((_, index) => `${3 + index} 0 R`).join(' ')}] /Count ${pages.length} >>`,
+    ...pages.map(
+      (_, index) =>
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> ${options?.imagePage === index + 1 ? `/XObject << /Im1 ${imageId} 0 R >>` : ''} >> /Contents ${3 + pages.length + index} 0 R >>`,
+    ),
+    ...pages.map((page, index) => {
+      const image = options?.imagePage === index + 1
+      const stream = `${image ? `q 612 0 0 792 ${options?.imageOffsetX ?? 0} 0 cm /Im1 Do Q\n` : ''}BT /F1 24 Tf ${image && options?.invisibleText ? '3 Tr ' : ''}72 720 Td (${page}) Tj ${image && options?.unusedInvisibleMode ? '3 Tr ' : ''}ET`
+      return `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`
+    }),
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    ...(options
+      ? [
+          '<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 7 >>\nstream\nFF0000>\nendstream',
+        ]
+      : []),
   ]
   let out = '%PDF-1.4\n'
   const offsets: number[] = [0]
@@ -173,6 +197,31 @@ export function buildPdfFixture(text: string): Uint8Array {
   for (let i = 1; i <= bodies.length; i++) {
     out += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`
   }
+  out += `trailer\n<< /Size ${bodies.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`
+  return new TextEncoder().encode(out)
+}
+
+export function buildImageBackedPdfFixture(text: string, invisible = false): Uint8Array {
+  const stream = `q 612 0 0 792 0 0 cm /Im1 Do Q\nBT /F1 24 Tf ${invisible ? '3 Tr ' : ''}72 720 Td (${text}) Tj ET`
+  const image = 'FF0000>'
+  const bodies = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+    `<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length ${image.length} >>\nstream\n${image}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ]
+  let out = '%PDF-1.4\n'
+  const offsets = [0]
+  for (let i = 0; i < bodies.length; i++) {
+    offsets.push(out.length)
+    out += `${i + 1} 0 obj\n${bodies[i]}\nendobj\n`
+  }
+  const xrefStart = out.length
+  out += `xref\n0 ${bodies.length + 1}\n0000000000 65535 f \n`
+  for (let i = 1; i <= bodies.length; i++)
+    out += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`
   out += `trailer\n<< /Size ${bodies.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`
   return new TextEncoder().encode(out)
 }

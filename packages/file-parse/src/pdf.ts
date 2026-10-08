@@ -134,8 +134,17 @@ function installDomMatrixPolyfill(): void {
   g.DOMMatrix = DOMMatrixPolyfill
 }
 
-/** extract text from a pdf with pdfjs-dist (pure JS, no native deps), one section per page */
-export async function pdfToText(bytes: Uint8Array): Promise<string> {
+type PdfPageExtraction = {
+  pages: string[]
+  pagesWithFullPageImage: number[]
+  pagesWithInvisibleTextLayer: number[]
+}
+
+/** Extract ordered page text and report pages painted by a near-full-page raster image. */
+export async function pdfToPagesWithImageCoverage(
+  bytes: Uint8Array,
+  inspectImages = true,
+): Promise<PdfPageExtraction> {
   installDomMatrixPolyfill()
   // Explicitly import the worker module (its top level registers globalThis.pdfjsWorker,
   // which the fake worker prefers) — otherwise pdfjs looks up pdf.worker.mjs by path at
@@ -143,7 +152,7 @@ export async function pdfToText(bytes: Uint8Array): Promise<string> {
   // worker failed". A literal specifier lets the bundler include it in the output.
   // @ts-expect-error the worker build artifact has no type declarations; imported only for its top-level side effect (registering globalThis.pdfjsWorker)
   await import('pdfjs-dist/legacy/build/pdf.worker.mjs')
-  const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  const { getDocument, OPS } = await import('pdfjs-dist/legacy/build/pdf.mjs')
   const fontUrl = standardFontDataUrl()
   // pdfjs-dist 6.x removed PDFDocumentProxy.destroy(); cleanup goes through the loading task
   const loadingTask = getDocument({
@@ -155,7 +164,69 @@ export async function pdfToText(bytes: Uint8Array): Promise<string> {
   })
   const doc = await loadingTask.promise
   try {
+    const inspectPage = async (page: Awaited<ReturnType<typeof doc.getPage>>) => {
+      const operations = await page.getOperatorList()
+      const [left, bottom, right, top] = page.view
+      const pageArea = (right - left) * (top - bottom)
+      let matrix = [1, 0, 0, 1, 0, 0]
+      const stack: number[][] = []
+      let textRenderingMode = 0
+      const textModeStack: number[] = []
+      let fullPageImage = false
+      let invisibleTextLayer = false
+      for (let j = 0; j < operations.fnArray.length; j++) {
+        const op = operations.fnArray[j]
+        if (op === OPS.save) {
+          stack.push(matrix.slice())
+          textModeStack.push(textRenderingMode)
+        } else if (op === OPS.restore) {
+          matrix = stack.pop() ?? matrix
+          textRenderingMode = textModeStack.pop() ?? textRenderingMode
+        } else if (op === OPS.transform) {
+          const [a, b, c, d, e, f] = matrix
+          const [u, v, w, x, y, z] = operations.argsArray[j] as number[]
+          matrix = [
+            a * u + c * v,
+            b * u + d * v,
+            a * w + c * x,
+            b * w + d * x,
+            a * y + c * z + e,
+            b * y + d * z + f,
+          ]
+        } else if (op === OPS.paintImageXObject || op === OPS.paintInlineImageXObject) {
+          const [a, b, c, d, e, f] = matrix
+          const xs = [e, a + e, c + e, a + c + e]
+          const ys = [f, b + f, d + f, b + d + f]
+          const visibleWidth = Math.max(
+            0,
+            Math.min(right, Math.max(...xs)) - Math.max(left, Math.min(...xs)),
+          )
+          const visibleHeight = Math.max(
+            0,
+            Math.min(top, Math.max(...ys)) - Math.max(bottom, Math.min(...ys)),
+          )
+          if (
+            pageArea > 0 &&
+            Math.abs(a * d - b * c) / pageArea >= 0.8 &&
+            (visibleWidth * visibleHeight) / pageArea >= 0.8
+          )
+            fullPageImage = true
+        } else if (op === OPS.setTextRenderingMode)
+          textRenderingMode = operations.argsArray[j]?.[0] as number
+        else if (
+          textRenderingMode === 3 &&
+          (op === OPS.showText ||
+            op === OPS.showSpacedText ||
+            op === OPS.nextLineShowText ||
+            op === OPS.nextLineSetSpacingShowText)
+        )
+          invisibleTextLayer = true
+      }
+      return { fullPageImage, invisibleTextLayer }
+    }
     const pages: string[] = []
+    const pagesWithFullPageImage: number[] = []
+    const pagesWithInvisibleTextLayer: number[] = []
     for (let i = 1; i <= doc.numPages; i++) {
       const page = await doc.getPage(i)
       const content = await page.getTextContent()
@@ -167,10 +238,24 @@ export async function pdfToText(bytes: Uint8Array): Promise<string> {
         }
       }
       pages.push(text.trim())
+      const inspected = inspectImages ? await inspectPage(page) : undefined
+      if (inspected?.fullPageImage) {
+        pagesWithFullPageImage.push(i)
+        if (inspected.invisibleTextLayer) pagesWithInvisibleTextLayer.push(i)
+      }
       page.cleanup()
     }
-    return pages.join('\n\n')
+    return { pages, pagesWithFullPageImage, pagesWithInvisibleTextLayer }
   } finally {
     await loadingTask.destroy()
   }
+}
+
+/** Extract ordered page text from a PDF; page numbers are the array index plus one. */
+export async function pdfToPages(bytes: Uint8Array): Promise<string[]> {
+  return (await pdfToPagesWithImageCoverage(bytes, false)).pages
+}
+
+export async function pdfToText(bytes: Uint8Array): Promise<string> {
+  return (await pdfToPages(bytes)).join('\n\n')
 }

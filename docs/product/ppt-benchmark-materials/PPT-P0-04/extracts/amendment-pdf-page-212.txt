@@ -1,0 +1,41 @@
+4              FEDERAL RULES OF EVIDENCE
+
+
+
+
+reliability is lower than the merits standard of correctness.’”
+Advisory Committee Note to the 2000 amendment to
+Rule 702, quoting In re Paoli R.R. Yard PCB Litigation, 35
+F.3d 717, 744 (3d Cir. 1994).
+
+         Rule 702 requires that the expert’s knowledge “help”
+the trier of fact to understand the evidence or to determine a
+fact in issue. Unfortunately, some courts have required the
+expert’s testimony to “appreciably help” the trier of fact.
+Applying a higher standard than helpfulness to otherwise
+reliable expert testimony is unnecessarily strict.
+
+      (2) Rule 702(d) has also been amended to emphasize
+that each expert opinion must stay within the bounds of what
+can be concluded from a reliable application of the expert’s
+basis and methodology. Judicial gatekeeping is essential
+because just as jurors may be unable, due to lack of
+specialized knowledge, to evaluate meaningfully the
+reliability of scientific and other methods underlying expert
+opinion, jurors may also lack the specialized knowledge to
+determine whether the conclusions of an expert go beyond
+what the expert’s basis and methodology may reliably
+support.
+
+        The amendment is especially pertinent to the
+testimony of forensic experts in both criminal and civil
+cases. Forensic experts should avoid assertions of absolute
+or one hundred percent certainty—or to a reasonable degree
+of scientific certainty—if the methodology is subjective and
+thus potentially subject to error. In deciding whether to admit
+forensic expert testimony, the judge should (where possible)
+receive an estimate of the known or potential rate of error of
+the methodology employed, based (where appropriate) on
+studies that reflect how often the method produces accurate
+results. Expert opinion testimony regarding the weight of
+feature comparison evidence (i.e., evidence that a set of

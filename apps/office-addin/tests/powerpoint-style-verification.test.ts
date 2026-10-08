@@ -3,13 +3,13 @@ import {
   BrowserPowerPointAdapter,
   MAX_POWERPOINT_TEXT,
 } from '../src/skills/powerpoint/browser-powerpoint-adapter.js'
-import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
+import { durableCompatibility } from './powerpoint-durable-fixture'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { createOfficeDiagnostics } from '../src/diagnostics/office-diagnostics.js'
 
 afterEach(() => vi.unstubAllGlobals())
 
-function officeFixture(options: { ignoredStyle?: boolean; mixedStyle?: boolean } = {}) {
+async function officeFixture(options: { ignoredStyle?: boolean; mixedStyle?: boolean } = {}) {
   const characterFonts = [
     { color: '#000000', name: 'Aptos', size: 32, bold: false, italic: false },
     {
@@ -91,12 +91,12 @@ function officeFixture(options: { ignoredStyle?: boolean; mixedStyle?: boolean }
   const adapter = new BrowserPowerPointAdapter()
   const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
   const proposals = createStructuredProposalController(diagnostics)
-  const skill = createPowerPointSkill({ adapter, proposals })
+  const { skill } = await durableCompatibility(adapter, proposals)
   return { adapter, proposals, skill, characterFonts, range, shapes, diagnostics }
 }
 
 it('confirms style and delete on different shapes in one batch', async () => {
-  const fixture = officeFixture()
+  const fixture = await officeFixture()
   const result = await fixture.skill.executeTool({
     id: 'probe',
     name: 'execute_office_js',
@@ -125,7 +125,7 @@ it('confirms style and delete on different shapes in one batch', async () => {
 })
 
 it('does not approve full-range style when only the first character matches', async () => {
-  const fixture = officeFixture({ ignoredStyle: true, mixedStyle: true })
+  const fixture = await officeFixture({ ignoredStyle: true, mixedStyle: true })
   await fixture.skill.executeTool({
     id: 'probe',
     name: 'execute_office_js',
@@ -146,7 +146,7 @@ it('does not approve full-range style when only the first character matches', as
 it.each(['bold', 'italic'] as const)(
   'preserves mixed %s as unknown instead of false',
   async (property) => {
-    const fixture = officeFixture()
+    const fixture = await officeFixture()
     fixture.characterFonts[0][property] = true
     fixture.characterFonts[1][property] = false
     const readback = await fixture.adapter.readShapeTextStyle(0, 'title')
@@ -155,7 +155,7 @@ it.each(['bold', 'italic'] as const)(
 )
 
 it('fails closed instead of verifying a truncated prefix of an oversized text range', async () => {
-  const fixture = officeFixture()
+  const fixture = await officeFixture()
   fixture.range.text = 'A'.repeat(MAX_POWERPOINT_TEXT + 1)
   await expect(fixture.adapter.readShapeTextStyle(0, 'title')).rejects.toThrow('office_read_failed')
   expect(fixture.range.getSubstring).not.toHaveBeenCalled()
@@ -170,7 +170,7 @@ it.each([
 ])(
   'reports the failing $property without retrying the applied batch',
   async ({ property, style }) => {
-    const fixture = officeFixture({ ignoredStyle: true })
+    const fixture = await officeFixture({ ignoredStyle: true })
     const readback = vi.spyOn(fixture.adapter, 'readShapeTextStyle')
     const execute = vi.spyOn(fixture.adapter, 'executeDeclarative')
     await fixture.skill.executeTool({
@@ -199,9 +199,10 @@ it.each([
     })
     expect(readback).toHaveBeenCalledTimes(3)
     expect(execute).toHaveBeenCalledTimes(1)
-    expect(fixture.shapes.items.map((shape) => shape.id)).toEqual(['title'])
+    // Durable step receipts stop before deleting another shape after a failed style write.
+    expect(fixture.shapes.items.map((shape) => shape.id)).toEqual(['title', 'empty'])
     expect(fixture.diagnostics.snapshot().events.at(-1)).toMatchObject({
-      phase: 'verify',
+      phase: 'write',
       error_code: 'office_verify_failed',
       office_error_location: `PowerPoint.operations.0.set_shape_text_style.${property}`,
     })
@@ -209,7 +210,7 @@ it.each([
 )
 
 it('still accepts converging style readback without repeating the mutation', async () => {
-  const fixture = officeFixture()
+  const fixture = await officeFixture()
   const execute = vi.spyOn(fixture.adapter, 'executeDeclarative')
   const readback = vi
     .spyOn(fixture.adapter, 'readShapeTextStyle')

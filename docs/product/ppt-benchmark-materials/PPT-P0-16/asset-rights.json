@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "file": "images/schematic-01.png",
+      "sha256": "7d38aa598d1ba91551d70307e3c9c91abffd5b39d1b9f9844f479204bdd9fe10",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark",
+      "attribution": "WisWork self-authored schematic 1; not research measurement data"
+    },
+    {
+      "file": "images/schematic-03.png",
+      "sha256": "5ee48219ef82660dc167a5625cfc2c3adea7ca6e2dc40452a18294f6d9e55efb",
+      "author": "WisWork benchmark team",
+      "usePermission": "Authorized for this benchmark",
+      "attribution": "WisWork self-authored schematic 3; not research measurement data"
+    }
+  ]
+}

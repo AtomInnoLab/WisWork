@@ -1,0 +1,415 @@
+{
+  "version": 1,
+  "id": "p0-08-cross-company-comparability-reference",
+  "title": "Apple 与 Toyota 跨公司可比性候选稿",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "assets": [],
+  "claims": [
+    {
+      "id": "apple-sales",
+      "text": "Apple FY2024 净销售额为 391,035 百万美元。",
+      "source": "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm ; local:basis.json",
+      "locator": "PDF 32 ; companies.apple.valueMillions"
+    },
+    {
+      "id": "toyota-sales",
+      "text": "Toyota FY2024 销售收入为 45,095,325 百万日元，含金融服务收入。",
+      "source": "https://global.toyota/pages/global_toyota/ir/library/sec/20-F_202403_final.pdf ; https://global.toyota/pages/global_toyota/ir/library/sec/20-F_202403_final.pdf ; local:basis.json",
+      "locator": "PDF 167 ; PDF 167 ; companies.toyota.valueMillions"
+    },
+    {
+      "id": "fx-period",
+      "text": "Toyota 官方汇总的 FY2024 已发生十二个月栏使用 1 美元兑 145 日元；右侧 FY2025 预测栏不能充当历史依据。",
+      "source": "https://global.toyota/pages/global_toyota/ir/financial-results/2024_4q_summary_en.pdf",
+      "locator": "PDF 28 FY2024 12 months"
+    },
+    {
+      "id": "fx-illustrative",
+      "text": "Toyota 收入按其 FY2024 历史汇率示意换算为 311,002.24 百万美元。",
+      "source": "https://global.toyota/pages/global_toyota/ir/library/sec/20-F_202403_final.pdf ; https://global.toyota/pages/global_toyota/ir/financial-results/2024_4q_summary_en.pdf ; local:independent-recalc.csv",
+      "locator": "PDF 167 ; PDF 28 FY2024 12 months ; CSV toyota_total_sales_revenues"
+    },
+    {
+      "id": "comparison-gap",
+      "text": "两公司财年结束日、会计准则和收入范围不同；同口径美元差额与跨公司收入排名均须留空。",
+      "source": "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm ; https://global.toyota/pages/global_toyota/ir/library/sec/20-F_202403_final.pdf ; https://global.toyota/pages/global_toyota/ir/library/sec/20-F_202403_final.pdf",
+      "locator": "PDF 32 ; PDF 167 ; PDF 167"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "跨公司收入可比性：先核对口径",
+      "claimIds": [],
+      "notes": "候选参考稿；官方原件已冻结，本稿未经财务审阅和 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "跨公司收入可比性：先核对口径",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 3.5,
+          "text": "两家公司披露的财年、会计准则和收入范围不同；本稿不作收入差额或排名。",
+          "fontSize": 18
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "参考稿；资料与专业结论待审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "资料时点与两份年度报告",
+      "claimIds": ["apple-sales", "toyota-sales"],
+      "notes": "候选参考稿；官方原件已冻结，本稿未经财务审阅和 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "资料时点与两份年度报告",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 3.5,
+          "text": "as-of 2024-11-01。Apple 10-K 于 2024-11-01 披露；Toyota 20-F 于 2024-06-25 披露，汇率汇总于 2024-05-08 发布。",
+          "fontSize": 18
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "参考稿；资料与专业结论待审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "财年、准则、币种和范围矩阵",
+      "claimIds": ["apple-sales", "toyota-sales"],
+      "notes": "候选参考稿；官方原件已冻结，本稿未经财务审阅和 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "财年、准则、币种和范围矩阵",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 0.8,
+          "text": "Apple：2024-09-28 / US GAAP / 百万美元 / 净销售额。Toyota：2024-03-31 / IFRS / 百万日元 / 销售及金融服务收入。",
+          "fontSize": 18
+        },
+        {
+          "kind": "table",
+          "id": "basis-matrix",
+          "x": 0.9,
+          "y": 2.65,
+          "w": 11.4,
+          "h": 3.3,
+          "fontSize": 15,
+          "rows": [
+            ["核对项", "Apple FY2024", "Toyota FY2024"],
+            ["财年结束", "2024-09-28", "2024-03-31"],
+            ["会计准则", "US GAAP", "IFRS"],
+            ["币种与单位", "USD millions", "JPY millions"],
+            ["收入范围", "Net sales", "Total sales revenues (products and financial services)"]
+          ]
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "参考稿；资料与专业结论待审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "Apple：原币净销售额",
+      "claimIds": ["apple-sales"],
+      "notes": "候选参考稿；官方原件已冻结，本稿未经财务审阅和 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Apple：原币净销售额",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 0.8,
+          "text": "391,035 百万美元；Apple 2024 Form 10-K，PDF 第 32 页。不得与 Toyota 原币图共用数值轴。",
+          "fontSize": 18
+        },
+        {
+          "kind": "chart",
+          "id": "apple-native-chart",
+          "x": 1,
+          "y": 2.8,
+          "w": 10.8,
+          "h": 3.2,
+          "chartType": "bar",
+          "categories": ["Apple Inc."],
+          "series": [{ "name": "Net sales（百万美元）", "values": [391035] }]
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Apple FY2024 Form 10-K，PDF 第 32 页",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "Toyota：原币销售及金融服务收入",
+      "claimIds": ["toyota-sales"],
+      "notes": "候选参考稿；官方原件已冻结，本稿未经财务审阅和 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Toyota：原币销售及金融服务收入",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 0.8,
+          "text": "45,095,325 百万日元；Toyota Form 20-F，PDF 第 167 页。包括金融服务收入。",
+          "fontSize": 18
+        },
+        {
+          "kind": "chart",
+          "id": "toyota-native-chart",
+          "x": 1,
+          "y": 2.8,
+          "w": 10.8,
+          "h": 3.2,
+          "chartType": "bar",
+          "categories": ["Toyota Motor Corporation"],
+          "series": [
+            {
+              "name": "Total sales revenues (products and financial services)（百万日元）",
+              "values": [45095325]
+            }
+          ]
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Toyota FY2024 Form 20-F，PDF 第 167 页；原件已冻结",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "Toyota 汇率换算仅作示意",
+      "claimIds": ["fx-period", "fx-illustrative"],
+      "notes": "候选参考稿；官方原件已冻结，本稿未经财务审阅和 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Toyota 汇率换算仅作示意",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 3.5,
+          "text": "45,095,325 ÷ 145 = 311,002.24 百万美元。汇率取 Toyota FY2024 历史 12 个月栏，官方汇总 PDF 第 28 页；不是 FY2025 预测栏。",
+          "fontSize": 18
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "参考稿；资料与专业结论待审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "不可比项与留空规则",
+      "claimIds": ["comparison-gap"],
+      "notes": "候选参考稿；官方原件已冻结，本稿未经财务审阅和 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "不可比项与留空规则",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 0.8,
+          "text": "同口径美元收入差额：空缺；跨公司收入排名：空缺。原因：财年结束日、准则及收入范围不同，货币换算不能消除差异。",
+          "fontSize": 18
+        },
+        {
+          "kind": "table",
+          "id": "comparison-gaps",
+          "x": 0.9,
+          "y": 2.65,
+          "w": 11.4,
+          "h": 2.7,
+          "fontSize": 16,
+          "rows": [
+            ["比较项", "结果", "理由"],
+            ["同口径美元收入差额", "", "财年、准则和范围不同"],
+            ["跨公司收入排名", "", "换算不能消除口径差异"]
+          ]
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "参考稿；资料与专业结论待审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "结论、审阅和宿主验收",
+      "claimIds": ["comparison-gap"],
+      "notes": "候选参考稿；官方原件已冻结，本稿未经财务审阅和 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "结论、审阅和宿主验收",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.6,
+          "w": 11.4,
+          "h": 3.5,
+          "text": "保留原币、原期间和原始口径；示意换算不支持相对规模结论。官方原件及本地摘要已冻结；仍待财务审阅及真实 PowerPoint 重开编辑证据。",
+          "fontSize": 18
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "参考稿；资料与专业结论待审阅",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}

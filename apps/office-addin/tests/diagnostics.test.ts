@@ -1,10 +1,193 @@
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import {
   createOfficeDiagnostics,
+  isDiagnosticToolError,
   officeDiagnosticEnvironment,
 } from '../src/diagnostics/office-diagnostics.js'
 
 describe('Office safe diagnostics', () => {
+  it('keeps the frozen P0-06 contract probe out of local and remote diagnostics', () => {
+    const contract = readFileSync(
+      new URL(
+        '../../../docs/product/ppt-benchmark-materials/PPT-P0-06/synthetic-nda.txt',
+        import.meta.url,
+      ),
+      'utf8',
+    )
+    const probe = /^测试追踪码：([^\r\n]+)$/m.exec(contract)?.[1]
+    expect(probe).toMatch(/^PRIVATE-SIM-P0-06-/)
+    const sent: unknown[] = []
+    const diagnostics = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'test',
+      remoteEnabled: true,
+      send: (event) => {
+        sent.push(event)
+      },
+    })
+    diagnostics.startTrace()
+    diagnostics.setTool('read_presentation_attachment', {
+      page_id: probe,
+      extra: contract,
+    } as never)
+    diagnostics.record({
+      phase: 'tool',
+      errorCode: 'office_read_failed',
+      error: Object.assign(new Error(contract), {
+        debugInfo: { statement: contract, errorLocation: 'Body.insertText' },
+      }),
+      prohibitedPrompt: contract,
+    } as never)
+    expect(diagnostics.snapshot().events[0]?.presentation_context?.page_id).toBe(probe)
+    expect(diagnostics.exportJson()).not.toContain(probe)
+    expect(diagnostics.exportJson({ includeLocalContext: true })).toContain(probe)
+    expect(JSON.stringify(sent)).not.toContain(probe)
+    expect(sent).toHaveLength(1)
+  })
+  it('keeps validated presentation identifiers in local export and strips them from remote events', () => {
+    const sent: unknown[] = []
+    const diagnostics = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'build-123',
+      localDocumentId: 'document-1',
+      remoteEnabled: true,
+      send: (event) => {
+        sent.push(event)
+      },
+      randomUUID: () => '00000000-0000-4000-8000-000000000001',
+    })
+    diagnostics.startTrace()
+    diagnostics.setTool('run_presentation_production', {
+      document_id: 'spoofed-document',
+      project_id: 'project-1',
+      request_id: 'run-1',
+      page_id: 'page-3',
+      tool_call_id: 'call-1',
+      extra: 'private brief',
+    } as never)
+    expect(diagnostics.record({ phase: 'tool', errorCode: 'office_write_failed' })).toMatchObject({
+      presentation_stage: 'production',
+      presentation_context: {
+        document_id: 'document-1',
+        project_id: 'project-1',
+        request_id: 'run-1',
+        page_id: 'page-3',
+        tool_call_id: 'call-1',
+      },
+    })
+    expect(diagnostics.exportJson()).not.toContain('presentation_context')
+    expect(diagnostics.exportJson({ includeLocalContext: true })).toContain('"page_id": "page-3"')
+    expect(JSON.stringify(sent)).not.toContain('presentation_context')
+    expect(JSON.stringify(sent)).not.toContain('document-1')
+    expect(JSON.stringify(sent)).not.toContain('private brief')
+    expect(sent[0]).toMatchObject({ presentation_stage: 'production' })
+    diagnostics.setTool('read_document', { page_id: 'secret page title' })
+    expect(diagnostics.record({ phase: 'tool', errorCode: 'office_read_failed' })).toMatchObject({
+      presentation_context: { document_id: 'document-1' },
+    })
+    diagnostics.startTrace()
+    expect(diagnostics.record({ phase: 'run', errorCode: 'agent_run_completed' })).toMatchObject({
+      presentation_context: { document_id: 'document-1' },
+    })
+    expect(diagnostics.snapshot().events.at(-1)).not.toHaveProperty('presentation_stage')
+  })
+  it('records a bounded run completion without document content', () => {
+    const sent: unknown[] = []
+    const diagnostics = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'build-123',
+      remoteEnabled: true,
+      send: (event) => {
+        sent.push(event)
+      },
+      randomUUID: () => '00000000-0000-4000-8000-000000000001',
+    })
+    diagnostics.startTrace()
+    diagnostics.setTool('agent_run')
+    const event = diagnostics.record({
+      phase: 'run',
+      errorCode: 'agent_run_completed',
+      durationMs: 1234,
+    })
+    expect(event).toMatchObject({
+      tool: 'agent_run',
+      phase: 'run',
+      outcome: 'passed',
+      error_code: 'agent_run_completed',
+      duration_ms: 1234,
+    })
+    expect(sent).toHaveLength(1)
+    expect(JSON.stringify(sent)).not.toContain('document')
+  })
+  it('binds each local event to the current Relay session and clears it after revocation', () => {
+    const sent: unknown[] = []
+    let sessionId: string | undefined = 'relay-1'
+    const diagnostics = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'test',
+      localDocumentId: 'document-1',
+      localSessionId: () => sessionId,
+      remoteEnabled: true,
+      send: (event) => {
+        sent.push(event)
+      },
+    })
+    diagnostics.startTrace()
+    diagnostics.setTool('run_presentation_production', { session_id: 'spoofed-session' })
+    expect(diagnostics.record({ phase: 'tool', errorCode: 'office_write_failed' })).toMatchObject({
+      presentation_context: { document_id: 'document-1', session_id: 'relay-1' },
+    })
+    sessionId = undefined
+    expect(diagnostics.record({ phase: 'transport', errorCode: 'network_error' })).toMatchObject({
+      presentation_context: { document_id: 'document-1' },
+    })
+    expect(diagnostics.snapshot().events.at(-1)?.presentation_context).not.toHaveProperty(
+      'session_id',
+    )
+    expect(JSON.stringify(sent)).not.toContain('relay-1')
+  })
+  it('samples remote events per trace while retaining every local event', () => {
+    const sent: string[] = []
+    let sequence = 0
+    const diagnostics = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'build-123',
+      remoteEnabled: true,
+      remoteSamplePercent: 25,
+      send: (event) => {
+        sent.push(event.trace_id)
+      },
+      randomUUID: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`,
+    })
+    for (let index = 0; index < 100; index += 1) {
+      diagnostics.startTrace()
+      diagnostics.record({ phase: 'write', errorCode: 'office_write_failed' })
+      diagnostics.record({ phase: 'verify', errorCode: 'office_verify_failed' })
+    }
+    expect(diagnostics.snapshot().events).toHaveLength(200)
+    expect(sent.length).toBeGreaterThan(0)
+    expect(sent.length).toBeLessThan(200)
+    expect(sent.length % 2).toBe(0)
+    for (let index = 0; index < sent.length; index += 2) expect(sent[index]).toBe(sent[index + 1])
+    const sampledCount = sent.length
+    const off = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'build-123',
+      remoteEnabled: true,
+      remoteSamplePercent: 0,
+      send: (event) => {
+        sent.push(event.trace_id)
+      },
+      randomUUID: () => '00000000-0000-4000-8000-000000000001',
+    })
+    off.record({ phase: 'write', errorCode: 'office_write_failed' })
+    expect(off.snapshot().events).toHaveLength(1)
+    expect(sent).toHaveLength(sampledCount)
+    expect(() =>
+      createOfficeDiagnostics({ host: 'powerpoint', build: 'x', remoteSamplePercent: 101 }),
+    ).toThrow('invalid_office_diagnostic_sample_percent')
+  })
   it.each([720_123, 1_800_000, 86_400_001])(
     'retains long-run elapsed time within the existing Relay bound: %i',
     (durationMs) => {
@@ -454,5 +637,235 @@ describe('Office safe diagnostics', () => {
       'office_recovery_failed:word_content',
       'office_write_failed',
     ])
+  })
+})
+
+const screenshotAttempt = (index = 0) => ({
+  version: 1 as const,
+  id: `12345678-1234-4234-8234-${index.toString(16).padStart(12, '0')}`,
+  documentId: 'document',
+  projectId: 'project',
+  requestId: 'request',
+  artifactDigest: 'a'.repeat(64),
+  pageId: 'page',
+  hostSlideId: 'host',
+  startedAt: '2026-09-29T00:00:00.000Z',
+  status: 'started' as const,
+})
+describe('explicit local persisted screenshot attempt export', () => {
+  it('never invokes the provider for default copy or remote events; clear retains durable current window', () => {
+    let attempts: unknown[] = [screenshotAttempt()]
+    const provider = vi.fn(() => attempts as never)
+    const sent: unknown[] = []
+    const d = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'test',
+      remoteEnabled: true,
+      send: (e) => {
+        sent.push(e)
+      },
+    })
+    d.record({ phase: 'tool', errorCode: 'office_read_failed' })
+    expect(d.exportJson({ screenshotAttempts: provider })).not.toContain(
+      'local_presentation_qa_attempts',
+    )
+    expect(provider).not.toHaveBeenCalled()
+    expect(JSON.stringify(sent)).not.toContain('attempts')
+    const section = () =>
+      JSON.parse(d.exportJson({ includeLocalContext: true, screenshotAttempts: provider }))
+        .local_presentation_qa_attempts
+    expect(section()).toEqual({
+      scope: 'retained_visible_presentation_task',
+      status: 'available',
+      attempts,
+      record_count: 1,
+      unresolved_count: 1,
+    })
+    attempts = [
+      {
+        ...screenshotAttempt(),
+        status: 'closed',
+        finishedAt: screenshotAttempt().startedAt,
+        errorCode: 'explicitly_closed',
+      },
+    ]
+    d.clear()
+    expect(section()).toMatchObject({ attempts, record_count: 1, unresolved_count: 0 })
+    expect(d.snapshot().events).toEqual([])
+    attempts = []
+    expect(section()).toMatchObject({ attempts: [], record_count: 0, unresolved_count: 0 })
+  })
+  it.each([
+    () => {
+      throw Error('secret exception')
+    },
+    () => null,
+    () => Array(1),
+    () => [screenshotAttempt(), screenshotAttempt()],
+    () => Array.from({ length: 65 }, (_, i) => screenshotAttempt(i)),
+    () => [{ ...screenshotAttempt(), png: 'secret' }],
+    ...['documentId', 'projectId', 'requestId', 'artifactDigest', 'source'].map((key) => () => [
+      screenshotAttempt(),
+      {
+        ...screenshotAttempt(1),
+        [key]:
+          key === 'source' ? 'production' : key === 'artifactDigest' ? 'b'.repeat(64) : 'other',
+      },
+    ]),
+    () =>
+      Array.from({ length: 64 }, (_, i) => ({
+        ...screenshotAttempt(i),
+        documentId: '界'.repeat(2048),
+      })),
+  ])('reports invalid/throwing provider %# as unavailable without raw reasons', (provider) => {
+    const d = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+    const result = JSON.parse(
+      d.exportJson({ includeLocalContext: true, screenshotAttempts: provider as never }),
+    )
+    expect(result.local_presentation_qa_attempts).toEqual({
+      scope: 'retained_visible_presentation_task',
+      status: 'unavailable',
+    })
+    expect(JSON.stringify(result)).not.toContain('secret')
+  })
+  it('retains a full valid UTF8 attempt snapshot and newest events by explicitly omitting oldest events only', () => {
+    let sequence = 0
+    const d = createOfficeDiagnostics({
+      host: 'powerpoint',
+      build: 'test',
+      randomUUID: () => 'e' + sequence++,
+    })
+    d.setTool('t'.repeat(128), {
+      project_id: 'p'.repeat(128),
+      request_id: 'r'.repeat(128),
+      page_id: 'a'.repeat(128),
+      tool_call_id: 'c'.repeat(128),
+    })
+    for (let i = 0; i < 200; i++)
+      d.record({ phase: 'tool', errorCode: 'office_read_failed', durationMs: i })
+    const attempts = Array.from({ length: 32 }, (_, i) => ({
+      ...screenshotAttempt(i),
+      documentId: '界'.repeat(1000),
+    }))
+    const exportOptions = { includeLocalContext: true, screenshotAttempts: () => attempts }
+    const raw = d.exportJson(exportOptions),
+      result = JSON.parse(raw)
+    expect(new TextEncoder().encode(raw).byteLength).toBeLessThanOrEqual(256 * 1024)
+    expect(result.local_presentation_qa_attempts.attempts).toEqual(attempts)
+    expect(result.omitted_event_count).toBeGreaterThan(0)
+    expect(result.events).toEqual(d.snapshot().events.slice(result.omitted_event_count))
+    expect(result.events.at(-1).duration_ms).toBe(199)
+    expect(d.snapshot().events).toHaveLength(200)
+  })
+})
+
+it('keeps legacy oversized local exports throwing without a provider and never changes remote or volatile events', () => {
+  const d = createOfficeDiagnostics({
+    host: 'powerpoint',
+    build: 'b'.repeat(64),
+    localDocumentId: 'd'.repeat(128),
+    localSessionId: () => 's'.repeat(128),
+  })
+  d.setTool('t'.repeat(128), {
+    project_id: 'p'.repeat(128),
+    request_id: 'r'.repeat(128),
+    page_id: 'a'.repeat(128),
+    tool_call_id: 'c'.repeat(128),
+  })
+  for (let i = 0; i < 200; i++)
+    d.record({
+      phase: 'tool',
+      errorCode: 'office_read_failed',
+      error: {
+        name: 'n'.repeat(128),
+        code: 'e'.repeat(128),
+        debugInfo: { errorLocation: 'l'.repeat(128) },
+      },
+    })
+  expect(() => d.exportJson({ includeLocalContext: true })).toThrow('diagnostic_export_too_large')
+  const result = JSON.parse(
+    d.exportJson({ includeLocalContext: true, screenshotAttempts: () => [screenshotAttempt()] }),
+  )
+  expect(result.events.length + result.omitted_event_count).toBe(200)
+  expect(result.events).toEqual(d.snapshot().events.slice(result.omitted_event_count))
+  expect(d.snapshot().events).toHaveLength(200)
+})
+
+describe('screenshot diagnostic taxonomy', () => {
+  it.each([
+    'presentation_screenshot_waiting',
+    'presentation_qa_failed',
+    'presentation_qa_capture_invalid',
+    'presentation_qa_capture_required',
+    'presentation_qa_stale',
+    'presentation_qa_busy',
+    'presentation_qa_state_invalid',
+    'presentation_qa_page_not_imported',
+    'presentation_qa_attempt_unresolved',
+    'presentation_qa_attempt_history_full',
+    'presentation_qa_attempt_state_invalid',
+    'presentation_session_storage_full',
+  ])(
+    'preserves finite tool code %s and safe outcomes without remote context/raw errors',
+    (code) => {
+      const sent: unknown[] = []
+      const d = createOfficeDiagnostics({
+        host: 'powerpoint',
+        build: 'test',
+        localDocumentId: 'private-doc',
+        remoteEnabled: true,
+        send: (e) => {
+          sent.push(e)
+        },
+      })
+      expect(isDiagnosticToolError(code)).toBe(true)
+      const event = d.record({
+        phase: 'tool',
+        errorCode: code,
+        error: Error('private-document-content'),
+      })
+      expect(event.error_code).toBe(code)
+      expect(event.outcome).toBe(
+        code === 'presentation_screenshot_waiting' ? 'unsupported' : 'failed',
+      )
+      expect(d.exportJson()).not.toContain('private-document-content')
+      expect(JSON.stringify(sent)).not.toContain('private-doc')
+    },
+  )
+  it('distinguishes run and transport codes from tools and retains old Word recovery compatibility', () => {
+    for (const code of [
+      'agent_run_completed',
+      'agent_run_failed',
+      'auth_required',
+      'network_error',
+      'provider_unavailable',
+      'request_timeout',
+      'diagnostic_upload_failed',
+      'presentation_qa_failed:private document',
+    ])
+      expect(isDiagnosticToolError(code)).toBe(false)
+    const d = createOfficeDiagnostics({ host: 'word', build: 'test' })
+    for (const code of [
+      'cancelled',
+      'invalid_tool_input',
+      'office_api_unsupported',
+      'office_read_failed',
+      'office_overwrite_required',
+      'office_recovery_failed',
+      'office_concurrent_change',
+      'office_state_uncertain',
+      'office_verify_failed',
+      'office_write_failed',
+      'proposal_missing',
+      'proposal_stale',
+      'office_recovery_failed:word_content',
+    ]) {
+      expect(isDiagnosticToolError(code)).toBe(true)
+      expect(d.record({ phase: 'tool', errorCode: code }).error_code).toBe(code)
+    }
+    expect(
+      d.record({ phase: 'tool', errorCode: 'presentation_qa_failed:private document' }).error_code,
+    ).toBe('office_write_failed')
+    expect(d.record({ phase: 'run', errorCode: 'agent_run_completed' }).outcome).toBe('passed')
   })
 })

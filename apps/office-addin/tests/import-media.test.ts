@@ -138,11 +138,11 @@ describe('host capability advertisement', () => {
     }
     ;(globalThis as Record<string, unknown>).PowerPoint = { run: vi.fn() }
     const powerpoint = createOfficeHostRuntime('powerpoint').skill.tools.map((item) => item.name)
-    expect(powerpoint).toContain('insert-image')
+    expect(powerpoint).not.toContain('insert-image')
     expect(powerpoint).not.toContain('csv-to-sheet')
   })
 
-  it('advertises web image insertion only after PC negotiates image-fetch', async () => {
+  it('keeps unsupported native image insertion unavailable even after PC negotiates image-fetch', async () => {
     ;(globalThis as Record<string, unknown>).Office = {
       context: {
         host: 'PowerPoint',
@@ -161,7 +161,7 @@ describe('host capability advertisement', () => {
       powerPointImageFetchAvailable: () => false,
     })
     expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('insert_web_image')
-    expect(runtime.skill.systemPrompt).toContain('When insert_web_image is available')
+    expect(runtime.skill.systemPrompt).not.toContain('When insert_web_image is available')
     expect(
       runtime.skill.executeTool(
         call('insert_web_image', {
@@ -175,7 +175,7 @@ describe('host capability advertisement', () => {
       ),
     ).toEqual(expect.objectContaining({ output: 'image_fetch_unavailable', isError: true }))
     runtime.setPowerPointImageFetchAvailable?.(true)
-    expect(runtime.skill.tools.map((tool) => tool.name)).toContain('insert_web_image')
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('insert_web_image')
     runtime.setPowerPointImageFetchAvailable?.(false)
     expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('insert_web_image')
     runtime.dispose()

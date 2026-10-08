@@ -200,6 +200,7 @@ export type OfficeRelayStatus =
   | 'disconnected:new_revocation'
   | 'disconnected:pairing_expired'
   | 'disconnected:protocol_violation'
+  | 'disconnected:protocol_version_mismatch'
   | 'disconnected:rejected'
   | 'disconnected:relay_error'
   | 'disconnected:invalid_code'

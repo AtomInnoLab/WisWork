@@ -28,4 +28,46 @@ describe('Office write transaction convergence', () => {
     ).rejects.toThrow('cancelled')
     expect(read).toHaveBeenCalledOnce()
   })
+
+  it('releases the abort listener after a completed retry delay', async () => {
+    vi.useFakeTimers()
+    try {
+      const controller = new AbortController()
+      const add = vi.spyOn(controller.signal, 'addEventListener')
+      const remove = vi.spyOn(controller.signal, 'removeEventListener')
+      const read = vi.fn().mockResolvedValueOnce('before').mockResolvedValue('after')
+      const result = readUntilConverged({
+        read,
+        accept: (value) => value === 'after',
+        signal: controller.signal,
+      })
+      await vi.advanceTimersByTimeAsync(50)
+      await expect(result).resolves.toBe('after')
+      expect(add).toHaveBeenCalledOnce()
+      expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('releases the abort listener when the retry is cancelled', async () => {
+    vi.useFakeTimers()
+    try {
+      const controller = new AbortController()
+      const remove = vi.spyOn(controller.signal, 'removeEventListener')
+      const read = vi.fn().mockResolvedValue('before')
+      const result = readUntilConverged({
+        read,
+        accept: () => false,
+        signal: controller.signal,
+      })
+      await Promise.resolve()
+      controller.abort()
+      await expect(result).rejects.toThrow('cancelled')
+      expect(read).toHaveBeenCalledOnce()
+      expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

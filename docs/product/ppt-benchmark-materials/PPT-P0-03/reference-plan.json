@@ -1,0 +1,386 @@
+{
+  "version": 1,
+  "projectId": "p0-03-road-sign-reference",
+  "title": "美国道路标志：理解与安全感候选汇报",
+  "brief": {
+    "objective": "基于论文、字典和去个体化汇总 CSV 制作八页交通研究候选汇报",
+    "audience": "交通研究专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": ["样本筛选", "四组标志", "两车道两项同意率原生图表", "数据口径和局限"],
+    "constraints": [
+      "未经调整的汇总比例不得当作回归结果",
+      "主观安全感不得写成事故率",
+      "真实 PowerPoint 保存重开尚未验收"
+    ]
+  },
+  "sources": [
+    {
+      "id": "article-sample",
+      "title": "Hess 与 Peterson 2015，PDF 第 8 页 Data Analysis",
+      "uri": "doi:10.1371/journal.pone.0136973",
+      "snapshotAttachmentId": "e9e284779f2d91dd0d6792a2a687e3c688fb40fce124f2959bed9902fa880438",
+      "locator": "第 8 页",
+      "excerpt": "We obtained 1,978 responses to our questionnaire (Table 1) and excluded 154 from our analy-\nsis, because the respondents identified themselves as living outside the United States. We ana-\nlyzed the remaining 1,824 responses"
+    },
+    {
+      "id": "article-scope",
+      "title": "Hess 与 Peterson 2015，PDF 第 1 页 Abstract",
+      "uri": "doi:10.1371/journal.pone.0136973",
+      "snapshotAttachmentId": "e9e284779f2d91dd0d6792a2a687e3c688fb40fce124f2959bed9902fa880438",
+      "locator": "第 1 页",
+      "excerpt": "We administered a web-based survey, using Twitter for recruitment, to\nexamine how well three US traffic control devices communicated the message that bicy-\nclists are permitted in the center of the travel lane and do not have to “get out of the way” to\nallow motorists to pass without changing lanes: “Bicycles May Use Full Lane” and “Share\nthe Road” signage, and Shared Lane Markings on the pavement. Each was compared to an\nunsigned roadway. We also asked respondents whether it was safe for a bicyclist to occupy\nthe center of the travel lane. “Bicycles May Use Full Lane” signage was the most consis-\ntently comprehended device for communicating the message that bicyclists may occupy\nthe travel lane and also increased perceptions of safety."
+    },
+    {
+      "id": "dictionary-fields",
+      "title": "Hess 与 Peterson 2015，S1 Data PDF 第 1 页",
+      "uri": "doi:10.1371/journal.pone.0136973.s001",
+      "snapshotAttachmentId": "80646ef5d3d956b3bdfc88263970911b2ace0165527edb21f051d8d59e6e2a07",
+      "locator": "第 1 页",
+      "excerpt": "Permitted2: [2-lane roadway] The bicyclist is permitted to ride in the center of the lane.\n0_Disagree; 1_Agree\nSafe2: [2-lane roadway] It is safe for the bicyclists to ride in the center of the lane.\n0_Disagree; 1_Agree\nBikeMoveRight4:"
+    },
+    {
+      "id": "csv-row-1",
+      "title": "汇总 CSV 第 2 行：1_None",
+      "uri": "local:treatment-outcomes.csv",
+      "snapshotAttachmentId": "826dc1dfee97d15c17f086a5c031a2da232cb58808a982dff26da5c209b28341",
+      "locator": "CSV 第 2 行",
+      "excerpt": "1_None,489,417,316,434,320"
+    },
+    {
+      "id": "csv-row-2",
+      "title": "汇总 CSV 第 3 行：2_STR",
+      "uri": "local:treatment-outcomes.csv",
+      "snapshotAttachmentId": "826dc1dfee97d15c17f086a5c031a2da232cb58808a982dff26da5c209b28341",
+      "locator": "CSV 第 3 行",
+      "excerpt": "2_STR,422,366,265,376,279"
+    },
+    {
+      "id": "csv-row-3",
+      "title": "汇总 CSV 第 4 行：3_SLM",
+      "uri": "local:treatment-outcomes.csv",
+      "snapshotAttachmentId": "826dc1dfee97d15c17f086a5c031a2da232cb58808a982dff26da5c209b28341",
+      "locator": "CSV 第 4 行",
+      "excerpt": "3_SLM,454,412,307,427,342"
+    },
+    {
+      "id": "csv-row-4",
+      "title": "汇总 CSV 第 5 行：4_BMUFL",
+      "uri": "local:treatment-outcomes.csv",
+      "snapshotAttachmentId": "826dc1dfee97d15c17f086a5c031a2da232cb58808a982dff26da5c209b28341",
+      "locator": "CSV 第 5 行",
+      "excerpt": "4_BMUFL,459,421,321,431,348"
+    }
+  ],
+  "claims": [
+    {
+      "id": "sample",
+      "statement": "论文收集 1,978 份问卷，排除 154 份非美国答卷后分析 1,824 份。",
+      "type": "fact",
+      "sourceIds": ["article-sample"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "scope",
+      "statement": "网络问卷考察标志理解与主观安全感，并未直接测量交通事故变化。",
+      "type": "fact",
+      "sourceIds": ["article-scope"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "dictionary",
+      "statement": "Permitted2 与 Safe2 分别是两车道场景的通行许可理解和主观安全感同意项。",
+      "type": "fact",
+      "sourceIds": ["dictionary-fields"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "permitted-1",
+      "statement": "1_None：Permitted2 同意 417/489 = 85.28%",
+      "type": "calculation",
+      "sourceIds": ["csv-row-1"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "calculation": {
+        "formula": "round(agree/n*100,2)",
+        "inputs": ["permitted_agree", "n"],
+        "unit": "%",
+        "reproduction": {
+          "bindings": [
+            { "name": "agree", "inputIndex": 0, "value": 417, "sourceId": "csv-row-1" },
+            { "name": "n", "inputIndex": 1, "value": 489, "sourceId": "csv-row-1" }
+          ],
+          "expected": 85.28
+        }
+      }
+    },
+    {
+      "id": "safe-1",
+      "statement": "1_None：Safe2 同意 316/489 = 64.62%",
+      "type": "calculation",
+      "sourceIds": ["csv-row-1"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "calculation": {
+        "formula": "round(agree/n*100,2)",
+        "inputs": ["safe_agree", "n"],
+        "unit": "%",
+        "reproduction": {
+          "bindings": [
+            { "name": "agree", "inputIndex": 0, "value": 316, "sourceId": "csv-row-1" },
+            { "name": "n", "inputIndex": 1, "value": 489, "sourceId": "csv-row-1" }
+          ],
+          "expected": 64.62
+        }
+      }
+    },
+    {
+      "id": "permitted-2",
+      "statement": "2_STR：Permitted2 同意 366/422 = 86.73%",
+      "type": "calculation",
+      "sourceIds": ["csv-row-2"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "calculation": {
+        "formula": "round(agree/n*100,2)",
+        "inputs": ["permitted_agree", "n"],
+        "unit": "%",
+        "reproduction": {
+          "bindings": [
+            { "name": "agree", "inputIndex": 0, "value": 366, "sourceId": "csv-row-2" },
+            { "name": "n", "inputIndex": 1, "value": 422, "sourceId": "csv-row-2" }
+          ],
+          "expected": 86.73
+        }
+      }
+    },
+    {
+      "id": "safe-2",
+      "statement": "2_STR：Safe2 同意 265/422 = 62.8%",
+      "type": "calculation",
+      "sourceIds": ["csv-row-2"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "calculation": {
+        "formula": "round(agree/n*100,2)",
+        "inputs": ["safe_agree", "n"],
+        "unit": "%",
+        "reproduction": {
+          "bindings": [
+            { "name": "agree", "inputIndex": 0, "value": 265, "sourceId": "csv-row-2" },
+            { "name": "n", "inputIndex": 1, "value": 422, "sourceId": "csv-row-2" }
+          ],
+          "expected": 62.8
+        }
+      }
+    },
+    {
+      "id": "permitted-3",
+      "statement": "3_SLM：Permitted2 同意 412/454 = 90.75%",
+      "type": "calculation",
+      "sourceIds": ["csv-row-3"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "calculation": {
+        "formula": "round(agree/n*100,2)",
+        "inputs": ["permitted_agree", "n"],
+        "unit": "%",
+        "reproduction": {
+          "bindings": [
+            { "name": "agree", "inputIndex": 0, "value": 412, "sourceId": "csv-row-3" },
+            { "name": "n", "inputIndex": 1, "value": 454, "sourceId": "csv-row-3" }
+          ],
+          "expected": 90.75
+        }
+      }
+    },
+    {
+      "id": "safe-3",
+      "statement": "3_SLM：Safe2 同意 307/454 = 67.62%",
+      "type": "calculation",
+      "sourceIds": ["csv-row-3"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "calculation": {
+        "formula": "round(agree/n*100,2)",
+        "inputs": ["safe_agree", "n"],
+        "unit": "%",
+        "reproduction": {
+          "bindings": [
+            { "name": "agree", "inputIndex": 0, "value": 307, "sourceId": "csv-row-3" },
+            { "name": "n", "inputIndex": 1, "value": 454, "sourceId": "csv-row-3" }
+          ],
+          "expected": 67.62
+        }
+      }
+    },
+    {
+      "id": "permitted-4",
+      "statement": "4_BMUFL：Permitted2 同意 421/459 = 91.72%",
+      "type": "calculation",
+      "sourceIds": ["csv-row-4"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "calculation": {
+        "formula": "round(agree/n*100,2)",
+        "inputs": ["permitted_agree", "n"],
+        "unit": "%",
+        "reproduction": {
+          "bindings": [
+            { "name": "agree", "inputIndex": 0, "value": 421, "sourceId": "csv-row-4" },
+            { "name": "n", "inputIndex": 1, "value": 459, "sourceId": "csv-row-4" }
+          ],
+          "expected": 91.72
+        }
+      }
+    },
+    {
+      "id": "safe-4",
+      "statement": "4_BMUFL：Safe2 同意 321/459 = 69.93%",
+      "type": "calculation",
+      "sourceIds": ["csv-row-4"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "calculation": {
+        "formula": "round(agree/n*100,2)",
+        "inputs": ["safe_agree", "n"],
+        "unit": "%",
+        "reproduction": {
+          "bindings": [
+            { "name": "agree", "inputIndex": 0, "value": 321, "sourceId": "csv-row-4" },
+            { "name": "n", "inputIndex": 1, "value": 459, "sourceId": "csv-row-4" }
+          ],
+          "expected": 69.93
+        }
+      }
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "美国道路标志：理解与安全感",
+      "purpose": "展示可复算汇总与研究边界",
+      "claimIds": [],
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑对象", "数据与来源可回读", "保留分母和局限"]
+    },
+    {
+      "id": "p02",
+      "title": "研究问题与测量边界",
+      "purpose": "展示可复算汇总与研究边界",
+      "claimIds": ["scope"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑对象", "数据与来源可回读", "保留分母和局限"]
+    },
+    {
+      "id": "p03",
+      "title": "样本筛选：不能混用分母",
+      "purpose": "展示可复算汇总与研究边界",
+      "claimIds": ["sample"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑对象", "数据与来源可回读", "保留分母和局限"]
+    },
+    {
+      "id": "p04",
+      "title": "四种标志与两车道指标",
+      "purpose": "展示可复算汇总与研究边界",
+      "claimIds": ["dictionary"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑对象", "数据与来源可回读", "保留分母和局限"]
+    },
+    {
+      "id": "p05",
+      "title": "原生图表：两项同意比例",
+      "purpose": "展示可复算汇总与研究边界",
+      "claimIds": [
+        "permitted-1",
+        "safe-1",
+        "permitted-2",
+        "safe-2",
+        "permitted-3",
+        "safe-3",
+        "permitted-4",
+        "safe-4"
+      ],
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑对象", "数据与来源可回读", "保留分母和局限"],
+      "chartData": [
+        {
+          "elementId": "two-lane-agreement",
+          "categories": ["1_None n=489", "2_STR n=422", "3_SLM n=454", "4_BMUFL n=459"],
+          "unit": "%",
+          "series": [
+            {
+              "name": "Permitted2 同意率",
+              "points": [
+                { "value": 85.28, "claimId": "permitted-1", "basis": { "kind": "calculation" } },
+                { "value": 86.73, "claimId": "permitted-2", "basis": { "kind": "calculation" } },
+                { "value": 90.75, "claimId": "permitted-3", "basis": { "kind": "calculation" } },
+                { "value": 91.72, "claimId": "permitted-4", "basis": { "kind": "calculation" } }
+              ]
+            },
+            {
+              "name": "Safe2 同意率",
+              "points": [
+                { "value": 64.62, "claimId": "safe-1", "basis": { "kind": "calculation" } },
+                { "value": 62.8, "claimId": "safe-2", "basis": { "kind": "calculation" } },
+                { "value": 67.62, "claimId": "safe-3", "basis": { "kind": "calculation" } },
+                { "value": 69.93, "claimId": "safe-4", "basis": { "kind": "calculation" } }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "如何阅读组间差异",
+      "purpose": "展示可复算汇总与研究边界",
+      "claimIds": [
+        "permitted-1",
+        "safe-1",
+        "permitted-2",
+        "safe-2",
+        "permitted-3",
+        "safe-3",
+        "permitted-4",
+        "safe-4"
+      ],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑对象", "数据与来源可回读", "保留分母和局限"]
+    },
+    {
+      "id": "p07",
+      "title": "局限：主观问卷不是事故实验",
+      "purpose": "展示可复算汇总与研究边界",
+      "claimIds": ["scope"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑对象", "数据与来源可回读", "保留分母和局限"]
+    },
+    {
+      "id": "p08",
+      "title": "结论与待核验事项",
+      "purpose": "展示可复算汇总与研究边界",
+      "claimIds": ["scope"],
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑对象", "数据与来源可回读", "保留分母和局限"]
+    }
+  ]
+}

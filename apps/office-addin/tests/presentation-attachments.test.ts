@@ -1,0 +1,965 @@
+import { createHash } from 'node:crypto'
+import { expect, it, vi } from 'vitest'
+import {
+  createPresentationAttachmentSkill,
+  isPresentationImage,
+  supportsPresentationAttachment,
+} from '../src/skills/powerpoint/presentation-attachments.js'
+import { InMemoryVfs } from '../src/skills/shared/vfs.js'
+function setup() {
+  const bytes = new Uint8Array(300000)
+  const attachmentId = createHash('sha256').update(bytes).digest('hex')
+  let receivedBytes = 0
+  let status = 'uploading'
+  const request = vi.fn(async (body: any, _signal?: AbortSignal) => {
+    if (body.operation === 'attachment_chunk')
+      receivedBytes = body.offset + atob(body.base64).length
+    if (body.operation === 'attachment_finish') status = 'ready'
+    if (body.operation === 'attachment_delete')
+      return new Response(JSON.stringify({ attachmentId: body.attachmentId, deleted: true }))
+    const metadata = {
+      attachmentId,
+      name: 'notes.txt',
+      sizeBytes: bytes.length,
+      sha256: attachmentId,
+      receivedBytes,
+      status,
+      ...(status === 'ready' ? { kind: 'text', totalChars: 5 } : {}),
+    }
+    return new Response(
+      JSON.stringify(
+        body.operation === 'attachment_list' || body.operation === 'attachment_list_assets'
+          ? { attachments: [metadata] }
+          : body.operation === 'attachment_read'
+            ? {
+                attachmentId,
+                name: 'notes.txt',
+                offset: 0,
+                totalChars: 5,
+                text: 'hello',
+                sourceUri: `attachment:${attachmentId}`,
+              }
+            : metadata,
+      ),
+    )
+  })
+  const documentId = vi.fn(async () => 'doc1')
+  const vfs = new InMemoryVfs()
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    request,
+    documentId,
+    vfs,
+  })
+  return { bytes, attachmentId, request, documentId, vfs, skill }
+}
+it('imports a webpage only with the negotiated capability and validates the saved text metadata', async () => {
+  const f = setup()
+  await expect(f.skill.importWebpage('https://example.com/page')).rejects.toThrow(
+    'presentation_webpages_unavailable',
+  )
+  await expect(f.skill.importWebpage('http://user:pass@example.com/page')).rejects.toThrow(
+    'invalid_tool_input',
+  )
+  const result = {
+    attachmentId: f.attachmentId,
+    sha256: f.attachmentId,
+    name: 'remote.html',
+    sizeBytes: 100,
+    receivedBytes: 100,
+    status: 'ready',
+    kind: 'text',
+    totalChars: 5,
+    source: 'https://example.com/page',
+    sourceUrlHash: createHash('sha256').update('https://example.com/page').digest('hex'),
+    retrievedAt: 1_780_000_000_000,
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify(result)))
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    webpagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  expect(await skill.importWebpage('https://example.com/page')).toMatchObject(result)
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      operation: 'attachment_import_webpage',
+      documentId: 'doc1',
+      url: 'https://example.com/page',
+    }),
+    expect.any(AbortSignal),
+  )
+  f.request.mockResolvedValue(new Response(JSON.stringify({ ...result, sourceUrlHash: 'bad' })))
+  await expect(skill.importWebpage('https://example.com/page')).rejects.toThrow(
+    'presentation_response_invalid',
+  )
+})
+it('lists document-scoped PC copies and deletes only a validated selected ID', async () => {
+  const f = setup()
+  expect(await f.skill.list()).toMatchObject([{ attachmentId: f.attachmentId }])
+  await expect(f.skill.remove('bad')).rejects.toThrow('invalid_tool_input')
+  await f.skill.remove(f.attachmentId)
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      operation: 'attachment_delete',
+      documentId: 'doc1',
+      attachmentId: f.attachmentId,
+    }),
+    expect.any(AbortSignal),
+  )
+  expect(f.skill.tools.map((tool) => tool.name)).not.toContain('delete_presentation_attachment')
+})
+it('shows PDF pages without extracted text and rejects malformed page coverage', async () => {
+  const f = setup()
+  const item = {
+    attachmentId: f.attachmentId,
+    sha256: f.attachmentId,
+    name: 'partly-readable.pdf',
+    sizeBytes: 100,
+    receivedBytes: 100,
+    status: 'ready',
+    kind: 'text',
+    totalChars: 20,
+    sectionCount: 3,
+    pagesWithoutExtractedText: [2],
+  }
+  f.request.mockImplementation(async () => new Response(JSON.stringify({ attachments: [item] })))
+  expect(await f.skill.list()).toMatchObject([item])
+  expect(
+    JSON.parse(
+      (await f.skill.executeTool({ id: 'list', name: 'list_presentation_attachments', input: {} }))
+        .output,
+    ),
+  ).toMatchObject({ attachments: [item] })
+  for (const pages of [[0], [3, 2], [1, 1], [1, 2, 3]]) {
+    f.request.mockResolvedValue(
+      new Response(
+        JSON.stringify({ attachments: [{ ...item, pagesWithoutExtractedText: pages }] }),
+      ),
+    )
+    await expect(f.skill.list()).rejects.toThrow('presentation_response_invalid')
+  }
+})
+it('accepts sparse PDF page hints and rejects overlap with empty pages', async () => {
+  const f = setup()
+  const item = {
+    attachmentId: f.attachmentId,
+    sha256: f.attachmentId,
+    name: 'partly-readable.pdf',
+    sizeBytes: 100,
+    receivedBytes: 100,
+    status: 'ready',
+    kind: 'text',
+    totalChars: 20,
+    sectionCount: 3,
+    pagesWithoutExtractedText: [2],
+    pagesWithSparseExtractedText: [3],
+    pagesWithFullPageImage: [1, 2, 3],
+    pagesWithInvisibleTextLayer: [1, 3],
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify({ attachments: [item] })))
+  expect(await f.skill.list()).toMatchObject([item])
+  f.request.mockResolvedValue(
+    new Response(JSON.stringify({ attachments: [{ ...item, pagesWithSparseExtractedText: [2] }] })),
+  )
+  await expect(f.skill.list()).rejects.toThrow('presentation_response_invalid')
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({ attachments: [{ ...item, pagesWithInvisibleTextLayer: [1, 4] }] }),
+    ),
+  )
+  await expect(f.skill.list()).rejects.toThrow('presentation_response_invalid')
+})
+it('requires negotiated support and validates the user-selected first-frame result', async () => {
+  const f = setup()
+  const response = {
+    attachmentId: f.attachmentId,
+    sha256: f.attachmentId,
+    name: 'motion.gif',
+    sizeBytes: 100,
+    receivedBytes: 100,
+    status: 'ready',
+    kind: 'image',
+    mime: 'image/png',
+    width: 2,
+    height: 3,
+    assetSha256: 'a'.repeat(64),
+    animationHandling: 'first_frame',
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify(response)))
+  await expect(f.skill.extractFirstFrame(f.attachmentId)).rejects.toThrow(
+    'presentation_assets_unavailable',
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    animationFrameAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  expect(await skill.extractFirstFrame(f.attachmentId)).toMatchObject(response)
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      operation: 'attachment_extract_first_frame',
+      attachmentId: f.attachmentId,
+      documentId: 'doc1',
+    }),
+    expect.any(AbortSignal),
+  )
+  f.request.mockResolvedValue(
+    new Response(JSON.stringify({ ...response, animationHandling: undefined })),
+  )
+  await expect(skill.extractFirstFrame(f.attachmentId)).rejects.toThrow(
+    'presentation_response_invalid',
+  )
+})
+it('pages more than 32 durable images for the UI and Agent', async () => {
+  const f = setup()
+  const ids = Array.from({ length: 33 }, (_, i) => i.toString(16).padStart(64, '0'))
+  f.request.mockImplementation(async (body) => {
+    const start = body.after ? ids.indexOf(body.after) + 1 : 0
+    const page = ids.slice(start, start + 32)
+    return new Response(
+      JSON.stringify({
+        attachments: page.map((attachmentId) => ({
+          attachmentId,
+          sha256: attachmentId,
+          name: `${attachmentId}.png`,
+          sizeBytes: 1,
+          receivedBytes: 0,
+          status: 'uploading',
+        })),
+        ...(start + page.length < ids.length ? { nextAfter: page.at(-1) } : {}),
+      }),
+    )
+  })
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    imagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  expect((await skill.list()).map((item) => item.attachmentId)).toEqual(ids)
+  const first = JSON.parse(
+    (await skill.executeTool({ id: 'list', name: 'list_presentation_attachments', input: {} }))
+      .output,
+  )
+  expect(first.attachments).toHaveLength(32)
+  expect(first.nextAfter).toBe(ids[31])
+  const second = JSON.parse(
+    (
+      await skill.executeTool({
+        id: 'next',
+        name: 'list_presentation_attachments',
+        input: { after: first.nextAfter },
+      })
+    ).output,
+  )
+  expect(second.attachments.map((item: { attachmentId: string }) => item.attachmentId)).toEqual([
+    ids[32],
+  ])
+})
+it('imports a URL image through the PC asset endpoint without exposing an Agent fetch tool', async () => {
+  const f = setup()
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        attachmentId: f.attachmentId,
+        sha256: f.attachmentId,
+        name: 'remote.png',
+        sizeBytes: 1,
+        receivedBytes: 1,
+        status: 'ready',
+        kind: 'image',
+        mime: 'image/png',
+        width: 1,
+        height: 1,
+        assetSha256: f.attachmentId,
+        source: 'https://example.com/image.png',
+        sources: ['https://example.com/image.png', 'https://example.org/same.png'],
+      }),
+    ),
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    imagesAvailable: () => true,
+    remoteImagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  expect(await skill.importUrl('https://example.com/image.png')).toMatchObject({
+    kind: 'image',
+    source: 'https://example.com/image.png',
+    sources: ['https://example.com/image.png', 'https://example.org/same.png'],
+  })
+  expect(f.request).toHaveBeenCalledWith(
+    expect.objectContaining({ operation: 'attachment_import_url', documentId: 'doc1' }),
+    expect.any(AbortSignal),
+  )
+  expect(skill.tools.map((tool) => tool.name)).not.toContain('import_presentation_image_url')
+})
+it('tries bounded image URL candidates after a rejected animated image', async () => {
+  const f = setup()
+  const first = 'https://example.com/failed.webp'
+  const second = 'https://example.org/usable.webp'
+  f.request.mockImplementation(
+    async (body) =>
+      new Response(
+        JSON.stringify(
+          body.url === first
+            ? { error: 'animated_image_unsupported' }
+            : {
+                attachmentId: f.attachmentId,
+                sha256: f.attachmentId,
+                name: 'remote.webp',
+                sizeBytes: 3,
+                receivedBytes: 3,
+                status: 'ready',
+                kind: 'image',
+                mime: 'image/png',
+                width: 2,
+                height: 3,
+                assetSha256: f.attachmentId,
+                source: second,
+              },
+        ),
+      ),
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    imagesAvailable: () => true,
+    remoteImagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  await expect(skill.importUrls([first, second])).resolves.toMatchObject({ source: second })
+  expect(f.request.mock.calls.map(([body]) => body.url)).toEqual([first, second])
+  f.request.mockClear()
+  await expect(skill.importUrls([first, first])).rejects.toThrow('invalid_tool_input')
+  await expect(skill.importUrls(['http://user:pass@example.com/a.png', second])).rejects.toThrow(
+    'invalid_tool_input',
+  )
+  await expect(
+    skill.importUrls(Array.from({ length: 5 }, (_, i) => `https://example.com/${i}.png`)),
+  ).rejects.toThrow('invalid_tool_input')
+  expect(f.request).not.toHaveBeenCalled()
+})
+it('surfaces staged animated URLs after trying every candidate', async () => {
+  const f = setup()
+  const first = 'https://example.com/motion.webp'
+  const second = 'https://example.org/missing.png'
+  f.request.mockImplementation(
+    async (body) =>
+      new Response(
+        JSON.stringify(
+          body.url === first
+            ? {
+                attachmentId: f.attachmentId,
+                sha256: f.attachmentId,
+                name: 'remote-motion.webp',
+                sizeBytes: 12,
+                receivedBytes: 12,
+                status: 'failed',
+                error: 'animated_image_unsupported',
+                source: first,
+              }
+            : { error: 'remote_image_unavailable' },
+        ),
+      ),
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    remoteImagesAvailable: () => true,
+    animationFrameAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  await expect(skill.importUrls([first, second])).rejects.toThrow(
+    'presentation_animated_image_staged',
+  )
+  expect(f.request.mock.calls.map(([body]) => body.url)).toEqual([first, second])
+  expect(f.request.mock.calls.every(([body]) => body.stageAnimated === true)).toBe(true)
+})
+it('does not try another image candidate after a document change or cancellation', async () => {
+  const f = setup()
+  f.request.mockResolvedValue(new Response(JSON.stringify({ error: 'document_changed' })))
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    remoteImagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  await expect(
+    skill.importUrls(['https://example.com/a.png', 'https://example.com/b.png']),
+  ).rejects.toThrow('presentation_document_changed')
+  expect(f.request).toHaveBeenCalledTimes(1)
+  f.request.mockClear()
+  f.request.mockImplementation(async () => {
+    skill.clear()
+    return new Response(JSON.stringify({ error: 'remote_image_unavailable' }))
+  })
+  await expect(
+    skill.importUrls(['https://example.com/a.png', 'https://example.com/b.png']),
+  ).rejects.toThrow('upload_cancelled')
+  expect(f.request).toHaveBeenCalledTimes(1)
+})
+it('does not try another image candidate after the PC reports cancellation', async () => {
+  const f = setup()
+  f.request.mockResolvedValue(new Response(JSON.stringify({ error: 'aborted' })))
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    remoteImagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  await expect(
+    skill.importUrls(['https://example.com/a.png', 'https://example.com/b.png']),
+  ).rejects.toThrow('presentation_aborted')
+  expect(f.request).toHaveBeenCalledTimes(1)
+})
+it('reports exhausted image candidates after recoverable failures', async () => {
+  const f = setup()
+  f.request.mockImplementation(
+    async () => new Response(JSON.stringify({ error: 'remote_image_unavailable' })),
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    remoteImagesAvailable: () => true,
+    request: f.request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  await expect(
+    skill.importUrls(['https://example.com/a.png', 'https://example.com/b.png']),
+  ).rejects.toThrow('presentation_image_candidates_exhausted')
+  expect(f.request).toHaveBeenCalledTimes(2)
+})
+it('uploads chunks and reads durable sources after reconnect', async () => {
+  const f = setup()
+  await f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))
+  expect(
+    f.request.mock.calls
+      .filter(([b]) => b.operation === 'attachment_chunk')
+      .map(([b]) => atob(b.base64).length),
+  ).toEqual([131072, 131072, 37856])
+  expect(f.vfs.list('/home/user')).toContain('/home/user/notes.txt')
+  f.skill.clear()
+  expect(
+    JSON.parse(
+      (
+        await f.skill.executeTool({
+          id: 'read',
+          name: 'read_presentation_attachment',
+          input: { attachment_id: f.attachmentId },
+        })
+      ).output,
+    ),
+  ).toMatchObject({ text: 'hello', sourceUri: `attachment:${f.attachmentId}` })
+})
+it('preserves bounded PDF page spans while reading source text', async () => {
+  const f = setup()
+  const value = {
+    attachmentId: f.attachmentId,
+    name: 'study.pdf',
+    offset: 0,
+    totalChars: 13,
+    text: 'First\n\nSecond',
+    sourceUri: `attachment:${f.attachmentId}`,
+    pageSpans: [
+      { locator: '第 1 页', start: 0, end: 5 },
+      { locator: '第 2 页', start: 7, end: 13 },
+    ],
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify(value)))
+  const call = () =>
+    f.skill.executeTool({
+      id: 'read',
+      name: 'read_presentation_attachment',
+      input: { attachment_id: f.attachmentId },
+    })
+  expect(JSON.parse((await call()).output)).toMatchObject({ pageSpans: value.pageSpans })
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        ...value,
+        pageSpans: [
+          value.pageSpans[0],
+          { ...value.pageSpans[1], imageBacked: true, invisibleTextLayer: true },
+        ],
+      }),
+    ),
+  )
+  const marked = JSON.parse((await call()).output)
+  expect(marked.pageSpans[1].imageBacked).toBe(true)
+  expect(marked.pageSpans[1].invisibleTextLayer).toBe(true)
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        ...value,
+        pageSpans: [value.pageSpans[0], { ...value.pageSpans[1], imageBacked: false }],
+      }),
+    ),
+  )
+  expect(await call()).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        ...value,
+        pageSpans: [value.pageSpans[0], { ...value.pageSpans[1], invisibleTextLayer: true }],
+      }),
+    ),
+  )
+  expect(await call()).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        ...value,
+        name: 'study.html',
+        text: 'First\nSecond',
+        totalChars: 12,
+        pageSpans: [
+          { locator: '第 1 段', start: 0, end: 5 },
+          { locator: '第 2 段', start: 6, end: 12 },
+        ],
+      }),
+    ),
+  )
+  expect(JSON.parse((await call()).output).pageSpans[1].locator).toBe('第 2 段')
+  f.request.mockResolvedValue(
+    new Response(
+      JSON.stringify({ ...value, pageSpans: [{ locator: '第 1 页', start: 20, end: 30 }] }),
+    ),
+  )
+  expect(await call()).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+})
+it('resumes after a lost chunk acknowledgement', async () => {
+  const f = setup()
+  const original = f.request.getMockImplementation()!
+  let lost = false
+  f.request.mockImplementation(async (body, signal) => {
+    const response = await original(body, signal)
+    if (body.operation === 'attachment_chunk' && !lost) {
+      lost = true
+      throw new Error('lost')
+    }
+    return response
+  })
+  await expect(f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))).rejects.toThrow()
+  await f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))
+  expect(
+    f.request.mock.calls.filter(([b]) => b.operation === 'attachment_chunk').map(([b]) => b.offset),
+  ).toEqual([0, 131072, 262144])
+})
+it('surfaces animated upload rejection instead of a generic attachment failure', async () => {
+  const bytes = new Uint8Array([71, 73, 70, 56, 57, 97])
+  const attachmentId = createHash('sha256').update(bytes).digest('hex')
+  const request = vi.fn(
+    async (body: Record<string, unknown>) =>
+      new Response(
+        JSON.stringify({
+          attachmentId,
+          sha256: attachmentId,
+          name: 'animated.gif',
+          sizeBytes: bytes.length,
+          receivedBytes: body.operation === 'attachment_begin' ? 0 : bytes.length,
+          status: body.operation === 'attachment_finish' ? 'failed' : 'uploading',
+          ...(body.operation === 'attachment_finish'
+            ? { error: 'animated_image_unsupported' }
+            : {}),
+        }),
+      ),
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    imagesAvailable: () => true,
+    request,
+    documentId: async () => 'doc',
+    vfs: new InMemoryVfs(),
+  })
+  await expect(skill.upload('animated.gif', Promise.resolve(bytes.buffer))).rejects.toThrow(
+    'presentation_animated_image_unsupported',
+  )
+})
+it('aborts and prevents late publication after clear', async () => {
+  const f = setup()
+  const original = f.request.getMockImplementation()!
+  f.request.mockImplementation(async (body, signal) => {
+    f.skill.clear()
+    expect(signal?.aborted).toBe(true)
+    return original(body, signal)
+  })
+  await expect(f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))).rejects.toThrow(
+    'upload_cancelled',
+  )
+  expect(f.vfs.list('/home/user')).toEqual([])
+})
+it('rejects changed documents and mismatched responses', async () => {
+  const f = setup()
+  f.documentId.mockResolvedValueOnce('doc1').mockResolvedValue('doc2')
+  await expect(f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))).rejects.toThrow(
+    'presentation_document_changed',
+  )
+  expect(f.request).not.toHaveBeenCalled()
+  const g = setup()
+  g.request.mockResolvedValue(new Response('{}'))
+  await expect(g.skill.upload('notes.txt', Promise.resolve(g.bytes.buffer))).rejects.toThrow(
+    'presentation_response_invalid',
+  )
+  expect(g.vfs.list('/home/user')).toEqual([])
+})
+it('retries extraction after a complete upload previously failed parsing', async () => {
+  const f = setup()
+  const original = f.request.getMockImplementation()!
+  await f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))
+  f.request.mockImplementation(async (body, signal) => {
+    const response = await original(body, signal)
+    if (body.operation === 'attachment_begin') {
+      return new Response(
+        JSON.stringify({ ...(await response.json()), status: 'failed', error: 'parse_failed' }),
+      )
+    }
+    return response
+  })
+  f.request.mockClear()
+  await f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))
+  expect(f.request.mock.calls.map(([b]) => b.operation)).toEqual([
+    'attachment_begin',
+    'attachment_finish',
+  ])
+})
+it('rejects foreign text, duplicate inventory and oversized read inputs', async () => {
+  const f = setup()
+  await f.skill.upload('notes.txt', Promise.resolve(f.bytes.buffer))
+  const original = f.request.getMockImplementation()!
+  f.request.mockImplementation(async (body, signal) => {
+    const data = await (await original(body, signal)).json()
+    return new Response(
+      JSON.stringify(
+        body.operation === 'attachment_read'
+          ? { ...data, sourceUri: 'attachment:wrong' }
+          : { attachments: [...data.attachments, ...data.attachments] },
+      ),
+    )
+  })
+  expect(
+    await f.skill.executeTool({
+      id: 'read',
+      name: 'read_presentation_attachment',
+      input: { attachment_id: f.attachmentId },
+    }),
+  ).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+  expect(
+    await f.skill.executeTool({ id: 'list', name: 'list_presentation_attachments', input: {} }),
+  ).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+  expect(
+    await f.skill.executeTool({
+      id: 'read',
+      name: 'read_presentation_attachment',
+      input: { attachment_id: f.attachmentId, max_chars: 24001 },
+    }),
+  ).toMatchObject({ isError: true, output: 'invalid_tool_input' })
+})
+it('does not publish read text after abort or a document switch during the request', async () => {
+  const f = setup(),
+    original = f.request.getMockImplementation()!
+  f.request.mockImplementation(async (body, signal) => {
+    f.documentId.mockResolvedValue('doc2')
+    return original(body, signal)
+  })
+  expect(
+    await f.skill.executeTool({
+      id: 'read',
+      name: 'read_presentation_attachment',
+      input: { attachment_id: f.attachmentId },
+    }),
+  ).toMatchObject({ isError: true, output: 'presentation_document_changed' })
+  const g = setup(),
+    controller = new AbortController()
+  controller.abort()
+  expect(
+    await g.skill.executeTool(
+      { id: 'list', name: 'list_presentation_attachments', input: {} },
+      controller.signal,
+    ),
+  ).toMatchObject({ isError: true, output: 'upload_cancelled' })
+  expect(g.request).not.toHaveBeenCalled()
+})
+it('accepts a durable original above the session file limit without a local copy', async () => {
+  const bytes = new Uint8Array(21 * 1024 * 1024),
+    attachmentId = createHash('sha256').update(bytes).digest('hex')
+  const vfs = new InMemoryVfs()
+  const request = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          attachmentId,
+          name: 'large.pdf',
+          sha256: attachmentId,
+          sizeBytes: bytes.length,
+          receivedBytes: bytes.length,
+          status: 'ready',
+          kind: 'text',
+          totalChars: 7,
+        }),
+      ),
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    documentId: async () => 'doc',
+    vfs,
+    request,
+  })
+  await skill.upload('large.pdf', Promise.resolve(bytes.buffer))
+  expect(request).toHaveBeenCalledOnce()
+  expect(vfs.list('/home/user')).toEqual([])
+})
+function imageFixture(overrides: Record<string, unknown> = {}) {
+  const bytes = new Uint8Array([1, 2, 3]),
+    attachmentId = createHash('sha256').update(bytes).digest('hex')
+  const value = {
+    attachmentId,
+    name: 'photo.jpg',
+    sha256: attachmentId,
+    sizeBytes: 3,
+    receivedBytes: 3,
+    status: 'ready',
+    kind: 'image',
+    mime: 'image/png',
+    width: 800,
+    height: 600,
+    assetSha256: 'b'.repeat(64),
+    ...overrides,
+  }
+  const imagesAvailable = vi.fn(() => true),
+    documentId = vi.fn(async () => 'doc')
+  const request = vi.fn(
+    async (body: unknown) =>
+      new Response(
+        JSON.stringify(
+          (body as { operation: string }).operation === 'attachment_list_assets'
+            ? { attachments: [value] }
+            : value,
+        ),
+      ),
+  )
+  const vfs = new InMemoryVfs(),
+    skill = createPresentationAttachmentSkill({
+      available: () => true,
+      imagesAvailable,
+      request,
+      documentId,
+      vfs,
+    })
+  return { bytes, value, imagesAvailable, request, vfs, skill, documentId }
+}
+it('accepts normalized GIF/WebP assets returned by the PC and offers them for upload', async () => {
+  for (const extension of ['gif', 'webp']) {
+    const name = `figure.${extension}`
+    expect(isPresentationImage(name)).toBe(true)
+    expect(supportsPresentationAttachment(name, true)).toBe(true)
+    const f = imageFixture({ name })
+    await expect(f.skill.list()).resolves.toMatchObject([
+      { name, kind: 'image', mime: 'image/png' },
+    ])
+  }
+})
+it('uploads image originals and lists validated compact asset metadata on the negotiated channel', async () => {
+  const f = imageFixture()
+  await f.skill.upload('photo.jpg', Promise.resolve(f.bytes.buffer))
+  const result = await f.skill.executeTool({
+    id: 'list',
+    name: 'list_presentation_attachments',
+    input: {},
+  })
+  expect(JSON.parse(result.output)).toEqual({ attachments: [f.value] })
+  expect(result.output).not.toContain('base64')
+  expect(f.request).toHaveBeenLastCalledWith(
+    { operation: 'attachment_list_assets', documentId: 'doc' },
+    expect.any(AbortSignal),
+  )
+  expect(f.skill.systemPrompt).toContain('attachmentId: listed_attachmentId')
+})
+it.each([
+  { width: 0 },
+  { height: 16385 },
+  { width: 9000, height: 1 },
+  { width: 5000, height: 4000 },
+  { width: 10000, height: 10000 },
+  { assetSha256: 'wrong' },
+  { mime: 'image/jpeg' },
+  { totalChars: 5 },
+  { kind: 'text' },
+  { source: 'file:///secret' },
+  { sources: ['https://example.com/image.png', 'file:///secret'] },
+  { licenseDeclaration: { kind: 'verified', evidenceAttachmentId: 'b'.repeat(64), assertedAt: 1 } },
+])('rejects forged image metadata %j', async (overrides) => {
+  const f = imageFixture(overrides)
+  expect(
+    await f.skill.executeTool({ id: 'list', name: 'list_presentation_attachments', input: {} }),
+  ).toMatchObject({ isError: true, output: 'presentation_response_invalid' })
+  await expect(f.skill.upload('photo.jpg', Promise.resolve(f.bytes.buffer))).rejects.toThrow(
+    'presentation_response_invalid',
+  )
+  expect(f.vfs.list('/home/user')).toEqual([])
+})
+it('saves and revokes a user image license assertion through the negotiated rights channel', async () => {
+  const f = imageFixture()
+  const evidenceId = 'c'.repeat(64)
+  await expect(f.skill.attestLicense(f.value.attachmentId, 'licensed', evidenceId)).rejects.toThrow(
+    'presentation_assets_unavailable',
+  )
+  const request = vi.fn(
+    async (body: { operation: string }) =>
+      new Response(
+        JSON.stringify({
+          ...f.value,
+          ...(body.operation === 'attachment_attest_license'
+            ? {
+                licenseDeclaration: {
+                  kind: 'licensed',
+                  evidenceAttachmentId: evidenceId,
+                  assertedAt: 1,
+                },
+              }
+            : {}),
+        }),
+      ),
+  )
+  const skill = createPresentationAttachmentSkill({
+    available: () => true,
+    imagesAvailable: () => true,
+    rightsAvailable: () => true,
+    request,
+    documentId: f.documentId,
+    vfs: f.vfs,
+  })
+  expect(await skill.attestLicense(f.value.attachmentId, 'licensed', evidenceId)).toMatchObject({
+    licenseDeclaration: { kind: 'licensed', evidenceAttachmentId: evidenceId },
+  })
+  expect(request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      operation: 'attachment_attest_license',
+      documentId: 'doc',
+      attachmentId: f.value.attachmentId,
+      evidenceAttachmentId: evidenceId,
+    }),
+    expect.any(AbortSignal),
+  )
+  expect(await skill.revokeLicense(f.value.attachmentId)).not.toHaveProperty('licenseDeclaration')
+})
+it('does not publish image upload results after image capability loss', async () => {
+  const f = imageFixture(),
+    original = f.request.getMockImplementation()!
+  f.request.mockImplementation(async (body) => {
+    const response = await original(body)
+    f.imagesAvailable.mockReturnValue(false)
+    return response
+  })
+  await expect(f.skill.upload('photo.jpg', Promise.resolve(f.bytes.buffer))).rejects.toThrow(
+    'presentation_assets_unavailable',
+  )
+  expect(f.vfs.list('/home/user')).toEqual([])
+})
+it('rejects oversized images and unnegotiated image uploads without dispatch', async () => {
+  const f = imageFixture()
+  await expect(
+    f.skill.upload('large.png', Promise.resolve(new ArrayBuffer(10 * 1024 * 1024 + 1))),
+  ).rejects.toThrow('presentation_image_too_large')
+  f.imagesAvailable.mockReturnValue(false)
+  await expect(f.skill.upload('photo.jpg', Promise.resolve(f.bytes.buffer))).rejects.toThrow(
+    'presentation_assets_unavailable',
+  )
+  expect(f.request).not.toHaveBeenCalled()
+  expect(f.skill.systemPrompt).not.toContain('attachmentId: listed_attachmentId')
+})
+
+const acquisitionHistory = () => ({
+  version: 1,
+  scope: 'remote_material_acquisition',
+  documentId: 'doc1',
+  revision: 1,
+  totalAttempts: 1,
+  records: [
+    {
+      id: 'attempt1',
+      attempt: 1,
+      kind: 'webpage',
+      source: 'https://example.com/page',
+      sourceUrlHash: 'a'.repeat(64),
+      state: 'fetching',
+      startedAt: '2026-09-29T00:00:00.000Z',
+    },
+  ],
+})
+it('reads scoped acquisition history and rejects cross-document or malformed histories', async () => {
+  const f = setup()
+  f.request.mockResolvedValue(new Response(JSON.stringify(acquisitionHistory())))
+  expect(await f.skill.acquisitionHistory()).toEqual(acquisitionHistory())
+  expect(f.request).toHaveBeenCalledWith(
+    { operation: 'attachment_acquisition_history', documentId: 'doc1' },
+    expect.any(AbortSignal),
+  )
+  for (const value of [
+    { ...acquisitionHistory(), documentId: 'other' },
+    { ...acquisitionHistory(), secret: 'query' },
+    { ...acquisitionHistory(), records: Array(65).fill(acquisitionHistory().records[0]) },
+  ]) {
+    f.request.mockResolvedValue(new Response(JSON.stringify(value)))
+    await expect(f.skill.acquisitionHistory()).rejects.toThrow('presentation_response_invalid')
+  }
+})
+it('hides history for old PCs but preserves other errors', async () => {
+  const f = setup()
+  for (const error of ['invalid_request', 'upgrade_required']) {
+    f.request.mockResolvedValue(new Response(JSON.stringify({ error })))
+    expect(await f.skill.acquisitionHistory()).toBeUndefined()
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify({ error: 'invalid_state' })))
+  await expect(f.skill.acquisitionHistory()).rejects.toThrow('presentation_invalid_state')
+})
+it('rejects history arriving after cancellation or document switching', async () => {
+  for (const clear of [true, false]) {
+    const f = setup()
+    let resolve!: (response: Response) => void
+    f.request.mockImplementation(
+      () =>
+        new Promise<Response>((done) => {
+          resolve = done
+        }),
+    )
+    const pending = f.skill.acquisitionHistory()
+    await vi.waitFor(() => expect(f.request).toHaveBeenCalled())
+    if (clear) f.skill.clear()
+    else f.documentId.mockResolvedValue('other')
+    resolve(new Response(JSON.stringify(acquisitionHistory())))
+    await expect(pending).rejects.toThrow(
+      clear ? 'upload_cancelled' : 'presentation_document_changed',
+    )
+  }
+})
+
+it('accepts the bounded latest 64 attempts without losing global attempt numbers', async () => {
+  const f = setup()
+  const value = {
+    ...acquisitionHistory(),
+    revision: 65,
+    totalAttempts: 65,
+    records: Array.from({ length: 64 }, (_, index) => ({
+      ...acquisitionHistory().records[0],
+      id: `attempt${index + 2}`,
+      attempt: index + 2,
+    })),
+  }
+  f.request.mockResolvedValue(new Response(JSON.stringify(value)))
+  const result = await f.skill.acquisitionHistory()
+  expect(result?.records).toHaveLength(64)
+  expect(result?.records[0].attempt).toBe(2)
+})

@@ -6,7 +6,23 @@
   "type": "module",
   "description": "Local project-based document storage and chat history persistence (no Electron dependency)",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./presentation-issue": "./src/presentation-issue.ts",
+    "./presentation-canonical": "./src/presentation-canonical.ts",
+    "./presentation-import-source": "./src/presentation-import-source.ts",
+    "./presentation-source-audit": "./src/presentation-source-audit.ts",
+    "./presentation-plan-acceptance": "./src/presentation-plan-acceptance.ts",
+    "./presentation-asset-events": "./src/presentation-asset-events.ts",
+    "./presentation-job": "./src/presentation-job.ts",
+    "./presentation-acquisition": "./src/presentation-acquisition.ts",
+    "./presentation-acquisition-store": "./src/presentation-acquisition-store.ts",
+    "./presentation-delivery-bundle": "./src/presentation-delivery-bundle.ts",
+    "./presentation-research": "./src/presentation-research.ts",
+    "./presentation-research-store": "./src/presentation-research-store.ts",
+    "./presentation-source-assessment": "./src/presentation-source-assessment.ts",
+    "./presentation-professional-context": "./src/presentation-professional-context.ts",
+    "./presentation-project-governance": "./src/presentation-project-governance.ts",
+    "./presentation-feedback": "./src/presentation-feedback.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

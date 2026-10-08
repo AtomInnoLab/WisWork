@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="340" viewBox="0 0 680 340">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#F7F3EA"/><stop offset="1" stop-color="#EDF5F4"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#102A43" flood-opacity=".12"/></filter>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#65808F"/></marker>
+  </defs>
+  <rect x="1" y="1" width="678" height="338" rx="20" fill="url(#bg)" stroke="#D8E2E5"/>
+  <text x="28" y="39" font-family="Noto Sans CJK SC, sans-serif" font-size="22" font-weight="700" fill="#102A43">可信内容不是页脚链接，而是一条可回查的证据链</text>
+  <text x="28" y="63" font-family="Noto Sans CJK SC, sans-serif" font-size="12" fill="#587080">所有关键结论均保留来源、时间、适用范围、计算与人工复核状态</text>
+  <g font-family="Noto Sans CJK SC, sans-serif" filter="url(#shadow)">
+    <g><rect x="28" y="96" width="132" height="112" rx="14" fill="#FFFFFF"/><rect x="28" y="96" width="132" height="8" rx="4" fill="#247A78"/><text x="44" y="132" font-size="16" font-weight="700" fill="#123C4A">权威资料</text><text x="44" y="157" font-size="12" fill="#587080">论文 · 法规 · 案例</text><text x="44" y="177" font-size="12" fill="#587080">财报 · 数据集 · 附件</text></g>
+    <g><rect x="190" y="96" width="132" height="112" rx="14" fill="#FFFFFF"/><rect x="190" y="96" width="132" height="8" rx="4" fill="#C59A3D"/><text x="206" y="132" font-size="16" font-weight="700" fill="#123C4A">证据片段</text><text x="206" y="157" font-size="12" fill="#587080">原文位置与版本</text><text x="206" y="177" font-size="12" fill="#587080">时点 · 法域 · 数据口径</text></g>
+    <g><rect x="352" y="96" width="132" height="112" rx="14" fill="#FFFFFF"/><rect x="352" y="96" width="132" height="8" rx="4" fill="#D66A4A"/><text x="368" y="132" font-size="16" font-weight="700" fill="#123C4A">结构化主张</text><text x="368" y="157" font-size="12" fill="#587080">事实 / 引文 / 计算</text><text x="368" y="177" font-size="12" fill="#587080">判断 / 假设 / 置信度</text></g>
+    <g><rect x="514" y="96" width="138" height="112" rx="14" fill="#102A43"/><rect x="514" y="96" width="138" height="8" rx="4" fill="#62B6B1"/><text x="530" y="132" font-size="16" font-weight="700" fill="#FFFFFF">可审计页面</text><text x="530" y="157" font-size="12" fill="#DCE8EA">结论 · 图表 · 脚注</text><text x="530" y="177" font-size="12" fill="#DCE8EA">点击回查 · 导出清单</text></g>
+  </g>
+  <g stroke="#65808F" stroke-width="2" marker-end="url(#arrow)"><path d="M163 152 H184"/><path d="M325 152 H346"/><path d="M487 152 H508"/></g>
+  <g font-family="Noto Sans CJK SC, sans-serif">
+    <rect x="28" y="238" width="624" height="72" rx="13" fill="#FFFFFF" stroke="#D6E0E3"/>
+    <text x="48" y="267" font-size="13" font-weight="700" fill="#102A43">专业检查点</text>
+    <text x="48" y="291" font-size="12" fill="#247A78">科研：引用与方法</text><text x="210" y="291" font-size="12" fill="#9A6C16">法律：法域与效力</text><text x="380" y="291" font-size="12" fill="#B34E35">金融：时点与口径</text><text x="540" y="291" font-size="12" fill="#526A78">人工：最终判断</text>
+  </g>
+</svg>

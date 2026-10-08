@@ -19,6 +19,8 @@
     "dist:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
+    "fast-xml-parser": "5.10.1",
+    "pdf-lib": "^1.17.1",
     "ws": "^8.21.1"
   },
   "devDependencies": {
@@ -54,7 +56,10 @@
     "react-dom": "^19.2.4",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "@wiswork/project-store": "*",
+    "@wiswork/file-parse": "*",
+    "@wiswork/font-metrics": "*"
   },
   "author": "AtomInnoLab"
 }

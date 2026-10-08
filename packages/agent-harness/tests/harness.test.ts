@@ -46,6 +46,41 @@ function options(
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('createAgentHarness', () => {
+  it('resumes a paired tool checkpoint with normal lifecycle and no additional user request', () => {
+    const transport = manualTransport()
+    const stream = vi.spyOn(transport, 'stream')
+    const harness = createAgentHarness(options(transport))
+    const messages: AgentMessage[] = [
+      { role: 'user', text: 'Read' },
+      { role: 'assistant', text: '', toolCalls: [{ id: 'call', name: 'read', input: {} }] },
+      { role: 'tool', results: [{ id: 'call', name: 'read', output: 'Saved' }] },
+    ]
+    expect(harness.resume(messages.slice(0, 2))).toBe(false)
+    expect(harness.snapshot.busy).toBe(false)
+    expect(harness.resume(messages)).toBe(true)
+    expect(harness.snapshot).toMatchObject({ status: 'running', busy: true, generation: 1 })
+    expect(stream.mock.calls[0]![0].messages).toEqual(messages)
+    transport.callbacks[0]!.onDone()
+    expect(harness.snapshot).toMatchObject({ status: 'done', busy: false })
+    harness.dispose()
+    expect(harness.resume(messages)).toBe(false)
+  })
+  it('does not resume when a subscriber resets the launch', () => {
+    const transport = manualTransport()
+    const harness = createAgentHarness(options(transport))
+    harness.subscribe(() => {
+      if (harness.snapshot.busy) harness.reset()
+    })
+    expect(
+      harness.resume([
+        { role: 'user', text: 'Read' },
+        { role: 'assistant', text: '', toolCalls: [{ id: 'call', name: 'read', input: {} }] },
+        { role: 'tool', results: [{ id: 'call', name: 'read', output: 'Saved' }] },
+      ]),
+    ).toBe(false)
+    expect(transport.callbacks).toHaveLength(0)
+    expect(harness.snapshot.busy).toBe(false)
+  })
   it('forwards presentation lifecycle events and receipt localization', async () => {
     const transport = manualTransport()
     const onPresentationPlan = vi.fn()
@@ -131,6 +166,93 @@ describe('createAgentHarness', () => {
     expect(harness.snapshot).toEqual({ status: 'done', busy: false, generation: 1 })
     expect(harness.messages.at(-1)).toEqual({ role: 'assistant', text: 'answer' })
     expect(snapshots).toEqual(['running:true', 'done:false'])
+  })
+
+  it('publishes ACP message deltas with stable session and message ids', async () => {
+    const transport = manualTransport()
+    const harness = createAgentHarness(options(transport))
+    const updates: Array<Parameters<Parameters<typeof harness.subscribeAcp>[0]>[0]> = []
+    harness.subscribeAcp((notification) => updates.push(notification))
+
+    expect(harness.sessionId).toMatch(/\S+/)
+    harness.run('go')
+    await flush()
+    transport.callbacks[0]!.onDelta('Hel')
+    transport.callbacks[0]!.onDelta('lo')
+    transport.callbacks[0]!.onDone()
+    await flush()
+
+    expect(updates.map((item) => item.sessionId)).toEqual([harness.sessionId, harness.sessionId])
+    expect(updates.map((item) => item.update)).toEqual([
+      expect.objectContaining({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'Hel' },
+      }),
+      expect.objectContaining({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'lo' },
+      }),
+    ])
+    const first = updates[0]!.update
+    const second = updates[1]!.update
+    expect(first.sessionUpdate).toBe('agent_message_chunk')
+    expect(second.sessionUpdate).toBe('agent_message_chunk')
+    if (
+      first.sessionUpdate === 'agent_message_chunk' &&
+      second.sessionUpdate === 'agent_message_chunk'
+    ) {
+      expect(first.messageId).toBe(second.messageId)
+    }
+  })
+
+  it('publishes ACP tool lifecycle and isolates failing listeners', async () => {
+    const transport = manualTransport()
+    const harness = createAgentHarness(options(transport))
+    const updates: Array<Parameters<Parameters<typeof harness.subscribeAcp>[0]>[0]> = []
+    harness.subscribeAcp(() => {
+      throw new Error('view failed')
+    })
+    harness.subscribeAcp((notification) => updates.push(notification))
+
+    harness.run('go')
+    await flush()
+    transport.callbacks[0]!.onToolCall({ id: 'call-1', name: 'read_slide_text', input: {} })
+    transport.callbacks[0]!.onDone()
+    await flush()
+
+    expect(updates.map((item) => item.update)).toEqual([
+      expect.objectContaining({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call-1',
+        name: 'read_slide_text',
+        kind: 'read',
+        status: 'in_progress',
+      }),
+      expect.objectContaining({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call-1',
+        status: 'completed',
+        title: 'done',
+      }),
+    ])
+  })
+
+  it('starts a new ACP session on reset and suppresses old updates after dispose', async () => {
+    const transport = manualTransport()
+    const harness = createAgentHarness(options(transport))
+    const firstSessionId = harness.sessionId
+    const listener = vi.fn()
+    harness.subscribeAcp(listener)
+
+    harness.reset()
+    expect(harness.sessionId).not.toBe(firstSessionId)
+    harness.run('go')
+    await flush()
+    const callbacks = transport.callbacks[0]!
+    harness.dispose()
+    callbacks.onDelta('late')
+
+    expect(listener).not.toHaveBeenCalled()
   })
 
   it.each(['reset', 'dispose'] as const)(

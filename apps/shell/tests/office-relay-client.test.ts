@@ -1,6 +1,13 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { PresentationStore, PresentationLifecycleStore } from '@wiswork/project-store'
+import { benchmarkPlan } from '../../../packages/pptx-engine/tests/fixtures/presentation-plan'
+import { acquirePresentationProjectLock } from '../src/main/presentation-service'
 import { describe, expect, it, vi } from 'vitest'
 import {
   createOfficeRelayClient,
+  createOfficePresentationGovernanceProxy,
   officeRelayEndpointFromEnv,
   type RelaySocket,
 } from '../src/main/office-relay-client'
@@ -10,6 +17,7 @@ import { createOfficeLocalSearchProxy } from '../src/main/office-retrieval-proxy
 class FakeSocket implements RelaySocket {
   readyState = 0
   sent: string[] = []
+  closedWith?: { code?: number; reason?: string }
   pings = 0
   listeners = new Map<string, Array<(event: any) => void>>()
   addEventListener(name: string, listener: (event: any) => void): void {
@@ -27,7 +35,8 @@ class FakeSocket implements RelaySocket {
   ping(): void {
     this.pings += 1
   }
-  close(): void {
+  close(code?: number, reason?: string): void {
+    this.closedWith = { code, reason }
     this.readyState = 3
     this.emit('close', {})
   }
@@ -65,6 +74,144 @@ function setup(loggedIn = true) {
 }
 
 describe('Office relay PC client', () => {
+  it.each(['agent.v1', 'presentation-master-backups.v1', 'presentation-package-backups.v1'])(
+    'reattaches an approved v2 %s session with a fresh token after socket loss',
+    async (capabilityName) => {
+      const first = new FakeSocket()
+      const second = new FakeSocket()
+      const connect = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
+      const getAccessToken = vi
+        .fn()
+        .mockResolvedValueOnce('first-token')
+        .mockResolvedValueOnce('second-token')
+      const client = createOfficeRelayClient({
+        endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+        connect,
+        getValidAccountStatus: async () => ({ loggedIn: true }),
+        getAccessToken,
+        proxy: async () => ({ status: 200, body: new Uint8Array() }),
+        negotiateCapabilities: true,
+        presentationProxy: async () => new Uint8Array(),
+        onPending() {},
+      })
+      const claiming = client.claim('123456')
+      await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1))
+      first.open()
+      await claiming
+      first.message({
+        version: 2,
+        type: 'pc.negotiated',
+        pairing_version: 2,
+        capabilities: [capabilityName],
+      })
+      first.message({
+        version: 2,
+        type: 'pc.claimed',
+        pairing_id: 'pairing_12345678',
+        host: 'PowerPoint',
+        origin: 'https://office.8-216-134-194.sslip.io',
+        verification_code: '123456',
+        expires_in: 120,
+        capabilities: [capabilityName],
+      })
+      await client.approve('pairing_12345678')
+      first.message({
+        version: 2,
+        type: 'pc.approved',
+        session_id: 'session_12345678',
+        capability: 'secret-capability',
+        expires_in: 1800,
+        capabilities: [capabilityName],
+      })
+      expect(client.status()).toBe('paired')
+      first.close()
+      await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(2))
+      expect(client.status()).toBe('connecting')
+      expect(connect).toHaveBeenNthCalledWith(2, expect.any(String), 'second-token')
+      second.open()
+      await vi.waitFor(() => expect(second.sent).toHaveLength(1))
+      expect(JSON.parse(second.sent[0]!)).toEqual({
+        version: 2,
+        type: 'pc.resume',
+        session_id: 'session_12345678',
+        capability: 'secret-capability',
+      })
+      second.message({
+        version: 2,
+        type: 'pc.resumed',
+        session_id: 'session_12345678',
+        expires_in: 1800,
+        capabilities: [capabilityName],
+      })
+      expect(client.status()).toBe('paired')
+      expect(second.pings).toBeGreaterThan(0)
+      client.revoke('test_complete')
+      expect(second.closedWith).toEqual({ code: 1000, reason: 'session_revoked' })
+    },
+  )
+  it.each(['before-token', 'during-token'])(
+    'refuses session reattachment across account changes %s',
+    async (changeAt) => {
+      const capabilityName = 'agent.v1'
+      let accountId = 'original-account'
+      const first = new FakeSocket()
+      const second = new FakeSocket()
+      const connect = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
+      const getAccessToken = vi
+        .fn()
+        .mockResolvedValueOnce('first-token')
+        .mockImplementationOnce(async () => {
+          if (changeAt === 'during-token') accountId = 'replacement-account'
+          return 'second-token'
+        })
+      const client = createOfficeRelayClient({
+        endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+        connect,
+        getValidAccountStatus: async () => ({ loggedIn: true, userId: accountId }),
+        getAccessToken,
+        proxy: async () => ({ status: 200, body: new Uint8Array() }),
+        negotiateCapabilities: true,
+        presentationProxy: async () => new Uint8Array(),
+        onPending() {},
+      })
+      const claiming = client.claim('123456')
+      await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1))
+      first.open()
+      await claiming
+      first.message({
+        version: 2,
+        type: 'pc.negotiated',
+        pairing_version: 2,
+        capabilities: [capabilityName],
+      })
+      first.message({
+        version: 2,
+        type: 'pc.claimed',
+        pairing_id: 'pairing_12345678',
+        host: 'PowerPoint',
+        origin: 'https://office.8-216-134-194.sslip.io',
+        verification_code: '123456',
+        expires_in: 120,
+        capabilities: [capabilityName],
+      })
+      await client.approve('pairing_12345678')
+      first.message({
+        version: 2,
+        type: 'pc.approved',
+        session_id: 'session_12345678',
+        capability: 'secret-capability',
+        expires_in: 1800,
+        capabilities: [capabilityName],
+      })
+      expect(client.status()).toBe('paired')
+      if (changeAt === 'before-token') accountId = 'replacement-account'
+      first.close()
+      await vi.waitFor(() => expect(client.status()).toBe('disconnected:auth_required'))
+      expect(connect).toHaveBeenCalledTimes(1)
+      expect(second.sent).toEqual([])
+      client.revoke('test_complete')
+    },
+  )
   it('refreshes once and reconnects when a websocket handshake rejects a stale token', async () => {
     const sockets: FakeSocket[] = []
     const tokens: string[] = []
@@ -782,6 +929,16 @@ describe('Office relay PC client', () => {
     expect(client.status()).toBe('disconnected:session_expired')
   })
 
+  it('reports a legacy pairing protocol mismatch without calling it a malformed frame', async () => {
+    const { client, socket } = setup()
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claiming
+    socket.message({ version: 1, type: 'relay.error', code: 'protocol_version_mismatch' })
+    expect(client.status()).toBe('disconnected:protocol_version_mismatch')
+  })
+
   it.each([100, 199, 204, 205, 304])(
     'returns request_failed without ending the session for non-streaming status %i',
     async (status) => {
@@ -1041,6 +1198,292 @@ describe('Office relay PC client', () => {
     client.revoke('test_complete')
     vi.useRealTimers()
   })
+
+  it('ignores old socket messages and proxy completions after re-pairing', async () => {
+    const sockets = [new FakeSocket(), new FakeSocket()]
+    let currentSocket = 0
+    const completions: Array<(value: { status: number; body: Uint8Array }) => void> = []
+    const signals: AbortSignal[] = []
+    const proxy = vi.fn(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise<{ status: number; body: Uint8Array }>((resolve) => {
+          completions.push(resolve)
+          signals.push(signal)
+        }),
+    )
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => sockets[currentSocket++]!,
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'token',
+      proxy,
+      onPending() {},
+    })
+    for (const [index, socket] of sockets.entries()) {
+      const claiming = client.claim('123456')
+      await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+      socket.open()
+      await claiming
+      socket.message({
+        version: 1,
+        type: 'pc.claimed',
+        pairing_id: 'pairing_12345678',
+        host: 'PowerPoint',
+        origin: 'https://office.8-216-134-194.sslip.io',
+        verification_code: '123456',
+        expires_in: 120,
+      })
+      await client.approve('pairing_12345678')
+      socket.message({
+        version: 1,
+        type: 'pc.approved',
+        session_id: `session_1234567${index}`,
+        capability: 'secret-capability',
+        expires_in: 1800,
+      })
+      {
+        socket.message({
+          version: 1,
+          type: 'relay.request',
+          session_id: `session_1234567${index}`,
+          request_id: 'request_12345678',
+          body: {},
+        })
+        await vi.waitFor(() => expect(proxy).toHaveBeenCalledTimes(index + 1))
+      }
+    }
+    const sent = [...sockets[1]!.sent]
+    completions[0]!({ status: 200, body: new TextEncoder().encode('{}') })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(sockets[1]!.sent).toEqual(sent)
+    sockets[0]!.emit('message', { data: 'malformed late frame' })
+    expect(client.status()).toBe('paired')
+    sockets[1]!.message({
+      version: 1,
+      type: 'relay.cancel',
+      session_id: 'session_12345671',
+      request_id: 'request_12345678',
+    })
+    expect(signals[1]!.aborted).toBe(true)
+    completions[1]!({ status: 200, body: new Uint8Array() })
+    client.revoke('test_complete')
+  })
+
+  it.each([
+    'presentation.v1',
+    'presentation-attachments.v1',
+    'presentation-assets.v1',
+    'presentation-remote-images.v1',
+    'presentation-webpages.v1',
+    'presentation-asset-rights.v1',
+    'presentation-animation-frame.v1',
+    'presentation-pdf.v1',
+    'presentation-production-pdf.v1',
+  ])(
+    'negotiates presentation only when provided and streams recoverable generation requests',
+    async (capabilityName) => {
+      const socket = new FakeSocket()
+      const payload = new TextEncoder().encode(JSON.stringify({ result: 'x'.repeat(70_000) }))
+      const presentationProxy = vi
+        .fn<(body: unknown, signal: AbortSignal) => Promise<Uint8Array>>()
+        .mockRejectedValueOnce(new Error('provider_unavailable'))
+        .mockResolvedValue(payload)
+      const proxy = vi.fn()
+      const client = createOfficeRelayClient({
+        endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+        connect: () => socket,
+        getValidAccountStatus: async () => ({ loggedIn: true }),
+        getAccessToken: async () => 'token',
+        proxy,
+        presentationProxy,
+        onPending() {},
+      })
+      const claiming = client.claim('123456')
+      await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+      socket.open()
+      await claiming
+      const capabilities = [
+        'agent.v1',
+        'presentation.v1',
+        'presentation-attachments.v1',
+        'presentation-assets.v1',
+        'presentation-remote-images.v1',
+        'presentation-webpages.v1',
+        'presentation-asset-rights.v1',
+        'presentation-animation-frame.v1',
+        'presentation-pdf.v1',
+        'presentation-production-pdf.v1',
+        'presentation-master-backups.v1',
+        'presentation-package-backups.v1',
+      ]
+      expect(JSON.parse(socket.sent[0]!)).toEqual({
+        version: 2,
+        type: 'pc.negotiate',
+        verification_code: '123456',
+        capabilities,
+      })
+      socket.message({ version: 2, type: 'pc.negotiated', pairing_version: 2, capabilities })
+      if (socket.closedWith) return { socket, client, presentationProxy, offered }
+      socket.message({
+        version: 2,
+        type: 'pc.claimed',
+        pairing_id: 'pairing_12345678',
+        host: 'PowerPoint',
+        origin: 'https://office.8-216-134-194.sslip.io',
+        verification_code: '123456',
+        expires_in: 120,
+        capabilities,
+      })
+      await client.approve('pairing_12345678')
+      socket.message({
+        version: 2,
+        type: 'pc.approved',
+        session_id: 'session_12345678',
+        capability: 'secret-capability',
+        expires_in: 1800,
+        capabilities,
+      })
+      for (const request_id of ['request_failure', 'request_success']) {
+        const body =
+          capabilityName === 'presentation-pdf.v1'
+            ? { operation: 'export_pdf', projectId: 'deck', requestId: 'first' }
+            : capabilityName === 'presentation-production-pdf.v1'
+              ? {
+                  operation: 'export_pdf',
+                  source: 'production',
+                  projectId: 'deck',
+                  requestId: 'first',
+                }
+              : { instruction: 'Create a deck' }
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id,
+          capability_name: capabilityName,
+          body,
+        })
+        await vi.waitFor(() =>
+          expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual(
+            expect.objectContaining({
+              type: request_id === 'request_failure' ? 'pc.error' : 'pc.done',
+              request_id,
+            }),
+          ),
+        )
+        expect(client.status()).toBe('paired')
+      }
+      expect(presentationProxy).toHaveBeenCalledWith(
+        capabilityName === 'presentation-pdf.v1'
+          ? { operation: 'export_pdf', projectId: 'deck', requestId: 'first' }
+          : capabilityName === 'presentation-production-pdf.v1'
+            ? {
+                operation: 'export_pdf',
+                source: 'production',
+                projectId: 'deck',
+                requestId: 'first',
+              }
+            : { instruction: 'Create a deck' },
+        expect.any(AbortSignal),
+      )
+      expect(proxy).not.toHaveBeenCalled()
+      const chunks = socket.sent
+        .map((raw) => JSON.parse(raw))
+        .filter((item) => item.type === 'pc.chunk')
+      expect(chunks.map((item) => item.sequence)).toEqual([0, 1])
+      expect(Buffer.concat(chunks.map((item) => Buffer.from(item.data, 'base64')))).toEqual(
+        Buffer.from(payload),
+      )
+      if (capabilityName === 'presentation-attachments.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_remote_capability',
+          capability_name: capabilityName,
+          body: { operation: 'attachment_import_url', url: 'https://example.com/image.png' },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      if (capabilityName === 'presentation-webpages.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_webpage_capability',
+          capability_name: 'presentation-attachments.v1',
+          body: { operation: 'attachment_import_webpage', url: 'https://example.com/page' },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      if (capabilityName === 'presentation.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_pdf_capability',
+          capability_name: capabilityName,
+          body: { operation: 'export_pdf', projectId: 'deck', requestId: 'first' },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      if (capabilityName === 'presentation-assets.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_rights_capability',
+          capability_name: capabilityName,
+          body: {
+            operation: 'attachment_attest_license',
+            attachmentId: 'a'.repeat(64),
+            license: 'owned',
+            evidenceAttachmentId: 'b'.repeat(64),
+          },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      if (capabilityName === 'presentation-animation-frame.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_animation_capability',
+          capability_name: 'presentation-attachments.v1',
+          body: { operation: 'attachment_extract_first_frame', attachmentId: 'a'.repeat(64) },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      if (capabilityName === 'presentation-pdf.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_pdf_capability',
+          capability_name: 'presentation-pdf.v1',
+          body: {
+            operation: 'export_pdf',
+            source: 'production',
+            projectId: 'deck',
+            requestId: 'first',
+          },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      if (capabilityName === 'presentation-production-pdf.v1') {
+        socket.message({
+          version: 2,
+          type: 'relay.request',
+          session_id: 'session_12345678',
+          request_id: 'wrong_production_pdf_capability',
+          capability_name: 'presentation-production-pdf.v1',
+          body: { operation: 'export_pdf', projectId: 'deck', requestId: 'first' },
+        })
+        await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+      }
+      client.revoke('test_complete')
+    },
+  )
 
   it('uses v2 only with a fixed retrieval proxy and dispatches negotiated web requests', async () => {
     const socket = new FakeSocket()
@@ -1955,4 +2398,656 @@ describe('Office relay PC client', () => {
     await expect(revoking).rejects.toThrow('auth_required')
     expect(connect).not.toHaveBeenCalled()
   })
+})
+
+async function teamPcClient(
+  supportsTeamPresentation = true,
+  negotiatedCapabilities?: string[],
+  host = 'PowerPoint',
+) {
+  const socket = new FakeSocket(),
+    presentationProxy = vi.fn(
+      async (
+        _body: unknown,
+        _signal: AbortSignal,
+        _context?: import('../src/main/office-relay-client').PresentationTeamContext,
+      ) => new TextEncoder().encode('{}'),
+    )
+  const client = createOfficeRelayClient({
+    endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+    connect: () => socket,
+    getValidAccountStatus: async () => ({ loggedIn: true }),
+    getAccessToken: async () => 'pc-token',
+    proxy: vi.fn(),
+    presentationProxy,
+    ...(supportsTeamPresentation ? { supportsTeamPresentation: true as const } : {}),
+    onPending: vi.fn(),
+  })
+  const claiming = client.claim('123456')
+  await vi.waitFor(() => expect(socket.listeners.get('open')?.length).toBeGreaterThan(0))
+  socket.open()
+  await claiming
+  const offered = JSON.parse(socket.sent[0]!).capabilities
+  const capabilities =
+    negotiatedCapabilities ??
+    (supportsTeamPresentation ? ['presentation-team.v1'] : ['agent.v1', 'presentation.v1'])
+  socket.message({ version: 2, type: 'pc.negotiated', pairing_version: 2, capabilities })
+  if (socket.closedWith) return { socket, client, presentationProxy, offered }
+  socket.message({
+    version: 2,
+    type: 'pc.claimed',
+    pairing_id: 'pairing_12345678',
+    host,
+    origin: 'https://office.8-216-134-194.sslip.io',
+    verification_code: '123456',
+    expires_in: 120,
+    capabilities,
+  })
+  await client.approve('pairing_12345678')
+  socket.message({
+    version: 2,
+    type: 'pc.approved',
+    session_id: 'session_12345678',
+    capability: 'secret-capability',
+    expires_in: 1800,
+    capabilities,
+  })
+  return { socket, client, presentationProxy, offered }
+}
+it('advertises team transport only explicitly and passes verified context separately from the body', async () => {
+  const old = await teamPcClient(false)
+  expect(old.offered).not.toContain('presentation-team.v1')
+  old.client.revoke()
+  const f = await teamPcClient(),
+    context = { version: 1, actorSubject: 'a'.repeat(64), pcSubject: 'b'.repeat(64) },
+    body = { operation: 'team_identity' }
+  expect(f.offered).toContain('presentation-team.v1')
+  f.socket.message({
+    version: 2,
+    type: 'relay.request',
+    session_id: 'session_12345678',
+    request_id: 'request_12345678',
+    capability_name: 'presentation-team.v1',
+    team_context: context,
+    body,
+  })
+  await vi.waitFor(() =>
+    expect(f.presentationProxy).toHaveBeenCalledWith(body, expect.any(AbortSignal), context),
+  )
+  expect(f.socket.sent.every((value) => !value.includes('pc-token'))).toBe(true)
+  f.client.revoke()
+})
+it.each([
+  'missing',
+  'bad-subject',
+  'extra',
+  'unknown-operation',
+  'ordinary-operation',
+  'feedback-read',
+  'feedback-record',
+  'feedback-compare',
+  'bearer',
+])('rejects %s team request context before proxying', async (scenario) => {
+  const f = await teamPcClient(),
+    context: Record<string, unknown> = {
+      version: 1,
+      actorSubject: 'a'.repeat(64),
+      pcSubject: 'b'.repeat(64),
+    },
+    body: Record<string, unknown> = { operation: 'team_identity' }
+  if (scenario === 'bad-subject') context.actorSubject = 'raw-actor'
+  if (scenario === 'extra') context.token = 'private'
+  if (scenario === 'unknown-operation') body.operation = 'team_unknown'
+  if (scenario === 'ordinary-operation') body.operation = 'get_plan'
+  if (scenario === 'feedback-read') body.operation = 'production_feedback_read'
+  if (scenario === 'feedback-record') body.operation = 'production_feedback_record'
+  if (scenario === 'feedback-compare') body.operation = 'production_feedback_compare'
+  const frame: Record<string, unknown> = {
+    version: 2,
+    type: 'relay.request',
+    session_id: 'session_12345678',
+    request_id: 'request_12345678',
+    capability_name: 'presentation-team.v1',
+    team_context: context,
+    body,
+  }
+  if (scenario === 'missing') delete frame.team_context
+  if (scenario === 'bearer') frame.access_token = 'private-token'
+  f.socket.message(frame)
+  expect(f.presentationProxy).not.toHaveBeenCalled()
+  expect(f.socket.closedWith).toBeDefined()
+  f.client.revoke()
+})
+it('rejects team operations and forged context through an ordinary presentation capability', async () => {
+  for (const withContext of [false, true]) {
+    const f = await teamPcClient(false)
+    f.socket.message({
+      version: 2,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'request_12345678',
+      capability_name: 'presentation.v1',
+      body: { operation: 'team_identity' },
+      ...(withContext
+        ? { team_context: { version: 1, actorSubject: 'a'.repeat(64), pcSubject: 'b'.repeat(64) } }
+        : {}),
+    })
+    expect(f.presentationProxy).not.toHaveBeenCalled()
+    expect(f.socket.closedWith).toBeDefined()
+    f.client.revoke()
+  }
+})
+it('refuses a forged mixed team/private negotiated session', async () => {
+  const f = await teamPcClient(true, ['presentation-team.v1', 'presentation.v1'])
+  expect(f.socket.closedWith).toBeDefined()
+  expect(f.presentationProxy).not.toHaveBeenCalled()
+  f.client.revoke()
+})
+
+it.each([
+  'master_backup_begin',
+  'master_backup_chunk',
+  'master_backup_finish',
+  'master_backup_status',
+  'master_backup_read',
+  'master_backup_list',
+])('routes only negotiated PowerPoint master backup operation %s', async (operation) => {
+  const f = await teamPcClient(false, ['agent.v1', 'presentation-master-backups.v1'])
+  expect(f.offered).toContain('presentation-master-backups.v1')
+  expect(f.client.status()).toBe('paired')
+  const body = { operation, documentId: 'document', changeId: 'change', key: 'snapshot' }
+  f.socket.message({
+    version: 2,
+    type: 'relay.request',
+    session_id: 'session_12345678',
+    request_id: 'master_1',
+    capability_name: 'presentation-master-backups.v1',
+    body,
+  })
+  await vi.waitFor(() =>
+    expect(f.presentationProxy).toHaveBeenCalledWith(body, expect.any(AbortSignal)),
+  )
+  await vi.waitFor(() =>
+    expect(f.socket.sent.map((x) => JSON.parse(x)).some((x) => x.type === 'pc.done')).toBe(true),
+  )
+  f.client.revoke('complete')
+})
+it.each([
+  ['presentation.v1', 'master_backup_status', 'PowerPoint', undefined],
+  ['agent.v1', 'master_backup_status', 'PowerPoint', undefined],
+  ['presentation-master-backups.v1', 'production_status', 'PowerPoint', undefined],
+  ['presentation-master-backups.v1', 'master_backup_delete', 'PowerPoint', undefined],
+  ['presentation-master-backups.v1', 'master_backup_status', 'Word', undefined],
+  ['presentation-master-backups.v1', 'master_backup_status', 'Excel', undefined],
+  ['presentation-master-backups.v1', 'master_backup_status', 'PowerPoint', {}],
+])(
+  'rejects master capability routing mismatch %s/%s/%s before proxy',
+  async (capability_name, operation, host, context) => {
+    const f = await teamPcClient(
+      false,
+      ['agent.v1', 'presentation.v1', 'presentation-master-backups.v1'],
+      host as string,
+    )
+    f.socket.message({
+      version: 2,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'master_bad',
+      capability_name,
+      body: { operation },
+      ...(context ? { team_context: context } : {}),
+    })
+    await vi.waitFor(() => expect(f.client.status()).toBe('disconnected:protocol_violation'))
+    expect(f.presentationProxy).not.toHaveBeenCalled()
+  },
+)
+it.each([false, true])(
+  'offers the exact optional governance catalog (enabled=%s) without changing the disabled bound',
+  async (enabled) => {
+    const socket = new FakeSocket()
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      retrievalProxy: async () => new Uint8Array(),
+      ...(enabled
+        ? {
+            presentationProxy: async () => new Uint8Array(),
+            supportsTeamPresentation: true as const,
+            presentationGovernanceProxy: async () => new Uint8Array(),
+          }
+        : {}),
+      onPending() {},
+    })
+    const pending = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await pending
+    const offered = JSON.parse(socket.sent[0]!).capabilities
+    expect(offered).toHaveLength(enabled ? 18 : 5)
+    expect(new Set(offered).size).toBe(offered.length)
+    expect(offered).toContain('web-fetch.v1')
+    expect(offered.includes('presentation-governance.v1')).toBe(enabled)
+    expect(offered.includes('presentation-master-backups.v1')).toBe(enabled)
+    expect(offered.includes('presentation-package-backups.v1')).toBe(enabled)
+    client.revoke('complete')
+  },
+)
+it.each([
+  'package_backup_begin',
+  'package_backup_chunk',
+  'package_backup_finish',
+  'package_backup_status',
+  'package_backup_read',
+  'package_backup_list',
+])('routes only negotiated PowerPoint package backup operation %s', async (operation) => {
+  const f = await teamPcClient(false, ['agent.v1', 'presentation-package-backups.v1'])
+  expect(f.offered).toContain('presentation-package-backups.v1')
+  expect(f.client.status()).toBe('paired')
+  const body = { operation, documentId: 'document', changeId: 'change', key: 'snapshot' }
+  f.socket.message({
+    version: 2,
+    type: 'relay.request',
+    session_id: 'session_12345678',
+    request_id: 'master_1',
+    capability_name: 'presentation-package-backups.v1',
+    body,
+  })
+  await vi.waitFor(() =>
+    expect(f.presentationProxy).toHaveBeenCalledWith(body, expect.any(AbortSignal)),
+  )
+  await vi.waitFor(() =>
+    expect(f.socket.sent.map((x) => JSON.parse(x)).some((x) => x.type === 'pc.done')).toBe(true),
+  )
+  f.client.revoke('complete')
+})
+it.each([
+  ['presentation.v1', 'package_backup_status', 'PowerPoint', undefined],
+  ['agent.v1', 'package_backup_status', 'PowerPoint', undefined],
+  ['presentation-package-backups.v1', 'production_status', 'PowerPoint', undefined],
+  ['presentation-package-backups.v1', 'package_backup_delete', 'PowerPoint', undefined],
+  ['presentation-package-backups.v1', 'package_backup_status', 'Word', undefined],
+  ['presentation-package-backups.v1', 'package_backup_status', 'Excel', undefined],
+  ['presentation-package-backups.v1', 'package_backup_status', 'PowerPoint', {}],
+])(
+  'rejects package capability routing mismatch %s/%s/%s before proxy',
+  async (capability_name, operation, host, context) => {
+    const f = await teamPcClient(
+      false,
+      ['agent.v1', 'presentation.v1', 'presentation-package-backups.v1'],
+      host as string,
+    )
+    f.socket.message({
+      version: 2,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'master_bad',
+      capability_name,
+      body: { operation },
+      ...(context ? { team_context: context } : {}),
+    })
+    await vi.waitFor(() => expect(f.client.status()).toBe('disconnected:protocol_violation'))
+    expect(f.presentationProxy).not.toHaveBeenCalled()
+  },
+)
+
+it.each([
+  ['presentation-master-backups.v1', 'package_backup_status'],
+  ['presentation-package-backups.v1', 'master_backup_status'],
+])('rejects cross-namespace %s', async (capability_name, operation) => {
+  const f = await teamPcClient(false, [
+    'agent.v1',
+    'presentation-master-backups.v1',
+    'presentation-package-backups.v1',
+  ])
+  f.socket.message({
+    version: 2,
+    type: 'relay.request',
+    session_id: 'session_12345678',
+    request_id: 'cross_bad',
+    capability_name,
+    body: { operation },
+  })
+  await vi.waitFor(() => expect(f.client.status()).toBe('disconnected:protocol_violation'))
+  expect(f.presentationProxy).not.toHaveBeenCalled()
+})
+
+async function governancePcClient(
+  settings: {
+    enabled?: boolean
+    capabilities?: string[]
+    host?: string
+    handler?: (body: unknown, signal: AbortSignal) => Promise<Uint8Array>
+  } = {},
+) {
+  const socket = new FakeSocket(),
+    presentationProxy = vi.fn(async () => new TextEncoder().encode('{}')),
+    governanceProxy = vi.fn(
+      settings.handler ?? (async () => new TextEncoder().encode('{"lifecycle":null}')),
+    )
+  const client = createOfficeRelayClient({
+    endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+    connect: () => socket,
+    getValidAccountStatus: async () => ({ loggedIn: true }),
+    getAccessToken: async () => 'pc-token',
+    proxy: vi.fn(),
+    presentationProxy,
+    ...(settings.enabled === false ? {} : { presentationGovernanceProxy: governanceProxy }),
+    onPending: vi.fn(),
+  })
+  const claiming = client.claim('123456')
+  await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+  socket.open()
+  await claiming
+  const offered = JSON.parse(socket.sent[0]!).capabilities,
+    capabilities = settings.capabilities ?? [
+      'agent.v1',
+      'presentation.v1',
+      'presentation-governance.v1',
+    ]
+  socket.message({ version: 2, type: 'pc.negotiated', pairing_version: 2, capabilities })
+  if (socket.closedWith) return { socket, client, presentationProxy, governanceProxy, offered }
+  socket.message({
+    version: 2,
+    type: 'pc.claimed',
+    pairing_id: 'pairing_12345678',
+    host: settings.host ?? 'PowerPoint',
+    origin: 'https://office.8-216-134-194.sslip.io',
+    verification_code: '123456',
+    expires_in: 120,
+    capabilities,
+  })
+  if (socket.closedWith) return { socket, client, presentationProxy, governanceProxy, offered }
+  await client.approve('pairing_12345678')
+  socket.message({
+    version: 2,
+    type: 'pc.approved',
+    session_id: 'session_12345678',
+    capability: 'secret-capability',
+    expires_in: 1800,
+    capabilities,
+  })
+  return { socket, client, presentationProxy, governanceProxy, offered }
+}
+function governanceFrame(
+  operation: string,
+  capability_name = 'presentation-governance.v1',
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    version: 2,
+    type: 'relay.request',
+    session_id: 'session_12345678',
+    request_id: 'governance_12345678',
+    capability_name,
+    body: { operation, documentId: 'doc', projectId: 'project' },
+    ...extra,
+  }
+}
+it('offers governance only with a real dedicated handler and never routes it through ordinary presentation', async () => {
+  const old = await governancePcClient({
+    enabled: false,
+    capabilities: ['agent.v1', 'presentation.v1'],
+  })
+  expect(old.offered).not.toContain('presentation-governance.v1')
+  old.client.revoke('done')
+  const f = await governancePcClient()
+  expect(f.offered).toContain('presentation-governance.v1')
+  f.socket.message(governanceFrame('project_lifecycle_read'))
+  await vi.waitFor(() =>
+    expect(f.governanceProxy).toHaveBeenCalledWith(
+      { operation: 'project_lifecycle_read', documentId: 'doc', projectId: 'project' },
+      expect.any(AbortSignal),
+    ),
+  )
+  expect(f.presentationProxy).not.toHaveBeenCalled()
+  await vi.waitFor(() =>
+    expect(f.socket.sent.map((x) => JSON.parse(x)).some((x) => x.type === 'pc.done')).toBe(true),
+  )
+  f.client.revoke('done')
+})
+it.each([
+  'project_deletion_preview',
+  'project_deletion_confirm',
+  'project_deletion_resume',
+  'project_lifecycle_initialize',
+  'project_lifecycle_read',
+  'project_lifecycle_set_policy',
+  'project_lifecycle_export_audit',
+])('routes whitelisted governance operation %s', async (operation) => {
+  const f = await governancePcClient()
+  f.socket.message(governanceFrame(operation))
+  await vi.waitFor(() => expect(f.governanceProxy).toHaveBeenCalledTimes(1))
+  f.client.revoke('done')
+})
+it.each([
+  ['presentation.v1', 'project_deletion_confirm', {}],
+  ['agent.v1', 'project_deletion_resume', {}],
+  ['presentation-governance.v1', 'unknown', {}],
+  ['presentation-governance.v1', 'compile', {}],
+  [
+    'presentation-governance.v1',
+    'project_lifecycle_read',
+    { team_context: { version: 1, actorSubject: 'a'.repeat(64), pcSubject: 'b'.repeat(64) } },
+  ],
+  [
+    'presentation-governance.v1',
+    'project_lifecycle_read',
+    {
+      body: {
+        operation: 'project_lifecycle_read',
+        documentId: 'doc',
+        projectId: 'project',
+        access_token: 'private',
+      },
+    },
+  ],
+  [
+    'presentation-governance.v1',
+    'project_lifecycle_read',
+    {
+      body: {
+        operation: 'project_lifecycle_read',
+        documentId: 'doc',
+        projectId: 'project',
+        team_context: {},
+      },
+    },
+  ],
+])('rejects governance family/context misuse %s %s', async (capability, operation, extra) => {
+  const f = await governancePcClient()
+  f.socket.message(governanceFrame(operation, capability, extra))
+  await vi.waitFor(() => expect(f.client.status()).toBe('disconnected:protocol_violation'))
+  expect(f.governanceProxy).not.toHaveBeenCalled()
+  expect(f.presentationProxy).not.toHaveBeenCalled()
+})
+it.each(['Word', 'Excel'])('refuses governance pairing for primary host %s', async (host) => {
+  const f = await governancePcClient({ host })
+  expect(f.client.status()).toBe('disconnected:protocol_violation')
+  expect(f.governanceProxy).not.toHaveBeenCalled()
+})
+it('refuses unnegotiated governance capability despite installed handler', async () => {
+  const f = await governancePcClient({ capabilities: ['agent.v1', 'presentation.v1'] })
+  f.socket.message(governanceFrame('project_deletion_preview'))
+  await vi.waitFor(() => expect(f.client.status()).toBe('disconnected:protocol_violation'))
+  expect(f.governanceProxy).not.toHaveBeenCalled()
+})
+it('refuses negotiated governance when no handler is installed', async () => {
+  const f = await governancePcClient({ enabled: false })
+  expect(f.client.status()).toBe('disconnected:protocol_violation')
+  expect(f.governanceProxy).not.toHaveBeenCalled()
+})
+
+it.each([
+  'project_lifecycle_initialize',
+  'project_lifecycle_read',
+  'project_lifecycle_set_policy',
+  'project_lifecycle_export_audit',
+])('preserves original presentation channel lifecycle operation %s', async (operation) => {
+  const f = await governancePcClient()
+  f.socket.message(governanceFrame(operation, 'presentation.v1'))
+  await vi.waitFor(() => expect(f.presentationProxy).toHaveBeenCalledOnce())
+  expect(f.governanceProxy).not.toHaveBeenCalled()
+  f.client.revoke()
+})
+it('real governance factory uses the existing project lock and actual userData store', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'governance-relay-factory-'))
+  let release: (() => void) | undefined
+  try {
+    const plan = benchmarkPlan(),
+      scope = { projectId: plan.projectId, documentId: 'synthetic-doc' }
+    new PresentationStore(root).savePlan(scope.projectId, scope.documentId, 0, plan)
+    const proxy = createOfficePresentationGovernanceProxy({ userDataPath: root })
+    release = await acquirePresentationProjectLock(root, scope.projectId)
+    let settled = false
+    const pending = proxy(
+      { operation: 'project_lifecycle_initialize', ...scope },
+      new AbortController().signal,
+    ).then((bytes) => {
+      settled = true
+      return JSON.parse(Buffer.from(bytes).toString())
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+    expect(new PresentationLifecycleStore(root).readControl(scope)).toBeUndefined()
+    release()
+    release = undefined
+    expect(await pending).toMatchObject({ lifecycle: { state: 'active', revision: 0 } })
+  } finally {
+    release?.()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+it.each([
+  'agent.v1',
+  'presentation.v1',
+  'presentation-attachments.v1',
+  'presentation-assets.v1',
+  'presentation-remote-images.v1',
+  'presentation-webpages.v1',
+  'presentation-asset-rights.v1',
+  'presentation-animation-frame.v1',
+  'presentation-pdf.v1',
+  'presentation-production-pdf.v1',
+  'presentation-master-backups.v1',
+  'presentation-package-backups.v1',
+])('refuses deletion on negotiated ordinary capability %s', async (capability) => {
+  const f = await governancePcClient({ capabilities: [capability] })
+  f.socket.message(governanceFrame('project_deletion_confirm', capability))
+  await vi.waitFor(() => expect(f.client.status()).toBe('disconnected:protocol_violation'))
+  expect(f.presentationProxy).not.toHaveBeenCalled()
+  expect(f.governanceProxy).not.toHaveBeenCalled()
+})
+it('rejects project deletion over legacy agent protocol', async () => {
+  const { client, socket, proxy } = setup()
+  const claimed = client.claim('123456')
+  await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+  socket.open()
+  await claimed
+  socket.message({
+    version: 1,
+    type: 'pc.claimed',
+    pairing_id: 'pairing_12345678',
+    host: 'PowerPoint',
+    origin: 'https://office.8-216-134-194.sslip.io',
+    verification_code: '123456',
+    expires_in: 120,
+  })
+  await client.approve('pairing_12345678')
+  socket.message({
+    version: 1,
+    type: 'pc.approved',
+    session_id: 'session_12345678',
+    capability: 'secret-capability',
+    expires_in: 1800,
+  })
+  socket.message({
+    version: 1,
+    type: 'relay.request',
+    session_id: 'session_12345678',
+    request_id: 'legacy-delete',
+    body: { operation: 'project_deletion_confirm' },
+  })
+  await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
+  expect(proxy).not.toHaveBeenCalled()
+})
+it('bounds governance input to 32KiB before invoking its handler', async () => {
+  const f = await governancePcClient()
+  f.socket.message(
+    governanceFrame('project_lifecycle_read', 'presentation-governance.v1', {
+      body: { operation: 'project_lifecycle_read', padding: 'x'.repeat(32 * 1024) },
+    }),
+  )
+  await vi.waitFor(() => expect(f.client.status()).toBe('disconnected:protocol_violation'))
+  expect(f.governanceProxy).not.toHaveBeenCalled()
+})
+it.each([0, 1])(
+  'preserves exact maximum governance wire response and rejects extra byte %s',
+  async (extra) => {
+    const f = await governancePcClient({
+      handler: async () => new Uint8Array(2 * 1024 * 1024 + 14 + extra),
+    })
+    f.socket.message(governanceFrame('project_lifecycle_read'))
+    await vi.waitFor(() =>
+      expect(
+        f.socket.sent.some((s) => JSON.parse(s).type === (extra ? 'pc.error' : 'pc.done')),
+      ).toBe(true),
+    )
+    const frames = f.socket.sent.map((s) => JSON.parse(s))
+    expect(frames.some((s) => s.type === 'pc.done')).toBe(!extra)
+    f.client.revoke()
+  },
+)
+
+it('offers the known 18-capability catalog while negotiating a 17-capability PowerPoint subset', async () => {
+  const socket = new FakeSocket()
+  const client = createOfficeRelayClient({
+    endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+    connect: () => socket,
+    getValidAccountStatus: async () => ({ loggedIn: true }),
+    getAccessToken: async () => 'token',
+    proxy: async () => ({ status: 200, body: new Uint8Array() }),
+    retrievalProxy: async () => new Uint8Array(),
+    presentationProxy: async () => new Uint8Array(),
+    presentationGovernanceProxy: async () => new TextEncoder().encode('{}'),
+    supportsTeamPresentation: true,
+    onPending() {},
+  })
+  const claiming = client.claim('123456')
+  await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+  socket.open()
+  await claiming
+  const offered = JSON.parse(socket.sent[0]!).capabilities as string[]
+  expect(offered).toHaveLength(18)
+  expect(new Set(offered).size).toBe(18)
+  expect(offered).toContain('presentation-team.v1')
+  expect(offered).toContain('presentation-governance.v1')
+  const primary = offered.filter((value) => value !== 'presentation-team.v1')
+  expect(primary).toHaveLength(17)
+  socket.message({ version: 2, type: 'pc.negotiated', pairing_version: 2, capabilities: primary })
+  socket.message({
+    version: 2,
+    type: 'pc.claimed',
+    pairing_id: 'pairing_12345678',
+    host: 'PowerPoint',
+    origin: 'https://office.8-216-134-194.sslip.io',
+    verification_code: '123456',
+    expires_in: 120,
+    capabilities: primary,
+  })
+  expect(client.status()).not.toContain('protocol_violation')
+  await client.approve('pairing_12345678')
+  socket.message({
+    version: 2,
+    type: 'pc.approved',
+    session_id: 'session_12345678',
+    capability: 'secret-capability',
+    expires_in: 1800,
+    capabilities: primary,
+  })
+  expect(client.status()).not.toContain('protocol_violation')
+  client.revoke()
 })

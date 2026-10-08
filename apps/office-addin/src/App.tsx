@@ -1,4 +1,49 @@
+import { PresentationProjectGovernanceCard } from './agent/presentation-project-governance-card.js'
+import { createPresentationGovernanceStorage } from './agent/presentation-project-governance-storage.js'
+import type { createPresentationProjectGovernanceController } from './agent/presentation-project-governance.js'
+import { createBrowserAuthClient, createMemorySessionStore } from '@wiswork/auth/browser'
+import { officeTeamAuthConfig } from './agent/team-auth-config.js'
+import { createOfficeTeamLoginDialog } from './agent/team-login-dialog.js'
+import { createOfficeTeamConnection, type OfficeTeamConnection } from './agent/team-connection.js'
+import { PresentationTeamCard } from './agent/presentation-team-card.js'
+import type { PresentationTeamController } from './agent/presentation-team-controller.js'
+import { createPresentationResearchAbandonPersistence } from './agent/presentation-research-recovery-storage.js'
+import { createPresentationResearchDeletePersistence } from './agent/presentation-research-cleanup-storage.js'
+import { PresentationResearchCard } from './agent/presentation-research-card.js'
+import type { PresentationResearchController } from './agent/presentation-research.js'
+import type { PresentationAcquisitionHistory } from '@wiswork/project-store/presentation-acquisition'
+import { PresentationAcquisitionHistoryCard } from './agent/presentation-acquisition-history.js'
+import { PresentationChangesCard } from './agent/presentation-changes-card.js'
+import type { PresentationChangesController } from './agent/presentation-changes.js'
+import { validatePresentationQaRecord } from './skills/powerpoint/presentation-qa.js'
+import { PresentationQaCard, type PresentationQaController } from './agent/presentation-qa-card.js'
+import {
+  PresentationImportProgressCard,
+  type PresentationImportProgressController,
+} from './agent/presentation-import-progress.js'
+import {
+  MAX_PRESENTATION_ATTACHMENT_BYTES,
+  MAX_PRESENTATION_IMAGE_BYTES,
+  isPresentationImage,
+  supportsPresentationAttachment,
+} from './skills/powerpoint/presentation-attachments.js'
+import { PresentationProjectCard } from './agent/presentation-project-card.js'
+import {
+  openPowerPointPresentationCopy,
+  supportsPowerPointPresentationCopy,
+} from './skills/powerpoint/presentation-copy.js'
+import { PresentationWorkflowCard } from './agent/presentation-workflow-card.js'
+import { PresentationStageCard } from './agent/presentation-stage-card.js'
+import { presentationStageTimeline } from './agent/presentation-stage-timeline.js'
+import type { PresentationProjectController } from './skills/powerpoint/presentation-project.js'
+import {
+  createBrowserPresentationDocumentBinding,
+  createPresentationAgentRunCheckpoint,
+  preparePresentationAgentRunRecovery,
+} from './skills/powerpoint/presentation-document.js'
+import { downloadSessionFile } from './agent/session-download.js'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { deployedBuildId, resolveBuildVersion, type BuildVersionState } from './build-version.js'
 import {
   AiTypingIndicator,
   IconEnter,
@@ -16,10 +61,14 @@ import {
 } from '@wiswork/i18n'
 import { createOfficeWebSkill } from './skills/shared/web-skill.js'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
+import type { PresentationAttachmentMetadata } from './skills/powerpoint/presentation-attachments.js'
 import {
   officeCapabilityFlags,
+  officeDiagnosticSamplePercent,
   officeRemoteDiagnosticsEnabled,
+  officePresentationRolloutPercent,
   officeWorkspaceMode,
+  presentationRolloutEnabled,
 } from '../build-config.js'
 import { officePresentationVerificationFlags } from './agent/presentation-flags.js'
 import {
@@ -74,6 +123,11 @@ const hostLabels: Record<OfficeHost, string> = {
   unknown: 'Office',
 }
 
+const sessionAttachmentLabel = (file: string) =>
+  file.startsWith('/home/user/generated/')
+    ? file.slice('/home/user/generated/'.length).replaceAll('/', ' / ')
+    : (file.split('/').at(-1) ?? file)
+
 const agentProductLabels: Record<OfficeHost, string> = {
   word: 'AI Word',
   excel: 'AI Sheets',
@@ -114,6 +168,8 @@ export function relayConnectionPresentation(
       : 'Waiting for a signed-in WisWork PC.',
     rejected: 'The connection was rejected in WisWork PC.',
     expired: 'The connection request expired. Try again.',
+    incompatible: 'Upgrade Office Relay, then connect again.',
+    pc_incompatible: 'Upgrade WisWork PC, then connect again.',
     connected: '',
   }[status]
   const busy = status === 'connecting' || status === 'reconnecting' || status === 'pending'
@@ -246,26 +302,71 @@ export function proposalPresentation(proposal: DisplayProposal) {
           .map((target) => proposalTarget(target, proposal.impact.host)),
     before,
     after,
-    preview: hasComparison || legacy ? '' : previewSummary(proposal.preview),
+    preview:
+      !legacy &&
+      hasComparison &&
+      (proposal.preview.beforeTruncated === true || proposal.preview.afterTruncated === true)
+        ? '部分文本预览已截断，仅展示开头片段；实际操作会作用于完整文本。请核对完整内容后再确认。'
+        : hasComparison || legacy
+          ? ''
+          : previewSummary(proposal.preview),
     // Declarative code is an internal safety protocol, not user-facing review content.
     code: undefined,
+    ...(!legacy && proposal.lockReview ? { lockReview: proposal.lockReview } : {}),
   }
 }
 
 const MEBIBYTE = 1024 * 1024
 
-function displayMegabytes(bytes: number): string {
+function displayMebibytes(bytes: number): string {
   const value = bytes / MEBIBYTE
   return Number.isInteger(value) ? String(value) : value.toFixed(1)
 }
 
 export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>): string {
   const code = error instanceof Error ? error.message : ''
+  if (code === 'presentation_animated_image_unsupported')
+    return file
+      ? '动画原件已保留在 PC。请在附件列表中选择“生成静态首帧”，或改用静态 PNG/JPEG。'
+      : '动画网址未保存。请先下载并上传原件，再在附件列表中选择“生成静态首帧”。'
+  const attachmentErrors: Record<string, string> = {
+    presentation_attachment_too_large: '制作资料每个文件最多 50 MiB。',
+    presentation_text_too_long: '粘贴资料最多 100 万字符。请拆分后分别保存。',
+    presentation_image_too_large: '图片每个文件最多 10 MiB。',
+    presentation_remote_image_unavailable:
+      '图片网址无法安全下载或图片格式不受支持，请检查网址后重试。',
+    presentation_image_candidates_exhausted:
+      '这些候选图片都无法安全下载或解码，请换一组网址后重试。',
+    invalid_tool_input: '请输入 1 到 4 个不同的 HTTP(S) 图片网址，每行一个。',
+    presentation_remote_image_source_conflict:
+      '相同图片内容已从另一来源加入当前文档。请使用已有素材，或手动上传本地文件。',
+    presentation_remote_webpage_unavailable:
+      '网页无法安全抓取，或未返回 HTML。请检查网址后重试，也可上传保存的 HTML 文件。',
+    presentation_remote_webpage_source_conflict:
+      '相同网页内容已作为另一份资料加入当前文档。请使用已有附件。',
+    presentation_webpages_unavailable: '请更新并连接支持网页资料的 PC 端后重试。',
+    presentation_aborted: '下载超时或已取消，请重试。',
+    presentation_parse_failed: '图片无法解码为受支持的 PNG、JPEG、静态 GIF 或 WebP。',
+    presentation_animated_image_staged:
+      '动画网址原件已保存在 PC，但不会直接用于页面。请在附件列表中选择“生成静态首帧”，或使用其他静态图片。',
+    presentation_assets_unavailable: '请更新并连接支持图片素材的 PC 端后重试。',
+    presentation_attachment_failed: '资料解析未完成，请检查文件或重新上传。',
+    presentation_not_found: '这份 PC 资料已不存在，请刷新附件列表。',
+    presentation_attachment_in_use: '这份资料正被图片使用权声明引用，请先撤回声明再删除。',
+    presentation_invalid_state: 'PC 资料状态异常，请重连后重试。',
+    presentation_quota_exceeded:
+      '当前文档在 PC 的资料容量已满（资料最多 32 个，附件预留容量总计 100 MiB）。请删除不再需要的资料或图片后重试。',
+    presentation_document_changed: '文档已改变，本次上传已停止。请在目标文档重新上传。',
+    presentation_service_unavailable: 'PC 连接不可用，请重连后重新选择同一文件续传。',
+    presentation_unavailable: 'PC 连接不可用，请重连后重新选择同一文件续传。',
+    presentation_response_invalid: '上传响应无效，请重连后重新选择同一文件续传。',
+  }
+  if (attachmentErrors[code]) return attachmentErrors[code]
   if (code === 'vfs_limit') {
     if (file && file.size > MAX_VFS_FILE_BYTES) {
-      return `File is ${displayMegabytes(file.size)} MB. Attachments must be ${displayMegabytes(MAX_VFS_FILE_BYTES)} MB or smaller.`
+      return `File is ${displayMebibytes(file.size)} MiB. Attachments must be ${displayMebibytes(MAX_VFS_FILE_BYTES)} MiB or smaller.`
     }
-    return `Attachment limit reached. Files are limited to ${displayMegabytes(MAX_VFS_FILE_BYTES)} MB each and ${displayMegabytes(MAX_VFS_TOTAL_BYTES)} MB per session.`
+    return `Attachment limit reached. Files are limited to ${displayMebibytes(MAX_VFS_FILE_BYTES)} MiB each and ${displayMebibytes(MAX_VFS_TOTAL_BYTES)} MiB per session.`
   }
   return [
     'upload_cancelled',
@@ -289,17 +390,49 @@ interface SessionFile {
 }
 
 export interface OfficeWorkspaceUi {
+  readonly team?: PresentationTeamController
+  readonly teamConnection?: OfficeTeamConnection
+  readonly governance?: ReturnType<typeof createPresentationProjectGovernanceController>
+  readonly research?: PresentationResearchController
+  readonly project?: PresentationProjectController
+  readonly importProgress?: PresentationImportProgressController
+  readonly qa?: PresentationQaController
+  readonly changes?: PresentationChangesController
+  readonly interruptedChange?: { agentRunId: string; toolCallId: string }
+  readonly durableAttachmentsAvailable?: () => boolean
+  readonly durableImagesAvailable?: () => boolean
+  readonly remoteImagesAvailable?: () => boolean
+  readonly webpagesAvailable?: () => boolean
+  readonly rightsAvailable?: () => boolean
+  readonly animationFrameAvailable?: () => boolean
+  readonly readPresentationAcquisitionHistory?: () => Promise<
+    PresentationAcquisitionHistory | undefined
+  >
+  readonly listDurableAttachments?: () => Promise<PresentationAttachmentMetadata[]>
+  readonly deleteDurableAttachment?: (attachmentId: string) => Promise<void>
+  readonly importPresentationImageUrl?: (url: string | string[]) => Promise<void>
+  readonly importPresentationWebpageUrl?: (url: string) => Promise<void>
+  readonly attestPresentationImageLicense?: (
+    imageId: string,
+    license: 'owned' | 'licensed' | 'public_domain',
+    evidenceId: string,
+  ) => Promise<void>
+  readonly revokePresentationImageLicense?: (imageId: string) => Promise<void>
+  readonly extractPresentationImageFirstFrame?: (imageId: string) => Promise<void>
   readonly attachments: () => readonly string[]
+  readonly downloadFile?: (path: string) => void
   readonly skills: () => readonly string[]
   readonly skillPackagesEnabled: boolean
   readonly upload: (file: SessionFile) => Promise<void>
   readonly copyDiagnostics?: () => Promise<void>
+  readonly copyDiagnosticsWithContext?: () => Promise<void>
   readonly uninstallSkill?: (name: string) => void
   readonly clear: () => void
 }
 
 export function DiagnosticCopyButton(props: {
   copyDiagnostics: () => Promise<void>
+  copyDiagnosticsWithContext?: () => Promise<void>
 }): React.ReactElement {
   const [status, setStatus] = useState('')
   return (
@@ -310,12 +443,26 @@ export function DiagnosticCopyButton(props: {
           setStatus('')
           void props
             .copyDiagnostics()
-            .then(() => setStatus('诊断信息已复制'))
+            .then(() => setStatus('诊断信息已复制；已移除文档、会话、项目和页面 ID'))
             .catch(() => setStatus('复制诊断信息失败'))
         }}
       >
         复制诊断信息
       </button>
+      {props.copyDiagnosticsWithContext && (
+        <button
+          type="button"
+          onClick={() => {
+            setStatus('')
+            void props
+              .copyDiagnosticsWithContext?.()
+              .then(() => setStatus('已复制含定位 ID 的本机诊断；请检查后分享'))
+              .catch(() => setStatus('复制诊断信息失败'))
+          }}
+        >
+          复制含定位 ID 的诊断
+        </button>
+      )}
       {status && (
         <p className="diagnostic-status" role="status">
           {status}
@@ -330,9 +477,35 @@ export function createOfficeWorkspaceUi(
   diagnostics?: Pick<OfficeDiagnostics, 'exportJson'>,
   clipboard: { writeText(value: string): Promise<void> } | undefined = globalThis.navigator
     ?.clipboard,
+  interruptedChange?: { agentRunId: string; toolCallId: string },
+  teamConnection?: OfficeTeamConnection,
 ): OfficeWorkspaceUi {
   return Object.freeze({
+    team: runtime.team,
+    teamConnection,
+    research: runtime.research,
+    governance: runtime.governance,
+    project: runtime.presentation,
+    importProgress: runtime.importProgress,
+    qa: runtime.qa,
+    changes: runtime.changes,
+    interruptedChange,
+    durableAttachmentsAvailable: runtime.durableAttachmentsAvailable,
+    durableImagesAvailable: runtime.durableImagesAvailable,
+    remoteImagesAvailable: runtime.remoteImagesAvailable,
+    webpagesAvailable: runtime.webpagesAvailable,
+    rightsAvailable: runtime.rightsAvailable,
+    animationFrameAvailable: runtime.animationFrameAvailable,
+    readPresentationAcquisitionHistory: runtime.readPresentationAcquisitionHistory,
+    listDurableAttachments: runtime.listDurableAttachments,
+    deleteDurableAttachment: runtime.deleteDurableAttachment,
+    importPresentationImageUrl: runtime.importPresentationImageUrl,
+    importPresentationWebpageUrl: runtime.importPresentationWebpageUrl,
+    attestPresentationImageLicense: runtime.attestPresentationImageLicense,
+    revokePresentationImageLicense: runtime.revokePresentationImageLicense,
+    extractPresentationImageFirstFrame: runtime.extractPresentationImageFirstFrame,
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
+    downloadFile: (path: string) => downloadSessionFile(runtime.vfs, path),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
     skillPackagesEnabled: runtime.skillPackagesEnabled,
     upload: (file: SessionFile) => uploadSessionFile(runtime, file),
@@ -342,6 +515,18 @@ export function createOfficeWorkspaceUi(
             if (!clipboard || typeof clipboard.writeText !== 'function')
               throw new Error('diagnostic_copy_failed')
             await clipboard.writeText(diagnostics.exportJson())
+          },
+          copyDiagnosticsWithContext: async () => {
+            if (!clipboard || typeof clipboard.writeText !== 'function')
+              throw new Error('diagnostic_copy_failed')
+            await clipboard.writeText(
+              diagnostics.exportJson({
+                includeLocalContext: true,
+                ...(runtime.qa?.attempts
+                  ? { screenshotAttempts: () => runtime.qa!.attempts!() }
+                  : {}),
+              }),
+            )
           },
         }
       : {}),
@@ -358,8 +543,23 @@ export function uploadSessionFile(runtime: OfficeHostRuntime, file: SessionFile)
     if (file.size > MAX_SKILL_BYTES) return Promise.reject(new Error('invalid_skill_package'))
     return runtime.installSkill(file.text())
   }
-  if (file.size > MAX_VFS_FILE_BYTES) return Promise.reject(new Error('vfs_limit'))
+  if (
+    runtime.durableAttachmentsAvailable?.() &&
+    supportsPresentationAttachment(file.name, runtime.durableImagesAvailable?.())
+  ) {
+    const image = isPresentationImage(file.name)
+    if (file.size > (image ? MAX_PRESENTATION_IMAGE_BYTES : MAX_PRESENTATION_ATTACHMENT_BYTES))
+      return Promise.reject(
+        new Error(image ? 'presentation_image_too_large' : 'presentation_attachment_too_large'),
+      )
+  } else if (file.size > MAX_VFS_FILE_BYTES) return Promise.reject(new Error('vfs_limit'))
   return runtime.uploadFile(file.name, file.arrayBuffer())
+}
+
+export function createPastedSourceFile(text: string, now = Date.now()): File {
+  if (!text.trim() || text.length > 1_000_000) throw new Error('presentation_text_too_long')
+  const name = `粘贴资料-${new Date(now).toISOString().replace(/[:.]/g, '-')}.txt`
+  return new File([text], name, { type: 'text/plain;charset=utf-8' })
 }
 
 export type WorkspacePanelName = 'attachments' | 'skills'
@@ -469,6 +669,28 @@ function ProposalReview(props: {
         </details>
       )}
       {event.error && <p className="error-text">{event.error}</p>}
+      {presentation.lockReview && (
+        <div className="proposal-lock-review" role="status">
+          {presentation.lockReview.state === 'checking' ? (
+            <p>正在核对当前锁页，完成后可确认。</p>
+          ) : presentation.lockReview.state === 'unavailable' ? (
+            <p>锁页状态无法可靠核对，请拒绝此提案并在连接或页面身份恢复后重新生成。</p>
+          ) : (
+            presentation.lockReview.pages.length > 0 && (
+              <>
+                <p>本次修改可能影响以下锁定页面。确认即允许本次覆盖，页面保持锁定。</p>
+                <ul>
+                  {presentation.lockReview.pages.map((page) => (
+                    <li key={`${page.projectId}/${page.pageId}`}>
+                      {page.title}（{page.slideIds.length} 个宿主副本）
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )
+          )}
+        </div>
+      )}
       {canReview && (
         <div className="actions">
           <button
@@ -481,10 +703,18 @@ function ProposalReview(props: {
           </button>
           <button
             type="button"
-            disabled={props.applying}
+            disabled={
+              props.applying ||
+              (presentation.lockReview !== undefined && presentation.lockReview.state !== 'ready')
+            }
             onClick={() => props.confirm(event.proposal.id)}
           >
-            {props.applying ? 'Applying…' : 'Confirm change'}
+            {props.applying
+              ? 'Applying…'
+              : presentation.lockReview?.state === 'ready' &&
+                  presentation.lockReview.pages.length > 0
+                ? '确认本次覆盖锁页'
+                : 'Confirm change'}
           </button>
         </div>
       )}
@@ -561,6 +791,8 @@ export function presentationDesignLifecycle(output: string | undefined) {
 
 function PowerPointTimeline(props: {
   timeline: OfficePresentationTimeline
+  groupStages?: boolean
+  latestDesignToolId?: string
   activeProposalId?: string
   busy: boolean
   applying: boolean
@@ -604,15 +836,41 @@ function PowerPointTimeline(props: {
     return text ? <pre className="ai-tool-display-text">{text}</pre> : undefined
   }
   const nodes: React.ReactNode[] = []
-  const latestDesignToolId = [...props.timeline]
-    .reverse()
-    .find(
-      (event) =>
-        event.kind === 'tool' && Boolean(extractPresentationDesignDocument(event.output ?? '')),
-    )?.id
+  const latestDesignToolId =
+    props.latestDesignToolId ??
+    [...props.timeline]
+      .reverse()
+      .find(
+        (event) =>
+          event.kind === 'tool' && Boolean(extractPresentationDesignDocument(event.output ?? '')),
+      )?.id
+  const timelineItems =
+    props.groupStages === false ? props.timeline : presentationStageTimeline(props.timeline)
+  const latestRequestIndex = timelineItems.reduce(
+    (last, event, index) => (event.kind === 'user' ? index : last),
+    -1,
+  )
   let index = 0
-  while (index < props.timeline.length) {
-    const event = props.timeline[index]!
+  while (index < timelineItems.length) {
+    const event = timelineItems[index]!
+    if (event.kind === 'stage') {
+      nodes.push(
+        <PresentationStageCard
+          key={event.id}
+          group={event}
+          runActive={(props.busy || props.applying) && index > latestRequestIndex}
+        >
+          <PowerPointTimeline
+            {...props}
+            timeline={event.events}
+            groupStages={false}
+            latestDesignToolId={latestDesignToolId}
+          />
+        </PresentationStageCard>,
+      )
+      index += 1
+      continue
+    }
     if (event.kind === 'phase') {
       nodes.push(
         <div className="ai-phase-row" key={event.id}>
@@ -639,8 +897,8 @@ function PowerPointTimeline(props: {
       continue
     }
     const tools = []
-    while (index < props.timeline.length && props.timeline[index]?.kind === 'tool') {
-      const tool = props.timeline[index] as Extract<OfficePresentationEvent, { kind: 'tool' }>
+    while (index < timelineItems.length && timelineItems[index]?.kind === 'tool') {
+      const tool = timelineItems[index] as Extract<OfficePresentationEvent, { kind: 'tool' }>
       const designMd = extractPresentationDesignDocument(tool.output ?? '')
       const lifecycle = designMd ? presentationDesignLifecycle(tool.output) : undefined
       tools.push({
@@ -758,10 +1016,25 @@ export function AgentWorkspace(props: {
 }) {
   const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
+  const projectPhase = useSyncExternalStore(
+    (listener) => ui.project?.subscribe(listener) ?? (() => undefined),
+    () => ui.project?.snapshot().phase ?? 'idle',
+    () => ui.project?.snapshot().phase ?? 'idle',
+  )
   const [instruction, setInstruction] = useState('')
   const [files, setFiles] = useState<readonly string[]>(ui.attachments())
+  const [acquisitionRefresh, setAcquisitionRefresh] = useState(0)
+  const [durableFiles, setDurableFiles] = useState<PresentationAttachmentMetadata[]>([])
   const [skills, setSkills] = useState<readonly string[]>(ui.skills())
   const [uploadError, setUploadError] = useState('')
+  const [copyStatus, setCopyStatus] = useState('')
+  const [copyPending, setCopyPending] = useState(false)
+  const [uploadPending, setUploadPending] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState('')
+  const [imageUrl, setImageUrl] = useState('')
+  const [webpageUrl, setWebpageUrl] = useState('')
+  const [pastedSource, setPastedSource] = useState('')
+  const uploadEpoch = useRef(0)
   const [diagnosticStatus, setDiagnosticStatus] = useState('')
   const [designEditor, setDesignEditor] = useState<{
     markdown: string
@@ -786,6 +1059,15 @@ export function AgentWorkspace(props: {
     [],
   )
   useEffect(() => {
+    if (!ui.durableAttachmentsAvailable?.()) return
+    void ui
+      .listDurableAttachments?.()
+      .then((items) => {
+        if (mounted.current) setDurableFiles(items)
+      })
+      .catch(() => undefined)
+  }, [ui])
+  useEffect(() => {
     const heading = panelHeading.current
     const opener = panelOpener.current
     if (!panel || !heading || !opener) return
@@ -797,23 +1079,69 @@ export function AgentWorkspace(props: {
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: state.busy ? 'auto' : 'smooth' })
   }, [state.busy, state.timeline])
 
+  useEffect(() => {
+    setFiles(ui.attachments())
+  }, [ui, state.timeline])
+
+  useEffect(() => {
+    if (!state.busy) void ui.project?.refresh()
+  }, [ui.project, state.busy])
+
+  useEffect(() => {
+    if (!state.busy) void ui.research?.refresh()
+  }, [ui.research, state.busy])
+
+  useEffect(() => ui.project?.subscribe(() => setFiles(ui.attachments())), [ui])
+
   function send() {
-    if (props.connectionAvailable === false || !instruction.trim()) return
+    if (
+      props.connectionAvailable === false ||
+      !instruction.trim() ||
+      state.busy ||
+      uploadPending ||
+      state.applying ||
+      state.proposal ||
+      (ui.project && ui.project.snapshot().phase !== 'idle')
+    )
+      return
     session.send(instruction)
     setInstruction('')
   }
 
   async function uploadFiles(selected: FileList | readonly File[]) {
+    if (
+      uploadPending ||
+      state.busy ||
+      state.applying ||
+      projectPhase !== 'idle' ||
+      props.connectionAvailable === false
+    )
+      return
+    const captured = ++uploadEpoch.current
+    const current = () => mounted.current && captured === uploadEpoch.current
     setUploadError('')
-    for (const file of Array.from(selected)) {
-      try {
-        await ui.upload(file)
-      } catch (error) {
-        if (mounted.current) setUploadError(safeUploadError(error, file))
-        break
+    setUploadPending(true)
+    setUploadStatus('正在上传…')
+    try {
+      for (const file of Array.from(selected)) {
+        if (!current()) break
+        try {
+          await ui.upload(file)
+          if (current()) setUploadStatus(`${file.name} 已上传，可让 Agent 读取。`)
+        } catch (error) {
+          if (current()) {
+            setUploadStatus('')
+            setUploadError(safeUploadError(error, file))
+          }
+          break
+        }
       }
+      if (current()) setFiles(ui.attachments())
+      const items = await ui.listDurableAttachments?.().catch(() => undefined)
+      if (current() && items) setDurableFiles(items)
+    } finally {
+      if (current()) setUploadPending(false)
     }
-    if (mounted.current) setFiles(ui.attachments())
   }
 
   const proposal = state.proposal
@@ -881,6 +1209,9 @@ export function AgentWorkspace(props: {
               type="button"
               className="quiet"
               onClick={() => {
+                uploadEpoch.current += 1
+                setUploadPending(false)
+                setUploadStatus('')
                 session.newTask()
                 ui.clear()
                 setFiles([])
@@ -918,12 +1249,35 @@ export function AgentWorkspace(props: {
                     setDiagnosticStatus('')
                     void ui
                       .copyDiagnostics?.()
-                      .then(() => mounted.current && setDiagnosticStatus('诊断信息已复制'))
+                      .then(
+                        () =>
+                          mounted.current &&
+                          setDiagnosticStatus('诊断信息已复制；已移除文档、会话、项目和页面 ID'),
+                      )
                       .catch(() => mounted.current && setDiagnosticStatus('复制诊断信息失败'))
                     event.currentTarget.closest('details')?.removeAttribute('open')
                   }}
                 >
                   复制诊断信息
+                </button>
+              )}
+              {ui.copyDiagnosticsWithContext && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    setDiagnosticStatus('')
+                    void ui
+                      .copyDiagnosticsWithContext?.()
+                      .then(
+                        () =>
+                          mounted.current &&
+                          setDiagnosticStatus('已复制含定位 ID 的本机诊断；请检查后分享'),
+                      )
+                      .catch(() => mounted.current && setDiagnosticStatus('复制诊断信息失败'))
+                    event.currentTarget.closest('details')?.removeAttribute('open')
+                  }}
+                >
+                  复制含定位 ID 的诊断
                 </button>
               )}
               <button type="button" onClick={disconnect}>
@@ -1044,6 +1398,16 @@ export function AgentWorkspace(props: {
             onSkip={() => session.skipQuestionnaire?.()}
           />
         )}
+        {state.recoveryAvailable && (
+          <button
+            type="button"
+            className="secondary"
+            disabled={state.busy || state.applying || projectPhase !== 'idle'}
+            onClick={() => void session.resumeInterrupted?.()}
+          >
+            恢复上次任务
+          </button>
+        )}
         {proposal &&
           !state.timeline.some(
             (event) => event.kind === 'proposal' && event.proposal.id === proposal.id,
@@ -1071,8 +1435,17 @@ export function AgentWorkspace(props: {
               <button
                 type="button"
                 className="secondary"
-                disabled={state.applying}
-                onClick={() => session.retry()}
+                disabled={
+                  uploadPending ||
+                  state.applying ||
+                  state.busy ||
+                  Boolean(state.proposal) ||
+                  projectPhase !== 'idle'
+                }
+                onClick={() => {
+                  if (!uploadPending && (!ui.project || ui.project.snapshot().phase === 'idle'))
+                    session.retry()
+                }}
               >
                 {state.error === 'proposal_stale' ? '重新生成' : 'Retry'}
               </button>
@@ -1109,7 +1482,9 @@ export function AgentWorkspace(props: {
               <label
                 className="upload-button"
                 htmlFor="session-upload"
-                aria-disabled={state.applying}
+                aria-disabled={
+                  state.applying || state.busy || uploadPending || projectPhase !== 'idle'
+                }
               >
                 Add attachment
               </label>
@@ -1117,32 +1492,545 @@ export function AgentWorkspace(props: {
                 id="session-upload"
                 className="visually-hidden"
                 type="file"
-                disabled={state.applying}
+                disabled={state.applying || state.busy || uploadPending || projectPhase !== 'idle'}
                 onChange={(event) => {
                   const file = event.currentTarget.files?.[0]
-                  if (!file) return
+                  event.currentTarget.value = ''
+                  if (
+                    !file ||
+                    uploadPending ||
+                    state.busy ||
+                    state.applying ||
+                    projectPhase !== 'idle'
+                  )
+                    return
+                  const captured = ++uploadEpoch.current
+                  const durable =
+                    ui.durableAttachmentsAvailable?.() &&
+                    supportsPresentationAttachment(file.name, ui.durableImagesAvailable?.()) &&
+                    file.name !== 'SKILL.md'
+                  const current = () => mounted.current && captured === uploadEpoch.current
                   setUploadError('')
+                  setUploadStatus(durable ? '正在上传到 PC 并解析…' : '正在上传…')
+                  setUploadPending(true)
                   void ui
                     .upload(file)
-                    .then(() => mounted.current && setFiles(ui.attachments()))
-                    .catch(
-                      (error: unknown) =>
-                        mounted.current && setUploadError(safeUploadError(error, file)),
-                    )
+                    .then(() => {
+                      if (!current()) return
+                      setFiles(ui.attachments())
+                      void ui
+                        .listDurableAttachments?.()
+                        .then((items) => {
+                          if (current()) setDurableFiles(items)
+                        })
+                        .catch(() => undefined)
+                      setUploadStatus(
+                        durable
+                          ? `${file.name} 已保存到 PC 并解析，可让 Agent 读取。`
+                          : `${file.name} 已加入本次会话。`,
+                      )
+                    })
+                    .catch((error: unknown) => {
+                      if (!current()) return
+                      setUploadStatus('')
+                      setUploadError(safeUploadError(error, file))
+                      void ui
+                        .listDurableAttachments?.()
+                        .then((items) => {
+                          if (current()) setDurableFiles(items)
+                        })
+                        .catch(() => undefined)
+                    })
+                    .finally(() => {
+                      if (current()) setUploadPending(false)
+                    })
                 }}
               />
               <p>
-                Files are limited to {displayMegabytes(MAX_VFS_FILE_BYTES)} MB each and{' '}
-                {displayMegabytes(MAX_VFS_TOTAL_BYTES)} MB per session, then cleared on logout.
+                {ui.durableAttachmentsAvailable?.()
+                  ? 'PDF、Word（DOCX）、HTML、TXT、MD、CSV、JSON 资料每个最多 50 MiB，保存于 PC 并绑定当前文档；退出登录不会删除。重连后可让 Agent 列出和读取，重新选择同一文件可续传。'
+                  : `Files are limited to ${displayMebibytes(MAX_VFS_FILE_BYTES)} MiB each and ${displayMebibytes(MAX_VFS_TOTAL_BYTES)} MiB per session, then cleared on logout.`}
               </p>
+              {ui.durableAttachmentsAvailable?.() && (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (uploadPending || state.busy || state.applying || projectPhase !== 'idle')
+                      return
+                    let file: File
+                    try {
+                      file = createPastedSourceFile(pastedSource)
+                    } catch (error) {
+                      setUploadError(safeUploadError(error))
+                      return
+                    }
+                    const captured = ++uploadEpoch.current
+                    const current = () => mounted.current && captured === uploadEpoch.current
+                    setUploadPending(true)
+                    setUploadError('')
+                    setUploadStatus('正在保存粘贴资料到 PC…')
+                    void ui
+                      .upload(file)
+                      .then(() => {
+                        if (!current()) return
+                        setPastedSource('')
+                        setUploadStatus('粘贴资料已保存到当前文档，可让 Agent 读取。')
+                        void ui
+                          .listDurableAttachments?.()
+                          .then((items) => {
+                            if (current()) setDurableFiles(items)
+                          })
+                          .catch(() => undefined)
+                      })
+                      .catch((error: unknown) => {
+                        if (current()) {
+                          setUploadStatus('')
+                          setUploadError(safeUploadError(error, file))
+                        }
+                      })
+                      .finally(() => {
+                        if (current()) setUploadPending(false)
+                      })
+                  }}
+                >
+                  <label htmlFor="presentation-pasted-source">粘贴资料原文</label>
+                  <textarea
+                    id="presentation-pasted-source"
+                    value={pastedSource}
+                    onChange={(event) => setPastedSource(event.currentTarget.value)}
+                    rows={5}
+                    maxLength={1_000_000}
+                    required
+                  />
+                  <button
+                    type="submit"
+                    disabled={
+                      uploadPending ||
+                      state.busy ||
+                      state.applying ||
+                      projectPhase !== 'idle' ||
+                      !pastedSource.trim()
+                    }
+                  >
+                    保存粘贴资料
+                  </button>
+                </form>
+              )}
+              {ui.webpagesAvailable?.() && (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (uploadPending || state.busy || !webpageUrl.trim()) return
+                    const captured = ++uploadEpoch.current
+                    const current = () => mounted.current && captured === uploadEpoch.current
+                    setUploadPending(true)
+                    setUploadError('')
+                    setUploadStatus('正在由 PC 抓取网页并保存原文…')
+                    void ui
+                      .importPresentationWebpageUrl?.(webpageUrl.trim())
+                      .then(() => {
+                        if (!current()) return
+                        setUploadStatus('网页原文及正文已保存到当前文档的 PC 资料。')
+                        setWebpageUrl('')
+                        void ui
+                          .listDurableAttachments?.()
+                          .then((items) => {
+                            if (current()) setDurableFiles(items)
+                          })
+                          .catch(() => undefined)
+                      })
+                      .catch((error: unknown) => {
+                        if (current()) {
+                          setUploadStatus('')
+                          setUploadError(safeUploadError(error))
+                        }
+                      })
+                      .finally(() => {
+                        if (current()) {
+                          setUploadPending(false)
+                          setAcquisitionRefresh((value) => value + 1)
+                        }
+                      })
+                  }}
+                >
+                  <label htmlFor="presentation-webpage-url">网页网址</label>
+                  <input
+                    id="presentation-webpage-url"
+                    type="url"
+                    value={webpageUrl}
+                    onChange={(event) => setWebpageUrl(event.currentTarget.value)}
+                    placeholder="https://example.com/article"
+                    required
+                  />
+                  <button
+                    type="submit"
+                    disabled={uploadPending || state.busy || !webpageUrl.trim()}
+                  >
+                    由 PC 获取网页
+                  </button>
+                </form>
+              )}
+              {ui.durableImagesAvailable?.() && (
+                <>
+                  <p>
+                    PNG、JPEG、静态 GIF、WebP 图片每个最多 10 MiB，上传后在 PC
+                    校验并缓存；可直接用于制作，无需将图片编码发给 Agent。
+                  </p>
+                  {ui.remoteImagesAvailable?.() && (
+                    <form
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        if (uploadPending || state.busy || !imageUrl.trim()) return
+                        const urls = imageUrl
+                          .split(/\r?\n/)
+                          .map((url) => url.trim())
+                          .filter(Boolean)
+                        if (urls.length > 4) {
+                          setUploadError('候选图片网址最多 4 个。')
+                          return
+                        }
+                        const captured = ++uploadEpoch.current
+                        const current = () => mounted.current && captured === uploadEpoch.current
+                        setUploadPending(true)
+                        setUploadError('')
+                        setUploadStatus('正在由 PC 下载并校验图片…')
+                        void ui
+                          .importPresentationImageUrl?.(urls.length === 1 ? urls[0]! : urls)
+                          .then(async () => {
+                            if (!current()) return
+                            const items = await ui.listDurableAttachments?.()
+                            if (!current()) return
+                            if (items) setDurableFiles(items)
+                            setUploadStatus(
+                              '图片已保存到当前文档的 PC 素材缓存；许可状态仍需核验。',
+                            )
+                            setImageUrl('')
+                          })
+                          .catch((error: unknown) => {
+                            if (current()) {
+                              setUploadStatus('')
+                              setUploadError(safeUploadError(error))
+                              void ui
+                                .listDurableAttachments?.()
+                                .then((items) => {
+                                  if (current()) setDurableFiles(items)
+                                })
+                                .catch(() => undefined)
+                            }
+                          })
+                          .finally(() => {
+                            if (current()) {
+                              setUploadPending(false)
+                              setAcquisitionRefresh((value) => value + 1)
+                            }
+                          })
+                      }}
+                    >
+                      <label htmlFor="presentation-image-url">
+                        图片网址（每行一个，最多 4 个，按顺序尝试）
+                      </label>
+                      <textarea
+                        id="presentation-image-url"
+                        value={imageUrl}
+                        onChange={(event) => setImageUrl(event.currentTarget.value)}
+                        placeholder={
+                          'https://example.com/image.png\nhttps://backup.example.com/image.webp'
+                        }
+                        rows={3}
+                        required
+                      />
+                      <button
+                        type="submit"
+                        disabled={uploadPending || state.busy || !imageUrl.trim()}
+                      >
+                        由 PC 获取图片
+                      </button>
+                    </form>
+                  )}
+                </>
+              )}
+              {ui.durableAttachmentsAvailable?.() && (
+                <p>
+                  下方仅显示本次会话可下载的副本；超过 20 MiB 或会话容量的资料仍可由 Agent 在 PC
+                  读取。其他文件及技能仅保留在会话中。
+                </p>
+              )}
+              {uploadStatus && <p role="status">{uploadStatus}</p>}
               {uploadError && (
                 <p className="error-text" role="alert">
                   {uploadError}
                 </p>
               )}
+              {ui.durableAttachmentsAvailable?.() && (
+                <PresentationAcquisitionHistoryCard
+                  read={ui.readPresentationAcquisitionHistory}
+                  refreshKey={`${acquisitionRefresh}:${state.busy}`}
+                />
+              )}
+              {ui.durableAttachmentsAvailable?.() && durableFiles.length > 0 && (
+                <ul>
+                  {durableFiles.map((file) => (
+                    <li key={file.attachmentId}>
+                      {file.name} · {file.status}
+                      {file.sectionCount !== undefined && (
+                        <span>
+                          {' · '}
+                          {file.name.toLowerCase().endsWith('.pdf') ? 'PDF' : '资料'}{' '}
+                          {file.sectionCount}{' '}
+                          {file.name.toLowerCase().endsWith('.pdf') ? '页' : '段'}
+                        </span>
+                      )}
+                      {file.pagesWithoutExtractedText?.length ? (
+                        <p role="status">
+                          第 {file.pagesWithoutExtractedText.slice(0, 20).join('、')}
+                          {file.pagesWithoutExtractedText.length > 20
+                            ? ` 等 ${file.pagesWithoutExtractedText.length} `
+                            : ' '}
+                          页未提取到文字；如这些页面包含内容，请补充可读取文本或 OCR 结果。
+                        </p>
+                      ) : null}
+                      {file.pagesWithSparseExtractedText?.length ? (
+                        <p role="status">
+                          第 {file.pagesWithSparseExtractedText.slice(0, 20).join('、')}
+                          {file.pagesWithSparseExtractedText.length > 20
+                            ? ` 等 ${file.pagesWithSparseExtractedText.length} `
+                            : ' '}
+                          页提取到的文字较少；如关键内容在这些页面，请核对原 PDF
+                          或补充可读取文本。此提示不判断 OCR 准确性。
+                        </p>
+                      ) : null}
+                      {file.pagesWithFullPageImage?.length ? (
+                        <p role="status">
+                          第 {file.pagesWithFullPageImage.slice(0, 20).join('、')}
+                          {file.pagesWithFullPageImage.length > 20
+                            ? ` 等 ${file.pagesWithFullPageImage.length} `
+                            : ' '}
+                          页含覆盖整页的图像；请核对提取文字与原 PDF。
+                        </p>
+                      ) : null}
+                      {file.pagesWithInvisibleTextLayer?.length ? (
+                        <p role="status">
+                          第 {file.pagesWithInvisibleTextLayer.slice(0, 20).join('、')}
+                          {file.pagesWithInvisibleTextLayer.length > 20
+                            ? ` 等 ${file.pagesWithInvisibleTextLayer.length} `
+                            : ' '}
+                          页含不可见文字层；该文字未经核对，不能仅凭匹配结果支持主张，请补充经核对文本。
+                        </p>
+                      ) : null}
+                      {file.status === 'failed' && file.error === 'parse_failed' && (
+                        <p role="alert">
+                          资料解析失败。
+                          {file.name.toLowerCase().endsWith('.pdf')
+                            ? '如 PDF 是扫描件，请补充可读取文本或 OCR 结果后重新上传。'
+                            : '请检查文件格式或重新上传。'}
+                        </p>
+                      )}
+                      {file.animationHandling === 'first_frame' && (
+                        <p>已按你的选择从动画原件生成静态首帧；原件仍保存在 PC。</p>
+                      )}
+                      {file.status === 'failed' &&
+                        file.error === 'animated_image_unsupported' &&
+                        ui.animationFrameAvailable?.() && (
+                          <button
+                            type="button"
+                            disabled={uploadPending || state.busy}
+                            onClick={() => {
+                              setUploadPending(true)
+                              setUploadError('')
+                              void ui
+                                .extractPresentationImageFirstFrame?.(file.attachmentId)
+                                .then(async () => {
+                                  if (!mounted.current) return
+                                  setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
+                                  setUploadStatus(
+                                    `${file.name} 的静态首帧已生成，可作为图片素材使用。`,
+                                  )
+                                })
+                                .catch((error: unknown) => {
+                                  if (mounted.current) setUploadError(safeUploadError(error))
+                                })
+                                .finally(() => {
+                                  if (mounted.current) setUploadPending(false)
+                                })
+                            }}
+                          >
+                            生成静态首帧
+                          </button>
+                        )}
+                      {file.kind === 'image' && file.source && (
+                        <details>
+                          <summary>
+                            来源 {(file.sources ?? [file.source]).length} 条 · 许可未核验
+                          </summary>
+                          <ul>
+                            {(file.sources ?? [file.source]).map((source, index) => (
+                              <li key={`${index}:${source}`}>{source}</li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                      {file.kind === 'text' && file.source && (
+                        <p>
+                          网页来源：{file.source}；抓取时间：
+                          {file.retrievedAt
+                            ? new Date(file.retrievedAt).toLocaleString()
+                            : '未记录'}
+                        </p>
+                      )}
+                      {file.kind === 'image' && file.licenseDeclaration && (
+                        <p>
+                          使用权：用户声明 {file.licenseDeclaration.kind}；依据附件{' '}
+                          {durableFiles.find(
+                            (item) =>
+                              item.attachmentId === file.licenseDeclaration?.evidenceAttachmentId,
+                          )?.name ??
+                            `${file.licenseDeclaration.evidenceAttachmentId.slice(0, 12)}…`}
+                          ；尚未核验。
+                        </p>
+                      )}
+                      {file.kind === 'image' && ui.rightsAvailable?.() && (
+                        <details>
+                          <summary>管理使用权声明</summary>
+                          <form
+                            onSubmit={(event) => {
+                              event.preventDefault()
+                              const data = new FormData(event.currentTarget)
+                              const license = data.get('license')
+                              const evidenceId = data.get('evidence')
+                              if (
+                                !['owned', 'licensed', 'public_domain'].includes(String(license)) ||
+                                typeof evidenceId !== 'string' ||
+                                !evidenceId
+                              )
+                                return
+                              setUploadPending(true)
+                              setUploadError('')
+                              void ui
+                                .attestPresentationImageLicense?.(
+                                  file.attachmentId,
+                                  license as 'owned' | 'licensed' | 'public_domain',
+                                  evidenceId,
+                                )
+                                .then(async () => {
+                                  if (mounted.current) {
+                                    setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
+                                    setUploadStatus('图片使用权声明已保存，仍需人工核验依据。')
+                                  }
+                                })
+                                .catch((error: unknown) => {
+                                  if (mounted.current) setUploadError(safeUploadError(error))
+                                })
+                                .finally(() => {
+                                  if (mounted.current) setUploadPending(false)
+                                })
+                            }}
+                          >
+                            <label>
+                              使用权声明
+                              <select name="license" defaultValue="licensed">
+                                <option value="owned">自有</option>
+                                <option value="licensed">已获许可</option>
+                                <option value="public_domain">公有领域</option>
+                              </select>
+                            </label>
+                            <label>
+                              依据附件
+                              <select name="evidence" required defaultValue="">
+                                <option value="" disabled>
+                                  选择已上传的资料
+                                </option>
+                                {durableFiles
+                                  .filter((item) => item.kind === 'text' && item.status === 'ready')
+                                  .map((item) => (
+                                    <option key={item.attachmentId} value={item.attachmentId}>
+                                      {item.name}
+                                    </option>
+                                  ))}
+                              </select>
+                            </label>
+                            <button
+                              type="submit"
+                              disabled={
+                                uploadPending ||
+                                state.busy ||
+                                !durableFiles.some(
+                                  (item) => item.kind === 'text' && item.status === 'ready',
+                                )
+                              }
+                            >
+                              保存声明
+                            </button>
+                          </form>
+                        </details>
+                      )}
+                      {file.kind === 'image' &&
+                        file.licenseDeclaration &&
+                        ui.rightsAvailable?.() && (
+                          <button
+                            type="button"
+                            disabled={uploadPending || state.busy}
+                            onClick={() => {
+                              setUploadPending(true)
+                              void ui
+                                .revokePresentationImageLicense?.(file.attachmentId)
+                                .then(async () => {
+                                  if (mounted.current)
+                                    setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
+                                })
+                                .catch((error: unknown) => {
+                                  if (mounted.current) setUploadError(safeUploadError(error))
+                                })
+                                .finally(() => {
+                                  if (mounted.current) setUploadPending(false)
+                                })
+                            }}
+                          >
+                            撤回声明
+                          </button>
+                        )}
+                      <button
+                        type="button"
+                        disabled={uploadPending || state.busy}
+                        onClick={() => {
+                          if (
+                            !window.confirm(
+                              `删除 PC 中的“${file.name}”？此操作会移除原文件及解析结果，之后使用需重新上传。`,
+                            )
+                          )
+                            return
+                          setUploadPending(true)
+                          void ui
+                            .deleteDurableAttachment?.(file.attachmentId)
+                            .then(async () => {
+                              if (!mounted.current) return
+                              setDurableFiles((await ui.listDurableAttachments?.()) ?? [])
+                              setUploadStatus(`${file.name} 已从 PC 删除。`)
+                            })
+                            .catch((error: unknown) => {
+                              if (mounted.current) setUploadError(safeUploadError(error))
+                            })
+                            .finally(() => {
+                              if (mounted.current) setUploadPending(false)
+                            })
+                        }}
+                      >
+                        删除 PC 副本
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <ul>
                 {files.map((file) => (
-                  <li key={file}>{file.split('/').at(-1)}</li>
+                  <li key={file}>
+                    {ui.downloadFile ? (
+                      <button type="button" onClick={() => ui.downloadFile?.(file)}>
+                        {sessionAttachmentLabel(file)} · 下载
+                      </button>
+                    ) : (
+                      sessionAttachmentLabel(file)
+                    )}
+                  </li>
                 ))}
               </ul>
               {!files.length && <p>No session attachments.</p>}
@@ -1214,6 +2102,159 @@ export function AgentWorkspace(props: {
       )}
 
       <section className="composer-shell" aria-label="Message WisWork Agent">
+        {host === 'powerpoint' && ui.project && (
+          <section aria-label="制作位置">
+            <strong>制作位置</strong>
+            <p>
+              可以在当前文档制作。已有内容时建议先保存原稿、再创建副本。现有项目不会自动迁移到副本。
+            </p>
+            <button
+              type="button"
+              disabled={
+                copyPending ||
+                uploadPending ||
+                state.busy ||
+                state.applying ||
+                projectPhase !== 'idle' ||
+                !supportsPowerPointPresentationCopy()
+              }
+              onClick={() => {
+                setCopyPending(true)
+                setCopyStatus('正在创建副本…')
+                void openPowerPointPresentationCopy()
+                  .then(() =>
+                    setCopyStatus(
+                      '副本已打开。请先另存为新文件，再在副本中打开 WisWork 并开始制作。',
+                    ),
+                  )
+                  .catch((error: unknown) =>
+                    setCopyStatus(
+                      error instanceof Error && error.message === 'presentation_document_changed'
+                        ? '导出期间文档已切换，副本未打开。请回到原文档重试。'
+                        : error instanceof Error &&
+                            error.message === 'presentation_copy_save_source_first'
+                          ? '请先保存当前文档，再创建副本；未保存的两份文稿可能共用项目身份。'
+                          : '创建副本失败；请检查文档身份、导出权限和 PowerPoint 版本。',
+                    ),
+                  )
+                  .finally(() => setCopyPending(false))
+              }}
+            >
+              创建副本后制作
+            </button>
+            {!supportsPowerPointPresentationCopy() && <p>当前 PowerPoint 不支持创建副本。</p>}
+            {copyStatus && <p role="status">{copyStatus}</p>}
+          </section>
+        )}
+        {host === 'powerpoint' && ui.team && (
+          <PresentationTeamCard
+            controller={ui.team}
+            account={ui.teamConnection}
+            disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
+          />
+        )}
+        {host === 'powerpoint' &&
+          import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1' &&
+          ui.governance && (
+            <PresentationProjectGovernanceCard
+              controller={ui.governance}
+              disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
+            />
+          )}
+        {ui.research && (
+          <PresentationResearchCard
+            controller={ui.research}
+            disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
+          />
+        )}
+        {ui.project && (
+          <PresentationWorkflowCard
+            project={ui.project}
+            imported={ui.importProgress}
+            qa={ui.qa}
+            disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
+          />
+        )}
+        {ui.project && (
+          <PresentationProjectCard
+            controller={ui.project}
+            onEndFrontend={() => session.stop()}
+            disabled={uploadPending || state.busy || state.applying || Boolean(state.proposal)}
+          />
+        )}
+        {ui.importProgress && <PresentationImportProgressCard controller={ui.importProgress} />}
+        {ui.changes && (
+          <PresentationChangesCard
+            controller={ui.changes}
+            interruptedChange={ui.interruptedChange}
+            disabled={
+              uploadPending ||
+              state.busy ||
+              state.applying ||
+              Boolean(state.proposal) ||
+              projectPhase !== 'idle'
+            }
+          />
+        )}
+        {ui.qa && (
+          <PresentationQaCard
+            controller={ui.qa}
+            disabled={
+              uploadPending ||
+              state.busy ||
+              state.applying ||
+              Boolean(state.proposal) ||
+              projectPhase !== 'idle'
+            }
+            onRecheck={(record, pageIds) => {
+              if (
+                uploadPending ||
+                state.busy ||
+                state.applying ||
+                state.proposal ||
+                projectPhase !== 'idle' ||
+                !validatePresentationQaRecord(record) ||
+                pageIds.length === 0 ||
+                new Set(pageIds).size !== pageIds.length ||
+                pageIds.some((id) => !record.pages.some((page) => page.pageId === id))
+              )
+                return
+              setInstruction(
+                `请准备页面 QA 重审：projectId=${JSON.stringify(record.projectId)}，requestId=${JSON.stringify(record.requestId)}，pageIds=${JSON.stringify(pageIds)}。` +
+                  '先确认当前文档、目标冻结任务及宿主页面映射一致；不一致时停止并说明。仅对指定页面逐页重新采集实际截图，观察截图后由 Agent 进行视觉复核；不得沿用历史通过结论或将采集成功视为通过。需要修改时先生成提案并等待用户确认。',
+              )
+            }}
+          />
+        )}
+        {ui.downloadFile &&
+          files.some(
+            (file) =>
+              file.startsWith('/home/user/generated/') &&
+              (file.endsWith('.pptx') || file.endsWith('.pdf')),
+          ) && (
+            <section aria-label="生成的演示文稿" className="presentation-downloads">
+              {files
+                .filter(
+                  (file) =>
+                    file.startsWith('/home/user/generated/') &&
+                    (file.endsWith('.pptx') ||
+                      file.endsWith('.pdf') ||
+                      file.endsWith('.report.json') ||
+                      file.endsWith('/report.json')),
+                )
+                .slice(-4)
+                .map((file) => (
+                  <button type="button" key={file} onClick={() => ui.downloadFile?.(file)}>
+                    {file.endsWith('.pptx')
+                      ? '下载 PPTX'
+                      : file.endsWith('.pdf')
+                        ? '下载 PDF 预览'
+                        : '下载验收报告'}{' '}
+                    · {sessionAttachmentLabel(file)}
+                  </button>
+                ))}
+            </section>
+          )}
         <div className="composer-input-box">
           {files.length > 0 && (
             <div className="composer-attachments" aria-label="Attached files">
@@ -1258,7 +2299,7 @@ export function AgentWorkspace(props: {
                 className="visually-hidden"
                 type="file"
                 multiple
-                disabled={state.applying}
+                disabled={state.applying || state.busy || uploadPending || projectPhase !== 'idle'}
                 onChange={(event) => {
                   const selected = event.currentTarget.files
                   if (selected?.length) void uploadFiles(selected)
@@ -1269,17 +2310,30 @@ export function AgentWorkspace(props: {
                 type="button"
                 className="composer-attach-button"
                 aria-label="Add attachments"
-                disabled={state.applying}
+                disabled={state.applying || state.busy || uploadPending || projectPhase !== 'idle'}
                 onClick={() => composerFileInput.current?.click()}
               >
                 <IconPaperclip size={20} />
               </button>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Attachments"
+                aria-expanded={panel === 'attachments'}
+                disabled={state.applying}
+                onClick={(event) => {
+                  panelOpener.current = event.currentTarget
+                  setPanel(panel === 'attachments' ? undefined : 'attachments')
+                }}
+              >
+                管理附件
+              </button>
               <span className="confirmation-chip">
                 <span aria-hidden="true" />
-                {host === 'powerpoint' ? '自动应用常规更改' : '更改需确认'}
+                {host === 'powerpoint' && !ui.project ? '自动应用常规更改' : '更改需确认'}
               </span>
             </div>
-            {state.busy ? (
+            {state.busy || state.applying ? (
               <button type="button" className="stop-button" onClick={() => session.stop()}>
                 Stop
               </button>
@@ -1289,7 +2343,12 @@ export function AgentWorkspace(props: {
                 type="button"
                 aria-label="Send message"
                 disabled={
-                  props.connectionAvailable === false || !instruction.trim() || state.applying
+                  props.connectionAvailable === false ||
+                  !instruction.trim() ||
+                  state.applying ||
+                  uploadPending ||
+                  Boolean(state.proposal) ||
+                  projectPhase !== 'idle'
                 }
                 onClick={send}
               >
@@ -1341,10 +2400,22 @@ export function ConfiguredApp(
     [props.documentClient],
   )
   const transportMode = useMemo(() => officeTransportMode(import.meta.env), [])
+  const teamRuntime = useRef<OfficeHostRuntime | undefined>(undefined)
+  const teamConnection = useMemo(() => {
+    const config = officeTeamAuthConfig(import.meta.env, window.location.origin)
+    if (!config || transportMode !== 'relay') return undefined
+    return createOfficeTeamConnection({
+      auth: createBrowserAuthClient({ config, store: createMemorySessionStore() }),
+      loginDialog: createOfficeTeamLoginDialog({ ...config, addinOrigin: window.location.origin }),
+      onUnavailable: () => teamRuntime.current?.team?.clear(),
+    })
+  }, [transportMode])
+  useEffect(() => () => teamConnection?.dispose(), [teamConnection])
   const remoteDiagnosticsEnabled = useMemo(
     () => transportMode === 'relay' && officeRemoteDiagnosticsEnabled(import.meta.env),
     [transportMode],
   )
+  const diagnosticSamplePercent = useMemo(() => officeDiagnosticSamplePercent(import.meta.env), [])
   const bridge = useMemo(
     () =>
       props.connectionBridge ??
@@ -1353,6 +2424,20 @@ export function ConfiguredApp(
         : createOfficeRelaySession({
             capabilities: [
               'agent.v1',
+              'presentation.v1',
+              'presentation-attachments.v1',
+              'presentation-assets.v1',
+              'presentation-remote-images.v1',
+              'presentation-webpages.v1',
+              'presentation-asset-rights.v1',
+              'presentation-animation-frame.v1',
+              'presentation-pdf.v1',
+              'presentation-production-pdf.v1',
+              'presentation-master-backups.v1',
+              'presentation-package-backups.v1',
+              ...(import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1'
+                ? ['presentation-governance.v1' as const]
+                : []),
               'web-search.v1',
               'image-search.v1',
               'image-fetch.v1',
@@ -1377,9 +2462,14 @@ export function ConfiguredApp(
   >()
   const workspaceMode = useMemo(() => officeWorkspaceMode(import.meta.env), [])
   const capabilityFlags = useMemo(() => officeCapabilityFlags(import.meta.env), [])
+  const presentationRolloutPercent = useMemo(
+    () => officePresentationRolloutPercent(import.meta.env),
+    [],
+  )
   const presentationFlags = useMemo(() => officePresentationVerificationFlags(import.meta.env), [])
   const [host, setHost] = useState<OfficeHost>('unknown')
   const [hostSupported, setHostSupported] = useState(false)
+  const [presentationRolloutExcluded, setPresentationRolloutExcluded] = useState(false)
   const [status, setStatus] = useState('Connecting to Office…')
   const [busy, setBusy] = useState(true)
   const [pairingForgetError, setPairingForgetError] = useState(false)
@@ -1417,13 +2507,91 @@ export function ConfiguredApp(
             void bridge.connect(activeHost)
             if (workspaceFactory) created = workspaceFactory({ host: activeHost, document, bridge })
             else {
+              if (
+                activeHost === 'powerpoint' &&
+                !presentationRolloutEnabled(
+                  Office.context.document.url || undefined,
+                  presentationRolloutPercent,
+                )
+              ) {
+                setPresentationRolloutExcluded(true)
+                setStatus('PPT Agent is not enabled for this presentation yet.')
+                return
+              }
+              const presentationBinding =
+                activeHost === 'powerpoint' ? createBrowserPresentationDocumentBinding() : undefined
+              const boundPresentationDocumentId = presentationBinding
+                ? await presentationBinding.documentId()
+                : undefined
+              const runRecovery =
+                presentationBinding && boundPresentationDocumentId
+                  ? await preparePresentationAgentRunRecovery(
+                      presentationBinding,
+                      boundPresentationDocumentId,
+                    )
+                  : undefined
+              const runCheckpoint =
+                presentationBinding && boundPresentationDocumentId
+                  ? createPresentationAgentRunCheckpoint(
+                      presentationBinding,
+                      boundPresentationDocumentId,
+                      (() => {
+                        try {
+                          return window.localStorage
+                        } catch {
+                          return undefined
+                        }
+                      })(),
+                    )
+                  : undefined
+              const governancePersistence =
+                import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1'
+                  ? (() => {
+                      try {
+                        return createPresentationGovernanceStorage(window.localStorage)
+                      } catch {
+                        return undefined
+                      }
+                    })()
+                  : undefined
+              const researchDeletePersistence = boundPresentationDocumentId
+                ? createPresentationResearchDeletePersistence(
+                    boundPresentationDocumentId,
+                    (() => {
+                      try {
+                        return window.localStorage
+                      } catch {
+                        return undefined
+                      }
+                    })(),
+                  )
+                : undefined
+              const researchAbandonPersistence = boundPresentationDocumentId
+                ? createPresentationResearchAbandonPersistence(
+                    boundPresentationDocumentId,
+                    (() => {
+                      try {
+                        return window.localStorage
+                      } catch {
+                        return undefined
+                      }
+                    })(),
+                  )
+                : undefined
+              const interruptedRun = runRecovery?.scrubFailed
+                ? undefined
+                : runCheckpoint?.recovery()
               const environment = officeDiagnosticEnvironment(activeHost)
               const diagnostics = createOfficeDiagnostics({
                 host: activeHost,
                 platform: environment.platform,
                 build: __WISWORK_OFFICE_BUILD_ID__,
+                localDocumentId: boundPresentationDocumentId,
+                localSessionId: () =>
+                  'diagnosticSessionId' in bridge ? bridge.diagnosticSessionId() : undefined,
                 requirementSets: environment.requirementSets,
                 remoteEnabled: remoteDiagnosticsEnabled,
+                remoteSamplePercent: diagnosticSamplePercent,
                 send: (event) => {
                   if (!('sendDiagnostic' in bridge)) throw new Error('diagnostic_upload_failed')
                   return bridge.sendDiagnostic(event)
@@ -1469,18 +2637,209 @@ export function ConfiguredApp(
                       ],
                     }
                   : {}),
+
+                ...(activeHost === 'powerpoint' && 'capabilityFetch' in bridge
+                  ? {
+                      presentation: {
+                        ...presentationBinding!,
+                        projectGovernanceEnabled:
+                          import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1',
+                        governanceAvailable: () => {
+                          const current = bridge.snapshot()
+                          return (
+                            current.status === 'connected' &&
+                            current.capabilities?.includes('presentation-governance.v1') === true
+                          )
+                        },
+                        governanceRequest: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch('presentation-governance.v1', body, signal),
+                        governanceSessionId: () =>
+                          'diagnosticSessionId' in bridge
+                            ? bridge.diagnosticSessionId()
+                            : undefined,
+                        readGovernanceAttempt: governancePersistence?.read,
+                        writeGovernanceAttempt: governancePersistence?.write,
+                        teamAvailable: () => teamConnection?.available() === true,
+                        teamRequest: teamConnection
+                          ? (body: unknown, signal?: AbortSignal) =>
+                              teamConnection.request(body, signal)
+                          : undefined,
+                        readResearchAbandonAttempt: researchAbandonPersistence?.read,
+                        writeResearchAbandonAttempt: researchAbandonPersistence?.write,
+                        readResearchDeleteAttempt: researchDeletePersistence?.read,
+                        writeResearchDeleteAttempt: researchDeletePersistence?.write,
+                        available: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation.v1') === true
+                          )
+                        },
+                        request: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch('presentation.v1', body, signal),
+                        packageBackupAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-package-backups.v1') ===
+                              true
+                          )
+                        },
+                        packageBackupRequest: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch('presentation-package-backups.v1', body, signal),
+                        masterBackupAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-master-backups.v1') ===
+                              true
+                          )
+                        },
+                        masterBackupRequest: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch('presentation-master-backups.v1', body, signal),
+                        pdfAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-pdf.v1') === true
+                          )
+                        },
+                        productionPdfAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-production-pdf.v1') ===
+                              true
+                          )
+                        },
+                        pdfRequest: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch(
+                            (body as { source?: string })?.source === 'production'
+                              ? 'presentation-production-pdf.v1'
+                              : 'presentation-pdf.v1',
+                            body,
+                            signal,
+                          ),
+                        assetsAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-assets.v1') === true
+                          )
+                        },
+                        remoteImagesAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-remote-images.v1') ===
+                              true
+                          )
+                        },
+                        webpagesAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-webpages.v1') === true
+                          )
+                        },
+                        rightsAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-asset-rights.v1') === true
+                          )
+                        },
+                        animationFrameAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-animation-frame.v1') ===
+                              true
+                          )
+                        },
+                        attachmentsAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-attachments.v1') === true
+                          )
+                        },
+                        attachmentsRequest: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch(
+                            body &&
+                              typeof body === 'object' &&
+                              'operation' in body &&
+                              body.operation === 'attachment_import_url'
+                              ? 'presentation-remote-images.v1'
+                              : body &&
+                                  typeof body === 'object' &&
+                                  'operation' in body &&
+                                  body.operation === 'attachment_import_webpage'
+                                ? 'presentation-webpages.v1'
+                                : body &&
+                                    typeof body === 'object' &&
+                                    'operation' in body &&
+                                    [
+                                      'attachment_attest_license',
+                                      'attachment_revoke_license',
+                                    ].includes(body.operation as string)
+                                  ? 'presentation-asset-rights.v1'
+                                  : body &&
+                                      typeof body === 'object' &&
+                                      'operation' in body &&
+                                      body.operation === 'attachment_extract_first_frame'
+                                    ? 'presentation-animation-frame.v1'
+                                    : 'presentation-attachments.v1',
+                            body,
+                            signal,
+                          ),
+                      },
+                    }
+                  : {}),
               })
               const session = createOfficeAgentSession({
+                host: activeHost,
                 transport: createPcBridgeAgentTransport(bridge),
                 skill: runtime.skill,
                 proposals: runtime.proposals,
                 automaticPowerPointMutations: activeHost === 'powerpoint',
                 ...('setToolHandler' in bridge ? { remoteTools: bridge } : {}),
-                diagnostics,
                 presentationText: (key) =>
                   officePresentationText(globalThis.Office?.context?.displayLanguage, key),
+                diagnostics,
+                ...(presentationBinding && boundPresentationDocumentId
+                  ? {
+                      runCheckpoint: {
+                        interrupted: runRecovery!.interrupted,
+                        scrubFailed: runRecovery!.scrubFailed,
+                        recovery: interruptedRun,
+                        readRecovery: () =>
+                          runRecovery!.scrubFailed ? undefined : runCheckpoint!.recovery(),
+                        validateDocument: async () =>
+                          (await presentationBinding.documentId()) === boundPresentationDocumentId,
+                        begin: runCheckpoint!.begin,
+                        tool: runCheckpoint!.tool,
+                        conversation: runCheckpoint!.conversation,
+                        adopt: runCheckpoint!.adopt,
+                        finish: runCheckpoint!.finish,
+                      },
+                    }
+                  : {}),
               })
-              created = { runtime, session, ui: createOfficeWorkspaceUi(runtime, diagnostics) }
+              teamRuntime.current = runtime
+              created = {
+                runtime,
+                session,
+                ui: createOfficeWorkspaceUi(
+                  runtime,
+                  diagnostics,
+                  undefined,
+                  interruptedRun?.changeReceipt && interruptedRun.toolCallId
+                    ? { agentRunId: interruptedRun.runId, toolCallId: interruptedRun.toolCallId }
+                    : undefined,
+                  teamConnection,
+                ),
+              }
             }
             setWorkspace(created)
           }
@@ -1498,6 +2857,7 @@ export function ConfiguredApp(
     })()
     return () => {
       active = false
+      if (teamRuntime.current === created?.runtime) teamRuntime.current = undefined
       created?.session.dispose()
       created?.runtime.dispose()
       bridge.disconnect()
@@ -1505,9 +2865,12 @@ export function ConfiguredApp(
   }, [
     bridge,
     capabilityFlags,
+    diagnosticSamplePercent,
     document,
-    presentationFlags,
+    presentationRolloutPercent,
     remoteDiagnosticsEnabled,
+    teamConnection,
+    presentationFlags,
     workspaceFactory,
   ])
 
@@ -1515,9 +2878,15 @@ export function ConfiguredApp(
     if (shouldResetOfficeSession(bridgeState.status) && workspace) {
       workspace.session.authenticationLost()
       workspace.runtime.clearSession()
+      workspace.runtime.presentation?.prepareReconnect()
     }
   }, [bridgeState.status, workspace])
 
+  const governanceSessionId =
+    'diagnosticSessionId' in bridge ? bridge.diagnosticSessionId() : undefined
+  useEffect(() => {
+    workspace?.runtime.governance?.clear()
+  }, [workspace, governanceSessionId])
   useEffect(() => {
     workspace?.runtime.setPowerPointImageFetchAvailable?.(
       bridgeState.status === 'connected' &&
@@ -1562,6 +2931,8 @@ export function ConfiguredApp(
   }, [bridge, bridgeState.enhanced, bridgeState.status, host, workspace])
 
   if (busy) return <StatusScreen title="Starting WisWork Agent" detail={status} busy />
+  if (presentationRolloutExcluded)
+    return <StatusScreen title="PPT Agent unavailable" detail={status} />
   if (!hostSupported) {
     return (
       <StatusScreen title="Unsupported Office host" detail="This host cannot use document tools." />
@@ -1605,7 +2976,10 @@ export function ConfiguredApp(
               : 'Try again'}
         </button>
         {workspace?.ui.copyDiagnostics && (
-          <DiagnosticCopyButton copyDiagnostics={workspace.ui.copyDiagnostics} />
+          <DiagnosticCopyButton
+            copyDiagnostics={workspace.ui.copyDiagnostics}
+            copyDiagnosticsWithContext={workspace.ui.copyDiagnosticsWithContext}
+          />
         )}
       </StatusScreen>
     )
@@ -1613,6 +2987,7 @@ export function ConfiguredApp(
   if (!workspace)
     return <StatusScreen title="Starting WisWork Agent" detail="Loading tools…" busy />
   const disconnect = () => {
+    void teamConnection?.signOut()
     workspace.session.logout()
     workspace.runtime.disableElevatedOffice()
     workspace.runtime.clearSession()
@@ -1664,5 +3039,57 @@ function StatusScreen(props: {
 }
 
 export function App() {
+  const [versionState, setVersionState] = useState<BuildVersionState>({ status: 'checking' })
+  const [versionAttempt, setVersionAttempt] = useState(0)
+  useEffect(() => {
+    let active = true
+    void (async () => {
+      const deployed = await deployedBuildId()
+      if (active)
+        setVersionState(
+          resolveBuildVersion(deployed, __WISWORK_OFFICE_BUILD_ID__, import.meta.env.PROD),
+        )
+    })()
+    return () => {
+      active = false
+    }
+  }, [versionAttempt])
+  if (versionState.status === 'checking')
+    return <StatusScreen title="Checking WisWork version" detail="Checking for updates…" busy />
+  if (versionState.status === 'unavailable')
+    return (
+      <StatusScreen
+        title="Cannot verify WisWork version"
+        detail="Check the connection and retry before using document tools."
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setVersionState({ status: 'checking' })
+            setVersionAttempt((attempt) => attempt + 1)
+          }}
+        >
+          Retry version check
+        </button>
+      </StatusScreen>
+    )
+  if (versionState.status === 'stale')
+    return (
+      <StatusScreen
+        title="WisWork update available"
+        detail="Reload this pane to use the latest version."
+      >
+        <button
+          type="button"
+          onClick={() => {
+            const url = new URL(window.location.href)
+            url.searchParams.set('v', versionState.buildId)
+            window.location.replace(url.href)
+          }}
+        >
+          Reload WisWork
+        </button>
+      </StatusScreen>
+    )
   return <ConfiguredApp />
 }

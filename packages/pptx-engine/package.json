@@ -8,7 +8,23 @@
   "exports": {
     ".": "./src/index.ts",
     "./table-grid": "./src/table-grid.ts",
-    "./background-promote": "./src/background-promote.ts"
+    "./background-promote": "./src/background-promote.ts",
+    "./presentation": "./src/presentation.ts",
+    "./presentation-plan": "./src/presentation-plan.ts",
+    "./presentation-research-binding": "./src/presentation-research-binding.ts",
+    "./presentation-compiler": "./src/presentation-compiler.ts",
+    "./presentation-content-check": "./src/presentation-content-check.ts",
+    "./presentation-claim-evidence": "./src/presentation-claim-evidence.ts",
+    "./presentation-page-reviews": "./src/presentation-page-reviews.ts",
+    "./presentation-claim-review": "./src/presentation-claim-review.ts",
+    "./presentation-delivery-report": "./src/presentation-delivery-report.ts",
+    "./presentation-calculation": "./src/presentation-calculation.ts",
+    "./presentation-source-limits": "./src/presentation-source-limits.ts",
+    "./presentation-chart-data": "./src/presentation-chart-data.ts",
+    "./presentation-preference": "./src/presentation-preference.ts",
+    "./presentation-team": "./src/presentation-team.ts",
+    "./presentation-feedback-comparison": "./src/presentation-feedback-comparison.ts",
+    "./presentation-manual-observation": "./src/presentation-manual-observation.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -18,11 +34,14 @@
   "dependencies": {
     "@wiswork/presentation-ops": "0.1.0",
     "fast-xml-parser": "^5.3.4",
-    "jszip": "^3.10.1"
+    "jszip": "^3.10.1",
+    "pngjs": "^7.0.0",
+    "pptxgenjs": "^4.0.1",
+    "@wiswork/project-store": "*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
-    "pptxgenjs": "^4.0.1",
+    "@types/pngjs": "^6.0.5",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
   }

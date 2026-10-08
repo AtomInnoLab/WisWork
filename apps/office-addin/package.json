@@ -7,13 +7,16 @@
   "description": "Confirmation-first WisWork Agent task pane for Word, Excel, and PowerPoint",
   "dependencies": {
     "@wiswork/agent-core": "*",
+    "@wiswork/auth": "*",
     "@wiswork/agent-harness": "*",
     "@wiswork/i18n": "*",
     "@wiswork/ai-provider": "*",
     "@wiswork/ui": "*",
     "fast-xml-parser": "5.10.1",
     "jszip": "3.10.1",
-    "pdfjs-dist": "5.7.284"
+    "pdfjs-dist": "5.7.284",
+    "@wiswork/pptx-engine": "*",
+    "@wiswork/project-store": "*"
   },
   "scripts": {
     "dev": "vite --mode development",

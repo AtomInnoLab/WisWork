@@ -1,0 +1,396 @@
+{
+  "version": 1,
+  "id": "p0-02-noise-evidence-reference",
+  "title": "背景噪声与认知任务：三项研究候选比较",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "assets": [],
+  "claims": [
+    {
+      "id": "helps",
+      "text": "教师评定的 8–10 岁儿童中，中等白噪声与高注意力组表现变差、低注意力组部分执行功能任务改善有关；常注意力组未见影响。",
+      "source": "doi:10.1371/journal.pone.0112768",
+      "locator": "第 1 页"
+    },
+    {
+      "id": "han",
+      "text": "N-back 任务中低唤醒语音噪声条件较静音和高唤醒条件反应更快；高唤醒与静音间未见显著差异。",
+      "source": "doi:10.1371/journal.pone.0076261",
+      "locator": "第 1 页"
+    },
+    {
+      "id": "mohanathasan",
+      "text": "两人对话任务中，+10 dB 信噪比的轻度噪声未见短时记忆影响；−3 dB 条件下主听力任务表现受损。",
+      "source": "doi:10.1371/journal.pone.0318821",
+      "locator": "第 1 页"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "背景噪声会帮助认知任务吗？",
+      "claimIds": [],
+      "notes": "候选比较，待认知/心理学领域审阅；不得当作通用建议。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "背景噪声会帮助认知任务吗？",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "三项原始研究的参与者、噪声、任务与指标不同。本稿为待领域审阅的候选证据比较，不给通用学习或医疗建议。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Helps 2014；Han 2013；Mohanathasan 2025，原始论文 PDF",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "先定义可比边界",
+      "claimIds": [],
+      "notes": "候选比较，待认知/心理学领域审阅；不得当作通用建议。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "先定义可比边界",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "比较的是各研究报告的方向及条件，不合并效果量。白噪声、语音噪声和宽带背景噪声不是同一种干预；儿童分组、N-back 和对话记忆也不是同一种任务。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "三篇论文 PDF 第 1 页 Abstract；不能做跨研究剂量曲线",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "Helps：组别决定白噪声方向",
+      "claimIds": ["helps"],
+      "notes": "候选比较，待认知/心理学领域审阅；不得当作通用建议。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Helps：组别决定白噪声方向",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "人群：教师评定的 8–10 岁儿童，三种注意力组。条件：不同白噪声水平。指标：记忆和执行功能任务。中等白噪声下，低注意力组部分执行功能任务改善，高注意力组表现变差，常注意力组未见影响。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "Helps 2014，PDF 第 1 页 Results；注意力分组不等于临床诊断",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "Han：低唤醒语音噪声条件",
+      "claimIds": ["han"],
+      "notes": "候选比较，待认知/心理学领域审阅；不得当作通用建议。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Han：低唤醒语音噪声条件",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "任务：N-back 工作记忆。比较：低唤醒语音噪声、静音、高唤醒语音噪声。低唤醒条件反应较快；高唤醒与静音之间未见显著差异。语音唤醒条件不能直接代换为白噪声强度。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "Han 2013，PDF 第 1 页 Abstract；反应时间与 ERP 均为研究指标",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "Mohanathasan：轻度与中度条件",
+      "claimIds": ["mohanathasan"],
+      "notes": "候选比较，待认知/心理学领域审阅；不得当作通用建议。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Mohanathasan：轻度与中度条件",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "任务：听取两人对话后回忆，并执行第二任务。轻度背景噪声为 +10 dB 信噪比，实验 1/2 未见短时记忆影响；实验 3 的 −3 dB 条件使主听力任务表现受损。信噪比不是绝对音量。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "Mohanathasan 2025，PDF 第 1 页 Abstract；实验条件不可互换",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "同页并列：有利、未见显著差异、不利",
+      "claimIds": ["helps", "han", "mohanathasan"],
+      "notes": "候选比较，待认知/心理学领域审阅；不得当作通用建议。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "同页并列：有利、未见显著差异、不利",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "有利｜Helps：低注意力儿童的部分执行功能任务；Han：低唤醒语音噪声下 N-back 反应。",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 2.75,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "未见显著差异｜Helps：常注意力组；Han：高唤醒与静音；Mohanathasan：+10 dB 对话短时记忆。",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "body-3",
+          "x": 0.9,
+          "y": 3.95,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "不利｜Helps：高注意力组；Mohanathasan：−3 dB 主听力任务。",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "三篇论文 PDF 第 1 页；“未见显著差异”不等于证明无效",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "可比性矩阵：四个关键差异",
+      "claimIds": ["helps", "han", "mohanathasan"],
+      "notes": "候选比较，待认知/心理学领域审阅；不得当作通用建议。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "可比性矩阵：四个关键差异",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "人群｜儿童注意力分组 / N-back 受试者 / 对话听者。",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 2.75,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "噪声｜白噪声水平 / 语音情绪唤醒 / 宽带噪声信噪比。",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "body-3",
+          "x": 0.9,
+          "y": 3.95,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "任务｜记忆与执行功能 / N-back / 对话回忆与双任务。",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "body-4",
+          "x": 0.9,
+          "y": 5.1499999999999995,
+          "w": 11.4,
+          "h": 1.1,
+          "text": "指标｜组别任务表现 / 反应时间与 ERP / 主听力及第二任务。",
+          "fontSize": 17
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "三篇论文 PDF 第 1 页；不可直接汇总为单一总体效应",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "结论与审阅边界",
+      "claimIds": ["helps", "han", "mohanathasan"],
+      "notes": "候选比较，待认知/心理学领域审阅；不得当作通用建议。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "结论与审阅边界",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "证据方向随人群、噪声和任务而变；保留有利、未见显著差异与不利结果。Helps 披露作者与白噪声产品开发公司的关联。科研审阅仍须核对原文、冲突措辞和每页来源；真实 PowerPoint 保存重开尚未验收。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "Helps PDF 第 1 页 Competing Interests；三项研究均不能支持通用建议",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}

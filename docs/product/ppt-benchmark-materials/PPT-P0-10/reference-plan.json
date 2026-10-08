@@ -1,0 +1,395 @@
+{
+  "version": 1,
+  "projectId": "p0-10-srocc-candidate",
+  "title": "P0-10 SROCC 8页候选摘要（待审阅）",
+  "domain": "science",
+  "brief": {
+    "objective": "大PDF原文追溯、限定摘要、数值/不确定性保留与原生编辑候选",
+    "audience": "科研专业审阅者",
+    "language": "zh-CN",
+    "minutes": 12,
+    "requiredContent": [
+      "8页固定范围",
+      "原PDF页/印刷页/段落定位",
+      "观测和投影分开",
+      "所有不确定性及适应限制"
+    ],
+    "constraints": [
+      "专业/版权/布局审阅未完成",
+      "未进行真实PowerPoint宿主验收",
+      "无全文或原图再分发",
+      "不是2026最新科学结论"
+    ]
+  },
+  "sources": [
+    {
+      "id": "s09",
+      "title": "SROCC s09",
+      "uri": "attachment:cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+      "locator": "第 9 页",
+      "excerpt": "2019"
+    },
+    {
+      "id": "s14",
+      "title": "SROCC s14",
+      "uri": "attachment:cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+      "locator": "第 14 页",
+      "excerpt": "15 May 2019"
+    },
+    {
+      "id": "s16",
+      "title": "SROCC s16",
+      "uri": "attachment:cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+      "locator": "第 16 页",
+      "excerpt": "A.1.1"
+    },
+    {
+      "id": "s19",
+      "title": "SROCC s19",
+      "uri": "attachment:cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+      "locator": "第 19 页",
+      "excerpt": "A.2.3"
+    },
+    {
+      "id": "s20",
+      "title": "SROCC s20",
+      "uri": "attachment:cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+      "locator": "第 20 页",
+      "excerpt": "A.3.1"
+    },
+    {
+      "id": "s30",
+      "title": "SROCC s30",
+      "uri": "attachment:cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+      "locator": "第 30 页",
+      "excerpt": "B.3.1"
+    },
+    {
+      "id": "s31",
+      "title": "SROCC s31",
+      "uri": "attachment:cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+      "locator": "第 31 页",
+      "excerpt": "B.3.6"
+    },
+    {
+      "id": "s40",
+      "title": "SROCC s40",
+      "uri": "attachment:cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+      "locator": "第 40 页",
+      "excerpt": "C.2.2"
+    },
+    {
+      "id": "s41",
+      "title": "SROCC s41",
+      "uri": "attachment:cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+      "locator": "第 41 页",
+      "excerpt": "C.3.1"
+    }
+  ],
+  "claims": [
+    {
+      "id": "p01-claim1",
+      "statement": "对象是2019年SROCC科学评估，当前原件为2022年出版版；文献接收截止2019-05-15，不代表2026最新知识。；严格区分证据/一致性形成的置信度与概率性似然；“很可能”通常为90–100%概率，不能把“高置信度”换算为同一概率。；本稿限定8页自制摘要，完整全文仍可从外部原件核查；范围尚待专业审阅者确认。",
+      "type": "fact",
+      "sourceIds": ["s09", "s14"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "institution",
+        "publicationId": "10.1017/9781009157964",
+        "version": "SROCC评估2019；原件出版2022；SHA cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+        "sample": "全球评估；具体对象/期间按本页原文限定",
+        "method": "IPCC文献评估；文献接收截止2019-05-15",
+        "statisticalBasis": "原报告置信度/似然与数值区间分别保留，不自行转换",
+        "limitations": "不覆盖全文所有章节/地区/最新研究；不作地区工程设计建议。"
+      }
+    },
+    {
+      "id": "p02-claim1",
+      "statement": "2006–2015年，格陵兰和南极之外全球冰川年均质量损失220 ± 30 Gt/yr；不是仅高山地区的单独估计。；原报告给出的海平面等效贡献为0.61 ± 0.08 mm/yr；原始±范围保留，不改写为标准误或某个置信区间。；高山多数地区积雪深度、范围和持续时间减少（高置信度）；冰川退缩与冻土融化涉及坡面稳定性及局地风险。",
+      "type": "fact",
+      "sourceIds": ["s16"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "institution",
+        "publicationId": "10.1017/9781009157964",
+        "version": "SROCC评估2019；原件出版2022；SHA cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+        "sample": "全球评估；具体对象/期间按本页原文限定",
+        "method": "IPCC文献评估；文献接收截止2019-05-15",
+        "statisticalBasis": "原报告置信度/似然与数值区间分别保留，不自行转换",
+        "limitations": "全球冰川值不可冒充每一个山地系统；积雪与冰川指标、样本、期间不同。"
+      }
+    },
+    {
+      "id": "p03-claim1",
+      "statement": "1979–2018年北极9月海冰面积减少12.8 ± 2.3%/十年（很可能）；不是年率。；同一期间南极海冰总体没有统计显著趋势（高置信度），原报告解释涉及区域信号相反及较大年际变化。；冰盖、海冰和永久冻土是不同指标；不能以海冰面积趋势替代冰盖质量变化。",
+      "type": "fact",
+      "sourceIds": ["s16"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "institution",
+        "publicationId": "10.1017/9781009157964",
+        "version": "SROCC评估2019；原件出版2022；SHA cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+        "sample": "全球评估；具体对象/期间按本页原文限定",
+        "method": "IPCC文献评估；文献接收截止2019-05-15",
+        "statisticalBasis": "原报告置信度/似然与数值区间分别保留，不自行转换",
+        "limitations": "时间范围固定1979–2018；不能从这些摘要推断所有极地区域或当前年份状态。"
+      }
+    },
+    {
+      "id": "p04-claim1",
+      "statement": "2006–2015全球平均海平面上升率3.6 mm/yr；原很可能范围3.1–4.1 mm/yr。；相对1986–2005，2100年RCP2.6投影0.43 m（可能范围0.29–0.59），RCP8.5为0.84 m（0.61–1.10）。；2100年终点值不同于2081–2100平均值；情景不是预测概率，世纪末不确定性主要涉及冰盖，尤其南极。",
+      "type": "fact",
+      "sourceIds": ["s20", "s30"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "institution",
+        "publicationId": "10.1017/9781009157964",
+        "version": "SROCC评估2019；原件出版2022；SHA cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+        "sample": "全球评估；具体对象/期间按本页原文限定",
+        "method": "IPCC文献评估；文献接收截止2019-05-15",
+        "statisticalBasis": "原报告置信度/似然与数值区间分别保留，不自行转换",
+        "limitations": "全球均值不是当地相对海平面；须考虑区域差异、地面沉降和局地暴露。"
+      }
+    },
+    {
+      "id": "p05-claim1",
+      "statement": "自1970年以来全球海洋持续变暖，吸收气候系统超过90%的多余热量（高置信度）；不可当作某一海盆份额。；1970–2010资料显示开阔海洋上部1000 m氧含量下降0.5–3.3%（很可能范围）；层结、通风及生物地球化学均有关。；海洋变暖、酸化和缺氧可共同影响生态系统；本稿不以单一物理量推出某一地区渔获或物种损失。",
+      "type": "fact",
+      "sourceIds": ["s19", "s20"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "institution",
+        "publicationId": "10.1017/9781009157964",
+        "version": "SROCC评估2019；原件出版2022；SHA cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+        "sample": "全球评估；具体对象/期间按本页原文限定",
+        "method": "IPCC文献评估；文献接收截止2019-05-15",
+        "statisticalBasis": "原报告置信度/似然与数值区间分别保留，不自行转换",
+        "limitations": "热量、pH和氧含量期间及单位不同，不共用数值轴，不补造跨指标合成指数。"
+      }
+    },
+    {
+      "id": "p06-claim1",
+      "statement": "海洋热浪频率自1982年以来翻倍（很可能）；须保留报告对热浪定义和参考资料的限定。；历史约百年一遇的海水位事件，在多数地点到2100年各RCP情景下至少每年出现一次（高置信度）；不等同于所有地点2050年都如此。；升温2°C条件下热带气旋平均强度、4/5级比例及相关降雨预计增加（中等置信度）；全球未来气旋频率变化仍为低置信度。",
+      "type": "fact",
+      "sourceIds": ["s19", "s30", "s31"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "institution",
+        "publicationId": "10.1017/9781009157964",
+        "version": "SROCC评估2019；原件出版2022；SHA cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+        "sample": "全球评估；具体对象/期间按本页原文限定",
+        "method": "IPCC文献评估；文献接收截止2019-05-15",
+        "statisticalBasis": "原报告置信度/似然与数值区间分别保留，不自行转换",
+        "limitations": "局地影响还依赖暴露、脆弱性、潮汐与波浪；不能用极端水位频率替代灾损预测。"
+      }
+    },
+    {
+      "id": "p07-claim1",
+      "statement": "同为2006–2015年年均质量损失：格陵兰（包括外围冰川）278 ± 11；南极155 ± 19；二者之外冰川220 ± 30 Gt/yr。；这些是三个不同对象的原报告估计；不从中央值建立“未来风险排名”，不去掉不确定性。；原脚注给出360 Gt冰质量对应1 mm全球平均海平面；220/360 = 0.6111111111111112 mm/yr，只是算术量级核对，原报告仍保留0.61 ± 0.08。",
+      "type": "fact",
+      "sourceIds": ["s16", "s30"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "institution",
+        "publicationId": "10.1017/9781009157964",
+        "version": "SROCC评估2019；原件出版2022；SHA cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+        "sample": "全球评估；具体对象/期间按本页原文限定",
+        "method": "IPCC文献评估；文献接收截止2019-05-15",
+        "statisticalBasis": "原报告置信度/似然与数值区间分别保留，不自行转换",
+        "limitations": "不独立重估误差传播，不把算术复现或简单差值称为气候归因或事实认证。"
+      }
+    },
+    {
+      "id": "ice-conversion",
+      "statement": "220/360 = 0.6111111111111112 mm/yr；仅算术量级核对，不复现气候估计不确定性。",
+      "type": "calculation",
+      "sourceIds": ["s16"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "calculation": {
+        "formula": "mass/factor",
+        "inputs": ["冰川220 Gt/yr：PDF16 A.1.1", "360 Gt/mm：PDF16脚注10"],
+        "unit": "mm/yr",
+        "reproduction": {
+          "bindings": [
+            {
+              "name": "mass",
+              "inputIndex": 0,
+              "value": 220,
+              "sourceId": "s16"
+            },
+            {
+              "name": "factor",
+              "inputIndex": 1,
+              "value": 360,
+              "sourceId": "s16"
+            }
+          ],
+          "expected": 0.6111111111111112
+        }
+      },
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "institution",
+        "publicationId": "10.1017/9781009157964",
+        "version": "SROCC评估2019；原件出版2022；SHA cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+        "sample": "全球评估；具体对象/期间按本页原文限定",
+        "method": "IPCC文献评估；文献接收截止2019-05-15",
+        "statisticalBasis": "原报告置信度/似然与数值区间分别保留，不自行转换",
+        "limitations": "不独立重估误差传播，不把算术复现或简单差值称为气候归因或事实认证。"
+      }
+    },
+    {
+      "id": "p08-claim1",
+      "statement": "生态系统保护/恢复等响应可在当地降低风险，但有生态、财政、制度与治理约束；部分选项仅在较低升温下有效（高置信度）。；海岸响应组合可包括防护、适应性设施、生态系统响应、向海拓展和退让，须权衡具体情境中的成本、收益与取舍（高置信度）。；不能称这些选项必然有效，也不推出应采用单一全国方案。全文PDF766页在外部路径，章节索引与逐页位置可供审阅者深入核查。",
+      "type": "judgment",
+      "sourceIds": ["s40", "s41"],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "professionalContext": {
+        "domain": "science",
+        "materialKind": "institution",
+        "publicationId": "10.1017/9781009157964",
+        "version": "SROCC评估2019；原件出版2022；SHA cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+        "sample": "全球评估；具体对象/期间按本页原文限定",
+        "method": "IPCC文献评估；文献接收截止2019-05-15",
+        "statisticalBasis": "原报告置信度/似然与数值区间分别保留，不自行转换",
+        "limitations": "科研内容/版权/版面仍待专业审阅；真实PowerPoint导入、编辑、保存重开及耗时仍未验收。"
+      }
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "阅读范围、版本与不确定性",
+      "purpose": "核对指定原件摘要而非认证结论",
+      "domainSection": "research_question",
+      "claimIds": ["p01-claim1"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "自制中文摘要与可编辑文本",
+        "原PDF位置及单位/不确定性/限定可見",
+        "候选待审状态不能写成通过"
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "高山与冰冻圈：观测口径先行",
+      "purpose": "核对指定原件摘要而非认证结论",
+      "domainSection": "methods_and_sample",
+      "claimIds": ["p02-claim1"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "自制中文摘要与可编辑文本",
+        "原PDF位置及单位/不确定性/限定可見",
+        "候选待审状态不能写成通过"
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "极地：北极与南极不能互相代替",
+      "purpose": "核对指定原件摘要而非认证结论",
+      "domainSection": "results_and_data",
+      "claimIds": ["p03-claim1"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "自制中文摘要与可编辑文本",
+        "原PDF位置及单位/不确定性/限定可見",
+        "候选待审状态不能写成通过"
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "海平面：观测率与2100年投影分开",
+      "purpose": "核对指定原件摘要而非认证结论",
+      "domainSection": "results_and_data",
+      "claimIds": ["p04-claim1"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "自制中文摘要与可编辑文本",
+        "原PDF位置及单位/不确定性/限定可見",
+        "候选待审状态不能写成通过"
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "海洋：热、酸化与缺氧各保留口径",
+      "purpose": "核对指定原件摘要而非认证结论",
+      "domainSection": "results_and_data",
+      "claimIds": ["p05-claim1"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "自制中文摘要与可编辑文本",
+        "原PDF位置及单位/不确定性/限定可見",
+        "候选待审状态不能写成通过"
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "极端事件：保留情景、暴露和低置信度",
+      "purpose": "核对指定原件摘要而非认证结论",
+      "domainSection": "scope_and_limitations",
+      "claimIds": ["p06-claim1"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "自制中文摘要与可编辑文本",
+        "原PDF位置及单位/不确定性/限定可見",
+        "候选待审状态不能写成通过"
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "数值对照：原期间、单位与范围不丢失",
+      "purpose": "核对指定原件摘要而非认证结论",
+      "domainSection": "scope_and_limitations",
+      "claimIds": ["p07-claim1", "ice-conversion"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "自制中文摘要与可编辑文本",
+        "原PDF位置及单位/不确定性/限定可見",
+        "候选待审状态不能写成通过"
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "适应、限制及完整原文索引",
+      "purpose": "核对指定原件摘要而非认证结论",
+      "domainSection": "research_references",
+      "claimIds": ["p08-claim1"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "自制中文摘要与可编辑文本",
+        "原PDF位置及单位/不确定性/限定可見",
+        "候选待审状态不能写成通过"
+      ]
+    }
+  ]
+}

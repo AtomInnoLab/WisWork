@@ -26,6 +26,7 @@ describe('configured Office connection lifecycle', () => {
     }
     const snapshot: OfficeRelaySnapshot = { status: 'offline' }
     const bridge: OfficeRelaySession = {
+      diagnosticSessionId: () => undefined,
       snapshot: () => snapshot,
       subscribe: () => () => undefined,
       connect: vi.fn().mockResolvedValue(undefined),
@@ -84,6 +85,7 @@ describe('configured Office connection lifecycle', () => {
     let notify: () => void = () => undefined
     let attempts = 0
     const bridge: OfficeRelaySession = {
+      diagnosticSessionId: () => undefined,
       snapshot: () => snapshot,
       subscribe: (listener) => {
         notify = listener

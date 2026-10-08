@@ -1,0 +1,707 @@
+{
+  "version": 1,
+  "projectId": "p0-07-annual-performance-reference",
+  "title": "Apple 2024 财年表现候选稿",
+  "domain": "finance",
+  "brief": {
+    "objective": "依据审计年报制作八页年度表现汇报，独立复算同比并保留未经审计业绩表的交叉核对身份",
+    "audience": "财务专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": [
+      "不同财年结束日",
+      "百万美元单位",
+      "三指标年度原值与同比",
+      "三张原生图表",
+      "审计身份与限制"
+    ],
+    "constraints": [
+      "净利润为下降",
+      "不把 Q4 业绩表称为审计报告",
+      "重述口径待审阅",
+      "不得提供投资建议",
+      "真实 PowerPoint 验收待完成"
+    ]
+  },
+  "sources": [
+    {
+      "id": "annual-period",
+      "title": "Apple FY2024 Form 10-K 合并报表期间与单位",
+      "uri": "https://s2.q4cdn.com/470004039/files/doc_earnings/2024/q4/filing/10-Q4-2024-As-Filed.pdf",
+      "snapshotAttachmentId": "319e1217afe72f194575e63350ea6c813eaf5caf0c24e59ce8b221fc1b3ea0d4",
+      "locator": "PDF 第 32 页／印刷第 29 页",
+      "excerpt": "Apple Inc.\nCONSOLIDATED STATEMENTS OF OPERATIONS\n(In millions, except number of shares, which are reflected in thousands, and per-share amounts)\nYears ended\nSeptember 28,\n2024 September 30,\n2023 September 24,\n2022\nNet sa",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "audit-opinion",
+      "title": "Apple FY2024 Form 10-K 独立审计意见",
+      "uri": "https://s2.q4cdn.com/470004039/files/doc_earnings/2024/q4/filing/10-Q4-2024-As-Filed.pdf",
+      "snapshotAttachmentId": "319e1217afe72f194575e63350ea6c813eaf5caf0c24e59ce8b221fc1b3ea0d4",
+      "locator": "PDF 第 51 页／印刷第 48 页",
+      "excerpt": "We have audited the accompanying consolidated balance sheets of Apple Inc. (the “Company”) as of September 28, 2024 and",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "release-unaudited",
+      "title": "Apple FY2024 Q4 官方业绩表未审计标识",
+      "uri": "https://www.apple.com/newsroom/pdfs/fy2024-q4/FY24_Q4_Consolidated_Financial_Statements.pdf",
+      "snapshotAttachmentId": "af9646018330484238d357f1168ae74194fd768f4ea9921e4b2828c88309320c",
+      "locator": "PDF 第 1 页",
+      "excerpt": "CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS (Unaudited)",
+      "asOf": "2024-10-31"
+    },
+    {
+      "id": "dictionary",
+      "title": "本包自制口径字典",
+      "uri": "local:data-dictionary.json",
+      "snapshotAttachmentId": "572b5b38a0d95f4aef0526da1dfae4344fa61c5e86aff0c0ed824a9467f59b5a",
+      "locator": "asOf、currency、unit、basis",
+      "excerpt": "{\n  \"caseId\": \"PPT-P0-07\",\n  \"materialStatus\": \"candidate_pending_financial_review\",\n  \"asOf\": \"2024-11-01\",\n  \"entity\": \"Apple Inc.\",\n  \"currency\": \"USD\",\n  \"unit\": \"millions\",\n  \"basis\": \"consolidated, U.S. GAAP, fiscal years ended 2024-09-28 and 2023-09-30\",\n  \"restatementReview\": \"pending_financial_reviewer; do not assert that either period was or was not restated\",\n  \"annualReport\": {\n    \"file\": \"apple-fy2024-form10k.pdf",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "net_sales-annual",
+      "title": "审计年报 净销售额 原值",
+      "uri": "https://s2.q4cdn.com/470004039/files/doc_earnings/2024/q4/filing/10-Q4-2024-As-Filed.pdf",
+      "snapshotAttachmentId": "319e1217afe72f194575e63350ea6c813eaf5caf0c24e59ce8b221fc1b3ea0d4",
+      "locator": "PDF 32 / 印 29",
+      "excerpt": "Total net sales 391,035 383,285 394,328",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "net_sales-release",
+      "title": "未经审计业绩表 净销售额 交叉核对",
+      "uri": "https://www.apple.com/newsroom/pdfs/fy2024-q4/FY24_Q4_Consolidated_Financial_Statements.pdf",
+      "snapshotAttachmentId": "af9646018330484238d357f1168ae74194fd768f4ea9921e4b2828c88309320c",
+      "locator": "PDF 第 1 页",
+      "excerpt": "Total net sales (1) 94,930 89,498 391,035 383,285",
+      "asOf": "2024-10-31"
+    },
+    {
+      "id": "net_sales-csv",
+      "title": "独立复算表 净销售额",
+      "uri": "local:independent-recalc.csv",
+      "snapshotAttachmentId": "5893943998b65489a3de7bedcdb9ad78f0cc734ac98cd0ddd2949c3b8b310ce5",
+      "locator": "CSV net_sales 行",
+      "excerpt": "net_sales,净销售额,391035,383285,2.02,independently_calculated",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "net_sales-2023-csv",
+      "title": "独立复算表 净销售额 2023 原值",
+      "uri": "local:independent-recalc.csv",
+      "snapshotAttachmentId": "5893943998b65489a3de7bedcdb9ad78f0cc734ac98cd0ddd2949c3b8b310ce5",
+      "locator": "CSV net_sales FY2023",
+      "excerpt": "383285",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "net_sales-2024-csv",
+      "title": "独立复算表 净销售额 2024 原值",
+      "uri": "local:independent-recalc.csv",
+      "snapshotAttachmentId": "5893943998b65489a3de7bedcdb9ad78f0cc734ac98cd0ddd2949c3b8b310ce5",
+      "locator": "CSV net_sales FY2024",
+      "excerpt": "391035",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "net_income-annual",
+      "title": "审计年报 净利润 原值",
+      "uri": "https://s2.q4cdn.com/470004039/files/doc_earnings/2024/q4/filing/10-Q4-2024-As-Filed.pdf",
+      "snapshotAttachmentId": "319e1217afe72f194575e63350ea6c813eaf5caf0c24e59ce8b221fc1b3ea0d4",
+      "locator": "PDF 32 / 印 29",
+      "excerpt": "Net income $ 93,736 $ 96,995 $ 99,803",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "net_income-release",
+      "title": "未经审计业绩表 净利润 交叉核对",
+      "uri": "https://www.apple.com/newsroom/pdfs/fy2024-q4/FY24_Q4_Consolidated_Financial_Statements.pdf",
+      "snapshotAttachmentId": "af9646018330484238d357f1168ae74194fd768f4ea9921e4b2828c88309320c",
+      "locator": "PDF 第 1 页",
+      "excerpt": "Net income $ 14,736 $ 22,956 $ 93,736 $ 96,995",
+      "asOf": "2024-10-31"
+    },
+    {
+      "id": "net_income-csv",
+      "title": "独立复算表 净利润",
+      "uri": "local:independent-recalc.csv",
+      "snapshotAttachmentId": "5893943998b65489a3de7bedcdb9ad78f0cc734ac98cd0ddd2949c3b8b310ce5",
+      "locator": "CSV net_income 行",
+      "excerpt": "net_income,净利润,93736,96995,-3.36,independently_calculated",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "net_income-2023-csv",
+      "title": "独立复算表 净利润 2023 原值",
+      "uri": "local:independent-recalc.csv",
+      "snapshotAttachmentId": "5893943998b65489a3de7bedcdb9ad78f0cc734ac98cd0ddd2949c3b8b310ce5",
+      "locator": "CSV net_income FY2023",
+      "excerpt": "96995",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "net_income-2024-csv",
+      "title": "独立复算表 净利润 2024 原值",
+      "uri": "local:independent-recalc.csv",
+      "snapshotAttachmentId": "5893943998b65489a3de7bedcdb9ad78f0cc734ac98cd0ddd2949c3b8b310ce5",
+      "locator": "CSV net_income FY2024",
+      "excerpt": "93736",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "operating_cash_flow-annual",
+      "title": "审计年报 经营活动现金流 原值",
+      "uri": "https://s2.q4cdn.com/470004039/files/doc_earnings/2024/q4/filing/10-Q4-2024-As-Filed.pdf",
+      "snapshotAttachmentId": "319e1217afe72f194575e63350ea6c813eaf5caf0c24e59ce8b221fc1b3ea0d4",
+      "locator": "PDF 36 / 印 33",
+      "excerpt": "Cash generated by operating activities 118,254 110,543 122,151",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "operating_cash_flow-release",
+      "title": "未经审计业绩表 经营活动现金流 交叉核对",
+      "uri": "https://www.apple.com/newsroom/pdfs/fy2024-q4/FY24_Q4_Consolidated_Financial_Statements.pdf",
+      "snapshotAttachmentId": "af9646018330484238d357f1168ae74194fd768f4ea9921e4b2828c88309320c",
+      "locator": "PDF 第 3 页",
+      "excerpt": "Cash generated by operating activities 118,254 110,543",
+      "asOf": "2024-10-31"
+    },
+    {
+      "id": "operating_cash_flow-csv",
+      "title": "独立复算表 经营活动现金流",
+      "uri": "local:independent-recalc.csv",
+      "snapshotAttachmentId": "5893943998b65489a3de7bedcdb9ad78f0cc734ac98cd0ddd2949c3b8b310ce5",
+      "locator": "CSV operating_cash_flow 行",
+      "excerpt": "operating_cash_flow,经营活动现金流,118254,110543,6.98,independently_calculated",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "operating_cash_flow-2023-csv",
+      "title": "独立复算表 经营活动现金流 2023 原值",
+      "uri": "local:independent-recalc.csv",
+      "snapshotAttachmentId": "5893943998b65489a3de7bedcdb9ad78f0cc734ac98cd0ddd2949c3b8b310ce5",
+      "locator": "CSV operating_cash_flow FY2023",
+      "excerpt": "110543",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "operating_cash_flow-2024-csv",
+      "title": "独立复算表 经营活动现金流 2024 原值",
+      "uri": "local:independent-recalc.csv",
+      "snapshotAttachmentId": "5893943998b65489a3de7bedcdb9ad78f0cc734ac98cd0ddd2949c3b8b310ce5",
+      "locator": "CSV operating_cash_flow FY2024",
+      "excerpt": "118254",
+      "asOf": "2024-11-01"
+    }
+  ],
+  "claims": [
+    {
+      "id": "basis",
+      "statement": "2024 与 2023 财年结束日分别为 2024-09-28、2023-09-30；合并报表单位为百万美元。",
+      "sourceIds": ["annual-period", "dictionary"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "两财年结束日不同；重述口径待财务审阅"
+      }
+    },
+    {
+      "id": "audit",
+      "statement": "主要年度数值取自包含独立审计意见的 Apple FY2024 Form 10-K。",
+      "sourceIds": ["audit-opinion"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "审计意见身份不认证本稿财务解释"
+      }
+    },
+    {
+      "id": "release-status",
+      "statement": "2024-10-31 官方 Q4 业绩表标为 Unaudited，仅用于交叉核对。",
+      "sourceIds": ["release-unaudited"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "disclosure",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "不能把业绩表称为审计年报"
+      }
+    },
+    {
+      "id": "net_sales-2023",
+      "statement": "净销售额 2023 财年为 383,285 百万美元。",
+      "sourceIds": ["net_sales-annual", "net_sales-2023-csv"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "审计年报原值为主，未经审计业绩表仅交叉核对；重述口径待审阅"
+      }
+    },
+    {
+      "id": "net_sales-2024",
+      "statement": "净销售额 2024 财年为 391,035 百万美元。",
+      "sourceIds": ["net_sales-annual", "net_sales-2024-csv"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "审计年报原值为主，未经审计业绩表仅交叉核对；重述口径待审阅"
+      }
+    },
+    {
+      "id": "net_sales-yoy",
+      "statement": "净销售额 2024 相对 2023 财年同比 +2.02%，为本包独立复算。",
+      "sourceIds": ["net_sales-csv"],
+      "type": "calculation",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "独立复算而非 Apple 原文百分比；不作未来预测",
+        "formula": "(2024−2023)÷2023×100%，小数点后两位四舍五入"
+      },
+      "calculation": {
+        "formula": "round((fy2024-fy2023)/fy2023*100,2)",
+        "inputs": ["fy2024", "fy2023"],
+        "unit": "%",
+        "reproduction": {
+          "bindings": [
+            { "name": "fy2024", "inputIndex": 0, "value": 391035, "sourceId": "net_sales-csv" },
+            { "name": "fy2023", "inputIndex": 1, "value": 383285, "sourceId": "net_sales-csv" }
+          ],
+          "expected": 2.02
+        }
+      }
+    },
+    {
+      "id": "net_income-2023",
+      "statement": "净利润 2023 财年为 96,995 百万美元。",
+      "sourceIds": ["net_income-annual", "net_income-2023-csv"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "审计年报原值为主，未经审计业绩表仅交叉核对；重述口径待审阅"
+      }
+    },
+    {
+      "id": "net_income-2024",
+      "statement": "净利润 2024 财年为 93,736 百万美元。",
+      "sourceIds": ["net_income-annual", "net_income-2024-csv"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "审计年报原值为主，未经审计业绩表仅交叉核对；重述口径待审阅"
+      }
+    },
+    {
+      "id": "net_income-yoy",
+      "statement": "净利润 2024 相对 2023 财年同比 -3.36%，为本包独立复算。",
+      "sourceIds": ["net_income-csv"],
+      "type": "calculation",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "独立复算而非 Apple 原文百分比；不作未来预测",
+        "formula": "(2024−2023)÷2023×100%，小数点后两位四舍五入"
+      },
+      "calculation": {
+        "formula": "round((fy2024-fy2023)/fy2023*100,2)",
+        "inputs": ["fy2024", "fy2023"],
+        "unit": "%",
+        "reproduction": {
+          "bindings": [
+            { "name": "fy2024", "inputIndex": 0, "value": 93736, "sourceId": "net_income-csv" },
+            { "name": "fy2023", "inputIndex": 1, "value": 96995, "sourceId": "net_income-csv" }
+          ],
+          "expected": -3.36
+        }
+      }
+    },
+    {
+      "id": "operating_cash_flow-2023",
+      "statement": "经营活动现金流 2023 财年为 110,543 百万美元。",
+      "sourceIds": ["operating_cash_flow-annual", "operating_cash_flow-2023-csv"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "审计年报原值为主，未经审计业绩表仅交叉核对；重述口径待审阅"
+      }
+    },
+    {
+      "id": "operating_cash_flow-2024",
+      "statement": "经营活动现金流 2024 财年为 118,254 百万美元。",
+      "sourceIds": ["operating_cash_flow-annual", "operating_cash_flow-2024-csv"],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "审计年报原值为主，未经审计业绩表仅交叉核对；重述口径待审阅"
+      }
+    },
+    {
+      "id": "operating_cash_flow-yoy",
+      "statement": "经营活动现金流 2024 相对 2023 财年同比 +6.98%，为本包独立复算。",
+      "sourceIds": ["operating_cash_flow-csv"],
+      "type": "calculation",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "fiscal years ended 2024-09-28 and 2023-09-30",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "consolidated U.S. GAAP",
+        "limitations": "独立复算而非 Apple 原文百分比；不作未来预测",
+        "formula": "(2024−2023)÷2023×100%，小数点后两位四舍五入"
+      },
+      "calculation": {
+        "formula": "round((fy2024-fy2023)/fy2023*100,2)",
+        "inputs": ["fy2024", "fy2023"],
+        "unit": "%",
+        "reproduction": {
+          "bindings": [
+            {
+              "name": "fy2024",
+              "inputIndex": 0,
+              "value": 118254,
+              "sourceId": "operating_cash_flow-csv"
+            },
+            {
+              "name": "fy2023",
+              "inputIndex": 1,
+              "value": 110543,
+              "sourceId": "operating_cash_flow-csv"
+            }
+          ],
+          "expected": 6.98
+        }
+      }
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "2024 财年表现：期间与来源",
+      "purpose": "展示已冻结年度数据、独立复算与审计边界",
+      "claimIds": ["basis", "audit", "release-status"],
+      "domainSection": "financial_question",
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑图表或文字",
+        "原值与公式可追溯",
+        "保留报告期、单位和审计身份"
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "目录与审计口径",
+      "purpose": "展示已冻结年度数据、独立复算与审计边界",
+      "claimIds": ["basis", "audit", "release-status"],
+      "domainSection": "reporting_basis",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑图表或文字",
+        "原值与公式可追溯",
+        "保留报告期、单位和审计身份"
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "收入：年度值与同比（百万美元）",
+      "purpose": "展示已冻结年度数据、独立复算与审计边界",
+      "claimIds": ["net_sales-2023", "net_sales-2024", "net_sales-yoy"],
+      "domainSection": "financial_results",
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑图表或文字",
+        "原值与公式可追溯",
+        "保留报告期、单位和审计身份"
+      ],
+      "chartData": [
+        {
+          "elementId": "net_sales-chart",
+          "categories": ["2023 财年", "2024 财年"],
+          "currency": "USD",
+          "unit": "USD millions",
+          "series": [
+            {
+              "name": "净销售额（百万美元）",
+              "points": [
+                {
+                  "value": 383285,
+                  "claimId": "net_sales-2023",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "net_sales-2023-csv",
+                    "excerptOffset": 0,
+                    "excerptText": "383285"
+                  }
+                },
+                {
+                  "value": 391035,
+                  "claimId": "net_sales-2024",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "net_sales-2024-csv",
+                    "excerptOffset": 0,
+                    "excerptText": "391035"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "利润：年度值与同比（百万美元）",
+      "purpose": "展示已冻结年度数据、独立复算与审计边界",
+      "claimIds": ["net_income-2023", "net_income-2024", "net_income-yoy"],
+      "domainSection": "financial_results",
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑图表或文字",
+        "原值与公式可追溯",
+        "保留报告期、单位和审计身份"
+      ],
+      "chartData": [
+        {
+          "elementId": "net_income-chart",
+          "categories": ["2023 财年", "2024 财年"],
+          "currency": "USD",
+          "unit": "USD millions",
+          "series": [
+            {
+              "name": "净利润（百万美元）",
+              "points": [
+                {
+                  "value": 96995,
+                  "claimId": "net_income-2023",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "net_income-2023-csv",
+                    "excerptOffset": 0,
+                    "excerptText": "96995"
+                  }
+                },
+                {
+                  "value": 93736,
+                  "claimId": "net_income-2024",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "net_income-2024-csv",
+                    "excerptOffset": 0,
+                    "excerptText": "93736"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "经营活动现金流：年度值与同比（百万美元）",
+      "purpose": "展示已冻结年度数据、独立复算与审计边界",
+      "claimIds": [
+        "operating_cash_flow-2023",
+        "operating_cash_flow-2024",
+        "operating_cash_flow-yoy"
+      ],
+      "domainSection": "financial_results",
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑图表或文字",
+        "原值与公式可追溯",
+        "保留报告期、单位和审计身份"
+      ],
+      "chartData": [
+        {
+          "elementId": "operating_cash_flow-chart",
+          "categories": ["2023 财年", "2024 财年"],
+          "currency": "USD",
+          "unit": "USD millions",
+          "series": [
+            {
+              "name": "经营活动现金流（百万美元）",
+              "points": [
+                {
+                  "value": 110543,
+                  "claimId": "operating_cash_flow-2023",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "operating_cash_flow-2023-csv",
+                    "excerptOffset": 0,
+                    "excerptText": "110543"
+                  }
+                },
+                {
+                  "value": 118254,
+                  "claimId": "operating_cash_flow-2024",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "operating_cash_flow-2024-csv",
+                    "excerptOffset": 0,
+                    "excerptText": "118254"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "三指标可编辑图表与公式",
+      "purpose": "展示已冻结年度数据、独立复算与审计边界",
+      "claimIds": ["net_sales-yoy", "net_income-yoy", "operating_cash_flow-yoy"],
+      "domainSection": "financial_results",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑图表或文字",
+        "原值与公式可追溯",
+        "保留报告期、单位和审计身份"
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "差异、限制与待审事项",
+      "purpose": "展示已冻结年度数据、独立复算与审计边界",
+      "claimIds": ["net_income-yoy", "release-status"],
+      "domainSection": "financial_risks_and_scenarios",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑图表或文字",
+        "原值与公式可追溯",
+        "保留报告期、单位和审计身份"
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "总结与来源页码",
+      "purpose": "展示已冻结年度数据、独立复算与审计边界",
+      "claimIds": ["basis", "audit", "release-status"],
+      "domainSection": "financial_actions",
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑图表或文字",
+        "原值与公式可追溯",
+        "保留报告期、单位和审计身份"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+scenario,label,sales_growth_bps,operating_margin_bps,net_sales_usd_millions,operating_income_usd_millions,evidence_type
+downside,下行假设,-500,2950,371483,109587,calculated_hypothesis
+base,基准假设,300,3150,402766,126871,calculated_hypothesis
+upside,上行假设,800,3350,422318,141477,calculated_hypothesis

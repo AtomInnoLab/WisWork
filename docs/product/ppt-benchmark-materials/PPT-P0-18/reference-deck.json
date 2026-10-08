@@ -1,0 +1,421 @@
+{
+  "version": 1,
+  "id": "p0-18-parent-candidate",
+  "title": "计算可复现性研究：失败页单独重做候选",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "122B43",
+    "accentColor": "008086"
+  },
+  "assets": [
+    {
+      "id": "participant-illustration",
+      "mime": "image/png",
+      "width": 960,
+      "height": 540,
+      "base64": "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",
+      "source": "WisWork 自制示意图 07",
+      "license": "owned"
+    },
+    {
+      "id": "second-illustration",
+      "mime": "image/png",
+      "width": 960,
+      "height": 540,
+      "base64": "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",
+      "source": "WisWork self-authored schematic 8; not research measurement data",
+      "license": "owned"
+    }
+  ],
+  "claims": [
+    {
+      "id": "sample",
+      "text": "工作坊前访谈 14 人，三个月后完成访谈 12 人；两时点分母不同。",
+      "source": "https://doi.org/10.1371/journal.pone.0230697 ; https://doi.org/10.1371/journal.pone.0230697",
+      "locator": "PDF 1 methods ; PDF 5 sample"
+    },
+    {
+      "id": "score",
+      "text": "六项清单均值从 1.6/6 到 2.2/6，p=0.318，未达统计显著。",
+      "source": "https://doi.org/10.1371/journal.pone.0230697",
+      "locator": "PDF 5 checklist"
+    },
+    {
+      "id": "open-source",
+      "text": "开源软件使用人数前测 7/14、后测 10/12；分母不同。",
+      "source": "https://doi.org/10.1371/journal.pone.0230697 ; https://doi.org/10.1371/journal.pone.0230697",
+      "locator": "PDF 5 Table 1 ; PDF 5 sample"
+    },
+    {
+      "id": "limitations",
+      "text": "小样本、招募与应答偏差、单人编码和统计功效不足限制推断。",
+      "source": "https://doi.org/10.1371/journal.pone.0230697",
+      "locator": "PDF 9 limitations"
+    },
+    {
+      "id": "illustration",
+      "text": "第 4 页两张自制示意图不是论文测量数据，权利来自本包声明。",
+      "source": "local:asset-rights.json ; local:asset-rights.json",
+      "locator": "P0-13-IMG-07 ; P0-13-IMG-08"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "计算可复现性工作坊：研究汇报",
+      "claimIds": [],
+      "notes": "来源：Deardorff et al., PLOS ONE 2020；本稿为待审候选。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.62,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.75,
+          "text": "计算可复现性工作坊：研究汇报",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.85,
+          "y": 1.8,
+          "w": 11.4,
+          "h": 2,
+          "text": "Deardorff 等，PLOS ONE 2020。此稿是现稿修改路径对照，研究主张仍待科研审阅。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "source",
+          "role": "decoration",
+          "x": 0.85,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Deardorff et al., PLOS ONE 2020；待科研审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "研究问题与汇报范围",
+      "claimIds": [],
+      "notes": "来源：Deardorff et al., PLOS ONE 2020；本稿为待审候选。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.62,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.75,
+          "text": "研究问题与汇报范围",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.85,
+          "y": 1.8,
+          "w": 11.4,
+          "h": 2,
+          "text": "研究关注编程工作坊与生物医学工作流程的计算可重复性；观察变化不等于因果证明。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "source",
+          "role": "decoration",
+          "x": 0.85,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Deardorff et al., PLOS ONE 2020；待科研审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "研究方法与时间点",
+      "claimIds": ["sample"],
+      "notes": "来源：Deardorff et al., PLOS ONE 2020；本稿为待审候选。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.62,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.75,
+          "text": "研究方法与时间点",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.85,
+          "y": 1.8,
+          "w": 11.4,
+          "h": 2,
+          "text": "工作坊前访谈 14 人，三个月后有 12 人完成后访谈；两时点分母不同。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "source",
+          "role": "decoration",
+          "x": 0.85,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Deardorff et al., PLOS ONE 2020；待科研审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "参与者与证据路径",
+      "claimIds": ["illustration"],
+      "notes": "预设布局失败：现稿主要依赖两张抽象图片，未把三步证据路径明确标为可编辑的原生流程对象；布局审阅要求重做这一页。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.62,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.75,
+          "text": "参与者与证据路径",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.85,
+          "y": 1.8,
+          "w": 11.4,
+          "h": 0.9,
+          "text": "两张自制示意图仅用于说明研究背景，尚未构成明确的可编辑三步证据路径。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "source",
+          "role": "decoration",
+          "x": 0.85,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Deardorff et al., PLOS ONE 2020；待科研审阅",
+          "fontSize": 9
+        },
+        {
+          "kind": "image",
+          "id": "left-image",
+          "assetId": "participant-illustration",
+          "x": 0.85,
+          "y": 3,
+          "w": 5.5,
+          "h": 2.3,
+          "fit": "contain",
+          "altText": "自制示意图 07；非研究测量数据"
+        },
+        {
+          "kind": "image",
+          "id": "right-image",
+          "assetId": "second-illustration",
+          "x": 6.9,
+          "y": 3,
+          "w": 5.5,
+          "h": 2.3,
+          "fit": "contain",
+          "altText": "自制示意图 08；非研究测量数据"
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "六项清单均值",
+      "claimIds": ["score"],
+      "notes": "来源：Deardorff et al., PLOS ONE 2020；本稿为待审候选。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.62,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.75,
+          "text": "六项清单均值",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.85,
+          "y": 1.8,
+          "w": 11.4,
+          "h": 2,
+          "text": "六项清单平均分从 1.6/6 到 2.2/6；论文报告 p=0.318，未达统计显著。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "source",
+          "role": "decoration",
+          "x": 0.85,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Deardorff et al., PLOS ONE 2020；待科研审阅",
+          "fontSize": 9
+        },
+        {
+          "kind": "chart",
+          "id": "checklist-chart",
+          "x": 1,
+          "y": 4,
+          "w": 10,
+          "h": 2.5,
+          "chartType": "bar",
+          "categories": ["前测", "三个月后"],
+          "series": [{ "name": "六项清单均值", "values": [1.6, 2.2] }]
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "开源软件使用：不同分母",
+      "claimIds": ["open-source"],
+      "notes": "来源：Deardorff et al., PLOS ONE 2020；本稿为待审候选。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.62,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.75,
+          "text": "开源软件使用：不同分母",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.85,
+          "y": 1.8,
+          "w": 11.4,
+          "h": 2,
+          "text": "Table 1：开源软件使用计数前测 7/14，后测 10/12，不能将计数差视作同一人的逐个变化。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "source",
+          "role": "decoration",
+          "x": 0.85,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Deardorff et al., PLOS ONE 2020；待科研审阅",
+          "fontSize": 9
+        },
+        {
+          "kind": "chart",
+          "id": "software-chart",
+          "x": 1,
+          "y": 4,
+          "w": 10,
+          "h": 2.5,
+          "chartType": "bar",
+          "categories": ["前测 n=14", "后测 n=12"],
+          "series": [{ "name": "开源软件使用人数", "values": [7, 10] }]
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "解释边界与局限",
+      "claimIds": ["limitations"],
+      "notes": "来源：Deardorff et al., PLOS ONE 2020；本稿为待审候选。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.62,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.75,
+          "text": "解释边界与局限",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.85,
+          "y": 1.8,
+          "w": 11.4,
+          "h": 2,
+          "text": "小样本、招募或应答偏差、单人编码及统计功效不足限制了推断。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "source",
+          "role": "decoration",
+          "x": 0.85,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Deardorff et al., PLOS ONE 2020；待科研审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "结论与后续审阅",
+      "claimIds": ["limitations"],
+      "notes": "来源：Deardorff et al., PLOS ONE 2020；本稿为待审候选。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.62,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.75,
+          "text": "结论与后续审阅",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.85,
+          "y": 1.8,
+          "w": 11.4,
+          "h": 2,
+          "text": "结论和局限并列；科研审阅与真实 PowerPoint 验收尚未完成。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "source",
+          "role": "decoration",
+          "x": 0.85,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Deardorff et al., PLOS ONE 2020；待科研审阅",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}

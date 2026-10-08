@@ -7,9 +7,21 @@ const SCHEMA_VERSION = 1
 const DATABASE_VERSION = 2
 const ENROLLMENT_LEASE_MS = 180_000
 const MAX_OPAQUE_LENGTH = 512
-const MAX_CAPABILITIES = 16
 const BINDING_CAPABILITIES = new Set([
   'agent.v1',
+  'presentation.v1',
+  'presentation-team.v1',
+  'presentation-attachments.v1',
+  'presentation-assets.v1',
+  'presentation-remote-images.v1',
+  'presentation-webpages.v1',
+  'presentation-asset-rights.v1',
+  'presentation-animation-frame.v1',
+  'presentation-pdf.v1',
+  'presentation-production-pdf.v1',
+  'presentation-master-backups.v1',
+  'presentation-package-backups.v1',
+  'presentation-governance.v1',
   'web-search.v1',
   'web-fetch.v1',
   'image-search.v1',
@@ -17,6 +29,7 @@ const BINDING_CAPABILITIES = new Set([
   'design-document.v1',
   'enhanced-lease.v1',
 ])
+const MAX_CAPABILITIES = BINDING_CAPABILITIES.size
 
 export const OFFICE_BINDING_DATABASE_SCHEMA = Object.freeze({
   name: 'wiswork-office-pairing',

@@ -1,0 +1,416 @@
+{
+  "version": 1,
+  "id": "p0-16-resume-reference",
+  "title": "计算可复现性研究：断线续跑八页候选稿",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "assets": [
+    {
+      "id": "schematic-1",
+      "mime": "image/png",
+      "width": 960,
+      "height": 540,
+      "base64": "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",
+      "source": "WisWork self-authored schematic 1; not research measurement data",
+      "license": "owned"
+    },
+    {
+      "id": "schematic-2",
+      "mime": "image/png",
+      "width": 960,
+      "height": 540,
+      "base64": "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dc5T+LxzngLA4zm2IXzesQ0BXt8lwLM75ylX3bKGHzrnKQA8tmMbctWPe/ihYxsCvJ0W4MWc8xTeO+cpANRxbEN479iGAG/rEuBFnfOUq25ZU9U5TwGgpmMbctWPe6o6tiHAbbgEeBXnPOWqW9ZUcc5TAODq2IZc9eOeKo5tCHBbLgFe1TlPueqWNY/qnKcAwIcc25CrftzzqI5tCHCbLgHexDlPueqWNY/inKcAwFMc25CrftzzKI5tCHDbLgHe1DlPeadb1tybc54CAF/r2Ia804977s2xDQHuxyXAzTjnKe90y5pbdc5TAOC5HduQd/pxz606tiHAfboEuEnnPOWdblnz1s55CgC8lmMb8k4/7nlrxzYEuH+XADfvnKf8WLeseSnnPAUAbsWxDfmxftzzUo5tCPCYun/5138/cwP++3/7LwGez2//8Kd8zD/+w98HAB7Zb//wp3zMP/7D3wd4XX/+t//ILWgBAACAAloAAACggBYAAAAooAUAAAAKaAEAAIACWgAAAKCAFgAAACigBQAAAApoAQAAgAJaAAAAoIAWAAAAKKAFAAAACmgBAACAAloAAACggBYAAAAooAUAAAAKaAEAAIACWgAAAKCAFgAAACigBQAAAApoAQAAgAJaAAAAoIAWAAAAKKAFAAAACmgBAACAAloAAACggBYAAAAooAUAAAAKaAEAAIACWgAAAKCAFgAAACigBQAAAApoAQAAgAJaAAAAoIAWAAAAKKAFAAAACmgBAACAAloAAACggBYAAAAooAUAAAAKaAEAAIACWgAAAKCAFgAAACigBQAAAApoAQAAgAJaAAAAoIAWAAAAKKAFAAAACmgBAACAAloAAACggBYAAAAooAUAAAAKaAEAAIACWgAAAKCAFgAAACigBQAAAApoAQAAgAJaAAAAoIAWAAAAKKAFAAAACmgBAACAAloAAACggBYAAAAooAUAAAAKaAEAAIACWgAAAKCAFgAAACigBQAAAApoAQAAgAJaAAAAoIAWAAAAKKAFAAAACmgBAACAAloAAACggBYAAAAooAUAAAAKaAEAAIACWgAAAKCAFgAAACigBQAAAApoAQAAgAJaAAAAoIAWAAAAKKAFAAAACmgBAACAAloAAACggBYAAAAooAUAAAAKaAEAAIACWgAAAKCAFgAAACigBQAAAApoAQAAgAJaAAAA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",
+      "source": "WisWork self-authored schematic 3; not research measurement data",
+      "license": "owned"
+    }
+  ],
+  "claims": [
+    {
+      "id": "sample",
+      "text": "培训前 14 人、三个月后 12 人",
+      "source": "doi:10.1371/journal.pone.0230697",
+      "locator": "第 5 页"
+    },
+    {
+      "id": "score",
+      "text": "均分 1.6/6 到 2.2/6；p=0.318",
+      "source": "doi:10.1371/journal.pone.0230697",
+      "locator": "第 5 页"
+    },
+    {
+      "id": "open-source",
+      "text": "开源软件使用 7/14 到 10/12",
+      "source": "doi:10.1371/journal.pone.0230697",
+      "locator": "第 5 页"
+    },
+    {
+      "id": "limitations",
+      "text": "小样本、选择/应答、单人编码和功效限制",
+      "source": "doi:10.1371/journal.pone.0230697",
+      "locator": "第 9 页"
+    },
+    {
+      "id": "checklist-design",
+      "text": "六项清单来自论文补充材料，研究表述仍待科研审阅",
+      "source": "doi:10.1371/journal.pone.0230697.s001",
+      "locator": "PDF 第 1 页"
+    },
+    {
+      "id": "illustrations",
+      "text": "两张自制示意图只用于说明，不代表研究测量数据",
+      "source": "local:asset-rights.json",
+      "locator": "assets 1–2"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "科研工作流可复现性：编程培训观察",
+      "claimIds": [],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "科研工作流可复现性：编程培训观察",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "Deardorff（2020）基于 UCSF 生物医学研究人员的编程培训访谈与清单；这是待专业审阅的候选参考稿。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：Deardorff 2020，PLOS ONE；候选参考稿",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "问题与研究范围",
+      "claimIds": ["illustrations"],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "问题与研究范围",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 2.2,
+          "text": "问题：入门编程培训后，研究人员的可复现工作流实践出现了哪些自述变化？研究对象和结论限于这项小样本观察。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：论文 PDF 第 1、3 页；仅限本研究样本",
+          "fontSize": 9
+        },
+        {
+          "kind": "image",
+          "id": "schematic-1-image",
+          "assetId": "schematic-1",
+          "x": 0.9,
+          "y": 4.05,
+          "w": 5.5,
+          "h": 1.7,
+          "fit": "contain",
+          "altText": "WisWork 自制示意图 1；非研究测量数据"
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "访谈设计与样本流失",
+      "claimIds": ["sample"],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "访谈设计与样本流失",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "培训前访谈 14 人，三个月后 12 人完成后访谈。分母不同，不能把两次计数直接视为同一批人的个体转变。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：论文 PDF 第 3、5 页；前后测分母不同",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "六项清单：测量什么",
+      "claimIds": ["illustrations", "checklist-design"],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "六项清单：测量什么",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 2.2,
+          "text": "S1 Checklist 是六项可复现实践的空白测量表，不提供参与者个体原始分数。报告只使用论文已发表的汇总值。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：S1 Checklist PDF 第 1 页；论文 PDF 第 5 页",
+          "fontSize": 9
+        },
+        {
+          "kind": "image",
+          "id": "schematic-2-image",
+          "assetId": "schematic-2",
+          "x": 0.9,
+          "y": 4.05,
+          "w": 5.5,
+          "h": 1.7,
+          "fit": "contain",
+          "altText": "WisWork 自制示意图 2；非研究测量数据"
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "清单均分：不可夸大变化",
+      "claimIds": ["score"],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "清单均分：不可夸大变化",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "六项清单均分从 1.6/6 到 2.2/6；论文报告差异未达统计显著（p = 0.318）。这不是培训因果效果的证明。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：论文 PDF 第 5 页；p = 0.318",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "Table 1：开源工具使用",
+      "claimIds": ["open-source"],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "Table 1：开源工具使用",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 0.9,
+          "text": "Table 1 中“使用开源软件”为培训前 7/14、三个月后 10/12。图中展示计数，横轴同时标出不同分母。",
+          "fontSize": 19
+        },
+        {
+          "kind": "chart",
+          "id": "table1-open-source-native",
+          "x": 1,
+          "y": 2.85,
+          "w": 10.8,
+          "h": 3.25,
+          "chartType": "bar",
+          "categories": ["前测 n=14", "三个月后 n=12"],
+          "series": [{ "name": "报告使用开源软件的人数", "values": [7, 10] }]
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：论文 PDF 第 5 页 Table 1；前测 n=14、后测 n=12",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "定性观察与研究局限",
+      "claimIds": ["limitations"],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "定性观察与研究局限",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "访谈提示受访者对“分享代码”的理解可能改变。作者列出小样本、招募/应答偏差、单人编码与定量分析功效不足等局限。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "来源：论文 PDF 第 5、9 页；局限见第 9 页",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "结论与待核验事项",
+      "claimIds": [],
+      "notes": "待科研专业审阅；所有主张仅限冻结原文，不代表真实 PowerPoint 宿主验收。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "结论与待核验事项",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "可以报告受访者自述与清单汇总的变化；不能声称已证明普遍或因果效果。仍需科研审阅、真实 PowerPoint 的图表编辑与保存重开验收。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "原件已冻结；科研审阅与 PowerPoint 宿主验收待完成",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}

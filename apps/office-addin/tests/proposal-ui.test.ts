@@ -1,9 +1,23 @@
 import { describe, expect, it, vi } from 'vitest'
-import { proposalPresentation, safeUploadError, uploadSessionFile } from '../src/App.js'
+import {
+  createPastedSourceFile,
+  proposalPresentation,
+  safeUploadError,
+  uploadSessionFile,
+} from '../src/App.js'
 import type { OfficeHostRuntime } from '../src/agent/host-runtime.js'
 import { MAX_VFS_FILE_BYTES } from '../src/skills/shared/vfs.js'
 
 describe('generic proposal presentation', () => {
+  it('turns pasted source text into a UTF-8 attachment with a readable name', async () => {
+    const file = createPastedSourceFile('中文 evidence\n', Date.UTC(2026, 8, 28, 10, 0, 0))
+    expect(file.name).toBe('粘贴资料-2026-09-28T10-00-00-000Z.txt')
+    expect(await file.text()).toBe('中文 evidence\n')
+    expect(() => createPastedSourceFile('  ')).toThrow('presentation_text_too_long')
+    expect(() => createPastedSourceFile('a'.repeat(1_000_001))).toThrow(
+      'presentation_text_too_long',
+    )
+  })
   it('presents structured impact as a readable comparison without protocol JSON or code', () => {
     expect(
       proposalPresentation({
@@ -165,19 +179,28 @@ describe('generic proposal presentation', () => {
 
   it('maps upload failures to stable UI-safe errors', () => {
     expect(safeUploadError(new Error('invalid_skill_package'))).toBe('invalid_skill_package')
+    expect(safeUploadError(new Error('presentation_animated_image_unsupported'))).toContain(
+      '动画网址未保存',
+    )
+    expect(safeUploadError(new Error('presentation_animated_image_staged'))).toContain(
+      '生成静态首帧',
+    )
+    expect(
+      safeUploadError(new Error('presentation_animated_image_unsupported'), { size: 100 }),
+    ).toContain('动画原件已保留')
     expect(safeUploadError(new Error('/Users/alice/private'))).toBe('upload_failed')
   })
 
   it('turns VFS limits into actionable attachment messages', () => {
     expect(safeUploadError(new Error('vfs_limit'), { size: 26.4 * 1024 * 1024 })).toBe(
-      'File is 26.4 MB. Attachments must be 20 MB or smaller.',
+      'File is 26.4 MiB. Attachments must be 20 MiB or smaller.',
     )
     expect(safeUploadError(new Error('vfs_limit'))).toBe(
-      'Attachment limit reached. Files are limited to 20 MB each and 64 MB per session.',
+      'Attachment limit reached. Files are limited to 20 MiB each and 64 MiB per session.',
     )
   })
 
-  it('accepts a session attachment larger than the old 2 MB limit', async () => {
+  it('accepts a session attachment larger than the old 2 MiB limit', async () => {
     const arrayBuffer = vi.fn(async () => new ArrayBuffer(0))
     const runtime = {
       uploadFile: vi.fn(async () => undefined),
@@ -209,4 +232,78 @@ describe('generic proposal presentation', () => {
     expect(runtime.uploadFile).not.toHaveBeenCalled()
     expect(runtime.installSkill).not.toHaveBeenCalled()
   })
+})
+it('uses the PC attachment limit for supported PPT sources before loading bytes', async () => {
+  const runtime = {
+    durableAttachmentsAvailable: () => true,
+    uploadFile: vi.fn(async () => undefined),
+  } as unknown as OfficeHostRuntime
+  const arrayBuffer = vi.fn(async () => new ArrayBuffer(0))
+  await expect(
+    uploadSessionFile(runtime, {
+      name: 'source.pdf',
+      size: 50 * 1024 * 1024,
+      arrayBuffer,
+      text: vi.fn(),
+    }),
+  ).resolves.toBeUndefined()
+  expect(arrayBuffer).toHaveBeenCalledOnce()
+  arrayBuffer.mockClear()
+  await expect(
+    uploadSessionFile(runtime, {
+      name: 'source.pdf',
+      size: 50 * 1024 * 1024 + 1,
+      arrayBuffer,
+      text: vi.fn(),
+    }),
+  ).rejects.toThrow('presentation_attachment_too_large')
+  expect(arrayBuffer).not.toHaveBeenCalled()
+})
+it('enforces the image limit only when the PC asset capability is negotiated', async () => {
+  const arrayBuffer = vi.fn(async () => new ArrayBuffer(0)),
+    uploadFile = vi.fn(async () => {})
+  const runtime = {
+    durableAttachmentsAvailable: () => true,
+    durableImagesAvailable: () => true,
+    uploadFile,
+  } as unknown as OfficeHostRuntime
+  await expect(
+    uploadSessionFile(runtime, {
+      name: 'photo.jpg',
+      size: 10 * 1024 * 1024 + 1,
+      arrayBuffer,
+      text: vi.fn(),
+    }),
+  ).rejects.toThrow('presentation_image_too_large')
+  expect(arrayBuffer).not.toHaveBeenCalled()
+  runtime.durableImagesAvailable = () => false
+  await expect(
+    uploadSessionFile(runtime, {
+      name: 'photo.jpg',
+      size: 10 * 1024 * 1024 + 1,
+      arrayBuffer,
+      text: vi.fn(),
+    }),
+  ).resolves.toBeUndefined()
+  expect(uploadFile).toHaveBeenCalledOnce()
+})
+
+it('shows an explicit warning when text recovery previews omit the full saved values', () => {
+  const presentation = proposalPresentation({
+    id: 'text-undo',
+    operation: 'undo_presentation_text_change',
+    title: '撤销文字修改',
+    impact: { host: 'powerpoint', targets: ['host'], count: 1 },
+    fingerprint: 'f',
+    before: 'prefix',
+    after: 'old prefix',
+    preview: {
+      beforeTruncated: true,
+      afterTruncated: true,
+      beforeLength: 12000,
+      afterLength: 12000,
+    },
+  })
+  expect(presentation.preview).toContain('文本预览已截断')
+  expect(presentation.preview).toContain('完整文本')
 })

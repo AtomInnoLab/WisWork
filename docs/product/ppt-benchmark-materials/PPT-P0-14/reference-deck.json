@@ -1,0 +1,983 @@
+{
+  "version": 1,
+  "id": "p0-14-nasa-fallback-candidate",
+  "title": "2024 全球地表温度异常：NASA 来源候选汇报",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "142D43",
+    "accentColor": "087D83"
+  },
+  "assets": [
+    {
+      "id": "nasa-svs-5450-2024-map",
+      "attachmentId": "ddbd57640789b4d60fe1dd0c57bd7563d7ad9d109732dcada2d814c3fa957cbe"
+    }
+  ],
+  "claims": [
+    {
+      "id": "global-mean",
+      "text": "NASA 报告 2024 年全球地表温度相对其 1951–1980 基线高 1.28 °C。",
+      "source": "https://science.nasa.gov/earth/earth-observatory/2024-was-the-warmest-year-on-record-153806/ ; https://svs.gsfc.nasa.gov/5450",
+      "locator": "description ; global-mean"
+    },
+    {
+      "id": "anomaly-not-absolute",
+      "text": "图像显示相对 1951–1980 基线的温度异常，不表示绝对气温。",
+      "source": "https://svs.gsfc.nasa.gov/5450",
+      "locator": "description"
+    },
+    {
+      "id": "map-colors",
+      "text": "地图中白色为接近基线，红色为高于基线，蓝色为低于基线。",
+      "source": "https://svs.gsfc.nasa.gov/5450",
+      "locator": "map-colors"
+    },
+    {
+      "id": "scope-limit",
+      "text": "单幅全球异常图不能推出任意城市的天气或未来预测。",
+      "source": "https://svs.gsfc.nasa.gov/5450",
+      "locator": "description"
+    },
+    {
+      "id": "usage-review",
+      "text": "图像署名与 NASA 媒体使用例外需要人工复核。",
+      "source": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "locator": "media-guidelines"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "2024 全球地表温度异常",
+      "claimIds": [
+        "global-mean",
+        "anomaly-not-absolute"
+      ],
+      "notes": "NASA 原始资料截至 2025-01-11；科学解释、媒体使用条件与真实 PowerPoint 效果待审阅。",
+      "elements": [
+        {
+          "id": "title",
+          "kind": "text",
+          "text": "2024 全球地表温度异常",
+          "x": 0.65,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.7,
+          "fontSize": 27,
+          "bold": true
+        },
+        {
+          "id": "body",
+          "kind": "text",
+          "text": "2024 年全球平均异常 +1.28 °C\n相对 NASA 1951–1980 年基线",
+          "x": 0.75,
+          "y": 1.7,
+          "w": 6.1,
+          "h": 3.2,
+          "fontSize": 29,
+          "bold": true
+        },
+        {
+          "id": "source",
+          "kind": "text",
+          "text": "NASA Earth Observatory / NASA SVS 5450 · 1951–1980 基线 · 待审阅",
+          "x": 0.75,
+          "y": 6.55,
+          "w": 11.6,
+          "h": 0.25,
+          "fontSize": 9,
+          "role": "decoration"
+        },
+        {
+          "id": "accent",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.12,
+          "fill": "087D83",
+          "lineColor": "087D83",
+          "role": "decoration"
+        },
+        {
+          "id": "map",
+          "kind": "image",
+          "assetId": "nasa-svs-5450-2024-map",
+          "x": 7.1,
+          "y": 1.65,
+          "w": 5.4,
+          "h": 3.05,
+          "fit": "contain",
+          "altText": "NASA 2024 全球地表温度异常地图，红色高于基线、蓝色低于基线"
+        },
+        {
+          "id": "metric-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 0.75,
+          "y": 5.02,
+          "w": 5.85,
+          "h": 1.17,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "metric-label",
+          "kind": "text",
+          "text": "年度指标",
+          "x": 0.9299999999999999,
+          "y": 5.159999999999999,
+          "w": 5.489999999999999,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "metric-value",
+          "kind": "text",
+          "text": "NASA 全球平均异常 +1.28 °C",
+          "x": 0.9299999999999999,
+          "y": 5.64,
+          "w": 5.489999999999999,
+          "h": 0.41999999999999993,
+          "fontSize": 15
+        },
+        {
+          "id": "basis-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 6.73,
+          "y": 5.02,
+          "w": 5.85,
+          "h": 1.17,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "basis-label",
+          "kind": "text",
+          "text": "比较口径",
+          "x": 6.91,
+          "y": 5.159999999999999,
+          "w": 5.489999999999999,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "basis-value",
+          "kind": "text",
+          "text": "相对 1951–1980 年平均值",
+          "x": 6.91,
+          "y": 5.64,
+          "w": 5.489999999999999,
+          "h": 0.41999999999999993,
+          "fontSize": 15
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "先明确比较基线",
+      "claimIds": [
+        "global-mean",
+        "anomaly-not-absolute"
+      ],
+      "notes": "NASA 原始资料截至 2025-01-11；科学解释、媒体使用条件与真实 PowerPoint 效果待审阅。",
+      "elements": [
+        {
+          "id": "title",
+          "kind": "text",
+          "text": "先明确比较基线",
+          "x": 0.65,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.7,
+          "fontSize": 27,
+          "bold": true
+        },
+        {
+          "id": "body",
+          "kind": "text",
+          "text": "+1.28 °C",
+          "x": 0.85,
+          "y": 2,
+          "w": 5.5,
+          "h": 1.25,
+          "fontSize": 54,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "source",
+          "kind": "text",
+          "text": "NASA Earth Observatory / NASA SVS 5450 · 1951–1980 基线 · 待审阅",
+          "x": 0.75,
+          "y": 6.55,
+          "w": 11.6,
+          "h": 0.25,
+          "fontSize": 9,
+          "role": "decoration"
+        },
+        {
+          "id": "accent",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.12,
+          "fill": "087D83",
+          "lineColor": "087D83",
+          "role": "decoration"
+        },
+        {
+          "id": "baseline-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 6.67,
+          "y": 1.62,
+          "w": 5.9,
+          "h": 1.85,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "baseline-label",
+          "kind": "text",
+          "text": "比较基线",
+          "x": 6.85,
+          "y": 1.7600000000000002,
+          "w": 5.54,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "baseline-value",
+          "kind": "text",
+          "text": "NASA 1951–1980 年平均值",
+          "x": 6.85,
+          "y": 2.24,
+          "w": 5.54,
+          "h": 1.1,
+          "fontSize": 16
+        },
+        {
+          "id": "not-absolute-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 6.67,
+          "y": 3.72,
+          "w": 5.9,
+          "h": 1.85,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "not-absolute-label",
+          "kind": "text",
+          "text": "避免误读",
+          "x": 6.85,
+          "y": 3.8600000000000003,
+          "w": 5.54,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "not-absolute-value",
+          "kind": "text",
+          "text": "异常量不是 2024 年的绝对气温",
+          "x": 6.85,
+          "y": 4.34,
+          "w": 5.54,
+          "h": 1.1,
+          "fontSize": 16
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "年度结论的证据",
+      "claimIds": [
+        "global-mean"
+      ],
+      "notes": "NASA 原始资料截至 2025-01-11；科学解释、媒体使用条件与真实 PowerPoint 效果待审阅。",
+      "elements": [
+        {
+          "id": "title",
+          "kind": "text",
+          "text": "年度结论的证据",
+          "x": 0.65,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.7,
+          "fontSize": 27,
+          "bold": true
+        },
+        {
+          "id": "body",
+          "kind": "text",
+          "text": "两份 NASA 原始资料采用同一年度和基线口径。",
+          "x": 0.78,
+          "y": 5.03,
+          "w": 11.8,
+          "h": 0.65,
+          "fontSize": 18
+        },
+        {
+          "id": "source",
+          "kind": "text",
+          "text": "NASA Earth Observatory / NASA SVS 5450 · 1951–1980 基线 · 待审阅",
+          "x": 0.75,
+          "y": 6.55,
+          "w": 11.6,
+          "h": 0.25,
+          "fontSize": 9,
+          "role": "decoration"
+        },
+        {
+          "id": "accent",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.12,
+          "fill": "087D83",
+          "lineColor": "087D83",
+          "role": "decoration"
+        },
+        {
+          "id": "article-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 0.75,
+          "y": 1.6,
+          "w": 5.82,
+          "h": 2.8,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "article-label",
+          "kind": "text",
+          "text": "Earth Observatory",
+          "x": 0.9299999999999999,
+          "y": 1.7400000000000002,
+          "w": 5.46,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "article-value",
+          "kind": "text",
+          "text": "2024 年全球平均异常：+1.28 °C",
+          "x": 0.9299999999999999,
+          "y": 2.22,
+          "w": 5.46,
+          "h": 2.05,
+          "fontSize": 19
+        },
+        {
+          "id": "svs-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 6.75,
+          "y": 1.6,
+          "w": 5.82,
+          "h": 2.8,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "svs-label",
+          "kind": "text",
+          "text": "Scientific Visualization Studio",
+          "x": 6.93,
+          "y": 1.7400000000000002,
+          "w": 5.46,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "svs-value",
+          "kind": "text",
+          "text": "地图与文字说明共同指向 1951–1980 基线",
+          "x": 6.93,
+          "y": 2.22,
+          "w": 5.46,
+          "h": 2.05,
+          "fontSize": 18
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "原图与图例",
+      "claimIds": [
+        "anomaly-not-absolute",
+        "map-colors"
+      ],
+      "notes": "NASA 原始资料截至 2025-01-11；科学解释、媒体使用条件与真实 PowerPoint 效果待审阅。",
+      "elements": [
+        {
+          "id": "title",
+          "kind": "text",
+          "text": "原图与图例",
+          "x": 0.65,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.7,
+          "fontSize": 27,
+          "bold": true
+        },
+        {
+          "id": "body",
+          "kind": "text",
+          "text": "红：高于基线\n白：接近基线\n蓝：低于基线",
+          "x": 9.5,
+          "y": 1.8,
+          "w": 2.7,
+          "h": 3.2,
+          "fontSize": 19
+        },
+        {
+          "id": "source",
+          "kind": "text",
+          "text": "NASA Earth Observatory / NASA SVS 5450 · 1951–1980 基线 · 待审阅",
+          "x": 0.75,
+          "y": 6.55,
+          "w": 11.6,
+          "h": 0.25,
+          "fontSize": 9,
+          "role": "decoration"
+        },
+        {
+          "id": "accent",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.12,
+          "fill": "087D83",
+          "lineColor": "087D83",
+          "role": "decoration"
+        },
+        {
+          "id": "map",
+          "kind": "image",
+          "assetId": "nasa-svs-5450-2024-map",
+          "x": 0.72,
+          "y": 1.55,
+          "w": 8.35,
+          "h": 4.7,
+          "fit": "contain",
+          "altText": "NASA 2024 全球地表温度异常地图，1951–1980 基线"
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "哪些结论不能由此推出",
+      "claimIds": [
+        "anomaly-not-absolute",
+        "scope-limit"
+      ],
+      "notes": "NASA 原始资料截至 2025-01-11；科学解释、媒体使用条件与真实 PowerPoint 效果待审阅。",
+      "elements": [
+        {
+          "id": "title",
+          "kind": "text",
+          "text": "哪些结论不能由此推出",
+          "x": 0.65,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.7,
+          "fontSize": 27,
+          "bold": true
+        },
+        {
+          "id": "body",
+          "kind": "text",
+          "text": "解释边界",
+          "x": 0.78,
+          "y": 1.4,
+          "w": 11.6,
+          "h": 0.5,
+          "fontSize": 18,
+          "color": "087D83",
+          "bold": true
+        },
+        {
+          "id": "source",
+          "kind": "text",
+          "text": "NASA Earth Observatory / NASA SVS 5450 · 1951–1980 基线 · 待审阅",
+          "x": 0.75,
+          "y": 6.55,
+          "w": 11.6,
+          "h": 0.25,
+          "fontSize": 9,
+          "role": "decoration"
+        },
+        {
+          "id": "accent",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.12,
+          "fill": "087D83",
+          "lineColor": "087D83",
+          "role": "decoration"
+        },
+        {
+          "id": "absolute-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 0.75,
+          "y": 2.13,
+          "w": 3.75,
+          "h": 3.3,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "absolute-label",
+          "kind": "text",
+          "text": "不是绝对温度",
+          "x": 0.9299999999999999,
+          "y": 2.27,
+          "w": 3.39,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "absolute-value",
+          "kind": "text",
+          "text": "颜色只表达相对基线的异常值",
+          "x": 0.9299999999999999,
+          "y": 2.75,
+          "w": 3.39,
+          "h": 2.55,
+          "fontSize": 17
+        },
+        {
+          "id": "weather-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 4.79,
+          "y": 2.13,
+          "w": 3.75,
+          "h": 3.3,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "weather-label",
+          "kind": "text",
+          "text": "不是城市天气",
+          "x": 4.97,
+          "y": 2.27,
+          "w": 3.39,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "weather-value",
+          "kind": "text",
+          "text": "全球分布图不能给出城市日天气",
+          "x": 4.97,
+          "y": 2.75,
+          "w": 3.39,
+          "h": 2.55,
+          "fontSize": 17
+        },
+        {
+          "id": "forecast-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 8.83,
+          "y": 2.13,
+          "w": 3.75,
+          "h": 3.3,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "forecast-label",
+          "kind": "text",
+          "text": "不是未来预测",
+          "x": 9.01,
+          "y": 2.27,
+          "w": 3.39,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "forecast-value",
+          "kind": "text",
+          "text": "这张历史地图不能单独预测未来",
+          "x": 9.01,
+          "y": 2.75,
+          "w": 3.39,
+          "h": 2.55,
+          "fontSize": 17
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "素材回退与生产记录",
+      "claimIds": [],
+      "notes": "NASA 原始资料截至 2025-01-11；科学解释、媒体使用条件与真实 PowerPoint 效果待审阅。",
+      "elements": [
+        {
+          "id": "title",
+          "kind": "text",
+          "text": "素材回退与生产记录",
+          "x": 0.65,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.7,
+          "fontSize": 27,
+          "bold": true
+        },
+        {
+          "id": "flow",
+          "kind": "table",
+          "x": 0.75,
+          "y": 1.55,
+          "w": 11.8,
+          "h": 4.5,
+          "fontSize": 15,
+          "rows": [
+            [
+              "阶段",
+              "受控输入",
+              "核对结果"
+            ],
+            [
+              "首选 4K",
+              "注入一次失败",
+              "尚未写页"
+            ],
+            [
+              "官方 2K",
+              "下载并核对",
+              "来源、摘要、尺寸"
+            ],
+            [
+              "重复取用",
+              "请求同一候选",
+              "命中缓存"
+            ],
+            [
+              "继续生产",
+              "引用已验证附件",
+              "逐页回读"
+            ]
+          ]
+        },
+        {
+          "id": "source",
+          "kind": "text",
+          "text": "NASA Earth Observatory / NASA SVS 5450 · 1951–1980 基线 · 待审阅",
+          "x": 0.75,
+          "y": 6.55,
+          "w": 11.6,
+          "h": 0.25,
+          "fontSize": 9,
+          "role": "decoration"
+        },
+        {
+          "id": "accent",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.12,
+          "fill": "087D83",
+          "lineColor": "087D83",
+          "role": "decoration"
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "来源、署名和使用条件",
+      "claimIds": [
+        "usage-review"
+      ],
+      "notes": "NASA 原始资料截至 2025-01-11；科学解释、媒体使用条件与真实 PowerPoint 效果待审阅。",
+      "elements": [
+        {
+          "id": "title",
+          "kind": "text",
+          "text": "来源、署名和使用条件",
+          "x": 0.65,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.7,
+          "fontSize": 27,
+          "bold": true
+        },
+        {
+          "id": "body",
+          "kind": "text",
+          "text": "使用前保留来源和署名；权利例外等待人工核对。",
+          "x": 0.8,
+          "y": 5.1,
+          "w": 11.7,
+          "h": 0.6,
+          "fontSize": 18
+        },
+        {
+          "id": "source",
+          "kind": "text",
+          "text": "NASA Earth Observatory / NASA SVS 5450 · 1951–1980 基线 · 待审阅",
+          "x": 0.75,
+          "y": 6.55,
+          "w": 11.6,
+          "h": 0.25,
+          "fontSize": 9,
+          "role": "decoration"
+        },
+        {
+          "id": "accent",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.12,
+          "fill": "087D83",
+          "lineColor": "087D83",
+          "role": "decoration"
+        },
+        {
+          "id": "credit-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 0.75,
+          "y": 1.62,
+          "w": 5.82,
+          "h": 2.8,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "credit-label",
+          "kind": "text",
+          "text": "图像与数据",
+          "x": 0.9299999999999999,
+          "y": 1.7600000000000002,
+          "w": 5.46,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "credit-value",
+          "kind": "text",
+          "text": "NASA Scientific Visualization Studio；NASA/GSFC GISS",
+          "x": 0.9299999999999999,
+          "y": 2.24,
+          "w": 5.46,
+          "h": 2.05,
+          "fontSize": 17
+        },
+        {
+          "id": "rights-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 6.75,
+          "y": 1.62,
+          "w": 5.82,
+          "h": 2.8,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "rights-label",
+          "kind": "text",
+          "text": "使用条件",
+          "x": 6.93,
+          "y": 1.7600000000000002,
+          "w": 5.46,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "rights-value",
+          "kind": "text",
+          "text": "NASA 媒体使用说明有标识、人物及第三方素材例外",
+          "x": 6.93,
+          "y": 2.24,
+          "w": 5.46,
+          "h": 2.05,
+          "fontSize": 17
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "结论与待核查",
+      "claimIds": [
+        "global-mean",
+        "usage-review"
+      ],
+      "notes": "NASA 原始资料截至 2025-01-11；科学解释、媒体使用条件与真实 PowerPoint 效果待审阅。",
+      "elements": [
+        {
+          "id": "title",
+          "kind": "text",
+          "text": "结论与待核查",
+          "x": 0.65,
+          "y": 0.45,
+          "w": 12,
+          "h": 0.7,
+          "fontSize": 27,
+          "bold": true
+        },
+        {
+          "id": "body",
+          "kind": "text",
+          "text": "2024 年全球平均异常 +1.28 °C",
+          "x": 0.82,
+          "y": 1.48,
+          "w": 11.5,
+          "h": 0.75,
+          "fontSize": 26,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "source",
+          "kind": "text",
+          "text": "NASA Earth Observatory / NASA SVS 5450 · 1951–1980 基线 · 待审阅",
+          "x": 0.75,
+          "y": 6.55,
+          "w": 11.6,
+          "h": 0.25,
+          "fontSize": 9,
+          "role": "decoration"
+        },
+        {
+          "id": "accent",
+          "kind": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 13.333,
+          "h": 0.12,
+          "fill": "087D83",
+          "lineColor": "087D83",
+          "role": "decoration"
+        },
+        {
+          "id": "conclusion-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 0.75,
+          "y": 2.55,
+          "w": 5.82,
+          "h": 2.8,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "conclusion-label",
+          "kind": "text",
+          "text": "可陈述",
+          "x": 0.9299999999999999,
+          "y": 2.69,
+          "w": 5.46,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "conclusion-value",
+          "kind": "text",
+          "text": "相对 NASA 1951–1980 年基线；地图只表达异常分布",
+          "x": 0.9299999999999999,
+          "y": 3.17,
+          "w": 5.46,
+          "h": 2.05,
+          "fontSize": 17
+        },
+        {
+          "id": "review-background",
+          "kind": "shape",
+          "shape": "roundRect",
+          "x": 6.75,
+          "y": 2.55,
+          "w": 5.82,
+          "h": 2.8,
+          "fill": "E8F2F4",
+          "lineColor": "C7DEE2",
+          "role": "background"
+        },
+        {
+          "id": "review-label",
+          "kind": "text",
+          "text": "待核查",
+          "x": 6.93,
+          "y": 2.69,
+          "w": 5.46,
+          "h": 0.34,
+          "fontSize": 15,
+          "bold": true,
+          "color": "087D83"
+        },
+        {
+          "id": "review-value",
+          "kind": "text",
+          "text": "科学解释、图像使用条件和真实 PowerPoint 可编辑性",
+          "x": 6.93,
+          "y": 3.17,
+          "w": 5.46,
+          "h": 2.05,
+          "fontSize": 17
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { parseAgentResumeMessages } from './resume.js'
 import type { AgentSkill, PresentationTaskPreparation } from './skill'
 import {
   parsePresentationAcceptanceContract,
@@ -54,7 +55,7 @@ export interface AgentLoopEvents<TSnapshot> {
   onToolStart?(call: AgentToolCall): void
   onToolExecuted?(event: ToolExecutedEvent<TSnapshot>): void
   /** a turn requested tools and they ran; the loop is going back to the model */
-  onTurnEnd?(): void
+  onTurnEnd?(): void | Promise<void>
   onDone?(result: AgentRunResult): void
   onError?(error: string): void
   onPresentationClarify?(event: { question: string }): void
@@ -135,7 +136,10 @@ function isFinalToolExecution(value: unknown): value is ToolExecution {
     typeof execution.summary === 'string' &&
     (execution.isError === undefined || typeof execution.isError === 'boolean') &&
     (execution.mutated === undefined || typeof execution.mutated === 'boolean') &&
-    (execution.stopToolBatch === undefined || typeof execution.stopToolBatch === 'boolean')
+    (execution.stopToolBatch === undefined || typeof execution.stopToolBatch === 'boolean') &&
+    (execution.fatalError === undefined ||
+      (typeof execution.fatalError === 'string' &&
+        /^[a-z][a-z0-9_]{0,63}$/.test(execution.fatalError)))
   )
 }
 
@@ -436,14 +440,86 @@ export class AgentLoop<TSnapshot = unknown> {
     this.trimHistory()
   }
 
+  /** Resume a complete text checkpoint without adding a second user request. */
+  private resumeCheckpoint(messages: readonly AgentMessage[]): boolean {
+    if (this.running) return false
+    const restored = parseAgentResumeMessages(messages)
+    if (!restored) return false
+    this.history = restored
+    this.running = true
+    this.cancelled = false
+    this.mutationSeen = false
+    this.presentationBatchMutationSeen = false
+    this.presentationContract = null
+    this.presentationCorrectionPasses = 0
+    this.presentationPlanEmitted = false
+    this.presentationCorrectionTurns = 0
+    this.presentationCorrectionPending = false
+    this.completionReviewRetries = 0
+    this.lastCompletionReviewCorrection = ''
+    this.reconciliationController = new AbortController()
+    this.invocationRun += 1
+    this.inputParseFails = 0
+    this.lastToolBatchSignature = ''
+    this.identicalToolBatches = 0
+    let userIndex = restored.length - 1
+    while (restored[userIndex]!.role !== 'user') userIndex--
+    this.runUserMsg = restored[userIndex]!
+    this.turns = restored.slice(userIndex).filter((message) => message.role === 'tool').length
+    for (const message of restored.slice(userIndex)) {
+      if (message.role !== 'assistant' || !message.toolCalls) continue
+      const signature = stableJson(
+        message.toolCalls.map((call) => ({
+          name: call.name,
+          input: call.input,
+          inputError: call.inputError,
+          truncated: call.truncated,
+        })),
+      )
+      this.identicalToolBatches =
+        signature === this.lastToolBatchSignature ? this.identicalToolBatches + 1 : 1
+      this.lastToolBatchSignature = signature
+    }
+    this.finalizing =
+      (this.options.maxTurns !== undefined && this.turns >= this.options.maxTurns) ||
+      this.identicalToolBatches >= MAX_IDENTICAL_TOOL_BATCHES
+    if (this.finalizing) this.history.push({ role: 'user', text: TURN_LIMIT_NOTE })
+    this.abortController = new AbortController()
+    const generation = this.generation
+    // A text checkpoint does not persist host acceptance. Rebuild presentation
+    // preparation and confirmation before dispatch without replaying old tools.
+    const start = () => {
+      if (generation !== this.generation || !this.running) return
+      try {
+        this.startTurn()
+      } catch (error) {
+        this.failRun(error, generation)
+      }
+    }
+    if (this.options.skill.presentation) {
+      void this.preparePresentationRun(
+        this.runUserMsg.role === 'user' ? this.runUserMsg.text : '',
+        generation,
+      )
+        .then((ready) => {
+          if (ready) start()
+        })
+        .catch((error) => this.failRun(error, generation))
+    } else start()
+    return true
+  }
+
   /** images: inline attachments for this user turn (vision input; see AgentImage) */
   run(instruction: string, images?: AgentImage[]): void {
     this.startRun(instruction, images, false)
   }
 
   /** Resume a failed run while retaining host-owned presentation verification state. */
-  resume(instruction: string, images?: AgentImage[]): void {
-    this.startRun(instruction, images, true)
+  resume(input: string | readonly AgentMessage[], images?: AgentImage[]): boolean {
+    if (typeof input !== 'string') return this.resumeCheckpoint(input)
+    if (this.running || !input) return false
+    this.startRun(input, images, true)
+    return true
   }
 
   private startRun(instruction: string, images: AgentImage[] | undefined, resume: boolean): void {
@@ -1191,6 +1267,10 @@ export class AgentLoop<TSnapshot = unknown> {
         execution,
         snapshotBefore: firstMutation ? snapshot : undefined,
       })
+      if (execution.fatalError) {
+        this.failRun(execution.fatalError, generation)
+        return
+      }
       if (execution.stopToolBatch) stopToolBatch = true
     }
     this.history.push({ role: 'tool', results })
@@ -1218,14 +1298,25 @@ export class AgentLoop<TSnapshot = unknown> {
     }
 
     this.turns++
+    // Long runs (e.g. page-by-page generation) over budget mid-way: truncate stale tool outputs so each turn doesn't resend a huge payload
+    this.squashStaleToolOutputs()
+    try {
+      await events?.onTurnEnd?.()
+    } catch (error) {
+      if (generation !== this.generation) return
+      if (!this.cancelled) throw error
+    }
+    if (generation !== this.generation) return
+    if (this.cancelled) {
+      this.running = false
+      this.runUserMsg = null
+      events?.onDone?.({ text: this.turnText, cancelled: true, turnLimit: false })
+      return
+    }
     if (this.options.maxTurns !== undefined && this.turns >= this.options.maxTurns) {
-      // Don't throw away the context already gathered: append one no-tools turn for a partial answer
       this.finalizing = true
       this.history.push({ role: 'user', text: TURN_LIMIT_NOTE })
     }
-    // Long runs (e.g. page-by-page generation) over budget mid-way: truncate stale tool outputs so each turn doesn't resend a huge payload
-    this.squashStaleToolOutputs()
-    events?.onTurnEnd?.()
     this.startTurn()
   }
 

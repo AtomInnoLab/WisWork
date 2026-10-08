@@ -186,6 +186,7 @@ describe('Slides interactive agent controller', () => {
     )
     controller.activate()
     await flush()
+    expect(() => controller.subscribeAcp(() => undefined)()).not.toThrow()
     controller.run('first')
     await flush()
     onEvent?.({ type: 'done', result: { text: '', cancelled: false, turnLimit: false } })

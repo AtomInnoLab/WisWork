@@ -762,6 +762,18 @@ p {
   font-size: 12px;
 }
 
+.stage-event {
+  display: block;
+}
+
+.stage-event details {
+  margin-top: 8px;
+}
+
+.stage-event li {
+  overflow-wrap: anywhere;
+}
+
 .tool-error .tool-indicator {
   background: var(--color-error);
 }
@@ -1209,6 +1221,60 @@ p {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+.presentation-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.presentation-downloads button {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.presentation-project {
+  max-height: 30vh;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-20);
+  font-size: 12px;
+}
+
+.presentation-project p {
+  margin: 6px 0;
+}
+
+.presentation-project-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.presentation-project-actions button {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.presentation-project summary {
+  cursor: pointer;
+}
+
+.presentation-job-events ol {
+  max-height: 16rem;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.presentation-job-events time {
+  font-variant-numeric: tabular-nums;
 }
 
 .ppt-questionnaire {

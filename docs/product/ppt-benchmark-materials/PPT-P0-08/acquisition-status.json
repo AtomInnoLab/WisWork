@@ -1,0 +1,143 @@
+{
+  "caseId": "PPT-P0-08",
+  "checkedDate": "2026-09-29",
+  "status": "originals_not_frozen",
+  "localOriginalsComplete": false,
+  "browserReadIsNotOriginalBytes": true,
+  "attempts": [
+    {
+      "source": "sony-form20f",
+      "url": "https://www.sony.com/en/SonyInfo/IR/library/FY2023_20F_PDF.pdf",
+      "transport": "HTTPS via configured proxy",
+      "result": "HTTP 403"
+    },
+    {
+      "source": "sony-form20f",
+      "url": "https://www.sony.com/en/SonyInfo/IR/library/FY2023_20F_PDF.pdf",
+      "transport": "direct HTTPS",
+      "result": "HTTP 403"
+    },
+    {
+      "source": "sony-financial-results",
+      "url": "https://www.sony.com/en/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf",
+      "transport": "direct HTTPS with ordinary browser user agent",
+      "result": "HTTP 403"
+    },
+    {
+      "source": "sony-sec-same-report-html",
+      "url": "https://www.sec.gov/Archives/edgar/data/313838/000119312524167500/d797371d20f.htm",
+      "transport": "HTTPS via configured proxy",
+      "result": "TLS wrong version number"
+    },
+    {
+      "source": "sony-sec-same-report-html",
+      "url": "https://www.sec.gov/Archives/edgar/data/313838/000119312524167500/d797371d20f.htm",
+      "transport": "direct HTTPS",
+      "result": "HTTP 403"
+    }
+  ],
+  "pending": [
+    "freeze_official_sony_originals",
+    "verify_pdf_pages_and_values",
+    "financial_review",
+    "rights_review",
+    "actual_powerpoint_task"
+  ],
+  "additionalOfficialRoutesCheck": {
+    "checkedDate": "2026-09-29",
+    "asOfUnchanged": "2024-11-01",
+    "status": "no_original_pdf_acquired",
+    "routesTested": 3,
+    "tlsVerificationDisabled": false,
+    "originalPdfCount": 0,
+    "attempts": [
+      {
+        "route": "legacy official sony.net hostname",
+        "url": "https://www.sony.net/SonyInfo/IR/library/FY2023_20F_PDF.pdf",
+        "curlExit": 0,
+        "result": "403 https://www.sony.com/en/SonyInfo/IR/library/FY2023_20F_PDF.pdf 184",
+        "error": ""
+      },
+      {
+        "route": "legacy official sony.net hostname",
+        "url": "https://www.sony.net/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf",
+        "curlExit": 0,
+        "result": "403 https://www.sony.com/en/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf 184",
+        "error": ""
+      },
+      {
+        "route": "sony-com-legacy",
+        "url": "https://www.sony.com/SonyInfo/IR/library/FY2023_20F_PDF.pdf",
+        "curlExit": 0,
+        "result": "403 https://www.sony.com/SonyInfo/IR/library/FY2023_20F_PDF.pdf 184",
+        "error": ""
+      },
+      {
+        "route": "sony-com-legacy",
+        "url": "https://www.sony.com/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf",
+        "curlExit": 0,
+        "result": "403 https://www.sony.com/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf 184",
+        "error": ""
+      },
+      {
+        "route": "sony-co-jp-legacy",
+        "url": "https://www.sony.co.jp/SonyInfo/IR/library/FY2023_20F_PDF.pdf",
+        "curlExit": 0,
+        "result": "403 https://www.sony.com/ja/SonyInfo/IR/library/FY2023_20F_PDF.pdf 183",
+        "error": ""
+      },
+      {
+        "route": "sony-co-jp-legacy",
+        "url": "https://www.sony.co.jp/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf",
+        "curlExit": 0,
+        "result": "403 https://www.sony.com/ja/SonyInfo/IR/library/presen/er/pdf/23q4_sony.pdf 183",
+        "error": ""
+      }
+    ],
+    "responseValidation": [
+      {
+        "file": "23q4_sony.sony-co-jp-legacy.response",
+        "sizeBytes": 183,
+        "sha256OfErrorResponse": "c79e3ce40f9f87d875bcdfcb6c03755aea40d2189c1300f2c3e4ec2f424fe558",
+        "pdfMagic": false
+      },
+      {
+        "file": "23q4_sony.sony-com-legacy.response",
+        "sizeBytes": 184,
+        "sha256OfErrorResponse": "a2c106700a1c5258a3f45766fd52b06b7e9df916413549c6ad3fdbc42df74da0",
+        "pdfMagic": false
+      },
+      {
+        "file": "23q4_sony.sony-net.response",
+        "sizeBytes": 184,
+        "sha256OfErrorResponse": "d7381f11c039854581c37b32746acd42ff2b7e69b589fdfe1368da56b18b8421",
+        "pdfMagic": false
+      },
+      {
+        "file": "FY2023_20F_PDF.sony-co-jp-legacy.response",
+        "sizeBytes": 183,
+        "sha256OfErrorResponse": "6ab2b1d863019d361fb8de50662b22a3b71976ae369321d79d97c9d0b353439b",
+        "pdfMagic": false
+      },
+      {
+        "file": "FY2023_20F_PDF.sony-com-legacy.response",
+        "sizeBytes": 184,
+        "sha256OfErrorResponse": "a34868f0aef63d6240838a50f8f695944347638c600e019034f32249be35b254",
+        "pdfMagic": false
+      },
+      {
+        "file": "FY2023_20F_PDF.sony-net.response",
+        "sizeBytes": 184,
+        "sha256OfErrorResponse": "55f2081153b75c87359e6377f5d960e5294aefae7228179824f6cad6ab6f2a33",
+        "pdfMagic": false
+      }
+    ],
+    "officialDiscovery": [
+      "https://www.sony.net/SonyInfo/IR/library/sec.html -> https://www.sony.com/en/SonyInfo/IR/library/sec.html",
+      "https://www.sony.com/SonyInfo/IR/library/sec.html -> https://www.sony.com/en/SonyInfo/IR/library/sec.html",
+      "https://www.sony.co.jp/SonyInfo/IR/library/sec.html -> https://www.sony.com/en/SonyInfo/IR/library/sec.html?j-short=library_sec"
+    ],
+    "evidenceDirectory": "/tmp/wiswork-p0-08-acquisition-next",
+    "limitation": "All response hashes describe HTTP 403 error bodies, not original report PDFs; no PDF page count or value verification is possible."
+  }
+}

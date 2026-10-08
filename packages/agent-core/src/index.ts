@@ -14,6 +14,7 @@ export type {
   ToolExecutionOutcome,
   ToolExecutionSuspension,
 } from './types'
+export { parseAgentResumeMessages } from './resume.js'
 export {
   createToolExecutionSuspensionAuthority,
   isToolExecutionSuspension,

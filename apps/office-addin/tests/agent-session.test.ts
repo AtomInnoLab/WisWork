@@ -1,15 +1,24 @@
-import type { AgentStreamCallbacks, AgentTransport, ToolExecution } from '@wiswork/agent-core'
+import {
+  type AgentStreamCallbacks,
+  type AgentTransport,
+  type ToolExecution,
+  suspendToolExecution,
+} from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
 import {
   bindAuthLoss,
   createOfficeAgentSession,
   presentationClarificationText,
 } from '../src/agent/use-office-agent.js'
-import type { ProposalDecision, StructuredProposal } from '../src/agent/proposal-controller.js'
-import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
-import type { OfficePowerPointVisualReviewer } from '../src/skills/powerpoint/powerpoint-verification.js'
+import {
+  type ProposalDecision,
+  type StructuredProposal,
+  createStructuredProposalController,
+} from '../src/agent/proposal-controller.js'
+import { type OfficePowerPointVisualReviewer } from '../src/skills/powerpoint/powerpoint-verification.js'
 import { createPcBridgeAgentTransport, type OfficeToolActivity } from '../src/agent/transport.js'
 import { createOfficeDiagnostics } from '../src/diagnostics/office-diagnostics.js'
+import { readFileSync } from 'node:fs'
 
 function transportHarness() {
   let callbacks: AgentStreamCallbacks | undefined
@@ -147,7 +156,7 @@ describe('Office agent session', () => {
       input: {},
       signal: new AbortController().signal,
     })
-    expect(diagnostics.snapshot().events).toEqual([
+    expect(diagnostics.snapshot().events.filter((event) => event.phase === 'tool')).toEqual([
       expect.objectContaining({
         tool: 'plan_deck',
         error_code: suffix === 'unknown_private' ? 'agent_run_failed' : code,
@@ -207,7 +216,7 @@ describe('Office agent session', () => {
         state: 'error',
         output: `${message}（${code}）`,
       })
-      expect(diagnostics.snapshot().events).toEqual([
+      expect(diagnostics.snapshot().events.filter((event) => event.phase === 'tool')).toEqual([
         expect.objectContaining({ tool: 'insert_web_image', phase: 'tool', error_code: code }),
       ])
       expect(executeTool).not.toHaveBeenCalled()
@@ -262,7 +271,7 @@ describe('Office agent session', () => {
       })
       if (order === 'remote-first') fail()
       fail()
-      expect(diagnostics.snapshot().events).toEqual([
+      expect(diagnostics.snapshot().events.filter((event) => event.phase === 'tool')).toEqual([
         expect.objectContaining({ tool: 'insert-image', error_code: 'invalid_image' }),
       ])
       expect(session.snapshot().timeline.find((event) => event.kind === 'tool')).toMatchObject({
@@ -2018,6 +2027,59 @@ describe('Office agent session', () => {
     expect(session.snapshot().timeline.some((event) => event.kind === 'proposal')).toBe(false)
   })
 
+  it('requires explicit approval for checkpoint-backed PowerPoint proposals in automatic mode', async () => {
+    const harness = transportHarness()
+    const proposals = createStructuredProposalController()
+    const execute = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'powerpoint',
+        systemPrompt: 'test',
+        tools: [{ name: 'edit_slide_text', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(() => {
+          const proposal = proposals.propose({
+            operation: 'edit_slide_text',
+            toolName: 'edit_slide_text',
+            title: 'Update slide',
+            preview: {},
+            impact: { host: 'powerpoint', targets: ['slide-1/shape-1'], count: 1 },
+            fingerprint: 'v1',
+            validate: async () => true,
+            execute,
+          })
+          return {
+            output: JSON.stringify({ proposalId: proposal.id }),
+            mutated: false,
+            summary: 'Prepared change',
+          }
+        }),
+      },
+      proposals,
+      automaticPowerPointMutations: true,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+        tool: vi.fn(async () => undefined),
+      },
+    })
+
+    session.send('update the slide')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'ppt-write', name: 'edit_slide_text', input: {} })
+    harness.callbacks().onDone()
+
+    await vi.waitFor(() => expect(session.snapshot().proposal).toBeDefined())
+    expect(execute).not.toHaveBeenCalled()
+    expect(harness.stream).toHaveBeenCalledOnce()
+    await session.confirm(session.snapshot().proposal!.id)
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    expect(session.snapshot().proposal).toBeUndefined()
+    session.dispose()
+  })
+
   it('auto-applies a PowerPoint background proposal without blocking the Agent turn', async () => {
     const harness = transportHarness()
     const proposals = createStructuredProposalController()
@@ -2246,4 +2308,1387 @@ describe('Office agent session', () => {
     await expect(pending).resolves.toMatchObject({ status: 'cannot_verify' })
     expect(harness.cancel).toHaveBeenCalledOnce()
   })
+})
+
+describe('durable PPT regression coverage', () => {
+  it('updates the existing approval event when an asynchronous lock review becomes ready', async () => {
+    const harness = transportHarness()
+    let finish!: (value: { state: 'ready'; token: string; pages: [] }) => void
+    const proposals = createStructuredProposalController(undefined, {
+      review: () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+      beforeWrite: async () => {},
+      afterWrite: () => {},
+    })
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      proposals,
+      skill: {
+        id: 'test',
+        systemPrompt: '',
+        tools: [],
+        executeTool: async () => ({ output: '', summary: 'Read only' }),
+      },
+    })
+    try {
+      proposals.propose({
+        operation: 'edit',
+        title: 'Edit',
+        preview: {},
+        impact: { host: 'powerpoint', count: 1, targets: ['host'] },
+        fingerprint: 'fp',
+        validate: () => true,
+        execute: () => {},
+      })
+      const event = session.snapshot().timeline.find((item) => item.kind === 'proposal')!
+      expect(event).toMatchObject({ proposal: { lockReview: { state: 'checking' } } })
+      await Promise.resolve()
+      finish({ state: 'ready', token: 'fresh', pages: [] })
+      await vi.waitFor(() =>
+        expect(session.snapshot().timeline.find((item) => item.id === event.id)).toMatchObject({
+          proposal: { lockReview: { state: 'ready' } },
+        }),
+      )
+      expect(session.snapshot().timeline.filter((item) => item.kind === 'proposal')).toHaveLength(1)
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it.each(['word', 'excel', 'powerpoint'] as const)(
+    'uses host-appropriate ACP activity for %s',
+    async (host) => {
+      const harness = transportHarness()
+      const session = createOfficeAgentSession({
+        host,
+        transport: harness.transport,
+        skill: {
+          id: 'test',
+          systemPrompt: 'test',
+          tools: [
+            { name: 'execute_office_js', description: 'execute', inputSchema: { type: 'object' } },
+          ],
+          executeTool: async () => ({ output: 'ok', summary: 'Executed' }),
+        },
+        proposals: proposalsHarness().controller,
+      })
+      session.send('execute')
+      await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+      harness.callbacks().onToolCall({ id: 'execute-1', name: 'execute_office_js', input: {} })
+      harness.callbacks().onDone()
+      await vi.waitFor(() =>
+        expect(session.snapshot().timeline.find((event) => event.kind === 'tool')).toMatchObject({
+          summary: host === 'powerpoint' ? '页面修改操作已结束' : '已准备修改',
+          state: 'complete',
+        }),
+      )
+    },
+  )
+
+  it('does not replace another safe run that appears during document validation', async () => {
+    const harness = transportHarness()
+    let record = {
+      runId: 'run-a',
+      instruction: 'Read A',
+      phase: 'running' as const,
+      restartSafe: true,
+    }
+    const begin = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: record,
+        readRecovery: () => record,
+        validateDocument: async () => {
+          record = { ...record, runId: 'run-b', instruction: 'Read B' }
+          return true
+        },
+        begin,
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    await session.resumeInterrupted?.()
+    expect(begin).not.toHaveBeenCalled()
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+
+  it('retries a failed checkpoint begin after document validation without a recovery record', async () => {
+    const harness = transportHarness()
+    const begin = vi.fn(async () => undefined)
+    begin.mockRejectedValueOnce(new Error('storage unavailable'))
+    const validateDocument = vi.fn(async () => true)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin,
+        finish: vi.fn(async () => undefined),
+        readRecovery: () => undefined,
+        validateDocument,
+      },
+    })
+    session.send('read deck')
+    await vi.waitFor(() =>
+      expect(session.snapshot().error).toBe('presentation_run_checkpoint_unavailable'),
+    )
+    expect(harness.stream).not.toHaveBeenCalled()
+    session.retry()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    expect(validateDocument).toHaveBeenCalledOnce()
+    expect(begin).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['stop', 'newTask', 'logout'] as const)(
+    'does not restart transient recovery after %s during validation',
+    async (action) => {
+      const harness = transportHarness()
+      let release!: (value: boolean) => void
+      const validateDocument = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            release = resolve
+          }),
+      )
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+        proposals: proposalsHarness().controller,
+        runCheckpoint: {
+          interrupted: false,
+          begin: vi.fn(async () => undefined),
+          finish: vi.fn(async () => undefined),
+          validateDocument,
+        },
+      })
+      session.send('read deck')
+      await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+      harness.callbacks().onError('network_error')
+      session.retry()
+      session.retry()
+      expect(validateDocument).toHaveBeenCalledOnce()
+      session[action]()
+      release(true)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(harness.stream).toHaveBeenCalledOnce()
+    },
+  )
+
+  it.each(['missing', 'throws'] as const)(
+    'fails closed when latest checkpoint %s despite safe static snapshot',
+    async (mode) => {
+      const harness = transportHarness()
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+        proposals: proposalsHarness().controller,
+        runCheckpoint: {
+          interrupted: false,
+          recovery: { instruction: 'old', phase: 'running', restartSafe: true },
+          readRecovery: () => {
+            if (mode === 'throws') throw new Error('corrupt')
+            return undefined
+          },
+          begin: vi.fn(async () => undefined),
+          finish: vi.fn(async () => undefined),
+          validateDocument: async () => true,
+        },
+      })
+      session.send('read deck')
+      await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+      harness.callbacks().onError('request_timeout')
+      expect(session.snapshot().retryable).toBe(false)
+      session.retry()
+      expect(harness.stream).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('preserves a transient-failure checkpoint and blocks replay after an unsafe tool', async () => {
+    const harness = transportHarness()
+    const finish = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'write', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => ({ output: 'written', mutated: true, summary: 'Written' })),
+      },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool: vi.fn(async () => undefined),
+        finish,
+      },
+    })
+    session.send('write deck')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'write-1', name: 'write', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    harness.callbacks().onError('network_error')
+    expect(finish).not.toHaveBeenCalled()
+    expect(session.snapshot().retryable).toBe(false)
+    session.retry()
+    expect(harness.stream).toHaveBeenCalledTimes(2)
+  })
+
+  it('opens after legacy prompt scrub failure but disables recovery and warns', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        scrubFailed: true,
+        validateDocument: vi.fn(async () => true),
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    expect(session.snapshot().recoveryAvailable).toBe(false)
+    expect(session.snapshot().timeline[0]).toMatchObject({
+      kind: 'system',
+      text: expect.stringContaining('请求原文仍保留在本 PPTX'),
+    })
+    await session.resumeInterrupted?.()
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+
+  it('resumes a pre-tool run only on explicit action after document validation', async () => {
+    const harness = transportHarness()
+    const validateDocument = vi.fn(async () => true)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: { instruction: 'Create deck', phase: 'running' },
+        validateDocument,
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    expect(session.snapshot().recoveryAvailable).toBe(true)
+    expect(harness.stream).not.toHaveBeenCalled()
+    await session.resumeInterrupted?.()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    expect(validateDocument).toHaveBeenCalledOnce()
+  })
+
+  it('never streams a recovered request when the deck switches after validation', async () => {
+    const harness = transportHarness()
+    let activeDocument = 'original'
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: { instruction: 'Create deck', phase: 'running' },
+        validateDocument: async () => {
+          activeDocument = 'copy'
+          return true
+        },
+        begin: async () => {
+          if (activeDocument !== 'original') throw new Error('presentation_document_changed')
+        },
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    await session.resumeInterrupted?.()
+    await vi.waitFor(() => expect(session.snapshot().status).toBe('error'))
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+
+  it('does not resume a run after a tool boundary', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: { instruction: 'Create deck', phase: 'tool_pending', toolName: 'write_page' },
+        validateDocument: vi.fn(async () => true),
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    expect(session.snapshot().recoveryAvailable).toBe(false)
+    await session.resumeInterrupted?.()
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['complete', '导入回执：2/2 页已记录导入'],
+    ['partial', '导入回执：1/2 页已记录导入'],
+    ['uncertain', '下一页写入结果不确定'],
+  ] as const)(
+    'shows the matched %s import receipt without replaying the tool',
+    (status, detail) => {
+      const harness = transportHarness()
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+        proposals: proposalsHarness().controller,
+        runCheckpoint: {
+          interrupted: true,
+          recovery: {
+            instruction: '',
+            phase: 'tool_pending',
+            toolName: 'import_presentation_production',
+            toolCallId: 'call-1',
+            restartSafe: false,
+            importReceipt: { state: status, completed: status === 'complete' ? 2 : 1, total: 2 },
+          },
+          begin: vi.fn(async () => undefined),
+          finish: vi.fn(async () => undefined),
+        },
+      })
+      expect(session.snapshot().recoveryAvailable).toBe(false)
+      expect(session.snapshot().timeline[0]).toMatchObject({
+        kind: 'system',
+        text: expect.stringContaining(detail),
+      })
+      if (status === 'uncertain')
+        expect(session.snapshot().timeline[0]).toMatchObject({
+          text: expect.stringContaining('核对宿主页面'),
+        })
+      expect(harness.stream).not.toHaveBeenCalled()
+    },
+  )
+
+  it('shows an interrupted change savepoint without offering write replay', () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: {
+          instruction: '',
+          phase: 'tool_pending',
+          toolName: 'edit_existing_presentation_text',
+          toolCallId: 'call-1',
+          restartSafe: false,
+          changeReceipt: { total: 2, unresolved: 1 },
+        },
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    expect(session.snapshot().recoveryAvailable).toBe(false)
+    expect(session.snapshot().timeline[0]).toMatchObject({
+      kind: 'system',
+      text: expect.stringContaining('对应修改历史 2 项，其中 1 项未结算'),
+    })
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+
+  it('restarts an interrupted read-only run only on explicit action after document validation', async () => {
+    const harness = transportHarness()
+    const validateDocument = vi.fn(async () => true)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: true,
+        recovery: {
+          instruction: 'Inspect this presentation',
+          phase: 'tool_completed',
+          toolName: 'read_presentation_plan',
+          restartSafe: true,
+        },
+        validateDocument,
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    expect(session.snapshot().recoveryAvailable).toBe(true)
+    expect(harness.stream).not.toHaveBeenCalled()
+    await session.resumeInterrupted?.()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    expect(validateDocument).toHaveBeenCalledOnce()
+  })
+
+  it.each(['newTask', 'logout'] as const)(
+    'does not restart an interrupted request after %s during document validation',
+    async (action) => {
+      const harness = transportHarness()
+      let releaseValidation!: (valid: boolean) => void
+      const begin = vi.fn(async () => undefined)
+      const validateDocument = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            releaseValidation = resolve
+          }),
+      )
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+        proposals: proposalsHarness().controller,
+        runCheckpoint: {
+          interrupted: true,
+          recovery: {
+            instruction: 'Inspect this presentation',
+            phase: 'tool_completed',
+            toolName: 'read_presentation_plan',
+            restartSafe: true,
+          },
+          validateDocument,
+          begin,
+          finish: vi.fn(async () => undefined),
+        },
+      })
+      const pending = session.resumeInterrupted?.()
+      expect(validateDocument).toHaveBeenCalledOnce()
+      session[action]()
+      releaseValidation(true)
+      await pending
+      expect(begin).not.toHaveBeenCalled()
+      expect(harness.stream).not.toHaveBeenCalled()
+    },
+  )
+
+  it('saves a checkpoint before starting and clears it after completion', async () => {
+    const harness = transportHarness()
+    const begin = vi.fn(async (_runId: string) => undefined)
+    const finish = vi.fn(async (_runId: string) => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: { interrupted: true, begin, finish },
+    })
+    expect(session.snapshot().timeline[0]).toMatchObject({ kind: 'system' })
+    session.send('continue')
+    expect(harness.stream).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    expect(begin).toHaveBeenCalledOnce()
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce())
+    expect(finish.mock.calls[0]?.[0]).toBe(begin.mock.calls[0]?.[0])
+  })
+
+  it('records a content-free run completion after a successful stream', async () => {
+    const harness = transportHarness()
+    const diagnostics = {
+      startTrace: vi.fn(() => 'trace'),
+      setTool: vi.fn(),
+      record: vi.fn(),
+      clear: vi.fn(),
+    }
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+    session.send('private presentation brief')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(diagnostics.record).toHaveBeenCalledWith({
+        phase: 'run',
+        errorCode: 'agent_run_completed',
+        durationMs: expect.any(Number),
+      }),
+    )
+    expect(diagnostics.setTool).toHaveBeenCalledWith('agent_run')
+    expect(JSON.stringify(diagnostics.record.mock.calls)).not.toContain(
+      'private presentation brief',
+    )
+  })
+
+  it('links a PowerPoint tool call to local diagnostic project and page IDs', async () => {
+    const harness = transportHarness()
+    const diagnostics = {
+      startTrace: vi.fn(() => 'trace'),
+      setTool: vi.fn(),
+      record: vi.fn(),
+      clear: vi.fn(),
+    }
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [
+          {
+            name: 'run_presentation_production',
+            description: 'run',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        executeTool: vi.fn(async () => ({
+          output: 'office_write_failed',
+          isError: true,
+          summary: 'failed',
+        })),
+      },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+    session.send('private brief')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({
+      id: 'call-1',
+      name: 'run_presentation_production',
+      input: {
+        project_id: 'project-1',
+        request_id: 'run-1',
+        page_id: 'page-3',
+        private_text: 'secret',
+      },
+    })
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(diagnostics.setTool).toHaveBeenCalledWith('run_presentation_production', {
+        project_id: 'project-1',
+        request_id: 'run-1',
+        page_id: 'page-3',
+        tool_call_id: 'call-1',
+      }),
+    )
+    expect(JSON.stringify(diagnostics.setTool.mock.calls)).not.toContain('secret')
+  })
+
+  it('waits for an ordinary tool completion checkpoint before the next request', async () => {
+    const harness = transportHarness()
+    let savePending!: () => void
+    let saveCompleted!: () => void
+    const executeTool = vi.fn(async () => ({ output: 'read', summary: 'Read document' }))
+    const begin = vi.fn(async (_runId: string) => undefined)
+    const tool = vi.fn(
+      (_runId: string, phase: 'tool_pending' | 'tool_completed') =>
+        new Promise<void>((resolve) => {
+          if (phase === 'tool_pending') savePending = resolve
+          else saveCompleted = resolve
+        }),
+    )
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'read_document', description: 'read', inputSchema: { type: 'object' } }],
+        executeTool,
+      },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: { interrupted: false, begin, tool, finish: vi.fn(async () => undefined) },
+    })
+
+    session.send('read')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'read-1', name: 'read_document', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_pending',
+        'read_document',
+        false,
+        'read-1',
+      ),
+    )
+    expect(executeTool).not.toHaveBeenCalled()
+
+    savePending()
+    await vi.waitFor(() =>
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_completed',
+        'read_document',
+        false,
+        'read-1',
+      ),
+    )
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(tool.mock.calls[0]?.[0]).toBe(begin.mock.calls[0]?.[0])
+    expect(tool.mock.calls[1]?.[0]).toBe(begin.mock.calls[0]?.[0])
+    expect(harness.stream).toHaveBeenCalledOnce()
+
+    saveCompleted()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+  })
+
+  it('halts after a completed tool when its final checkpoint cannot be saved', async () => {
+    const harness = transportHarness()
+    const finish = vi.fn(async () => undefined)
+    const executeTool = vi.fn(async () => ({
+      output: 'changed',
+      summary: 'Changed',
+      mutated: true,
+    }))
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'write', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool,
+      },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool: vi.fn(async (_id, phase) => {
+          if (phase === 'tool_completed') throw new Error('save failed')
+        }),
+        finish,
+      },
+    })
+    session.send('change')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'write-1', name: 'write', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(session.snapshot().error).toBe('presentation_run_checkpoint_unavailable'),
+    )
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(harness.stream).toHaveBeenCalledOnce()
+    expect(finish).not.toHaveBeenCalled()
+    expect(session.snapshot().retryable).toBe(false)
+  })
+
+  it.each(['newTask', 'logout'] as const)(
+    'keeps the pending write checkpoint when %s resets a tool still executing',
+    async (action) => {
+      const harness = transportHarness()
+      let finishWrite!: (result: ToolExecution) => void
+      const executeTool = vi.fn(
+        () =>
+          new Promise<ToolExecution>((resolve) => {
+            finishWrite = resolve
+          }),
+      )
+      const begin = vi.fn(async () => undefined)
+      const tool = vi.fn(async () => undefined)
+      const finish = vi.fn(async () => undefined)
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: {
+          id: 'test',
+          systemPrompt: 'test',
+          tools: [{ name: 'write', description: 'write', inputSchema: { type: 'object' } }],
+          executeTool,
+        },
+        proposals: proposalsHarness().controller,
+        runCheckpoint: { interrupted: false, begin, tool, finish },
+      })
+      session.send('change')
+      await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+      harness.callbacks().onToolCall({ id: 'write-1', name: 'write', input: {} })
+      harness.callbacks().onDone()
+      await vi.waitFor(() => expect(executeTool).toHaveBeenCalledOnce())
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_pending',
+        'write',
+        false,
+        'write-1',
+      )
+
+      session[action]()
+      expect(finish).not.toHaveBeenCalled()
+      finishWrite({ output: 'changed', summary: 'Changed', mutated: true })
+      await Promise.resolve()
+      expect(tool).not.toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_completed',
+        'write',
+        true,
+        'write-1',
+      )
+      expect(finish).not.toHaveBeenCalled()
+    },
+  )
+
+  it('does not execute an old tool after its pending checkpoint outlives the run', async () => {
+    const harness = transportHarness()
+    let releasePending!: () => void
+    const executeTool = vi.fn(async () => ({ output: 'done', summary: 'Done' }))
+    const tool = vi.fn((_runId: string, phase: 'tool_pending' | 'tool_completed') =>
+      phase === 'tool_pending'
+        ? new Promise<void>((resolve) => {
+            releasePending = resolve
+          })
+        : Promise.resolve(),
+    )
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'read', description: 'read', inputSchema: { type: 'object' } }],
+        executeTool,
+      },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool,
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    session.send('old')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'old-tool', name: 'read', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_pending',
+        'read',
+        false,
+        'old-tool',
+      ),
+    )
+    session.newTask()
+    session.send('new')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    releasePending()
+    await Promise.resolve()
+    expect(executeTool).not.toHaveBeenCalled()
+    expect(tool).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for proposal decision and completion checkpoint before continuing', async () => {
+    const harness = transportHarness()
+    const proposals = proposalsHarness()
+    let releaseCompleted!: () => void
+    const tool = vi.fn((_runId: string, phase: 'tool_pending' | 'tool_completed') =>
+      phase === 'tool_completed'
+        ? new Promise<void>((resolve) => {
+            releaseCompleted = resolve
+          })
+        : Promise.resolve(),
+    )
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'propose', description: 'propose', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => {
+          proposals.setPending()
+          return { output: 'prepared', summary: 'Prepared' }
+        }),
+      },
+      proposals: proposals.controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool,
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    session.send('edit')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'proposal-tool', name: 'propose', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().proposal?.id).toBe('p1'))
+    expect(tool).toHaveBeenCalledTimes(1)
+    await session.confirm('p1')
+    await vi.waitFor(() =>
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_completed',
+        'propose',
+        true,
+        'proposal-tool',
+      ),
+    )
+    expect(harness.stream).toHaveBeenCalledOnce()
+    releaseCompleted()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+  })
+
+  it('halts after approved work if its completion checkpoint fails', async () => {
+    const harness = transportHarness()
+    const proposals = proposalsHarness()
+    const finish = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'propose', description: 'propose', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => {
+          proposals.setPending()
+          return { output: 'prepared', summary: 'Prepared' }
+        }),
+      },
+      proposals: proposals.controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool: vi.fn(async (_id, phase) => {
+          if (phase === 'tool_completed') throw new Error('save failed')
+        }),
+        finish,
+      },
+    })
+    session.send('edit')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'proposal-tool', name: 'propose', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().proposal?.id).toBe('p1'))
+    await session.confirm('p1')
+    await vi.waitFor(() =>
+      expect(session.snapshot().error).toBe('presentation_run_checkpoint_unavailable'),
+    )
+    expect(harness.stream).toHaveBeenCalledOnce()
+    expect(finish).not.toHaveBeenCalled()
+  })
+
+  it('waits for a suspended tool result and its completion checkpoint', async () => {
+    const harness = transportHarness()
+    let releaseResult!: (result: ToolExecution) => void
+    let releaseCompleted!: () => void
+    const tool = vi.fn((_runId: string, phase: 'tool_pending' | 'tool_completed') =>
+      phase === 'tool_completed'
+        ? new Promise<void>((resolve) => {
+            releaseCompleted = resolve
+          })
+        : Promise.resolve(),
+    )
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'wait', description: 'wait', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () =>
+          suspendToolExecution(
+            new Promise<ToolExecution>((resolve) => {
+              releaseResult = resolve
+            }),
+          ),
+        ),
+      },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: vi.fn(async () => undefined),
+        tool,
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    session.send('wait')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onToolCall({ id: 'wait-tool', name: 'wait', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(releaseResult).toBeTypeOf('function'))
+    expect(tool).toHaveBeenCalledTimes(1)
+    releaseResult({ output: 'done', summary: 'Done' })
+    await vi.waitFor(() =>
+      expect(tool).toHaveBeenCalledWith(
+        expect.any(String),
+        'tool_completed',
+        'wait',
+        false,
+        'wait-tool',
+      ),
+    )
+    expect(harness.stream).toHaveBeenCalledOnce()
+    releaseCompleted()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+  })
+
+  it('does not start a run when its checkpoint cannot be saved', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: {
+        interrupted: false,
+        begin: async () => {
+          throw new Error('save failed')
+        },
+        finish: vi.fn(async () => undefined),
+      },
+    })
+    session.send('continue')
+    await vi.waitFor(() => expect(session.snapshot().status).toBe('error'))
+    expect(session.snapshot().error).toBe('presentation_run_checkpoint_unavailable')
+    expect(harness.stream).not.toHaveBeenCalled()
+  })
+
+  it('passes a longer presentation brief to the bounded local recovery checkpoint', async () => {
+    const harness = transportHarness()
+    const begin = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: { interrupted: false, begin, finish: vi.fn(async () => undefined) },
+    })
+    const brief = '页面、来源和样式要求。'.repeat(150)
+    expect(brief.length).toBeGreaterThan(1000)
+    session.send(brief)
+    await vi.waitFor(() => expect(begin).toHaveBeenCalledOnce())
+    expect(begin).toHaveBeenCalledWith(expect.any(String), brief)
+    session.stop()
+  })
+
+  it('does not start a cancelled run after a delayed checkpoint save', async () => {
+    const harness = transportHarness()
+    let release!: () => void
+    const begin = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        }),
+    )
+    const finish = vi.fn(async (_runId: string) => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: { interrupted: false, begin, finish },
+    })
+    session.send('do work')
+    session.stop()
+    release()
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce())
+    expect(harness.stream).not.toHaveBeenCalled()
+    expect(session.snapshot().status).toBe('cancelled')
+  })
+
+  it('shows PowerPoint production as a stage activity through ACP updates', async () => {
+    const harness = transportHarness()
+    let finish!: () => void
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [
+          {
+            name: 'run_presentation_production',
+            description: 'run',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        executeTool: vi.fn(
+          () =>
+            new Promise<ToolExecution>((resolve) => {
+              finish = () => resolve({ output: '{}', summary: 'internal', mutated: false })
+            }),
+        ),
+      },
+      proposals: proposalsHarness().controller,
+    })
+    session.send('继续制作')
+    await Promise.resolve()
+    harness
+      .callbacks()
+      .onToolCall({ id: 'production-1', name: 'run_presentation_production', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() =>
+      expect(session.snapshot().timeline).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'tool', summary: '正在处理逐页制作…', state: 'running' }),
+        ]),
+      ),
+    )
+    finish()
+    await vi.waitFor(() =>
+      expect(session.snapshot().timeline).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'tool',
+            summary: '逐页制作操作已结束',
+            state: 'complete',
+          }),
+        ]),
+      ),
+    )
+  })
+
+  it('does not duplicate the user instruction while automatic recovery is pending', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+    })
+
+    session.send('Try this')
+    await Promise.resolve()
+    harness.callbacks().onError('provider_unavailable')
+    session.retry()
+    await Promise.resolve()
+
+    expect(session.snapshot().status).toBe('working')
+    expect(
+      session
+        .snapshot()
+        .timeline.filter((event) => event.kind === 'user')
+        .map((event) => (event.kind === 'user' ? event.text : '')),
+    ).toEqual(['Try this'])
+    session.dispose()
+  })
+
+  it('keeps P0-20 transient model error and user cancellation distinct from completion', async () => {
+    const scenario = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../../docs/product/ppt-benchmark-materials/PPT-P0-20/scenario.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    )
+    expect(scenario.faultSchedule.map((fault: { id: string }) => fault.id)).toEqual([
+      'F1',
+      'F2',
+      'F3',
+    ])
+    const harness = transportHarness()
+    const begin = vi.fn(async () => undefined)
+    const finish = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'p0-20', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      runCheckpoint: { interrupted: false, begin, finish, validateDocument: async () => true },
+    })
+    const instruction = '继续同一项目的八页制作'
+    session.send(instruction)
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(1))
+    harness.callbacks().onError('provider_unavailable')
+    expect(session.snapshot()).toMatchObject({ status: 'error', retryable: true })
+    expect(
+      session
+        .snapshot()
+        .timeline.some((event) => event.kind === 'system' && event.text.includes('完成')),
+    ).toBe(false)
+    session.retry()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    expect(begin).toHaveBeenCalledTimes(2)
+    expect(
+      session
+        .snapshot()
+        .timeline.filter((event) => event.kind === 'user')
+        .map((event) => (event.kind === 'user' ? event.text : '')),
+    ).toEqual([instruction, instruction])
+    session.stop()
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().status).toBe('cancelled'))
+    expect(session.snapshot()).toMatchObject({ busy: false, retryable: false })
+    expect(harness.cancel).toHaveBeenCalledOnce()
+    expect(finish).toHaveBeenCalled()
+  })
+
+  it('reports screenshot metadata without sending bulk images into model history', async () => {
+    const harness = transportHarness()
+    const proposals = createStructuredProposalController()
+    const pngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII='
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'powerpoint',
+        systemPrompt: 'test',
+        tools: [{ name: 'edit_slide_text', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool: () => {
+          const proposal = proposals.propose({
+            operation: 'edit_slide_text',
+            title: 'Edit',
+            preview: {},
+            impact: { host: 'powerpoint', targets: ['slide-1'], count: 1 },
+            fingerprint: 'v1',
+            validate: () => true,
+            execute: () => {},
+            postWrite: () => ({
+              status: 'captured',
+              pages: [
+                {
+                  slideId: 'slide-1',
+                  pngBase64,
+                  digest: 'f4b555ad4009f54a1a37dc29e7ccf9f8f4cfe22410ba7769061c0328cdb6db67',
+                },
+              ],
+            }),
+          })
+          return {
+            output: JSON.stringify({ proposalId: proposal.id }),
+            mutated: false,
+            summary: 'Awaiting confirmation',
+          }
+        },
+      },
+      proposals,
+    })
+    session.send('edit')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'write', name: 'edit_slide_text', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().proposal).toBeDefined())
+    await session.confirm(session.snapshot().proposal!.id)
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    const resumed = harness.stream.mock.calls[1]?.[0] as {
+      messages: Array<{ results?: Array<{ output: string; content?: unknown }> }>
+    }
+    const result = resumed.messages.at(-1)?.results?.[0]
+    expect(JSON.parse(result!.output)).toMatchObject({
+      status: 'applied',
+      qaPassed: false,
+      visualReview: 'pending',
+      postWrite: { status: 'captured', pages: [{ slideId: 'slide-1' }] },
+    })
+    expect(result!.content).toBeUndefined()
+  })
+
+  it('attributes a run transport failure to the run rather than the last presentation page', async () => {
+    const harness = transportHarness()
+    const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+
+    session.send('Produce a deck')
+    await Promise.resolve()
+    diagnostics.setTool('run_presentation_production', {
+      project_id: 'project-1',
+      request_id: 'run-1',
+      page_id: 'page-3',
+    })
+    harness.callbacks().onError('transport_timeout')
+
+    const event = diagnostics.snapshot().events.at(-1)
+    expect(event).toMatchObject({
+      tool: 'agent_run',
+      phase: 'transport',
+      error_code: 'request_timeout',
+    })
+    expect(event).not.toHaveProperty('presentation_context')
+    expect(event).not.toHaveProperty('presentation_stage')
+  })
+
+  it('keeps checkpoint-backed transport timeouts available for validated manual recovery', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      runCheckpoint: {
+        interrupted: false,
+        recovery: { instruction: 'Build a complex presentation', phase: 'running' },
+        validateDocument: async () => true,
+        begin: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+    })
+
+    session.send('Build a complex presentation')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledOnce())
+    harness.callbacks().onError('transport_timeout')
+
+    expect(session.snapshot()).toMatchObject({
+      error: 'request_timeout',
+      errorMessage: expect.stringContaining('未自动重放'),
+      retryable: true,
+    })
+  })
+
+  it('hides unknown backup confirmation response text from the session', async () => {
+    const proposals = proposalsHarness()
+    proposals.controller.confirm.mockRejectedValue(new Error('quota_exceeded /private/secret'))
+    proposals.setPending()
+    const session = createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposals.controller,
+    })
+    await session.confirm('p1')
+    expect(session.snapshot()).toMatchObject({
+      error: 'office_write_failed',
+      errorMessage: 'The approved change could not be applied.',
+      retryable: false,
+    })
+    expect(JSON.stringify(session.snapshot())).not.toContain('/private/secret')
+    expect(proposals.controller.confirm).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    'capture_presentation_page_qa',
+    'record_presentation_page_review',
+    'compare_presentation_page_structure',
+  ])(
+    'records nonfatal waiting screenshot diagnostics for %s without changing its model output',
+    async (name) => {
+      const harness = transportHarness()
+      const output = JSON.stringify({
+        status: 'waiting_screenshot',
+        pageId: 'page-1',
+        hostSlideId: 'host-1',
+        retryable: true,
+      })
+      const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'screenshot-test' })
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: {
+          id: 'qa-test',
+          systemPrompt: 'test',
+          tools: [{ name, description: 'test', inputSchema: { type: 'object' } }],
+          executeTool: async () => ({ output, mutated: false, summary: 'waiting' }),
+        },
+        proposals: proposalsHarness().controller,
+        diagnostics,
+      })
+      try {
+        session.send('Capture this page')
+        await Promise.resolve()
+        harness.callbacks().onToolCall({
+          id: 'screenshot-call',
+          name,
+          input: { project_id: 'project-1', page_id: 'page-1' },
+        })
+        harness.callbacks().onDone()
+        await vi.waitFor(() =>
+          expect(
+            diagnostics
+              .snapshot()
+              .events.some((event) => event.error_code === 'presentation_screenshot_waiting'),
+          ).toBe(true),
+        )
+        const event = diagnostics
+          .snapshot()
+          .events.find((event) => event.error_code === 'presentation_screenshot_waiting')!
+        expect(event).toMatchObject({
+          tool: name,
+          phase: 'tool',
+          outcome: 'unsupported',
+          presentation_context: {
+            project_id: 'project-1',
+            page_id: 'page-1',
+            tool_call_id: 'screenshot-call',
+          },
+        })
+        expect(session.snapshot().status).not.toBe('error')
+        expect(diagnostics.exportJson()).not.toContain('page-1')
+        expect(JSON.stringify(harness.stream.mock.calls)).toContain('waiting_screenshot')
+      } finally {
+        session.dispose()
+      }
+    },
+  )
+
+  it('keeps a real unresolved screenshot failure distinct from a generic agent failure', async () => {
+    const harness = transportHarness(),
+      diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'screenshot-test' })
+    const name = 'capture_presentation_page_qa'
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'qa-test',
+        systemPrompt: 'test',
+        tools: [{ name, description: 'test', inputSchema: { type: 'object' } }],
+        executeTool: async () => ({
+          output: 'presentation_qa_attempt_unresolved',
+          isError: true,
+          mutated: false,
+          summary: 'unresolved',
+        }),
+      },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+    try {
+      session.send('Capture')
+      await Promise.resolve()
+      harness.callbacks().onToolCall({ id: 'failed-capture', name, input: { page_id: 'page-1' } })
+      harness.callbacks().onDone()
+      await vi.waitFor(() =>
+        expect(
+          diagnostics
+            .snapshot()
+            .events.some((event) => event.error_code === 'presentation_qa_attempt_unresolved'),
+        ).toBe(true),
+      )
+      expect(
+        diagnostics
+          .snapshot()
+          .events.find((event) => event.error_code === 'presentation_qa_attempt_unresolved')
+          ?.outcome,
+      ).toBe('failed')
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it.each([
+    { name: 'unrelated_tool', payload: {}, mutated: false },
+    { name: 'capture_presentation_page_qa', payload: { pageId: 'other-page' }, mutated: false },
+    { name: 'capture_presentation_page_qa', payload: { retryable: false }, mutated: false },
+    { name: 'capture_presentation_page_qa', payload: { hostSlideId: '' }, mutated: false },
+    { name: 'capture_presentation_page_qa', payload: { private: 'unexpected' }, mutated: false },
+    {
+      name: 'capture_presentation_page_qa',
+      payload: { hostSlideId: 'x'.repeat(4096) },
+      mutated: false,
+    },
+    { name: 'capture_presentation_page_qa', payload: {}, mutated: true },
+  ])(
+    'does not infer screenshot waiting from untrusted or unrelated results: %j',
+    async ({ name, payload, mutated }) => {
+      const harness = transportHarness()
+      const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'screenshot-test' })
+      const output = JSON.stringify({
+        status: 'waiting_screenshot',
+        pageId: 'page-1',
+        hostSlideId: 'host-1',
+        retryable: true,
+        ...payload,
+      })
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: {
+          id: 'qa-test',
+          systemPrompt: 'test',
+          tools: [{ name, description: 'test', inputSchema: { type: 'object' } }],
+          executeTool: async () => ({ output, mutated, summary: 'done' }),
+        },
+        proposals: proposalsHarness().controller,
+        diagnostics,
+      })
+      try {
+        session.send('Capture this page')
+        await Promise.resolve()
+        harness.callbacks().onToolCall({
+          id: 'screenshot-call',
+          name,
+          input: { project_id: 'project-1', page_id: 'page-1' },
+        })
+        harness.callbacks().onDone()
+        await vi.waitFor(() => expect(harness.stream.mock.calls.length).toBeGreaterThan(1))
+        expect(
+          diagnostics
+            .snapshot()
+            .events.some((event) => event.error_code === 'presentation_screenshot_waiting'),
+        ).toBe(false)
+      } finally {
+        session.dispose()
+      }
+    },
+  )
 })

@@ -16,7 +16,11 @@ use std::{
 use tokio::net::TcpListener;
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::{Message, client::IntoClientRequest},
+    tungstenite::{
+        Message,
+        client::IntoClientRequest,
+        protocol::{CloseFrame, frame::coding::CloseCode},
+    },
 };
 use wiswork_relay::{Config, app, try_app};
 
@@ -103,9 +107,10 @@ async fn server_with_request_limits(
         .route(
             "/oidc/me",
             axum::routing::get(|headers: axum::http::HeaderMap| async move {
+            if headers.get("authorization").and_then(|v| v.to_str().ok()) == Some("Bearer slow-team-token") { tokio::time::sleep(Duration::from_millis(250)).await; }
             let subject = match headers.get("authorization").and_then(|v| v.to_str().ok()) {
                 Some("Bearer valid-test-token") => Some("test-user"),
-                Some("Bearer legitimate-test-token") => Some("legitimate-user"),
+                Some("Bearer legitimate-test-token") | Some("Bearer slow-team-token") => Some("legitimate-user"),
                 _ => None,
             };
             if let Some(subject) = subject {
@@ -439,6 +444,192 @@ async fn approved_v2_session_with_capabilities(
     let pc_ready = recv(&mut pc).await;
     let office_ready = recv(&mut office).await;
     (office, pc, office_ready, pc_ready)
+}
+
+#[tokio::test]
+async fn office_socket_resumes_the_same_v2_session_without_new_pairing() {
+    let url = server().await;
+    let (mut office, mut pc, office_ready, pc_ready) = approved_v2_session(&url).await;
+    let sid = office_ready["session_id"].as_str().unwrap();
+    let capability = office_ready["capability"].as_str().unwrap();
+
+    let mut premature = socket(&url, ORIGIN).await;
+    send(&mut premature, json!({"version":2,"type":"office.resume","session_id":sid,"capability":capability,"host":"Word"})).await;
+    assert_eq!(recv(&mut premature).await["code"], "session_active");
+    premature.close(None).await.unwrap();
+
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":capability,"request_id":"interrupted","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "interrupted");
+    office.close(None).await.unwrap();
+    assert_eq!(recv(&mut pc).await["type"], "relay.cancel");
+
+    let mut attacker = socket(&url, ORIGIN).await;
+    send(&mut attacker, json!({"version":2,"type":"office.resume","session_id":sid,"capability":"wrong","host":"Word"})).await;
+    assert_eq!(recv(&mut attacker).await["code"], "invalid_capability");
+    attacker.close(None).await.unwrap();
+
+    let mut resumed = socket(&url, ORIGIN).await;
+    send(&mut resumed, json!({"version":2,"type":"office.resume","session_id":sid,"capability":capability,"host":"Word"})).await;
+    let ack = recv(&mut resumed).await;
+    assert_eq!(ack["type"], "office.resumed");
+    assert_eq!(ack["session_id"], office_ready["session_id"]);
+    assert_eq!(ack["capabilities"], office_ready["capabilities"]);
+    send(&mut resumed, json!({"version":2,"type":"office.request","session_id":sid,"capability":capability,"request_id":"after_resume","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "after_resume");
+    send(&mut pc, json!({"version":2,"type":"pc.start","session_id":sid,"capability":pc_ready["capability"],"request_id":"after_resume","status":200,"content_type":"application/json"})).await;
+    assert_eq!(recv(&mut resumed).await["type"], "relay.start");
+    send(&mut pc, json!({"version":2,"type":"pc.done","session_id":sid,"capability":pc_ready["capability"],"request_id":"after_resume"})).await;
+    assert_eq!(recv(&mut resumed).await["type"], "relay.done");
+
+    send(
+        &mut resumed,
+        json!({"version":2,"type":"office.leave","session_id":sid,"capability":capability}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["code"], "session_revoked");
+    let mut again = socket(&url, ORIGIN).await;
+    send(&mut again, json!({"version":2,"type":"office.resume","session_id":sid,"capability":capability,"host":"Word"})).await;
+    assert_eq!(recv(&mut again).await["code"], "invalid_session");
+}
+
+#[tokio::test]
+async fn pc_socket_resumes_same_session_and_interrupted_request_is_not_replayed() {
+    let url = server().await;
+    let (mut office, mut pc, office_ready, pc_ready) = approved_v2_session(&url).await;
+    let sid = office_ready["session_id"].as_str().unwrap();
+    let office_cap = office_ready["capability"].as_str().unwrap();
+    let pc_cap = pc_ready["capability"].as_str().unwrap();
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":office_cap,"request_id":"interrupted","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "interrupted");
+    pc.close(None).await.unwrap();
+    assert_eq!(recv(&mut office).await["code"], "pc_offline");
+    assert_eq!(recv(&mut office).await["type"], "office.pc_offline");
+
+    let mut wrong = pc_socket_with_token(&url, "legitimate-test-token")
+        .await
+        .unwrap();
+    send(
+        &mut wrong,
+        json!({"version":2,"type":"pc.resume","session_id":sid,"capability":pc_cap}),
+    )
+    .await;
+    assert_eq!(recv(&mut wrong).await["code"], "invalid_capability");
+    wrong.close(None).await.unwrap();
+
+    let mut resumed = pc_socket(&url).await;
+    send(
+        &mut resumed,
+        json!({"version":2,"type":"pc.resume","session_id":sid,"capability":pc_cap}),
+    )
+    .await;
+    let ack = recv(&mut resumed).await;
+    assert_eq!(ack["type"], "pc.resumed");
+    assert_eq!(ack["session_id"], sid);
+    assert_eq!(recv(&mut office).await["type"], "office.pc_online");
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":office_cap,"request_id":"new_request","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut resumed).await["request_id"], "new_request");
+}
+
+#[tokio::test]
+async fn explicit_pc_close_revokes_only_its_sessions() {
+    let url = server().await;
+    let (mut office, mut pc, ready, pc_ready) = approved_v2_session(&url).await;
+    let (mut other_office, mut other_pc, other_ready, _) = approved_v2_session(&url).await;
+    let sid = ready["session_id"].as_str().unwrap();
+    let cap = pc_ready["capability"].as_str().unwrap();
+
+    pc.close(Some(CloseFrame {
+        code: CloseCode::Normal,
+        reason: "session_revoked".into(),
+    }))
+    .await
+    .unwrap();
+    assert_eq!(recv(&mut office).await["code"], "session_revoked");
+
+    let mut resumed = pc_socket(&url).await;
+    send(
+        &mut resumed,
+        json!({"version":2,"type":"pc.resume","session_id":sid,"capability":cap}),
+    )
+    .await;
+    assert_eq!(recv(&mut resumed).await["code"], "invalid_session");
+
+    send(&mut other_office, json!({"version":2,"type":"office.request","session_id":other_ready["session_id"],"capability":other_ready["capability"],"request_id":"still_live","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut other_pc).await["request_id"], "still_live");
+}
+
+#[tokio::test]
+async fn pc_close_with_wrong_reason_remains_resumable() {
+    let url = server().await;
+    let (mut office, mut pc, ready, pc_ready) = approved_v2_session(&url).await;
+    pc.close(Some(CloseFrame {
+        code: CloseCode::Normal,
+        reason: "session_revoked_extra".into(),
+    }))
+    .await
+    .unwrap();
+    assert_eq!(recv(&mut office).await["type"], "office.pc_offline");
+
+    let mut resumed = pc_socket(&url).await;
+    send(&mut resumed, json!({"version":2,"type":"pc.resume","session_id":ready["session_id"],"capability":pc_ready["capability"]})).await;
+    assert_eq!(recv(&mut resumed).await["type"], "pc.resumed");
+    assert_eq!(recv(&mut office).await["type"], "office.pc_online");
+}
+
+#[tokio::test]
+async fn explicit_pc_close_terminates_active_office_request() {
+    let url = server().await;
+    let (mut office, mut pc, ready, _) = approved_v2_session(&url).await;
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"in_progress","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "in_progress");
+
+    pc.close(Some(CloseFrame {
+        code: CloseCode::Normal,
+        reason: "session_revoked".into(),
+    }))
+    .await
+    .unwrap();
+    let terminal = recv(&mut office).await;
+    assert_eq!(terminal["type"], "relay.error");
+    assert_eq!(terminal["code"], "session_revoked");
+}
+
+#[tokio::test]
+async fn three_powerpoint_sessions_route_interleaved_requests_to_their_own_pcs() {
+    let url = server().await;
+    let mut sessions = Vec::new();
+    for index in 0..3 {
+        let mut office = socket(&url, ORIGIN).await;
+        send(&mut office, json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["agent.v1"]})).await;
+        let created = recv(&mut office).await;
+        let mut pc = pc_socket(&url).await;
+        send(&mut pc, json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":["agent.v1"]})).await;
+        let claimed = recv(&mut pc).await;
+        send(&mut pc, json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"]})).await;
+        let pc_ready = recv(&mut pc).await;
+        let office_ready = recv(&mut office).await;
+        sessions.push((office, pc, office_ready, pc_ready, index));
+    }
+    for (office, _, ready, _, index) in &mut sessions {
+        send(office, json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"same_request_id","capability_name":"agent.v1","body":{"document":index}})).await;
+    }
+    for (_, pc, ready, _, index) in &mut sessions {
+        let forwarded = recv(pc).await;
+        assert_eq!(forwarded["session_id"], ready["session_id"]);
+        assert_eq!(forwarded["body"]["document"], json!(index));
+    }
+    for (_, pc, ready, pc_ready, _) in &mut sessions {
+        send(pc, json!({"version":2,"type":"pc.start","session_id":ready["session_id"],"capability":pc_ready["capability"],"request_id":"same_request_id","status":200,"content_type":"application/json"})).await;
+        send(pc, json!({"version":2,"type":"pc.done","session_id":ready["session_id"],"capability":pc_ready["capability"],"request_id":"same_request_id"})).await;
+    }
+    for (office, _, ready, _, _) in &mut sessions {
+        assert_eq!(recv(office).await["session_id"], ready["session_id"]);
+        assert_eq!(recv(office).await["type"], "relay.done");
+    }
+    sessions[0].0.close(None).await.unwrap();
+    let (office, pc, ready, _, _) = &mut sessions[1];
+    send(office, json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"second_document_still_live","capability_name":"agent.v1","body":{}})).await;
+    assert_eq!(recv(pc).await["request_id"], "second_document_still_live");
 }
 
 #[tokio::test]
@@ -1740,11 +1931,79 @@ async fn pairs_only_after_claim_and_approval_then_forwards_and_cancels() {
 
 #[tokio::test]
 async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
+    check_v2_capability("web-search.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_presentation_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_presentation_attachments_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-attachments.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_presentation_assets_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-assets.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_presentation_remote_images_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-remote-images.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_presentation_webpages_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-webpages.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_presentation_asset_rights_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-asset-rights.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_presentation_animation_frame_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-animation-frame.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_compiled_pdf_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-pdf.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_production_pdf_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-production-pdf.v1").await;
+}
+
+#[tokio::test]
+async fn v2_negotiates_master_backups_and_denies_unnegotiated_requests() {
+    check_v2_capability("presentation-master-backups.v1").await;
+}
+
+async fn check_v2_capability(capability: &str) {
+    check_v2_body(capability, None).await;
+}
+async fn check_v2_body(capability: &str, rejected: Option<(&str, serde_json::Value)>) {
     let url = server().await;
+    let host = if [
+        "presentation-master-backups.v1",
+        "presentation-package-backups.v1",
+        "presentation-governance.v1",
+    ]
+    .contains(&capability)
+    {
+        "PowerPoint"
+    } else {
+        "Word"
+    };
     let mut office = socket(&url, ORIGIN).await;
     send(
         &mut office,
-        json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1","web-search.v1","web-fetch.v1","future-capability.v9"]}),
+        json!({"version":2,"type":"office.create","host":host,"capabilities":["agent.v1",capability,"web-fetch.v1","future-capability.v9"]}),
     )
     .await;
     let created = recv(&mut office).await;
@@ -1754,36 +2013,30 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
     let mut pc = pc_socket(&url).await;
     send(
         &mut pc,
-        json!({"version":2,"type":"pc.negotiate","verification_code":code,"capabilities":["agent.v1","web-search.v1","image-search.v1","future-capability.v9"]}),
+        json!({"version":2,"type":"pc.negotiate","verification_code":code,"capabilities":["agent.v1",capability,"image-search.v1","future-capability.v9"]}),
     )
     .await;
     let negotiated = recv(&mut pc).await;
     assert_eq!(negotiated["type"], "pc.negotiated");
     assert_eq!(negotiated["pairing_version"], 2);
-    assert_eq!(
-        negotiated["capabilities"],
-        json!(["agent.v1", "web-search.v1"])
-    );
+    assert_eq!(negotiated["capabilities"], json!(["agent.v1", capability]));
     send(
         &mut pc,
-        json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1","web-search.v1","image-search.v1"]}),
+        json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1",capability,"image-search.v1"]}),
     )
     .await;
     let claimed = recv(&mut pc).await;
-    assert_eq!(
-        claimed["capabilities"],
-        json!(["agent.v1", "web-search.v1"])
-    );
+    assert_eq!(claimed["capabilities"], json!(["agent.v1", capability]));
     send(
         &mut pc,
-        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1","web-search.v1"]}),
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1",capability]}),
     )
     .await;
     let pc_ready = recv(&mut pc).await;
     let office_ready = recv(&mut office).await;
     assert_eq!(
         office_ready["capabilities"],
-        json!(["agent.v1", "web-search.v1"])
+        json!(["agent.v1", capability])
     );
 
     send(
@@ -1793,18 +2046,25 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
     .await;
     assert_eq!(recv(&mut office).await["code"], "capability_not_negotiated");
 
+    if let Some((name, body)) = rejected {
+        send(&mut office,json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"bad_governance","capability_name":name,"body":body})).await;
+        assert_eq!(recv(&mut office).await["code"], "invalid_request");
+        return;
+    }
+    let body = if capability == "presentation-governance.v1" {
+        json!({"operation":"project_lifecycle_read"})
+    } else {
+        json!({"query":"office agents","max_results":5})
+    };
     send(
         &mut office,
-        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"web_request_2","capability_name":"web-search.v1","body":{"query":"office agents","max_results":5}}),
+        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"web_request_2","capability_name":capability,"body":body}),
     )
     .await;
     let forwarded = recv(&mut pc).await;
     assert_eq!(forwarded["version"], 2);
-    assert_eq!(forwarded["capability_name"], "web-search.v1");
-    assert_eq!(
-        forwarded["body"],
-        json!({"query":"office agents","max_results":5})
-    );
+    assert_eq!(forwarded["capability_name"], capability);
+    assert_eq!(forwarded["body"], body);
     assert_eq!(pc_ready["capabilities"], office_ready["capabilities"]);
     send(&mut pc, json!({"version":2,"type":"pc.start","session_id":office_ready["session_id"],"capability":pc_ready["capability"],"request_id":"web_request_2","status":200,"content_type":"application/json"})).await;
     assert_eq!(recv(&mut office).await["version"], 2);
@@ -1813,18 +2073,19 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
     send(&mut pc, json!({"version":2,"type":"pc.done","session_id":office_ready["session_id"],"capability":pc_ready["capability"],"request_id":"web_request_2"})).await;
     assert_eq!(recv(&mut office).await["version"], 2);
     pc.close(None).await.unwrap();
-    let revoked = recv(&mut office).await;
-    assert_eq!(revoked["version"], 2);
-    assert_eq!(revoked["code"], "session_revoked");
+    let offline = recv(&mut office).await;
+    assert_eq!(offline["version"], 2);
+    assert_eq!(offline["type"], "office.pc_offline");
 }
 
 #[tokio::test]
-async fn three_valid_v2_negotiations_and_claims_share_one_subject_budget() {
+async fn valid_v2_negotiations_do_not_exhaust_invalid_code_budget() {
     let url = server().await;
-    let mut office = socket(&url, ORIGIN).await;
+    let mut offices = Vec::new();
     let mut pcs = Vec::new();
 
-    for host in ["Word", "Excel", "PowerPoint"] {
+    for host in ["Word", "Excel", "PowerPoint", "Word", "Excel", "PowerPoint"] {
+        let mut office = socket(&url, ORIGIN).await;
         send(
             &mut office,
             json!({"version":2,"type":"office.create","host":host,"capabilities":["agent.v1"]}),
@@ -1847,7 +2108,57 @@ async fn three_valid_v2_negotiations_and_claims_share_one_subject_budget() {
         .await;
         assert_eq!(recv(&mut pc).await["type"], "pc.claimed");
         pcs.push(pc);
+        offices.push(office);
     }
+
+    for attempt in 0..6 {
+        let mut invalid = pc_socket(&url).await;
+        send(
+            &mut invalid,
+            json!({"version":2,"type":"pc.negotiate","verification_code":"999999","capabilities":["agent.v1"]}),
+        )
+        .await;
+        assert_eq!(
+            recv(&mut invalid).await["code"],
+            if attempt < 5 {
+                "invalid_code"
+            } else {
+                "claim_limit"
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn valid_v1_claims_do_not_exhaust_invalid_code_budget() {
+    let url = server().await;
+    let mut offices = Vec::new();
+    let mut pcs = Vec::new();
+    for _ in 0..6 {
+        let mut office = socket(&url, ORIGIN).await;
+        send(
+            &mut office,
+            json!({"version":1,"type":"office.create","host":"Word"}),
+        )
+        .await;
+        let created = recv(&mut office).await;
+        let mut pc = pc_socket(&url).await;
+        send(
+            &mut pc,
+            json!({"version":1,"type":"pc.claim","verification_code":created["verification_code"]}),
+        )
+        .await;
+        assert_eq!(recv(&mut pc).await["type"], "pc.claimed");
+        offices.push(office);
+        pcs.push(pc);
+    }
+    let mut invalid = pc_socket(&url).await;
+    send(
+        &mut invalid,
+        json!({"version":1,"type":"pc.claim","verification_code":"999999"}),
+    )
+    .await;
+    assert_eq!(recv(&mut invalid).await["code"], "invalid_code");
 }
 
 #[tokio::test]
@@ -2051,6 +2362,42 @@ async fn unknown_only_claim_does_not_mutate_or_notify_the_pairing() {
 }
 
 #[tokio::test]
+async fn old_pc_claim_gets_explicit_version_error_without_touching_v2_pairing() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["agent.v1"]}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    let code = created["verification_code"].clone();
+
+    let mut old_pc = pc_socket(&url).await;
+    send(
+        &mut old_pc,
+        json!({"version":1,"type":"pc.claim","verification_code":code}),
+    )
+    .await;
+    assert_eq!(
+        recv(&mut old_pc).await,
+        json!({"version":1,"type":"relay.error","code":"protocol_version_mismatch"})
+    );
+    assert_eq!(
+        recv(&mut office).await,
+        json!({"version":2,"type":"office.pc_incompatible","pairing_id":created["pairing_id"]})
+    );
+
+    let mut new_pc = pc_socket(&url).await;
+    send(
+        &mut new_pc,
+        json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1"]}),
+    )
+    .await;
+    assert_eq!(recv(&mut new_pc).await["type"], "pc.claimed");
+}
+
+#[tokio::test]
 async fn pc_response_activity_cannot_revive_an_idle_expired_session() {
     let url =
         server_with_session_ttls(Some((Duration::from_millis(100), Duration::from_secs(1)))).await;
@@ -2130,6 +2477,27 @@ async fn accepts_capability_bound_diagnostic_without_forwarding_or_disturbing_re
             .await
             .is_err()
     );
+    let mut completed = diagnostic(&office_ready, "0c9483ef-720f-4b10-a1d5-143349f0a94b");
+    completed["tool"] = json!("agent_run");
+    completed["phase"] = json!("run");
+    completed["outcome"] = json!("passed");
+    completed["error_code"] = json!("agent_run_completed");
+    for key in [
+        "office_error_code",
+        "office_error_name",
+        "office_error_location",
+    ] {
+        completed.as_object_mut().unwrap().remove(key);
+    }
+    send(&mut office, completed.clone()).await;
+    assert_eq!(
+        recv(&mut office).await["type"],
+        "office.diagnostic.accepted"
+    );
+    completed["event_id"] = json!("a688c4e8-1616-42d0-9712-8d5282578d10");
+    completed["error_code"] = json!("office_write_failed");
+    send(&mut office, completed).await;
+    assert_eq!(recv(&mut office).await["code"], "invalid_frame");
 
     send(
         &mut office,
@@ -2337,4 +2705,330 @@ async fn caps_diagnostics_at_one_hundred_per_session_without_mutating_request_st
     )
     .await;
     assert_eq!(recv(&mut pc).await["request_id"], "after_limit");
+}
+
+async fn approved_team_session(
+    url: &str,
+) -> (
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    Value,
+    Value,
+) {
+    let mut office = socket(url, ORIGIN).await;
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["presentation-team.v1"]}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    let mut pc = pc_socket(url).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":["presentation-team.v1"]}),
+    )
+    .await;
+    let claimed = recv(&mut pc).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["presentation-team.v1"]}),
+    )
+    .await;
+    let pc_ready = recv(&mut pc).await;
+    let office_ready = recv(&mut office).await;
+    (office, pc, office_ready, pc_ready)
+}
+
+#[tokio::test]
+async fn team_context_authenticates_actor_separately_and_never_forwards_bearer() {
+    let url = server().await;
+    let (mut office, mut pc, ready, _) = approved_team_session(&url).await;
+    send(&mut office,json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"team_request","capability_name":"presentation-team.v1","access_token":"legitimate-test-token","body":{"operation":"team_identity"}})).await;
+    let frame = recv(&mut pc).await;
+    assert_eq!(frame["capability_name"], "presentation-team.v1");
+    assert_eq!(frame["team_context"]["version"], 1);
+    use sha2::{Digest, Sha256};
+    let hex = |value: &str| {
+        Sha256::digest(value.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    assert_eq!(
+        frame["team_context"]["actorSubject"],
+        hex("legitimate-user")
+    );
+    assert_eq!(frame["team_context"]["pcSubject"], hex("test-user"));
+    assert!(frame.get("access_token").is_none());
+    assert!(!frame.to_string().contains("legitimate-test-token"));
+}
+
+#[tokio::test]
+async fn team_rejects_missing_bad_tokens_and_forged_context_before_forwarding() {
+    for scenario in [
+        "missing",
+        "bad",
+        "forged",
+        "body_token",
+        "ordinary_token",
+        "ordinary_team",
+    ] {
+        let url = server().await;
+        let (mut office, mut pc, ready, _) = approved_team_session(&url).await;
+        let mut frame = json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"team_request","capability_name":"presentation-team.v1","access_token":"legitimate-test-token","body":{"operation":"team_identity"}});
+        match scenario {
+            "missing" => {
+                frame.as_object_mut().unwrap().remove("access_token");
+            }
+            "bad" => frame["access_token"] = json!("invalid-token"),
+            "forged" => {
+                frame["team_context"] =
+                    json!({"version":1,"actorSubject":"fake","pcSubject":"fake"})
+            }
+            "body_token" => frame["body"]["access_token"] = json!("secret"),
+            "ordinary_token" => {
+                frame["capability_name"] = json!("agent.v1");
+                frame["body"]["operation"] = json!("ordinary");
+            }
+            "ordinary_team" => {
+                frame["capability_name"] = json!("agent.v1");
+                frame.as_object_mut().unwrap().remove("access_token");
+            }
+            _ => unreachable!(),
+        }
+        send(&mut office, frame).await;
+        assert_eq!(recv(&mut office).await["type"], "relay.error", "{scenario}");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(80), pc.next())
+                .await
+                .is_err(),
+            "{scenario}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn team_cancel_during_oidc_validation_never_forwards_request() {
+    for close in [false, true] {
+        let url = server().await;
+        let (mut office, mut pc, ready, _) = approved_team_session(&url).await;
+        send(&mut office,json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"slow_team","capability_name":"presentation-team.v1","access_token":"slow-team-token","body":{"operation":"team_project_create"}})).await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        if close {
+            office.close(None).await.unwrap();
+        } else {
+            send(&mut office,json!({"version":2,"type":"office.cancel","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"slow_team"})).await;
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(400), pc.next())
+                .await
+                .is_err(),
+            "close={close}"
+        );
+    }
+}
+#[tokio::test]
+async fn team_session_rejects_all_private_capability_combinations_before_pairing() {
+    for other in ["agent.v1", "presentation.v1", "presentation-attachments.v1"] {
+        let url = server().await;
+        let mut office = socket(&url, wiswork_relay::OFFICE_ORIGIN).await;
+        send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["presentation-team.v1",other]})).await;
+        let error = recv(&mut office).await;
+        assert_eq!(error["type"], "relay.error");
+        assert_eq!(error["code"], "invalid_capabilities");
+    }
+}
+
+#[tokio::test]
+async fn master_backup_capability_budget_accepts_nineteen_and_rejects_twenty_one() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    let caps = json!([
+        "agent.v1",
+        "web-search.v1",
+        "web-fetch.v1",
+        "image-search.v1",
+        "image-fetch.v1",
+        "design-document.v1",
+        "enhanced-lease.v1",
+        "presentation.v1",
+        "presentation-attachments.v1",
+        "presentation-assets.v1",
+        "presentation-remote-images.v1",
+        "presentation-webpages.v1",
+        "presentation-asset-rights.v1",
+        "presentation-animation-frame.v1",
+        "presentation-pdf.v1",
+        "presentation-production-pdf.v1",
+        "presentation-master-backups.v1",
+        "presentation-package-backups.v1",
+        "presentation-governance.v1"
+    ]);
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":caps}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    assert_eq!(created["type"], "office.created");
+    let mut pc = pc_socket(&url).await;
+    send(&mut pc,json!({"version":2,"type":"pc.negotiate","verification_code":created["verification_code"],"capabilities":caps})).await;
+    let negotiated = recv(&mut pc).await;
+    assert_eq!(negotiated["type"], "pc.negotiated");
+    assert_eq!(negotiated["capabilities"].as_array().unwrap().len(), 19);
+    assert!(
+        negotiated["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("presentation-master-backups.v1"))
+    );
+    let mut oversized = caps.as_array().unwrap().clone();
+    oversized.push(json!("future-three.v1"));
+    oversized.push(json!("future-four.v1"));
+    let mut other = socket(&url, ORIGIN).await;
+    send(
+        &mut other,
+        json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":oversized}),
+    )
+    .await;
+    assert_eq!(recv(&mut other).await["code"], "invalid_frame");
+}
+#[tokio::test]
+async fn old_pc_without_master_backups_cannot_forward_master_requests() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["agent.v1","presentation-master-backups.v1"]})).await;
+    let created = recv(&mut office).await;
+    let mut pc = pc_socket(&url).await;
+    send(&mut pc,json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":["agent.v1"]})).await;
+    let claimed = recv(&mut pc).await;
+    send(&mut pc,json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"]})).await;
+    recv(&mut pc).await;
+    let ready = recv(&mut office).await;
+    send(&mut office,json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"missing_master","capability_name":"presentation-master-backups.v1","body":{"operation":"master_backup_status"}})).await;
+    assert_eq!(recv(&mut office).await["code"], "capability_not_negotiated");
+}
+
+#[tokio::test]
+async fn v2_package_backups_negotiate_stream_and_disconnect() {
+    check_v2_capability("presentation-package-backups.v1").await;
+}
+#[tokio::test]
+async fn old_pc_without_package_backups_cannot_forward_master_requests() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["agent.v1","presentation-package-backups.v1"]})).await;
+    let created = recv(&mut office).await;
+    let mut pc = pc_socket(&url).await;
+    send(&mut pc,json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":["agent.v1"]})).await;
+    let claimed = recv(&mut pc).await;
+    send(&mut pc,json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"]})).await;
+    recv(&mut pc).await;
+    let ready = recv(&mut office).await;
+    send(&mut office,json!({"version":2,"type":"office.request","session_id":ready["session_id"],"capability":ready["capability"],"request_id":"missing_master","capability_name":"presentation-package-backups.v1","body":{"operation":"package_backup_status"}})).await;
+    assert_eq!(recv(&mut office).await["code"], "capability_not_negotiated");
+}
+
+#[tokio::test]
+async fn governance_capability_negotiates() {
+    check_v2_capability("presentation-governance.v1").await;
+}
+
+#[tokio::test]
+async fn governance_refuses_non_powerpoint() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(&mut office,json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1","presentation-governance.v1"]})).await;
+    assert_eq!(recv(&mut office).await["code"], "unsupported_host");
+}
+
+#[tokio::test]
+async fn governance_wrong_family_and_context_denied() {
+    for rejected in [
+        ("presentation-governance.v1", json!({"operation":"unknown"})),
+        (
+            "presentation-governance.v1",
+            json!({"operation":"package_backup_read"}),
+        ),
+        ("agent.v1", json!({"operation":"project_deletion_confirm"})),
+        (
+            "presentation-governance.v1",
+            json!({"operation":"project_lifecycle_read","team_context":{}}),
+        ),
+        (
+            "presentation-governance.v1",
+            json!({"operation":"project_lifecycle_read","access_token":"private"}),
+        ),
+    ] {
+        check_v2_body("presentation-governance.v1", Some(rejected)).await;
+    }
+}
+fn full_pc_catalog() -> Vec<serde_json::Value> {
+    [
+        "agent.v1",
+        "web-search.v1",
+        "web-fetch.v1",
+        "image-search.v1",
+        "presentation.v1",
+        "presentation-team.v1",
+        "presentation-attachments.v1",
+        "presentation-assets.v1",
+        "presentation-remote-images.v1",
+        "presentation-webpages.v1",
+        "presentation-asset-rights.v1",
+        "presentation-animation-frame.v1",
+        "presentation-pdf.v1",
+        "presentation-production-pdf.v1",
+        "presentation-master-backups.v1",
+        "presentation-package-backups.v1",
+        "presentation-governance.v1",
+    ]
+    .into_iter()
+    .map(|s| json!(s))
+    .collect()
+}
+#[tokio::test]
+async fn full_pc_catalog_intersects_primary_sixteen_and_team_one() {
+    for team in [false, true] {
+        let offered = full_pc_catalog();
+        assert_eq!(offered.len(), 17);
+        let requested: Vec<_> = offered
+            .iter()
+            .filter(|v| (v.as_str() == Some("presentation-team.v1")) == team)
+            .cloned()
+            .collect();
+        assert_eq!(requested.len(), if team { 1 } else { 16 });
+        let url = server().await;
+        let mut office = socket(&url, ORIGIN).await;
+        send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":requested})).await;
+        let created = recv(&mut office).await;
+        assert_eq!(created["type"], "office.created");
+        let mut pc = pc_socket(&url).await;
+        send(&mut pc,json!({"version":2,"type":"pc.negotiate","verification_code":created["verification_code"],"capabilities":offered})).await;
+        let negotiated = recv(&mut pc).await;
+        assert_eq!(negotiated["capabilities"], json!(requested));
+        send(&mut pc,json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":offered})).await;
+        assert_eq!(recv(&mut pc).await["capabilities"], json!(requested));
+    }
+}
+#[tokio::test]
+async fn extended_pc_catalog_rejects_unknown_and_duplicate_entries() {
+    for duplicate in [false, true] {
+        let mut offered = full_pc_catalog();
+        offered[16] = json!(if duplicate { "agent.v1" } else { "future.v1" });
+        let url = server().await;
+        let mut office = socket(&url, ORIGIN).await;
+        send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["agent.v1"]})).await;
+        let created = recv(&mut office).await;
+        let mut pc = pc_socket(&url).await;
+        send(&mut pc,json!({"version":2,"type":"pc.negotiate","verification_code":created["verification_code"],"capabilities":offered})).await;
+        assert_eq!(recv(&mut pc).await["code"], "invalid_frame");
+    }
+}
+#[tokio::test]
+async fn team_only_request_rejects_mixed_capabilities_even_with_full_pc_catalog() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(&mut office,json!({"version":2,"type":"office.create","host":"PowerPoint","capabilities":["presentation-team.v1","agent.v1"]})).await;
+    assert_eq!(recv(&mut office).await["code"], "invalid_capabilities");
 }

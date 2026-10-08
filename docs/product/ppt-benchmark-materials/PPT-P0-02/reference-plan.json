@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "projectId": "p0-02-noise-evidence-reference",
+  "title": "背景噪声与认知任务：三项研究候选比较",
+  "brief": {
+    "objective": "基于三篇冻结原文制作八页科研证据比较，保留方向冲突与可比性边界",
+    "audience": "科研专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": ["三项研究的条件与结果", "同页三方向证据", "可比性矩阵", "利益冲突与局限"],
+    "constraints": ["不得合并效果量", "科学解释待专业审阅", "真实 PowerPoint 保存重开尚未验收"]
+  },
+  "sources": [
+    {
+      "id": "helps",
+      "title": "Helps 2014，PDF 第 1 页 Results",
+      "uri": "doi:10.1371/journal.pone.0112768",
+      "snapshotAttachmentId": "cac04d1ef37f2d86e257af0e7ce2025655463beef3cd64223a7407a04f039a06",
+      "locator": "第 1 页",
+      "excerpt": "Results: There were different effects of WN on performance in the three groups-adding moderate WN worsened the\nperformance of super-attentive children for both task types and improved EF performance in sub-attentive children. The\nnormal-attentive children’s performance was unaffected by WN exposure."
+    },
+    {
+      "id": "han",
+      "title": "Han 2013，PDF 第 1 页 Abstract",
+      "uri": "doi:10.1371/journal.pone.0076261",
+      "snapshotAttachmentId": "3de9235f5e38dccfc73e096d480ac9118c08458a5965e560f8387da5e3aac9da",
+      "locator": "第 1 页",
+      "excerpt": "We found that the memory performance in low arousal condition were\nimproved compared with the silent and the high arousal conditions; participants responded more quickly and had larger P2\nand P3 amplitudes in low arousal condition while the performance and ERP components showed no significant difference\nbetween high arousal and silent conditions."
+    },
+    {
+      "id": "mohanathasan",
+      "title": "Mohanathasan 2025，PDF 第 1 页 Abstract",
+      "uri": "doi:10.1371/journal.pone.0318821",
+      "snapshotAttachmentId": "50a237c34c21c1ff9a9187dc6df0f80fae6b6b69e7266c24c3526d1fa8c404c6",
+      "locator": "第 1 页",
+      "excerpt": "In Experiments 1 and 2, short-term memory of running speech\nand listening effort were unaffected by soft-noise listening conditions. In Experiment 3, how-\never, the moderate-noise listening condition impaired performance in the primary listening\ntask, while performance in the vibrotactile secondary task was unaffected."
+    }
+  ],
+  "claims": [
+    {
+      "id": "helps",
+      "statement": "教师评定的 8–10 岁儿童中，中等白噪声与高注意力组表现变差、低注意力组部分执行功能任务改善有关；常注意力组未见影响。",
+      "type": "fact",
+      "sourceIds": ["helps"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "han",
+      "statement": "N-back 任务中低唤醒语音噪声条件较静音和高唤醒条件反应更快；高唤醒与静音间未见显著差异。",
+      "type": "fact",
+      "sourceIds": ["han"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "mohanathasan",
+      "statement": "两人对话任务中，+10 dB 信噪比的轻度噪声未见短时记忆影响；−3 dB 条件下主听力任务表现受损。",
+      "type": "fact",
+      "sourceIds": ["mohanathasan"],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "背景噪声会帮助认知任务吗？",
+      "purpose": "并列展示研究条件、结果方向和不可比边界",
+      "claimIds": [],
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留三方向证据及来源", "不合并跨研究效果量"]
+    },
+    {
+      "id": "p02",
+      "title": "先定义可比边界",
+      "purpose": "并列展示研究条件、结果方向和不可比边界",
+      "claimIds": [],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留三方向证据及来源", "不合并跨研究效果量"]
+    },
+    {
+      "id": "p03",
+      "title": "Helps：组别决定白噪声方向",
+      "purpose": "并列展示研究条件、结果方向和不可比边界",
+      "claimIds": ["helps"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留三方向证据及来源", "不合并跨研究效果量"]
+    },
+    {
+      "id": "p04",
+      "title": "Han：低唤醒语音噪声条件",
+      "purpose": "并列展示研究条件、结果方向和不可比边界",
+      "claimIds": ["han"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留三方向证据及来源", "不合并跨研究效果量"]
+    },
+    {
+      "id": "p05",
+      "title": "Mohanathasan：轻度与中度条件",
+      "purpose": "并列展示研究条件、结果方向和不可比边界",
+      "claimIds": ["mohanathasan"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留三方向证据及来源", "不合并跨研究效果量"]
+    },
+    {
+      "id": "p06",
+      "title": "同页并列：有利、未见显著差异、不利",
+      "purpose": "并列展示研究条件、结果方向和不可比边界",
+      "claimIds": ["helps", "han", "mohanathasan"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留三方向证据及来源", "不合并跨研究效果量"]
+    },
+    {
+      "id": "p07",
+      "title": "可比性矩阵：四个关键差异",
+      "purpose": "并列展示研究条件、结果方向和不可比边界",
+      "claimIds": ["helps", "han", "mohanathasan"],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留三方向证据及来源", "不合并跨研究效果量"]
+    },
+    {
+      "id": "p08",
+      "title": "结论与审阅边界",
+      "purpose": "并列展示研究条件、结果方向和不可比边界",
+      "claimIds": ["helps", "han", "mohanathasan"],
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑文字", "保留三方向证据及来源", "不合并跨研究效果量"]
+    }
+  ]
+}

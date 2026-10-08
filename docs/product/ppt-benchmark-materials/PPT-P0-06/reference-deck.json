@@ -1,0 +1,448 @@
+{
+  "version": 1,
+  "id": "p0-06-synthetic-nda-review-reference",
+  "title": "虚构保密合同风险汇报：候选稿",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "assets": [],
+  "claims": [
+    {
+      "id": "status",
+      "text": "材料为 WisWork 自有虚构且未签署的测试合同；仅限获准本机项目制作内部审阅稿。",
+      "source": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960 ; attachment:dcb6f2f58c3e05d7675fdad05d5e4c1f29099e321ecb12fc0aaeac9b337c3893",
+      "locator": "合同状态与本机授权 ; 测试审阅口径"
+    },
+    {
+      "id": "c1",
+      "text": "第 1 条定义保密信息，并列出已合法知悉、非违约公开、第三方合法提供及独立开发四类例外。",
+      "source": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 1 条"
+    },
+    {
+      "id": "c2",
+      "text": "第 2 条只允许为示意联合设计试验评估使用信息，其他项目、模型训练、公开搜索或营销须先获书面同意。",
+      "source": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 2 条"
+    },
+    {
+      "id": "c3",
+      "text": "第 3 条限制必要知悉人员并要求保护和记录；获准人员、离岗撤权、分包方范围仍待确认。",
+      "source": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960 ; attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "locator": "合同第 3 条 ; 修订意见 R1"
+    },
+    {
+      "id": "c4",
+      "text": "第 4 条允许依法必要披露；仅在法律允许时提前通知，通知例外和披露范围待专业审阅。",
+      "source": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960 ; attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "locator": "合同第 4 条 ; 修订意见 R2"
+    },
+    {
+      "id": "c5",
+      "text": "第 5 条写明双方书面签署才生效；草稿约定终止后三年保密延续，当前尚未签署。",
+      "source": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 5 条"
+    },
+    {
+      "id": "c6",
+      "text": "第 6 条草稿约定三十日返还或删除，并保留法律强制保存例外；备份和删除证明待确认。",
+      "source": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960 ; attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "locator": "合同第 6 条 ; 修订意见 R3"
+    },
+    {
+      "id": "c7",
+      "text": "第 7 条仅写先协商补救，损失、举证、救济和适用法律仍未确定。",
+      "source": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960",
+      "locator": "合同第 7 条"
+    },
+    {
+      "id": "c8",
+      "text": "第 8 条的通知地址、适用法律、争议机构和签署人均留待确认。",
+      "source": "attachment:9cbec9ddc0486ba92b775afdc6db7ef3b193ede926ddda2129c97016625b0960 ; attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "locator": "合同第 8 条 ; 修订意见 R4"
+    },
+    {
+      "id": "followup",
+      "text": "修订意见 R1–R5 仅是待专业审阅的建议，应由合同责任人与法律/隐私审阅人确认。",
+      "source": "attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1 ; attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1 ; attachment:671bdec2b9feb684fd1006c1b66552b08f55be05e88fb3922d30e633726dbfe1",
+      "locator": "修订意见 R1 ; 修订意见 R4 ; 修订意见 R5"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "虚构保密合同：内部审阅",
+      "claimIds": [],
+      "notes": "仅供自有虚构合同的本机测试；未签署、无法律效力；法律和隐私审阅待完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "虚构保密合同：内部审阅",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "WisWork 自有虚构材料｜双方未签署｜仅限获准本机测试项目。此稿是条款审阅候选，不构成真实合同或法律意见。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "内部测试；法律与隐私审阅待完成",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "审阅范围与授权",
+      "claimIds": ["status"],
+      "notes": "仅供自有虚构合同的本机测试；未签署、无法律效力；法律和隐私审阅待完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "审阅范围与授权",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "范围｜八条测试合同、内部审阅口径和五条修订意见。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 3.05,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "边界｜禁止原始材料外发、跨项目复用及未经授权的模型请求；实际发送记录须另行核验。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "合同状态与 review-policy.txt；不包含禁止披露字段",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "条款地图：定义、例外与期限",
+      "claimIds": ["c1", "c5"],
+      "notes": "仅供自有虚构合同的本机测试；未签署、无法律效力；法律和隐私审阅待完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "条款地图：定义、例外与期限",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "第 1 条｜保留四类例外：既有合法知悉、非违约公开、合法第三方提供、独立开发。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 3.05,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "第 5 条｜书面签署后才生效；终止后三年保密延续只是未签署草稿的约定。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "合同第 1、5 条；不把草稿当已生效义务",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "目的限制与访问控制",
+      "claimIds": ["c2", "c3"],
+      "notes": "仅供自有虚构合同的本机测试；未签署、无法律效力；法律和隐私审阅待完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "目的限制与访问控制",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "合同原文｜第 2 条限定使用目的；第 3 条只允许必要知悉人员访问并要求保护和记录。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 3.05,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "审阅建议｜R1 要求确认人员登记、撤权、分包方及记录保留；尚未生效。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "合同第 2、3 条；R1 为待审建议",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "依法披露与通知限定",
+      "claimIds": ["c4"],
+      "notes": "仅供自有虚构合同的本机测试；未签署、无法律效力；法律和隐私审阅待完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "依法披露与通知限定",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "合同原文｜第 4 条仅允许在必要范围内依法披露，且只在法律允许时提前通知。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 3.05,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "待确认｜R2 建议专业审阅通知例外和披露范围责任；不得写成一律提前通知。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "合同第 4 条；R2 为待审建议",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "返还、删除与留存例外",
+      "claimIds": ["c6"],
+      "notes": "仅供自有虚构合同的本机测试；未签署、无法律效力；法律和隐私审阅待完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "返还、删除与留存例外",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "合同原文｜第 6 条草稿约定三十日返还或删除；法律强制保存副本可在必要范围内保留并继续受约束。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 3.05,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "待确认｜R3 提出备份、灾备与删除证明；不宣称系统已自动删除。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "合同第 6 条；R3 为待审建议",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "救济、通知与争议未定",
+      "claimIds": ["c7", "c8"],
+      "notes": "仅供自有虚构合同的本机测试；未签署、无法律效力；法律和隐私审阅待完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "救济、通知与争议未定",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "第 7 条｜先协商补救；损失、举证、救济与适用法律未定。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "body-2",
+          "x": 0.9,
+          "y": 3.05,
+          "w": 11.4,
+          "h": 1.35,
+          "text": "第 8 条｜通知地址、法律、争议机构和签署人均未定；R4 建议签署前确认。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "合同第 7、8 条；不得推断法域或赔偿数额",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "修订与人工复核",
+      "claimIds": ["followup"],
+      "notes": "仅供自有虚构合同的本机测试；未签署、无法律效力；法律和隐私审阅待完成。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "修订与人工复核",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.55,
+          "w": 11.4,
+          "h": 4.75,
+          "text": "R1–R5 是建议，不是已生效义务。合同责任人、法律与隐私审阅人须核对逐条映射、授权范围及实际发送记录，并检查 PPTX、截图、来源账本和诊断中的禁止字段。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.63,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "法律/隐私、实际发送与真实 PowerPoint 验收待完成",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}

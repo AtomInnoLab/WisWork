@@ -1,0 +1,271 @@
+{
+  "version": 1,
+  "projectId": "p0-14-nasa-fallback-candidate",
+  "title": "2024 全球地表温度异常：NASA 来源候选汇报",
+  "domain": "science",
+  "brief": {
+    "objective": "用 NASA 原始资料解释 2024 全球地表温度异常，并在首选图片失败后使用经过验证的官方备用图继续八页生产",
+    "audience": "内部科学与媒体使用审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": [
+      "+1.28 °C 与 1951–1980 基线",
+      "官方图例",
+      "故障回退记录",
+      "NASA 署名与使用条件"
+    ],
+    "constraints": [
+      "不将异常误写为绝对气温",
+      "不从地图推出城市天气或未来预测",
+      "人工审阅和真实 PowerPoint 验收待完成"
+    ]
+  },
+  "sources": [
+    {
+      "id": "article-description",
+      "title": "NASA Earth Observatory 2024 温度文章",
+      "uri": "https://science.nasa.gov/earth/earth-observatory/2024-was-the-warmest-year-on-record-153806/",
+      "snapshotAttachmentId": "7564b76049bf18c6f7d1a5fc0cc95e7fe69142a3b5a68a2c2c8fa195ad1f2013",
+      "locator": "description",
+      "excerpt": "global temperatures in 2024 were 1.28 degrees Celsius (2.30 degrees Fahrenheit) above the agency’s 20th-century baseline",
+      "asOf": "2025-01-11"
+    },
+    {
+      "id": "svs-description",
+      "title": "NASA SVS 5450 地图说明",
+      "uri": "https://svs.gsfc.nasa.gov/5450",
+      "snapshotAttachmentId": "b62d69224905828c9e3b4c6264fb43ba1f6967a189356a671f5c5cec7076658b",
+      "locator": "description",
+      "excerpt": "It does not show absolute temperatures; instead, it shows how much warmer or cooler each region of Earth was compared to the average from 1951 to 1980.",
+      "asOf": "2025-01-11"
+    },
+    {
+      "id": "svs-map-colors",
+      "title": "NASA SVS 5450 图例说明",
+      "uri": "https://svs.gsfc.nasa.gov/5450",
+      "snapshotAttachmentId": "b62d69224905828c9e3b4c6264fb43ba1f6967a189356a671f5c5cec7076658b",
+      "locator": "map-colors",
+      "excerpt": "Average temperatures are shown in white, with higher-than-normal temperatures shown in red and lower-than-normal temperatures in blue.",
+      "asOf": "2025-01-11"
+    },
+    {
+      "id": "svs-global-mean",
+      "title": "NASA SVS 5450 全球均值",
+      "uri": "https://svs.gsfc.nasa.gov/5450",
+      "snapshotAttachmentId": "b62d69224905828c9e3b4c6264fb43ba1f6967a189356a671f5c5cec7076658b",
+      "locator": "global-mean",
+      "excerpt": "Earth’s global surface temperatures in 2024 were the warmest on record -- 1.28 degrees Celsius (2.30 degrees Fahrenheit) above the agency’s 20th-century baseline (1951–1980).",
+      "asOf": "2025-01-11"
+    },
+    {
+      "id": "rights-media-guidelines",
+      "title": "NASA Images and Media Usage Guidelines",
+      "uri": "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+      "snapshotAttachmentId": "fcc632866efc09eaf76825d0158bd3692283b6d9d4c6b2cdac925e991086cb10",
+      "locator": "media-guidelines",
+      "excerpt": "NASA Images and Media Usage Guidelines",
+      "asOf": "2025-01-11"
+    }
+  ],
+  "claims": [
+    {
+      "id": "global-mean",
+      "statement": "NASA 报告 2024 年全球地表温度相对其 1951–1980 基线高 1.28 °C。",
+      "sourceIds": [
+        "article-description",
+        "svs-global-mean"
+      ],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2025-01-11"
+    },
+    {
+      "id": "anomaly-not-absolute",
+      "statement": "图像显示相对 1951–1980 基线的温度异常，不表示绝对气温。",
+      "sourceIds": [
+        "svs-description"
+      ],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2025-01-11"
+    },
+    {
+      "id": "map-colors",
+      "statement": "地图中白色为接近基线，红色为高于基线，蓝色为低于基线。",
+      "sourceIds": [
+        "svs-map-colors"
+      ],
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2025-01-11"
+    },
+    {
+      "id": "scope-limit",
+      "statement": "单幅全球异常图不能推出任意城市的天气或未来预测。",
+      "sourceIds": [
+        "svs-description"
+      ],
+      "type": "judgment",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2025-01-11"
+    },
+    {
+      "id": "usage-review",
+      "statement": "图像署名与 NASA 媒体使用例外需要人工复核。",
+      "sourceIds": [
+        "rights-media-guidelines"
+      ],
+      "type": "judgment",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2025-01-11"
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "142D43",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "2024 全球地表温度异常",
+      "purpose": "2024 年全球平均异常 +1.28 °C\n相对 NASA 1951–1980 年基线",
+      "claimIds": [
+        "global-mean",
+        "anomaly-not-absolute"
+      ],
+      "layout": "cover",
+      "domainSection": "research_question",
+      "requiredAssets": [
+        "nasa-svs-5450-2024-map"
+      ],
+      "acceptanceCriteria": [
+        "结论与来源一致",
+        "文本、表格与图片均为可编辑页面对象",
+        "图片及图例可见"
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "先明确比较基线",
+      "purpose": "+1.28 °C",
+      "claimIds": [
+        "global-mean",
+        "anomaly-not-absolute"
+      ],
+      "layout": "content",
+      "domainSection": "methods_and_sample",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "结论与来源一致",
+        "文本、表格与图片均为可编辑页面对象",
+        "图片及图例可见"
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "年度结论的证据",
+      "purpose": "两份 NASA 原始资料采用同一年度和基线口径。",
+      "claimIds": [
+        "global-mean"
+      ],
+      "layout": "content",
+      "domainSection": "results_and_data",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "结论与来源一致",
+        "文本、表格与图片均为可编辑页面对象",
+        "图片及图例可见"
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "原图与图例",
+      "purpose": "红：高于基线\n白：接近基线\n蓝：低于基线",
+      "claimIds": [
+        "anomaly-not-absolute",
+        "map-colors"
+      ],
+      "layout": "content",
+      "domainSection": "results_and_data",
+      "requiredAssets": [
+        "nasa-svs-5450-2024-map"
+      ],
+      "acceptanceCriteria": [
+        "结论与来源一致",
+        "文本、表格与图片均为可编辑页面对象",
+        "图片及图例可见"
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "哪些结论不能由此推出",
+      "purpose": "解释边界",
+      "claimIds": [
+        "anomaly-not-absolute",
+        "scope-limit"
+      ],
+      "layout": "content",
+      "domainSection": "scope_and_limitations",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "结论与来源一致",
+        "文本、表格与图片均为可编辑页面对象",
+        "图片及图例可见"
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "素材回退与生产记录",
+      "purpose": "素材回退与生产记录",
+      "claimIds": [],
+      "layout": "process",
+      "domainSection": "scope_and_limitations",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "结论与来源一致",
+        "文本、表格与图片均为可编辑页面对象",
+        "图片及图例可见"
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "来源、署名和使用条件",
+      "purpose": "使用前保留来源和署名；权利例外等待人工核对。",
+      "claimIds": [
+        "usage-review"
+      ],
+      "layout": "content",
+      "domainSection": "scope_and_limitations",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "结论与来源一致",
+        "文本、表格与图片均为可编辑页面对象",
+        "图片及图例可见"
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "结论与待核查",
+      "purpose": "2024 年全球平均异常 +1.28 °C",
+      "claimIds": [
+        "global-mean",
+        "usage-review"
+      ],
+      "layout": "summary",
+      "domainSection": "research_references",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "结论与来源一致",
+        "文本、表格与图片均为可编辑页面对象",
+        "图片及图例可见"
+      ]
+    }
+  ]
+}

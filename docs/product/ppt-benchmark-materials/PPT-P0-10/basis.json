@@ -1,0 +1,259 @@
+{
+  "version": 1,
+  "caseId": "PPT-P0-10",
+  "status": "candidate_pending_professional_copyright_layout_and_host_review",
+  "scopeHumanConfirmed": false,
+  "source": {
+    "officialUrl": "https://www.ipcc.ch/site/assets/uploads/sites/3/2022/03/SROCC_FullReport_FINAL.pdf",
+    "localPath": "/tmp/wiswork-p0-10-srocc-full-report.pdf",
+    "environmentOverride": "WISWORK_P0_10_PDF",
+    "bytes": 51870607,
+    "sha256": "cadeefed4b0f0627384b6b7f3730afc729570270b8794b71759f9dc6511a36b2",
+    "pdfPages": 766,
+    "assessmentYear": 2019,
+    "editionYear": 2022,
+    "literatureAcceptedThrough": "2019-05-15",
+    "doi": "10.1017/9781009157964"
+  },
+  "locators": [
+    {
+      "sourceId": "s09",
+      "pdfPage": 9,
+      "printedPage": "ix",
+      "anchor": "2019"
+    },
+    {
+      "sourceId": "s14",
+      "pdfPage": 14,
+      "printedPage": "4",
+      "anchor": "15 May 2019"
+    },
+    {
+      "sourceId": "s16",
+      "pdfPage": 16,
+      "printedPage": "6",
+      "anchor": "A.1.1"
+    },
+    {
+      "sourceId": "s19",
+      "pdfPage": 19,
+      "printedPage": "9",
+      "anchor": "A.2.3"
+    },
+    {
+      "sourceId": "s20",
+      "pdfPage": 20,
+      "printedPage": "10",
+      "anchor": "A.3.1"
+    },
+    {
+      "sourceId": "s30",
+      "pdfPage": 30,
+      "printedPage": "20",
+      "anchor": "B.3.1"
+    },
+    {
+      "sourceId": "s31",
+      "pdfPage": 31,
+      "printedPage": "21",
+      "anchor": "B.3.6"
+    },
+    {
+      "sourceId": "s40",
+      "pdfPage": 40,
+      "printedPage": "30",
+      "anchor": "C.2.2"
+    },
+    {
+      "sourceId": "s41",
+      "pdfPage": 41,
+      "printedPage": "31",
+      "anchor": "C.3.1"
+    }
+  ],
+  "chapterNavigation": [
+    {
+      "chapter": 2,
+      "executiveSummaryPdfPage": 143,
+      "printedPage": "133"
+    },
+    {
+      "chapter": 3,
+      "executiveSummaryPdfPage": 215,
+      "printedPage": "205"
+    },
+    {
+      "chapter": 4,
+      "executiveSummaryPdfPage": 333,
+      "printedPage": "323"
+    },
+    {
+      "chapter": 5,
+      "executiveSummaryPdfPage": 460,
+      "printedPage": "450"
+    },
+    {
+      "chapter": 6,
+      "executiveSummaryPdfPage": 601,
+      "printedPage": "591"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "阅读范围、版本与不确定性",
+      "sources": ["s09", "s14"],
+      "section": "research_question",
+      "summary": [
+        "对象是2019年SROCC科学评估，当前原件为2022年出版版；文献接收截止2019-05-15，不代表2026最新知识。",
+        "严格区分证据/一致性形成的置信度与概率性似然；“很可能”通常为90–100%概率，不能把“高置信度”换算为同一概率。",
+        "本稿限定8页自制摘要，完整全文仍可从外部原件核查；范围尚待专业审阅者确认。"
+      ],
+      "limitations": ["不覆盖全文所有章节/地区/最新研究；不作地区工程设计建议。"],
+      "locator": "PDF 9（印刷ix）序言范围；PDF 14（印刷4）导言脚注3/6"
+    },
+    {
+      "id": "p02",
+      "title": "高山与冰冻圈：观测口径先行",
+      "sources": ["s16"],
+      "section": "methods_and_sample",
+      "summary": [
+        "2006–2015年，格陵兰和南极之外全球冰川年均质量损失220 ± 30 Gt/yr；不是仅高山地区的单独估计。",
+        "原报告给出的海平面等效贡献为0.61 ± 0.08 mm/yr；原始±范围保留，不改写为标准误或某个置信区间。",
+        "高山多数地区积雪深度、范围和持续时间减少（高置信度）；冰川退缩与冻土融化涉及坡面稳定性及局地风险。"
+      ],
+      "limitations": ["全球冰川值不可冒充每一个山地系统；积雪与冰川指标、样本、期间不同。"],
+      "locator": "PDF 16（印刷6）SPM A.1.1–A.1.3；深读第2章PDF143（印刷133）起执行摘要"
+    },
+    {
+      "id": "p03",
+      "title": "极地：北极与南极不能互相代替",
+      "sources": ["s16"],
+      "section": "results_and_data",
+      "summary": [
+        "1979–2018年北极9月海冰面积减少12.8 ± 2.3%/十年（很可能）；不是年率。",
+        "同一期间南极海冰总体没有统计显著趋势（高置信度），原报告解释涉及区域信号相反及较大年际变化。",
+        "冰盖、海冰和永久冻土是不同指标；不能以海冰面积趋势替代冰盖质量变化。"
+      ],
+      "limitations": ["时间范围固定1979–2018；不能从这些摘要推断所有极地区域或当前年份状态。"],
+      "locator": "PDF16（印刷6）SPM A.1.4；深读第3章PDF215（印刷205）起执行摘要"
+    },
+    {
+      "id": "p04",
+      "title": "海平面：观测率与2100年投影分开",
+      "sources": ["s20", "s30"],
+      "section": "results_and_data",
+      "summary": [
+        "2006–2015全球平均海平面上升率3.6 mm/yr；原很可能范围3.1–4.1 mm/yr。",
+        "相对1986–2005，2100年RCP2.6投影0.43 m（可能范围0.29–0.59），RCP8.5为0.84 m（0.61–1.10）。",
+        "2100年终点值不同于2081–2100平均值；情景不是预测概率，世纪末不确定性主要涉及冰盖，尤其南极。"
+      ],
+      "limitations": ["全球均值不是当地相对海平面；须考虑区域差异、地面沉降和局地暴露。"],
+      "locator": "PDF20（印刷10）SPM A.3.1；PDF30（印刷20）B.3.1/B.3.2；第4章PDF333（印刷323）起"
+    },
+    {
+      "id": "p05",
+      "title": "海洋：热、酸化与缺氧各保留口径",
+      "sources": ["s19", "s20"],
+      "section": "results_and_data",
+      "summary": [
+        "自1970年以来全球海洋持续变暖，吸收气候系统超过90%的多余热量（高置信度）；不可当作某一海盆份额。",
+        "1970–2010资料显示开阔海洋上部1000 m氧含量下降0.5–3.3%（很可能范围）；层结、通风及生物地球化学均有关。",
+        "海洋变暖、酸化和缺氧可共同影响生态系统；本稿不以单一物理量推出某一地区渔获或物种损失。"
+      ],
+      "limitations": ["热量、pH和氧含量期间及单位不同，不共用数值轴，不补造跨指标合成指数。"],
+      "locator": "PDF19（印刷9）SPM A.2/A.2.5；PDF20（印刷10）A.2.6；第5章PDF460（印刷450）起"
+    },
+    {
+      "id": "p06",
+      "title": "极端事件：保留情景、暴露和低置信度",
+      "sources": ["s19", "s30", "s31"],
+      "section": "scope_and_limitations",
+      "summary": [
+        "海洋热浪频率自1982年以来翻倍（很可能）；须保留报告对热浪定义和参考资料的限定。",
+        "历史约百年一遇的海水位事件，在多数地点到2100年各RCP情景下至少每年出现一次（高置信度）；不等同于所有地点2050年都如此。",
+        "升温2°C条件下热带气旋平均强度、4/5级比例及相关降雨预计增加（中等置信度）；全球未来气旋频率变化仍为低置信度。"
+      ],
+      "limitations": ["局地影响还依赖暴露、脆弱性、潮汐与波浪；不能用极端水位频率替代灾损预测。"],
+      "locator": "PDF19（印刷9）A.2.3；PDF30（印刷20）B.3.4；PDF31（印刷21）B.3.6；第6章PDF601（印刷591）起"
+    },
+    {
+      "id": "p07",
+      "title": "数值对照：原期间、单位与范围不丢失",
+      "sources": ["s16", "s30"],
+      "section": "scope_and_limitations",
+      "summary": [
+        "同为2006–2015年年均质量损失：格陵兰（包括外围冰川）278 ± 11；南极155 ± 19；二者之外冰川220 ± 30 Gt/yr。",
+        "这些是三个不同对象的原报告估计；不从中央值建立“未来风险排名”，不去掉不确定性。",
+        "原脚注给出360 Gt冰质量对应1 mm全球平均海平面；220/360 = 0.6111111111111112 mm/yr，只是算术量级核对，原报告仍保留0.61 ± 0.08。"
+      ],
+      "limitations": ["不独立重估误差传播，不把算术复现或简单差值称为气候归因或事实认证。"],
+      "locator": "PDF16（印刷6）A.1.1/脚注9–10；2100投影另见PDF30 B.3.1"
+    },
+    {
+      "id": "p08",
+      "title": "适应、限制及完整原文索引",
+      "sources": ["s40", "s41"],
+      "section": "research_references",
+      "summary": [
+        "生态系统保护/恢复等响应可在当地降低风险，但有生态、财政、制度与治理约束；部分选项仅在较低升温下有效（高置信度）。",
+        "海岸响应组合可包括防护、适应性设施、生态系统响应、向海拓展和退让，须权衡具体情境中的成本、收益与取舍（高置信度）。",
+        "不能称这些选项必然有效，也不推出应采用单一全国方案。全文PDF766页在外部路径，章节索引与逐页位置可供审阅者深入核查。"
+      ],
+      "limitations": [
+        "科研内容/版权/版面仍待专业审阅；真实PowerPoint导入、编辑、保存重开及耗时仍未验收。"
+      ],
+      "locator": "PDF40（印刷30）SPM C.2；PDF41（印刷31）C.3/C.3.1–C.3.4"
+    }
+  ],
+  "numericBasis": {
+    "massLossPeriod": "2006–2015",
+    "massLossUnit": "Gt/yr",
+    "massLoss": [
+      {
+        "object": "格陵兰（含外围冰川）",
+        "value": 278,
+        "plusMinus": 11
+      },
+      {
+        "object": "南极冰盖",
+        "value": 155,
+        "plusMinus": 19
+      },
+      {
+        "object": "二者之外全球冰川",
+        "value": 220,
+        "plusMinus": 30
+      }
+    ],
+    "seaLevel2100": {
+      "relativeTo": "1986–2005",
+      "unit": "m",
+      "intervalLabel": "可能范围（不代换为置信度）",
+      "values": [
+        {
+          "scenario": "RCP2.6",
+          "central": 0.43,
+          "lower": 0.29,
+          "upper": 0.59
+        },
+        {
+          "scenario": "RCP8.5",
+          "central": 0.84,
+          "lower": 0.61,
+          "upper": 1.1
+        }
+      ]
+    },
+    "calculationClaimId": "ice-conversion",
+    "calculationScope": "arithmetic_only",
+    "conversionAuthenticatesClimateEstimate": false
+  },
+  "review": {
+    "professional": "pending",
+    "copyright": "pending_distribution_review",
+    "layout": "pending_human_review",
+    "powerPointHost": "not_checked",
+    "scopeConfirmation": "pending_human_confirmation"
+  }
+}

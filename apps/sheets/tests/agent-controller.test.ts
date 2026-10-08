@@ -122,6 +122,7 @@ describe('Sheets agent controller', () => {
     await flush()
     expect(controller.appendAssistantContext('Shell-owned observation.')).toBe(false)
     expect(controller.messages).toEqual([])
+    expect(() => controller.subscribeAcp(() => undefined)()).not.toThrow()
     expect(controller.run('enhanced sheets')).toBe(true)
     await flush()
     expect(api.startTurn).toHaveBeenCalledOnce()

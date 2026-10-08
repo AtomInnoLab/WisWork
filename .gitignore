@@ -37,3 +37,10 @@ electron-builder.env
 __pycache__/
 /notes/
 /MEMORY.md
+
+# Local Office development artifacts
+/.deployment-backups/
+/tmp/
+/Untitled Spreadsheet*.xlsx
+/output/pdf/*.html
+/output/pdf/assets/

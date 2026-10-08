@@ -1,0 +1,351 @@
+{
+  "version": 1,
+  "projectId": "p0-12-branded-research-candidate",
+  "title": "编程培训与生物医学工作流可复现性：品牌汇报候选",
+  "brief": {
+    "objective": "按自制品牌模板和 Brand Kit 制作八页可编辑科研汇报，验证缺失字体的显式回退",
+    "audience": "科研专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": [
+      "研究问题与方法",
+      "六项清单",
+      "Table 1 原生图表",
+      "统计结论与局限",
+      "品牌布局组件",
+      "缺失字体回退",
+      "两份科研 PDF 来源"
+    ],
+    "constraints": [
+      "科学解释待专业审阅",
+      "真实 PowerPoint 保存重开尚未验收",
+      "品牌与科学解释待人工审阅",
+      "真实 PowerPoint 宿主字形待验收"
+    ]
+  },
+  "sources": [
+    {
+      "id": "paper-page-5",
+      "title": "Deardorff 2020 论文 PDF 第 5 页",
+      "uri": "doi:10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "第 5 页",
+      "excerpt": "only 12 researchers\nparticipated in the post-workshop interviews."
+    },
+    {
+      "id": "paper-score",
+      "title": "Deardorff 2020 论文 PDF 第 5 页：清单均分",
+      "uri": "doi:10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "第 5 页",
+      "excerpt": "1.6 to 2.2\nand ranged from 0 to 6, however this was not a statistically significant difference (t(11) = -1.04,\np = 0.318)"
+    },
+    {
+      "id": "paper-table-1",
+      "title": "Deardorff 2020 Table 1",
+      "uri": "doi:10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "第 5 页",
+      "excerpt": "Use open source software 7 10"
+    },
+    {
+      "id": "paper-page-9",
+      "title": "Deardorff 2020 论文 PDF 第 9 页",
+      "uri": "doi:10.1371/journal.pone.0230697",
+      "snapshotAttachmentId": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+      "locator": "第 9 页",
+      "excerpt": "The analysis and coding for this project was also performed solely by the author, and\na different researcher might have interpreted slightly different themes. Finally, because of the\nsmall sample size, the quantitative analysis lacked appropriate power."
+    },
+    {
+      "id": "checklist-scorecard",
+      "title": "Deardorff 2020 S1 Checklist",
+      "uri": "local:deardorff-2020-checklist.pdf",
+      "snapshotAttachmentId": "c1bffef3f6b97236b2329b952791aa1e0d3176e2c7c5cd3e21a1e61e6e068ad9",
+      "locator": "PDF 第 1 页 / Reproducibility Score Card",
+      "excerpt": "Reproducibility Score Card",
+      "asOf": "2020-07-01"
+    }
+  ],
+  "claims": [
+    {
+      "id": "sample",
+      "statement": "培训前 14 人、三个月后 12 人",
+      "type": "fact",
+      "sourceIds": [
+        "paper-page-5"
+      ],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "score",
+      "statement": "均分 1.6/6 到 2.2/6；p=0.318",
+      "type": "fact",
+      "sourceIds": [
+        "paper-score"
+      ],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "open-source",
+      "statement": "开源软件使用 7/14 到 10/12",
+      "type": "fact",
+      "sourceIds": [
+        "paper-table-1"
+      ],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "limitations",
+      "statement": "小样本、选择/应答、单人编码和功效限制",
+      "type": "fact",
+      "sourceIds": [
+        "paper-page-9"
+      ],
+      "confidence": "low",
+      "reviewStatus": "needs_review"
+    },
+    {
+      "id": "checklist-six",
+      "statement": "S1 Checklist 列出六项可复现实践，空白表本身不提供参与者个体原始分数。",
+      "type": "fact",
+      "sourceIds": [
+        "checklist-scorecard"
+      ],
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2020-07-01"
+    }
+  ],
+  "style": {
+    "fontFace": "WisWork Benchmark Display 2026",
+    "fontFallbacks": [
+      "Noto Sans CJK SC"
+    ],
+    "background": "FFFFFF",
+    "textColor": "102A43",
+    "accentColor": "007F86"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "科研工作流可复现性：编程培训观察",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": [],
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "保留来源与研究局限"
+      ],
+      "layoutComponentId": "benchmark-cover"
+    },
+    {
+      "id": "p02",
+      "title": "问题与研究范围",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": [],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "保留来源与研究局限"
+      ],
+      "layoutComponentId": "benchmark-content"
+    },
+    {
+      "id": "p03",
+      "title": "访谈设计与样本流失",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": [
+        "sample"
+      ],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "保留来源与研究局限"
+      ],
+      "layoutComponentId": "benchmark-content"
+    },
+    {
+      "id": "p04",
+      "title": "六项清单：测量什么",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": [
+        "checklist-six"
+      ],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "保留来源与研究局限"
+      ],
+      "layoutComponentId": "benchmark-content"
+    },
+    {
+      "id": "p05",
+      "title": "清单均分：不可夸大变化",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": [
+        "score"
+      ],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "保留来源与研究局限"
+      ],
+      "layoutComponentId": "benchmark-content"
+    },
+    {
+      "id": "p06",
+      "title": "Table 1：开源工具使用",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": [
+        "open-source"
+      ],
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "保留来源与研究局限"
+      ],
+      "chartData": [
+        {
+          "elementId": "table1-open-source-native",
+          "categories": [
+            "前测 n=14",
+            "三个月后 n=12"
+          ],
+          "series": [
+            {
+              "name": "报告使用开源软件的人数",
+              "points": [
+                {
+                  "value": 7,
+                  "claimId": "open-source",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "paper-table-1",
+                    "excerptOffset": 25,
+                    "excerptText": "7"
+                  }
+                },
+                {
+                  "value": 10,
+                  "claimId": "open-source",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "paper-table-1",
+                    "excerptOffset": 27,
+                    "excerptText": "10"
+                  }
+                }
+              ]
+            }
+          ],
+          "unit": "people"
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "定性观察与研究局限",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": [
+        "limitations"
+      ],
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "保留来源与研究局限"
+      ],
+      "layoutComponentId": "benchmark-content"
+    },
+    {
+      "id": "p08",
+      "title": "结论与待核验事项",
+      "purpose": "呈现本研究的受限证据与待审解释",
+      "claimIds": [],
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": [
+        "原生可编辑文字",
+        "保留来源与研究局限"
+      ]
+    }
+  ],
+  "brandKit": {
+    "id": "wiswork-benchmark-research",
+    "revision": 1,
+    "name": "WisWork 自制研究汇报基准品牌",
+    "allowedColors": [
+      "102A43",
+      "007F86",
+      "E8F5F3",
+      "FFFFFF",
+      "52606D",
+      "D8E2E9"
+    ],
+    "layoutComponents": [
+      {
+        "id": "benchmark-cover",
+        "name": "封面",
+        "layout": "cover",
+        "slots": [
+          {
+            "id": "cover-title",
+            "kind": "text",
+            "x": 1.03,
+            "y": 1.65,
+            "w": 10.8,
+            "h": 1
+          },
+          {
+            "id": "cover-subtitle",
+            "kind": "text",
+            "x": 1.03,
+            "y": 2.85,
+            "w": 10.8,
+            "h": 0.5
+          }
+        ]
+      },
+      {
+        "id": "benchmark-content",
+        "name": "内容与证据",
+        "layout": "content",
+        "slots": [
+          {
+            "id": "content-title",
+            "kind": "text",
+            "x": 0.62,
+            "y": 0.94,
+            "w": 11.6,
+            "h": 0.7
+          },
+          {
+            "id": "content-body",
+            "kind": "text",
+            "x": 0.9,
+            "y": 2.17,
+            "w": 6.4,
+            "h": 3.8
+          },
+          {
+            "id": "content-source",
+            "kind": "text",
+            "x": 8.38,
+            "y": 5.45,
+            "w": 3.95,
+            "h": 0.55
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,3 +1,8 @@
+import { acquirePresentationProjectLock, createPresentationService } from './presentation-service'
+import {
+  createPresentationProjectRetentionService,
+  presentationRetentionEnabled,
+} from './presentation-project-retention'
 import { execSync, spawn } from 'node:child_process'
 import { resolveIterationIdentity } from './iteration-identity'
 import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -189,6 +194,7 @@ import { createThemeController, registerThemeIpc } from './theme-controller'
 import { applyUpdateChannel, initAutoUpdater } from './updater'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
 import { startOfficeBridgeHttpServer, type OfficeBridgeHttpServer } from './office-bridge-http'
+import { createOfficeOutboundAudit } from './office-outbound-audit'
 import {
   bindOfficeBridgePortPool,
   createOfficeMessagesProxy,
@@ -199,7 +205,11 @@ import {
   syncOfficeBridgeAvailability,
 } from './office-bridge-runtime'
 import { registerOfficePairingIpc } from './office-pairing-ipc'
-import { createOfficeRelayClient, officeRelayEndpointFromEnv } from './office-relay-client'
+import {
+  createOfficeRelayClient,
+  createOfficePresentationGovernanceProxy,
+  officeRelayEndpointFromEnv,
+} from './office-relay-client'
 import { createOfficeDesignDocuments } from './office-design-document'
 import { createOfficeRelayPool, type OfficeRelayPool } from './office-relay-pool'
 import { createElectronOfficeRelayBindingStore } from './office-relay-binding-store'
@@ -350,6 +360,7 @@ let officeRelay: OfficeRelayPool | null = null
 let officeRelayLifecycle: OfficeRelayLifecycle | null = null
 let officeRelayPersistenceAvailable = false
 let officeRelayDiagnostic = 'disconnected'
+let presentationRetentionTimer: ReturnType<typeof setInterval> | null = null
 const officeRelayActivationFence = createOfficeRelayActivationFence()
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
   if (!authRuntime) throw new AuthError('auth_not_initialized')
@@ -2950,6 +2961,7 @@ app.whenReady().then(async () => {
   }
   const officeMessagesProxy = createOfficeMessagesProxy({
     fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+    audit: createOfficeOutboundAudit({ userDataPath: app.getPath('userData') }),
     onTerminalAuthLoss: () => {
       officeBridge?.setSessionAvailable(false)
       officeRelayActivationFence.lock()
@@ -2968,6 +2980,19 @@ app.whenReady().then(async () => {
         })
     },
   })
+  if (presentationRetentionEnabled(process.env)) {
+    const root = app.getPath('userData')
+    const retention = createPresentationProjectRetentionService({
+      userDataPath: root,
+      acquireProjectLock: (projectId) => acquirePresentationProjectLock(root, projectId),
+    })
+    const scan = () => {
+      void retention.tick().catch(() => console.error('[ppt-retention] scan failed'))
+    }
+    scan()
+    presentationRetentionTimer = setInterval(scan, 24 * 60 * 60 * 1000)
+    presentationRetentionTimer.unref()
+  }
   try {
     const persistentPairing = officePairingResumeEnabled(process.env)
     officeRelayPersistenceAvailable = persistentPairing
@@ -2995,6 +3020,12 @@ app.whenReady().then(async () => {
       ? (['web-search.v1', 'web-fetch.v1', 'image-search.v1'] as const)
       : (['web-search.v1', 'image-search.v1', 'image-fetch.v1'] as const)
     const endpoint = officeRelayEndpointFromEnv(process.env)
+    const presentationUserDataPath = app.getPath('userData')
+    const presentationProxy = createPresentationService({ userDataPath: presentationUserDataPath })
+    const presentationGovernanceProxy =
+      process.env.WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1'
+        ? createOfficePresentationGovernanceProxy({ userDataPath: presentationUserDataPath })
+        : undefined
     officeRelay = createOfficeRelayPool({
       createClient: (events) =>
         createOfficeRelayClient({
@@ -3006,6 +3037,9 @@ app.whenReady().then(async () => {
               .client.refresh()
               .then((session) => session.accessToken),
           proxy: officeMessagesProxy,
+          presentationProxy,
+          presentationGovernanceProxy,
+          supportsTeamPresentation: true,
           enhancedProxy: officeCodexProxy,
           enhancedStatement: (host) => {
             const enhancedHost = {
@@ -3314,6 +3348,7 @@ app.on('window-all-closed', () => {
 
 const beforeQuitBarrier = createBeforeQuitBarrier({
   cleanup: async () => {
+    if (presentationRetentionTimer) clearInterval(presentationRetentionTimer)
     // No close prompt may fall through to "Save" during shutdown.
     markSheetsShuttingDown()
     stopSheetsSidecar()

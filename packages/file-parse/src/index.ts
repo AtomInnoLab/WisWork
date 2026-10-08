@@ -1,5 +1,6 @@
-export { parseFileToText, type ParsedFile, type ParsedFileKind } from './parse'
+export { parseFileToText, paragraphSections, type ParsedFile, type ParsedFileKind } from './parse'
 export { docxToText } from './docx'
 export { pptxToText } from './pptx'
 export { xlsxToText } from './xlsx'
-export { pdfToText } from './pdf'
+export { pdfToPages, pdfToText } from './pdf'
+export { decodeHtmlBytes, htmlToText } from './html'

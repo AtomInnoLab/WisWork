@@ -24,6 +24,33 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+// Isolate screenshot gating from the durable text-edit service, whose backup and
+// readback behavior is covered by the native edit integration suites.
+function createPreviewSkill(options: Parameters<typeof createPowerPointSkill>[0]) {
+  return createPowerPointSkill({
+    ...options,
+    durableTextEdit: async (input) => {
+      const proposal = options.proposals.propose({
+        operation: 'edit_slide_text',
+        toolName: 'edit_slide_text',
+        title: 'Edit',
+        preview: {},
+        impact: { host: 'powerpoint', targets: ['s1/title'], count: 1 },
+        fingerprint: 'durable',
+        validate: async () => true,
+        execute: (signal) =>
+          options.adapter.editSlideText(input.slide_index, input.shape_id, input.text, signal),
+        verify: async () => {},
+      })
+      return {
+        output: JSON.stringify({ proposalId: proposal.id }),
+        mutated: false,
+        summary: 'Durable proposal',
+      }
+    },
+  })
+}
+
 describe('Office model screenshot previews', () => {
   it('records failed legacy screenshot serialization before marking its tool card complete', async () => {
     let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
@@ -197,7 +224,7 @@ describe('Office model screenshot previews', () => {
           base64: Buffer.alloc(OFFICE_SCREENSHOT_PREVIEW_BYTES + 1).toString('base64'),
         }
       })
-      const skill = createPowerPointSkill({
+      const skill = createPreviewSkill({
         platform: 'Mac',
         proposals,
         adapter: {
@@ -212,7 +239,7 @@ describe('Office model screenshot previews', () => {
             paragraphs: [text],
           }),
           verifySlides: async () => ({ slideWidth: 960, slideHeight: 540, slides: [] }),
-          screenshotSlide: async () => png,
+          screenshotSlide: async () => ({ ...png, slideId: 's1' }),
         } as unknown as PowerPointAdapter,
         prepareScreenshot: prepare,
       })
@@ -265,10 +292,12 @@ describe('Office model screenshot previews', () => {
 
   it('describes the prepared model preview while retaining the original native UI image', async () => {
     const image = { mime: 'image/jpeg', base64: jpeg }
-    const skill = createPowerPointSkill({
+    const skill = createPreviewSkill({
       platform: 'Mac',
       proposals: createStructuredProposalController(),
-      adapter: { screenshotSlide: async () => png } as unknown as PowerPointAdapter,
+      adapter: {
+        screenshotSlide: async () => ({ ...png, slideId: 's1' }),
+      } as unknown as PowerPointAdapter,
       prepareScreenshot: async () => image,
     })
     const result = await skill.executeTool({
@@ -296,11 +325,11 @@ describe('Office model screenshot previews', () => {
     )
     const proposals = createStructuredProposalController()
     let text = 'Old'
-    const skill = createPowerPointSkill({
+    const skill = createPreviewSkill({
       platform: 'Mac',
       proposals,
       adapter: {
-        screenshotSlide: async () => png,
+        screenshotSlide: async () => ({ ...png, slideId: 's1' }),
         snapshotSlide: async () => ({ slideId: 's1', fingerprint: 'same' }),
         editSlideText: async (_slide: number, _shape: string, value: string) => {
           text = value

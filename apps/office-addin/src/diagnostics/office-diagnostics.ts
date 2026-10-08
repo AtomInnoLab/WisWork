@@ -1,17 +1,28 @@
+import {
+  parsePresentationQaAttempt,
+  type PresentationQaAttempt,
+} from '../skills/powerpoint/presentation-qa-attempts.js'
 import type { OfficeHost } from '../office-document.js'
+import { acpPresentationStage, type PresentationStage } from '@wiswork/agent-harness'
 
 export const MAX_LOCAL_DIAGNOSTIC_EVENTS = 200
 export const MAX_DIAGNOSTIC_EVENT_BYTES = 4 * 1024
 export const MAX_DIAGNOSTIC_EXPORT_BYTES = 256 * 1024
 
 export type DiagnosticPhase =
-  'tool' | 'proposal' | 'validate' | 'write' | 'verify' | 'recovery' | 'transport'
-export type DiagnosticOutcome = 'failed' | 'unsupported' | 'cancelled'
+  'run' | 'tool' | 'proposal' | 'validate' | 'write' | 'verify' | 'recovery' | 'transport'
+export type DiagnosticOutcome = 'passed' | 'failed' | 'unsupported' | 'cancelled'
 export type VerificationStage = 'text' | 'body_shape' | 'content' | 'boundary'
+export interface PresentationDiagnosticContext {
+  document_id?: string
+  session_id?: string
+  project_id?: string
+  request_id?: string
+  page_id?: string
+  tool_call_id?: string
+}
 
-const ERROR_CODES = new Set([
-  'agent_run_failed',
-  'auth_required',
+const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'cancelled',
   'design_contract_review_required',
   'design_contract_prototype_required',
@@ -22,13 +33,11 @@ const ERROR_CODES = new Set([
   'design_contract_review_not_pending',
   'design_contract_acceptance_mismatch',
   'design_contract_screenshot_required',
-  'diagnostic_upload_failed',
   'image_fetch_unavailable',
   'image_limit',
   'image_mime_unsupported',
   'invalid_image',
   'invalid_tool_input',
-  'network_error',
   'office_api_unsupported',
   'office_read_failed',
   'office_screenshot_unavailable',
@@ -41,6 +50,29 @@ const ERROR_CODES = new Set([
   'office_write_pending',
   'proposal_missing',
   'proposal_stale',
+  'presentation_screenshot_waiting',
+  'presentation_qa_failed',
+  'presentation_qa_capture_invalid',
+  'presentation_qa_capture_required',
+  'presentation_qa_stale',
+  'presentation_qa_busy',
+  'presentation_qa_state_invalid',
+  'presentation_qa_page_not_imported',
+  'presentation_qa_attempt_unresolved',
+  'presentation_qa_attempt_history_full',
+  'presentation_qa_attempt_state_invalid',
+  'presentation_session_storage_full',
+])
+export function isDiagnosticToolError(value: string): boolean {
+  return DIAGNOSTIC_TOOL_ERRORS.has(value) || /^office_recovery_failed:word_[a-z_]+$/.test(value)
+}
+const ERROR_CODES = new Set([
+  ...DIAGNOSTIC_TOOL_ERRORS,
+  'agent_run_completed',
+  'agent_run_failed',
+  'auth_required',
+  'diagnostic_upload_failed',
+  'network_error',
   'provider_unavailable',
   'request_timeout',
   'session_expired',
@@ -62,8 +94,10 @@ export interface OfficeDiagnosticEvent {
   office_error_name?: string
   office_error_location?: string
   verification_stage?: VerificationStage
+  presentation_stage?: PresentationStage
   duration_ms: number
   requirement_sets: Readonly<Record<string, boolean>>
+  presentation_context?: Readonly<PresentationDiagnosticContext>
 }
 
 export interface OfficeDiagnosticSnapshot {
@@ -73,7 +107,7 @@ export interface OfficeDiagnosticSnapshot {
 
 export interface OfficeDiagnostics {
   startTrace(): string
-  setTool(name: string): void
+  setTool(name: string, context?: PresentationDiagnosticContext): void
   record(input: {
     phase: DiagnosticPhase
     errorCode: string
@@ -81,7 +115,10 @@ export interface OfficeDiagnostics {
     durationMs?: number
   }): OfficeDiagnosticEvent
   snapshot(): OfficeDiagnosticSnapshot
-  exportJson(): string
+  exportJson(options?: {
+    includeLocalContext?: boolean
+    screenshotAttempts?: () => PresentationQaAttempt[]
+  }): string
   clear(): void
 }
 
@@ -89,8 +126,11 @@ interface DiagnosticOptions {
   host: Exclude<OfficeHost, 'unknown'>
   platform?: string
   build: string
+  localDocumentId?: string
+  localSessionId?: () => string | undefined
   requirementSets?: Readonly<Record<string, boolean>>
   remoteEnabled?: boolean
+  remoteSamplePercent?: number
   send?: (event: OfficeDiagnosticEvent) => void | Promise<void>
   randomUUID?: () => string
   now?: () => number
@@ -151,12 +191,17 @@ const identifier = (value: unknown, fallback: string, maximum = 128): string => 
   return normalized && /^[A-Za-z0-9_.:/()-]+$/.test(normalized) ? normalized : fallback
 }
 const stableError = (value: unknown): string =>
-  typeof value === 'string' &&
-  (ERROR_CODES.has(value) || /^office_recovery_failed:word_[a-z_]+$/.test(value))
+  typeof value === 'string' && (ERROR_CODES.has(value) || isDiagnosticToolError(value))
     ? value
     : 'office_write_failed'
 const outcome = (code: string): DiagnosticOutcome =>
-  code === 'office_api_unsupported' ? 'unsupported' : code === 'cancelled' ? 'cancelled' : 'failed'
+  code === 'agent_run_completed'
+    ? 'passed'
+    : code === 'office_api_unsupported' || code === 'presentation_screenshot_waiting'
+      ? 'unsupported'
+      : code === 'cancelled'
+        ? 'cancelled'
+        : 'failed'
 
 type OfficeDiagnosticMetadata = Pick<
   OfficeDiagnosticEvent,
@@ -221,21 +266,79 @@ function requirementSets(value: Readonly<Record<string, boolean>> | undefined) {
   return Object.freeze(Object.fromEntries(entries) as Record<string, boolean>)
 }
 
+function presentationContext(value: PresentationDiagnosticContext | undefined) {
+  if (!value) return undefined
+  const allowed = [
+    'document_id',
+    'session_id',
+    'project_id',
+    'request_id',
+    'page_id',
+    'tool_call_id',
+  ] as const
+  const safe = Object.fromEntries(
+    allowed.flatMap((key) =>
+      typeof value[key] === 'string' && /^[A-Za-z0-9_#-]{1,128}$/.test(value[key])
+        ? [[key, value[key]]]
+        : [],
+    ),
+  ) as PresentationDiagnosticContext
+  return Object.keys(safe).length ? Object.freeze(safe) : undefined
+}
+
 function freezeEvent(event: OfficeDiagnosticEvent): OfficeDiagnosticEvent {
-  return Object.freeze({ ...event, requirement_sets: Object.freeze({ ...event.requirement_sets }) })
+  return Object.freeze({
+    ...event,
+    requirement_sets: Object.freeze({ ...event.requirement_sets }),
+    ...(event.presentation_context
+      ? { presentation_context: Object.freeze({ ...event.presentation_context }) }
+      : {}),
+  })
+}
+
+function localScreenshotAttempts(provider: () => PresentationQaAttempt[]) {
+  const scope = 'retained_visible_presentation_task' as const
+  try {
+    const supplied = provider()
+    if (!Array.isArray(supplied) || supplied.length > 64) throw Error('invalid')
+    const attempts = Array.from(supplied, parsePresentationQaAttempt)
+    const ids = new Set(attempts.map((a) => a.id))
+    const task = (a: PresentationQaAttempt) =>
+      JSON.stringify([a.documentId, a.source, a.projectId, a.requestId, a.artifactDigest])
+    if (
+      ids.size !== attempts.length ||
+      attempts.some((a) => task(a) !== task(attempts[0]!)) ||
+      encoder.encode(JSON.stringify(attempts)).byteLength > 128 * 1024
+    )
+      throw Error('invalid')
+    return {
+      scope,
+      status: 'available' as const,
+      attempts,
+      record_count: attempts.length,
+      unresolved_count: attempts.filter((a) => a.status === 'started').length,
+    }
+  } catch {
+    return { scope, status: 'unavailable' as const }
+  }
 }
 
 export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagnostics {
+  const samplePercent = options.remoteSamplePercent ?? 100
+  if (!Number.isInteger(samplePercent) || samplePercent < 0 || samplePercent > 100)
+    throw new Error('invalid_office_diagnostic_sample_percent')
   const randomUUID = options.randomUUID ?? (() => crypto.randomUUID())
   const now = options.now ?? (() => Date.now())
   const requirements = requirementSets(options.requirementSets)
   const candidatePlatform = identifier(options.platform, 'unknown', 32).toLowerCase()
   const platform = PLATFORMS.has(candidatePlatform) ? candidatePlatform : 'unknown'
   const build = identifier(options.build, 'unknown', 64)
+  const documentContext = presentationContext({ document_id: options.localDocumentId })
   let events: OfficeDiagnosticEvent[] = []
   let traceId: string | undefined
   let traceGeneration = 0
   let tool = 'unknown'
+  let context: Readonly<PresentationDiagnosticContext> | undefined
   let uploadFailureRecorded = false
 
   const local = (event: OfficeDiagnosticEvent) => {
@@ -255,14 +358,21 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
     delete derived.office_error_name
     delete derived.office_error_location
     delete derived.verification_stage
+    delete derived.presentation_context
     return derived
   }
   const upload = (event: OfficeDiagnosticEvent) => {
     if (!options.remoteEnabled || !options.send || event.error_code === 'diagnostic_upload_failed')
       return
+    if (samplePercent !== 100) {
+      let hash = 2_166_136_261
+      for (const char of event.trace_id) hash = Math.imul(hash ^ char.charCodeAt(0), 16_777_619)
+      if ((hash >>> 0) % 100 >= samplePercent) return
+    }
     const generation = traceGeneration
     try {
-      const result = options.send(event)
+      const { presentation_context: _localContext, ...remoteEvent } = event
+      const result = options.send(remoteEvent)
       void Promise.resolve(result).catch(() => {
         if (generation !== traceGeneration || uploadFailureRecorded) return
         uploadFailureRecorded = true
@@ -281,11 +391,18 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
       traceGeneration += 1
       traceId = randomUUID()
       tool = 'unknown'
+      context = undefined
       uploadFailureRecorded = false
       return traceId
     },
-    setTool(name) {
+    setTool(name, inputContext) {
       tool = identifier(name, 'unknown', 128)
+      context = presentationContext({
+        project_id: inputContext?.project_id,
+        request_id: inputContext?.request_id,
+        page_id: inputContext?.page_id,
+        tool_call_id: inputContext?.tool_call_id,
+      })
     },
     record(input) {
       if (!traceId) {
@@ -293,6 +410,8 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
         traceId = randomUUID()
       }
       const errorCode = stableError(input.errorCode)
+      const presentationStage = acpPresentationStage(tool)
+      const sessionContext = presentationContext({ session_id: options.localSessionId?.() })
       const event = freezeEvent({
         event_id: randomUUID(),
         trace_id: traceId,
@@ -305,12 +424,16 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
         outcome: outcome(errorCode),
         error_code: errorCode,
         ...officeIdentifiers(input.error),
+        ...(presentationStage ? { presentation_stage: presentationStage } : {}),
         duration_ms:
           Number.isFinite(input.durationMs) && input.durationMs! >= 0
             ? // Match the existing Relay diagnostic bound, not a fictitious 10-minute run cap.
               Math.min(86_400_000, Math.trunc(input.durationMs!))
             : 0,
         requirement_sets: requirements,
+        ...(documentContext || sessionContext || context
+          ? { presentation_context: { ...context, ...sessionContext, ...documentContext } }
+          : {}),
       })
       if (encoder.encode(JSON.stringify(event)).byteLength > MAX_DIAGNOSTIC_EVENT_BYTES) {
         throw new Error('invalid_diagnostic_event')
@@ -320,8 +443,37 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
       return event
     },
     snapshot: () => Object.freeze({ trace_id: traceId, events: Object.freeze([...events]) }),
-    exportJson() {
-      const value = JSON.stringify({ version: 1, trace_id: traceId, events }, null, 2)
+    exportJson(exportOptions) {
+      const exportedEvents =
+        exportOptions?.includeLocalContext === true
+          ? events
+          : events.map(({ presentation_context: _localContext, ...event }) => event)
+      const attempts =
+        exportOptions?.includeLocalContext === true && exportOptions.screenshotAttempts
+          ? localScreenshotAttempts(exportOptions.screenshotAttempts)
+          : undefined
+      let omitted = 0
+      const serialize = () =>
+        JSON.stringify(
+          {
+            version: 1,
+            trace_id: traceId,
+            events: exportedEvents.slice(omitted),
+            ...(attempts ? { local_presentation_qa_attempts: attempts } : {}),
+            ...(omitted ? { omitted_event_count: omitted } : {}),
+          },
+          null,
+          2,
+        )
+      let value = serialize()
+      while (
+        attempts &&
+        encoder.encode(value).byteLength > MAX_DIAGNOSTIC_EXPORT_BYTES &&
+        omitted < exportedEvents.length
+      ) {
+        omitted++
+        value = serialize()
+      }
       if (encoder.encode(value).byteLength > MAX_DIAGNOSTIC_EXPORT_BYTES)
         throw new Error('diagnostic_export_too_large')
       return value
@@ -331,6 +483,7 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
       events = []
       traceId = undefined
       tool = 'unknown'
+      context = undefined
       uploadFailureRecorded = false
     },
   }

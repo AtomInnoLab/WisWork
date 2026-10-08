@@ -54,6 +54,8 @@ async function fixture(negotiated = true, callback = true, resume = false, fresh
   })
   await runtime.initialize()
   const socket = new Socket()
+  const sockets = [socket]
+  let connections = 0
   const enhancedProxy = vi.fn(
     async (
       request: Parameters<
@@ -86,7 +88,12 @@ async function fixture(negotiated = true, callback = true, resume = false, fresh
   const retrieval = vi.fn(async () => new Uint8Array())
   const client = createOfficeRelayClient({
     endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
-    connect: () => socket,
+    connect: () => {
+      if (connections++ === 0) return socket
+      const next = new Socket()
+      sockets.push(next)
+      return next
+    },
     getValidAccountStatus,
     getAccessToken: async () => 'token',
     proxy: async () => {
@@ -153,6 +160,7 @@ async function fixture(negotiated = true, callback = true, resume = false, fresh
     policy,
     runtime,
     socket,
+    sockets,
     client,
     renew,
     initial,
@@ -174,6 +182,31 @@ describe('PC Enhanced authorization leases', () => {
   afterEach(() => {
     vi.clearAllTimers()
     vi.useRealTimers()
+  })
+
+  it('renews Enhanced authority after ephemeral websocket reattachment', async () => {
+    const f = await fixture()
+    f.socket.close()
+    await vi.advanceTimersByTimeAsync(0)
+    const next = f.sockets[1]!
+    expect(next).toBeDefined()
+    next.readyState = 1
+    next.emit('open')
+    await vi.advanceTimersByTimeAsync(0)
+    next.message({
+      version: 2,
+      type: 'pc.resumed',
+      session_id: 'session_12345678',
+      expires_in: 1800,
+      capabilities: ['agent.v1', 'enhanced-lease.v1'],
+    })
+    expect(f.client.status()).toBe('paired')
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(f.renew).toHaveBeenCalledOnce()
+    expect(
+      next.sent.find((frame) => frame.type === 'pc.session_state')?.enhanced.expires_at,
+    ).toBeGreaterThan(f.initial.expires_at)
+    f.client.revoke('test_complete')
   })
 
   it.each(['crash', 'logout', 'global-policy', 'host-policy', 'raw-policy'])(

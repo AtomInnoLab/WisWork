@@ -1,0 +1,40 @@
+{
+  "caseId": "PPT-P0-06",
+  "materialStatus": "candidate_synthetic_pending_legal_and_privacy_review",
+  "documentInputs": ["synthetic-nda.txt", "review-policy.txt", "revision-notes.txt"],
+  "classification": "internal_test_synthetic",
+  "authorizedUse": "local_project_test_and_internal_review_only",
+  "forbiddenDisclosure": {
+    "contractFieldLabel": "测试追踪码",
+    "targets": ["presentation", "model_request", "remote_diagnostics", "cross_project_asset"],
+    "requiresActualSendRecords": true
+  },
+  "clauses": [
+    { "number": 1, "topic": "保密信息定义与例外", "review": "保留四类例外" },
+    { "number": 2, "topic": "限定使用目的", "review": "不扩写用途" },
+    { "number": 3, "topic": "访问与保护", "review": "待确认人员和分包方范围" },
+    { "number": 4, "topic": "依法披露", "review": "保留法律允许时通知的限定" },
+    { "number": 5, "topic": "生效与期限", "review": "未签署，保密延续三年为草稿文字" },
+    { "number": 6, "topic": "返还与删除", "review": "核对例外和备份" },
+    { "number": 7, "topic": "违约处理", "review": "救济和法律未定" },
+    { "number": 8, "topic": "通知与争议", "review": "法域和机构未定" }
+  ],
+  "pages": [
+    { "number": 1, "purpose": "内部测试封面：虚构、未签署和权限边界" },
+    { "number": 2, "purpose": "审阅范围、合同状态和允许使用目的" },
+    { "number": 3, "purpose": "条款地图：定义、例外和期限" },
+    { "number": 4, "purpose": "访问控制与目的限制风险" },
+    { "number": 5, "purpose": "依法披露的通知限定" },
+    { "number": 6, "purpose": "返还、删除和保留例外" },
+    { "number": 7, "purpose": "未定条款与待专业确认问题" },
+    { "number": 8, "purpose": "修订建议、责任人和禁止外发复核" }
+  ],
+  "requiredEvidence": [
+    "材料所有权和测试授权记录",
+    "三份输入的摘要与逐条映射",
+    "实际模型请求、Relay/PC 路由和诊断发送记录",
+    "合同条款与输出主张逐项对照及法律审阅",
+    "禁止字段在请求、输出、来源账本和诊断中的脱敏核对",
+    "八页 PowerPoint 截图、PPTX、保存关闭重开及原生文本编辑证据"
+  ]
+}

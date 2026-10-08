@@ -9,6 +9,10 @@ const dist = resolve(appRoot, 'dist')
 beforeAll(async () => {
   const configured = {
     VITE_WISWORK_ADDIN_ORIGIN: 'https://office.example',
+    VITE_WISWORK_TEAM_CLIENT_ID: 'registered-fixture-client',
+    VITE_WISWORK_TEAM_REDIRECT_URI: 'https://office.example/team-auth-callback.html',
+    VITE_WISWORK_PRESENTATION_ROLLOUT_PERCENT: '25',
+    VITE_WISWORK_OFFICE_DIAGNOSTIC_SAMPLE_PERCENT: '10',
   }
   const prior = Object.fromEntries(Object.keys(configured).map((key) => [key, process.env[key]]))
   Object.assign(process.env, configured)
@@ -20,9 +24,28 @@ beforeAll(async () => {
       else process.env[key] = value
     }
   }
-}, 30_000)
+}, 30_000) // A production Vite build can exceed the default hook budget alongside other test workers.
 
 describe('configured Office build output', () => {
+  it('emits version metadata matching the compiled task pane', async () => {
+    const metadata = JSON.parse(await readFile(resolve(dist, 'version.json'), 'utf8')) as {
+      buildId: string
+      presentationRolloutPercent: number
+      diagnosticSamplePercent: number
+      presentationMinPcProtocol: number
+      presentationMinRelayProtocol: number
+    }
+    expect(metadata.buildId).toMatch(/^[A-Za-z0-9_.-]{3,96}$/)
+    expect(metadata.presentationRolloutPercent).toBe(25)
+    expect(metadata.diagnosticSamplePercent).toBe(10)
+    expect(metadata.presentationMinPcProtocol).toBe(2)
+    expect(metadata.presentationMinRelayProtocol).toBe(2)
+    const taskpane = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
+    const scriptPath = taskpane.match(/src="(\/assets\/taskpane-[^"]+\.js)"/)?.[1]
+    expect(scriptPath).toBeDefined()
+    const script = await readFile(resolve(dist, scriptPath!.slice(1)), 'utf8')
+    expect(script).toContain(metadata.buildId)
+  })
   it('emits only configured origins in the deployment manifest', async () => {
     const manifest = await readFile(resolve(dist, 'manifest.xml'), 'utf8')
     expect(manifest).toContain('<Version>0.3.42.0</Version>')
@@ -32,10 +55,21 @@ describe('configured Office build output', () => {
     expect(manifest).not.toContain('*')
   })
 
-  it('emits one task pane with the fixed relay policy and no legacy auth assets', async () => {
+  it('emits a task pane and constrained team dialog pages without legacy auth assets', async () => {
     const taskpane = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
-    const files = await readdir(dist, { recursive: true })
+    const files = (await readdir(dist, { recursive: true })).map((file) =>
+      file.replaceAll('\\', '/'),
+    )
     expect(taskpane).toContain("connect-src 'self' wss://office.8-216-134-194.sslip.io")
+    expect(taskpane).toContain('https://gateway.wispaper.ai')
+    for (const page of ['team-auth-start.html', 'team-auth-callback.html']) {
+      const html = await readFile(resolve(dist, page), 'utf8')
+      expect(html).toContain('name="referrer" content="no-referrer"')
+      expect(html).toContain("connect-src 'none'")
+      expect(html).toContain('https://appsforoffice.microsoft.com/lib/1/hosted/office.js')
+      expect(html).not.toContain('unsafe-inline')
+      expect(html).not.toContain('access_token=')
+    }
     expect(taskpane).not.toContain('http://127.0.0.1')
     const scriptPath = taskpane.match(/src="(\/assets\/taskpane-[^"]+\.js)"/)?.[1]
     expect(scriptPath).toBeDefined()
@@ -57,7 +91,12 @@ describe('configured Office build output', () => {
   })
 
   it('omits a deployable manifest from an unconfigured build', async () => {
-    const keys = ['VITE_WISWORK_ADDIN_ORIGIN', 'VITE_WISWORK_PC_BRIDGE_PORTS']
+    const keys = [
+      'VITE_WISWORK_ADDIN_ORIGIN',
+      'VITE_WISWORK_PC_BRIDGE_PORTS',
+      'VITE_WISWORK_TEAM_CLIENT_ID',
+      'VITE_WISWORK_TEAM_REDIRECT_URI',
+    ]
     const prior = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
     for (const key of keys) process.env[key] = ''
     try {
@@ -69,7 +108,7 @@ describe('configured Office build output', () => {
       }
     }
     await expect(access(resolve(dist, 'manifest.xml'))).rejects.toThrow()
-  }, 15_000)
+  }, 30_000)
 
   it('fails the build for an invalid persistent-pairing rollback flag', async () => {
     const key = 'VITE_WISWORK_OFFICE_PAIRING_RESUME'
@@ -108,5 +147,5 @@ describe('configured Office build output', () => {
         else process.env[key] = value
       }
     }
-  }, 15_000)
+  }, 30_000)
 })

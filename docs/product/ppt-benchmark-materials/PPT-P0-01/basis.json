@@ -1,0 +1,18 @@
+{
+  "caseId": "PPT-P0-01",
+  "sourceFile": "deardorff-2020-article.pdf",
+  "checklistFile": "deardorff-2020-checklist.pdf",
+  "sourceSha256": "ff64709ef7b48a3292e4d4528809b50ed7f5d10836971b9cebcf35e769cf3617",
+  "checklistSha256": "c1bffef3f6b97236b2329b952791aa1e0d3176e2c7c5cd3e21a1e61e6e068ad9",
+  "sample": { "before": 14, "after": 12, "sourcePage": 5 },
+  "score": { "before": 1.6, "after": 2.2, "maximum": 6, "p": 0.318, "sourcePage": 5 },
+  "table1OpenSource": {
+    "before": 7,
+    "after": 10,
+    "beforeDenominator": 14,
+    "afterDenominator": 12,
+    "sourcePage": 5
+  },
+  "limitationsPage": 9,
+  "review": "pending_scientific_and_host_review"
+}

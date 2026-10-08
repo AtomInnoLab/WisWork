@@ -222,6 +222,36 @@ describe('Office persistent binding store', () => {
     await expect(store.load('powerpoint', capabilities)).resolves.toMatchObject({ capabilities })
   })
 
+  it('persists combined PPT and Enhanced capabilities beyond the old sixteen-item limit', async () => {
+    const database = new MemoryBindingDatabase()
+    const store = createOfficeBindingStore({ database, subtle: crypto.subtle })
+    const capabilities = [
+      'agent.v1',
+      'web-search.v1',
+      'web-fetch.v1',
+      'image-search.v1',
+      'image-fetch.v1',
+      'design-document.v1',
+      'enhanced-lease.v1',
+      'presentation.v1',
+      'presentation-attachments.v1',
+      'presentation-assets.v1',
+      'presentation-remote-images.v1',
+      'presentation-webpages.v1',
+      'presentation-asset-rights.v1',
+      'presentation-animation-frame.v1',
+      'presentation-pdf.v1',
+      'presentation-production-pdf.v1',
+      'presentation-master-backups.v1',
+      'presentation-package-backups.v1',
+      'presentation-governance.v1',
+    ]
+    const enrollment = await store.createEnrollment('powerpoint', capabilities)
+    await store.stage(enrollment, 'binding_12345678', capabilities)
+    await store.activate(enrollment, 'binding_12345678', capabilities)
+    await expect(store.load('powerpoint', capabilities)).resolves.toMatchObject({ capabilities })
+  })
+
   it('generates and stores only a non-exportable P-256 private CryptoKey', async () => {
     const database = new MemoryBindingDatabase()
     const store = createOfficeBindingStore({ database, subtle: crypto.subtle })

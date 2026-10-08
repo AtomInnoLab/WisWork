@@ -1,0 +1,461 @@
+{
+  "version": 1,
+  "id": "p0-17-finance",
+  "title": "财务：Apple FY2024 审计年报",
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "assets": [],
+  "claims": [
+    {
+      "id": "finance-claim-1",
+      "text": "财政年度截至 2024-09-28；与上一财年的日期不同。",
+      "source": "local:apple-fy2024-form10k.pdf",
+      "locator": "PDF 第 1 页"
+    },
+    {
+      "id": "finance-claim-2",
+      "text": "合并净销售额 FY2024 为 391,035 百万美元，FY2023 为 383,285 百万美元。",
+      "source": "local:apple-fy2024-form10k.pdf",
+      "locator": "PDF 第 51 页"
+    },
+    {
+      "id": "finance-claim-3",
+      "text": "净利润与现金流须分别按审计年报原表及单位核对，不将利润等同现金。",
+      "source": "local:apple-fy2024-form10k.pdf",
+      "locator": "PDF 第 32 页"
+    },
+    {
+      "id": "finance-claim-4",
+      "text": "原生图表并列展示两年净销售额原值；单位为百万美元。",
+      "source": "local:apple-fy2024-form10k.pdf",
+      "locator": "PDF 第 35 页"
+    },
+    {
+      "id": "finance-claim-5",
+      "text": "比较只覆盖历史披露；重述、分类口径和风险仍待财务审阅。",
+      "source": "local:apple-fy2024-form10k.pdf",
+      "locator": "PDF 第 3 页"
+    },
+    {
+      "id": "finance-sales-2023",
+      "text": "FY2023 净销售额 383,285 百万美元，取自审计年报。",
+      "source": "local:apple-fy2024-form10k.pdf",
+      "locator": "PDF 第 32 页"
+    },
+    {
+      "id": "finance-sales-2024",
+      "text": "FY2024 净销售额 391,035 百万美元，取自审计年报。",
+      "source": "local:apple-fy2024-form10k.pdf",
+      "locator": "PDF 第 32 页"
+    }
+  ],
+  "slides": [
+    {
+      "id": "p01",
+      "title": "财务封面",
+      "claimIds": [],
+      "notes": "FIN-P0-17；只报告 FY2024 10-K 历史披露值，不虚构预测或投资意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "财务封面",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "Apple FY2024 Form 10-K；本稿只使用该份冻结审计年报。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "FIN-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "FIN-P0-17；来源：apple-fy2024-form10k.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p02",
+      "title": "报告目录",
+      "claimIds": [],
+      "notes": "FIN-P0-17；只报告 FY2024 10-K 历史披露值，不虚构预测或投资意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "报告目录",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "依次呈现报告期、审计身份、收入、利润与现金流、年度对照及口径。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "FIN-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "FIN-P0-17；来源：apple-fy2024-form10k.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p03",
+      "title": "报告期与审计范围",
+      "claimIds": ["finance-claim-1"],
+      "notes": "FIN-P0-17；只报告 FY2024 10-K 历史披露值，不虚构预测或投资意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "报告期与审计范围",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "财政年度截至 2024-09-28；与上一财年的日期不同。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "FIN-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "FIN-P0-17；来源：apple-fy2024-form10k.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p04",
+      "title": "收入结构",
+      "claimIds": ["finance-claim-2"],
+      "notes": "FIN-P0-17；只报告 FY2024 10-K 历史披露值，不虚构预测或投资意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "收入结构",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "合并净销售额 FY2024 为 391,035 百万美元，FY2023 为 383,285 百万美元。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "FIN-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "FIN-P0-17；来源：apple-fy2024-form10k.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "利润与现金流",
+      "claimIds": ["finance-claim-3"],
+      "notes": "FIN-P0-17；只报告 FY2024 10-K 历史披露值，不虚构预测或投资意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "利润与现金流",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "净利润与现金流须分别按审计年报原表及单位核对，不将利润等同现金。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "FIN-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "FIN-P0-17；来源：apple-fy2024-form10k.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "年度对照",
+      "claimIds": ["finance-claim-4", "finance-sales-2023", "finance-sales-2024"],
+      "notes": "FIN-P0-17；只报告 FY2024 10-K 历史披露值，不虚构预测或投资意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "年度对照",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 0.9,
+          "text": "原生图表并列展示两年净销售额原值；单位为百万美元。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "FIN-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "FIN-P0-17；来源：apple-fy2024-form10k.pdf；待专业审阅",
+          "fontSize": 9
+        },
+        {
+          "kind": "chart",
+          "id": "finance-chart",
+          "x": 1,
+          "y": 2.85,
+          "w": 10.8,
+          "h": 3.25,
+          "chartType": "bar",
+          "categories": ["FY2023", "FY2024"],
+          "series": [{ "name": "净销售额（百万美元）", "values": [383285, 391035] }]
+        }
+      ]
+    },
+    {
+      "id": "p07",
+      "title": "口径与风险",
+      "claimIds": ["finance-claim-5"],
+      "notes": "FIN-P0-17；只报告 FY2024 10-K 历史披露值，不虚构预测或投资意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "口径与风险",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "比较只覆盖历史披露；重述、分类口径和风险仍待财务审阅。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "FIN-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "FIN-P0-17；来源：apple-fy2024-form10k.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    },
+    {
+      "id": "p08",
+      "title": "结论与待财务审阅项",
+      "claimIds": [],
+      "notes": "FIN-P0-17；只报告 FY2024 10-K 历史披露值，不虚构预测或投资意见。",
+      "elements": [
+        {
+          "kind": "text",
+          "id": "title",
+          "x": 0.65,
+          "y": 0.48,
+          "w": 12,
+          "h": 0.7,
+          "text": "结论与待财务审阅项",
+          "fontSize": 26
+        },
+        {
+          "kind": "text",
+          "id": "body",
+          "x": 0.9,
+          "y": 1.65,
+          "w": 11.4,
+          "h": 3.8,
+          "text": "本稿待财务审阅；不含预测或投资建议。",
+          "fontSize": 19
+        },
+        {
+          "kind": "text",
+          "id": "marker",
+          "x": 0.9,
+          "y": 6.3,
+          "w": 3,
+          "h": 0.3,
+          "text": "FIN-P0-17",
+          "fontSize": 11
+        },
+        {
+          "kind": "text",
+          "id": "footer",
+          "role": "decoration",
+          "x": 0.9,
+          "y": 6.62,
+          "w": 11.4,
+          "h": 0.25,
+          "text": "FIN-P0-17；来源：apple-fy2024-form10k.pdf；待专业审阅",
+          "fontSize": 9
+        }
+      ]
+    }
+  ]
+}

@@ -113,6 +113,7 @@ describe('Docs agent controller', () => {
     await flush()
     expect(controller.appendAssistantContext('Shell-owned observation.')).toBe(false)
     expect(controller.messages).toEqual([])
+    expect(() => controller.subscribeAcp(() => undefined)()).not.toThrow()
     expect(controller.run('enhanced docs')).toBe(true)
     await flush()
     expect(api.register).toHaveBeenCalledOnce()

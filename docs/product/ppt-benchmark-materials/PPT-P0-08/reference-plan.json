@@ -1,0 +1,333 @@
+{
+  "version": 1,
+  "projectId": "p0-08-cross-company-comparability-reference",
+  "title": "Apple 与 Toyota 跨公司可比性候选稿",
+  "domain": "finance",
+  "brief": {
+    "objective": "先核对两公司财年、会计准则、币种、单位和收入范围，仅展示有来源的历史汇率示意换算",
+    "audience": "财务专业审阅者",
+    "language": "zh-CN",
+    "minutes": 8,
+    "requiredContent": ["口径矩阵", "两张各自原币图表", "历史 FY2024 汇率", "不可比项空白结果"],
+    "constraints": [
+      "不得计算同口径美元差额",
+      "不得排名",
+      "不把 FY2025 预测汇率当历史汇率",
+      "财务与真实 PowerPoint 验收待完成"
+    ]
+  },
+  "sources": [
+    {
+      "id": "apple-report",
+      "title": "Apple 审计年报净销售额",
+      "uri": "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm",
+      "snapshotAttachmentId": "ec74758cd767465362c641cf2fd5d8fedd477aed2bf7f62117e67610435dcb88",
+      "locator": "PDF 32",
+      "excerpt": "Total net sales 391,035 383,285 394,328",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "toyota-report",
+      "title": "Toyota 20-F 销售收入",
+      "uri": "https://global.toyota/pages/global_toyota/ir/library/sec/20-F_202403_final.pdf",
+      "snapshotAttachmentId": "66edd522fe4eed60916621c0aff380dfbb4306768ea4bb5dd9537c79665856c9",
+      "locator": "PDF 167",
+      "excerpt": "Total sales revenues . . . . . . . . . . . . . . . . 26 31,379,507 37,154,298 45,095,325",
+      "asOf": "2024-06-25"
+    },
+    {
+      "id": "toyota-finance",
+      "title": "Toyota 20-F 金融服务收入",
+      "uri": "https://global.toyota/pages/global_toyota/ir/library/sec/20-F_202403_final.pdf",
+      "snapshotAttachmentId": "66edd522fe4eed60916621c0aff380dfbb4306768ea4bb5dd9537c79665856c9",
+      "locator": "PDF 167",
+      "excerpt": "Financial services . . . . . . . . . . . . . . . . . . 26 2,306,079 2,786,679 3,447,195",
+      "asOf": "2024-06-25"
+    },
+    {
+      "id": "fx-history",
+      "title": "Toyota FY2024 历史十二个月汇率栏",
+      "uri": "https://global.toyota/pages/global_toyota/ir/financial-results/2024_4q_summary_en.pdf",
+      "snapshotAttachmentId": "530b317b698130d4d8a654207a1b88c957f17207a33fdad220c9ef17cd19d3e5",
+      "locator": "PDF 28 FY2024 12 months",
+      "excerpt": "Supplemental Material for Financial Results for FY2024 (Consolidated)\n< IFRS >\nFY2023 FY2024 FY2025\nForecast\n1Q 2Q 3Q 4Q 1Q 2Q 3Q 4Q 12 months 12 months\n(2022/4-6) (2022/7-9) (2022/10-12) (2023/1-3) ('22/4-'23/3) (2023/4-6) (2023/7-9) (2023/10-12) (2024/1-3) ('23/4-'24/3) ('24/4-'25/3)\n12 months\n130 138 141 132 135 137 145 148 149 145\n138 139 144 142 141 150 157 159 161 157\n(Note 1)\n8,491.1 9,218.2 9,754.6 9,690.2 37,154.2 10,",
+      "asOf": "2024-05-08"
+    },
+    {
+      "id": "apple-value",
+      "title": "Apple Inc. 2024-09-28 原币收入字段",
+      "uri": "local:basis.json",
+      "snapshotAttachmentId": "d5065541095b13fc96085cf2446d0f43ea30c0ca7661bf6d57b66bf910e097a6",
+      "locator": "companies.apple.valueMillions",
+      "excerpt": "391035",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "toyota-value",
+      "title": "Toyota Motor Corporation 2024-03-31 原币收入字段",
+      "uri": "local:basis.json",
+      "snapshotAttachmentId": "d5065541095b13fc96085cf2446d0f43ea30c0ca7661bf6d57b66bf910e097a6",
+      "locator": "companies.toyota.valueMillions",
+      "excerpt": "45095325",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "fx-csv",
+      "title": "独立汇率示意复算行",
+      "uri": "local:independent-recalc.csv",
+      "snapshotAttachmentId": "a433b0adf0c4e2a567af5785d4788d15942bc045a07332d358617b37e10e4a1d",
+      "locator": "CSV toyota_total_sales_revenues",
+      "excerpt": "toyota_total_sales_revenues,45095325,JPY millions,145,45095325/145,311002.24,illustrative_only",
+      "asOf": "2024-11-01"
+    }
+  ],
+  "claims": [
+    {
+      "id": "apple-sales",
+      "statement": "Apple FY2024 净销售额为 391,035 百万美元。",
+      "sourceIds": ["apple-report", "apple-value"],
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-09-28",
+        "asOf": "2024-11-01",
+        "currency": "USD",
+        "unit": "USD millions",
+        "accountingBasis": "US GAAP",
+        "limitations": "与 Toyota 财年、准则和收入范围不同；不可直接排名"
+      },
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "toyota-sales",
+      "statement": "Toyota FY2024 销售收入为 45,095,325 百万日元，含金融服务收入。",
+      "sourceIds": ["toyota-report", "toyota-finance", "toyota-value"],
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-03-31",
+        "asOf": "2024-11-01",
+        "currency": "JPY",
+        "unit": "JPY millions",
+        "accountingBasis": "IFRS",
+        "limitations": "销售及金融服务收入与 Apple 净销售额不可直接比较"
+      },
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "fx-period",
+      "statement": "Toyota 官方汇总的 FY2024 已发生十二个月栏使用 1 美元兑 145 日元；右侧 FY2025 预测栏不能充当历史依据。",
+      "sourceIds": ["fx-history"],
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-03-31",
+        "asOf": "2024-11-01",
+        "currency": "JPY",
+        "unit": "JPY millions",
+        "accountingBasis": "IFRS",
+        "limitations": "历史年度汇率非 2024-11-01 即期汇率，也非 Apple 财年汇率"
+      },
+      "type": "fact",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01"
+    },
+    {
+      "id": "fx-illustrative",
+      "statement": "Toyota 收入按其 FY2024 历史汇率示意换算为 311,002.24 百万美元。",
+      "sourceIds": ["toyota-report", "fx-history", "fx-csv"],
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "financial_statement",
+        "reportingPeriod": "FY2024 ended 2024-03-31",
+        "asOf": "2024-11-01",
+        "currency": "JPY",
+        "unit": "JPY millions",
+        "accountingBasis": "IFRS",
+        "limitations": "仅示意换算，不能据此与 Apple 计算同口径差额或排名",
+        "formula": "Toyota JPY millions / 145 JPY per USD"
+      },
+      "type": "calculation",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01",
+      "calculation": {
+        "formula": "round(jpy / rate, 2)",
+        "inputs": ["jpy", "rate"],
+        "unit": "USD millions",
+        "currency": "USD",
+        "reproduction": {
+          "bindings": [
+            { "name": "jpy", "inputIndex": 0, "value": 45095325, "sourceId": "fx-csv" },
+            { "name": "rate", "inputIndex": 1, "value": 145, "sourceId": "fx-csv" }
+          ],
+          "expected": 311002.24
+        }
+      }
+    },
+    {
+      "id": "comparison-gap",
+      "statement": "两公司财年结束日、会计准则和收入范围不同；同口径美元差额与跨公司收入排名均须留空。",
+      "sourceIds": ["apple-report", "toyota-report", "toyota-finance"],
+      "professionalContext": {
+        "domain": "finance",
+        "materialKind": "disclosure",
+        "reportingPeriod": "non-aligned FY2024 periods",
+        "asOf": "2024-11-01",
+        "currency": "USD and JPY",
+        "unit": "millions",
+        "accountingBasis": "US GAAP versus IFRS",
+        "limitations": "无可靠同口径调整；不发布差额或排名"
+      },
+      "type": "judgment",
+      "confidence": "low",
+      "reviewStatus": "needs_review",
+      "asOf": "2024-11-01"
+    }
+  ],
+  "style": {
+    "fontFace": "Noto Sans CJK SC",
+    "background": "FFFFFF",
+    "textColor": "173248",
+    "accentColor": "087D83"
+  },
+  "slides": [
+    {
+      "id": "p01",
+      "title": "跨公司收入可比性：先核对口径",
+      "purpose": "保留原币与不可比边界，示意换算独立呈现",
+      "claimIds": [],
+      "domainSection": "financial_question",
+      "layout": "cover",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑表格和图表", "源数值可追溯", "不可比结果保持空白"]
+    },
+    {
+      "id": "p02",
+      "title": "资料时点与两份年度报告",
+      "purpose": "保留原币与不可比边界，示意换算独立呈现",
+      "claimIds": ["apple-sales", "toyota-sales"],
+      "domainSection": "reporting_basis",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑表格和图表", "源数值可追溯", "不可比结果保持空白"]
+    },
+    {
+      "id": "p03",
+      "title": "财年、准则、币种和范围矩阵",
+      "purpose": "保留原币与不可比边界，示意换算独立呈现",
+      "claimIds": ["apple-sales", "toyota-sales"],
+      "domainSection": "reporting_basis",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑表格和图表", "源数值可追溯", "不可比结果保持空白"]
+    },
+    {
+      "id": "p04",
+      "title": "Apple：原币净销售额",
+      "purpose": "保留原币与不可比边界，示意换算独立呈现",
+      "claimIds": ["apple-sales"],
+      "domainSection": "financial_results",
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑表格和图表", "源数值可追溯", "不可比结果保持空白"],
+      "chartData": [
+        {
+          "elementId": "apple-native-chart",
+          "categories": ["Apple Inc."],
+          "currency": "USD",
+          "unit": "USD millions",
+          "series": [
+            {
+              "name": "Net sales（百万美元）",
+              "points": [
+                {
+                  "value": 391035,
+                  "claimId": "apple-sales",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "apple-value",
+                    "excerptOffset": 0,
+                    "excerptText": "391035"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p05",
+      "title": "Toyota：原币销售及金融服务收入",
+      "purpose": "保留原币与不可比边界，示意换算独立呈现",
+      "claimIds": ["toyota-sales"],
+      "domainSection": "financial_results",
+      "layout": "chart",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑表格和图表", "源数值可追溯", "不可比结果保持空白"],
+      "chartData": [
+        {
+          "elementId": "toyota-native-chart",
+          "categories": ["Toyota Motor Corporation"],
+          "currency": "JPY",
+          "unit": "JPY millions",
+          "series": [
+            {
+              "name": "Total sales revenues (products and financial services)（百万日元）",
+              "points": [
+                {
+                  "value": 45095325,
+                  "claimId": "toyota-sales",
+                  "basis": {
+                    "kind": "source",
+                    "sourceId": "toyota-value",
+                    "excerptOffset": 0,
+                    "excerptText": "45095325"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p06",
+      "title": "Toyota 汇率换算仅作示意",
+      "purpose": "保留原币与不可比边界，示意换算独立呈现",
+      "claimIds": ["fx-period", "fx-illustrative"],
+      "domainSection": "financial_results",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑表格和图表", "源数值可追溯", "不可比结果保持空白"]
+    },
+    {
+      "id": "p07",
+      "title": "不可比项与留空规则",
+      "purpose": "保留原币与不可比边界，示意换算独立呈现",
+      "claimIds": ["comparison-gap"],
+      "domainSection": "financial_risks_and_scenarios",
+      "layout": "content",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑表格和图表", "源数值可追溯", "不可比结果保持空白"]
+    },
+    {
+      "id": "p08",
+      "title": "结论、审阅和宿主验收",
+      "purpose": "保留原币与不可比边界，示意换算独立呈现",
+      "claimIds": ["comparison-gap"],
+      "domainSection": "financial_actions",
+      "layout": "summary",
+      "requiredAssets": [],
+      "acceptanceCriteria": ["原生可编辑表格和图表", "源数值可追溯", "不可比结果保持空白"]
+    }
+  ]
+}

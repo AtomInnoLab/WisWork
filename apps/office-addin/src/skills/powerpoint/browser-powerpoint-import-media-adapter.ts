@@ -43,12 +43,10 @@ async function slide(context: Runtime, index: number, signal?: AbortSignal): Pro
   return item
 }
 export function supportsPowerPointImportMedia(): boolean {
-  try {
-    runtime()
-    return true
-  } catch {
-    return false
-  }
+  // PowerPoint ShapeCollection has no released image-insert API. addPicture is
+  // preview-only, and addImage belongs to Excel.ShapeCollection. Generated
+  // picture pages use the supported PPTX import path until this changes.
+  return false
 }
 
 export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapter {

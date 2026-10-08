@@ -163,6 +163,7 @@ const CATALOG = Object.freeze({
     edit_slide_master_xml: ['mutate', 'transaction-proposal'],
     duplicate_slide: ['mutate', 'transaction-proposal'],
     execute_office_js: ['mutate', 'transaction-proposal'],
+    add_slide_ir_objects: ['mutate', 'transaction-proposal'],
     propose_raw_office_edit: ['mutate', 'raw-office-proposal'],
   }),
 }) as unknown as Readonly<

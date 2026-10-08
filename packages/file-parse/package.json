@@ -17,6 +17,7 @@
     "@wiswork/docx-engine": "*",
     "fast-xml-parser": "^5.3.4",
     "jszip": "^3.10.1",
+    "parse5": "^8.0.1",
     "pdfjs-dist": "^6.2.108"
   },
   "devDependencies": {

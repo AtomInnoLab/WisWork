@@ -1,0 +1,41 @@
+       FEDERAL RULES OF EVIDENCE                              3
+
+
+
+
+rule. Nor does the amendment require that the court make a
+finding of reliability in the absence of objection.
+
+        The amendment clarifies that the preponderance
+standard applies to the three reliability-based requirements
+added in 2000—requirements that many courts have
+incorrectly determined to be governed by the more
+permissive Rule 104(b) standard. But it remains the case that
+other admissibility requirements in the rule (such as that the
+expert must be qualified and the expert’s testimony must
+help the trier of fact) are governed by the Rule 104(a)
+standard as well.
+
+        Some challenges to expert testimony will raise
+matters of weight rather than admissibility even under the
+Rule 104(a) standard. For example, if the court finds it more
+likely than not that an expert has a sufficient basis to support
+an opinion, the fact that the expert has not read every single
+study that exists will raise a question of weight and not
+admissibility. But this does not mean, as certain courts have
+held, that arguments about the sufficiency of an expert’s
+basis always go to weight and not admissibility. Rather it
+means that once the court has found it more likely than not
+that the admissibility requirement has been met, any attack
+by the opponent will go only to the weight of the evidence.
+
+      It will often occur that experts come to different
+conclusions based on contested sets of facts. Where that is
+so, the Rule 104(a) standard does not necessarily require
+exclusion of either side’s experts. Rather, by deciding the
+disputed facts, the jury can decide which side’s experts to
+credit. “[P]roponents ‘do not have to demonstrate to the
+judge by a preponderance of the evidence that the
+assessments of their experts are correct, they only have to
+demonstrate by a preponderance of evidence that their
+opinions are reliable. . . . The evidentiary requirement of

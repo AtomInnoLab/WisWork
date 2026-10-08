@@ -164,6 +164,62 @@ describe('AgentLoop', () => {
   })
 
   describe('presentation task orchestration', () => {
+    it('rechecks presentation confirmation before dispatching a restored checkpoint', async () => {
+      const transport = scriptedTransport([])
+      const confirm = vi.fn(async () => false)
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'ready', contract, requiresConfirmation: true }),
+            confirm,
+            complete: vi.fn(),
+          },
+        },
+      })
+      expect(
+        loop.resume([
+          { role: 'user', text: 'edit deck' },
+          { role: 'assistant', text: '', toolCalls: [{ id: 'read', name: 'read', input: {} }] },
+          { role: 'tool', results: [{ id: 'read', name: 'read', output: 'evidence' }] },
+        ]),
+      ).toBe(true)
+      await flush()
+      expect(confirm).toHaveBeenCalledOnce()
+      expect(transport.requests).toHaveLength(0)
+      expect(loop.busy).toBe(false)
+    })
+
+    it('drops the previous presentation contract when a reset checkpoint bypasses preparation', async () => {
+      const prepare = vi
+        .fn<PresentationTaskHooks['prepare']>()
+        .mockReturnValueOnce({ kind: 'ready', contract })
+        .mockReturnValueOnce({ kind: 'bypass' })
+      const complete = vi.fn<PresentationTaskHooks['complete']>()
+      const transport = scriptedTransport([(cb) => cb.onError('offline'), (cb) => cb.onDone()])
+      const done = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: { ...makeSkill(), presentation: { prepare, complete } },
+        events: { onDone: done },
+      })
+      loop.run('edit deck')
+      await flush()
+      loop.reset()
+      expect(
+        loop.resume([
+          { role: 'user', text: 'read deck' },
+          { role: 'assistant', text: '', toolCalls: [{ id: 'read', name: 'read', input: {} }] },
+          { role: 'tool', results: [{ id: 'read', name: 'read', output: 'evidence' }] },
+        ]),
+      ).toBe(true)
+      await flush()
+      expect(prepare).toHaveBeenCalledTimes(2)
+      expect(complete).not.toHaveBeenCalled()
+      expect(done).toHaveBeenCalledOnce()
+    })
+
     it('resumes an interrupted presentation without discarding its acceptance contract', async () => {
       const previousContracts: unknown[] = []
       const transport = scriptedTransport([
@@ -1939,6 +1995,57 @@ describe('AgentLoop', () => {
       expect.objectContaining({
         execution: expect.objectContaining({ output: 'invalid_tool_output', isError: true }),
       }),
+    )
+  })
+
+  it('halts the run before another tool or provider turn on a fatal tool result', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'write-1', name: 'do_thing', input: {} })
+        cb.onToolCall({ id: 'write-2', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(),
+    ])
+    const executeTool = vi.fn(() => ({
+      output: 'checkpoint failed',
+      summary: 'Checkpoint unavailable',
+      isError: true,
+      fatalError: 'presentation_run_checkpoint_unavailable',
+    }))
+    const onError = vi.fn()
+    const loop = new AgentLoop({ transport, skill: makeSkill(executeTool), events: { onError } })
+    loop.run('write')
+    await flush()
+    await flush()
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(transport.requests).toHaveLength(1)
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError).toHaveBeenCalledWith('presentation_run_checkpoint_unavailable')
+    expect(loop.busy).toBe(false)
+  })
+
+  it('rejects an unbounded fatal error code as invalid tool output', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(),
+    ])
+    const onError = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => ({ output: 'bad', summary: 'bad', fatalError: 'x'.repeat(100) })),
+      events: { onError },
+    })
+    loop.run('read')
+    await flush()
+    await flush()
+    expect(transport.requests).toHaveLength(2)
+    expect(onError).not.toHaveBeenCalled()
+    expect((loop.messages[2] as Extract<AgentMessage, { role: 'tool' }>).results[0]?.output).toBe(
+      'invalid_tool_output',
     )
   })
 
