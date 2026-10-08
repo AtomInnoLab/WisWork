@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
+import { stripVTControlCharacters } from 'node:util'
 import { build } from 'esbuild'
 import electron from 'electron'
 import { chromium } from '@playwright/test'
@@ -403,7 +404,9 @@ function firstLine(child, label, timeoutMs, accept = () => true) {
       () => fail(new Error(`${label} startup timed out: ${output.join(' | ')}`)),
       timeoutMs,
     )
-    lines.on('line', (line) => {
+    lines.on('line', (rawLine) => {
+      // Vite colors the port separately in CI, splitting the visible URL.
+      const line = stripVTControlCharacters(rawLine)
       output.push(line)
       if (!accept(line)) return
       clearTimeout(timer)
