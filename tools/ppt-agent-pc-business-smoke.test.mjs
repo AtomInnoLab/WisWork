@@ -47,7 +47,14 @@ test('compiled delivery check binds all PPTX text pages to the rendered PDF coun
   )
 })
 
-async function fakeRelay(t, response, mutate = (frame) => frame, handle, extraCapabilities = []) {
+async function fakeRelay(
+  t,
+  response,
+  mutate = (frame) => frame,
+  handle,
+  extraCapabilities = [],
+  notices = [],
+) {
   const server = createServer()
   const sockets = new WebSocketServer({ server })
   t.after(async () => {
@@ -107,7 +114,10 @@ async function fakeRelay(t, response, mutate = (frame) => frame, handle, extraCa
           },
           { ...common, type: 'relay.done' },
         ]
-        for (const reply of frames) socket.send(JSON.stringify(mutate(reply)))
+        for (const reply of frames) {
+          for (const notice of notices) socket.send(JSON.stringify(notice))
+          socket.send(JSON.stringify(mutate(reply)))
+        }
       }
     })
   })
@@ -116,13 +126,28 @@ async function fakeRelay(t, response, mutate = (frame) => frame, handle, extraCa
 }
 
 test('real PC smoke pairs and verifies a buffered, chunked status response', async (t) => {
-  const origin = await fakeRelay(t, {
-    projectId: 'project-1',
-    status: 'compiled',
-    slideCount: 1,
-    slides: [{ id: 'slide-1', title: 'Title' }],
-    history: [],
-  })
+  const origin = await fakeRelay(
+    t,
+    {
+      projectId: 'project-1',
+      status: 'compiled',
+      slideCount: 1,
+      slides: [{ id: 'slide-1', title: 'Title' }],
+      history: [],
+    },
+    undefined,
+    undefined,
+    [],
+    [
+      {
+        version: 2,
+        type: 'relay.session_state',
+        session_id: 'session',
+        generation: 1,
+        enhanced: null,
+      },
+    ],
+  )
   const codes = []
   assert.deepEqual(
     await inspectPcBusiness(origin, 'document-1', 'project-1', {
@@ -471,4 +496,27 @@ test('real PC smoke cleans an attachment after a failed upload chunk', async (t)
     /upload chunk failed/,
   )
   assert.equal(deleted, created)
+})
+
+test('real PC smoke rejects session-state notices for another session', async (t) => {
+  const origin = await fakeRelay(
+    t,
+    { projectId: 'project-1', status: 'compiled', slideCount: 1 },
+    undefined,
+    undefined,
+    [],
+    [
+      {
+        version: 2,
+        type: 'relay.session_state',
+        session_id: 'other',
+        generation: 1,
+        enhanced: null,
+      },
+    ],
+  )
+  await assert.rejects(
+    inspectPcBusiness(origin, 'document-1', 'project-1', { timeoutMs: 1000 }),
+    /session state identity mismatch/,
+  )
 })

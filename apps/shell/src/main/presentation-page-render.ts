@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { access, mkdtemp, open, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join, win32 } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const MAX_PNG_BYTES = 64 * 1024
@@ -17,7 +17,7 @@ export function libreOfficeCommands(
   if (platform === 'darwin')
     return [
       '/Applications/LibreOffice.app/Contents/MacOS/soffice',
-      join(home, 'Applications/LibreOffice.app/Contents/MacOS/soffice'),
+      posix.join(home, 'Applications/LibreOffice.app/Contents/MacOS/soffice'),
       'soffice',
     ]
   if (platform === 'win32') {
@@ -25,7 +25,12 @@ export function libreOfficeCommands(
       (value): value is string => Boolean(value && win32.isAbsolute(value)),
     )
     return [
-      ...roots.map((root) => win32.join(root, 'LibreOffice', 'program', 'soffice.exe')),
+      ...roots.flatMap((root) =>
+        ['soffice.com', 'soffice.exe'].map((name) =>
+          win32.join(root, 'LibreOffice', 'program', name),
+        ),
+      ),
+      'soffice.com',
       'soffice.exe',
     ]
   }
@@ -42,7 +47,7 @@ async function libreOfficeCommand(): Promise<string> {
       // Continue to the next standard installation location.
     }
   }
-  return commands.at(-1)!
+  return process.platform === 'win32' ? 'soffice.com' : commands.at(-1)!
 }
 
 /** Read no more than the renderer's file budget and reject oversized PNG dimensions before decode. */

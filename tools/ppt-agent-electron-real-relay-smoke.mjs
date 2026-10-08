@@ -176,7 +176,8 @@ async function inspectBrowserWorkbench(origin, pc) {
       sockets.set(id, socket)
       socket.on('open', () => void dispatch(id, 'open'))
       socket.on('message', (data) => {
-        inbound.push(JSON.parse(data.toString()).type)
+        const frame = JSON.parse(data.toString())
+        inbound.push(frame.type)
         void dispatch(id, 'message', data.toString())
       })
       socket.on('close', () => void dispatch(id, 'close'))
@@ -235,6 +236,9 @@ async function inspectBrowserWorkbench(origin, pc) {
       })
     }
     await page.addInitScript(() => {
+      // Exercise short-session resume/re-pairing with the ephemeral PC fixture,
+      // including in production builds where persistent pairing is enabled.
+      Object.defineProperty(window, 'indexedDB', { value: undefined, configurable: true })
       const sockets = new Map()
       window.__relayDispatch = (id, type, data) => {
         const socket = sockets.get(id)
@@ -272,12 +276,16 @@ async function inspectBrowserWorkbench(origin, pc) {
     const response = await page.goto('https://localhost:3000/taskpane.html')
     if (builtTaskpane) {
       await page.getByRole('heading', { name: 'Cannot verify WisWork version' }).waitFor()
-      if (await page.getByRole('button', { name: 'Connect to WisWork PC' }).count())
+      if (await page.getByText(/Enter code [0-9]{6} in WisWork PC/).count())
         throw Error('unverified Taskpane version exposed PC connection')
       await page.getByRole('button', { name: 'Retry version check' }).click()
     }
+    let codeText
     try {
-      await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
+      // The taskpane now starts pairing automatically after host/version verification.
+      codeText = await page
+        .getByText(/Enter code [0-9]{6} in WisWork PC/)
+        .textContent({ timeout: 15_000 })
     } catch (error) {
       const state = await page.evaluate(() => ({
         readyState: document.readyState,
@@ -285,13 +293,10 @@ async function inspectBrowserWorkbench(origin, pc) {
         html: document.documentElement?.outerHTML.slice(0, 800),
       }))
       throw new Error(
-        `Taskpane connect button unavailable: ${JSON.stringify({ status: response?.status(), url: page.url(), ...state, pageErrors, requestFailures, failedResponses })}`,
+        `Taskpane pairing code unavailable: ${JSON.stringify({ status: response?.status(), url: page.url(), ...state, pageErrors, requestFailures, failedResponses })}`,
         { cause: error },
       )
     }
-    const codeText = await page
-      .getByText(/Enter code [0-9]{6} in WisWork PC/)
-      .textContent({ timeout: 15_000 })
     const code = codeText?.match(/Enter code ([0-9]{6})/)?.[1]
     if (!code) throw Error('browser pairing code missing')
     pc.stdin.write(JSON.stringify({ type: 'claim', code }) + '\n')
@@ -299,6 +304,12 @@ async function inspectBrowserWorkbench(origin, pc) {
     await workbench
       .getByText('Browser to real PC project', { exact: true })
       .waitFor({ timeout: 20_000 })
+      .catch(async (error) => {
+        throw new Error(
+          `Taskpane project unavailable: ${JSON.stringify({ body: await page.locator('body').innerText(), pageErrors, outbound, inbound })}`,
+          { cause: error },
+        )
+      })
     if (!(await workbench.textContent()).includes('尚未完成视觉验证'))
       throw Error('browser project verification state missing')
     await page.getByRole('button', { name: '创建副本后制作' }).click()
@@ -317,10 +328,13 @@ async function inspectBrowserWorkbench(origin, pc) {
     }, browserDocumentUrl)
     if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth))
       throw Error('browser project workbench overflows at 320px')
-    const firstSocket = sockets.values().next().value
-    if (!firstSocket || !inbound.includes('office.approved'))
+    const activeSocket = [...sockets.values()].find(
+      (socket) => socket.readyState === WebSocket.OPEN,
+    )
+    if (!activeSocket || !inbound.includes('office.approved'))
       throw Error('browser relay approval not observed')
-    firstSocket.terminate()
+    activeSocket.terminate()
+    await page.getByRole('button', { name: 'Connect to WisWork PC', exact: true }).click()
     const waitFor = async (check, label) => {
       for (let attempt = 0; attempt < 100; attempt++) {
         if (check()) return
@@ -344,21 +358,21 @@ async function inspectBrowserWorkbench(origin, pc) {
     await workbench.getByText('Browser to real PC project', { exact: true }).waitFor()
     const createdBeforeReload = outbound.filter((type) => type === 'office.create').length
     await page.reload()
+    let reopenedCodeText
     try {
-      await page.getByRole('button', { name: 'Connect to WisWork PC' }).click()
+      reopenedCodeText = await page
+        .getByText(/Enter code [0-9]{6} in WisWork PC/)
+        .textContent({ timeout: 15_000 })
     } catch (error) {
       const state = await page.evaluate(() => ({
         readyState: document.readyState,
         body: document.body?.innerText.slice(0, 700),
       }))
       throw new Error(
-        `Taskpane reconnect button unavailable: ${JSON.stringify({ url: page.url(), ...state, pageErrors, outboundTail: outbound.slice(-8), inboundTail: inbound.slice(-8) })}`,
+        `Taskpane reconnect pairing code unavailable: ${JSON.stringify({ url: page.url(), ...state, pageErrors, outboundTail: outbound.slice(-8), inboundTail: inbound.slice(-8) })}`,
         { cause: error },
       )
     }
-    const reopenedCodeText = await page
-      .getByText(/Enter code [0-9]{6} in WisWork PC/)
-      .textContent({ timeout: 15_000 })
     const reopenedCode = reopenedCodeText?.match(/Enter code ([0-9]{6})/)?.[1]
     if (!reopenedCode) throw Error('reopened browser pairing code missing')
     pc.stdin.write(JSON.stringify({ type: 'claim', code: reopenedCode }) + '\n')

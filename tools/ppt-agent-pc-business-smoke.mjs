@@ -516,6 +516,17 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
     )
       throw new Error('PC did not negotiate required presentation capabilities')
     options.onProgress?.('paired')
+    async function nextResponse(timeout) {
+      const deadline = Date.now() + timeout
+      for (;;) {
+        const remaining = deadline - Date.now()
+        if (remaining <= 0) throw new Error('relay response timed out')
+        const frame = await next(remaining)
+        if (frame.type !== 'relay.session_state') return frame
+        if (frame.session_id !== approved.session_id)
+          throw new Error('session state identity mismatch')
+      }
+    }
     async function request(capabilityName, body) {
       const requestId = randomUUID()
       options.onProgress?.(`request:${body.operation}`)
@@ -530,7 +541,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
           body,
         }),
       )
-      const start = await expected(next, 'relay.start', Math.max(30_000, timeoutMs))
+      const start = await expected(nextResponse, 'relay.start', Math.max(30_000, timeoutMs))
       if (
         start.request_id !== requestId ||
         start.session_id !== approved.session_id ||
@@ -541,7 +552,7 @@ export async function inspectPcBusiness(relayOrigin, documentId, projectId, opti
       const chunks = []
       let bytes = 0
       for (;;) {
-        const frame = await next(Math.max(30_000, timeoutMs))
+        const frame = await nextResponse(Math.max(30_000, timeoutMs))
         if (frame.request_id !== requestId || frame.session_id !== approved.session_id)
           throw new Error('PC response identity mismatch')
         if (frame.type === 'relay.done') break

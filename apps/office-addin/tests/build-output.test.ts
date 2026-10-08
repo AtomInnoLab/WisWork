@@ -57,7 +57,9 @@ describe('configured Office build output', () => {
 
   it('emits a task pane and constrained team dialog pages without legacy auth assets', async () => {
     const taskpane = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
-    const files = await readdir(dist, { recursive: true })
+    const files = (await readdir(dist, { recursive: true })).map((file) =>
+      file.replaceAll('\\', '/'),
+    )
     expect(taskpane).toContain("connect-src 'self' wss://office.8-216-134-194.sslip.io")
     expect(taskpane).toContain('https://gateway.wispaper.ai')
     for (const page of ['team-auth-start.html', 'team-auth-callback.html']) {

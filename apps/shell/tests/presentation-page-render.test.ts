@@ -13,12 +13,18 @@ import {
   readBoundedRenderedPng,
 } from '../src/main/presentation-page-render'
 
-const sofficeAvailable = libreOfficeCommands().some(
-  (command) => spawnSync(command, ['--version'], { timeout: 5_000 }).status === 0,
-)
+const sofficeChecks: string[] = []
+const sofficeAvailable = libreOfficeCommands().some((command) => {
+  const result = spawnSync(command, ['--version'], { timeout: 5_000, windowsHide: true })
+  sofficeChecks.push(
+    `${command}: status=${result.status}, signal=${result.signal}, error=${result.error?.message ?? 'none'}`,
+  )
+  return result.status === 0
+})
 
 it('requires a working LibreOffice executable in cross-platform CI', () => {
-  if (process.env.WISWORK_REQUIRE_LIBREOFFICE === '1') expect(sofficeAvailable).toBe(true)
+  if (process.env.WISWORK_REQUIRE_LIBREOFFICE === '1')
+    expect(sofficeAvailable, sofficeChecks.join('\n')).toBe(true)
 })
 
 it('checks standard Mac and Windows LibreOffice installations before PATH', () => {
@@ -33,10 +39,14 @@ it('checks standard Mac and Windows LibreOffice installations before PATH', () =
       'ProgramFiles(x86)': 'C:\\Program Files (x86)',
     }),
   ).toEqual([
+    'C:\\Program Files\\LibreOffice\\program\\soffice.com',
     'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
+    'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.com',
     'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe',
+    'soffice.com',
     'soffice.exe',
   ])
+  expect(libreOfficeCommands('win32', {})).toEqual(['soffice.com', 'soffice.exe'])
   expect(libreOfficeCommands('linux', {})).toEqual(['soffice'])
 })
 
