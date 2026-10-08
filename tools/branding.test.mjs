@@ -197,6 +197,12 @@ test('active repository text contains no unallowlisted legacy product branding',
     .filter(Boolean)
   const legacy = /genoffice|genspark|genteam|com\.genoffice/i
   const allowedLegacyLine = (path, line) => {
+    // This exact competitor comparison is research context, not WisWork product branding.
+    if (path === 'docs/product/wiswork-ppt-agent-solution-and-implementation-plan-2026-09-22.md')
+      return (
+        line.trim() ===
+        '| Genspark | Guide Mode、首屏确认、区域/批量修改、Fact Check、历史版本 | 提供引导式入口、轻量样式确认、选择区域修改、来源核验、保存点 | 不默认全量并行生成；复杂图表不能以“看起来正确”代替 PowerPoint 回读 |'
+      )
     if (path === 'apps/shell/src/main/user-data-migration.ts')
       return line.trim() === "const LEGACY_PRODUCT_NAMES = ['GenOffice', 'AI Office'] as const"
     if (path === 'apps/shell/tests/user-data-migration.test.ts')
